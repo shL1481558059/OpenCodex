@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>OpenCodex Admin</title>
+    <style>
+      :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      body { margin: 0; background: #f5f7fb; color: #172033; }
+      header { height: 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; border-bottom: 1px solid #d9e0ea; background: #fff; }
+      h1 { margin: 0; font-size: 18px; }
+      nav { display: flex; gap: 8px; align-items: center; }
+      button { border: 1px solid #b9c3d1; border-radius: 6px; background: #fff; color: #172033; padding: 8px 10px; cursor: pointer; }
+      button.primary { background: #1463ff; border-color: #1463ff; color: #fff; }
+      button.danger { color: #b42318; }
+      main { display: grid; grid-template-columns: 300px 1fr; min-height: calc(100vh - 57px); }
+      aside { border-right: 1px solid #d9e0ea; background: #fff; padding: 16px; overflow: auto; }
+      section { padding: 18px; overflow: auto; }
+      .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+      .tab.active { background: #172033; color: #fff; border-color: #172033; }
+      .channel { display: flex; justify-content: space-between; gap: 8px; width: 100%; text-align: left; margin-bottom: 8px; }
+      .channel.active { border-color: #1463ff; box-shadow: 0 0 0 2px rgba(20, 99, 255, .15); }
+      .muted { color: #617083; font-size: 13px; }
+      .grid { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 12px; }
+      label { display: block; font-size: 13px; color: #4d5b6d; margin-bottom: 6px; }
+      input, select, textarea { box-sizing: border-box; width: 100%; border: 1px solid #b9c3d1; border-radius: 6px; padding: 9px 10px; background: #fff; color: #172033; font: inherit; }
+      textarea { min-height: 96px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+      .row { margin-bottom: 12px; }
+      .actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+      .status { margin-left: 8px; font-size: 13px; }
+      table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #d9e0ea; }
+      th, td { border-bottom: 1px solid #e7ecf3; padding: 8px; text-align: left; vertical-align: top; font-size: 13px; }
+      th { background: #eef3f9; }
+      pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; }
+      .hidden { display: none; }
+      @media (max-width: 760px) { main { grid-template-columns: 1fr; } aside { border-right: 0; border-bottom: 1px solid #d9e0ea; } .grid { grid-template-columns: 1fr; } }
+      @media (prefers-color-scheme: dark) {
+        body { background: #101419; color: #edf2f7; }
+        header, aside, table { background: #171c22; border-color: #2a3440; }
+        button, input, select, textarea { background: #11161c; color: #edf2f7; border-color: #3b4654; }
+        button.primary { background: #2f75ff; border-color: #2f75ff; }
+        th { background: #202832; }
+        td, th { border-color: #2a3440; }
+        label, .muted { color: #b8c2cf; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>OpenCodex Admin</h1>
+      <nav>
+        <form method="post" action="/admin/logout"><button type="submit">退出</button></form>
+      </nav>
+    </header>
+    <main>
+      <aside>
+        <div class="tabs">
+          <button id="tab-config" class="tab active" type="button">渠道配置</button>
+          <button id="tab-logs" class="tab" type="button">日志</button>
+        </div>
+        <div id="channel-list"></div>
+        <button id="add-channel" class="primary" type="button">新增渠道</button>
+      </aside>
+      <section id="config-panel">
+        <div class="row">
+          <label for="default-channel">默认渠道</label>
+          <input id="default-channel" placeholder="channel id">
+        </div>
+        <div class="row">
+          <label for="model-routes">模型路由 JSON</label>
+          <textarea id="model-routes" spellcheck="false"></textarea>
+        </div>
+        <hr>
+        <div id="channel-form" class="hidden">
+          <div class="grid">
+            <div class="row"><label>ID</label><input id="channel-id"></div>
+            <div class="row"><label>名称</label><input id="channel-name"></div>
+            <div class="row">
+              <label>服务类型</label>
+              <select id="channel-type">
+                <option value="responses">responses</option>
+                <option value="chat">chat</option>
+                <option value="messages">messages</option>
+              </select>
+            </div>
+            <div class="row">
+              <label>鉴权模式</label>
+              <select id="channel-auth">
+                <option value="pass_through_or_config">pass_through_or_config</option>
+                <option value="pass_through">pass_through</option>
+                <option value="config">config</option>
+                <option value="none">none</option>
+              </select>
+            </div>
+            <div class="row"><label>Base URL</label><input id="channel-baseurl"></div>
+            <div class="row"><label>API Key</label><input id="channel-apikey"></div>
+            <div class="row"><label>超时秒数</label><input id="channel-timeout" type="number" min="1"></div>
+          </div>
+          <div class="row"><label>Headers JSON</label><textarea id="channel-headers" spellcheck="false"></textarea></div>
+          <div class="row"><label>Compat JSON</label><textarea id="channel-compat" spellcheck="false"></textarea></div>
+          <div class="actions">
+            <button id="save-channel" class="primary" type="button">保存渠道</button>
+            <button id="delete-channel" class="danger" type="button">删除渠道</button>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="save-config" class="primary" type="button">保存全部配置</button>
+          <span id="config-status" class="status"></span>
+        </div>
+      </section>
+      <section id="logs-panel" class="hidden">
+        <div class="actions">
+          <button id="refresh-logs" class="primary" type="button">刷新日志</button>
+          <span class="muted">当前展示等级：{{ log_view_level }}</span>
+        </div>
+        <table>
+          <thead><tr><th>时间</th><th>等级</th><th>内容</th></tr></thead>
+          <tbody id="logs-body"></tbody>
+        </table>
+      </section>
+    </main>
+    <script>
+      let config = {channels: [], routing: {default_channel: "", model_routes: []}};
+      let selectedIndex = -1;
+
+      const $ = (id) => document.getElementById(id);
+
+      async function api(url, options = {}) {
+        const response = await fetch(url, options);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || data.error?.message || response.statusText);
+        return data;
+      }
+
+      function parseJsonField(id, fallback) {
+        const value = $(id).value.trim();
+        if (!value) return fallback;
+        return JSON.parse(value);
+      }
+
+      function setStatus(text, error = false) {
+        $("config-status").textContent = text;
+        $("config-status").style.color = error ? "#b42318" : "#1a7f37";
+      }
+
+      function renderChannels() {
+        const list = $("channel-list");
+        list.innerHTML = "";
+        config.channels.forEach((channel, index) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "channel" + (index === selectedIndex ? " active" : "");
+          button.innerHTML = `<span>${channel.name || channel.id}</span><span class="muted">${channel.type}</span>`;
+          button.onclick = () => selectChannel(index);
+          list.appendChild(button);
+        });
+      }
+
+      function selectChannel(index) {
+        selectedIndex = index;
+        const channel = config.channels[index];
+        $("channel-form").classList.remove("hidden");
+        $("channel-id").value = channel.id || "";
+        $("channel-name").value = channel.name || "";
+        $("channel-type").value = channel.type || "chat";
+        $("channel-auth").value = channel.auth_mode || "pass_through_or_config";
+        $("channel-baseurl").value = channel.baseurl || "";
+        $("channel-apikey").value = channel.apikey || "";
+        $("channel-timeout").value = channel.timeout_seconds || 120;
+        $("channel-headers").value = JSON.stringify(channel.headers || {}, null, 2);
+        $("channel-compat").value = JSON.stringify(channel.compat || {
+          rename_params: {},
+          drop_params: [],
+          force_params: {},
+          default_params: {},
+          unsupported_params: []
+        }, null, 2);
+        renderChannels();
+      }
+
+      function syncGlobalFields() {
+        config.routing = config.routing || {};
+        config.routing.default_channel = $("default-channel").value.trim();
+        config.routing.model_routes = parseJsonField("model-routes", []);
+      }
+
+      function syncSelectedChannel() {
+        if (selectedIndex < 0) return;
+        config.channels[selectedIndex] = {
+          id: $("channel-id").value.trim(),
+          name: $("channel-name").value.trim(),
+          type: $("channel-type").value,
+          baseurl: $("channel-baseurl").value.trim(),
+          apikey: $("channel-apikey").value,
+          auth_mode: $("channel-auth").value,
+          headers: parseJsonField("channel-headers", {}),
+          timeout_seconds: Number($("channel-timeout").value || 120),
+          compat: parseJsonField("channel-compat", {})
+        };
+      }
+
+      async function loadConfig() {
+        config = await api("/admin/api/config");
+        config.channels = config.channels || [];
+        config.routing = config.routing || {default_channel: "", model_routes: []};
+        $("default-channel").value = config.routing.default_channel || "";
+        $("model-routes").value = JSON.stringify(config.routing.model_routes || [], null, 2);
+        renderChannels();
+        if (config.channels.length) selectChannel(0);
+      }
+
+      async function saveConfig() {
+        try {
+          syncSelectedChannel();
+          syncGlobalFields();
+          config = await api("/admin/api/config", {
+            method: "POST",
+            headers: {"content-type": "application/json"},
+            body: JSON.stringify(config)
+          });
+          setStatus("已保存并热加载");
+          await loadConfig();
+        } catch (error) {
+          setStatus(error.message, true);
+        }
+      }
+
+      async function refreshLogs() {
+        const data = await api("/admin/api/logs?limit=200");
+        const body = $("logs-body");
+        body.innerHTML = "";
+        data.events.slice().reverse().forEach((event) => {
+          const tr = document.createElement("tr");
+          const copy = {...event};
+          const time = copy.time || "";
+          const level = copy.level || "";
+          delete copy.time;
+          delete copy.level;
+          tr.innerHTML = `<td>${time}</td><td>${level}</td><td><pre>${escapeHtml(JSON.stringify(copy, null, 2))}</pre></td>`;
+          body.appendChild(tr);
+        });
+      }
+
+      function escapeHtml(text) {
+        return text.replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]));
+      }
+
+      $("add-channel").onclick = () => {
+        config.channels.push({
+          id: `channel-${config.channels.length + 1}`,
+          name: "",
+          type: "chat",
+          baseurl: "",
+          apikey: "",
+          auth_mode: "pass_through_or_config",
+          headers: {},
+          timeout_seconds: 120,
+          compat: {rename_params: {}, drop_params: [], force_params: {}, default_params: {}, unsupported_params: []}
+        });
+        selectChannel(config.channels.length - 1);
+      };
+      $("save-channel").onclick = () => { syncSelectedChannel(); renderChannels(); setStatus("渠道已更新，记得保存全部配置"); };
+      $("delete-channel").onclick = () => {
+        if (selectedIndex >= 0) {
+          config.channels.splice(selectedIndex, 1);
+          selectedIndex = -1;
+          $("channel-form").classList.add("hidden");
+          renderChannels();
+          setStatus("渠道已删除，记得保存全部配置");
+        }
+      };
+      $("save-config").onclick = saveConfig;
+      $("refresh-logs").onclick = refreshLogs;
+      $("tab-config").onclick = () => {
+        $("tab-config").classList.add("active"); $("tab-logs").classList.remove("active");
+        $("config-panel").classList.remove("hidden"); $("logs-panel").classList.add("hidden");
+      };
+      $("tab-logs").onclick = async () => {
+        $("tab-logs").classList.add("active"); $("tab-config").classList.remove("active");
+        $("logs-panel").classList.remove("hidden"); $("config-panel").classList.add("hidden");
+        await refreshLogs();
+      };
+
+      loadConfig().catch((error) => setStatus(error.message, true));
+    </script>
+  </body>
+</html>

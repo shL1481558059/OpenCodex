@@ -1,0 +1,81 @@
+{
+  "channels": [
+    {
+      "id": "openai-responses",
+      "name": "OpenAI Responses",
+      "type": "responses",
+      "baseurl": "https://api.openai.com/v1",
+      "apikey": "${OPENAI_API_KEY}",
+      "auth_mode": "pass_through_or_config",
+      "headers": {},
+      "timeout_seconds": 120,
+      "compat": {
+        "rename_params": {},
+        "drop_params": [],
+        "force_params": {},
+        "default_params": {},
+        "unsupported_params": []
+      }
+    },
+    {
+      "id": "anthropic-messages",
+      "name": "Anthropic Messages",
+      "type": "messages",
+      "baseurl": "https://api.anthropic.com/v1",
+      "apikey": "${ANTHROPIC_API_KEY}",
+      "auth_mode": "pass_through_or_config",
+      "headers": {
+        "anthropic-version": "2023-06-01"
+      },
+      "timeout_seconds": 120,
+      "compat": {
+        "rename_params": {},
+        "drop_params": [],
+        "force_params": {},
+        "default_params": {
+          "max_tokens": 4096
+        },
+        "unsupported_params": []
+      }
+    },
+    {
+      "id": "windhub-mimo-messages",
+      "name": "Windhub MiMo Messages",
+      "type": "messages",
+      "baseurl": "https://windhub.cc",
+      "apikey": "${WINDHUB_API_KEY}",
+      "auth_mode": "config",
+      "headers": {
+        "anthropic-version": "2023-06-01"
+      },
+      "timeout_seconds": 120,
+      "compat": {
+        "rename_params": {},
+        "drop_params": [
+          "parallel_tool_calls",
+          "store",
+          "service_tier"
+        ],
+        "force_params": {},
+        "default_params": {
+          "max_tokens": 4096
+        },
+        "unsupported_params": [],
+        "fallback_thinking_on_tool_use": true
+      }
+    }
+  ],
+  "routing": {
+    "default_channel": "openai-responses",
+    "model_routes": [
+      {
+        "pattern": "mimo-*",
+        "channel": "windhub-mimo-messages"
+      },
+      {
+        "pattern": "claude-*",
+        "channel": "anthropic-messages"
+      }
+    ]
+  }
+}

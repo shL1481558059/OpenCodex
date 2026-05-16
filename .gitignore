@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+config.json
+logs/
+.pytest_cache/
+.DS_Store
+AGENTS.md
+
+# Python
+*.pyo
+*.pyd
+*.egg-info/
+build/
+dist/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Local artifacts
+*.tar
+*.tar.gz
+*.zip
