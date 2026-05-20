@@ -6,42 +6,77 @@
     <title>OpenCodex Admin</title>
     <style>
       :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      * { box-sizing: border-box; }
       body { margin: 0; background: #f5f7fb; color: #172033; }
       header { height: 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; border-bottom: 1px solid #d9e0ea; background: #fff; }
-      h1 { margin: 0; font-size: 18px; }
+      h1 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: 0; }
+      h2 { margin: 0; font-size: 20px; letter-spacing: 0; }
+      h3 { margin: 0 0 12px; font-size: 16px; letter-spacing: 0; }
+      h4 { margin: 0 0 10px; font-size: 14px; letter-spacing: 0; }
       nav { display: flex; gap: 8px; align-items: center; }
-      button { border: 1px solid #b9c3d1; border-radius: 6px; background: #fff; color: #172033; padding: 8px 10px; cursor: pointer; }
+      button { min-height: 36px; border: 1px solid #b9c3d1; border-radius: 6px; background: #fff; color: #172033; padding: 7px 10px; cursor: pointer; font: inherit; white-space: nowrap; }
+      button:hover { border-color: #7e8da0; }
       button.primary { background: #1463ff; border-color: #1463ff; color: #fff; }
       button.danger { color: #b42318; }
-      main { display: grid; grid-template-columns: 300px 1fr; min-height: calc(100vh - 57px); }
-      aside { border-right: 1px solid #d9e0ea; background: #fff; padding: 16px; overflow: auto; }
-      section { padding: 18px; overflow: auto; }
-      .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
-      .tab.active { background: #172033; color: #fff; border-color: #172033; }
-      .channel { display: flex; justify-content: space-between; gap: 8px; width: 100%; text-align: left; margin-bottom: 8px; }
-      .channel.active { border-color: #1463ff; box-shadow: 0 0 0 2px rgba(20, 99, 255, .15); }
+      button.small { min-height: 30px; padding: 5px 8px; font-size: 13px; }
+      main { display: grid; grid-template-columns: 184px minmax(0, 1fr); min-height: calc(100vh - 57px); }
+      aside { border-right: 1px solid #d9e0ea; background: #fff; padding: 14px; overflow: auto; }
+      section { min-width: 0; padding: 18px; overflow: auto; }
+      .side-menu { display: grid; gap: 8px; }
+      .menu-item { width: 100%; text-align: left; }
+      .menu-item.active { background: #172033; color: #fff; border-color: #172033; }
+      .section-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; }
       .muted { color: #617083; font-size: 13px; }
       .grid { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 12px; }
+      .filters { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 12px; margin-bottom: 12px; }
       label { display: block; font-size: 13px; color: #4d5b6d; margin-bottom: 6px; }
-      input, select, textarea { box-sizing: border-box; width: 100%; border: 1px solid #b9c3d1; border-radius: 6px; padding: 9px 10px; background: #fff; color: #172033; font: inherit; }
+      input, select, textarea { width: 100%; border: 1px solid #b9c3d1; border-radius: 6px; padding: 9px 10px; background: #fff; color: #172033; font: inherit; }
+      input[type="checkbox"] { width: auto; min-width: 18px; height: 18px; padding: 0; }
       textarea { min-height: 96px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
       .row { margin-bottom: 12px; }
-      .actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
-      .status { margin-left: 8px; font-size: 13px; }
-      table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #d9e0ea; }
+      .checkbox-row { display: flex; align-items: center; gap: 8px; min-height: 38px; }
+      .checkbox-row label { margin: 0; }
+      .actions { display: flex; gap: 8px; margin: 14px 0; flex-wrap: wrap; align-items: center; }
+      .status { font-size: 13px; }
+      .table-wrap { width: 100%; overflow: auto; border: 1px solid #d9e0ea; background: #fff; }
+      table { width: 100%; border-collapse: collapse; min-width: 920px; }
       th, td { border-bottom: 1px solid #e7ecf3; padding: 8px; text-align: left; vertical-align: top; font-size: 13px; }
-      th { background: #eef3f9; }
-      pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; }
+      th { background: #eef3f9; color: #334155; font-weight: 700; }
+      tr.selected td { background: #eef5ff; }
+      .ops { display: flex; gap: 6px; flex-wrap: wrap; }
+      .badge { display: inline-flex; align-items: center; min-height: 24px; border-radius: 999px; padding: 2px 8px; font-size: 12px; border: 1px solid #b9c3d1; }
+      .badge.on { color: #05603a; border-color: #8bd7b0; background: #ecfdf3; }
+      .badge.off { color: #9a3412; border-color: #fdba74; background: #fff7ed; }
+      .editor { margin-top: 18px; padding-top: 18px; border-top: 1px solid #d9e0ea; }
+      .rule-fieldset { margin: 0 0 14px; padding: 12px; border: 1px solid #d9e0ea; border-radius: 6px; }
+      .rule-fieldset legend { padding: 0 6px; color: #4d5b6d; font-size: 13px; }
+      .rule-grid { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 12px; }
+      .rule-grid > .row { margin-bottom: 0; }
+      .rule-grid textarea { min-height: 84px; }
+      .rule-note { margin: 4px 0 0; color: #617083; font-size: 12px; }
+      pre { margin: 8px 0 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; }
+      details summary { cursor: pointer; }
       .hidden { display: none; }
-      @media (max-width: 760px) { main { grid-template-columns: 1fr; } aside { border-right: 0; border-bottom: 1px solid #d9e0ea; } .grid { grid-template-columns: 1fr; } }
+      @media (max-width: 920px) {
+        main { grid-template-columns: 1fr; }
+        aside { border-right: 0; border-bottom: 1px solid #d9e0ea; }
+        .side-menu { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .filters, .grid, .rule-grid { grid-template-columns: 1fr; }
+        .section-header { align-items: flex-start; flex-direction: column; }
+      }
       @media (prefers-color-scheme: dark) {
         body { background: #101419; color: #edf2f7; }
-        header, aside, table { background: #171c22; border-color: #2a3440; }
+        header, aside, .table-wrap { background: #171c22; border-color: #2a3440; }
         button, input, select, textarea { background: #11161c; color: #edf2f7; border-color: #3b4654; }
         button.primary { background: #2f75ff; border-color: #2f75ff; }
-        th { background: #202832; }
-        td, th { border-color: #2a3440; }
+        th { background: #202832; color: #dbe4ee; }
+        td, th, .editor { border-color: #2a3440; }
+        tr.selected td { background: #18263b; }
         label, .muted { color: #b8c2cf; }
+        .rule-fieldset { border-color: #2a3440; }
+        .rule-fieldset legend, .rule-note { color: #b8c2cf; }
+        .badge.on { color: #86efac; border-color: #166534; background: #052e1a; }
+        .badge.off { color: #fdba74; border-color: #9a3412; background: #431407; }
       }
     </style>
   </head>
@@ -54,29 +89,46 @@
     </header>
     <main>
       <aside>
-        <div class="tabs">
-          <button id="tab-config" class="tab active" type="button">渠道配置</button>
-          <button id="tab-logs" class="tab" type="button">日志</button>
+        <div class="side-menu">
+          <button id="menu-config" class="menu-item active" type="button">渠道配置</button>
+          <button id="menu-logs" class="menu-item" type="button">日志</button>
         </div>
-        <div id="channel-list"></div>
-        <button id="add-channel" class="primary" type="button">新增渠道</button>
       </aside>
+
       <section id="config-panel">
-        <div class="row">
-          <label for="default-channel">默认渠道</label>
-          <input id="default-channel" placeholder="channel id">
+        <div class="section-header">
+          <h2>渠道配置</h2>
+          <button id="add-channel" class="primary" type="button">新增渠道</button>
         </div>
-        <div class="row">
-          <label for="model-routes">模型路由 JSON</label>
-          <textarea id="model-routes" spellcheck="false"></textarea>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>名称</th>
+                <th>类型</th>
+                <th>状态</th>
+                <th>顺序</th>
+                <th>Base URL</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="channel-table-body"></tbody>
+          </table>
         </div>
-        <hr>
-        <div id="channel-form" class="hidden">
+        <div class="actions">
+          <button id="save-config" class="primary" type="button">保存全部配置</button>
+          <span id="config-status" class="status"></span>
+        </div>
+
+        <div id="channel-form" class="editor hidden">
+          <h3>编辑渠道</h3>
           <div class="grid">
-            <div class="row"><label>ID</label><input id="channel-id"></div>
-            <div class="row"><label>名称</label><input id="channel-name"></div>
+            <div class="row"><label for="channel-id">ID</label><input id="channel-id"></div>
+            <div class="row"><label for="channel-name">名称</label><input id="channel-name"></div>
             <div class="row">
-              <label>服务类型</label>
+              <label for="channel-type">服务类型</label>
               <select id="channel-type">
                 <option value="responses">responses</option>
                 <option value="chat">chat</option>
@@ -84,7 +136,7 @@
               </select>
             </div>
             <div class="row">
-              <label>鉴权模式</label>
+              <label for="channel-auth">鉴权模式</label>
               <select id="channel-auth">
                 <option value="pass_through_or_config">pass_through_or_config</option>
                 <option value="pass_through">pass_through</option>
@@ -92,43 +144,229 @@
                 <option value="none">none</option>
               </select>
             </div>
-            <div class="row"><label>Base URL</label><input id="channel-baseurl"></div>
-            <div class="row"><label>API Key</label><input id="channel-apikey"></div>
-            <div class="row"><label>超时秒数</label><input id="channel-timeout" type="number" min="1"></div>
+            <div class="row"><label for="channel-baseurl">Base URL</label><input id="channel-baseurl"></div>
+            <div class="row"><label for="channel-apikey">API Key</label><input id="channel-apikey"></div>
+            <div class="row"><label for="channel-timeout">超时秒数</label><input id="channel-timeout" type="number" min="1"></div>
+            <div class="row checkbox-row"><input id="channel-enabled" type="checkbox"><label for="channel-enabled">启用</label></div>
           </div>
-          <div class="row"><label>Headers JSON</label><textarea id="channel-headers" spellcheck="false"></textarea></div>
-          <div class="row"><label>Compat JSON</label><textarea id="channel-compat" spellcheck="false"></textarea></div>
+          <div class="row"><label for="channel-headers">Headers JSON</label><textarea id="channel-headers" spellcheck="false"></textarea></div>
+          <fieldset class="rule-fieldset">
+            <legend>全局规则</legend>
+            <div class="rule-grid">
+              <div class="row">
+                <label for="compat-force-protocol">强制上游协议</label>
+                <select id="compat-force-protocol">
+                  <option value=""></option>
+                  <option value="responses">responses</option>
+                  <option value="chat">chat</option>
+                  <option value="messages">messages</option>
+                </select>
+              </div>
+              <div class="row">
+                <label for="compat-tool-request-protocol">工具请求协议</label>
+                <select id="compat-tool-request-protocol">
+                  <option value=""></option>
+                  <option value="responses">responses</option>
+                  <option value="chat">chat</option>
+                  <option value="messages">messages</option>
+                </select>
+              </div>
+              <div class="row checkbox-row">
+                <input id="compat-fallback-thinking" type="checkbox">
+                <label for="compat-fallback-thinking">工具续传缺少 thinking 时补占位</label>
+              </div>
+              <div class="row">
+                <label for="compat-rename-params">参数重命名</label>
+                <textarea id="compat-rename-params" spellcheck="false" placeholder="max_output_tokens=max_tokens"></textarea>
+              </div>
+              <div class="row">
+                <label for="compat-drop-params">丢弃参数</label>
+                <textarea id="compat-drop-params" spellcheck="false" placeholder="parallel_tool_calls"></textarea>
+              </div>
+              <div class="row">
+                <label for="compat-force-params">强制参数</label>
+                <textarea id="compat-force-params" spellcheck="false" placeholder='max_tokens=4096'></textarea>
+              </div>
+              <div class="row">
+                <label for="compat-default-params">默认参数</label>
+                <textarea id="compat-default-params" spellcheck="false" placeholder='temperature=0.2'></textarea>
+              </div>
+              <div class="row">
+                <label for="compat-unsupported-params">不支持参数</label>
+                <textarea id="compat-unsupported-params" spellcheck="false" placeholder="stream"></textarea>
+              </div>
+            </div>
+            <p class="rule-note">对象参数按 `key=value` 填写，右侧支持 JSON 值。</p>
+          </fieldset>
+          <fieldset class="rule-fieldset">
+            <legend>按协议覆盖</legend>
+            <div class="rule-grid">
+              <div>
+                <h4>responses</h4>
+                <div class="row">
+                  <label for="compat-responses-rename-params">参数重命名</label>
+                  <textarea id="compat-responses-rename-params" spellcheck="false" placeholder="max_output_tokens=max_tokens"></textarea>
+                </div>
+                <div class="row">
+                  <label for="compat-responses-drop-params">丢弃参数</label>
+                  <textarea id="compat-responses-drop-params" spellcheck="false" placeholder="parallel_tool_calls"></textarea>
+                </div>
+                <div class="row">
+                  <label for="compat-responses-force-params">强制参数</label>
+                  <textarea id="compat-responses-force-params" spellcheck="false" placeholder='max_tokens=4096'></textarea>
+                </div>
+                <div class="row">
+                  <label for="compat-responses-default-params">默认参数</label>
+                  <textarea id="compat-responses-default-params" spellcheck="false" placeholder='temperature=0.2'></textarea>
+                </div>
+                <div class="row">
+                  <label for="compat-responses-unsupported-params">不支持参数</label>
+                  <textarea id="compat-responses-unsupported-params" spellcheck="false" placeholder="stream"></textarea>
+                </div>
+              </div>
+              <div>
+                <h4>chat</h4>
+                <div class="row">
+                  <label for="compat-chat-rename-params">参数重命名</label>
+                  <textarea id="compat-chat-rename-params" spellcheck="false" placeholder="max_output_tokens=max_tokens"></textarea>
+                </div>
+                <div class="row">
+                  <label for="compat-chat-drop-params">丢弃参数</label>
+                  <textarea id="compat-chat-drop-params" spellcheck="false" placeholder="parallel_tool_calls"></textarea>
+                </div>
+                <div class="row">
+                  <label for="compat-chat-force-params">强制参数</label>
+                  <textarea id="compat-chat-force-params" spellcheck="false" placeholder='max_tokens=4096'></textarea>
+                </div>
+                <div class="row">
+                  <label for="compat-chat-default-params">默认参数</label>
+                  <textarea id="compat-chat-default-params" spellcheck="false" placeholder='temperature=0.2'></textarea>
+                </div>
+                <div class="row">
+                  <label for="compat-chat-unsupported-params">不支持参数</label>
+                  <textarea id="compat-chat-unsupported-params" spellcheck="false" placeholder="stream"></textarea>
+                </div>
+              </div>
+              <div>
+                <h4>messages</h4>
+                <div class="row checkbox-row">
+                  <input id="compat-messages-fallback-thinking" type="checkbox">
+                  <label for="compat-messages-fallback-thinking">工具续传缺少 thinking 时补占位</label>
+                </div>
+                <div class="row">
+                  <label for="compat-messages-rename-params">参数重命名</label>
+                  <textarea id="compat-messages-rename-params" spellcheck="false" placeholder="max_output_tokens=max_tokens"></textarea>
+                </div>
+                <div class="row">
+                  <label for="compat-messages-drop-params">丢弃参数</label>
+                  <textarea id="compat-messages-drop-params" spellcheck="false" placeholder="parallel_tool_calls"></textarea>
+                </div>
+                <div class="row">
+                  <label for="compat-messages-force-params">强制参数</label>
+                  <textarea id="compat-messages-force-params" spellcheck="false" placeholder='max_tokens=4096'></textarea>
+                </div>
+                <div class="row">
+                  <label for="compat-messages-default-params">默认参数</label>
+                  <textarea id="compat-messages-default-params" spellcheck="false" placeholder='temperature=0.2'></textarea>
+                </div>
+                <div class="row">
+                  <label for="compat-messages-unsupported-params">不支持参数</label>
+                  <textarea id="compat-messages-unsupported-params" spellcheck="false" placeholder="stream"></textarea>
+                </div>
+              </div>
+            </div>
+          </fieldset>
           <div class="actions">
             <button id="save-channel" class="primary" type="button">保存渠道</button>
-            <button id="delete-channel" class="danger" type="button">删除渠道</button>
+            <button id="cancel-channel" type="button">取消</button>
           </div>
         </div>
-        <div class="actions">
-          <button id="save-config" class="primary" type="button">保存全部配置</button>
-          <span id="config-status" class="status"></span>
-        </div>
       </section>
+
       <section id="logs-panel" class="hidden">
-        <div class="actions">
-          <button id="refresh-logs" class="primary" type="button">刷新日志</button>
-          <span class="muted">当前展示等级：{{ log_view_level }}</span>
+        <div class="section-header">
+          <h2>日志</h2>
+          <span class="muted">展示等级：{{ log_view_level }}</span>
         </div>
-        <table>
-          <thead><tr><th>时间</th><th>等级</th><th>内容</th></tr></thead>
-          <tbody id="logs-body"></tbody>
-        </table>
+        <div class="filters">
+          <div class="row"><label for="log-request-id">请求 ID</label><input id="log-request-id"></div>
+          <div class="row"><label for="log-model">模型</label><input id="log-model"></div>
+          <div class="row"><label for="log-channel">渠道</label><select id="log-channel"></select></div>
+          <div class="row">
+            <label for="log-path">路径</label>
+            <select id="log-path">
+              <option value=""></option>
+              <option value="/v1/responses">/v1/responses</option>
+              <option value="/v1/chat/completions">/v1/chat/completions</option>
+              <option value="/v1/messages">/v1/messages</option>
+            </select>
+          </div>
+          <div class="row"><label for="log-status-code">状态码</label><input id="log-status-code" type="number" min="100" max="599"></div>
+          <div class="row">
+            <label for="log-stream">流式</label>
+            <select id="log-stream">
+              <option value=""></option>
+              <option value="1">是</option>
+              <option value="0">否</option>
+            </select>
+          </div>
+          <div class="row"><label for="log-client-ip">客户端 IP</label><input id="log-client-ip"></div>
+          <div class="row"><label for="log-error">错误</label><input id="log-error"></div>
+          <div class="row"><label for="log-created-from">开始时间</label><input id="log-created-from" type="datetime-local"></div>
+          <div class="row"><label for="log-created-to">结束时间</label><input id="log-created-to" type="datetime-local"></div>
+          <div class="row"><label for="log-limit">数量</label><input id="log-limit" type="number" min="1" max="1000" value="200"></div>
+        </div>
+        <div class="actions">
+          <button id="search-logs" class="primary" type="button">查询</button>
+          <button id="reset-logs" type="button">重置</button>
+          <span id="logs-status" class="status"></span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>请求 ID</th>
+                <th>路径</th>
+                <th>模型</th>
+                <th>上游模型</th>
+                <th>渠道</th>
+                <th>流式</th>
+                <th>状态</th>
+                <th>耗时</th>
+                <th>TTFT</th>
+                <th>Token</th>
+                <th>成本</th>
+                <th>错误</th>
+                <th>详情</th>
+              </tr>
+            </thead>
+            <tbody id="logs-body"></tbody>
+          </table>
+        </div>
       </section>
     </main>
     <script>
-      let config = {channels: [], routing: {default_channel: "", model_routes: []}};
+      let config = {channels: []};
       let selectedIndex = -1;
+      const COMPAT_PROTOCOLS = ["responses", "chat", "messages"];
+      const COMPAT_SECTION_FIELDS = ["rename_params", "drop_params", "force_params", "default_params", "unsupported_params"];
+      const COMPAT_KNOWN_TOP_LEVEL_FIELDS = [
+        "force_protocol",
+        "tool_request_protocol",
+        "fallback_thinking_on_tool_use",
+        ...COMPAT_SECTION_FIELDS
+      ];
 
       const $ = (id) => document.getElementById(id);
 
       async function api(url, options = {}) {
         const response = await fetch(url, options);
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || data.error?.message || response.statusText);
+        if (!response.ok) {
+          const message = typeof data.error === "string" ? data.error : data.error?.message || response.statusText;
+          throw new Error(message);
+        }
         return data;
       }
 
@@ -138,25 +376,311 @@
         return JSON.parse(value);
       }
 
-      function setStatus(text, error = false) {
-        $("config-status").textContent = text;
-        $("config-status").style.color = error ? "#b42318" : "#1a7f37";
+      function setStatus(target, text, error = false) {
+        $(target).textContent = text;
+        $(target).style.color = error ? "#b42318" : "#1a7f37";
       }
 
-      function renderChannels() {
-        const list = $("channel-list");
-        list.innerHTML = "";
-        config.channels.forEach((channel, index) => {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = "channel" + (index === selectedIndex ? " active" : "");
-          button.innerHTML = `<span>${channel.name || channel.id}</span><span class="muted">${channel.type}</span>`;
-          button.onclick = () => selectChannel(index);
-          list.appendChild(button);
+      function escapeHtml(value) {
+        return String(value ?? "").replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]));
+      }
+
+      function defaultCompat() {
+        return {
+          force_protocol: "",
+          tool_request_protocol: "",
+          fallback_thinking_on_tool_use: false,
+          rename_params: {},
+          drop_params: [],
+          force_params: {},
+          default_params: {},
+          unsupported_params: [],
+          by_protocol: {}
+        };
+      }
+
+      function isPlainObject(value) {
+        return value !== null && typeof value === "object" && !Array.isArray(value);
+      }
+
+      function cloneJson(value) {
+        return JSON.parse(JSON.stringify(value));
+      }
+
+      function compatSectionId(scope, field) {
+        const normalizedField = field.replace(/_/g, "-");
+        return scope === "global" ? `compat-${normalizedField}` : `compat-${scope}-${normalizedField}`;
+      }
+
+      function normalizeStringList(value) {
+        if (!Array.isArray(value)) return [];
+        return value.map((item) => String(item ?? "").trim()).filter(Boolean);
+      }
+
+      function normalizeCompatSection(section) {
+        const source = isPlainObject(section) ? section : {};
+        return {
+          rename_params: isPlainObject(source.rename_params) ? cloneJson(source.rename_params) : {},
+          drop_params: normalizeStringList(source.drop_params),
+          force_params: isPlainObject(source.force_params) ? cloneJson(source.force_params) : {},
+          default_params: isPlainObject(source.default_params) ? cloneJson(source.default_params) : {},
+          unsupported_params: normalizeStringList(source.unsupported_params)
+        };
+      }
+
+      function normalizeCompat(compat) {
+        const source = isPlainObject(compat) ? compat : {};
+        const normalized = {
+          force_protocol: typeof source.force_protocol === "string" ? source.force_protocol : "",
+          tool_request_protocol: typeof source.tool_request_protocol === "string" ? source.tool_request_protocol : "",
+          fallback_thinking_on_tool_use: source.fallback_thinking_on_tool_use === true,
+          ...normalizeCompatSection(source),
+          by_protocol: {}
+        };
+        const byProtocol = isPlainObject(source.by_protocol) ? source.by_protocol : {};
+        COMPAT_PROTOCOLS.forEach((protocol) => {
+          const section = normalizeCompatSection(byProtocol[protocol]);
+          section.fallback_thinking_on_tool_use =
+            isPlainObject(byProtocol[protocol]) && byProtocol[protocol].fallback_thinking_on_tool_use === true;
+          normalized.by_protocol[protocol] = section;
+        });
+        return normalized;
+      }
+
+      function formatStringList(list) {
+        return normalizeStringList(list).join("\n");
+      }
+
+      function formatStringMap(map) {
+        if (!isPlainObject(map)) return "";
+        return Object.entries(map).map(([key, value]) => `${key}=${String(value ?? "")}`).join("\n");
+      }
+
+      function formatValueMap(map) {
+        if (!isPlainObject(map)) return "";
+        return Object.entries(map).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join("\n");
+      }
+
+      function setCompatSectionFields(scope, section, includeFallback = false) {
+        const normalized = normalizeCompatSection(section);
+        $(compatSectionId(scope, "rename_params")).value = formatStringMap(normalized.rename_params);
+        $(compatSectionId(scope, "drop_params")).value = formatStringList(normalized.drop_params);
+        $(compatSectionId(scope, "force_params")).value = formatValueMap(normalized.force_params);
+        $(compatSectionId(scope, "default_params")).value = formatValueMap(normalized.default_params);
+        $(compatSectionId(scope, "unsupported_params")).value = formatStringList(normalized.unsupported_params);
+        if (includeFallback) {
+          $(compatSectionId(scope, "fallback-thinking")).checked = section?.fallback_thinking_on_tool_use === true;
+        }
+      }
+
+      function populateCompatForm(compat) {
+        const normalized = normalizeCompat(compat);
+        $("compat-force-protocol").value = normalized.force_protocol;
+        $("compat-tool-request-protocol").value = normalized.tool_request_protocol;
+        $("compat-fallback-thinking").checked = normalized.fallback_thinking_on_tool_use;
+        setCompatSectionFields("global", normalized);
+        COMPAT_PROTOCOLS.forEach((protocol) => {
+          setCompatSectionFields(protocol, normalized.by_protocol[protocol], protocol === "messages");
         });
       }
 
+      function splitNonEmptyLines(value) {
+        return String(value ?? "")
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean);
+      }
+
+      function parseStringListFromField(id) {
+        return splitNonEmptyLines($(id).value);
+      }
+
+      function parseAssignmentMap(id, label, parseValue) {
+        const result = {};
+        const lines = String($(id).value ?? "").split("\n");
+        lines.forEach((line, index) => {
+          const text = line.trim();
+          if (!text) return;
+          const separator = text.indexOf("=");
+          if (separator <= 0) {
+            throw new Error(`${label} 第 ${index + 1} 行必须使用 key=value`);
+          }
+          const key = text.slice(0, separator).trim();
+          const rawValue = text.slice(separator + 1).trim();
+          if (!key) {
+            throw new Error(`${label} 第 ${index + 1} 行缺少 key`);
+          }
+          result[key] = parseValue(rawValue, label, index + 1);
+        });
+        return result;
+      }
+
+      function parseLooseJsonValue(rawValue, label, lineNumber) {
+        if (!rawValue) return "";
+        const jsonLike = /^[\[{"]/.test(rawValue) || /^(true|false|null|-?\d)/.test(rawValue);
+        if (!jsonLike) return rawValue;
+        try {
+          return JSON.parse(rawValue);
+        } catch (error) {
+          throw new Error(`${label} 第 ${lineNumber} 行的值不是合法 JSON`);
+        }
+      }
+
+      function parseCompatSection(scope, includeFallback = false) {
+        const section = {
+          rename_params: parseAssignmentMap(
+            compatSectionId(scope, "rename_params"),
+            "参数重命名",
+            (value) => value
+          ),
+          drop_params: parseStringListFromField(compatSectionId(scope, "drop_params")),
+          force_params: parseAssignmentMap(
+            compatSectionId(scope, "force_params"),
+            "强制参数",
+            parseLooseJsonValue
+          ),
+          default_params: parseAssignmentMap(
+            compatSectionId(scope, "default_params"),
+            "默认参数",
+            parseLooseJsonValue
+          ),
+          unsupported_params: parseStringListFromField(compatSectionId(scope, "unsupported_params"))
+        };
+        if (includeFallback) {
+          section.fallback_thinking_on_tool_use = $(compatSectionId(scope, "fallback-thinking")).checked;
+        }
+        return pruneCompatSection(section, includeFallback);
+      }
+
+      function pruneCompatSection(section, includeFallback = false) {
+        const result = {};
+        if (includeFallback && section.fallback_thinking_on_tool_use === true) {
+          result.fallback_thinking_on_tool_use = true;
+        }
+        if (isPlainObject(section.rename_params) && Object.keys(section.rename_params).length) {
+          result.rename_params = section.rename_params;
+        }
+        if (Array.isArray(section.drop_params) && section.drop_params.length) {
+          result.drop_params = section.drop_params;
+        }
+        if (isPlainObject(section.force_params) && Object.keys(section.force_params).length) {
+          result.force_params = section.force_params;
+        }
+        if (isPlainObject(section.default_params) && Object.keys(section.default_params).length) {
+          result.default_params = section.default_params;
+        }
+        if (Array.isArray(section.unsupported_params) && section.unsupported_params.length) {
+          result.unsupported_params = section.unsupported_params;
+        }
+        return result;
+      }
+
+      function stripKnownCompatFields(compat) {
+        const base = isPlainObject(compat) ? cloneJson(compat) : {};
+        const byProtocol = isPlainObject(base.by_protocol) ? base.by_protocol : {};
+        COMPAT_KNOWN_TOP_LEVEL_FIELDS.forEach((field) => delete base[field]);
+        COMPAT_PROTOCOLS.forEach((protocol) => {
+          if (!isPlainObject(byProtocol[protocol])) return;
+          delete byProtocol[protocol].fallback_thinking_on_tool_use;
+          COMPAT_SECTION_FIELDS.forEach((field) => delete byProtocol[protocol][field]);
+          if (!Object.keys(byProtocol[protocol]).length) {
+            delete byProtocol[protocol];
+          }
+        });
+        if (Object.keys(byProtocol).length) base.by_protocol = byProtocol;
+        else delete base.by_protocol;
+        return base;
+      }
+
+      function buildCompatFromForm(existingCompat = {}) {
+        const compat = stripKnownCompatFields(existingCompat);
+        const forceProtocol = $("compat-force-protocol").value;
+        const toolRequestProtocol = $("compat-tool-request-protocol").value;
+        if (forceProtocol) compat.force_protocol = forceProtocol;
+        if (toolRequestProtocol) compat.tool_request_protocol = toolRequestProtocol;
+        if ($("compat-fallback-thinking").checked) {
+          compat.fallback_thinking_on_tool_use = true;
+        }
+        Object.assign(compat, parseCompatSection("global"));
+
+        const byProtocol = isPlainObject(compat.by_protocol) ? compat.by_protocol : {};
+        COMPAT_PROTOCOLS.forEach((protocol) => {
+          const section = parseCompatSection(protocol, protocol === "messages");
+          if (Object.keys(section).length) {
+            const current = isPlainObject(byProtocol[protocol]) ? byProtocol[protocol] : {};
+            byProtocol[protocol] = {...current, ...section};
+          }
+        });
+        if (Object.keys(byProtocol).length) compat.by_protocol = byProtocol;
+        else delete compat.by_protocol;
+        return compat;
+      }
+
+      function normalizeConfig() {
+        config.channels = config.channels || [];
+        delete config.routing;
+      }
+
+      function channelEnabled(channel) {
+        return channel.enabled !== false;
+      }
+
+      function renderChannels() {
+        normalizeConfig();
+        const body = $("channel-table-body");
+        body.innerHTML = "";
+        if (!config.channels.length) {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td colspan="7" class="muted">暂无渠道</td>`;
+          body.appendChild(tr);
+          renderLogChannelOptions();
+          return;
+        }
+
+        config.channels.forEach((channel, index) => {
+          const tr = document.createElement("tr");
+          if (index === selectedIndex) tr.className = "selected";
+          const enabled = channelEnabled(channel);
+          tr.innerHTML = `
+            <td>${escapeHtml(channel.id)}</td>
+            <td>${escapeHtml(channel.name || "")}</td>
+            <td>${escapeHtml(channel.type || "")}</td>
+            <td><span class="badge ${enabled ? "on" : "off"}">${enabled ? "启用中" : "已暂停"}</span></td>
+            <td>${index + 1}</td>
+            <td>${escapeHtml(channel.baseurl || "")}</td>
+            <td>
+              <div class="ops">
+                <button class="small" type="button" data-action="edit" data-index="${index}">编辑</button>
+                <button class="small" type="button" data-action="toggle" data-index="${index}">${enabled ? "暂停" : "恢复"}</button>
+                <button class="small" type="button" data-action="move-up" data-index="${index}" ${index === 0 ? "disabled" : ""}>上移</button>
+                <button class="small" type="button" data-action="move-down" data-index="${index}" ${index === config.channels.length - 1 ? "disabled" : ""}>下移</button>
+                <button class="small danger" type="button" data-action="delete" data-index="${index}">删除</button>
+              </div>
+            </td>
+          `;
+          body.appendChild(tr);
+        });
+        renderLogChannelOptions();
+      }
+
+      function renderLogChannelOptions() {
+        const select = $("log-channel");
+        const current = select.value;
+        select.innerHTML = `<option value=""></option>` + config.channels.map((channel) => (
+          `<option value="${escapeHtml(channel.id)}">${escapeHtml(channel.name || channel.id)}</option>`
+        )).join("");
+        select.value = current;
+      }
+
       function selectChannel(index) {
+        if (selectedIndex >= 0 && selectedIndex !== index) {
+          try {
+            syncSelectedChannel();
+          } catch (error) {
+            setStatus("config-status", error.message, true);
+            return;
+          }
+        }
         selectedIndex = index;
         const channel = config.channels[index];
         $("channel-form").classList.remove("hidden");
@@ -167,27 +691,17 @@
         $("channel-baseurl").value = channel.baseurl || "";
         $("channel-apikey").value = channel.apikey || "";
         $("channel-timeout").value = channel.timeout_seconds || 120;
+        $("channel-enabled").checked = channelEnabled(channel);
         $("channel-headers").value = JSON.stringify(channel.headers || {}, null, 2);
-        $("channel-compat").value = JSON.stringify(channel.compat || {
-          rename_params: {},
-          drop_params: [],
-          force_params: {},
-          default_params: {},
-          unsupported_params: []
-        }, null, 2);
+        populateCompatForm(channel.compat || defaultCompat());
         renderChannels();
-      }
-
-      function syncGlobalFields() {
-        config.routing = config.routing || {};
-        config.routing.default_channel = $("default-channel").value.trim();
-        config.routing.model_routes = parseJsonField("model-routes", []);
       }
 
       function syncSelectedChannel() {
         if (selectedIndex < 0) return;
+        const nextId = $("channel-id").value.trim();
         config.channels[selectedIndex] = {
-          id: $("channel-id").value.trim(),
+          id: nextId,
           name: $("channel-name").value.trim(),
           type: $("channel-type").value,
           baseurl: $("channel-baseurl").value.trim(),
@@ -195,59 +709,43 @@
           auth_mode: $("channel-auth").value,
           headers: parseJsonField("channel-headers", {}),
           timeout_seconds: Number($("channel-timeout").value || 120),
-          compat: parseJsonField("channel-compat", {})
+          compat: buildCompatFromForm(config.channels[selectedIndex]?.compat || {}),
+          enabled: $("channel-enabled").checked
         };
       }
 
-      async function loadConfig() {
-        config = await api("/admin/api/config");
-        config.channels = config.channels || [];
-        config.routing = config.routing || {default_channel: "", model_routes: []};
-        $("default-channel").value = config.routing.default_channel || "";
-        $("model-routes").value = JSON.stringify(config.routing.model_routes || [], null, 2);
-        renderChannels();
-        if (config.channels.length) selectChannel(0);
-      }
-
-      async function saveConfig() {
+      function saveSelectedChannel() {
         try {
           syncSelectedChannel();
-          syncGlobalFields();
-          config = await api("/admin/api/config", {
-            method: "POST",
-            headers: {"content-type": "application/json"},
-            body: JSON.stringify(config)
-          });
-          setStatus("已保存并热加载");
-          await loadConfig();
+          renderChannels();
+          setStatus("config-status", "渠道已更新，保存全部配置后生效");
         } catch (error) {
-          setStatus(error.message, true);
+          setStatus("config-status", error.message, true);
         }
       }
 
-      async function refreshLogs() {
-        const data = await api("/admin/api/logs?limit=200");
-        const body = $("logs-body");
-        body.innerHTML = "";
-        data.events.slice().reverse().forEach((event) => {
-          const tr = document.createElement("tr");
-          const copy = {...event};
-          const time = copy.time || "";
-          const level = copy.level || "";
-          delete copy.time;
-          delete copy.level;
-          tr.innerHTML = `<td>${time}</td><td>${level}</td><td><pre>${escapeHtml(JSON.stringify(copy, null, 2))}</pre></td>`;
-          body.appendChild(tr);
-        });
+      function cancelChannelEdit() {
+        selectedIndex = -1;
+        $("channel-form").classList.add("hidden");
+        renderChannels();
       }
 
-      function escapeHtml(text) {
-        return text.replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]));
+      function nextChannelId() {
+        const ids = new Set(config.channels.map((channel) => channel.id));
+        let index = config.channels.length + 1;
+        while (ids.has(`channel-${index}`)) index += 1;
+        return `channel-${index}`;
       }
 
-      $("add-channel").onclick = () => {
+      function addChannel() {
+        try {
+          syncSelectedChannel();
+        } catch (error) {
+          setStatus("config-status", error.message, true);
+          return;
+        }
         config.channels.push({
-          id: `channel-${config.channels.length + 1}`,
+          id: nextChannelId(),
           name: "",
           type: "chat",
           baseurl: "",
@@ -255,33 +753,181 @@
           auth_mode: "pass_through_or_config",
           headers: {},
           timeout_seconds: 120,
-          compat: {rename_params: {}, drop_params: [], force_params: {}, default_params: {}, unsupported_params: []}
+          compat: {},
+          enabled: true
         });
         selectChannel(config.channels.length - 1);
-      };
-      $("save-channel").onclick = () => { syncSelectedChannel(); renderChannels(); setStatus("渠道已更新，记得保存全部配置"); };
-      $("delete-channel").onclick = () => {
-        if (selectedIndex >= 0) {
-          config.channels.splice(selectedIndex, 1);
-          selectedIndex = -1;
-          $("channel-form").classList.add("hidden");
-          renderChannels();
-          setStatus("渠道已删除，记得保存全部配置");
-        }
-      };
-      $("save-config").onclick = saveConfig;
-      $("refresh-logs").onclick = refreshLogs;
-      $("tab-config").onclick = () => {
-        $("tab-config").classList.add("active"); $("tab-logs").classList.remove("active");
-        $("config-panel").classList.remove("hidden"); $("logs-panel").classList.add("hidden");
-      };
-      $("tab-logs").onclick = async () => {
-        $("tab-logs").classList.add("active"); $("tab-config").classList.remove("active");
-        $("logs-panel").classList.remove("hidden"); $("config-panel").classList.add("hidden");
-        await refreshLogs();
-      };
+        setStatus("config-status", "渠道已新增，保存全部配置后生效");
+      }
 
-      loadConfig().catch((error) => setStatus(error.message, true));
+      function deleteChannel(index) {
+        const channel = config.channels[index];
+        if (!channel) return;
+        if (!confirm(`删除渠道 ${channel.id}？`)) return;
+        config.channels.splice(index, 1);
+        if (selectedIndex === index) cancelChannelEdit();
+        else if (selectedIndex > index) selectedIndex -= 1;
+        renderChannels();
+        setStatus("config-status", "渠道已删除，保存全部配置后生效");
+      }
+
+      function toggleChannel(index) {
+        const channel = config.channels[index];
+        if (!channel) return;
+        channel.enabled = !channelEnabled(channel);
+        if (selectedIndex === index) $("channel-enabled").checked = channel.enabled;
+        renderChannels();
+        setStatus("config-status", `${channel.id} 已${channel.enabled ? "恢复" : "暂停"}，保存全部配置后生效`);
+      }
+
+      function moveChannel(index, direction) {
+        const nextIndex = index + direction;
+        if (nextIndex < 0 || nextIndex >= config.channels.length) return;
+        try {
+          syncSelectedChannel();
+        } catch (error) {
+          setStatus("config-status", error.message, true);
+          return;
+        }
+        const [channel] = config.channels.splice(index, 1);
+        config.channels.splice(nextIndex, 0, channel);
+        if (selectedIndex === index) selectedIndex = nextIndex;
+        else if (selectedIndex === nextIndex) selectedIndex = index;
+        renderChannels();
+        setStatus("config-status", "渠道顺序已更新，保存全部配置后生效");
+      }
+
+      async function loadConfig() {
+        config = await api("/admin/api/config");
+        normalizeConfig();
+        selectedIndex = -1;
+        $("channel-form").classList.add("hidden");
+        renderChannels();
+      }
+
+      async function saveConfig() {
+        try {
+          syncSelectedChannel();
+          normalizeConfig();
+          config = await api("/admin/api/config", {
+            method: "POST",
+            headers: {"content-type": "application/json"},
+            body: JSON.stringify(config)
+          });
+          setStatus("config-status", "已保存并热加载");
+          await loadConfig();
+        } catch (error) {
+          setStatus("config-status", error.message, true);
+        }
+      }
+
+      function addQuery(params, name, value) {
+        if (value !== null && value !== undefined && String(value).trim() !== "") params.set(name, String(value).trim());
+      }
+
+      function addDateQuery(params, name, value) {
+        if (!value) return;
+        const date = new Date(value);
+        if (!Number.isNaN(date.getTime())) params.set(name, String(date.getTime() / 1000));
+      }
+
+      function buildLogQuery() {
+        const params = new URLSearchParams();
+        addQuery(params, "request_id", $("log-request-id").value);
+        addQuery(params, "model", $("log-model").value);
+        addQuery(params, "channel_id", $("log-channel").value);
+        addQuery(params, "path", $("log-path").value);
+        addQuery(params, "status_code", $("log-status-code").value);
+        addQuery(params, "is_stream", $("log-stream").value);
+        addQuery(params, "client_ip", $("log-client-ip").value);
+        addQuery(params, "error", $("log-error").value);
+        addQuery(params, "limit", $("log-limit").value || "200");
+        addDateQuery(params, "created_from", $("log-created-from").value);
+        addDateQuery(params, "created_to", $("log-created-to").value);
+        return params;
+      }
+
+      async function refreshLogs() {
+        try {
+          const data = await api(`/admin/api/logs?${buildLogQuery().toString()}`);
+          const body = $("logs-body");
+          body.innerHTML = "";
+          if (!data.events.length) {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `<td colspan="14" class="muted">暂无日志</td>`;
+            body.appendChild(tr);
+          }
+          data.events.forEach((event) => {
+            const tr = document.createElement("tr");
+            const tokens = `${event.input_tokens || 0}/${event.cached_tokens || 0}/${event.output_tokens || 0}`;
+            const detail = {...event};
+            tr.innerHTML = `
+              <td>${formatTime(event.created_at)}</td>
+              <td>${escapeHtml(event.request_id)}</td>
+              <td>${escapeHtml(event.path)}</td>
+              <td>${escapeHtml(event.model)}</td>
+              <td>${escapeHtml(event.upstream_model)}</td>
+              <td>${escapeHtml(event.channel_id)}</td>
+              <td>${event.is_stream ? "是" : "否"}</td>
+              <td>${escapeHtml(event.status_code)}</td>
+              <td>${escapeHtml(event.duration_ms)} ms</td>
+              <td>${event.ttft_ms === null || event.ttft_ms === undefined ? "" : `${escapeHtml(event.ttft_ms)} ms`}</td>
+              <td>${escapeHtml(tokens)}</td>
+              <td>${escapeHtml(event.cost || 0)}</td>
+              <td>${escapeHtml(event.error || "")}</td>
+              <td><details><summary>详情</summary><pre>${escapeHtml(JSON.stringify(detail, null, 2))}</pre></details></td>
+            `;
+            body.appendChild(tr);
+          });
+          setStatus("logs-status", `共 ${data.events.length} 条`);
+        } catch (error) {
+          setStatus("logs-status", error.message, true);
+        }
+      }
+
+      function formatTime(timestamp) {
+        if (!timestamp) return "";
+        const date = new Date(Number(timestamp) * 1000);
+        if (Number.isNaN(date.getTime())) return "";
+        return date.toLocaleString();
+      }
+
+      function resetLogs() {
+        ["log-request-id", "log-model", "log-channel", "log-path", "log-status-code", "log-stream", "log-client-ip", "log-error", "log-created-from", "log-created-to"].forEach((id) => {
+          $(id).value = "";
+        });
+        $("log-limit").value = "200";
+        refreshLogs();
+      }
+
+      function showPanel(name) {
+        const configActive = name === "config";
+        $("config-panel").classList.toggle("hidden", !configActive);
+        $("logs-panel").classList.toggle("hidden", configActive);
+        $("menu-config").classList.toggle("active", configActive);
+        $("menu-logs").classList.toggle("active", !configActive);
+      }
+
+      $("channel-table-body").onclick = (event) => {
+        const button = event.target.closest("button[data-action]");
+        if (!button) return;
+        const index = Number(button.dataset.index);
+        if (button.dataset.action === "edit") selectChannel(index);
+        if (button.dataset.action === "toggle") toggleChannel(index);
+        if (button.dataset.action === "move-up") moveChannel(index, -1);
+        if (button.dataset.action === "move-down") moveChannel(index, 1);
+        if (button.dataset.action === "delete") deleteChannel(index);
+      };
+      $("add-channel").onclick = addChannel;
+      $("save-channel").onclick = saveSelectedChannel;
+      $("cancel-channel").onclick = cancelChannelEdit;
+      $("save-config").onclick = saveConfig;
+      $("search-logs").onclick = refreshLogs;
+      $("reset-logs").onclick = resetLogs;
+      $("menu-config").onclick = () => showPanel("config");
+      $("menu-logs").onclick = async () => { showPanel("logs"); await refreshLogs(); };
+
+      loadConfig().catch((error) => setStatus("config-status", error.message, true));
     </script>
   </body>
 </html>

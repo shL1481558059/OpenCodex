@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import sqlite3
 import time
 import uuid
 from typing import Any
@@ -27,7 +28,11 @@ from .protocols import convert_request, convert_response
 from .reasoning_cache import ReasoningCache
 from .routing import choose_channel
 from .settings import Settings, SettingsError
-from .streaming import messages_sse_to_responses_events, responses_sse_events
+from .streaming import (
+    chat_sse_to_responses_events,
+    messages_sse_to_responses_events,
+    responses_sse_events,
+)
 from .upstream import post_upstream, stream_upstream
 
 
@@ -54,7 +59,7 @@ METADATA_CACHE_NAMESPACE_KEYS = (
 def create_app(settings: Settings | None = None) -> Flask:
     settings = settings or Settings.from_env()
     logger = configure_logging(settings.log_path, settings.log_level)
-    config_manager = ConfigManager(settings.config_path, settings.default_timeout)
+    config_manager = ConfigManager(settings.db_path, settings.default_timeout)
     reasoning_cache = ReasoningCache()
     db_writer = AsyncDBWriter(settings.db_path)
     db_writer.start()
@@ -118,7 +123,7 @@ def create_app(settings: Settings | None = None) -> Flask:
         except ConfigError as exc:
             log_event(logger, "WARNING", "config save rejected", error=str(exc))
             return jsonify({"error": str(exc)}), 400
-        except OSError as exc:
+        except (OSError, sqlite3.DatabaseError) as exc:
             log_event(logger, "ERROR", "config save failed", error=str(exc))
             return jsonify({"error": f"failed to save config: {exc}"}), 500
         log_event(logger, "INFO", "config saved", channels=len(saved.get("channels", [])))
@@ -127,12 +132,24 @@ def create_app(settings: Settings | None = None) -> Flask:
     @app.get("/admin/api/logs")
     def admin_logs():
         require_admin()
-        limit = request.args.get("limit", "200")
-        try:
-            parsed_limit = int(limit)
-        except ValueError:
-            parsed_limit = 200
-        events = read_logs(settings.db_path, parsed_limit)
+        filters = {
+            key: request.args.get(key)
+            for key in (
+                "request_id",
+                "model",
+                "upstream_model",
+                "channel_id",
+                "path",
+                "status_code",
+                "is_stream",
+                "client_ip",
+                "error",
+                "created_from",
+                "created_to",
+            )
+            if request.args.get(key) not in (None, "")
+        }
+        events = read_logs(settings.db_path, request.args.get("limit", "200"), filters)
         return jsonify({"events": events})
 
     @app.post("/v1/responses")
@@ -227,7 +244,6 @@ def create_app(settings: Settings | None = None) -> Flask:
             log_payload.update(
                 {
                     "channel_id": channel.get("id"),
-                    "route_pattern": route.matched_pattern,
                     "upstream_model": route.upstream_model,
                 }
             )
@@ -278,7 +294,7 @@ def create_app(settings: Settings | None = None) -> Flask:
             log_payload["request_body"] = trace_payload
             log_payload["upstream_request_body"] = redact(upstream_request)
 
-            if stream_requested and upstream_channel["type"] == "messages":
+            if stream_requested and upstream_channel["type"] in {"messages", "chat"}:
                 upstream_request["stream"] = True
                 log_payload["upstream_request_body"] = redact(upstream_request)
                 log_payload["streaming"] = True
@@ -296,17 +312,29 @@ def create_app(settings: Settings | None = None) -> Flask:
                     nonlocal first_token_recorded, streamed_upstream_response, ttft_ms
                     stream_error = None
 
-                    def remember_streamed_message(response: dict[str, Any]) -> None:
+                    def remember_streamed_response(response: dict[str, Any]) -> None:
                         nonlocal streamed_upstream_response
                         streamed_upstream_response = response
-                        reasoning_cache.remember_messages_response(response, cache_namespace)
+                        if upstream_channel["type"] == "messages":
+                            reasoning_cache.remember_messages_response(response, cache_namespace)
+                        if upstream_channel["type"] == "chat":
+                            reasoning_cache.remember_chat_response(response, cache_namespace)
 
                     try:
-                        for line in messages_sse_to_responses_events(
-                            upstream_lines,
-                            route.original_model or payload.get("model"),
-                            remember_streamed_message,
-                        ):
+                        event_iter = (
+                            messages_sse_to_responses_events(
+                                upstream_lines,
+                                route.original_model or payload.get("model"),
+                                remember_streamed_response,
+                            )
+                            if upstream_channel["type"] == "messages"
+                            else chat_sse_to_responses_events(
+                                upstream_lines,
+                                route.original_model or payload.get("model"),
+                                remember_streamed_response,
+                            )
+                        )
+                        for line in event_iter:
                             if not first_token_recorded and "response.output_text.delta" in line:
                                 first_token_recorded = True
                                 ttft_ms = int((time.time() - ttft_start) * 1000)
@@ -320,7 +348,7 @@ def create_app(settings: Settings | None = None) -> Flask:
                             record_duration_ms=int((time.time() - started) * 1000),
                             record_ttft_ms=ttft_ms,
                             response_body=streamed_upstream_response,
-                            response_protocol="messages",
+                            response_protocol=upstream_channel["type"],
                             error=stream_error,
                         )
 
@@ -564,6 +592,10 @@ def _has_tool_material(payload: dict[str, Any]) -> bool:
                 "shell_call",
                 "apply_patch_call",
                 "function_call_output",
+                "custom_tool_call_output",
+                "local_shell_call_output",
+                "shell_call_output",
+                "apply_patch_call_output",
                 "tool_result",
             }:
                 return True

@@ -259,6 +259,7 @@ def _responses_input_item_to_messages(item: Any) -> list[dict[str, Any]]:
         arguments = item.get("arguments")
         if arguments is None:
             arguments = item.get("input") or item.get("action") or {}
+        arguments = _normalize_apply_patch_arguments(item_type, name, arguments)
         return [
             {
                 "role": "assistant",
@@ -501,11 +502,14 @@ def _responses_response_to_canonical(
                 if isinstance(block, dict) and block.get("type") in {"output_text", "text"}:
                     text_parts.append(str(block.get("text", "")))
         elif item.get("type") in {"function_call", "custom_tool_call", "local_shell_call", "shell_call", "apply_patch_call"}:
+            name = item.get("name") or item.get("type", "tool").replace("_call", "")
+            arguments = item.get("arguments") or item.get("input") or {}
+            arguments = _normalize_apply_patch_arguments(item.get("type", ""), name, arguments)
             tool_calls.append(
                 {
                     "id": item.get("call_id") or item.get("id") or f"call_{uuid.uuid4().hex}",
-                    "name": item.get("name") or item.get("type", "tool").replace("_call", ""),
-                    "arguments": _json_dumps(item.get("arguments") or item.get("input") or {}),
+                    "name": name,
+                    "arguments": _json_dumps(arguments),
                 }
             )
     return {
@@ -590,13 +594,28 @@ def _canonical_to_responses_response(canonical: dict[str, Any]) -> dict[str, Any
             }
         )
     for tool_call in canonical.get("tool_calls", []):
+        tool_name = str(tool_call.get("name") or "")
+        if _is_apply_patch_name(tool_name):
+            output.append(
+                {
+                    "id": f"ctc_{uuid.uuid4().hex}",
+                    "type": "custom_tool_call",
+                    "status": "completed",
+                    "call_id": tool_call.get("id"),
+                    "name": "apply_patch",
+                    "input": _apply_patch_input_from_arguments(
+                        tool_call.get("arguments", "{}")
+                    ),
+                }
+            )
+            continue
         output.append(
             {
                 "id": f"fc_{uuid.uuid4().hex}",
                 "type": "function_call",
                 "status": "completed",
                 "call_id": tool_call.get("id"),
-                "name": tool_call.get("name"),
+                "name": tool_name,
                 "arguments": tool_call.get("arguments", "{}"),
             }
         )
@@ -855,6 +874,88 @@ def _json_dumps(value: Any) -> str:
     if isinstance(value, str):
         return value
     return json.dumps(value, ensure_ascii=False)
+
+
+def _is_apply_patch_name(name: str) -> bool:
+    return name.replace("-", "_") == "apply_patch"
+
+
+def _apply_patch_input_from_arguments(arguments: Any) -> str:
+    value = _decode_json_value(arguments)
+    patch = _extract_patch_value(value)
+    if patch is None:
+        return arguments if isinstance(arguments, str) else _json_dumps(arguments)
+    return patch if isinstance(patch, str) else _json_dumps(patch)
+
+
+def _extract_patch_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        for key in ("patch", "input"):
+            if key in value:
+                return value[key]
+        if "command" in value:
+            return _extract_patch_command(value["command"])
+    if isinstance(value, (list, tuple)):
+        return _extract_patch_command(value)
+    return None
+
+
+def _extract_patch_command(command: Any) -> Any:
+    command = _decode_json_value(command)
+    if isinstance(command, dict):
+        return _extract_patch_value(command)
+    if isinstance(command, (list, tuple)):
+        parts = list(command)
+        if len(parts) >= 2 and _is_apply_patch_executable(parts[0]):
+            return _extract_patch_value(parts[1]) or parts[1]
+        for part in parts:
+            if isinstance(part, str) and _looks_like_patch(part):
+                return part
+    if isinstance(command, str) and _looks_like_patch(command):
+        return command
+    return None
+
+
+def _decode_json_value(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
+def _is_apply_patch_executable(value: Any) -> bool:
+    executable = str(value or "").rsplit("/", 1)[-1]
+    return _is_apply_patch_name(executable)
+
+
+def _looks_like_patch(value: str) -> bool:
+    return value.lstrip().startswith("*** Begin Patch")
+
+
+def _normalize_apply_patch_arguments(item_type: str, name: str, arguments: Any) -> Any:
+    normalized_name = str(name or "").replace("-", "_")
+    if normalized_name != "apply_patch" and item_type != "apply_patch_call":
+        return arguments
+    if isinstance(arguments, str):
+        if _is_json_object_string(arguments):
+            return arguments
+        return {"patch": arguments}
+    if isinstance(arguments, dict):
+        if "patch" in arguments:
+            return arguments
+        if set(arguments) == {"input"}:
+            return {"patch": arguments["input"]}
+    return arguments
+
+
+def _is_json_object_string(value: str) -> bool:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(parsed, dict)
 
 
 def _parse_json_object(value: Any) -> dict[str, Any]:
