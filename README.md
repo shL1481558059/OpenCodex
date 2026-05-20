@@ -17,11 +17,10 @@
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp .env.example .env
-cp config.example.json config.json
 .venv/bin/python -m opencodex_proxy
 ```
 
-`.env` 管系统配置和 admin 密码，`config.json` 管渠道与路由。
+`.env` 管系统配置和 admin 密码，渠道配置通过 `/admin` 写入 SQLite。
 
 ## `.env`
 
@@ -29,7 +28,7 @@ cp config.example.json config.json
 OPENCODEX_HOST=0.0.0.0
 OPENCODEX_PORT=8000
 OPENCODEX_ADMIN_PASSWORD=change-me
-OPENCODEX_CONFIG_PATH=config.json
+OPENCODEX_DB_PATH=logs/opencodex.db
 OPENCODEX_LOG_PATH=logs/opencodex.log
 OPENCODEX_LOG_LEVEL=INFO
 OPENCODEX_LOG_VIEW_LEVEL=BASIC
@@ -40,7 +39,7 @@ OPENCODEX_SECRET_KEY=change-me-session-secret
 日志展示等级：
 
 - `BASIC`：时间、等级、路径、入口协议、模型、渠道、状态码、耗时、错误摘要。
-- `DEBUG`：增加路由命中、模型改写、兼容规则、脱敏参数、上游错误摘要。
+- `DEBUG`：增加上游模型、兼容规则、脱敏参数、上游错误摘要。
 - `TRACE`：增加脱敏后的请求和响应正文片段，仅建议本地临时排障。
 
 所有日志展示都会脱敏 `Authorization`、`api_key`、`apikey`、`x-api-key`、cookie 和密码。
@@ -48,13 +47,12 @@ OPENCODEX_SECRET_KEY=change-me-session-secret
 ## Docker
 
 ```bash
-docker buildx build --platform linux/amd64 -t opencodex-proxy:windhub-amd64 --load .
+docker buildx build --platform linux/amd64 -t opencodex-proxy:test --load .
 docker run --rm -p 8000:8000 \
   --platform linux/amd64 \
   --env-file .env \
-  -v "$PWD/config.json:/app/config/config.json" \
   -v "$PWD/logs:/app/logs" \
-  opencodex-proxy:windhub-amd64
+  opencodex-proxy:test
 ```
 
 完整部署步骤见 [DEPLOYMENT.md](/Users/w/shL/work/shl/OpenCodex/DEPLOYMENT.md)。
@@ -79,7 +77,7 @@ wire_api = "responses"
 requires_openai_auth = false
 ```
 
-Windhub 的 `mimo-v2.5-pro` 已在示例配置中统一路由到 `messages` 渠道。实测其 `chat` 渠道文本请求可用，但工具结果续轮会因上游 `reasoning_content` 校验返回 400 或偶发 500；`messages` 渠道在保留 thinking block 后可完成工具调用闭环。
+Windhub 的 `mimo-v2.5-pro` 建议在管理台配置为 `messages` 渠道，并放在渠道列表首位。实测其 `chat` 渠道文本请求可用，但工具结果续轮会因上游 `reasoning_content` 校验返回 400 或偶发 500；`messages` 渠道在保留 thinking block 后可完成工具调用闭环。
 
 ## 测试
 

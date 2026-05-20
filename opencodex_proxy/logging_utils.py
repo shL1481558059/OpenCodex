@@ -106,7 +106,6 @@ def event_for_view(event: dict[str, Any], view_level: str) -> dict[str, Any]:
             "status_code",
             "duration_ms",
             "error",
-            "route_pattern",
             "upstream_model",
             "compat",
             "params",

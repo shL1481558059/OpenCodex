@@ -12,7 +12,6 @@ Windhub 的 `mimo-v2.5-pro` 在本项目中统一走 `/v1/messages` 上游。
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp .env.example .env
-cp config.example.json config.json
 mkdir -p logs
 ```
 
@@ -22,7 +21,7 @@ mkdir -p logs
 OPENCODEX_HOST=0.0.0.0
 OPENCODEX_PORT=8000
 OPENCODEX_ADMIN_PASSWORD=change-me
-OPENCODEX_CONFIG_PATH=config.json
+OPENCODEX_DB_PATH=logs/opencodex.db
 OPENCODEX_LOG_PATH=logs/opencodex.log
 OPENCODEX_LOG_LEVEL=INFO
 OPENCODEX_LOG_VIEW_LEVEL=BASIC
@@ -45,7 +44,7 @@ http://127.0.0.1:8000/admin
 
 ## Windhub MiMo 配置
 
-`config.example.json` 已包含 `windhub-mimo-messages` 渠道，并将 `mimo-*` 路由到该渠道。
+在管理台新增 `windhub-mimo-messages` 渠道，并将它放在渠道列表首位。
 
 核心配置：
 
@@ -59,43 +58,32 @@ http://127.0.0.1:8000/admin
 }
 ```
 
-路由：
-
-```json
-{
-  "pattern": "mimo-*",
-  "channel": "windhub-mimo-messages"
-}
-```
-
 ## x86/amd64 Docker 镜像
 
 构建 linux/amd64 镜像：
 
 ```bash
-docker buildx build --platform linux/amd64 -t opencodex-proxy:windhub-amd64 --load .
+docker buildx build --platform linux/amd64 -t opencodex-proxy:test --load .
 ```
 
 运行容器：
 
 ```bash
-mkdir -p config logs
-cp config.example.json config/config.json
+mkdir -p logs
 
 docker run --rm \
   --platform linux/amd64 \
   --name opencodex-proxy \
   -p 8000:8000 \
   --env-file .env \
-  -v "$PWD/config/config.json:/app/config/config.json" \
   -v "$PWD/logs:/app/logs" \
-  opencodex-proxy:windhub-amd64
+  opencodex-proxy:test
 ```
 
 如果 `.env` 里使用容器路径，请保持：
 
 ```env
-OPENCODEX_CONFIG_PATH=/app/config/config.json
+OPENCODEX_DB_PATH=/app/logs/opencodex.db
 OPENCODEX_LOG_PATH=/app/logs/opencodex.log
 ```
 
@@ -137,7 +125,7 @@ rm -rf /tmp/opencodex-codex-home
 ## 日志展示等级
 
 - `BASIC`：时间、等级、路径、入口协议、模型、渠道、状态码、耗时、错误摘要。
-- `DEBUG`：增加路由命中、模型改写、兼容规则、脱敏参数、上游错误摘要。
+- `DEBUG`：增加上游模型、兼容规则、脱敏参数、上游错误摘要。
 - `TRACE`：增加脱敏后的请求和响应正文片段，仅建议本地临时排障。
 
 所有等级都会脱敏 `Authorization`、`api_key`、`apikey`、`x-api-key`、cookie 和密码。

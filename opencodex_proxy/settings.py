@@ -21,7 +21,6 @@ class Settings:
     port: int
     admin_password: str
     db_path: Path
-    config_path: Path
     log_path: Path
     log_level: str
     log_view_level: str
@@ -53,7 +52,6 @@ class Settings:
             port=_parse_positive_int("OPENCODEX_PORT", 8000),
             admin_password=admin_password,
             db_path=Path(os.getenv("OPENCODEX_DB_PATH", "logs/opencodex.db")),
-            config_path=Path(os.getenv("OPENCODEX_CONFIG_PATH", "config.json")),
             log_path=Path(os.getenv("OPENCODEX_LOG_PATH", "logs/opencodex.log")),
             log_level=log_level,
             log_view_level=log_view_level,

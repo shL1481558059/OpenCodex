@@ -9,7 +9,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY opencodex_proxy ./opencodex_proxy
-COPY config.example.json ./config.example.json
 COPY .env.example ./.env.example
 
 EXPOSE 8000
