@@ -171,7 +171,6 @@ def create_app(settings: Settings | None = None) -> Flask:
         trace_payload: Any = None
         route = None
         channel: dict[str, Any] | None = None
-        upstream_channel: dict[str, Any] | None = None
         upstream_response: dict[str, Any] | None = None
         log_payload: dict[str, Any] = {
             "request_id": request_id,
@@ -248,20 +247,14 @@ def create_app(settings: Settings | None = None) -> Flask:
                 }
             )
 
-            upstream_channel = _effective_upstream_channel(channel, payload)
-            if upstream_channel["type"] != channel["type"]:
-                log_payload["effective_channel_type"] = upstream_channel["type"]
-
             upstream_request = convert_request(
-                payload, entry_protocol, upstream_channel["type"], route.upstream_model
+                payload, entry_protocol, channel["type"], route.upstream_model
             )
             upstream_request, compat_details = apply_compat(
                 upstream_request,
-                _compat_for_protocol(channel.get("compat", {}), upstream_channel["type"]),
+                _compat_rules(channel.get("compat", {})),
             )
-            if upstream_channel["type"] != channel["type"]:
-                compat_details.append(f"force_protocol:{upstream_channel['type']}")
-            if upstream_channel["type"] == "chat":
+            if channel["type"] == "chat":
                 injected_reasoning = reasoning_cache.inject_chat_request(
                     upstream_request, cache_namespace
                 )
@@ -270,7 +263,7 @@ def create_app(settings: Settings | None = None) -> Flask:
                         f"inject_reasoning_content:{tool_call_id}"
                         for tool_call_id in injected_reasoning
                     )
-            if upstream_channel["type"] == "messages":
+            if channel["type"] == "messages":
                 injected_thinking = reasoning_cache.inject_messages_request(
                     upstream_request, cache_namespace
                 )
@@ -279,9 +272,8 @@ def create_app(settings: Settings | None = None) -> Flask:
                         f"inject_thinking:{tool_call_id}"
                         for tool_call_id in injected_thinking
                     )
-                if _compat_flag_for_protocol(
+                if _compat_flag(
                     channel.get("compat", {}),
-                    upstream_channel["type"],
                     "fallback_thinking_on_tool_use",
                 ):
                     fallback_thinking = _inject_fallback_thinking_on_tool_use(upstream_request)
@@ -294,13 +286,13 @@ def create_app(settings: Settings | None = None) -> Flask:
             log_payload["request_body"] = trace_payload
             log_payload["upstream_request_body"] = redact(upstream_request)
 
-            if stream_requested and upstream_channel["type"] in {"messages", "chat"}:
+            if stream_requested and channel["type"] in {"messages", "chat"}:
                 upstream_request["stream"] = True
                 log_payload["upstream_request_body"] = redact(upstream_request)
                 log_payload["streaming"] = True
                 ttft_start = time.time()
                 upstream_lines = stream_upstream(
-                    upstream_channel,
+                    channel,
                     upstream_request,
                     request.headers.get("Authorization"),
                     settings.default_timeout,
@@ -315,9 +307,9 @@ def create_app(settings: Settings | None = None) -> Flask:
                     def remember_streamed_response(response: dict[str, Any]) -> None:
                         nonlocal streamed_upstream_response
                         streamed_upstream_response = response
-                        if upstream_channel["type"] == "messages":
+                        if channel["type"] == "messages":
                             reasoning_cache.remember_messages_response(response, cache_namespace)
-                        if upstream_channel["type"] == "chat":
+                        if channel["type"] == "chat":
                             reasoning_cache.remember_chat_response(response, cache_namespace)
 
                     try:
@@ -327,7 +319,7 @@ def create_app(settings: Settings | None = None) -> Flask:
                                 route.original_model or payload.get("model"),
                                 remember_streamed_response,
                             )
-                            if upstream_channel["type"] == "messages"
+                            if channel["type"] == "messages"
                             else chat_sse_to_responses_events(
                                 upstream_lines,
                                 route.original_model or payload.get("model"),
@@ -348,7 +340,7 @@ def create_app(settings: Settings | None = None) -> Flask:
                             record_duration_ms=int((time.time() - started) * 1000),
                             record_ttft_ms=ttft_ms,
                             response_body=streamed_upstream_response,
-                            response_protocol=upstream_channel["type"],
+                            response_protocol=channel["type"],
                             error=stream_error,
                         )
 
@@ -363,20 +355,20 @@ def create_app(settings: Settings | None = None) -> Flask:
                 upstream_request["stream"] = False
 
             upstream_response = post_upstream(
-                upstream_channel,
+                channel,
                 upstream_request,
                 request.headers.get("Authorization"),
                 settings.default_timeout,
             )
-            if upstream_channel["type"] == "chat":
+            if channel["type"] == "chat":
                 reasoning_cache.remember_chat_response(upstream_response, cache_namespace)
-            if upstream_channel["type"] == "messages":
+            if channel["type"] == "messages":
                 reasoning_cache.remember_messages_response(upstream_response, cache_namespace)
             log_payload["upstream_response_body"] = redact(upstream_response)
             response_payload = convert_response(
                 upstream_response,
                 entry_protocol,
-                upstream_channel["type"],
+                channel["type"],
                 route.original_model,
             )
             if stream_requested:
@@ -393,9 +385,7 @@ def create_app(settings: Settings | None = None) -> Flask:
                             record_duration_ms=int((time.time() - started) * 1000),
                             record_ttft_ms=ttft_ms,
                             response_body=upstream_response,
-                            response_protocol=upstream_channel["type"]
-                            if upstream_channel is not None
-                            else None,
+                            response_protocol=channel["type"] if channel is not None else None,
                             error=stream_error,
                         )
 
@@ -431,9 +421,7 @@ def create_app(settings: Settings | None = None) -> Flask:
                     record_duration_ms=duration_ms,
                     record_ttft_ms=ttft_ms,
                     response_body=upstream_response,
-                    response_protocol=upstream_channel["type"]
-                    if upstream_channel is not None
-                    else None,
+                    response_protocol=channel["type"] if channel is not None else None,
                     error=log_payload.get("error"),
                 )
 
@@ -489,45 +477,15 @@ def _namespace_value(value: Any) -> str | None:
     return None
 
 
-def _effective_upstream_channel(
-    channel: dict[str, Any], payload: dict[str, Any]
-) -> dict[str, Any]:
-    compat = channel.get("compat") or {}
-    forced_protocol = str(compat.get("force_protocol") or "").strip()
-    tool_protocol = str(compat.get("tool_request_protocol") or "").strip()
-    if forced_protocol == "messages" or (
-        channel.get("type") == "chat"
-        and tool_protocol == "messages"
-        and _has_tool_material(payload)
-    ):
-        effective = dict(channel)
-        effective["type"] = "messages"
-        return effective
-    return channel
-
-
-def _compat_for_protocol(compat: dict[str, Any] | None, protocol: str) -> dict[str, Any]:
+def _compat_rules(compat: dict[str, Any] | None) -> dict[str, Any]:
     compat = compat or {}
     fields = ("rename_params", "drop_params", "force_params", "default_params", "unsupported_params")
-    selected = {field: compat.get(field) for field in fields if field in compat}
-    by_protocol = compat.get("by_protocol")
-    if isinstance(by_protocol, dict) and isinstance(by_protocol.get(protocol), dict):
-        protocol_compat = by_protocol[protocol]
-        for field in fields:
-            if field in protocol_compat:
-                selected[field] = protocol_compat[field]
-    return selected
+    return {field: compat.get(field) for field in fields if field in compat}
 
 
-def _compat_flag_for_protocol(
-    compat: dict[str, Any] | None, protocol: str, field: str
-) -> bool:
+def _compat_flag(compat: dict[str, Any] | None, field: str) -> bool:
     compat = compat or {}
-    value = compat.get(field)
-    by_protocol = compat.get("by_protocol")
-    if isinstance(by_protocol, dict) and isinstance(by_protocol.get(protocol), dict):
-        value = by_protocol[protocol].get(field, value)
-    return value is True
+    return compat.get(field) is True
 
 
 def _inject_fallback_thinking_on_tool_use(request_payload: dict[str, Any]) -> list[str]:
@@ -561,56 +519,6 @@ def _inject_fallback_thinking_on_tool_use(request_payload: dict[str, Any]) -> li
         ]
         injected.extend(tool_use_ids)
     return injected
-
-
-def _has_tool_material(payload: dict[str, Any]) -> bool:
-    if payload.get("tools"):
-        return True
-    if payload.get("tool_choice") not in (None, "", "none"):
-        return True
-
-    messages = payload.get("messages")
-    if isinstance(messages, list):
-        for message in messages:
-            if not isinstance(message, dict):
-                continue
-            if message.get("tool_calls") or message.get("role") == "tool":
-                return True
-            if _content_has_tool_material(message.get("content")):
-                return True
-
-    raw_input = payload.get("input")
-    if isinstance(raw_input, list):
-        for item in raw_input:
-            if not isinstance(item, dict):
-                continue
-            item_type = str(item.get("type") or "")
-            if item_type in {
-                "function_call",
-                "custom_tool_call",
-                "local_shell_call",
-                "shell_call",
-                "apply_patch_call",
-                "function_call_output",
-                "custom_tool_call_output",
-                "local_shell_call_output",
-                "shell_call_output",
-                "apply_patch_call_output",
-                "tool_result",
-            }:
-                return True
-            if _content_has_tool_material(item.get("content")):
-                return True
-    return False
-
-
-def _content_has_tool_material(content: Any) -> bool:
-    if not isinstance(content, list):
-        return False
-    for block in content:
-        if isinstance(block, dict) and block.get("type") in {"tool_use", "tool_result"}:
-            return True
-    return False
 
 
 def main() -> None:

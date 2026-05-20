@@ -1,7 +1,6 @@
 import json
 import unittest
 
-from opencodex_proxy.app import _has_tool_material
 from opencodex_proxy.protocols import convert_request, convert_response
 
 
@@ -239,18 +238,6 @@ class ProtocolTests(unittest.TestCase):
         self.assertFalse(
             any(message.get("content") in ("", [], None) for message in result["messages"])
         )
-
-    def test_has_tool_material_recognizes_tool_outputs(self):
-        for item_type in (
-            "custom_tool_call_output",
-            "local_shell_call_output",
-            "shell_call_output",
-            "apply_patch_call_output",
-        ):
-            self.assertTrue(
-                _has_tool_material({"input": [{"type": item_type, "call_id": "call_1"}]}),
-                item_type,
-            )
 
     def test_chat_response_to_responses(self):
         payload = {

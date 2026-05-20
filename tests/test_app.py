@@ -82,25 +82,12 @@ class AppTests(unittest.TestCase):
     def test_admin_can_add_channel(self):
         self.login()
         compat = {
-            "force_protocol": "messages",
-            "tool_request_protocol": "messages",
             "fallback_thinking_on_tool_use": True,
             "rename_params": {"max_output_tokens": "max_tokens"},
             "drop_params": ["parallel_tool_calls"],
             "force_params": {"max_tokens": 4096},
             "default_params": {"temperature": 0.2, "metadata": {"source": "admin"}},
             "unsupported_params": ["stream"],
-            "by_protocol": {
-                "chat": {
-                    "rename_params": {"top_p": "temperature"},
-                    "unsupported_params": ["response_format"],
-                },
-                "messages": {
-                    "fallback_thinking_on_tool_use": True,
-                    "drop_params": ["reasoning"],
-                    "force_params": {"max_tokens": 2048},
-                },
-            },
         }
         candidate = {
             "channels": [
@@ -134,22 +121,10 @@ class AppTests(unittest.TestCase):
     def test_admin_can_edit_channel(self):
         self.login()
         compat = {
-            "force_protocol": "messages",
-            "tool_request_protocol": "messages",
             "fallback_thinking_on_tool_use": True,
             "rename_params": {"max_output_tokens": "max_tokens"},
             "force_params": {"max_tokens": 2048, "temperature": 0},
             "default_params": {"metadata": {"source": "edited"}},
-            "by_protocol": {
-                "messages": {
-                    "fallback_thinking_on_tool_use": True,
-                    "drop_params": ["parallel_tool_calls"],
-                    "unsupported_params": ["stream"],
-                },
-                "responses": {
-                    "rename_params": {"max_tokens": "max_output_tokens"},
-                },
-            },
         }
         candidate = {
             "channels": [
@@ -250,6 +225,55 @@ class AppTests(unittest.TestCase):
         self.assertEqual(upstream_channel["baseurl"], "https://agentrouter.org/v1")
         self.assertEqual(upstream_payload["model"], "deepseek-v4-pro")
         self.assertEqual(upstream_payload["messages"][0]["content"], "ping")
+
+    @patch("opencodex_proxy.app.post_upstream")
+    def test_responses_to_messages_converts_without_protocol_specific_config(
+        self, mock_post
+    ):
+        manager = self.app.config["OPENCODEX_CONFIG_MANAGER"]
+        manager.save(
+            {
+                "channels": [
+                    {
+                        "id": "messages",
+                        "type": "messages",
+                        "baseurl": "https://example.test/v1",
+                        "apikey": "secret",
+                        "auth_mode": "config",
+                        "timeout_seconds": 30,
+                        "compat": {},
+                    }
+                ]
+            }
+        )
+        mock_post.return_value = {
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "m",
+            "content": [{"type": "text", "text": "pong"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+
+        response = self.client.post(
+            "/v1/responses",
+            json={
+                "model": "m",
+                "instructions": "be brief",
+                "input": "ping",
+                "max_output_tokens": 32,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["output"][0]["content"][0]["text"], "pong")
+        upstream_channel = mock_post.call_args.args[0]
+        upstream_payload = mock_post.call_args.args[1]
+        self.assertEqual(upstream_channel["type"], "messages")
+        self.assertEqual(upstream_payload["system"], "be brief")
+        self.assertEqual(upstream_payload["messages"][0]["content"][0]["text"], "ping")
+        self.assertEqual(upstream_payload["max_tokens"], 32)
 
     @patch("opencodex_proxy.app.post_upstream")
     def test_responses_to_chat_applies_compat_rules(self, mock_post):
@@ -548,7 +572,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(second_upstream_payload["messages"][0]["tool_calls"][0]["id"], "call_1")
 
     @patch("opencodex_proxy.app.post_upstream")
-    def test_mimo_chat_channel_can_force_all_requests_to_messages(self, mock_post):
+    def test_chat_channel_type_is_used_even_for_tool_requests(self, mock_post):
         manager = self.app.config["OPENCODEX_CONFIG_MANAGER"]
         manager.save(
             {
@@ -562,6 +586,7 @@ class AppTests(unittest.TestCase):
                         "timeout_seconds": 30,
                         "compat": {
                             "force_protocol": "messages",
+                            "tool_request_protocol": "messages",
                             "by_protocol": {
                                 "messages": {
                                     "default_params": {"max_tokens": 4096},
@@ -574,24 +599,46 @@ class AppTests(unittest.TestCase):
             }
         )
         mock_post.return_value = {
-            "id": "msg_1",
-            "type": "message",
-            "role": "assistant",
+            "id": "chatcmpl_1",
             "model": "mimo-v2.5-pro",
-            "content": [{"type": "text", "text": "pong"}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 1, "output_tokens": 1},
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "done"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
         }
         response = self.client.post(
             "/v1/responses",
-            json={"model": "mimo-v2.5-pro", "input": "ping"},
+            json={
+                "model": "mimo-v2.5-pro",
+                "input": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "exec_command",
+                        "arguments": "{\"cmd\":\"pwd\"}",
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_1",
+                        "output": "/tmp",
+                    },
+                ],
+            },
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json()["output"][0]["content"][0]["text"], "pong")
+        self.assertEqual(response.get_json()["output"][0]["content"][0]["text"], "done")
+        self.assertNotIn("force_protocol", manager.raw["channels"][0]["compat"])
+        self.assertNotIn("tool_request_protocol", manager.raw["channels"][0]["compat"])
+        self.assertNotIn("by_protocol", manager.raw["channels"][0]["compat"])
         upstream_channel = mock_post.call_args.args[0]
         upstream_payload = mock_post.call_args.args[1]
-        self.assertEqual(upstream_channel["type"], "messages")
-        self.assertEqual(upstream_payload["messages"][0]["content"][0]["text"], "ping")
+        self.assertEqual(upstream_channel["type"], "chat")
+        self.assertEqual(upstream_payload["messages"][0]["tool_calls"][0]["id"], "call_1")
+        self.assertEqual(upstream_payload["messages"][1]["role"], "tool")
+        self.assertNotIn("max_tokens", upstream_payload)
 
     @patch("opencodex_proxy.app.post_upstream")
     def test_messages_channel_can_fallback_thinking_for_tool_history(self, mock_post):
