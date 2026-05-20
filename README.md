@@ -59,7 +59,7 @@ docker run --rm -p 8000:8000 \
 
 ## Codex CLI
 
-Codex CLI 会通过 `/v1/responses` 使用 `stream=true` 和工具调用。代理会合成 Responses SSE，并按渠道转换到上游协议。
+Codex CLI 会通过 `/v1/responses` 使用 `stream=true` 和工具调用。代理会合成 Responses SSE，并按渠道服务类型自动转换到上游协议；入口协议和渠道服务类型不一致时不需要额外配置。
 
 临时隔离测试示例：
 
@@ -77,7 +77,7 @@ wire_api = "responses"
 requires_openai_auth = false
 ```
 
-Windhub 的 `mimo-v2.5-pro` 建议在管理台配置为 `messages` 渠道，并放在渠道列表首位。实测其 `chat` 渠道文本请求可用，但工具结果续轮会因上游 `reasoning_content` 校验返回 400 或偶发 500；`messages` 渠道在保留 thinking block 后可完成工具调用闭环。
+Windhub 的 `mimo-v2.5-pro` 建议在管理台直接把服务类型配置为 `messages`，并放在渠道列表首位。上游协议严格由渠道的服务类型决定：配置为 `chat` 就走 `/v1/chat/completions`，配置为 `responses` 就走 `/v1/responses`，配置为 `messages` 就走 `/v1/messages`。实测其 `chat` 渠道文本请求可用，但工具结果续轮会因上游 `reasoning_content` 校验返回 400 或偶发 500；`messages` 渠道在保留 thinking block 后可完成工具调用闭环。
 
 ## 测试
 

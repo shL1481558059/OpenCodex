@@ -11,6 +11,7 @@ from .db import init_db, read_channels, replace_channels
 
 CHANNEL_TYPES = {"responses", "chat", "messages"}
 AUTH_MODES = {"pass_through_or_config", "pass_through", "config", "none"}
+REMOVED_COMPAT_FIELDS = {"force_protocol", "tool_request_protocol", "by_protocol"}
 
 EMPTY_CONFIG: dict[str, Any] = {
     "channels": [],
@@ -43,7 +44,7 @@ class ConfigManager:
 
     def reload(self) -> None:
         with self._lock:
-            raw = {"channels": read_channels(self.db_path)}
+            raw = strip_removed_config_fields({"channels": read_channels(self.db_path)})
             expanded = expand_env(raw)
             validate_config(expanded, self.default_timeout)
             self._raw = raw
@@ -61,7 +62,7 @@ class ConfigManager:
             default_timeout=self.default_timeout,
         )
         with self._lock:
-            raw = {"channels": read_channels(self.db_path)}
+            raw = strip_removed_config_fields({"channels": read_channels(self.db_path)})
             self._raw = raw
             self._expanded = expand_env(raw)
         return self.raw
@@ -80,7 +81,20 @@ def expand_env(value: Any) -> Any:
 def strip_removed_config_fields(config: dict[str, Any]) -> dict[str, Any]:
     candidate = deepcopy(config)
     candidate.pop("routing", None)
+    channels = candidate.get("channels")
+    if isinstance(channels, list):
+        for channel in channels:
+            if not isinstance(channel, dict):
+                continue
+            compat = channel.get("compat")
+            if isinstance(compat, dict):
+                _strip_removed_compat_fields(compat)
     return candidate
+
+
+def _strip_removed_compat_fields(compat: dict[str, Any]) -> None:
+    for field in REMOVED_COMPAT_FIELDS:
+        compat.pop(field, None)
 
 
 def validate_config(config: dict[str, Any], default_timeout: int = 120) -> None:
@@ -139,34 +153,6 @@ def validate_compat(compat: Any, channel_id: str) -> None:
     if not isinstance(compat, dict):
         raise ConfigError(f"channel {channel_id} compat must be an object")
     _validate_compat_fields(compat, f"channel {channel_id} compat")
-
-    for field in ("force_protocol", "tool_request_protocol"):
-        protocol = compat.get(field)
-        if protocol in (None, ""):
-            continue
-        if protocol not in CHANNEL_TYPES:
-            raise ConfigError(
-                f"channel {channel_id} compat.{field} must be one of {sorted(CHANNEL_TYPES)}"
-            )
-
-    by_protocol = compat.get("by_protocol", {})
-    if by_protocol in (None, ""):
-        return
-    if not isinstance(by_protocol, dict):
-        raise ConfigError(f"channel {channel_id} compat.by_protocol must be an object")
-    for protocol, protocol_compat in by_protocol.items():
-        if protocol not in CHANNEL_TYPES:
-            raise ConfigError(
-                f"channel {channel_id} compat.by_protocol key must be one of {sorted(CHANNEL_TYPES)}"
-            )
-        if not isinstance(protocol_compat, dict):
-            raise ConfigError(
-                f"channel {channel_id} compat.by_protocol.{protocol} must be an object"
-            )
-        _validate_compat_fields(
-            protocol_compat,
-            f"channel {channel_id} compat.by_protocol.{protocol}",
-        )
 
 
 def _validate_compat_fields(compat: dict[str, Any], label: str) -> None:

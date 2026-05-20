@@ -153,24 +153,6 @@
           <fieldset class="rule-fieldset">
             <legend>全局规则</legend>
             <div class="rule-grid">
-              <div class="row">
-                <label for="compat-force-protocol">强制上游协议</label>
-                <select id="compat-force-protocol">
-                  <option value=""></option>
-                  <option value="responses">responses</option>
-                  <option value="chat">chat</option>
-                  <option value="messages">messages</option>
-                </select>
-              </div>
-              <div class="row">
-                <label for="compat-tool-request-protocol">工具请求协议</label>
-                <select id="compat-tool-request-protocol">
-                  <option value=""></option>
-                  <option value="responses">responses</option>
-                  <option value="chat">chat</option>
-                  <option value="messages">messages</option>
-                </select>
-              </div>
               <div class="row checkbox-row">
                 <input id="compat-fallback-thinking" type="checkbox">
                 <label for="compat-fallback-thinking">工具续传缺少 thinking 时补占位</label>
@@ -197,84 +179,6 @@
               </div>
             </div>
             <p class="rule-note">对象参数按 `key=value` 填写，右侧支持 JSON 值。</p>
-          </fieldset>
-          <fieldset class="rule-fieldset">
-            <legend>按协议覆盖</legend>
-            <div class="rule-grid">
-              <div>
-                <h4>responses</h4>
-                <div class="row">
-                  <label for="compat-responses-rename-params">参数重命名</label>
-                  <textarea id="compat-responses-rename-params" spellcheck="false" placeholder="max_output_tokens=max_tokens"></textarea>
-                </div>
-                <div class="row">
-                  <label for="compat-responses-drop-params">丢弃参数</label>
-                  <textarea id="compat-responses-drop-params" spellcheck="false" placeholder="parallel_tool_calls"></textarea>
-                </div>
-                <div class="row">
-                  <label for="compat-responses-force-params">强制参数</label>
-                  <textarea id="compat-responses-force-params" spellcheck="false" placeholder='max_tokens=4096'></textarea>
-                </div>
-                <div class="row">
-                  <label for="compat-responses-default-params">默认参数</label>
-                  <textarea id="compat-responses-default-params" spellcheck="false" placeholder='temperature=0.2'></textarea>
-                </div>
-                <div class="row">
-                  <label for="compat-responses-unsupported-params">不支持参数</label>
-                  <textarea id="compat-responses-unsupported-params" spellcheck="false" placeholder="stream"></textarea>
-                </div>
-              </div>
-              <div>
-                <h4>chat</h4>
-                <div class="row">
-                  <label for="compat-chat-rename-params">参数重命名</label>
-                  <textarea id="compat-chat-rename-params" spellcheck="false" placeholder="max_output_tokens=max_tokens"></textarea>
-                </div>
-                <div class="row">
-                  <label for="compat-chat-drop-params">丢弃参数</label>
-                  <textarea id="compat-chat-drop-params" spellcheck="false" placeholder="parallel_tool_calls"></textarea>
-                </div>
-                <div class="row">
-                  <label for="compat-chat-force-params">强制参数</label>
-                  <textarea id="compat-chat-force-params" spellcheck="false" placeholder='max_tokens=4096'></textarea>
-                </div>
-                <div class="row">
-                  <label for="compat-chat-default-params">默认参数</label>
-                  <textarea id="compat-chat-default-params" spellcheck="false" placeholder='temperature=0.2'></textarea>
-                </div>
-                <div class="row">
-                  <label for="compat-chat-unsupported-params">不支持参数</label>
-                  <textarea id="compat-chat-unsupported-params" spellcheck="false" placeholder="stream"></textarea>
-                </div>
-              </div>
-              <div>
-                <h4>messages</h4>
-                <div class="row checkbox-row">
-                  <input id="compat-messages-fallback-thinking" type="checkbox">
-                  <label for="compat-messages-fallback-thinking">工具续传缺少 thinking 时补占位</label>
-                </div>
-                <div class="row">
-                  <label for="compat-messages-rename-params">参数重命名</label>
-                  <textarea id="compat-messages-rename-params" spellcheck="false" placeholder="max_output_tokens=max_tokens"></textarea>
-                </div>
-                <div class="row">
-                  <label for="compat-messages-drop-params">丢弃参数</label>
-                  <textarea id="compat-messages-drop-params" spellcheck="false" placeholder="parallel_tool_calls"></textarea>
-                </div>
-                <div class="row">
-                  <label for="compat-messages-force-params">强制参数</label>
-                  <textarea id="compat-messages-force-params" spellcheck="false" placeholder='max_tokens=4096'></textarea>
-                </div>
-                <div class="row">
-                  <label for="compat-messages-default-params">默认参数</label>
-                  <textarea id="compat-messages-default-params" spellcheck="false" placeholder='temperature=0.2'></textarea>
-                </div>
-                <div class="row">
-                  <label for="compat-messages-unsupported-params">不支持参数</label>
-                  <textarea id="compat-messages-unsupported-params" spellcheck="false" placeholder="stream"></textarea>
-                </div>
-              </div>
-            </div>
           </fieldset>
           <div class="actions">
             <button id="save-channel" class="primary" type="button">保存渠道</button>
@@ -349,11 +253,9 @@
     <script>
       let config = {channels: []};
       let selectedIndex = -1;
-      const COMPAT_PROTOCOLS = ["responses", "chat", "messages"];
       const COMPAT_SECTION_FIELDS = ["rename_params", "drop_params", "force_params", "default_params", "unsupported_params"];
+      const COMPAT_REMOVED_TOP_LEVEL_FIELDS = ["force_protocol", "tool_request_protocol", "by_protocol"];
       const COMPAT_KNOWN_TOP_LEVEL_FIELDS = [
-        "force_protocol",
-        "tool_request_protocol",
         "fallback_thinking_on_tool_use",
         ...COMPAT_SECTION_FIELDS
       ];
@@ -387,15 +289,12 @@
 
       function defaultCompat() {
         return {
-          force_protocol: "",
-          tool_request_protocol: "",
           fallback_thinking_on_tool_use: false,
           rename_params: {},
           drop_params: [],
           force_params: {},
           default_params: {},
-          unsupported_params: [],
-          by_protocol: {}
+          unsupported_params: []
         };
       }
 
@@ -409,7 +308,7 @@
 
       function compatSectionId(scope, field) {
         const normalizedField = field.replace(/_/g, "-");
-        return scope === "global" ? `compat-${normalizedField}` : `compat-${scope}-${normalizedField}`;
+        return `compat-${normalizedField}`;
       }
 
       function normalizeStringList(value) {
@@ -431,19 +330,9 @@
       function normalizeCompat(compat) {
         const source = isPlainObject(compat) ? compat : {};
         const normalized = {
-          force_protocol: typeof source.force_protocol === "string" ? source.force_protocol : "",
-          tool_request_protocol: typeof source.tool_request_protocol === "string" ? source.tool_request_protocol : "",
           fallback_thinking_on_tool_use: source.fallback_thinking_on_tool_use === true,
-          ...normalizeCompatSection(source),
-          by_protocol: {}
+          ...normalizeCompatSection(source)
         };
-        const byProtocol = isPlainObject(source.by_protocol) ? source.by_protocol : {};
-        COMPAT_PROTOCOLS.forEach((protocol) => {
-          const section = normalizeCompatSection(byProtocol[protocol]);
-          section.fallback_thinking_on_tool_use =
-            isPlainObject(byProtocol[protocol]) && byProtocol[protocol].fallback_thinking_on_tool_use === true;
-          normalized.by_protocol[protocol] = section;
-        });
         return normalized;
       }
 
@@ -475,13 +364,8 @@
 
       function populateCompatForm(compat) {
         const normalized = normalizeCompat(compat);
-        $("compat-force-protocol").value = normalized.force_protocol;
-        $("compat-tool-request-protocol").value = normalized.tool_request_protocol;
         $("compat-fallback-thinking").checked = normalized.fallback_thinking_on_tool_use;
         setCompatSectionFields("global", normalized);
-        COMPAT_PROTOCOLS.forEach((protocol) => {
-          setCompatSectionFields(protocol, normalized.by_protocol[protocol], protocol === "messages");
-        });
       }
 
       function splitNonEmptyLines(value) {
@@ -577,42 +461,17 @@
 
       function stripKnownCompatFields(compat) {
         const base = isPlainObject(compat) ? cloneJson(compat) : {};
-        const byProtocol = isPlainObject(base.by_protocol) ? base.by_protocol : {};
+        COMPAT_REMOVED_TOP_LEVEL_FIELDS.forEach((field) => delete base[field]);
         COMPAT_KNOWN_TOP_LEVEL_FIELDS.forEach((field) => delete base[field]);
-        COMPAT_PROTOCOLS.forEach((protocol) => {
-          if (!isPlainObject(byProtocol[protocol])) return;
-          delete byProtocol[protocol].fallback_thinking_on_tool_use;
-          COMPAT_SECTION_FIELDS.forEach((field) => delete byProtocol[protocol][field]);
-          if (!Object.keys(byProtocol[protocol]).length) {
-            delete byProtocol[protocol];
-          }
-        });
-        if (Object.keys(byProtocol).length) base.by_protocol = byProtocol;
-        else delete base.by_protocol;
         return base;
       }
 
       function buildCompatFromForm(existingCompat = {}) {
         const compat = stripKnownCompatFields(existingCompat);
-        const forceProtocol = $("compat-force-protocol").value;
-        const toolRequestProtocol = $("compat-tool-request-protocol").value;
-        if (forceProtocol) compat.force_protocol = forceProtocol;
-        if (toolRequestProtocol) compat.tool_request_protocol = toolRequestProtocol;
         if ($("compat-fallback-thinking").checked) {
           compat.fallback_thinking_on_tool_use = true;
         }
         Object.assign(compat, parseCompatSection("global"));
-
-        const byProtocol = isPlainObject(compat.by_protocol) ? compat.by_protocol : {};
-        COMPAT_PROTOCOLS.forEach((protocol) => {
-          const section = parseCompatSection(protocol, protocol === "messages");
-          if (Object.keys(section).length) {
-            const current = isPlainObject(byProtocol[protocol]) ? byProtocol[protocol] : {};
-            byProtocol[protocol] = {...current, ...section};
-          }
-        });
-        if (Object.keys(byProtocol).length) compat.by_protocol = byProtocol;
-        else delete compat.by_protocol;
         return compat;
       }
 

@@ -52,6 +52,40 @@ class ConfigTests(unittest.TestCase):
             self.assertNotIn("routing", saved)
             self.assertNotIn("routing", manager.raw)
 
+    def test_legacy_protocol_override_compat_fields_are_removed_on_save(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "config.db"
+            manager = ConfigManager(db_path)
+            saved = manager.save(
+                {
+                    "channels": [
+                        {
+                            "id": "chat",
+                            "type": "chat",
+                            "baseurl": "https://example.test/v1",
+                            "compat": {
+                                "force_protocol": "messages",
+                                "tool_request_protocol": "messages",
+                                "drop_params": ["metadata"],
+                                "by_protocol": {
+                                    "messages": {
+                                        "force_protocol": "chat",
+                                        "tool_request_protocol": "responses",
+                                        "drop_params": ["parallel_tool_calls"],
+                                    }
+                                },
+                            },
+                        }
+                    ]
+                }
+            )
+
+            compat = saved["channels"][0]["compat"]
+            self.assertNotIn("force_protocol", compat)
+            self.assertNotIn("tool_request_protocol", compat)
+            self.assertNotIn("by_protocol", compat)
+            self.assertEqual(compat["drop_params"], ["metadata"])
+
     def test_first_enabled_channel_is_used(self):
         config = {
             "channels": [
@@ -114,29 +148,6 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(RoutingError):
             choose_channel(config, "mimo-local")
 
-    def test_compat_by_protocol_is_validated(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            db_path = Path(tmp) / "config.db"
-            manager = ConfigManager(db_path)
-            with self.assertRaises(ConfigError):
-                manager.save(
-                    {
-                        "channels": [
-                            {
-                                "id": "chat",
-                                "type": "chat",
-                                "baseurl": "https://example.test/v1",
-                                "compat": {
-                                    "force_protocol": "messages",
-                                    "by_protocol": {
-                                        "messages": {"drop_params": "not-a-list"}
-                                    },
-                                },
-                            }
-                        ]
-                    }
-                )
-
     def test_compat_fallback_thinking_flag_must_be_boolean(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "config.db"
@@ -151,11 +162,6 @@ class ConfigTests(unittest.TestCase):
                                 "baseurl": "https://example.test/v1",
                                 "compat": {
                                     "fallback_thinking_on_tool_use": "true",
-                                    "by_protocol": {
-                                        "messages": {
-                                            "fallback_thinking_on_tool_use": "false",
-                                        }
-                                    },
                                 },
                             }
                         ]
