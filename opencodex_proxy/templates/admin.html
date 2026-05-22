@@ -119,6 +119,9 @@
         </div>
         <div class="actions">
           <button id="save-config" class="primary" type="button">保存全部配置</button>
+          <button id="export-config" type="button">导出 JSON</button>
+          <button id="import-config" type="button">导入 JSON</button>
+          <input id="import-config-file" type="file" accept="application/json,.json" class="hidden">
           <span id="config-status" class="status"></span>
         </div>
 
@@ -680,6 +683,49 @@
         }
       }
 
+      async function exportConfig() {
+        try {
+          const response = await fetch("/admin/api/config/export");
+          if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            const message = typeof data.error === "string" ? data.error : response.statusText;
+            throw new Error(message);
+          }
+          const blob = await response.blob();
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = "opencodex-channels-config.json";
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          URL.revokeObjectURL(url);
+          setStatus("config-status", "已导出 JSON");
+        } catch (error) {
+          setStatus("config-status", error.message, true);
+        }
+      }
+
+      async function importConfigFile(file) {
+        if (!file) return;
+        try {
+          const text = await file.text();
+          const payload = JSON.parse(text);
+          const result = await api("/admin/api/config/import", {
+            method: "POST",
+            headers: {"content-type": "application/json"},
+            body: JSON.stringify(payload)
+          });
+          const skippedText = result.skipped_ids?.length ? `，跳过 ${result.skipped_ids.join("、")}` : "";
+          setStatus("config-status", `已导入 ${result.imported} 个渠道${skippedText}`);
+          await loadConfig();
+        } catch (error) {
+          setStatus("config-status", error.message, true);
+        } finally {
+          $("import-config-file").value = "";
+        }
+      }
+
       function addQuery(params, name, value) {
         if (value !== null && value !== undefined && String(value).trim() !== "") params.set(name, String(value).trim());
       }
@@ -781,6 +827,9 @@
       $("save-channel").onclick = saveSelectedChannel;
       $("cancel-channel").onclick = cancelChannelEdit;
       $("save-config").onclick = saveConfig;
+      $("export-config").onclick = exportConfig;
+      $("import-config").onclick = () => $("import-config-file").click();
+      $("import-config-file").onchange = () => importConfigFile($("import-config-file").files[0]);
       $("search-logs").onclick = refreshLogs;
       $("reset-logs").onclick = resetLogs;
       $("menu-config").onclick = () => showPanel("config");

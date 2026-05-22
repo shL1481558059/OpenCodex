@@ -79,6 +79,70 @@ class AppTests(unittest.TestCase):
         self.assertEqual(manager.expanded["channels"][0]["id"], "messages")
         self.assertNotIn("routing", manager.expanded)
 
+    def test_admin_export_config_includes_full_apikey(self):
+        self.login()
+
+        response = self.client.get("/admin/api/config/export")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/json")
+        self.assertIn(
+            "opencodex-channels-config.json",
+            response.headers.get("Content-Disposition", ""),
+        )
+        exported = json.loads(response.get_data(as_text=True))
+        self.assertEqual(exported["channels"][0]["id"], "chat")
+        self.assertEqual(exported["channels"][0]["apikey"], "secret")
+
+    def test_admin_import_config_appends_without_overwriting_existing_ids(self):
+        self.login()
+        imported = {
+            "channels": [
+                {
+                    "id": "chat",
+                    "type": "chat",
+                    "baseurl": "https://duplicate.example.test/v1",
+                    "apikey": "changed",
+                    "auth_mode": "config",
+                    "timeout_seconds": 30,
+                },
+                {
+                    "id": "messages",
+                    "type": "messages",
+                    "baseurl": "https://messages.example.test/v1",
+                    "apikey": "new-secret",
+                    "auth_mode": "config",
+                    "timeout_seconds": 45,
+                },
+            ]
+        }
+
+        response = self.client.post("/admin/api/config/import", json=imported)
+
+        self.assertEqual(response.status_code, 200)
+        result = response.get_json()
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["skipped_ids"], ["chat"])
+        channels = read_channels(self.db_path)
+        self.assertEqual([channel["id"] for channel in channels], ["chat", "messages"])
+        self.assertEqual(channels[0]["apikey"], "secret")
+        self.assertEqual(channels[1]["apikey"], "new-secret")
+        manager = self.app.config["OPENCODEX_CONFIG_MANAGER"]
+        self.assertEqual([channel["id"] for channel in manager.raw["channels"]], ["chat", "messages"])
+
+    def test_admin_import_rejects_invalid_config_without_changes(self):
+        self.login()
+
+        response = self.client.post(
+            "/admin/api/config/import",
+            json={"channels": [{"id": "bad", "type": "chat"}]},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        channels = read_channels(self.db_path)
+        self.assertEqual([channel["id"] for channel in channels], ["chat"])
+
     def test_admin_can_add_channel(self):
         self.login()
         compat = {

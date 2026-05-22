@@ -112,6 +112,77 @@ def create_app(settings: Settings | None = None) -> Flask:
         require_admin()
         return jsonify(config_manager.raw)
 
+    @app.get("/admin/api/config/export")
+    def admin_export_config():
+        require_admin()
+        payload = json.dumps(config_manager.raw, ensure_ascii=False, indent=2) + "\n"
+        return Response(
+            payload,
+            mimetype="application/json",
+            headers={
+                "Content-Disposition": 'attachment; filename="opencodex-channels-config.json"'
+            },
+        )
+
+    @app.post("/admin/api/config/import")
+    def admin_import_config():
+        require_admin()
+        candidate = request.get_json(silent=True)
+        if not isinstance(candidate, dict):
+            return jsonify({"error": "request body must be a JSON object"}), 400
+
+        imported_channels = candidate.get("channels")
+        if not isinstance(imported_channels, list):
+            return jsonify({"error": "channels must be a list"}), 400
+
+        current = config_manager.raw
+        current_channels = current.get("channels", [])
+        current_ids = {
+            str(channel.get("id", "")).strip()
+            for channel in current_channels
+            if isinstance(channel, dict)
+        }
+        merged_channels = list(current_channels)
+        skipped_ids: list[str] = []
+
+        for channel in imported_channels:
+            if not isinstance(channel, dict):
+                merged_channels.append(channel)
+                continue
+            channel_id = str(channel.get("id", "")).strip()
+            if channel_id in current_ids:
+                skipped_ids.append(channel_id)
+                continue
+            current_ids.add(channel_id)
+            merged_channels.append(channel)
+
+        try:
+            saved = config_manager.save({**current, "channels": merged_channels})
+        except ConfigError as exc:
+            log_event(logger, "WARNING", "config import rejected", error=str(exc))
+            return jsonify({"error": str(exc)}), 400
+        except (OSError, sqlite3.DatabaseError) as exc:
+            log_event(logger, "ERROR", "config import failed", error=str(exc))
+            return jsonify({"error": f"failed to import config: {exc}"}), 500
+
+        imported_count = len(merged_channels) - len(current_channels)
+        log_event(
+            logger,
+            "INFO",
+            "config imported",
+            imported=imported_count,
+            skipped=len(skipped_ids),
+            channels=len(saved.get("channels", [])),
+        )
+        return jsonify(
+            {
+                "config": saved,
+                "imported": imported_count,
+                "skipped": len(skipped_ids),
+                "skipped_ids": skipped_ids,
+            }
+        )
+
     @app.post("/admin/api/config")
     def admin_save_config():
         require_admin()
