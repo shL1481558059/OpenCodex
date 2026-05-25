@@ -60,6 +60,7 @@ METADATA_CACHE_NAMESPACE_KEYS = (
     "x-codex-session-id",
     "prompt_cache_key",
 )
+FALLBACK_REASONING_CONTENT = "Tool use continuation context unavailable after proxy restart."
 
 
 def create_app(settings: Settings | None = None) -> Flask:
@@ -428,6 +429,18 @@ def create_app(settings: Settings | None = None) -> Flask:
                         f"inject_reasoning_content:{tool_call_id}"
                         for tool_call_id in injected_reasoning
                     )
+                if _compat_flag(
+                    channel.get("compat", {}),
+                    "fallback_thinking_on_tool_use",
+                ):
+                    fallback_reasoning = _inject_fallback_reasoning_content_on_tool_calls(
+                        upstream_request
+                    )
+                    if fallback_reasoning:
+                        compat_details.extend(
+                            f"fallback_reasoning_content:{tool_call_id}"
+                            for tool_call_id in fallback_reasoning
+                        )
             if channel["type"] == "messages":
                 injected_thinking = reasoning_cache.inject_messages_request(
                     upstream_request, cache_namespace
@@ -692,6 +705,34 @@ def _compat_flag(compat: dict[str, Any] | None, field: str) -> bool:
     return compat.get(field) is True
 
 
+def _inject_fallback_reasoning_content_on_tool_calls(
+    request_payload: dict[str, Any],
+) -> list[str]:
+    messages = request_payload.get("messages")
+    if not isinstance(messages, list):
+        return []
+    injected: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        if message.get("reasoning_content"):
+            continue
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list) or not tool_calls:
+            continue
+        tool_call_ids = [
+            str(tool_call.get("id") or "").strip()
+            for tool_call in tool_calls
+            if isinstance(tool_call, dict)
+        ]
+        tool_call_ids = [tool_call_id for tool_call_id in tool_call_ids if tool_call_id]
+        if not tool_call_ids:
+            continue
+        message["reasoning_content"] = FALLBACK_REASONING_CONTENT
+        injected.extend(tool_call_ids)
+    return injected
+
+
 def _inject_fallback_thinking_on_tool_use(request_payload: dict[str, Any]) -> list[str]:
     messages = request_payload.get("messages")
     if not isinstance(messages, list):
@@ -716,7 +757,7 @@ def _inject_fallback_thinking_on_tool_use(request_payload: dict[str, Any]) -> li
         message["content"] = [
             {
                 "type": "thinking",
-                "thinking": "Tool use continuation context unavailable after proxy restart.",
+                "thinking": FALLBACK_REASONING_CONTENT,
                 "signature": "",
             },
             *content,

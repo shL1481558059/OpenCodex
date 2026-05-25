@@ -651,7 +651,7 @@ class AppTests(unittest.TestCase):
                         "apikey": "secret",
                         "auth_mode": "config",
                         "timeout_seconds": 30,
-                        "compat": {},
+                        "compat": {"fallback_thinking_on_tool_use": True},
                     }
                 ]
             }
@@ -733,6 +733,143 @@ class AppTests(unittest.TestCase):
             "need to inspect the current directory",
         )
         self.assertEqual(second_upstream_payload["messages"][0]["tool_calls"][0]["id"], "call_1")
+
+    @patch("opencodex_proxy.app.post_upstream")
+    def test_responses_chat_can_fallback_reasoning_content_for_tool_history(self, mock_post):
+        manager = self.app.config["OPENCODEX_CONFIG_MANAGER"]
+        manager.save(
+            {
+                "channels": [
+                    {
+                        "id": "chat",
+                        "type": "chat",
+                        "baseurl": "https://example.test/v1",
+                        "apikey": "secret",
+                        "auth_mode": "config",
+                        "timeout_seconds": 30,
+                        "compat": {"fallback_thinking_on_tool_use": True},
+                    }
+                ]
+            }
+        )
+        mock_post.return_value = {
+            "id": "chatcmpl_2",
+            "model": "m",
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "done"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+
+        response = self.client.post(
+            "/v1/responses",
+            json={
+                "model": "m",
+                "input": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "exec_command",
+                        "arguments": "{\"cmd\":\"pwd\"}",
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_1",
+                        "output": "/tmp",
+                    },
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        upstream_payload = mock_post.call_args.args[1]
+        self.assertEqual(
+            upstream_payload["messages"][0]["reasoning_content"],
+            "Tool use continuation context unavailable after proxy restart.",
+        )
+        self.assertEqual(upstream_payload["messages"][0]["tool_calls"][0]["id"], "call_1")
+
+    @patch("opencodex_proxy.app.post_upstream")
+    def test_responses_chat_groups_parallel_tool_calls_before_tool_outputs(self, mock_post):
+        manager = self.app.config["OPENCODEX_CONFIG_MANAGER"]
+        manager.save(
+            {
+                "channels": [
+                    {
+                        "id": "deepseek",
+                        "type": "chat",
+                        "baseurl": "https://example.test/v1",
+                        "apikey": "secret",
+                        "auth_mode": "config",
+                        "timeout_seconds": 30,
+                        "compat": {"fallback_thinking_on_tool_use": True},
+                        "models": [{"model": "gpt-5.5", "upstream_model": "deepseek-v4-pro"}],
+                    }
+                ]
+            }
+        )
+        mock_post.return_value = {
+            "id": "chatcmpl_2",
+            "model": "deepseek-v4-pro",
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "done"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+
+        response = self.client.post(
+            "/v1/responses",
+            json={
+                "model": "gpt-5.5",
+                "input": [
+                    {"role": "user", "content": [{"type": "input_text", "text": "run checks"}]},
+                    {
+                        "type": "function_call",
+                        "call_id": "call_a",
+                        "name": "exec_command",
+                        "arguments": "{\"cmd\":\"pwd\"}",
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "call_b",
+                        "name": "exec_command",
+                        "arguments": "{\"cmd\":\"ls\"}",
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "call_c",
+                        "name": "exec_command",
+                        "arguments": "{\"cmd\":\"date\"}",
+                    },
+                    {"type": "function_call_output", "call_id": "call_a", "output": "/tmp"},
+                    {"type": "function_call_output", "call_id": "call_b", "output": "file.txt"},
+                    {"type": "function_call_output", "call_id": "call_c", "output": "today"},
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        upstream_payload = mock_post.call_args.args[1]
+        self.assertEqual(
+            [message["role"] for message in upstream_payload["messages"]],
+            ["user", "assistant", "tool", "tool", "tool"],
+        )
+        assistant = upstream_payload["messages"][1]
+        self.assertEqual(
+            [tool_call["id"] for tool_call in assistant["tool_calls"]],
+            ["call_a", "call_b", "call_c"],
+        )
+        self.assertEqual(
+            [message["tool_call_id"] for message in upstream_payload["messages"][2:]],
+            ["call_a", "call_b", "call_c"],
+        )
+        self.assertEqual(assistant["reasoning_content"], "Tool use continuation context unavailable after proxy restart.")
 
     @patch("opencodex_proxy.app.post_upstream")
     def test_chat_channel_type_is_used_even_for_tool_requests(self, mock_post):
@@ -949,6 +1086,22 @@ class AppTests(unittest.TestCase):
 
     @patch("opencodex_proxy.app.post_upstream")
     def test_chat_reasoning_cache_does_not_cross_prompt_cache_keys(self, mock_post):
+        manager = self.app.config["OPENCODEX_CONFIG_MANAGER"]
+        manager.save(
+            {
+                "channels": [
+                    {
+                        "id": "chat",
+                        "type": "chat",
+                        "baseurl": "https://example.test/v1",
+                        "apikey": "secret",
+                        "auth_mode": "config",
+                        "timeout_seconds": 30,
+                        "compat": {},
+                    }
+                ]
+            }
+        )
         mock_post.side_effect = [
             {
                 "id": "chatcmpl_1",
