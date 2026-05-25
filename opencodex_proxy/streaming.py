@@ -6,12 +6,23 @@ import uuid
 from collections.abc import Callable
 from typing import Any, Iterable
 
-from .protocols import _apply_patch_input_from_arguments, _is_apply_patch_name
+from .protocols import (
+    _apply_patch_input_from_tool_call,
+    _is_apply_patch_tool_name,
+    _normalize_annotations,
+)
 
 
 def responses_sse_events(response_payload: dict[str, Any]) -> Iterable[str]:
+    sequence_number = 0
+
+    def emit(event: str, payload: dict[str, Any]) -> str:
+        nonlocal sequence_number
+        enriched = {"type": event, **payload, "sequence_number": sequence_number}
+        sequence_number += 1
+        return _sse(event, enriched)
+
     created = {
-        "type": "response.created",
         "response": {
             "id": response_payload.get("id"),
             "object": "response",
@@ -21,17 +32,17 @@ def responses_sse_events(response_payload: dict[str, Any]) -> Iterable[str]:
             "output": [],
         },
     }
-    yield _sse("response.created", created)
+    yield emit("response.created", created)
 
     for item in response_payload.get("output", []) or []:
-        yield _sse("response.output_item.done", {"type": "response.output_item.done", "item": item})
+        yield emit("response.output_item.done", {"item": item})
 
     completed_response = dict(response_payload)
     completed_response["end_turn"] = True
-    completed_response["status"] = "completed"
-    yield _sse(
+    completed_response["status"] = response_payload.get("status") or "completed"
+    yield emit(
         "response.completed",
-        {"type": "response.completed", "response": completed_response},
+        {"response": completed_response},
     )
 
 
@@ -50,11 +61,17 @@ def messages_sse_to_responses_events(
     stop_reason = "stop"
     usage: dict[str, Any] = {}
     text_started = False
+    sequence_number = 0
 
-    yield _sse(
+    def emit(event: str, payload: dict[str, Any]) -> str:
+        nonlocal sequence_number
+        enriched = {"type": event, **payload, "sequence_number": sequence_number}
+        sequence_number += 1
+        return _sse(event, enriched)
+
+    yield emit(
         "response.created",
         {
-            "type": "response.created",
             "response": {
                 "id": response_id,
                 "object": "response",
@@ -98,10 +115,9 @@ def messages_sse_to_responses_events(
                     continue
                 if not text_started:
                     text_started = True
-                    yield _sse(
+                    yield emit(
                         "response.output_item.added",
                         {
-                            "type": "response.output_item.added",
                             "output_index": 0,
                             "item": {
                                 "id": message_item_id,
@@ -112,10 +128,9 @@ def messages_sse_to_responses_events(
                             },
                         },
                     )
-                    yield _sse(
+                    yield emit(
                         "response.content_part.added",
                         {
-                            "type": "response.content_part.added",
                             "item_id": message_item_id,
                             "output_index": 0,
                             "content_index": 0,
@@ -124,10 +139,9 @@ def messages_sse_to_responses_events(
                     )
                 text_parts.append(text)
                 block["text"] = str(block.get("text", "")) + text
-                yield _sse(
+                yield emit(
                     "response.output_text.delta",
                     {
-                        "type": "response.output_text.delta",
                         "item_id": message_item_id,
                         "output_index": 0,
                         "content_index": 0,
@@ -179,29 +193,27 @@ def messages_sse_to_responses_events(
             "content": [{"type": "output_text", "text": text}],
         }
         output.append(message_item)
-        yield _sse(
+        yield emit(
             "response.output_text.done",
             {
-                "type": "response.output_text.done",
                 "item_id": message_item_id,
                 "output_index": 0,
                 "content_index": 0,
                 "text": text,
             },
         )
-        yield _sse(
+        yield emit(
             "response.content_part.done",
             {
-                "type": "response.content_part.done",
                 "item_id": message_item_id,
                 "output_index": 0,
                 "content_index": 0,
                 "part": {"type": "output_text", "text": text},
             },
         )
-        yield _sse(
+        yield emit(
             "response.output_item.done",
-            {"type": "response.output_item.done", "output_index": 0, "item": message_item},
+            {"output_index": 0, "item": message_item},
         )
 
     for block in ordered_blocks:
@@ -213,10 +225,9 @@ def messages_sse_to_responses_events(
             block.get("input") or {},
         )
         output.append(item)
-        yield _sse(
+        yield emit(
             "response.output_item.done",
             {
-                "type": "response.output_item.done",
                 "output_index": len(output) - 1,
                 "item": item,
             },
@@ -232,9 +243,9 @@ def messages_sse_to_responses_events(
         "usage": _messages_usage_to_responses_usage(usage),
         "end_turn": True,
     }
-    yield _sse(
+    yield emit(
         "response.completed",
-        {"type": "response.completed", "response": completed_response},
+        {"response": completed_response},
     )
 
 
@@ -245,20 +256,147 @@ def chat_sse_to_responses_events(
 ) -> Iterable[str]:
     response_id = f"resp_{uuid.uuid4().hex}"
     message_item_id = f"msg_{uuid.uuid4().hex}"
+    reasoning_item_id = f"rs_{uuid.uuid4().hex}"
     created_at = int(time.time())
     response_model = model
     completion_id = None
     completion_created = None
     text_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    annotations: list[dict[str, Any]] = []
     text_started = False
+    reasoning_started = False
+    reasoning_done = False
     usage: dict[str, Any] = {}
     finish_reason = "stop"
     tool_calls: dict[int, dict[str, Any]] = {}
+    tool_stream_meta: dict[int, dict[str, Any]] = {}
+    message_output_index: int | None = None
+    reasoning_output_index: int | None = None
+    next_output_index = 0
+    sequence_number = 0
+    output_by_index: dict[int, dict[str, Any]] = {}
 
-    yield _sse(
+    def emit(event: str, payload: dict[str, Any]) -> str:
+        nonlocal sequence_number
+        enriched = {"type": event, **payload, "sequence_number": sequence_number}
+        sequence_number += 1
+        return _sse(event, enriched)
+
+    def allocate_output_index() -> int:
+        nonlocal next_output_index
+        output_index = next_output_index
+        next_output_index += 1
+        return output_index
+
+    def ensure_reasoning_started() -> list[str]:
+        nonlocal reasoning_started, reasoning_output_index
+        if reasoning_started:
+            return []
+        reasoning_started = True
+        reasoning_output_index = allocate_output_index()
+        return [
+            emit(
+                "response.output_item.added",
+                {
+                    "output_index": reasoning_output_index,
+                    "item": {
+                        "id": reasoning_item_id,
+                        "type": "reasoning",
+                        "summary": [],
+                        "encrypted_content": None,
+                        "status": "in_progress",
+                    },
+                },
+            ),
+            emit(
+                "response.reasoning_summary_part.added",
+                {
+                    "item_id": reasoning_item_id,
+                    "output_index": reasoning_output_index,
+                    "summary_index": 0,
+                    "part": {"type": "summary_text", "text": ""},
+                },
+            ),
+        ]
+
+    def finalize_reasoning() -> list[str]:
+        nonlocal reasoning_done
+        if not reasoning_started or reasoning_done or reasoning_output_index is None:
+            return []
+        reasoning_done = True
+        reasoning_text = "".join(reasoning_parts)
+        reasoning_item = {
+            "id": reasoning_item_id,
+            "type": "reasoning",
+            "status": "completed",
+            "summary": [{"type": "summary_text", "text": reasoning_text}],
+            "encrypted_content": reasoning_text,
+        }
+        output_by_index[reasoning_output_index] = reasoning_item
+        return [
+            emit(
+                "response.reasoning_summary_text.done",
+                {
+                    "item_id": reasoning_item_id,
+                    "output_index": reasoning_output_index,
+                    "summary_index": 0,
+                    "text": reasoning_text,
+                },
+            ),
+            emit(
+                "response.reasoning_summary_part.done",
+                {
+                    "item_id": reasoning_item_id,
+                    "output_index": reasoning_output_index,
+                    "summary_index": 0,
+                    "part": {"type": "summary_text", "text": reasoning_text},
+                },
+            ),
+            emit(
+                "response.output_item.done",
+                {"output_index": reasoning_output_index, "item": reasoning_item},
+            ),
+        ]
+
+    def ensure_message_started() -> list[str]:
+        nonlocal text_started, message_output_index
+        if text_started:
+            return []
+        events = finalize_reasoning()
+        text_started = True
+        message_output_index = allocate_output_index()
+        events.extend(
+            [
+                emit(
+                    "response.output_item.added",
+                    {
+                        "output_index": message_output_index,
+                        "item": {
+                            "id": message_item_id,
+                            "type": "message",
+                            "status": "in_progress",
+                            "role": "assistant",
+                            "content": [],
+                        },
+                    },
+                ),
+                emit(
+                    "response.content_part.added",
+                    {
+                        "item_id": message_item_id,
+                        "output_index": message_output_index,
+                        "content_index": 0,
+                        "part": {"type": "output_text", "text": "", "annotations": []},
+                    },
+                ),
+            ]
+        )
+        return events
+
+    yield emit(
         "response.created",
         {
-            "type": "response.created",
             "response": {
                 "id": response_id,
                 "object": "response",
@@ -294,45 +432,53 @@ def chat_sse_to_responses_events(
             if choice.get("finish_reason"):
                 finish_reason = str(choice["finish_reason"])
 
+            reasoning_text = delta.get("reasoning_content")
+            if isinstance(reasoning_text, str) and reasoning_text:
+                for line in ensure_reasoning_started():
+                    yield line
+                reasoning_parts.append(reasoning_text)
+                yield emit(
+                    "response.reasoning_summary_text.delta",
+                    {
+                        "item_id": reasoning_item_id,
+                        "output_index": reasoning_output_index,
+                        "summary_index": 0,
+                        "delta": reasoning_text,
+                    },
+                )
+
             text = delta.get("content")
             if isinstance(text, str) and text:
-                if not text_started:
-                    text_started = True
-                    yield _sse(
-                        "response.output_item.added",
-                        {
-                            "type": "response.output_item.added",
-                            "output_index": 0,
-                            "item": {
-                                "id": message_item_id,
-                                "type": "message",
-                                "status": "in_progress",
-                                "role": "assistant",
-                                "content": [],
-                            },
-                        },
-                    )
-                    yield _sse(
-                        "response.content_part.added",
-                        {
-                            "type": "response.content_part.added",
-                            "item_id": message_item_id,
-                            "output_index": 0,
-                            "content_index": 0,
-                            "part": {"type": "output_text", "text": ""},
-                        },
-                    )
+                for line in ensure_message_started():
+                    yield line
                 text_parts.append(text)
-                yield _sse(
+                yield emit(
                     "response.output_text.delta",
                     {
-                        "type": "response.output_text.delta",
                         "item_id": message_item_id,
-                        "output_index": 0,
+                        "output_index": message_output_index,
                         "content_index": 0,
                         "delta": text,
                     },
                 )
+
+            new_annotations = _normalize_annotations(delta.get("annotations"))
+            if new_annotations:
+                for line in ensure_message_started():
+                    yield line
+                for annotation in new_annotations:
+                    annotation_index = len(annotations)
+                    annotations.append(annotation)
+                    yield emit(
+                        "response.output_text.annotation.added",
+                        {
+                            "item_id": message_item_id,
+                            "output_index": message_output_index,
+                            "content_index": 0,
+                            "annotation_index": annotation_index,
+                            "annotation": annotation,
+                        },
+                    )
 
             for tool_call in delta.get("tool_calls", []) or []:
                 if not isinstance(tool_call, dict):
@@ -356,12 +502,57 @@ def chat_sse_to_responses_events(
                         target["function"]["name"] = function["name"]
                     if function.get("arguments"):
                         target["function"]["arguments"] += str(function["arguments"])
+                tool_name = target.get("function", {}).get("name")
+                if not target.get("id") or not tool_name or _is_apply_patch_tool_name(str(tool_name)):
+                    continue
+                meta = tool_stream_meta.setdefault(index, {})
+                if "output_index" not in meta:
+                    meta["output_index"] = allocate_output_index()
+                if "item_id" not in meta:
+                    meta["item_id"] = f"fc_{uuid.uuid4().hex}"
+                if not meta.get("item_added"):
+                    meta["item_added"] = True
+                    for line in finalize_reasoning():
+                        yield line
+                    yield emit(
+                        "response.output_item.added",
+                        {
+                            "output_index": meta["output_index"],
+                            "item": {
+                                "id": meta["item_id"],
+                                "type": "function_call",
+                                "status": "in_progress",
+                                "call_id": target["id"],
+                                "name": tool_name,
+                                "arguments": "",
+                            },
+                        },
+                    )
+                arguments = str(target.get("function", {}).get("arguments") or "")
+                streamed_length = int(meta.get("streamed_arguments_length") or 0)
+                if len(arguments) > streamed_length:
+                    delta_text = arguments[streamed_length:]
+                    meta["streamed_arguments_length"] = len(arguments)
+                    yield emit(
+                        "response.function_call_arguments.delta",
+                        {
+                            "item_id": meta["item_id"],
+                            "output_index": meta["output_index"],
+                            "delta": delta_text,
+                        },
+                    )
 
+    for line in finalize_reasoning():
+        yield line
+
+    reasoning_text = "".join(reasoning_parts)
     message = {
         "role": "assistant",
         "content": "".join(text_parts),
         "tool_calls": [],
     }
+    if reasoning_text:
+        message["reasoning_content"] = reasoning_text
     for index in sorted(tool_calls):
         tool_call = tool_calls[index]
         message["tool_calls"].append(
@@ -392,71 +583,95 @@ def chat_sse_to_responses_events(
     if on_response is not None:
         on_response(upstream_response)
 
-    output = []
     text = "".join(text_parts)
-    if text:
+    if text or annotations:
+        if message_output_index is None:
+            message_output_index = allocate_output_index()
+        output_text = {"type": "output_text", "text": text}
+        if annotations:
+            output_text["annotations"] = annotations
         message_item = {
             "id": message_item_id,
             "type": "message",
             "status": "completed",
             "role": "assistant",
-            "content": [{"type": "output_text", "text": text}],
+            "content": [output_text],
         }
-        output.append(message_item)
-        yield _sse(
+        yield emit(
             "response.output_text.done",
             {
-                "type": "response.output_text.done",
                 "item_id": message_item_id,
-                "output_index": 0,
+                "output_index": message_output_index,
                 "content_index": 0,
                 "text": text,
             },
         )
-        yield _sse(
+        yield emit(
             "response.content_part.done",
             {
-                "type": "response.content_part.done",
                 "item_id": message_item_id,
-                "output_index": 0,
+                "output_index": message_output_index,
                 "content_index": 0,
-                "part": {"type": "output_text", "text": text},
+                "part": output_text,
             },
         )
-        yield _sse(
+        output_by_index[message_output_index] = message_item
+        yield emit(
             "response.output_item.done",
-            {"type": "response.output_item.done", "output_index": 0, "item": message_item},
+            {
+                "output_index": message_output_index,
+                "item": message_item,
+            },
         )
 
-    for tool_call in message["tool_calls"]:
+    for index, tool_call in zip(sorted(tool_calls), message["tool_calls"]):
+        meta = tool_stream_meta.get(index, {})
         item = _responses_tool_call_item(
             tool_call["id"],
             tool_call["function"].get("name"),
             tool_call["function"].get("arguments", "{}"),
+            meta.get("item_id"),
         )
-        output.append(item)
-        yield _sse(
+        if "output_index" in meta:
+            output_index = int(meta["output_index"])
+        else:
+            while next_output_index in output_by_index:
+                next_output_index += 1
+            output_index = allocate_output_index()
+        output_by_index[output_index] = item
+        if meta.get("item_added") and item.get("type") == "function_call":
+            yield emit(
+                "response.function_call_arguments.done",
+                {
+                    "item_id": item["id"],
+                    "output_index": output_index,
+                    "arguments": item.get("arguments", ""),
+                },
+            )
+        yield emit(
             "response.output_item.done",
             {
-                "type": "response.output_item.done",
-                "output_index": len(output) - 1,
+                "output_index": output_index,
                 "item": item,
             },
         )
 
+    incomplete = finish_reason == "length"
     completed_response = {
         "id": response_id,
         "object": "response",
         "created_at": created_at,
-        "status": "completed",
+        "status": "incomplete" if incomplete else "completed",
         "model": response_model,
-        "output": output,
+        "output": [output_by_index[index] for index in sorted(output_by_index)],
         "usage": _chat_usage_to_responses_usage(usage),
         "end_turn": True,
     }
-    yield _sse(
+    if incomplete:
+        completed_response["incomplete_details"] = {"reason": "max_output_tokens"}
+    yield emit(
         "response.completed",
-        {"type": "response.completed", "response": completed_response},
+        {"response": completed_response},
     )
 
 
@@ -514,19 +729,24 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def _responses_tool_call_item(call_id: Any, name: Any, arguments: Any) -> dict[str, Any]:
+def _responses_tool_call_item(
+    call_id: Any,
+    name: Any,
+    arguments: Any,
+    item_id: Any | None = None,
+) -> dict[str, Any]:
     tool_name = str(name or "")
-    if _is_apply_patch_name(tool_name):
+    if _is_apply_patch_tool_name(tool_name):
         return {
-            "id": f"ctc_{uuid.uuid4().hex}",
+            "id": item_id or f"ctc_{uuid.uuid4().hex}",
             "type": "custom_tool_call",
             "status": "completed",
             "call_id": call_id,
             "name": "apply_patch",
-            "input": _apply_patch_input_from_arguments(arguments),
+            "input": _apply_patch_input_from_tool_call(tool_name, arguments),
         }
     return {
-        "id": f"fc_{uuid.uuid4().hex}",
+        "id": item_id or f"fc_{uuid.uuid4().hex}",
         "type": "function_call",
         "status": "completed",
         "call_id": call_id,

@@ -116,7 +116,9 @@ def _responses_request_to_canonical(payload: dict[str, Any]) -> dict[str, Any]:
             messages.extend(_responses_input_item_to_messages(item))
     else:
         raise BadRequestError("responses input must be a string or list")
-    messages = _merge_consecutive_assistant_tool_call_messages(messages)
+    messages = _normalize_chat_tool_history(
+        _merge_consecutive_assistant_tool_call_messages(messages)
+    )
 
     return {
         "model": payload.get("model"),
@@ -190,7 +192,15 @@ def _canonical_to_chat_request(canonical: dict[str, Any]) -> dict[str, Any]:
             {
                 key: deepcopy(value)
                 for key, value in message.items()
-                if key in {"role", "content", "tool_calls", "tool_call_id", "name"}
+                if key
+                in {
+                    "role",
+                    "content",
+                    "tool_calls",
+                    "tool_call_id",
+                    "name",
+                    "reasoning_content",
+                }
             }
         )
         result["messages"][-1]["role"] = role
@@ -198,7 +208,7 @@ def _canonical_to_chat_request(canonical: dict[str, Any]) -> dict[str, Any]:
     if tools:
         result["tools"] = tools
     if canonical.get("tool_choice") is not None:
-        result["tool_choice"] = canonical["tool_choice"]
+        result["tool_choice"] = _tool_choice_to_chat(canonical["tool_choice"])
     if "max_output_tokens" in result and "max_tokens" not in result:
         result["max_tokens"] = result.pop("max_output_tokens")
     return result
@@ -230,6 +240,9 @@ def _canonical_to_messages_request(canonical: dict[str, Any]) -> dict[str, Any]:
             )
             continue
         content = _chat_content_to_anthropic_content(message.get("content", ""))
+        reasoning_content = _stringify_content(message.get("reasoning_content", "")).strip()
+        if reasoning_content:
+            content = [{"type": "text", "text": f"Reasoning content:\n{reasoning_content}"}] + content
         if message.get("tool_calls"):
             content = content if isinstance(content, list) else [{"type": "text", "text": str(content)}]
             content.extend(_chat_tool_calls_to_anthropic(message.get("tool_calls", [])))
@@ -272,6 +285,140 @@ def _merge_consecutive_assistant_tool_call_messages(
     return merged
 
 
+def _normalize_chat_tool_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    messages = _fold_reasoning_into_tool_call_messages(messages)
+    messages = _merge_consecutive_assistant_tool_call_messages(messages)
+    _remove_orphan_tool_messages(messages)
+    _ensure_tool_calls_have_outputs(messages)
+    return messages
+
+
+def _fold_reasoning_into_tool_call_messages(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    folded: list[dict[str, Any]] = []
+    pending_reasoning: dict[str, Any] | None = None
+    for message in messages:
+        if _is_reasoning_only_message(message):
+            if folded and _is_assistant_with_tool_calls(folded[-1]):
+                _append_reasoning_content(folded[-1], message.get("reasoning_content", ""))
+            else:
+                if pending_reasoning is None:
+                    pending_reasoning = deepcopy(message)
+                else:
+                    _append_reasoning_content(
+                        pending_reasoning, message.get("reasoning_content", "")
+                    )
+            continue
+
+        if _is_assistant_with_tool_calls(message) and pending_reasoning is not None:
+            message = deepcopy(message)
+            _append_reasoning_content(message, pending_reasoning.get("reasoning_content", ""))
+            pending_reasoning = None
+        elif pending_reasoning is not None:
+            folded.append(pending_reasoning)
+            pending_reasoning = None
+        folded.append(message)
+
+    if pending_reasoning is not None:
+        folded.append(pending_reasoning)
+    return folded
+
+
+def _is_reasoning_only_message(message: Any) -> bool:
+    return (
+        isinstance(message, dict)
+        and message.get("role") == "assistant"
+        and bool(message.get("reasoning_content"))
+        and _is_empty_chat_content(message.get("content"))
+        and not message.get("tool_calls")
+    )
+
+
+def _is_assistant_with_tool_calls(message: Any) -> bool:
+    return (
+        isinstance(message, dict)
+        and message.get("role") == "assistant"
+        and isinstance(message.get("tool_calls"), list)
+        and bool(message.get("tool_calls"))
+    )
+
+
+def _append_reasoning_content(message: dict[str, Any], reasoning_content: Any) -> None:
+    text = _stringify_content(reasoning_content)
+    if not text:
+        return
+    existing = _stringify_content(message.get("reasoning_content", ""))
+    message["reasoning_content"] = existing + text if existing else text
+
+
+def _remove_orphan_tool_messages(messages: list[dict[str, Any]]) -> None:
+    valid_ids: set[str] | None = None
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        role = message.get("role") if isinstance(message, dict) else None
+        if role == "assistant":
+            tool_calls = message.get("tool_calls")
+            valid_ids = (
+                {
+                    str(tool_call.get("id"))
+                    for tool_call in tool_calls
+                    if isinstance(tool_call, dict) and tool_call.get("id")
+                }
+                if isinstance(tool_calls, list) and tool_calls
+                else None
+            )
+            index += 1
+            continue
+        if role == "tool":
+            tool_call_id = str(message.get("tool_call_id") or "")
+            if valid_ids and tool_call_id in valid_ids:
+                index += 1
+                continue
+            del messages[index]
+            continue
+        valid_ids = None
+        index += 1
+
+
+def _ensure_tool_calls_have_outputs(messages: list[dict[str, Any]]) -> None:
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        if not _is_assistant_with_tool_calls(message):
+            index += 1
+            continue
+        tool_calls = message.get("tool_calls", [])
+        seen: set[str] = set()
+        insert_at = index + 1
+        while insert_at < len(messages) and messages[insert_at].get("role") == "tool":
+            tool_call_id = messages[insert_at].get("tool_call_id")
+            if tool_call_id:
+                seen.add(str(tool_call_id))
+            insert_at += 1
+        missing = [
+            str(tool_call.get("id"))
+            for tool_call in tool_calls
+            if isinstance(tool_call, dict)
+            and tool_call.get("id")
+            and str(tool_call.get("id")) not in seen
+        ]
+        if missing:
+            placeholders = [
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": "[tool output missing - no function_call_output was provided for this call_id]",
+                }
+                for tool_call_id in missing
+            ]
+            messages[insert_at:insert_at] = placeholders
+            index = insert_at + len(placeholders)
+            continue
+        index += 1
+
+
 def _is_assistant_tool_call_only_message(message: Any) -> bool:
     return (
         isinstance(message, dict)
@@ -311,19 +458,22 @@ def _responses_input_item_to_messages(item: Any) -> list[dict[str, Any]]:
             }
         ]
     if item_type in RESPONSES_TOOL_OUTPUT_TYPES:
+        call_id = item.get("call_id") or item.get("tool_call_id") or item.get("tool_use_id")
+        if not call_id:
+            return []
         output = item.get("output")
         if output is None:
             output = item.get("content", "")
         return [
             {
                 "role": "tool",
-                "tool_call_id": item.get("call_id") or item.get("tool_call_id"),
+                "tool_call_id": call_id,
                 "content": _stringify_content(output),
             }
         ]
     if item_type == "reasoning":
-        text = _responses_reasoning_summary_to_text(item)
-        return [{"role": "assistant", "content": text}] if text else []
+        text = _responses_reasoning_to_text(item)
+        return [{"role": "assistant", "content": "", "reasoning_content": text}] if text else []
     if item_type == "web_search_call":
         text = _responses_metadata_item_to_text(item)
         return [{"role": "assistant", "content": text}] if text else []
@@ -349,6 +499,9 @@ def _messages_to_responses_input(messages: list[dict[str, Any]]) -> tuple[str, l
             if text:
                 instructions.append(text)
             continue
+        reasoning_content = _stringify_content(message.get("reasoning_content", "")).strip()
+        if role == "assistant" and reasoning_content:
+            input_items.append(_responses_reasoning_item(reasoning_content))
         if role == "tool":
             input_items.append(
                 {
@@ -398,20 +551,48 @@ def _copy_common_request_params(payload: dict[str, Any], protocol: str) -> dict[
 def _responses_tools_to_canonical(tools: Any) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for tool in tools or []:
-        if not isinstance(tool, dict):
+        result.extend(_responses_tool_to_canonical_items(tool))
+    return _dedupe_canonical_tools(result)
+
+
+def _responses_tool_to_canonical_items(tool: Any) -> list[dict[str, Any]]:
+    if not isinstance(tool, dict):
+        return []
+    tool_type = tool.get("type", "function")
+    if tool_type == "namespace":
+        nested = tool.get("tools")
+        if not isinstance(nested, list):
+            return []
+        result: list[dict[str, Any]] = []
+        for inner in nested:
+            result.extend(_responses_tool_to_canonical_items(inner))
+        return result
+    if tool_type == "function":
+        return [
+            {
+                "name": tool.get("name"),
+                "description": tool.get("description", ""),
+                "parameters": tool.get("parameters") or {},
+                "native_type": "function",
+            }
+        ]
+    return [_wrap_native_tool(tool_type, tool)]
+
+
+def _dedupe_canonical_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for tool in tools:
+        native_type = str(tool.get("native_type") or "function")
+        name = str(tool.get("name") or "")
+        if not name:
             continue
-        tool_type = tool.get("type", "function")
-        if tool_type == "function":
-            result.append(
-                {
-                    "name": tool.get("name"),
-                    "description": tool.get("description", ""),
-                    "parameters": tool.get("parameters") or {},
-                    "native_type": "function",
-                }
-            )
-        else:
-            result.append(_wrap_native_tool(tool_type, tool))
+        namespace = "function" if native_type == "function" else native_type
+        key = (namespace, name)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(tool)
     return result
 
 
@@ -478,7 +659,7 @@ def _canonical_tools_to_chat(tools: list[dict[str, Any]]) -> list[dict[str, Any]
                 "parameters": tool.get("parameters") or {},
             },
         }
-        for tool in tools
+        for tool in _expand_apply_patch_proxy_tools(tools)
         if tool.get("name")
     ]
 
@@ -490,7 +671,7 @@ def _canonical_tools_to_anthropic(tools: list[dict[str, Any]]) -> list[dict[str,
             "description": tool.get("description", ""),
             "input_schema": tool.get("parameters") or {},
         }
-        for tool in tools
+        for tool in _expand_apply_patch_proxy_tools(tools)
         if tool.get("name")
     ]
 
@@ -523,10 +704,163 @@ def _wrap_native_tool(tool_type: str, tool: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _expand_apply_patch_proxy_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for tool in tools:
+        if _is_apply_patch_canonical_tool(tool):
+            result.extend(_apply_patch_proxy_tools(tool))
+        else:
+            result.append(tool)
+    return _dedupe_canonical_tools(result)
+
+
+def _is_apply_patch_canonical_tool(tool: dict[str, Any]) -> bool:
+    native_type = str(tool.get("native_type") or "function")
+    name = str(tool.get("name") or "")
+    if native_type == "apply_patch":
+        return True
+    if _is_apply_patch_name(name) and native_type in {"custom", "apply_patch"}:
+        return True
+    raw = tool.get("raw")
+    if isinstance(raw, dict) and raw.get("type") == "custom" and _is_apply_patch_name(name):
+        return True
+    return False
+
+
+def _apply_patch_proxy_tools(tool: dict[str, Any]) -> list[dict[str, Any]]:
+    description = tool.get("description") or "Apply a patch."
+    return [
+        {
+            "name": "apply_patch_add_file",
+            "description": f"{description} Create one new file with structured JSON.",
+            "parameters": _apply_patch_single_op_schema("add_file"),
+            "native_type": "function",
+        },
+        {
+            "name": "apply_patch_delete_file",
+            "description": f"{description} Delete one file with structured JSON.",
+            "parameters": _apply_patch_single_op_schema("delete_file"),
+            "native_type": "function",
+        },
+        {
+            "name": "apply_patch_update_file",
+            "description": f"{description} Edit one existing file with structured hunks.",
+            "parameters": _apply_patch_single_op_schema("update_file"),
+            "native_type": "function",
+        },
+        {
+            "name": "apply_patch_replace_file",
+            "description": f"{description} Replace one file entirely with structured JSON.",
+            "parameters": _apply_patch_single_op_schema("replace_file"),
+            "native_type": "function",
+        },
+        {
+            "name": "apply_patch_batch",
+            "description": f"{description} Apply multiple structured patch operations.",
+            "parameters": _apply_patch_batch_schema(),
+            "native_type": "function",
+        },
+    ]
+
+
+def _apply_patch_single_op_schema(action: str) -> dict[str, Any]:
+    properties: dict[str, Any] = {
+        "path": {"type": "string", "description": "Target file path."}
+    }
+    required = ["path"]
+    if action in {"add_file", "replace_file"}:
+        properties["content"] = {"type": "string", "description": "Full file content."}
+        required.append("content")
+    elif action == "update_file":
+        properties["move_to"] = {
+            "type": "string",
+            "description": "Optional destination path for a file move.",
+        }
+        properties["hunks"] = _apply_patch_hunks_schema()
+        required.append("hunks")
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": properties,
+        "required": required,
+    }
+
+
+def _apply_patch_batch_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "operations": {
+                "type": "array",
+                "description": "Structured patch operations.",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": [
+                                "add_file",
+                                "delete_file",
+                                "update_file",
+                                "replace_file",
+                            ],
+                        },
+                        "path": {"type": "string", "description": "Target file path."},
+                        "move_to": {
+                            "type": "string",
+                            "description": "Optional destination path for a file move.",
+                        },
+                        "content": {"type": "string", "description": "File content."},
+                        "hunks": _apply_patch_hunks_schema(),
+                    },
+                    "required": ["type", "path"],
+                },
+            }
+        },
+        "required": ["operations"],
+    }
+
+
+def _apply_patch_hunks_schema() -> dict[str, Any]:
+    return {
+        "type": "array",
+        "description": "Structured update hunks.",
+        "minItems": 1,
+        "items": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "context": {"type": "string", "description": "Optional @@ header text."},
+                "lines": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "op": {
+                                "type": "string",
+                                "enum": ["context", "add", "remove"],
+                            },
+                            "text": {"type": "string"},
+                        },
+                        "required": ["op", "text"],
+                    },
+                },
+            },
+            "required": ["lines"],
+        },
+    }
+
+
 def _responses_response_to_canonical(
     payload: dict[str, Any], original_model: str | None
 ) -> dict[str, Any]:
     text_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    annotations: list[dict[str, Any]] = []
     tool_calls: list[dict[str, Any]] = []
     for item in payload.get("output", []) or []:
         if not isinstance(item, dict):
@@ -535,6 +869,11 @@ def _responses_response_to_canonical(
             for block in item.get("content", []) or []:
                 if isinstance(block, dict) and block.get("type") in {"output_text", "text"}:
                     text_parts.append(str(block.get("text", "")))
+                    annotations.extend(_normalize_annotations(block.get("annotations")))
+        elif item.get("type") == "reasoning":
+            reasoning = _responses_reasoning_to_text(item)
+            if reasoning:
+                reasoning_parts.append(reasoning)
         elif item.get("type") in {"function_call", "custom_tool_call", "local_shell_call", "shell_call", "apply_patch_call"}:
             name = item.get("name") or item.get("type", "tool").replace("_call", "")
             arguments = item.get("arguments") or item.get("input") or {}
@@ -551,6 +890,8 @@ def _responses_response_to_canonical(
         "model": original_model or payload.get("model"),
         "created": payload.get("created_at") or int(time.time()),
         "text": "".join(text_parts),
+        "reasoning": "".join(reasoning_parts),
+        "annotations": annotations,
         "tool_calls": tool_calls,
         "finish_reason": payload.get("status") or "stop",
         "usage": _responses_usage_to_canonical(payload.get("usage", {})),
@@ -578,6 +919,8 @@ def _chat_response_to_canonical(
         "model": original_model or payload.get("model"),
         "created": payload.get("created") or int(time.time()),
         "text": _stringify_content(message.get("content", "")),
+        "reasoning": _stringify_content(message.get("reasoning_content", "")),
+        "annotations": _normalize_annotations(message.get("annotations")),
         "tool_calls": tool_calls,
         "finish_reason": choice.get("finish_reason", "stop") if isinstance(choice, dict) else "stop",
         "usage": _chat_usage_to_canonical(payload.get("usage", {})),
@@ -617,19 +960,33 @@ def _messages_response_to_canonical(
 
 def _canonical_to_responses_response(canonical: dict[str, Any]) -> dict[str, Any]:
     output = []
+    if canonical.get("reasoning"):
+        reasoning = canonical.get("reasoning", "")
+        output.append(
+            {
+                "id": f"rs_{uuid.uuid4().hex}",
+                "type": "reasoning",
+                "status": "completed",
+                "summary": [{"type": "summary_text", "text": reasoning}],
+                "encrypted_content": reasoning,
+            }
+        )
     if canonical.get("text"):
+        output_text = {"type": "output_text", "text": canonical.get("text", "")}
+        if canonical.get("annotations"):
+            output_text["annotations"] = deepcopy(canonical.get("annotations"))
         output.append(
             {
                 "id": f"msg_{uuid.uuid4().hex}",
                 "type": "message",
                 "status": "completed",
                 "role": "assistant",
-                "content": [{"type": "output_text", "text": canonical.get("text", "")}],
+                "content": [output_text],
             }
         )
     for tool_call in canonical.get("tool_calls", []):
         tool_name = str(tool_call.get("name") or "")
-        if _is_apply_patch_name(tool_name):
+        if _is_apply_patch_tool_name(tool_name):
             output.append(
                 {
                     "id": f"ctc_{uuid.uuid4().hex}",
@@ -637,8 +994,8 @@ def _canonical_to_responses_response(canonical: dict[str, Any]) -> dict[str, Any
                     "status": "completed",
                     "call_id": tool_call.get("id"),
                     "name": "apply_patch",
-                    "input": _apply_patch_input_from_arguments(
-                        tool_call.get("arguments", "{}")
+                    "input": _apply_patch_input_from_tool_call(
+                        tool_name, tool_call.get("arguments", "{}")
                     ),
                 }
             )
@@ -653,15 +1010,20 @@ def _canonical_to_responses_response(canonical: dict[str, Any]) -> dict[str, Any
                 "arguments": tool_call.get("arguments", "{}"),
             }
         )
-    return {
+    finish_reason = canonical.get("finish_reason") or "stop"
+    incomplete = finish_reason == "length"
+    response = {
         "id": canonical.get("id") or f"resp_{uuid.uuid4().hex}",
         "object": "response",
         "created_at": canonical.get("created") or int(time.time()),
-        "status": "completed",
+        "status": "incomplete" if incomplete else "completed",
         "model": canonical.get("model"),
         "output": output,
         "usage": _canonical_usage_to_responses(canonical.get("usage", {})),
     }
+    if incomplete:
+        response["incomplete_details"] = {"reason": "max_output_tokens"}
+    return response
 
 
 def _canonical_to_chat_response(canonical: dict[str, Any]) -> dict[str, Any]:
@@ -723,13 +1085,51 @@ def _canonical_to_messages_response(canonical: dict[str, Any]) -> dict[str, Any]
 
 
 def _responses_reasoning_summary_to_text(item: dict[str, Any]) -> str:
+    text = _responses_reasoning_to_text(item)
+    if text:
+        return f"Reasoning content:\n{text}"
+    return ""
+
+
+def _responses_reasoning_to_text(item: dict[str, Any]) -> str:
+    encrypted_content = _stringify_content(item.get("encrypted_content", "")).strip()
+    if encrypted_content:
+        return encrypted_content
     summary = _stringify_content(item.get("summary", "")).strip()
     if summary:
-        return f"Reasoning summary:\n{summary}"
+        return summary
     content = _stringify_content(item.get("content", "")).strip()
     if content:
-        return f"Reasoning content:\n{content}"
+        return content
     return ""
+
+
+def _responses_reasoning_item(text: str) -> dict[str, Any]:
+    return {
+        "type": "reasoning",
+        "summary": [{"type": "summary_text", "text": text}],
+        "encrypted_content": text,
+        "status": "completed",
+    }
+
+
+def _normalize_annotations(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        annotation = {
+            "type": item.get("type") or "url_citation",
+            "url": item.get("url") or "",
+            "title": item.get("title") or "",
+        }
+        snippet = item.get("snippet", item.get("summary"))
+        if snippet is not None:
+            annotation["snippet"] = snippet
+        result.append(annotation)
+    return result
 
 
 def _responses_metadata_item_to_text(item: dict[str, Any]) -> str:
@@ -883,6 +1283,21 @@ def _tool_choice_to_anthropic(tool_choice: Any) -> Any:
     return tool_choice
 
 
+def _tool_choice_to_chat(tool_choice: Any) -> Any:
+    if isinstance(tool_choice, str):
+        return tool_choice
+    if isinstance(tool_choice, dict):
+        function = tool_choice.get("function") or {}
+        if function.get("name"):
+            return tool_choice
+        tool_choice_type = tool_choice.get("type")
+        if tool_choice_type in {"auto", "none"}:
+            return tool_choice_type
+        if tool_choice_type in {"required", "tool", "any", "function"}:
+            return "required"
+    return tool_choice
+
+
 def _stringify_content(value: Any) -> str:
     if value is None:
         return ""
@@ -914,12 +1329,104 @@ def _is_apply_patch_name(name: str) -> bool:
     return name.replace("-", "_") == "apply_patch"
 
 
+def _is_apply_patch_tool_name(name: str) -> bool:
+    normalized = name.replace("-", "_")
+    return normalized == "apply_patch" or normalized.startswith("apply_patch_")
+
+
+def _apply_patch_input_from_tool_call(name: str, arguments: Any) -> str:
+    normalized = name.replace("-", "_")
+    if normalized.startswith("apply_patch_") and normalized != "apply_patch":
+        rebuilt = _rebuild_apply_patch_grammar(normalized, arguments)
+        if rebuilt is not None:
+            return rebuilt
+    return _apply_patch_input_from_arguments(arguments)
+
+
 def _apply_patch_input_from_arguments(arguments: Any) -> str:
     value = _decode_json_value(arguments)
     patch = _extract_patch_value(value)
     if patch is None:
         return arguments if isinstance(arguments, str) else _json_dumps(arguments)
     return patch if isinstance(patch, str) else _json_dumps(patch)
+
+
+def _rebuild_apply_patch_grammar(name: str, arguments: Any) -> str | None:
+    value = _decode_json_value(arguments)
+    if not isinstance(value, dict):
+        return None
+    action = name.removeprefix("apply_patch_")
+    if action == "batch":
+        operations = value.get("operations")
+        if not isinstance(operations, list):
+            return None
+    else:
+        operation = dict(value)
+        operation["type"] = action
+        operations = [operation]
+
+    body: list[str] = []
+    for operation in operations:
+        if not isinstance(operation, dict):
+            continue
+        body.extend(_apply_patch_operation_lines(operation))
+    if not body:
+        return None
+    return "\n".join(["*** Begin Patch", *body, "*** End Patch"])
+
+
+def _apply_patch_operation_lines(operation: dict[str, Any]) -> list[str]:
+    op_type = str(operation.get("type") or "")
+    path = str(operation.get("path") or "").strip()
+    if not path:
+        return []
+    if op_type == "add_file":
+        return [
+            f"*** Add File: {path}",
+            *_prefixed_content_lines(operation.get("content", ""), "+"),
+        ]
+    if op_type == "delete_file":
+        return [f"*** Delete File: {path}"]
+    if op_type == "replace_file":
+        lines = [f"*** Update File: {path}"]
+        move_to = str(operation.get("move_to") or "").strip()
+        if move_to:
+            lines.append(f"*** Move to: {move_to}")
+        lines.extend(_prefixed_content_lines(operation.get("content", ""), "+"))
+        return lines
+    if op_type == "update_file":
+        lines = [f"*** Update File: {path}"]
+        move_to = str(operation.get("move_to") or "").strip()
+        if move_to:
+            lines.append(f"*** Move to: {move_to}")
+        hunks = operation.get("hunks")
+        if not isinstance(hunks, list):
+            return []
+        for hunk in hunks:
+            if not isinstance(hunk, dict):
+                continue
+            context = str(hunk.get("context") or "").strip()
+            lines.append(f"@@ {context}" if context else "@@")
+            hunk_lines = hunk.get("lines")
+            if not isinstance(hunk_lines, list):
+                continue
+            for line in hunk_lines:
+                if not isinstance(line, dict):
+                    continue
+                text = str(line.get("text") or "")
+                op = line.get("op")
+                if op == "add":
+                    lines.append(f"+{text}")
+                elif op == "remove":
+                    lines.append(f"-{text}")
+                else:
+                    lines.append(f" {text}")
+        return lines
+    return []
+
+
+def _prefixed_content_lines(content: Any, prefix: str) -> list[str]:
+    return [f"{prefix}{line}" for line in str(content or "").split("\n")]
 
 
 def _extract_patch_value(value: Any) -> Any:

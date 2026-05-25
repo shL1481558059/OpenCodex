@@ -57,6 +57,20 @@ class AppTests(unittest.TestCase):
     def login(self):
         return self.client.post("/admin", data={"password": "pw"})
 
+    def parse_sse_events(self, body: str) -> list[tuple[str, dict]]:
+        events = []
+        for chunk in body.strip().split("\n\n"):
+            event_name = ""
+            data = None
+            for line in chunk.splitlines():
+                if line.startswith("event:"):
+                    event_name = line.split(":", 1)[1].strip()
+                if line.startswith("data:"):
+                    data = json.loads(line.split(":", 1)[1].strip())
+            if event_name and isinstance(data, dict):
+                events.append((event_name, data))
+        return events
+
     def test_admin_requires_login(self):
         response = self.client.get("/admin/api/config")
         self.assertEqual(response.status_code, 401)
@@ -1429,13 +1443,65 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.mimetype, "text/event-stream")
         body = response.get_data(as_text=True)
+        self.assertIn("event: response.function_call_arguments.delta", body)
+        self.assertIn("event: response.function_call_arguments.done", body)
         self.assertIn("event: response.output_item.done", body)
         self.assertIn("function_call", body)
         self.assertIn("\"call_id\":\"call_1\"", body)
         self.assertIn("\"name\":\"exec_command\"", body)
+        self.assertIn("\"arguments\":\"{\\\"cmd\\\":\\\"pwd\\\"}\"", body)
         self.assertIn("event: response.completed", body)
         upstream_payload = mock_stream.call_args.args[1]
         self.assertIs(upstream_payload["stream"], True)
+
+    @patch("opencodex_proxy.app.stream_upstream")
+    def test_responses_stream_to_chat_streams_reasoning_annotations_and_sequence(self, mock_stream):
+        manager = self.app.config["OPENCODEX_CONFIG_MANAGER"]
+        manager.save(
+            {
+                "channels": [
+                    {
+                        "id": "chat",
+                        "type": "chat",
+                        "baseurl": "https://example.test/v1",
+                        "apikey": "secret",
+                        "auth_mode": "config",
+                        "timeout_seconds": 30,
+                        "compat": {},
+                    }
+                ]
+            }
+        )
+        mock_stream.return_value = iter(
+            [
+                'data: {"id":"chatcmpl_reason","object":"chat.completion.chunk","created":1,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"think "},"finish_reason":null}]}\n',
+                "\n",
+                'data: {"id":"chatcmpl_reason","object":"chat.completion.chunk","created":1,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"content":"answer","annotations":[{"type":"url_citation","url":"https://example.test/a","title":"Example","summary":"snippet"}]},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}\n',
+                "\n",
+                "data: [DONE]\n",
+                "\n",
+            ]
+        )
+
+        response = self.client.post(
+            "/v1/responses", json={"model": "deepseek-v4-pro", "input": "run", "stream": True}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        events = self.parse_sse_events(response.get_data(as_text=True))
+        names = [event for event, _ in events]
+        self.assertIn("response.reasoning_summary_text.delta", names)
+        self.assertIn("response.reasoning_summary_text.done", names)
+        self.assertIn("response.output_text.annotation.added", names)
+        self.assertEqual(
+            [data["sequence_number"] for _, data in events],
+            list(range(len(events))),
+        )
+        completed = next(data for event, data in events if event == "response.completed")
+        output = completed["response"]["output"]
+        self.assertEqual(output[0]["type"], "reasoning")
+        self.assertEqual(output[0]["encrypted_content"], "think ")
+        self.assertEqual(output[1]["content"][0]["annotations"][0]["snippet"], "snippet")
 
     @patch("opencodex_proxy.app.stream_upstream")
     def test_responses_stream_to_chat_maps_apply_patch_to_custom_tool_call(self, mock_stream):
@@ -1537,6 +1603,114 @@ class AppTests(unittest.TestCase):
         self.assertIn("\"type\":\"custom_tool_call\"", body)
         self.assertIn("\"name\":\"apply_patch\"", body)
         self.assertIn(json.dumps(patch_text, ensure_ascii=False)[1:-1], body)
+        self.assertNotIn("\"type\":\"function_call\"", body)
+
+    @patch("opencodex_proxy.app.stream_upstream")
+    def test_responses_stream_to_chat_maps_apply_patch_proxy_to_custom_tool_call(
+        self, mock_stream
+    ):
+        manager = self.app.config["OPENCODEX_CONFIG_MANAGER"]
+        manager.save(
+            {
+                "channels": [
+                    {
+                        "id": "chat",
+                        "type": "chat",
+                        "baseurl": "https://example.test/v1",
+                        "apikey": "secret",
+                        "auth_mode": "config",
+                        "timeout_seconds": 30,
+                        "compat": {},
+                    }
+                ]
+            }
+        )
+        arguments = json.dumps(
+            {
+                "path": "data.json",
+                "hunks": [
+                    {
+                        "lines": [
+                            {"op": "remove", "text": '  "old": true'},
+                            {"op": "add", "text": '  "old": false'},
+                        ]
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+        chunk_1 = {
+            "id": "chatcmpl_tool",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "deepseek-v4-pro",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_patch_proxy",
+                                "type": "function",
+                                "function": {
+                                    "name": "apply_patch_update_file",
+                                    "arguments": arguments[:40],
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        }
+        chunk_2 = {
+            "id": "chatcmpl_tool",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "deepseek-v4-pro",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {"arguments": arguments[40:]},
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        }
+        mock_stream.return_value = iter(
+            [
+                f"data: {json.dumps(chunk_1, ensure_ascii=False)}\n",
+                "\n",
+                f"data: {json.dumps(chunk_2, ensure_ascii=False)}\n",
+                "\n",
+                'data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","created":1,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}\n',
+                "\n",
+                "data: [DONE]\n",
+                "\n",
+            ]
+        )
+
+        response = self.client.post(
+            "/v1/responses", json={"model": "deepseek-v4-pro", "input": "patch", "stream": True}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("\"type\":\"custom_tool_call\"", body)
+        self.assertIn("\"name\":\"apply_patch\"", body)
+        self.assertIn("\"call_id\":\"call_patch_proxy\"", body)
+        self.assertIn("*** Update File: data.json", body)
+        self.assertIn("-  \\\"old\\\": true", body)
+        self.assertIn("+  \\\"old\\\": false", body)
+        self.assertNotIn("response.function_call_arguments.delta", body)
         self.assertNotIn("\"type\":\"function_call\"", body)
 
     @patch("opencodex_proxy.app.stream_upstream")
