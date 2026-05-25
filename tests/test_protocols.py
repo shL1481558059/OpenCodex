@@ -110,6 +110,48 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(result["max_tokens"], 64)
         self.assertEqual(result["temperature"], 0.2)
 
+    def test_responses_parallel_function_calls_are_grouped_for_chat(self):
+        payload = {
+            "model": "local",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "run checks"}]},
+                {
+                    "type": "function_call",
+                    "call_id": "call_a",
+                    "name": "exec_command",
+                    "arguments": "{\"cmd\":\"pwd\"}",
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_b",
+                    "name": "exec_command",
+                    "arguments": "{\"cmd\":\"ls\"}",
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_c",
+                    "name": "exec_command",
+                    "arguments": "{\"cmd\":\"date\"}",
+                },
+                {"type": "function_call_output", "call_id": "call_a", "output": "/tmp"},
+                {"type": "function_call_output", "call_id": "call_b", "output": "file.txt"},
+                {"type": "function_call_output", "call_id": "call_c", "output": "today"},
+            ],
+        }
+
+        result = convert_request(payload, "responses", "chat", "upstream")
+
+        self.assertEqual([message["role"] for message in result["messages"]], ["user", "assistant", "tool", "tool", "tool"])
+        assistant = result["messages"][1]
+        self.assertEqual(
+            [tool_call["id"] for tool_call in assistant["tool_calls"]],
+            ["call_a", "call_b", "call_c"],
+        )
+        self.assertEqual(
+            [message["tool_call_id"] for message in result["messages"][2:]],
+            ["call_a", "call_b", "call_c"],
+        )
+
     def test_apply_patch_arguments_preserve_complex_json_objects(self):
         complex_arguments = (
             '{"patch":"*** Begin Patch\\n*** Update File: a.txt\\n@@\\n-old\\n+new\\n'

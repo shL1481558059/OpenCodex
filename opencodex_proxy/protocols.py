@@ -116,6 +116,7 @@ def _responses_request_to_canonical(payload: dict[str, Any]) -> dict[str, Any]:
             messages.extend(_responses_input_item_to_messages(item))
     else:
         raise BadRequestError("responses input must be a string or list")
+    messages = _merge_consecutive_assistant_tool_call_messages(messages)
 
     return {
         "model": payload.get("model"),
@@ -246,6 +247,39 @@ def _canonical_to_messages_request(canonical: dict[str, Any]) -> dict[str, Any]:
     if "max_output_tokens" in result and "max_tokens" not in result:
         result["max_tokens"] = result.pop("max_output_tokens")
     return result
+
+
+def _merge_consecutive_assistant_tool_call_messages(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    pending: dict[str, Any] | None = None
+
+    for message in messages:
+        if _is_assistant_tool_call_only_message(message):
+            if pending is None:
+                pending = deepcopy(message)
+            else:
+                pending["tool_calls"].extend(deepcopy(message.get("tool_calls", [])))
+            continue
+        if pending is not None:
+            merged.append(pending)
+            pending = None
+        merged.append(message)
+
+    if pending is not None:
+        merged.append(pending)
+    return merged
+
+
+def _is_assistant_tool_call_only_message(message: Any) -> bool:
+    return (
+        isinstance(message, dict)
+        and message.get("role") == "assistant"
+        and _is_empty_chat_content(message.get("content"))
+        and isinstance(message.get("tool_calls"), list)
+        and bool(message.get("tool_calls"))
+    )
 
 
 def _responses_input_item_to_messages(item: Any) -> list[dict[str, Any]]:
