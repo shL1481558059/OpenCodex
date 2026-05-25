@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS channels (
     headers_json TEXT NOT NULL DEFAULT '{}',
     timeout_seconds INTEGER NOT NULL,
     compat_json TEXT NOT NULL DEFAULT '{}',
+    models_json TEXT NOT NULL DEFAULT '[]',
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
@@ -62,8 +63,18 @@ def init_db(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     conn.executescript(SCHEMA)
+    _migrate_channels(conn)
     conn.commit()
     conn.close()
+
+
+def _migrate_channels(conn: sqlite3.Connection) -> None:
+    columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(channels)").fetchall()
+    }
+    if "models_json" not in columns:
+        conn.execute("ALTER TABLE channels ADD COLUMN models_json TEXT NOT NULL DEFAULT '[]'")
 
 
 class AsyncDBWriter:
@@ -137,7 +148,7 @@ def read_channels(db_path: Path) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT id, position, name, type, baseurl, apikey, auth_mode,
-               headers_json, timeout_seconds, compat_json, enabled
+               headers_json, timeout_seconds, compat_json, models_json, enabled
         FROM channels
         ORDER BY position ASC, id ASC
         """
@@ -167,9 +178,9 @@ def replace_channels(
                     """
                     INSERT INTO channels (
                         id, position, name, type, baseurl, apikey, auth_mode,
-                        headers_json, timeout_seconds, compat_json, enabled,
+                        headers_json, timeout_seconds, compat_json, models_json, enabled,
                         created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         channel["id"],
@@ -182,6 +193,7 @@ def replace_channels(
                         json.dumps(channel.get("headers") or {}, ensure_ascii=False),
                         int(channel.get("timeout_seconds") or default_timeout),
                         json.dumps(channel.get("compat") or {}, ensure_ascii=False),
+                        json.dumps(channel.get("models") or [], ensure_ascii=False),
                         1 if channel.get("enabled", True) is not False else 0,
                         existing_created.get(channel["id"], now),
                         now,
@@ -202,6 +214,7 @@ def _row_to_channel(row: sqlite3.Row) -> dict[str, Any]:
         "headers": _parse_json_object(row["headers_json"]),
         "timeout_seconds": row["timeout_seconds"],
         "compat": _parse_json_object(row["compat_json"]),
+        "models": _parse_json_list(row["models_json"]),
         "enabled": bool(row["enabled"]),
     }
 
@@ -214,6 +227,16 @@ def _parse_json_object(raw: str | None) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _parse_json_list(raw: str | None) -> list[Any]:
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return value if isinstance(value, list) else []
 
 
 def extract_usage(response: dict[str, Any], protocol: str) -> dict[str, int]:

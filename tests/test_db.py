@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -10,6 +11,7 @@ from opencodex_proxy.db import (
     AsyncDBWriter,
     calculate_cost,
     extract_usage,
+    init_db,
     read_channels,
     read_logs,
     replace_channels,
@@ -316,6 +318,7 @@ class TestChannelStore(unittest.TestCase):
                     "headers": {"X-Test": "yes"},
                     "timeout_seconds": 45,
                     "compat": {"drop_params": ["store"]},
+                    "models": [{"model": "gpt-5", "upstream_model": "gpt-4"}],
                     "enabled": False,
                 },
                 {
@@ -332,6 +335,7 @@ class TestChannelStore(unittest.TestCase):
         self.assertEqual([channel["id"] for channel in channels], ["first", "second"])
         self.assertEqual(channels[0]["headers"], {"X-Test": "yes"})
         self.assertEqual(channels[0]["compat"], {"drop_params": ["store"]})
+        self.assertEqual(channels[0]["models"], [{"model": "gpt-5", "upstream_model": "gpt-4"}])
         self.assertFalse(channels[0]["enabled"])
         self.assertEqual(channels[1]["timeout_seconds"], 30)
         self.assertEqual(channels[1]["auth_mode"], "pass_through_or_config")
@@ -355,6 +359,37 @@ class TestChannelStore(unittest.TestCase):
         channels = read_channels(self.db_path)
 
         self.assertEqual([channel["id"] for channel in channels], ["keep"])
+
+    def test_init_db_migrates_channels_models_column(self):
+        conn = sqlite3.connect(str(self.db_path))
+        conn.executescript(
+            """
+            CREATE TABLE channels (
+                id TEXT PRIMARY KEY,
+                position INTEGER NOT NULL,
+                name TEXT NOT NULL DEFAULT '',
+                type TEXT NOT NULL,
+                baseurl TEXT NOT NULL,
+                apikey TEXT NOT NULL DEFAULT '',
+                auth_mode TEXT NOT NULL DEFAULT 'pass_through_or_config',
+                headers_json TEXT NOT NULL DEFAULT '{}',
+                timeout_seconds INTEGER NOT NULL,
+                compat_json TEXT NOT NULL DEFAULT '{}',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        init_db(self.db_path)
+
+        conn = sqlite3.connect(str(self.db_path))
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(channels)").fetchall()}
+        conn.close()
+        self.assertIn("models_json", columns)
 
 
 if __name__ == "__main__":

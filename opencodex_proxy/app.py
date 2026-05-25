@@ -20,7 +20,13 @@ from flask import (
 )
 
 from .compat import apply_compat
-from .config import ConfigError, ConfigManager
+from .config import (
+    ConfigError,
+    ConfigManager,
+    expand_env,
+    strip_removed_config_fields,
+    validate_channel,
+)
 from .db import AsyncDBWriter, calculate_cost, extract_usage, read_logs
 from .errors import BadRequestError, ProxyError
 from .logging_utils import configure_logging, log_event, read_log_events, redact
@@ -33,7 +39,7 @@ from .streaming import (
     messages_sse_to_responses_events,
     responses_sse_events,
 )
-from .upstream import post_upstream, stream_upstream
+from .upstream import list_upstream_models, post_upstream, stream_upstream
 
 
 ENTRY_PROTOCOLS = {
@@ -222,6 +228,94 @@ def create_app(settings: Settings | None = None) -> Flask:
         }
         events = read_logs(settings.db_path, request.args.get("limit", "200"), filters)
         return jsonify({"events": events})
+
+    @app.post("/admin/api/channels/discover-models")
+    def admin_discover_models():
+        require_admin()
+        started = time.time()
+        try:
+            channel = _draft_channel_from_request(settings.default_timeout)
+            raw = list_upstream_models(
+                channel,
+                request.headers.get("Authorization"),
+                settings.default_timeout,
+            )
+        except ConfigError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except ProxyError as exc:
+            return jsonify(
+                {
+                    "error": str(exc),
+                    "status_code": exc.status_code,
+                    "duration_ms": int((time.time() - started) * 1000),
+                    "body": redact(getattr(exc, "body", None)),
+                }
+            ), 502
+        return jsonify(
+            {
+                "models": _extract_model_ids(raw),
+                "raw": redact(raw),
+                "duration_ms": int((time.time() - started) * 1000),
+            }
+        )
+
+    @app.post("/admin/api/channels/test")
+    def admin_test_channel():
+        require_admin()
+        started = time.time()
+        try:
+            body = request.get_json(silent=True)
+            if not isinstance(body, dict):
+                return jsonify({"error": "request body must be a JSON object"}), 400
+            payload = body.get("payload")
+            if not isinstance(payload, dict):
+                return jsonify({"error": "payload must be a JSON object"}), 400
+            channel = _draft_channel_from_request(settings.default_timeout)
+            original_model, upstream_model = _test_models(channel, payload.get("model"))
+            upstream_request = convert_request(
+                payload,
+                channel["type"],
+                channel["type"],
+                upstream_model,
+            )
+            upstream_request, compat_details = apply_compat(
+                upstream_request,
+                _compat_rules(channel.get("compat", {})),
+            )
+            upstream_response = post_upstream(
+                channel,
+                upstream_request,
+                request.headers.get("Authorization"),
+                settings.default_timeout,
+            )
+            response_payload = convert_response(
+                upstream_response,
+                channel["type"],
+                channel["type"],
+                original_model,
+            )
+        except ConfigError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except ProxyError as exc:
+            return jsonify(
+                {
+                    "ok": False,
+                    "status_code": exc.status_code,
+                    "duration_ms": int((time.time() - started) * 1000),
+                    "error": str(exc),
+                    "body": redact(getattr(exc, "body", None)),
+                }
+            )
+        return jsonify(
+            {
+                "ok": True,
+                "duration_ms": int((time.time() - started) * 1000),
+                "model": original_model,
+                "upstream_model": upstream_model,
+                "compat": compat_details,
+                "response": redact(response_payload),
+            }
+        )
 
     @app.post("/v1/responses")
     @app.post("/v1/chat/completions")
@@ -506,6 +600,45 @@ def is_admin_authenticated() -> bool:
 def require_admin() -> None:
     if not is_admin_authenticated():
         raise BadRequestError("admin authentication required", status_code=401)
+
+
+def _draft_channel_from_request(default_timeout: int) -> dict[str, Any]:
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        raise ConfigError("request body must be a JSON object")
+    channel = body.get("channel")
+    if not isinstance(channel, dict):
+        raise ConfigError("channel must be a JSON object")
+    normalized = strip_removed_config_fields({"channels": [channel]})
+    expanded_channel = expand_env(normalized)["channels"][0]
+    validate_channel(expanded_channel, default_timeout)
+    return expanded_channel
+
+
+def _extract_model_ids(payload: dict[str, Any]) -> list[str]:
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return []
+    ids: list[str] = []
+    seen: set[str] = set()
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("id", "")).strip()
+        if model_id and model_id not in seen:
+            seen.add(model_id)
+            ids.append(model_id)
+    return ids
+
+
+def _test_models(channel: dict[str, Any], model: Any) -> tuple[str, str]:
+    original_model = str(model or "").strip()
+    for mapping in channel.get("models", []):
+        if not isinstance(mapping, dict):
+            continue
+        if mapping.get("model") == original_model:
+            return original_model, str(mapping.get("upstream_model") or original_model)
+    return original_model, original_model
 
 
 def _visible_params(payload: dict[str, Any]) -> dict[str, Any]:

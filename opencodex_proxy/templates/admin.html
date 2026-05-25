@@ -54,6 +54,13 @@
       .rule-grid > .row { margin-bottom: 0; }
       .rule-grid textarea { min-height: 84px; }
       .rule-note { margin: 4px 0 0; color: #617083; font-size: 12px; }
+      .model-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+      .model-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; margin-top: 10px; }
+      .model-option { display: flex; gap: 8px; align-items: center; border: 1px solid #d9e0ea; border-radius: 6px; padding: 8px; background: #fff; min-width: 0; }
+      .model-option span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .model-map-table { min-width: 680px; }
+      .model-map-table input { min-width: 180px; }
+      .result-panel { border: 1px solid #d9e0ea; border-radius: 6px; padding: 10px; background: #fff; }
       pre { margin: 8px 0 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; }
       details summary { cursor: pointer; }
       .hidden { display: none; }
@@ -75,6 +82,7 @@
         label, .muted { color: #b8c2cf; }
         .rule-fieldset { border-color: #2a3440; }
         .rule-fieldset legend, .rule-note { color: #b8c2cf; }
+        .model-option, .result-panel { background: #171c22; border-color: #2a3440; }
         .badge.on { color: #86efac; border-color: #166534; background: #052e1a; }
         .badge.off { color: #fdba74; border-color: #9a3412; background: #431407; }
       }
@@ -154,6 +162,29 @@
           </div>
           <div class="row"><label for="channel-headers">Headers JSON</label><textarea id="channel-headers" spellcheck="false"></textarea></div>
           <fieldset class="rule-fieldset">
+            <legend>模型映射</legend>
+            <div class="model-tools">
+              <button id="discover-models" type="button">获取远端模型</button>
+              <button id="add-model-mapping" type="button">手动添加映射</button>
+              <button id="add-selected-models" class="primary" type="button">添加勾选模型</button>
+              <span id="models-status" class="status"></span>
+            </div>
+            <div id="discovered-models" class="model-list hidden"></div>
+            <div class="table-wrap">
+              <table class="model-map-table">
+                <thead>
+                  <tr>
+                    <th>下游模型</th>
+                    <th>上游模型</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="model-mappings-body"></tbody>
+              </table>
+            </div>
+            <p class="rule-note">下游模型是客户端请求名；上游模型是实际发给渠道的模型名。</p>
+          </fieldset>
+          <fieldset class="rule-fieldset">
             <legend>全局规则</legend>
             <div class="rule-grid">
               <div class="row checkbox-row">
@@ -187,6 +218,19 @@
             <button id="save-channel" class="primary" type="button">保存渠道</button>
             <button id="cancel-channel" type="button">取消</button>
           </div>
+          <fieldset class="rule-fieldset">
+            <legend>渠道测试</legend>
+            <div class="row">
+              <label for="test-payload">请求 JSON</label>
+              <textarea id="test-payload" spellcheck="false"></textarea>
+            </div>
+            <div class="actions">
+              <button id="reset-test-payload" type="button">重置测试请求</button>
+              <button id="run-channel-test" class="primary" type="button">测试调用</button>
+              <span id="test-status" class="status"></span>
+            </div>
+            <div id="test-result" class="result-panel hidden"><pre></pre></div>
+          </fieldset>
         </div>
       </section>
 
@@ -256,6 +300,7 @@
     <script>
       let config = {channels: []};
       let selectedIndex = -1;
+      let discoveredModels = [];
       const COMPAT_SECTION_FIELDS = ["rename_params", "drop_params", "force_params", "default_params", "unsupported_params"];
       const COMPAT_REMOVED_TOP_LEVEL_FIELDS = ["force_protocol", "tool_request_protocol", "by_protocol"];
       const COMPAT_KNOWN_TOP_LEVEL_FIELDS = [
@@ -307,6 +352,115 @@
 
       function cloneJson(value) {
         return JSON.parse(JSON.stringify(value));
+      }
+
+      function normalizeModelMappings(models) {
+        if (!Array.isArray(models)) return [];
+        return models.map((item) => {
+          if (typeof item === "string") {
+            const model = item.trim();
+            return model ? {model, upstream_model: model} : null;
+          }
+          if (!isPlainObject(item)) return null;
+          const model = String(item.model || "").trim();
+          const upstreamModel = String(item.upstream_model || "").trim() || model;
+          return model ? {model, upstream_model: upstreamModel} : null;
+        }).filter(Boolean);
+      }
+
+      function modelMappingsForRender(models) {
+        if (!Array.isArray(models)) return [];
+        return models.map((item) => {
+          if (typeof item === "string") {
+            return {model: item.trim(), upstream_model: item.trim()};
+          }
+          if (!isPlainObject(item)) return {model: "", upstream_model: ""};
+          const model = String(item.model || "").trim();
+          const upstreamModel = String(item.upstream_model || "").trim();
+          return {model, upstream_model: upstreamModel || model};
+        });
+      }
+
+      function readModelMappingsFromTable() {
+        return readDraftModelMappingsFromTable().filter((mapping) => mapping.model);
+      }
+
+      function readDraftModelMappingsFromTable() {
+        return Array.from(document.querySelectorAll("#model-mappings-body tr[data-model-index]")).map((row) => {
+          const model = row.querySelector("[data-field='model']").value.trim();
+          const upstreamModel = row.querySelector("[data-field='upstream_model']").value.trim() || model;
+          return {model, upstream_model: upstreamModel};
+        });
+      }
+
+      function renderModelMappings(models) {
+        const body = $("model-mappings-body");
+        const mappings = modelMappingsForRender(models);
+        body.innerHTML = "";
+        if (!mappings.length) {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td colspan="3" class="muted">暂无模型映射</td>`;
+          body.appendChild(tr);
+          return;
+        }
+        mappings.forEach((mapping, index) => {
+          const tr = document.createElement("tr");
+          tr.dataset.modelIndex = String(index);
+          tr.innerHTML = `
+            <td><input data-field="model" value="${escapeHtml(mapping.model)}"></td>
+            <td><input data-field="upstream_model" value="${escapeHtml(mapping.upstream_model)}"></td>
+            <td><button class="small danger" type="button" data-action="delete-model" data-index="${index}">删除</button></td>
+          `;
+          body.appendChild(tr);
+        });
+      }
+
+      function renderDiscoveredModels(models) {
+        discoveredModels = Array.isArray(models) ? models : [];
+        const container = $("discovered-models");
+        container.innerHTML = "";
+        container.classList.toggle("hidden", !discoveredModels.length);
+        discoveredModels.forEach((model) => {
+          const label = document.createElement("label");
+          label.className = "model-option";
+          label.innerHTML = `<input type="checkbox" value="${escapeHtml(model)}"><span title="${escapeHtml(model)}">${escapeHtml(model)}</span>`;
+          container.appendChild(label);
+        });
+      }
+
+      function addModelMapping(model = "", upstreamModel = "") {
+        const mappings = readDraftModelMappingsFromTable();
+        mappings.push({model, upstream_model: upstreamModel || model});
+        renderModelMappings(mappings);
+      }
+
+      function defaultTestPayload(channel) {
+        const mappings = readModelMappingsFromTable();
+        const model = mappings[0]?.model || "test-model";
+        if ((channel?.type || "chat") === "messages") {
+          return {
+            model,
+            max_tokens: 32,
+            messages: [{role: "user", content: "ping"}]
+          };
+        }
+        if ((channel?.type || "chat") === "responses") {
+          return {
+            model,
+            input: "ping",
+            max_output_tokens: 32
+          };
+        }
+        return {
+          model,
+          messages: [{role: "user", content: "ping"}],
+          max_tokens: 32
+        };
+      }
+
+      function resetTestPayload() {
+        const channel = selectedIndex >= 0 ? config.channels[selectedIndex] : {};
+        $("test-payload").value = JSON.stringify(defaultTestPayload(channel), null, 2);
       }
 
       function compatSectionId(scope, field) {
@@ -555,12 +709,18 @@
         $("channel-timeout").value = channel.timeout_seconds || 120;
         $("channel-enabled").checked = channelEnabled(channel);
         $("channel-headers").value = JSON.stringify(channel.headers || {}, null, 2);
+        renderModelMappings(channel.models || []);
+        renderDiscoveredModels([]);
         populateCompatForm(channel.compat || defaultCompat());
+        resetTestPayload();
+        $("test-result").classList.add("hidden");
+        $("test-result").querySelector("pre").textContent = "";
         renderChannels();
       }
 
       function syncSelectedChannel() {
         if (selectedIndex < 0) return;
+        const modelMappings = readModelMappingsFromTable();
         const nextId = $("channel-id").value.trim();
         config.channels[selectedIndex] = {
           id: nextId,
@@ -571,6 +731,7 @@
           auth_mode: $("channel-auth").value,
           headers: parseJsonField("channel-headers", {}),
           timeout_seconds: Number($("channel-timeout").value || 120),
+          models: modelMappings,
           compat: buildCompatFromForm(config.channels[selectedIndex]?.compat || {}),
           enabled: $("channel-enabled").checked
         };
@@ -615,6 +776,7 @@
           auth_mode: "pass_through_or_config",
           headers: {},
           timeout_seconds: 120,
+          models: [],
           compat: {},
           enabled: true
         });
@@ -726,6 +888,65 @@
         }
       }
 
+      async function discoverRemoteModels() {
+        try {
+          syncSelectedChannel();
+          const channel = config.channels[selectedIndex];
+          setStatus("models-status", "正在获取远端模型...");
+          const data = await api("/admin/api/channels/discover-models", {
+            method: "POST",
+            headers: {"content-type": "application/json"},
+            body: JSON.stringify({channel})
+          });
+          renderDiscoveredModels(data.models || []);
+          setStatus("models-status", `获取到 ${(data.models || []).length} 个模型，用时 ${data.duration_ms || 0} ms`);
+        } catch (error) {
+          setStatus("models-status", error.message, true);
+        }
+      }
+
+      function addSelectedDiscoveredModels() {
+        const selected = Array.from(document.querySelectorAll("#discovered-models input:checked")).map((input) => input.value);
+        if (!selected.length) {
+          setStatus("models-status", "请先勾选远端模型", true);
+          return;
+        }
+        const mappings = readDraftModelMappingsFromTable();
+        const existing = new Set(mappings.map((mapping) => mapping.model).filter(Boolean));
+        selected.forEach((model) => {
+          if (!existing.has(model)) {
+            mappings.push({model, upstream_model: model});
+            existing.add(model);
+          }
+        });
+        renderModelMappings(mappings);
+        setStatus("models-status", `已添加 ${selected.length} 个模型映射，保存渠道后生效`);
+      }
+
+      async function runChannelTest() {
+        try {
+          syncSelectedChannel();
+          const channel = config.channels[selectedIndex];
+          const payload = parseJsonField("test-payload", {});
+          setStatus("test-status", "正在调用上游...");
+          $("test-result").classList.add("hidden");
+          const data = await api("/admin/api/channels/test", {
+            method: "POST",
+            headers: {"content-type": "application/json"},
+            body: JSON.stringify({channel, payload})
+          });
+          $("test-result").classList.remove("hidden");
+          $("test-result").querySelector("pre").textContent = JSON.stringify(data, null, 2);
+          if (data.ok === false) {
+            setStatus("test-status", `调用失败，用时 ${data.duration_ms || 0} ms`, true);
+          } else {
+            setStatus("test-status", `调用成功，用时 ${data.duration_ms || 0} ms`);
+          }
+        } catch (error) {
+          setStatus("test-status", error.message, true);
+        }
+      }
+
       function addQuery(params, name, value) {
         if (value !== null && value !== undefined && String(value).trim() !== "") params.set(name, String(value).trim());
       }
@@ -823,9 +1044,22 @@
         if (button.dataset.action === "move-down") moveChannel(index, 1);
         if (button.dataset.action === "delete") deleteChannel(index);
       };
+      $("model-mappings-body").onclick = (event) => {
+        const button = event.target.closest("button[data-action='delete-model']");
+        if (!button) return;
+        const index = Number(button.dataset.index);
+        const mappings = readDraftModelMappingsFromTable();
+        mappings.splice(index, 1);
+        renderModelMappings(mappings);
+      };
       $("add-channel").onclick = addChannel;
       $("save-channel").onclick = saveSelectedChannel;
       $("cancel-channel").onclick = cancelChannelEdit;
+      $("discover-models").onclick = discoverRemoteModels;
+      $("add-model-mapping").onclick = () => addModelMapping("", "");
+      $("add-selected-models").onclick = addSelectedDiscoveredModels;
+      $("reset-test-payload").onclick = resetTestPayload;
+      $("run-channel-test").onclick = runChannelTest;
       $("save-config").onclick = saveConfig;
       $("export-config").onclick = exportConfig;
       $("import-config").onclick = () => $("import-config-file").click();

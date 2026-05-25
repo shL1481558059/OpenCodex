@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from opencodex_proxy.app import create_app
 from opencodex_proxy.db import read_channels, read_logs
+from opencodex_proxy.errors import UpstreamError
 from opencodex_proxy.settings import Settings
 
 
@@ -220,6 +221,104 @@ class AppTests(unittest.TestCase):
         self.assertEqual(read_channels(self.db_path)[0]["compat"], compat)
         manager = self.app.config["OPENCODEX_CONFIG_MANAGER"]
         self.assertFalse(manager.expanded["channels"][0]["enabled"])
+
+    @patch("opencodex_proxy.app.list_upstream_models")
+    def test_admin_can_discover_models(self, mock_models):
+        self.login()
+        mock_models.return_value = {
+            "object": "list",
+            "data": [
+                {"id": "gpt-4"},
+                {"id": "gpt-4"},
+                {"id": "gpt-4o"},
+                {"object": "model"},
+            ],
+        }
+        response = self.client.post(
+            "/admin/api/channels/discover-models",
+            json={
+                "channel": {
+                    "id": "chat",
+                    "type": "chat",
+                    "baseurl": "https://example.test/v1",
+                    "apikey": "secret",
+                    "auth_mode": "config",
+                    "timeout_seconds": 30,
+                }
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["models"], ["gpt-4", "gpt-4o"])
+        upstream_channel = mock_models.call_args.args[0]
+        self.assertEqual(upstream_channel["id"], "chat")
+
+    @patch("opencodex_proxy.app.post_upstream")
+    def test_admin_channel_test_rewrites_model_mapping(self, mock_post):
+        self.login()
+        mock_post.return_value = {
+            "id": "chatcmpl_1",
+            "model": "gpt-4",
+            "choices": [{"message": {"role": "assistant", "content": "pong"}}],
+        }
+        response = self.client.post(
+            "/admin/api/channels/test",
+            json={
+                "channel": {
+                    "id": "chat",
+                    "type": "chat",
+                    "baseurl": "https://example.test/v1",
+                    "apikey": "secret",
+                    "auth_mode": "config",
+                    "timeout_seconds": 30,
+                    "models": [{"model": "gpt-5", "upstream_model": "gpt-4"}],
+                },
+                "payload": {
+                    "model": "gpt-5",
+                    "messages": [{"role": "user", "content": "ping"}],
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["model"], "gpt-5")
+        self.assertEqual(data["upstream_model"], "gpt-4")
+        self.assertEqual(data["response"]["model"], "gpt-5")
+        upstream_payload = mock_post.call_args.args[1]
+        self.assertEqual(upstream_payload["model"], "gpt-4")
+
+    @patch("opencodex_proxy.app.post_upstream")
+    def test_admin_channel_test_returns_upstream_error_body(self, mock_post):
+        self.login()
+        mock_post.side_effect = UpstreamError(
+            "upstream returned HTTP 400",
+            status_code=400,
+            body={"error": "bad model"},
+            channel_id="chat",
+        )
+        response = self.client.post(
+            "/admin/api/channels/test",
+            json={
+                "channel": {
+                    "id": "chat",
+                    "type": "chat",
+                    "baseurl": "https://example.test/v1",
+                    "timeout_seconds": 30,
+                },
+                "payload": {
+                    "model": "gpt-5",
+                    "messages": [{"role": "user", "content": "ping"}],
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertFalse(data["ok"])
+        self.assertEqual(data["status_code"], 400)
+        self.assertEqual(data["body"], {"error": "bad model"})
 
     def test_admin_can_delete_channel(self):
         self.login()

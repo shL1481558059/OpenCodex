@@ -116,6 +116,118 @@ class ConfigTests(unittest.TestCase):
         result = choose_channel(config, "gpt-4o")
         self.assertEqual(result.channel["id"], "enabled")
 
+    def test_model_mapping_routes_and_rewrites_upstream_model(self):
+        config = {
+            "channels": [
+                {
+                    "id": "first",
+                    "type": "chat",
+                    "baseurl": "https://example.test/v1",
+                    "models": [{"model": "gpt-5", "upstream_model": "gpt-4"}],
+                }
+            ]
+        }
+        result = choose_channel(config, "gpt-5")
+        self.assertEqual(result.channel["id"], "first")
+        self.assertEqual(result.original_model, "gpt-5")
+        self.assertEqual(result.upstream_model, "gpt-4")
+
+    def test_model_mapping_prefers_first_enabled_channel(self):
+        config = {
+            "channels": [
+                {
+                    "id": "first",
+                    "type": "chat",
+                    "baseurl": "https://example.test/v1",
+                    "models": [{"model": "gpt-5", "upstream_model": "gpt-4"}],
+                },
+                {
+                    "id": "second",
+                    "type": "chat",
+                    "baseurl": "https://second.example.test/v1",
+                    "models": [{"model": "gpt-5", "upstream_model": "gpt-4o"}],
+                },
+            ]
+        }
+        result = choose_channel(config, "gpt-5")
+        self.assertEqual(result.channel["id"], "first")
+        self.assertEqual(result.upstream_model, "gpt-4")
+
+    def test_model_mapping_requires_match_when_any_mapping_exists(self):
+        config = {
+            "channels": [
+                {
+                    "id": "first",
+                    "type": "chat",
+                    "baseurl": "https://example.test/v1",
+                    "models": [{"model": "gpt-5", "upstream_model": "gpt-4"}],
+                },
+                {"id": "fallback", "type": "chat", "baseurl": "https://fallback.test/v1"},
+            ]
+        }
+        with self.assertRaises(RoutingError):
+            choose_channel(config, "gpt-4o")
+
+    def test_model_mapping_string_array_is_normalized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "config.db"
+            manager = ConfigManager(db_path)
+            saved = manager.save(
+                {
+                    "channels": [
+                        {
+                            "id": "chat",
+                            "type": "chat",
+                            "baseurl": "https://example.test/v1",
+                            "models": ["gpt-4"],
+                        }
+                    ]
+                }
+            )
+            self.assertEqual(
+                saved["channels"][0]["models"],
+                [{"model": "gpt-4", "upstream_model": "gpt-4"}],
+            )
+
+    def test_model_mapping_empty_upstream_defaults_to_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "config.db"
+            manager = ConfigManager(db_path)
+            saved = manager.save(
+                {
+                    "channels": [
+                        {
+                            "id": "chat",
+                            "type": "chat",
+                            "baseurl": "https://example.test/v1",
+                            "models": [{"model": "gpt-5", "upstream_model": ""}],
+                        }
+                    ]
+                }
+            )
+            self.assertEqual(saved["channels"][0]["models"][0]["upstream_model"], "gpt-5")
+
+    def test_model_mapping_rejects_duplicate_downstream_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "config.db"
+            manager = ConfigManager(db_path)
+            with self.assertRaises(ConfigError):
+                manager.save(
+                    {
+                        "channels": [
+                            {
+                                "id": "chat",
+                                "type": "chat",
+                                "baseurl": "https://example.test/v1",
+                                "models": [
+                                    {"model": "gpt-5", "upstream_model": "gpt-4"},
+                                    {"model": "gpt-5", "upstream_model": "gpt-4o"},
+                                ],
+                            }
+                        ]
+                    }
+                )
+
     def test_channel_enabled_must_be_boolean(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "config.db"
