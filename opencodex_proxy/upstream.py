@@ -61,6 +61,48 @@ def post_upstream(
         ) from exc
 
 
+def list_upstream_models(
+    channel: dict[str, Any],
+    client_authorization: str | None,
+    default_timeout: int,
+) -> dict[str, Any]:
+    url = _join_url(channel["baseurl"], "/models")
+    headers = build_headers(channel, client_authorization)
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    timeout = int(channel.get("timeout_seconds") or default_timeout)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8")
+            return json.loads(body) if body else {}
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode("utf-8", errors="replace")
+        body = _decode_body(body_text)
+        raise UpstreamError(
+            f"upstream returned HTTP {exc.code}",
+            status_code=exc.code,
+            body=body,
+            channel_id=channel.get("id"),
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise UpstreamError(
+            f"failed to reach upstream: {exc.reason}",
+            status_code=502,
+            channel_id=channel.get("id"),
+        ) from exc
+    except TimeoutError as exc:
+        raise UpstreamError(
+            "upstream request timed out",
+            status_code=504,
+            channel_id=channel.get("id"),
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise UpstreamError(
+            "upstream returned invalid JSON",
+            status_code=502,
+            channel_id=channel.get("id"),
+        ) from exc
+
+
 def stream_upstream(
     channel: dict[str, Any],
     payload: dict[str, Any],

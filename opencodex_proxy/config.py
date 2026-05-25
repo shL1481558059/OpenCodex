@@ -89,7 +89,29 @@ def strip_removed_config_fields(config: dict[str, Any]) -> dict[str, Any]:
             compat = channel.get("compat")
             if isinstance(compat, dict):
                 _strip_removed_compat_fields(compat)
+            channel["models"] = normalize_model_mappings(channel.get("models", []))
     return candidate
+
+
+def normalize_model_mappings(models: Any) -> list[dict[str, str]]:
+    if models in (None, ""):
+        return []
+    if not isinstance(models, list):
+        return []
+
+    normalized: list[dict[str, str]] = []
+    for item in models:
+        if isinstance(item, str):
+            model = item.strip()
+            upstream_model = model
+        elif isinstance(item, dict):
+            model = str(item.get("model", "")).strip()
+            upstream_model = str(item.get("upstream_model", "")).strip() or model
+        else:
+            continue
+        if model:
+            normalized.append({"model": model, "upstream_model": upstream_model})
+    return normalized
 
 
 def _strip_removed_compat_fields(compat: dict[str, Any]) -> None:
@@ -144,7 +166,29 @@ def validate_channel(channel: Any, default_timeout: int) -> None:
     if not isinstance(enabled, bool):
         raise ConfigError(f"channel {channel_id} enabled must be a boolean")
 
+    validate_model_mappings(channel.get("models", []), channel_id)
     validate_compat(channel.get("compat", {}), channel_id)
+
+
+def validate_model_mappings(models: Any, channel_id: str) -> None:
+    if models in (None, ""):
+        return
+    if not isinstance(models, list):
+        raise ConfigError(f"channel {channel_id} models must be a list")
+
+    seen: set[str] = set()
+    for index, mapping in enumerate(models, start=1):
+        if not isinstance(mapping, dict):
+            raise ConfigError(f"channel {channel_id} models[{index}] must be an object")
+        model = str(mapping.get("model", "")).strip()
+        upstream_model = str(mapping.get("upstream_model", "")).strip()
+        if not model:
+            raise ConfigError(f"channel {channel_id} models[{index}].model is required")
+        if not upstream_model:
+            mapping["upstream_model"] = model
+        if model in seen:
+            raise ConfigError(f"channel {channel_id} duplicated model mapping: {model}")
+        seen.add(model)
 
 
 def validate_compat(compat: Any, channel_id: str) -> None:
