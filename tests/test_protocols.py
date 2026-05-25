@@ -134,6 +134,8 @@ class ProtocolTests(unittest.TestCase):
         update_schema = result["tools"][2]["function"]["parameters"]
         self.assertEqual(update_schema["required"], ["path", "hunks"])
         self.assertIn("hunks", update_schema["properties"])
+        hunk_schema = update_schema["properties"]["hunks"]["items"]
+        self.assertNotIn("context", hunk_schema["properties"])
 
     def test_responses_parallel_function_calls_are_grouped_for_chat(self):
         payload = {
@@ -376,8 +378,10 @@ class ProtocolTests(unittest.TestCase):
         arguments = json.dumps(
             {
                 "path": "sample.txt",
+                "move_to": "renamed.txt",
                 "hunks": [
                     {
+                        "context": "Chunk ID: should be ignored",
                         "lines": [
                             {"op": "context", "text": "alpha"},
                             {"op": "remove", "text": "old"},
@@ -424,10 +428,56 @@ class ProtocolTests(unittest.TestCase):
                 [
                     "*** Begin Patch",
                     "*** Update File: sample.txt",
+                    "*** Move to: renamed.txt",
                     "@@",
                     " alpha",
                     "-old",
                     "+new",
+                    "*** End Patch",
+                ]
+            ),
+        )
+
+    def test_chat_apply_patch_replace_proxy_response_rebuilds_delete_add_patch(self):
+        arguments = json.dumps(
+            {"path": "sample.txt", "content": "first\nsecond"},
+            ensure_ascii=False,
+        )
+        payload = {
+            "id": "chatcmpl_patch_replace",
+            "model": "upstream",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_patch_replace",
+                                "type": "function",
+                                "function": {
+                                    "name": "apply_patch_replace_file",
+                                    "arguments": arguments,
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        }
+
+        result = convert_response(payload, "responses", "chat", "local")
+
+        self.assertEqual(
+            result["output"][0]["input"],
+            "\n".join(
+                [
+                    "*** Begin Patch",
+                    "*** Delete File: sample.txt",
+                    "*** Add File: sample.txt",
+                    "+first",
+                    "+second",
                     "*** End Patch",
                 ]
             ),
@@ -438,7 +488,21 @@ class ProtocolTests(unittest.TestCase):
             {
                 "operations": [
                     {"type": "add_file", "path": "a.txt", "content": "hello"},
-                    {"type": "delete_file", "path": "b.txt"},
+                    {
+                        "type": "update_file",
+                        "path": "b.txt",
+                        "hunks": [
+                            {
+                                "context": "section",
+                                "lines": [
+                                    {"op": "remove", "text": "old"},
+                                    {"op": "add", "text": "new"},
+                                ],
+                            }
+                        ],
+                    },
+                    {"type": "replace_file", "path": "c.txt", "content": "reset"},
+                    {"type": "delete_file", "path": "d.txt"},
                 ]
             }
         )
@@ -475,7 +539,14 @@ class ProtocolTests(unittest.TestCase):
                     "*** Begin Patch",
                     "*** Add File: a.txt",
                     "+hello",
-                    "*** Delete File: b.txt",
+                    "*** Update File: b.txt",
+                    "@@",
+                    "-old",
+                    "+new",
+                    "*** Delete File: c.txt",
+                    "*** Add File: c.txt",
+                    "+reset",
+                    "*** Delete File: d.txt",
                     "*** End Patch",
                 ]
             ),

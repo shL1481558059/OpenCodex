@@ -833,7 +833,6 @@ def _apply_patch_hunks_schema() -> dict[str, Any]:
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "context": {"type": "string", "description": "Optional @@ header text."},
                 "lines": {
                     "type": "array",
                     "items": {
@@ -1388,12 +1387,11 @@ def _apply_patch_operation_lines(operation: dict[str, Any]) -> list[str]:
     if op_type == "delete_file":
         return [f"*** Delete File: {path}"]
     if op_type == "replace_file":
-        lines = [f"*** Update File: {path}"]
-        move_to = str(operation.get("move_to") or "").strip()
-        if move_to:
-            lines.append(f"*** Move to: {move_to}")
-        lines.extend(_prefixed_content_lines(operation.get("content", ""), "+"))
-        return lines
+        return [
+            f"*** Delete File: {path}",
+            f"*** Add File: {path}",
+            *_prefixed_content_lines(operation.get("content", ""), "+"),
+        ]
     if op_type == "update_file":
         lines = [f"*** Update File: {path}"]
         move_to = str(operation.get("move_to") or "").strip()
@@ -1405,8 +1403,7 @@ def _apply_patch_operation_lines(operation: dict[str, Any]) -> list[str]:
         for hunk in hunks:
             if not isinstance(hunk, dict):
                 continue
-            context = str(hunk.get("context") or "").strip()
-            lines.append(f"@@ {context}" if context else "@@")
+            lines.append("@@")
             hunk_lines = hunk.get("lines")
             if not isinstance(hunk_lines, list):
                 continue
