@@ -440,7 +440,7 @@ def _responses_input_item_to_messages(item: Any) -> list[dict[str, Any]]:
         arguments = item.get("arguments")
         if arguments is None:
             arguments = item.get("input") or item.get("action") or {}
-        arguments = _normalize_apply_patch_arguments(item_type, name, arguments)
+        name, arguments = _normalize_apply_patch_tool_call(item_type, name, arguments)
         return [
             {
                 "role": "assistant",
@@ -1333,6 +1333,19 @@ def _is_apply_patch_tool_name(name: str) -> bool:
     return normalized == "apply_patch" or normalized.startswith("apply_patch_")
 
 
+def _normalize_apply_patch_tool_call(
+    item_type: str, name: Any, arguments: Any
+) -> tuple[str, Any]:
+    tool_name = str(name or "")
+    arguments = _normalize_apply_patch_arguments(item_type, tool_name, arguments)
+    if not (_is_apply_patch_name(tool_name) or item_type == "apply_patch_call"):
+        return tool_name, arguments
+    structured = _structured_apply_patch_arguments_from_legacy(arguments)
+    if structured is None:
+        return tool_name, arguments
+    return "apply_patch_batch", structured
+
+
 def _apply_patch_input_from_tool_call(name: str, arguments: Any) -> str:
     normalized = name.replace("-", "_")
     if normalized.startswith("apply_patch_") and normalized != "apply_patch":
@@ -1424,6 +1437,109 @@ def _apply_patch_operation_lines(operation: dict[str, Any]) -> list[str]:
 
 def _prefixed_content_lines(content: Any, prefix: str) -> list[str]:
     return [f"{prefix}{line}" for line in str(content or "").split("\n")]
+
+
+def _structured_apply_patch_arguments_from_legacy(arguments: Any) -> dict[str, Any] | None:
+    value = _decode_json_value(arguments)
+    if isinstance(value, dict):
+        patch_keys = [key for key in ("patch", "input") if key in value]
+        if len(value) != 1 or not patch_keys:
+            return None
+    patch = _apply_patch_input_from_arguments(arguments)
+    if not isinstance(patch, str) or not _looks_like_patch(patch):
+        return None
+    operations = _parse_apply_patch_operations(patch)
+    if not operations:
+        return None
+    return {"operations": operations}
+
+
+def _parse_apply_patch_operations(patch: str) -> list[dict[str, Any]] | None:
+    lines = patch.strip("\n").split("\n")
+    if len(lines) < 2 or lines[0] != "*** Begin Patch" or lines[-1] != "*** End Patch":
+        return None
+    operations: list[dict[str, Any]] = []
+    index = 1
+    end = len(lines) - 1
+    while index < end:
+        line = lines[index]
+        if line.startswith("*** Add File: "):
+            path = line.removeprefix("*** Add File: ").strip()
+            index += 1
+            content: list[str] = []
+            while index < end and not lines[index].startswith("*** "):
+                if not lines[index].startswith("+"):
+                    return None
+                content.append(lines[index][1:])
+                index += 1
+            if not path or not content:
+                return None
+            operations.append(
+                {"type": "add_file", "path": path, "content": "\n".join(content)}
+            )
+            continue
+        if line.startswith("*** Delete File: "):
+            path = line.removeprefix("*** Delete File: ").strip()
+            if not path:
+                return None
+            operations.append({"type": "delete_file", "path": path})
+            index += 1
+            continue
+        if line.startswith("*** Update File: "):
+            operation, index = _parse_apply_patch_update_operation(lines, index, end)
+            if operation is None:
+                return None
+            operations.append(operation)
+            continue
+        return None
+    return operations
+
+
+def _parse_apply_patch_update_operation(
+    lines: list[str], index: int, end: int
+) -> tuple[dict[str, Any] | None, int]:
+    path = lines[index].removeprefix("*** Update File: ").strip()
+    if not path:
+        return None, index
+    operation: dict[str, Any] = {"type": "update_file", "path": path}
+    index += 1
+    if index < end and lines[index].startswith("*** Move to: "):
+        move_to = lines[index].removeprefix("*** Move to: ").strip()
+        if move_to:
+            operation["move_to"] = move_to
+        index += 1
+    hunks: list[dict[str, Any]] = []
+    while index < end and not lines[index].startswith("*** "):
+        if not lines[index].startswith("@@"):
+            return None, index
+        index += 1
+        hunk_lines: list[dict[str, str]] = []
+        while (
+            index < end
+            and not lines[index].startswith("@@")
+            and not lines[index].startswith("*** ")
+        ):
+            line = lines[index]
+            if not line:
+                return None, index
+            op = line[0]
+            text = line[1:]
+            if op == " ":
+                hunk_lines.append({"op": "context", "text": text})
+            elif op == "+":
+                hunk_lines.append({"op": "add", "text": text})
+            elif op == "-":
+                hunk_lines.append({"op": "remove", "text": text})
+            else:
+                return None, index
+            index += 1
+        if not hunk_lines:
+            return None, index
+        hunks.append({"lines": hunk_lines})
+    if not hunks:
+        return None, index
+    operation["hunks"] = hunks
+    return operation, index
 
 
 def _extract_patch_value(value: Any) -> Any:
