@@ -620,6 +620,66 @@ class ProtocolTests(unittest.TestCase):
             ),
         )
 
+    def test_apply_patch_replace_history_roundtrips_large_content_byte_for_byte(self):
+        long_line = "x" * 240
+        expected_content = "\n".join(
+            [
+                "header",
+                "",
+                f"long={long_line}",
+                "中文行",
+                "tail",
+                "",
+            ]
+        )
+        patch = "\n".join(
+            [
+                "*** Begin Patch",
+                "*** Delete File: large file (draft)#1.txt",
+                "*** Add File: large file (draft)#1.txt",
+                "+header",
+                "+",
+                f"+long={long_line}",
+                "+中文行",
+                "+tail",
+                "+",
+                "*** End Patch",
+            ]
+        )
+        first_turn = {
+            "model": "local",
+            "input": [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_patch_large_replace",
+                    "name": "apply_patch",
+                    "input": patch,
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_patch_large_replace",
+                    "output": "patched",
+                },
+            ],
+            "tools": [{"type": "apply_patch", "description": "Apply a patch"}],
+        }
+
+        request = convert_request(first_turn, "responses", "chat", "upstream")
+
+        arguments = json.loads(
+            request["messages"][0]["tool_calls"][0]["function"]["arguments"]
+        )
+        operations = arguments["operations"]
+        self.assertEqual(operations[0], {"type": "delete_file", "path": "large file (draft)#1.txt"})
+        self.assertEqual(
+            operations[1],
+            {
+                "type": "add_file",
+                "path": "large file (draft)#1.txt",
+                "content": expected_content,
+            },
+        )
+
     def test_chat_apply_patch_batch_proxy_response_rebuilds_one_patch(self):
         arguments = json.dumps(
             {
@@ -756,6 +816,75 @@ class ProtocolTests(unittest.TestCase):
             },
         )
 
+    def test_apply_patch_history_replays_special_path_batch(self):
+        patch = "\n".join(
+            [
+                "*** Begin Patch",
+                "*** Add File: dir with spaces/new file (草稿)#1.txt",
+                "+hello",
+                "*** Update File: dir with spaces/old file (草稿)#2.txt",
+                "*** Move to: dir with spaces/new file (最终)#2.txt",
+                "@@",
+                " old context",
+                "-old",
+                "+new",
+                "*** Delete File: dir with spaces/delete file (草稿)#3.txt",
+                "*** End Patch",
+            ]
+        )
+        first_turn = {
+            "model": "local",
+            "input": [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_patch_special_batch",
+                    "name": "apply_patch",
+                    "input": patch,
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_patch_special_batch",
+                    "output": "patched",
+                },
+            ],
+            "tools": [{"type": "apply_patch", "description": "Apply a patch"}],
+        }
+
+        request = convert_request(first_turn, "responses", "chat", "upstream")
+
+        tool_call = request["messages"][0]["tool_calls"][0]
+        self.assertEqual(tool_call["function"]["name"], "apply_patch_batch")
+        self.assertEqual(
+            json.loads(tool_call["function"]["arguments"]),
+            {
+                "operations": [
+                    {
+                        "type": "add_file",
+                        "path": "dir with spaces/new file (草稿)#1.txt",
+                        "content": "hello",
+                    },
+                    {
+                        "type": "update_file",
+                        "path": "dir with spaces/old file (草稿)#2.txt",
+                        "move_to": "dir with spaces/new file (最终)#2.txt",
+                        "hunks": [
+                            {
+                                "lines": [
+                                    {"op": "context", "text": "old context"},
+                                    {"op": "remove", "text": "old"},
+                                    {"op": "add", "text": "new"},
+                                ]
+                            }
+                        ],
+                    },
+                    {
+                        "type": "delete_file",
+                        "path": "dir with spaces/delete file (草稿)#3.txt",
+                    },
+                ]
+            },
+        )
+
     def test_chat_apply_patch_batch_proxy_rebuilds_eof_marker(self):
         arguments = json.dumps(
             {
@@ -816,6 +945,187 @@ class ProtocolTests(unittest.TestCase):
                 ]
             ),
         )
+
+    def test_chat_apply_patch_batch_proxy_rebuilds_multiple_eof_hunks(self):
+        arguments = json.dumps(
+            {
+                "operations": [
+                    {
+                        "type": "update_file",
+                        "path": "src/file.py",
+                        "hunks": [
+                            {
+                                "lines": [
+                                    {"op": "remove", "text": "first_old"},
+                                    {"op": "add", "text": "first_new"},
+                                    {"op": "eof", "text": ""},
+                                ]
+                            },
+                            {
+                                "lines": [
+                                    {"op": "remove", "text": "second_old"},
+                                    {"op": "add", "text": "second_new"},
+                                    {"op": "eof", "text": ""},
+                                ]
+                            },
+                        ],
+                    }
+                ]
+            }
+        )
+        payload = {
+            "id": "chatcmpl_patch_batch_multi_eof",
+            "model": "upstream",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_patch_batch_multi_eof",
+                                "type": "function",
+                                "function": {
+                                    "name": "apply_patch_batch",
+                                    "arguments": arguments,
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        }
+
+        result = convert_response(payload, "responses", "chat", "local")
+
+        self.assertEqual(
+            result["output"][0]["input"],
+            "\n".join(
+                [
+                    "*** Begin Patch",
+                    "*** Update File: src/file.py",
+                    "@@",
+                    "-first_old",
+                    "+first_new",
+                    "*** End of File",
+                    "@@",
+                    "-second_old",
+                    "+second_new",
+                    "*** End of File",
+                    "*** End Patch",
+                ]
+            ),
+        )
+
+    def test_apply_patch_newline_path_is_not_structured(self):
+        patch = "\n".join(
+            [
+                "*** Begin Patch",
+                "*** Add File: bad",
+                "name.txt",
+                "+content",
+                "*** End Patch",
+            ]
+        )
+        first_turn = {
+            "model": "local",
+            "input": [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_patch_newline_path",
+                    "name": "apply_patch",
+                    "input": patch,
+                }
+            ],
+            "tools": [{"type": "apply_patch", "description": "Apply a patch"}],
+        }
+
+        request = convert_request(first_turn, "responses", "chat", "upstream")
+
+        tool_call = request["messages"][0]["tool_calls"][0]
+        self.assertEqual(tool_call["function"]["name"], "apply_patch")
+        self.assertEqual(json.loads(tool_call["function"]["arguments"]), {"patch": patch})
+
+    def test_apply_patch_proxy_rejects_newline_path_rebuild(self):
+        arguments = json.dumps(
+            {"path": "bad\nname.txt", "content": "content"},
+            ensure_ascii=False,
+        )
+        payload = {
+            "id": "chatcmpl_patch_newline_path",
+            "model": "upstream",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_patch_newline_path",
+                                "type": "function",
+                                "function": {
+                                    "name": "apply_patch_add_file",
+                                    "arguments": arguments,
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        }
+
+        result = convert_response(payload, "responses", "chat", "local")
+
+        self.assertEqual(
+            result["output"][0]["input"],
+            json.dumps({"path": "bad\nname.txt", "content": "content"}, ensure_ascii=False),
+        )
+
+    def test_apply_patch_proxy_rejects_newline_move_to_rebuild(self):
+        arguments = json.dumps(
+            {
+                "path": "old.txt",
+                "move_to": "bad\nname.txt",
+                "hunks": [
+                    {
+                        "lines": [
+                            {"op": "remove", "text": "old"},
+                            {"op": "add", "text": "new"},
+                        ]
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+        payload = {
+            "id": "chatcmpl_patch_newline_move_to",
+            "model": "upstream",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_patch_newline_move_to",
+                                "type": "function",
+                                "function": {
+                                    "name": "apply_patch_update_file",
+                                    "arguments": arguments,
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        }
+
+        result = convert_response(payload, "responses", "chat", "local")
+
+        self.assertEqual(result["output"][0]["input"], arguments)
 
     def test_apply_patch_failure_output_allows_followup_structured_retry(self):
         failed_patch = "\n".join(

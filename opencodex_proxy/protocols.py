@@ -1389,7 +1389,7 @@ def _rebuild_apply_patch_grammar(name: str, arguments: Any) -> str | None:
 
 def _apply_patch_operation_lines(operation: dict[str, Any]) -> list[str]:
     op_type = str(operation.get("type") or "")
-    path = str(operation.get("path") or "").strip()
+    path = _apply_patch_path(operation.get("path"))
     if not path:
         return []
     if op_type == "add_file":
@@ -1407,8 +1407,11 @@ def _apply_patch_operation_lines(operation: dict[str, Any]) -> list[str]:
         ]
     if op_type == "update_file":
         lines = [f"*** Update File: {path}"]
-        move_to = str(operation.get("move_to") or "").strip()
-        if move_to:
+        raw_move_to = operation.get("move_to")
+        if str(raw_move_to or "").strip():
+            move_to = _apply_patch_path(raw_move_to)
+            if not move_to:
+                return []
             lines.append(f"*** Move to: {move_to}")
         hunks = operation.get("hunks")
         if not isinstance(hunks, list):
@@ -1435,6 +1438,13 @@ def _apply_patch_operation_lines(operation: dict[str, Any]) -> list[str]:
                     lines.append(f" {text}")
         return lines
     return []
+
+
+def _apply_patch_path(value: Any) -> str:
+    path = str(value or "").strip()
+    if "\n" in path or "\r" in path:
+        return ""
+    return path
 
 
 def _prefixed_content_lines(content: Any, prefix: str) -> list[str]:
