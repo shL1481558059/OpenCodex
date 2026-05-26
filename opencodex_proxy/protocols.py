@@ -841,7 +841,7 @@ def _apply_patch_hunks_schema() -> dict[str, Any]:
                         "properties": {
                             "op": {
                                 "type": "string",
-                                "enum": ["context", "add", "remove"],
+                                "enum": ["context", "add", "remove", "eof"],
                             },
                             "text": {"type": "string"},
                         },
@@ -1429,6 +1429,8 @@ def _apply_patch_operation_lines(operation: dict[str, Any]) -> list[str]:
                     lines.append(f"+{text}")
                 elif op == "remove":
                     lines.append(f"-{text}")
+                elif op == "eof":
+                    lines.append("*** End of File")
                 else:
                     lines.append(f" {text}")
         return lines
@@ -1472,7 +1474,7 @@ def _parse_apply_patch_operations(patch: str) -> list[dict[str, Any]] | None:
                     return None
                 content.append(lines[index][1:])
                 index += 1
-            if not path or not content:
+            if not path:
                 return None
             operations.append(
                 {"type": "add_file", "path": path, "content": "\n".join(content)}
@@ -1532,6 +1534,9 @@ def _parse_apply_patch_update_operation(
                 hunk_lines.append({"op": "remove", "text": text})
             else:
                 return None, index
+            index += 1
+        if index < end and lines[index] == "*** End of File":
+            hunk_lines.append({"op": "eof", "text": ""})
             index += 1
         if not hunk_lines:
             return None, index
