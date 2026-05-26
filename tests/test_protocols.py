@@ -438,6 +438,81 @@ class ProtocolTests(unittest.TestCase):
             ),
         )
 
+    def test_chat_apply_patch_proxy_response_rebuilds_rename_with_multiple_hunks(self):
+        long_context = "prefix-" + "x" * 160 + "-suffix"
+        arguments = json.dumps(
+            {
+                "path": "src/old_name.py",
+                "move_to": "src/new_name.py",
+                "hunks": [
+                    {
+                        "context": "Chunk ID: stale location should not leak",
+                        "lines": [
+                            {"op": "context", "text": "def first():"},
+                            {"op": "remove", "text": "    return 'old'"},
+                            {"op": "add", "text": "    return 'new'"},
+                        ],
+                    },
+                    {
+                        "context": "near long generated context",
+                        "lines": [
+                            {"op": "context", "text": long_context},
+                            {"op": "context", "text": ""},
+                            {"op": "remove", "text": "VALUE = '漂移前'"},
+                            {"op": "add", "text": "VALUE = '漂移后'"},
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        )
+        payload = {
+            "id": "chatcmpl_patch_rename_multi_hunk",
+            "model": "upstream",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_patch_rename_multi_hunk",
+                                "type": "function",
+                                "function": {
+                                    "name": "apply_patch_update_file",
+                                    "arguments": arguments,
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        }
+
+        result = convert_response(payload, "responses", "chat", "local")
+
+        self.assertEqual(
+            result["output"][0]["input"],
+            "\n".join(
+                [
+                    "*** Begin Patch",
+                    "*** Update File: src/old_name.py",
+                    "*** Move to: src/new_name.py",
+                    "@@",
+                    " def first():",
+                    "-    return 'old'",
+                    "+    return 'new'",
+                    "@@",
+                    f" {long_context}",
+                    " ",
+                    "-VALUE = '漂移前'",
+                    "+VALUE = '漂移后'",
+                    "*** End Patch",
+                ]
+            ),
+        )
+
     def test_chat_apply_patch_replace_proxy_response_rebuilds_delete_add_patch(self):
         arguments = json.dumps(
             {"path": "sample.txt", "content": "first\nsecond"},
@@ -547,6 +622,137 @@ class ProtocolTests(unittest.TestCase):
                     "*** Add File: c.txt",
                     "+reset",
                     "*** Delete File: d.txt",
+                    "*** End Patch",
+                ]
+            ),
+        )
+
+    def test_apply_patch_failure_output_allows_followup_structured_retry(self):
+        failed_patch = "\n".join(
+            [
+                "*** Begin Patch",
+                "*** Update File: src/old_config.py",
+                "*** Move to: src/config.py",
+                "@@",
+                "-missing_value = True",
+                "+missing_value = False",
+                "*** End Patch",
+            ]
+        )
+        retry_arguments = json.dumps(
+            {
+                "path": "src/config.py",
+                "hunks": [
+                    {
+                        "context": "@@ line drift from tool error should be ignored",
+                        "lines": [
+                            {"op": "context", "text": "existing_value = True"},
+                            {"op": "remove", "text": "retry_value = 'old'"},
+                            {"op": "add", "text": "retry_value = 'new'"},
+                        ],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+        first_turn = {
+            "model": "local",
+            "input": [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_patch_retry",
+                    "name": "apply_patch",
+                    "input": failed_patch,
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_patch_retry",
+                    "output": (
+                        "Failed to apply patch: context not found\n"
+                        "@@\n"
+                        "-missing_value = True\n"
+                        "+missing_value = False"
+                    ),
+                },
+            ],
+            "tools": [{"type": "apply_patch", "description": "Apply a patch"}],
+        }
+
+        request = convert_request(first_turn, "responses", "chat", "upstream")
+
+        tool_call = request["messages"][0]["tool_calls"][0]
+        self.assertEqual(tool_call["function"]["name"], "apply_patch_batch")
+        self.assertEqual(
+            json.loads(tool_call["function"]["arguments"]),
+            {
+                "operations": [
+                    {
+                        "type": "update_file",
+                        "path": "src/old_config.py",
+                        "move_to": "src/config.py",
+                        "hunks": [
+                            {
+                                "lines": [
+                                    {"op": "remove", "text": "missing_value = True"},
+                                    {"op": "add", "text": "missing_value = False"},
+                                ]
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+        self.assertEqual(
+            request["messages"][1],
+            {
+                "role": "tool",
+                "tool_call_id": "call_patch_retry",
+                "content": (
+                    "Failed to apply patch: context not found\n"
+                    "@@\n"
+                    "-missing_value = True\n"
+                    "+missing_value = False"
+                ),
+            },
+        )
+        self.assertIn("apply_patch_update_file", [tool["function"]["name"] for tool in request["tools"]])
+
+        retry_payload = {
+            "id": "chatcmpl_patch_retry",
+            "model": "upstream",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_patch_retry_2",
+                                "type": "function",
+                                "function": {
+                                    "name": "apply_patch_update_file",
+                                    "arguments": retry_arguments,
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        }
+
+        retry = convert_response(retry_payload, "responses", "chat", "local")
+
+        self.assertEqual(
+            retry["output"][0]["input"],
+            "\n".join(
+                [
+                    "*** Begin Patch",
+                    "*** Update File: src/config.py",
+                    "@@",
+                    " existing_value = True",
+                    "-retry_value = 'old'",
+                    "+retry_value = 'new'",
                     "*** End Patch",
                 ]
             ),
