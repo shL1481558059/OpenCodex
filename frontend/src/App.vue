@@ -107,14 +107,10 @@
                     </el-tag>
                   </template>
                 </el-table-column>
-                <el-table-column label="操作" width="250">
+                <el-table-column label="操作" width="160">
                   <template #default="{ row, $index }">
                     <div class="inline-actions">
                       <el-button size="small" :icon="Edit" @click="openChannelDrawer(row, $index)">编辑</el-button>
-                      <el-button size="small" :disabled="$index === 0" @click="moveChannel($index, -1)">上移</el-button>
-                      <el-button size="small" :disabled="$index === channels.length - 1" @click="moveChannel($index, 1)">
-                        下移
-                      </el-button>
                       <el-popconfirm title="删除这个渠道？" @confirm="deleteChannel($index)">
                         <template #reference>
                           <el-button size="small" type="danger" :icon="Delete">删除</el-button>
@@ -133,6 +129,40 @@
                   <div class="text-muted">表格分页展示，详情中查看完整请求与响应</div>
                 </div>
                 <div class="toolbar-actions">
+                  <el-popover placement="bottom-end" width="320" trigger="click">
+                    <template #reference>
+                      <el-button :icon="Setting">列设置</el-button>
+                    </template>
+                    <div class="log-column-settings">
+                      <div class="log-column-settings__header">
+                        <span>显示列</span>
+                        <el-button link type="primary" @click="resetLogColumns">恢复默认</el-button>
+                      </div>
+                      <el-checkbox-group v-model="visibleLogColumnKeys" class="log-column-settings__list">
+                        <div v-for="(column, index) in orderedLogColumns" :key="column.key" class="log-column-settings__item">
+                          <el-checkbox :label="column.key">{{ column.label }}</el-checkbox>
+                          <div class="log-column-settings__actions">
+                            <el-button
+                              size="small"
+                              text
+                              :disabled="index === 0"
+                              @click="moveLogColumn(index, -1)"
+                            >
+                              上移
+                            </el-button>
+                            <el-button
+                              size="small"
+                              text
+                              :disabled="index === orderedLogColumns.length - 1"
+                              @click="moveLogColumn(index, 1)"
+                            >
+                              下移
+                            </el-button>
+                          </div>
+                        </div>
+                      </el-checkbox-group>
+                    </div>
+                  </el-popover>
                   <el-button :icon="Refresh" @click="loadLogs">刷新</el-button>
                   <el-button @click="resetLogFilters">重置</el-button>
                 </div>
@@ -182,46 +212,29 @@
               </el-form>
 
               <el-table
+                class="log-table"
                 v-loading="logsLoading"
                 :data="logs"
                 style="width: 100%"
                 empty-text="暂无日志"
               >
-                <el-table-column prop="created_at" label="时间" width="180">
-                  <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
-                </el-table-column>
-                <el-table-column prop="request_id" label="请求" width="130" show-overflow-tooltip />
-                <el-table-column prop="request_status" label="状态" width="90">
+                <el-table-column
+                  v-for="column in visibleLogColumns"
+                  :key="column.key"
+                  :prop="column.prop"
+                  :label="column.label"
+                  :width="column.width"
+                  :min-width="column.minWidth"
+                  :show-overflow-tooltip="column.showOverflowTooltip"
+                >
                   <template #default="{ row }">
-                    <el-tag :type="row.request_status === 'success' ? 'success' : 'danger'">
+                    <el-tag v-if="column.key === 'request_status'" :type="row.request_status === 'success' ? 'success' : 'danger'">
                       {{ row.request_status === "success" ? "成功" : "失败" }}
                     </el-tag>
+                    <span v-else>{{ formatLogCell(row, column) }}</span>
                   </template>
                 </el-table-column>
-                <el-table-column prop="model" label="模型" min-width="160" show-overflow-tooltip />
-                <el-table-column prop="channel_id" label="渠道" min-width="130" show-overflow-tooltip />
-                <el-table-column prop="status_code" label="状态码" width="90" />
-                <el-table-column prop="duration_ms" label="耗时" width="95">
-                  <template #default="{ row }">{{ displayMs(row.duration_ms) }}</template>
-                </el-table-column>
-                <el-table-column prop="ttft_ms" label="TTFT" width="95">
-                  <template #default="{ row }">{{ displayMs(row.ttft_ms) }}</template>
-                </el-table-column>
-                <el-table-column label="Token" width="190">
-                  <template #default="{ row }">
-                    {{ row.input_tokens || 0 }} / {{ row.cached_tokens || 0 }} / {{ row.output_tokens || 0 }}
-                  </template>
-                </el-table-column>
-                <el-table-column prop="cost" label="成本" width="110">
-                  <template #default="{ row }">{{ formatCost(row.cost) }}</template>
-                </el-table-column>
-                <el-table-column label="请求 Body" min-width="220">
-                  <template #default="{ row }">{{ previewJson(row.request_body) }}</template>
-                </el-table-column>
-                <el-table-column label="响应" min-width="220">
-                  <template #default="{ row }">{{ previewJson(row.response_body || row.error) }}</template>
-                </el-table-column>
-                <el-table-column label="操作" width="90">
+                <el-table-column label="操作" width="90" fixed="right">
                   <template #default="{ row }">
                     <el-button size="small" :icon="View" @click="openLogDetail(row)">详情</el-button>
                   </template>
@@ -426,6 +439,7 @@ import {
   Plus,
   Refresh,
   Search,
+  Setting,
   SwitchButton,
   Upload,
   View
@@ -462,7 +476,7 @@ const selectedDiscoveredModels = ref([]);
 
 const logs = ref([]);
 const logPage = ref(1);
-const logPageSize = ref(50);
+const logPageSize = ref(20);
 const logTotal = ref(0);
 const filterOptions = reactive({
   request_ids: [],
@@ -484,10 +498,35 @@ const logFilters = reactive({
 const selectedLog = ref(null);
 const logDetailVisible = ref(false);
 
+const logColumnDefinitions = [
+  { key: "created_at", prop: "created_at", label: "时间", width: 180 },
+  { key: "request_id", prop: "request_id", label: "请求", width: 130, showOverflowTooltip: true },
+  { key: "request_status", prop: "request_status", label: "状态", width: 90 },
+  { key: "model", prop: "model", label: "模型", minWidth: 160, showOverflowTooltip: true },
+  { key: "channel_id", prop: "channel_id", label: "渠道", minWidth: 130, showOverflowTooltip: true },
+  { key: "status_code", prop: "status_code", label: "状态码", width: 90 },
+  { key: "duration_ms", prop: "duration_ms", label: "耗时", width: 95 },
+  { key: "ttft_ms", prop: "ttft_ms", label: "TTFT", width: 95 },
+  { key: "tokens", label: "Token", width: 190 },
+  { key: "cost", prop: "cost", label: "成本", width: 110 },
+  { key: "request_body", prop: "request_body", label: "请求 Body", minWidth: 220, showOverflowTooltip: true },
+  { key: "response_body", prop: "response_body", label: "响应", minWidth: 220, showOverflowTooltip: true }
+];
+const defaultLogColumnKeys = logColumnDefinitions.map((column) => column.key);
+const logColumnMap = Object.fromEntries(logColumnDefinitions.map((column) => [column.key, column]));
+const logColumnOrder = ref(defaultLogColumnKeys.slice());
+const visibleLogColumnKeys = ref(defaultLogColumnKeys.slice());
+
 const channels = computed(() => config.channels || []);
 const enabledChannelCount = computed(() => channels.value.filter((channel) => channel.enabled !== false).length);
 const modelMappingCount = computed(() =>
   channels.value.reduce((total, channel) => total + normalizeModels(channel.models).length, 0)
+);
+const orderedLogColumns = computed(() =>
+  logColumnOrder.value.map((key) => logColumnMap[key]).filter(Boolean)
+);
+const visibleLogColumns = computed(() =>
+  orderedLogColumns.value.filter((column) => visibleLogColumnKeys.value.includes(column.key))
 );
 
 onMounted(async () => {
@@ -601,21 +640,6 @@ async function deleteChannel(index) {
   try {
     await saveConfig(nextChannels);
     ElMessage.success("渠道已删除");
-  } catch (error) {
-    ElMessage.error(error.message);
-  }
-}
-
-async function moveChannel(index, direction) {
-  const target = index + direction;
-  if (target < 0 || target >= channels.value.length) {
-    return;
-  }
-  const nextChannels = channels.value.slice();
-  const [item] = nextChannels.splice(index, 1);
-  nextChannels.splice(target, 0, item);
-  try {
-    await saveConfig(nextChannels);
   } catch (error) {
     ElMessage.error(error.message);
   }
@@ -735,6 +759,22 @@ function resetLogFilters() {
     request_status: ""
   });
   loadLogs(1);
+}
+
+function moveLogColumn(index, direction) {
+  const target = index + direction;
+  if (target < 0 || target >= logColumnOrder.value.length) {
+    return;
+  }
+  const nextOrder = logColumnOrder.value.slice();
+  const [item] = nextOrder.splice(index, 1);
+  nextOrder.splice(target, 0, item);
+  logColumnOrder.value = nextOrder;
+}
+
+function resetLogColumns() {
+  logColumnOrder.value = defaultLogColumnKeys.slice();
+  visibleLogColumnKeys.value = defaultLogColumnKeys.slice();
 }
 
 function openLogDetail(row) {
@@ -919,6 +959,27 @@ function formatStoredJson(value) {
 function previewJson(value) {
   const text = formatStoredJson(value).replace(/\s+/g, " ").trim();
   return text.length > 120 ? `${text.slice(0, 120)}...` : text;
+}
+
+function formatLogCell(row, column) {
+  switch (column.key) {
+    case "created_at":
+      return formatTime(row.created_at);
+    case "duration_ms":
+      return displayMs(row.duration_ms);
+    case "ttft_ms":
+      return displayMs(row.ttft_ms);
+    case "tokens":
+      return `${row.input_tokens || 0} / ${row.cached_tokens || 0} / ${row.output_tokens || 0}`;
+    case "cost":
+      return formatCost(row.cost);
+    case "request_body":
+      return previewJson(row.request_body);
+    case "response_body":
+      return previewJson(row.response_body || row.error);
+    default:
+      return row[column.prop] ?? "";
+  }
 }
 
 function formatJson(value) {
