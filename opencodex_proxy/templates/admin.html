@@ -4,298 +4,915 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>OpenCodex Admin</title>
+    <link rel="icon" href="data:,">
     <style>
-      :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      :root {
+        color-scheme: light;
+        font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+        --bg: #eef1ef;
+        --canvas: #f8f7f3;
+        --panel: #fffdfa;
+        --panel-soft: #f3f0e8;
+        --ink: #17201b;
+        --muted: #66736b;
+        --faint: #89958e;
+        --line: #d7ddd6;
+        --line-strong: #bbc7bf;
+        --accent: #245c4f;
+        --accent-strong: #163f37;
+        --accent-soft: #e3eee9;
+        --warning: #9a5b1d;
+        --warning-soft: #fff3dc;
+        --danger: #b42318;
+        --danger-soft: #fff0ed;
+        --success: #197052;
+        --success-soft: #e6f4ed;
+        --shadow: 0 18px 48px rgba(23, 32, 27, .08);
+        --radius: 8px;
+      }
+
       * { box-sizing: border-box; }
-      body { margin: 0; background: #f5f7fb; color: #172033; }
-      header { height: 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; border-bottom: 1px solid #d9e0ea; background: #fff; }
-      h1 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: 0; }
-      h2 { margin: 0; font-size: 20px; letter-spacing: 0; }
-      h3 { margin: 0 0 12px; font-size: 16px; letter-spacing: 0; }
-      h4 { margin: 0 0 10px; font-size: 14px; letter-spacing: 0; }
-      nav { display: flex; gap: 8px; align-items: center; }
-      button { min-height: 36px; border: 1px solid #b9c3d1; border-radius: 6px; background: #fff; color: #172033; padding: 7px 10px; cursor: pointer; font: inherit; white-space: nowrap; }
-      button:hover { border-color: #7e8da0; }
-      button.primary { background: #1463ff; border-color: #1463ff; color: #fff; }
-      button.danger { color: #b42318; }
-      button.small { min-height: 30px; padding: 5px 8px; font-size: 13px; }
-      main { display: grid; grid-template-columns: 184px minmax(0, 1fr); min-height: calc(100vh - 57px); }
-      aside { border-right: 1px solid #d9e0ea; background: #fff; padding: 14px; overflow: auto; }
-      section { min-width: 0; padding: 18px; overflow: auto; }
-      .side-menu { display: grid; gap: 8px; }
-      .menu-item { width: 100%; text-align: left; }
-      .menu-item.active { background: #172033; color: #fff; border-color: #172033; }
-      .section-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; }
-      .muted { color: #617083; font-size: 13px; }
-      .grid { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 12px; }
-      .filters { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 12px; margin-bottom: 12px; }
-      label { display: block; font-size: 13px; color: #4d5b6d; margin-bottom: 6px; }
-      input, select, textarea { width: 100%; border: 1px solid #b9c3d1; border-radius: 6px; padding: 9px 10px; background: #fff; color: #172033; font: inherit; }
-      input[type="checkbox"] { width: auto; min-width: 18px; height: 18px; padding: 0; }
-      textarea { min-height: 96px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+        background:
+          linear-gradient(135deg, rgba(36, 92, 79, .08), transparent 32%),
+          linear-gradient(180deg, #f3f5f2, var(--bg));
+        color: var(--ink);
+      }
+
+      h1, h2, h3, h4, p { margin-top: 0; }
+      h1, h2, h3, h4 { letter-spacing: 0; }
+      h1 { margin-bottom: 0; font-size: 18px; line-height: 1.2; }
+      h2 { margin-bottom: 6px; font-size: 28px; line-height: 1.15; }
+      h3 { margin-bottom: 4px; font-size: 17px; line-height: 1.25; }
+      h4 { margin-bottom: 10px; font-size: 14px; line-height: 1.25; }
+
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        height: 64px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 0 22px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 253, 250, .94);
+        backdrop-filter: blur(18px);
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+      }
+
+      .brand-mark {
+        width: 38px;
+        height: 38px;
+        display: grid;
+        place-items: center;
+        flex: 0 0 auto;
+        border: 1px solid var(--accent);
+        border-radius: 8px;
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 900;
+      }
+
+      .brand p {
+        margin: 3px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.3;
+      }
+
+      nav {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .shell {
+        display: grid;
+        grid-template-columns: 232px minmax(0, 1fr);
+        min-height: calc(100vh - 64px);
+      }
+
+      aside {
+        min-width: 0;
+        padding: 18px 14px;
+        border-right: 1px solid var(--line);
+        background: rgba(255, 253, 250, .7);
+      }
+
+      .side-label {
+        margin: 0 10px 10px;
+        color: var(--faint);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+      }
+
+      .side-menu {
+        display: grid;
+        gap: 8px;
+      }
+
+      .menu-item {
+        width: 100%;
+        justify-content: flex-start;
+        min-height: 44px;
+        padding-inline: 12px;
+        text-align: left;
+      }
+
+      .menu-item.active {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: #fff;
+        box-shadow: 0 12px 28px rgba(36, 92, 79, .16);
+      }
+
+      .side-note {
+        margin: 18px 10px 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      .workspace {
+        min-width: 0;
+        padding: 24px;
+        overflow: auto;
+      }
+
+      .page-head,
+      .surface-head,
+      .editor-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+      }
+
+      .page-head { margin-bottom: 18px; }
+      .surface-head { margin-bottom: 14px; }
+      .editor-head { margin-bottom: 18px; }
+
+      .page-copy,
+      .section-copy {
+        margin: 0;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.6;
+      }
+
+      .eyebrow {
+        margin: 0 0 6px;
+        color: var(--accent);
+        font-size: 11px;
+        font-weight: 900;
+        letter-spacing: .1em;
+        text-transform: uppercase;
+      }
+
+      .head-actions,
+      .actions,
+      .model-tools,
+      .ops {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .actions { margin: 0; }
+      .panel-actions { margin-top: 14px; }
+
+      button {
+        min-height: 38px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+        background: #fff;
+        color: var(--ink);
+        padding: 8px 12px;
+        cursor: pointer;
+        font: inherit;
+        font-size: 13px;
+        font-weight: 800;
+        white-space: nowrap;
+        transition: border-color .16s ease, background .16s ease, color .16s ease, transform .16s ease, box-shadow .16s ease;
+      }
+
+      button:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+        transform: translateY(-1px);
+      }
+
+      button:active { transform: translateY(0); }
+      button:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+
+      button.primary {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: #fff;
+      }
+
+      button.primary:hover {
+        background: var(--accent-strong);
+        color: #fff;
+        box-shadow: 0 10px 24px rgba(36, 92, 79, .18);
+      }
+
+      button.danger {
+        border-color: rgba(180, 35, 24, .26);
+        color: var(--danger);
+      }
+
+      button.danger:hover {
+        border-color: var(--danger);
+        background: var(--danger-soft);
+      }
+
+      button.small {
+        min-height: 30px;
+        padding: 5px 8px;
+        font-size: 12px;
+      }
+
+      .chip,
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 3px 9px;
+        background: #fff;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+
+      .badge.on {
+        border-color: rgba(25, 112, 82, .24);
+        background: var(--success-soft);
+        color: var(--success);
+      }
+
+      .badge.off {
+        border-color: rgba(154, 91, 29, .24);
+        background: var(--warning-soft);
+        color: var(--warning);
+      }
+
+      .metric-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+
+      .metric-card {
+        min-height: 94px;
+        padding: 16px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--panel);
+      }
+
+      .metric-card span {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .metric-card strong {
+        display: block;
+        margin-top: 8px;
+        font-size: 30px;
+        line-height: 1;
+      }
+
+      .surface,
+      .editor,
+      .rule-fieldset,
+      .result-panel {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--panel);
+        box-shadow: var(--shadow);
+      }
+
+      .surface,
+      .editor {
+        padding: 18px;
+      }
+
+      .surface + .surface {
+        margin-top: 16px;
+      }
+
+      .editor {
+        margin-top: 18px;
+      }
+
+      .grid,
+      .filters,
+      .rule-grid {
+        display: grid;
+        gap: 12px;
+      }
+
+      .grid { grid-template-columns: repeat(2, minmax(220px, 1fr)); }
+      .filters { grid-template-columns: repeat(5, minmax(150px, 1fr)); }
+      .rule-grid { grid-template-columns: repeat(2, minmax(220px, 1fr)); }
+
+      .form-section {
+        padding: 16px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--canvas);
+      }
+
+      .form-section.full { grid-column: 1 / -1; }
+
+      label {
+        display: block;
+        margin-bottom: 6px;
+        color: #46524b;
+        font-size: 12px;
+        font-weight: 900;
+      }
+
+      input,
+      select,
+      textarea {
+        width: 100%;
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+        padding: 9px 10px;
+        background: #fff;
+        color: var(--ink);
+        font: inherit;
+        font-size: 13px;
+        outline: none;
+        transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
+      }
+
+      input:focus,
+      select:focus,
+      textarea:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(36, 92, 79, .14);
+      }
+
+      input[type="checkbox"] {
+        width: 18px;
+        min-width: 18px;
+        height: 18px;
+        padding: 0;
+        accent-color: var(--accent);
+      }
+
+      textarea {
+        min-height: 98px;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        line-height: 1.55;
+      }
+
       .row { margin-bottom: 12px; }
-      .checkbox-row { display: flex; align-items: center; gap: 8px; min-height: 38px; }
+      .row:last-child { margin-bottom: 0; }
+
+      .checkbox-row {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        min-height: 38px;
+      }
+
       .checkbox-row label { margin: 0; }
-      .actions { display: flex; gap: 8px; margin: 14px 0; flex-wrap: wrap; align-items: center; }
-      .status { font-size: 13px; }
-      .table-wrap { width: 100%; overflow: auto; border: 1px solid #d9e0ea; background: #fff; }
-      table { width: 100%; border-collapse: collapse; min-width: 920px; }
-      th, td { border-bottom: 1px solid #e7ecf3; padding: 8px; text-align: left; vertical-align: top; font-size: 13px; }
-      th { background: #eef3f9; color: #334155; font-weight: 700; }
-      tr.selected td { background: #eef5ff; }
-      .ops { display: flex; gap: 6px; flex-wrap: wrap; }
-      .badge { display: inline-flex; align-items: center; min-height: 24px; border-radius: 999px; padding: 2px 8px; font-size: 12px; border: 1px solid #b9c3d1; }
-      .badge.on { color: #05603a; border-color: #8bd7b0; background: #ecfdf3; }
-      .badge.off { color: #9a3412; border-color: #fdba74; background: #fff7ed; }
-      .editor { margin-top: 18px; padding-top: 18px; border-top: 1px solid #d9e0ea; }
-      .rule-fieldset { margin: 0 0 14px; padding: 12px; border: 1px solid #d9e0ea; border-radius: 6px; }
-      .rule-fieldset legend { padding: 0 6px; color: #4d5b6d; font-size: 13px; }
-      .rule-grid { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 12px; }
-      .rule-grid > .row { margin-bottom: 0; }
-      .rule-grid textarea { min-height: 84px; }
-      .rule-note { margin: 4px 0 0; color: #617083; font-size: 12px; }
-      .model-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
-      .model-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; margin-top: 10px; }
-      .model-option { display: flex; gap: 8px; align-items: center; border: 1px solid #d9e0ea; border-radius: 6px; padding: 8px; background: #fff; min-width: 0; }
-      .model-option span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+      .status {
+        min-height: 24px;
+        display: inline-flex;
+        align-items: center;
+        color: var(--success);
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      .muted {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .table-wrap {
+        width: 100%;
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: #fff;
+      }
+
+      table {
+        width: 100%;
+        min-width: 960px;
+        border-collapse: collapse;
+      }
+
+      th,
+      td {
+        border-bottom: 1px solid #edf0ec;
+        padding: 10px 12px;
+        text-align: left;
+        vertical-align: top;
+        font-size: 13px;
+      }
+
+      th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        background: #f3f5f1;
+        color: #46524b;
+        font-size: 12px;
+        font-weight: 900;
+      }
+
+      tbody tr:hover td { background: #fbfaf6; }
+      tr.selected td { background: var(--accent-soft); }
+      tbody tr:last-child td { border-bottom: 0; }
+
+      .rule-fieldset {
+        margin: 16px 0 0;
+        padding: 16px;
+      }
+
+      .rule-fieldset legend {
+        padding: 0 8px;
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 900;
+      }
+
+      .rule-note {
+        margin: 10px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      .model-tools { margin-bottom: 12px; }
+
+      .model-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: 8px;
+        margin: 10px 0 12px;
+      }
+
+      .model-option {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 9px;
+        background: #fff;
+      }
+
+      .model-option span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
       .model-map-table { min-width: 680px; }
       .model-map-table input { min-width: 180px; }
-      .result-panel { border: 1px solid #d9e0ea; border-radius: 6px; padding: 10px; background: #fff; }
-      pre { margin: 8px 0 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; }
-      details summary { cursor: pointer; }
-      .hidden { display: none; }
-      @media (max-width: 920px) {
-        main { grid-template-columns: 1fr; }
-        aside { border-right: 0; border-bottom: 1px solid #d9e0ea; }
-        .side-menu { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-        .filters, .grid, .rule-grid { grid-template-columns: 1fr; }
-        .section-header { align-items: flex-start; flex-direction: column; }
+
+      .result-panel {
+        margin-top: 12px;
+        padding: 12px;
+        background: #101714;
+        color: #dce8e2;
+        box-shadow: none;
       }
+
+      pre {
+        margin: 8px 0 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 12px;
+        line-height: 1.55;
+      }
+
+      details summary {
+        cursor: pointer;
+        color: var(--accent);
+        font-weight: 800;
+      }
+
+      .hidden { display: none !important; }
+
+      @media (max-width: 1120px) {
+        .filters { grid-template-columns: repeat(3, minmax(150px, 1fr)); }
+        .metric-grid { grid-template-columns: repeat(3, minmax(140px, 1fr)); }
+      }
+
+      @media (max-width: 880px) {
+        .topbar {
+          position: static;
+          height: auto;
+          align-items: flex-start;
+          padding: 16px;
+        }
+        .shell { grid-template-columns: 1fr; }
+        aside {
+          position: sticky;
+          top: 0;
+          z-index: 10;
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+          padding: 12px;
+        }
+        .side-label,
+        .side-note { display: none; }
+        .side-menu { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .workspace { padding: 16px; }
+        .page-head,
+        .surface-head,
+        .editor-head {
+          flex-direction: column;
+          align-items: stretch;
+        }
+        .head-actions,
+        .actions,
+        .model-tools { align-items: stretch; }
+        .head-actions button,
+        .actions button,
+        .model-tools button { flex: 1 1 auto; }
+        .filters,
+        .grid,
+        .rule-grid,
+        .metric-grid { grid-template-columns: 1fr; }
+      }
+
+      @media (max-width: 560px) {
+        .topbar { flex-direction: column; }
+        nav { width: 100%; justify-content: space-between; }
+        .brand p { display: none; }
+        .surface,
+        .editor,
+        .form-section,
+        .rule-fieldset { padding: 14px; }
+        h2 { font-size: 24px; }
+      }
+
       @media (prefers-color-scheme: dark) {
-        body { background: #101419; color: #edf2f7; }
-        header, aside, .table-wrap { background: #171c22; border-color: #2a3440; }
-        button, input, select, textarea { background: #11161c; color: #edf2f7; border-color: #3b4654; }
-        button.primary { background: #2f75ff; border-color: #2f75ff; }
-        th { background: #202832; color: #dbe4ee; }
-        td, th, .editor { border-color: #2a3440; }
-        tr.selected td { background: #18263b; }
-        label, .muted { color: #b8c2cf; }
-        .rule-fieldset { border-color: #2a3440; }
-        .rule-fieldset legend, .rule-note { color: #b8c2cf; }
-        .model-option, .result-panel { background: #171c22; border-color: #2a3440; }
-        .badge.on { color: #86efac; border-color: #166534; background: #052e1a; }
-        .badge.off { color: #fdba74; border-color: #9a3412; background: #431407; }
+        :root {
+          color-scheme: dark;
+          --bg: #0e1412;
+          --canvas: #101714;
+          --panel: #161d1a;
+          --panel-soft: #111815;
+          --ink: #edf4ef;
+          --muted: #a8b5ad;
+          --faint: #75847c;
+          --line: #28342f;
+          --line-strong: #3a4943;
+          --accent: #74b7a5;
+          --accent-strong: #9bd4c4;
+          --accent-soft: #18372f;
+          --success: #86d4b4;
+          --success-soft: #102a22;
+          --warning: #f2c580;
+          --warning-soft: #34240e;
+          --danger: #ff9a8e;
+          --danger-soft: #311713;
+          --shadow: 0 18px 48px rgba(0, 0, 0, .28);
+        }
+        body { background: linear-gradient(180deg, #111815, var(--bg)); }
+        .topbar { background: rgba(22, 29, 26, .94); }
+        button,
+        input,
+        select,
+        textarea,
+        .chip,
+        .model-option,
+        .table-wrap { background: #101714; }
+        label,
+        th { color: #d5dfd9; }
+        th { background: #18201d; }
+        td,
+        th { border-color: #24302b; }
+        tbody tr:hover td { background: #111b17; }
+        .result-panel { background: #080c0a; }
+        button.primary { color: #07100d; }
       }
     </style>
   </head>
   <body>
-    <header>
-      <h1>OpenCodex Admin</h1>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">OC</div>
+        <div>
+          <h1>OpenCodex Admin</h1>
+          <p>协议中转、渠道编排与请求观测</p>
+        </div>
+      </div>
       <nav>
+        <span class="chip">日志级别 {{ log_view_level }}</span>
         <form method="post" action="/admin/logout"><button type="submit">退出</button></form>
       </nav>
     </header>
-    <main>
+    <main class="shell">
       <aside>
+        <p class="side-label">Workspace</p>
         <div class="side-menu">
           <button id="menu-config" class="menu-item active" type="button">渠道配置</button>
-          <button id="menu-logs" class="menu-item" type="button">日志</button>
+          <button id="menu-logs" class="menu-item" type="button">请求日志</button>
         </div>
+        <p class="side-note">按顺序路由启用渠道；配置保存后会立即热加载。</p>
       </aside>
 
-      <section id="config-panel">
-        <div class="section-header">
-          <h2>渠道配置</h2>
-          <button id="add-channel" class="primary" type="button">新增渠道</button>
-        </div>
-
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>名称</th>
-                <th>类型</th>
-                <th>状态</th>
-                <th>顺序</th>
-                <th>Base URL</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="channel-table-body"></tbody>
-          </table>
-        </div>
-        <div class="actions">
-          <button id="save-config" class="primary" type="button">保存全部配置</button>
-          <button id="export-config" type="button">导出 JSON</button>
-          <button id="import-config" type="button">导入 JSON</button>
-          <input id="import-config-file" type="file" accept="application/json,.json" class="hidden">
-          <span id="config-status" class="status"></span>
-        </div>
-
-        <div id="channel-form" class="editor hidden">
-          <h3>编辑渠道</h3>
-          <div class="grid">
-            <div class="row"><label for="channel-id">ID</label><input id="channel-id"></div>
-            <div class="row"><label for="channel-name">名称</label><input id="channel-name"></div>
-            <div class="row">
-              <label for="channel-type">服务类型</label>
-              <select id="channel-type">
-                <option value="responses">responses</option>
-                <option value="chat">chat</option>
-                <option value="messages">messages</option>
-              </select>
+      <div class="workspace">
+        <section id="config-panel">
+          <div class="page-head">
+            <div>
+              <p class="eyebrow">Routing Control</p>
+              <h2>渠道配置</h2>
+              <p class="page-copy">管理上游渠道、模型映射、兼容规则，并在保存前完成连通性测试。</p>
             </div>
-            <div class="row">
-              <label for="channel-auth">鉴权模式</label>
-              <select id="channel-auth">
-                <option value="pass_through_or_config">pass_through_or_config</option>
-                <option value="pass_through">pass_through</option>
-                <option value="config">config</option>
-                <option value="none">none</option>
-              </select>
+            <div class="head-actions">
+              <button id="add-channel" class="primary" type="button">新增渠道</button>
+              <button id="export-config" type="button">导出 JSON</button>
+              <button id="import-config" type="button">导入 JSON</button>
+              <input id="import-config-file" type="file" accept="application/json,.json" class="hidden">
             </div>
-            <div class="row"><label for="channel-baseurl">Base URL</label><input id="channel-baseurl"></div>
-            <div class="row"><label for="channel-apikey">API Key</label><input id="channel-apikey"></div>
-            <div class="row"><label for="channel-timeout">超时秒数</label><input id="channel-timeout" type="number" min="1"></div>
-            <div class="row checkbox-row"><input id="channel-enabled" type="checkbox"><label for="channel-enabled">启用</label></div>
           </div>
-          <div class="row"><label for="channel-headers">Headers JSON</label><textarea id="channel-headers" spellcheck="false"></textarea></div>
-          <fieldset class="rule-fieldset">
-            <legend>模型映射</legend>
-            <div class="model-tools">
-              <button id="discover-models" type="button">获取远端模型</button>
-              <button id="add-model-mapping" type="button">手动添加映射</button>
-              <button id="add-selected-models" class="primary" type="button">添加勾选模型</button>
-              <span id="models-status" class="status"></span>
+
+          <div class="metric-grid">
+            <div class="metric-card"><span>渠道总数</span><strong id="metric-channels">0</strong></div>
+            <div class="metric-card"><span>启用渠道</span><strong id="metric-enabled">0</strong></div>
+            <div class="metric-card"><span>模型映射</span><strong id="metric-models">0</strong></div>
+          </div>
+
+          <div class="surface">
+            <div class="surface-head">
+              <div>
+                <h3>路由顺序</h3>
+                <p class="section-copy">列表从上到下决定默认路由优先级；启用状态和模型映射会共同影响请求落点。</p>
+              </div>
+              <div class="actions">
+                <button id="save-config" class="primary" type="button">保存全部配置</button>
+                <span id="config-status" class="status"></span>
+              </div>
             </div>
-            <div id="discovered-models" class="model-list hidden"></div>
             <div class="table-wrap">
-              <table class="model-map-table">
+              <table>
                 <thead>
                   <tr>
-                    <th>下游模型</th>
-                    <th>上游模型</th>
+                    <th>ID</th>
+                    <th>名称</th>
+                    <th>类型</th>
+                    <th>状态</th>
+                    <th>顺序</th>
+                    <th>Base URL</th>
                     <th>操作</th>
                   </tr>
                 </thead>
-                <tbody id="model-mappings-body"></tbody>
+                <tbody id="channel-table-body"></tbody>
               </table>
             </div>
-            <p class="rule-note">下游模型是客户端请求名；上游模型是实际发给渠道的模型名。</p>
-          </fieldset>
-          <fieldset class="rule-fieldset">
-            <legend>全局规则</legend>
-            <div class="rule-grid">
-              <div class="row checkbox-row">
-                <input id="compat-fallback-thinking" type="checkbox">
-                <label for="compat-fallback-thinking">工具续传缺少 thinking 时补占位</label>
-              </div>
-              <div class="row">
-                <label for="compat-rename-params">参数重命名</label>
-                <textarea id="compat-rename-params" spellcheck="false" placeholder="max_output_tokens=max_tokens"></textarea>
-              </div>
-              <div class="row">
-                <label for="compat-drop-params">丢弃参数</label>
-                <textarea id="compat-drop-params" spellcheck="false" placeholder="parallel_tool_calls"></textarea>
-              </div>
-              <div class="row">
-                <label for="compat-force-params">强制参数</label>
-                <textarea id="compat-force-params" spellcheck="false" placeholder='max_tokens=4096'></textarea>
-              </div>
-              <div class="row">
-                <label for="compat-default-params">默认参数</label>
-                <textarea id="compat-default-params" spellcheck="false" placeholder='temperature=0.2'></textarea>
-              </div>
-              <div class="row">
-                <label for="compat-unsupported-params">不支持参数</label>
-                <textarea id="compat-unsupported-params" spellcheck="false" placeholder="stream"></textarea>
-              </div>
-            </div>
-            <p class="rule-note">对象参数按 `key=value` 填写，右侧支持 JSON 值。</p>
-          </fieldset>
-          <div class="actions">
-            <button id="save-channel" class="primary" type="button">保存渠道</button>
-            <button id="cancel-channel" type="button">取消</button>
           </div>
-          <fieldset class="rule-fieldset">
-            <legend>渠道测试</legend>
-            <div class="row">
-              <label for="test-payload">请求 JSON</label>
-              <textarea id="test-payload" spellcheck="false"></textarea>
-            </div>
-            <div class="actions">
-              <button id="reset-test-payload" type="button">重置测试请求</button>
-              <button id="run-channel-test" class="primary" type="button">测试调用</button>
-              <span id="test-status" class="status"></span>
-            </div>
-            <div id="test-result" class="result-panel hidden"><pre></pre></div>
-          </fieldset>
-        </div>
-      </section>
 
-      <section id="logs-panel" class="hidden">
-        <div class="section-header">
-          <h2>日志</h2>
-          <span class="muted">展示等级：{{ log_view_level }}</span>
-        </div>
-        <div class="filters">
-          <div class="row"><label for="log-request-id">请求 ID</label><input id="log-request-id"></div>
-          <div class="row"><label for="log-model">模型</label><input id="log-model"></div>
-          <div class="row"><label for="log-channel">渠道</label><select id="log-channel"></select></div>
-          <div class="row">
-            <label for="log-path">路径</label>
-            <select id="log-path">
-              <option value=""></option>
-              <option value="/v1/responses">/v1/responses</option>
-              <option value="/v1/chat/completions">/v1/chat/completions</option>
-              <option value="/v1/messages">/v1/messages</option>
-            </select>
+          <div id="channel-form" class="editor hidden">
+            <div class="editor-head">
+              <div>
+                <p class="eyebrow">Channel Editor</p>
+                <h3>编辑渠道</h3>
+                <p class="section-copy">先保存渠道到当前草稿，再保存全部配置让变更生效。</p>
+              </div>
+              <div class="actions">
+                <button id="save-channel" class="primary" type="button">保存渠道</button>
+                <button id="cancel-channel" type="button">关闭编辑</button>
+              </div>
+            </div>
+
+            <div class="grid">
+              <div class="form-section">
+                <h4>基础信息</h4>
+                <div class="row"><label for="channel-id">ID</label><input id="channel-id"></div>
+                <div class="row"><label for="channel-name">名称</label><input id="channel-name"></div>
+                <div class="row checkbox-row"><input id="channel-enabled" type="checkbox"><label for="channel-enabled">启用此渠道</label></div>
+              </div>
+
+              <div class="form-section">
+                <h4>协议与鉴权</h4>
+                <div class="row">
+                  <label for="channel-type">服务类型</label>
+                  <select id="channel-type">
+                    <option value="responses">responses</option>
+                    <option value="chat">chat</option>
+                    <option value="messages">messages</option>
+                  </select>
+                </div>
+                <div class="row">
+                  <label for="channel-auth">鉴权模式</label>
+                  <select id="channel-auth">
+                    <option value="pass_through_or_config">pass_through_or_config</option>
+                    <option value="pass_through">pass_through</option>
+                    <option value="config">config</option>
+                    <option value="none">none</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-section">
+                <h4>上游连接</h4>
+                <div class="row"><label for="channel-baseurl">Base URL</label><input id="channel-baseurl"></div>
+                <div class="row"><label for="channel-apikey">API Key</label><input id="channel-apikey"></div>
+                <div class="row"><label for="channel-timeout">超时秒数</label><input id="channel-timeout" type="number" min="1"></div>
+              </div>
+
+              <div class="form-section">
+                <h4>请求头</h4>
+                <div class="row"><label for="channel-headers">Headers JSON</label><textarea id="channel-headers" spellcheck="false"></textarea></div>
+              </div>
+            </div>
+
+            <fieldset class="rule-fieldset">
+              <legend>模型映射</legend>
+              <div class="model-tools">
+                <button id="discover-models" type="button">获取远端模型</button>
+                <button id="add-model-mapping" type="button">手动添加映射</button>
+                <button id="add-selected-models" class="primary" type="button">添加勾选模型</button>
+                <span id="models-status" class="status"></span>
+              </div>
+              <div id="discovered-models" class="model-list hidden"></div>
+              <div class="table-wrap">
+                <table class="model-map-table">
+                  <thead>
+                    <tr>
+                      <th>下游模型</th>
+                      <th>上游模型</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="model-mappings-body"></tbody>
+                </table>
+              </div>
+              <p class="rule-note">下游模型是客户端请求名；上游模型是实际发给渠道的模型名。</p>
+            </fieldset>
+
+            <fieldset class="rule-fieldset">
+              <legend>兼容规则</legend>
+              <div class="rule-grid">
+                <div class="row checkbox-row">
+                  <input id="compat-fallback-thinking" type="checkbox">
+                  <label for="compat-fallback-thinking">工具续传缺少 thinking 时补占位</label>
+                </div>
+                <div class="row">
+                  <label for="compat-rename-params">参数重命名</label>
+                  <textarea id="compat-rename-params" spellcheck="false" placeholder="max_output_tokens=max_tokens"></textarea>
+                </div>
+                <div class="row">
+                  <label for="compat-drop-params">丢弃参数</label>
+                  <textarea id="compat-drop-params" spellcheck="false" placeholder="parallel_tool_calls"></textarea>
+                </div>
+                <div class="row">
+                  <label for="compat-force-params">强制参数</label>
+                  <textarea id="compat-force-params" spellcheck="false" placeholder='max_tokens=4096'></textarea>
+                </div>
+                <div class="row">
+                  <label for="compat-default-params">默认参数</label>
+                  <textarea id="compat-default-params" spellcheck="false" placeholder='temperature=0.2'></textarea>
+                </div>
+                <div class="row">
+                  <label for="compat-unsupported-params">不支持参数</label>
+                  <textarea id="compat-unsupported-params" spellcheck="false" placeholder="stream"></textarea>
+                </div>
+              </div>
+              <p class="rule-note">对象参数按 `key=value` 填写，右侧支持 JSON 值。</p>
+            </fieldset>
+
+            <fieldset class="rule-fieldset">
+              <legend>渠道测试</legend>
+              <div class="row">
+                <label for="test-payload">请求 JSON</label>
+                <textarea id="test-payload" spellcheck="false"></textarea>
+              </div>
+              <div class="actions panel-actions">
+                <button id="reset-test-payload" type="button">重置测试请求</button>
+                <button id="run-channel-test" class="primary" type="button">测试调用</button>
+                <span id="test-status" class="status"></span>
+              </div>
+              <div id="test-result" class="result-panel hidden"><pre></pre></div>
+            </fieldset>
           </div>
-          <div class="row"><label for="log-status-code">状态码</label><input id="log-status-code" type="number" min="100" max="599"></div>
-          <div class="row">
-            <label for="log-stream">流式</label>
-            <select id="log-stream">
-              <option value=""></option>
-              <option value="1">是</option>
-              <option value="0">否</option>
-            </select>
+        </section>
+
+        <section id="logs-panel" class="hidden">
+          <div class="page-head">
+            <div>
+              <p class="eyebrow">Observability</p>
+              <h2>请求日志</h2>
+              <p class="page-copy">按请求、模型、渠道、状态与时间窗口定位一次代理调用。</p>
+            </div>
+            <span class="chip">展示等级 {{ log_view_level }}</span>
           </div>
-          <div class="row"><label for="log-client-ip">客户端 IP</label><input id="log-client-ip"></div>
-          <div class="row"><label for="log-error">错误</label><input id="log-error"></div>
-          <div class="row"><label for="log-created-from">开始时间</label><input id="log-created-from" type="datetime-local"></div>
-          <div class="row"><label for="log-created-to">结束时间</label><input id="log-created-to" type="datetime-local"></div>
-          <div class="row"><label for="log-limit">数量</label><input id="log-limit" type="number" min="1" max="1000" value="200"></div>
-        </div>
-        <div class="actions">
-          <button id="search-logs" class="primary" type="button">查询</button>
-          <button id="reset-logs" type="button">重置</button>
-          <span id="logs-status" class="status"></span>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>请求 ID</th>
-                <th>路径</th>
-                <th>模型</th>
-                <th>上游模型</th>
-                <th>渠道</th>
-                <th>流式</th>
-                <th>状态</th>
-                <th>耗时</th>
-                <th>TTFT</th>
-                <th>Token</th>
-                <th>成本</th>
-                <th>错误</th>
-                <th>详情</th>
-              </tr>
-            </thead>
-            <tbody id="logs-body"></tbody>
-          </table>
-        </div>
-      </section>
+
+          <div class="surface">
+            <div class="surface-head">
+              <div>
+                <h3>筛选条件</h3>
+                <p class="section-copy">缩小范围后再查看详情，可减少日志排查时的噪音。</p>
+              </div>
+              <div class="actions">
+                <button id="search-logs" class="primary" type="button">查询</button>
+                <button id="reset-logs" type="button">重置</button>
+                <span id="logs-status" class="status"></span>
+              </div>
+            </div>
+            <div class="filters">
+              <div class="row"><label for="log-request-id">请求 ID</label><input id="log-request-id"></div>
+              <div class="row"><label for="log-model">模型</label><input id="log-model"></div>
+              <div class="row"><label for="log-channel">渠道</label><select id="log-channel"></select></div>
+              <div class="row">
+                <label for="log-path">路径</label>
+                <select id="log-path">
+                  <option value=""></option>
+                  <option value="/v1/responses">/v1/responses</option>
+                  <option value="/v1/chat/completions">/v1/chat/completions</option>
+                  <option value="/v1/messages">/v1/messages</option>
+                </select>
+              </div>
+              <div class="row"><label for="log-status-code">状态码</label><input id="log-status-code" type="number" min="100" max="599"></div>
+              <div class="row">
+                <label for="log-stream">流式</label>
+                <select id="log-stream">
+                  <option value=""></option>
+                  <option value="1">是</option>
+                  <option value="0">否</option>
+                </select>
+              </div>
+              <div class="row"><label for="log-client-ip">客户端 IP</label><input id="log-client-ip"></div>
+              <div class="row"><label for="log-error">错误</label><input id="log-error"></div>
+              <div class="row"><label for="log-created-from">开始时间</label><input id="log-created-from" type="datetime-local"></div>
+              <div class="row"><label for="log-created-to">结束时间</label><input id="log-created-to" type="datetime-local"></div>
+              <div class="row"><label for="log-limit">数量</label><input id="log-limit" type="number" min="1" max="1000" value="200"></div>
+            </div>
+          </div>
+
+          <div class="surface">
+            <div class="surface-head">
+              <div>
+                <h3>结果</h3>
+                <p class="section-copy">展开详情可查看脱敏后的请求、响应与错误上下文。</p>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>请求 ID</th>
+                    <th>路径</th>
+                    <th>模型</th>
+                    <th>上游模型</th>
+                    <th>渠道</th>
+                    <th>流式</th>
+                    <th>状态</th>
+                    <th>耗时</th>
+                    <th>TTFT</th>
+                    <th>Token</th>
+                    <th>成本</th>
+                    <th>错误</th>
+                    <th>详情</th>
+                  </tr>
+                </thead>
+                <tbody id="logs-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </div>
     </main>
     <script>
       let config = {channels: []};
@@ -328,7 +945,7 @@
 
       function setStatus(target, text, error = false) {
         $(target).textContent = text;
-        $(target).style.color = error ? "#b42318" : "#1a7f37";
+        $(target).style.color = error ? "var(--danger)" : "var(--success)";
       }
 
       function escapeHtml(value) {
@@ -641,8 +1258,18 @@
         return channel.enabled !== false;
       }
 
+      function updateMetrics() {
+        const channels = Array.isArray(config.channels) ? config.channels : [];
+        $("metric-channels").textContent = String(channels.length);
+        $("metric-enabled").textContent = String(channels.filter(channelEnabled).length);
+        $("metric-models").textContent = String(channels.reduce((total, channel) => {
+          return total + normalizeModelMappings(channel.models || []).length;
+        }, 0));
+      }
+
       function renderChannels() {
         normalizeConfig();
+        updateMetrics();
         const body = $("channel-table-body");
         body.innerHTML = "";
         if (!config.channels.length) {
