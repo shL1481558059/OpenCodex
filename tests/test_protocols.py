@@ -1,5 +1,8 @@
 import json
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 
 from opencodex_proxy.protocols import convert_request, convert_response
 
@@ -1047,13 +1050,223 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(tool_call["function"]["name"], "apply_patch")
         self.assertEqual(json.loads(tool_call["function"]["arguments"]), {"patch": patch})
 
-    def test_apply_patch_proxy_rejects_newline_path_rebuild(self):
+    def test_apply_patch_proxy_newline_path_falls_back_to_exec_command(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target_path = str(Path(tmpdir) / "bad\nname.txt")
+            arguments = json.dumps(
+                {"path": target_path, "content": "content"},
+                ensure_ascii=False,
+            )
+            payload = {
+                "id": "chatcmpl_patch_newline_path",
+                "model": "upstream",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_patch_newline_path",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "apply_patch_add_file",
+                                        "arguments": arguments,
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+            }
+
+            result = convert_response(payload, "responses", "chat", "local")
+
+            item = result["output"][0]
+            self.assertEqual(item["type"], "function_call")
+            self.assertEqual(item["name"], "exec_command")
+            self.assertEqual(item["call_id"], "call_patch_newline_path")
+
+            command = json.loads(item["arguments"])["cmd"]
+            self.assertIn("PYTHON_BIN=python3", command)
+            self.assertIn('"$PYTHON_BIN" - <<\'PY\'', command)
+            completed = subprocess.run(
+                command,
+                shell=True,
+                cwd=tmpdir,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(Path(target_path).read_text(encoding="utf-8"), "content")
+
+    def test_apply_patch_proxy_newline_move_to_falls_back_to_exec_command(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "old.txt"
+            destination = Path(tmpdir) / "bad\nname.txt"
+            source.write_text("old\nkeep", encoding="utf-8")
+            arguments = json.dumps(
+                {
+                    "path": str(source),
+                    "move_to": str(destination),
+                    "hunks": [
+                        {
+                            "lines": [
+                                {"op": "remove", "text": "old"},
+                                {"op": "add", "text": "new"},
+                            ]
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            )
+            payload = {
+                "id": "chatcmpl_patch_newline_move_to",
+                "model": "upstream",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_patch_newline_move_to",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "apply_patch_update_file",
+                                        "arguments": arguments,
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+            }
+
+            result = convert_response(payload, "responses", "chat", "local")
+
+            item = result["output"][0]
+            self.assertEqual(item["type"], "function_call")
+            self.assertEqual(item["name"], "exec_command")
+            self.assertEqual(item["call_id"], "call_patch_newline_move_to")
+
+            command = json.loads(item["arguments"])["cmd"]
+            completed = subprocess.run(
+                command,
+                shell=True,
+                cwd=tmpdir,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertFalse(source.exists())
+            self.assertEqual(destination.read_text(encoding="utf-8"), "new\nkeep")
+
+    def test_apply_patch_proxy_newline_batch_fallback_executes_mixed_operations(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            update_target = root / "update\nfile.txt"
+            replace_target = root / "replace\nfile.txt"
+            delete_target = root / "delete\nfile.txt"
+            add_target = root / "add\nfile.txt"
+            update_target.write_text("alpha\nbeta", encoding="utf-8")
+            replace_target.write_text("old replace", encoding="utf-8")
+            delete_target.write_text("delete me", encoding="utf-8")
+            arguments = json.dumps(
+                {
+                    "operations": [
+                        {
+                            "type": "add_file",
+                            "path": str(add_target),
+                            "content": "added",
+                        },
+                        {
+                            "type": "update_file",
+                            "path": str(update_target),
+                            "hunks": [
+                                {
+                                    "lines": [
+                                        {"op": "context", "text": "alpha"},
+                                        {"op": "remove", "text": "beta"},
+                                        {"op": "add", "text": "gamma"},
+                                    ]
+                                }
+                            ],
+                        },
+                        {
+                            "type": "replace_file",
+                            "path": str(replace_target),
+                            "content": "new replace",
+                        },
+                        {"type": "delete_file", "path": str(delete_target)},
+                    ]
+                },
+                ensure_ascii=False,
+            )
+            payload = {
+                "id": "chatcmpl_patch_newline_batch",
+                "model": "upstream",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_patch_newline_batch",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "apply_patch_batch",
+                                        "arguments": arguments,
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+            }
+
+            result = convert_response(payload, "responses", "chat", "local")
+
+            item = result["output"][0]
+            self.assertEqual(item["type"], "function_call")
+            self.assertEqual(item["name"], "exec_command")
+
+            command = json.loads(item["arguments"])["cmd"]
+            completed = subprocess.run(
+                command,
+                shell=True,
+                cwd=tmpdir,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(add_target.read_text(encoding="utf-8"), "added")
+            self.assertEqual(update_target.read_text(encoding="utf-8"), "alpha\ngamma")
+            self.assertEqual(replace_target.read_text(encoding="utf-8"), "new replace")
+            self.assertFalse(delete_target.exists())
+
+    def test_raw_apply_patch_response_falls_back_to_exec_command(self):
+        patch = "\n".join(
+            [
+                "*** Begin Patch",
+                "*** Add File: created.txt",
+                "+hello",
+                "*** End Patch",
+            ]
+        )
         arguments = json.dumps(
-            {"path": "bad\nname.txt", "content": "content"},
+            {"command": ["apply_patch", patch], "metadata": {"ignored": True}},
             ensure_ascii=False,
         )
         payload = {
-            "id": "chatcmpl_patch_newline_path",
+            "id": "chatcmpl_raw_patch",
             "model": "upstream",
             "choices": [
                 {
@@ -1062,7 +1275,103 @@ class ProtocolTests(unittest.TestCase):
                         "content": "",
                         "tool_calls": [
                             {
-                                "id": "call_patch_newline_path",
+                                "id": "call_raw_patch",
+                                "type": "function",
+                                "function": {
+                                    "name": "apply_patch",
+                                    "arguments": arguments,
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        }
+
+        result = convert_response(payload, "responses", "chat", "local")
+
+        item = result["output"][0]
+        self.assertEqual(item["type"], "function_call")
+        self.assertEqual(item["name"], "exec_command")
+        self.assertEqual(item["call_id"], "call_raw_patch")
+        command = json.loads(item["arguments"])["cmd"]
+        self.assertIn("subprocess.run(['apply_patch']", command)
+
+    def test_raw_apply_patch_newline_update_add_falls_back_to_python_exec_command(self):
+        patch = "\n".join(
+            [
+                "*** Begin Patch",
+                "*** Update File: cli-newline",
+                "name.txt",
+                "@@ -0,0 +1,1 @@",
+                "+EXACT-CONTENT",
+                "*** End Patch",
+            ]
+        )
+        arguments = json.dumps({"command": ["apply_patch", patch]}, ensure_ascii=False)
+        payload = {
+            "id": "chatcmpl_raw_newline_patch",
+            "model": "upstream",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_raw_newline_patch",
+                                "type": "function",
+                                "function": {
+                                    "name": "apply_patch",
+                                    "arguments": arguments,
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = convert_response(payload, "responses", "chat", "local")
+
+            item = result["output"][0]
+            self.assertEqual(item["type"], "function_call")
+            self.assertEqual(item["name"], "exec_command")
+            command = json.loads(item["arguments"])["cmd"]
+            self.assertIn("payload.get('operations')", command)
+            completed = subprocess.run(
+                command,
+                shell=True,
+                cwd=tmpdir,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(
+                (Path(tmpdir) / "cli-newline\nname.txt").read_text(encoding="utf-8"),
+                "EXACT-CONTENT",
+            )
+
+    def test_apply_patch_proxy_normal_path_still_rebuilds_raw_patch(self):
+        arguments = json.dumps(
+            {"path": "normal.txt", "content": "content"},
+            ensure_ascii=False,
+        )
+        payload = {
+            "id": "chatcmpl_patch_normal_path",
+            "model": "upstream",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_patch_normal_path",
                                 "type": "function",
                                 "function": {
                                     "name": "apply_patch_add_file",
@@ -1078,54 +1387,20 @@ class ProtocolTests(unittest.TestCase):
 
         result = convert_response(payload, "responses", "chat", "local")
 
+        item = result["output"][0]
+        self.assertEqual(item["type"], "custom_tool_call")
+        self.assertEqual(item["name"], "apply_patch")
         self.assertEqual(
-            result["output"][0]["input"],
-            json.dumps({"path": "bad\nname.txt", "content": "content"}, ensure_ascii=False),
+            item["input"],
+            "\n".join(
+                [
+                    "*** Begin Patch",
+                    "*** Add File: normal.txt",
+                    "+content",
+                    "*** End Patch",
+                ]
+            ),
         )
-
-    def test_apply_patch_proxy_rejects_newline_move_to_rebuild(self):
-        arguments = json.dumps(
-            {
-                "path": "old.txt",
-                "move_to": "bad\nname.txt",
-                "hunks": [
-                    {
-                        "lines": [
-                            {"op": "remove", "text": "old"},
-                            {"op": "add", "text": "new"},
-                        ]
-                    }
-                ],
-            },
-            ensure_ascii=False,
-        )
-        payload = {
-            "id": "chatcmpl_patch_newline_move_to",
-            "model": "upstream",
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": [
-                            {
-                                "id": "call_patch_newline_move_to",
-                                "type": "function",
-                                "function": {
-                                    "name": "apply_patch_update_file",
-                                    "arguments": arguments,
-                                },
-                            }
-                        ],
-                    },
-                    "finish_reason": "tool_calls",
-                }
-            ],
-        }
-
-        result = convert_response(payload, "responses", "chat", "local")
-
-        self.assertEqual(result["output"][0]["input"], arguments)
 
     def test_apply_patch_failure_output_allows_followup_structured_retry(self):
         failed_patch = "\n".join(
