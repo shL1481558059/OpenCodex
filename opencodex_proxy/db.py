@@ -256,10 +256,20 @@ def extract_usage(response: dict[str, Any], protocol: str) -> dict[str, int]:
     if protocol == "chat":
         return {
             "input_tokens": usage.get("prompt_tokens", 0),
-            "cached_tokens": 0,
+            "cached_tokens": _chat_cached_tokens(usage),
             "output_tokens": usage.get("completion_tokens", 0),
         }
     return {"input_tokens": 0, "cached_tokens": 0, "output_tokens": 0}
+
+
+def _chat_cached_tokens(usage: dict[str, Any]) -> int:
+    details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
+    if not isinstance(details, dict):
+        return 0
+    try:
+        return int(details.get("cached_tokens") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def calculate_cost(
@@ -298,6 +308,7 @@ TEXT_FILTER_FIELDS = {
 }
 
 INTEGER_FILTER_FIELDS = {"status_code", "is_stream"}
+REQUEST_STATUS_VALUES = {"success", "failed"}
 
 
 def read_logs(
@@ -307,7 +318,77 @@ def read_logs(
 ) -> list[dict[str, Any]]:
     if not db_path.exists():
         return []
-    filters = filters or {}
+    where_clause, params = _log_where_clause(filters or {})
+
+    try:
+        parsed_limit = int(limit)
+    except (TypeError, ValueError):
+        parsed_limit = 200
+    parsed_limit = max(1, min(parsed_limit, 1000))
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    cursor = conn.execute(
+        f"SELECT * FROM request_logs {where_clause} ORDER BY id DESC LIMIT ?",
+        (*params, parsed_limit),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [_row_to_log(row) for row in rows]
+
+
+def read_logs_page(
+    db_path: Path,
+    page: int = 1,
+    page_size: int = 50,
+    filters: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not db_path.exists():
+        return {"events": [], "total": 0, "page": 1, "page_size": _parse_page_size(page_size)}
+
+    parsed_page = _parse_page(page)
+    parsed_page_size = _parse_page_size(page_size)
+    offset = (parsed_page - 1) * parsed_page_size
+    where_clause, params = _log_where_clause(filters or {})
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM request_logs {where_clause}",
+        params,
+    ).fetchone()[0]
+    rows = conn.execute(
+        f"SELECT * FROM request_logs {where_clause} ORDER BY id DESC LIMIT ? OFFSET ?",
+        (*params, parsed_page_size, offset),
+    ).fetchall()
+    conn.close()
+    return {
+        "events": [_row_to_log(row) for row in rows],
+        "total": int(total),
+        "page": parsed_page,
+        "page_size": parsed_page_size,
+    }
+
+
+def read_log_filter_options(db_path: Path) -> dict[str, list[Any]]:
+    if not db_path.exists():
+        return _empty_log_filter_options()
+    conn = sqlite3.connect(str(db_path))
+    try:
+        return {
+            "request_ids": _distinct_text_values(conn, "request_id"),
+            "models": _distinct_text_values(conn, "model"),
+            "upstream_models": _distinct_text_values(conn, "upstream_model"),
+            "channel_ids": _distinct_text_values(conn, "channel_id"),
+            "paths": _distinct_text_values(conn, "path"),
+            "status_codes": _distinct_int_values(conn, "status_code"),
+            "request_statuses": ["success", "failed"],
+        }
+    finally:
+        conn.close()
+
+
+def _log_where_clause(filters: dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
     conditions: list[str] = []
     params: list[Any] = []
 
@@ -329,6 +410,13 @@ def read_logs(
         conditions.append(f"{field} = ?")
         params.append(int_value)
 
+    request_status = str(filters.get("request_status") or "").strip()
+    if request_status in REQUEST_STATUS_VALUES:
+        if request_status == "success":
+            conditions.append("status_code < 400 AND (error IS NULL OR error = '')")
+        else:
+            conditions.append("(status_code >= 400 OR (error IS NOT NULL AND error != ''))")
+
     for field, operator in (("created_from", ">="), ("created_to", "<=")):
         value = filters.get(field)
         if value in (None, ""):
@@ -340,19 +428,81 @@ def read_logs(
         conditions.append(f"created_at {operator} ?")
         params.append(timestamp)
 
-    try:
-        parsed_limit = int(limit)
-    except (TypeError, ValueError):
-        parsed_limit = 200
-    parsed_limit = max(1, min(parsed_limit, 1000))
-
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    cursor = conn.execute(
-        f"SELECT * FROM request_logs {where_clause} ORDER BY id DESC LIMIT ?",
-        (*params, parsed_limit),
-    )
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+    return where_clause, tuple(params)
+
+
+def _row_to_log(row: sqlite3.Row) -> dict[str, Any]:
+    log = dict(row)
+    log["request_status"] = _request_status(log)
+    return log
+
+
+def _request_status(log: dict[str, Any]) -> str:
+    status_code = log.get("status_code")
+    try:
+        status = int(status_code)
+    except (TypeError, ValueError):
+        status = 0
+    error = str(log.get("error") or "").strip()
+    return "failed" if status >= 400 or error else "success"
+
+
+def _parse_page(page: Any) -> int:
+    try:
+        parsed = int(page)
+    except (TypeError, ValueError):
+        parsed = 1
+    return max(1, parsed)
+
+
+def _parse_page_size(page_size: Any) -> int:
+    try:
+        parsed = int(page_size)
+    except (TypeError, ValueError):
+        parsed = 50
+    return max(1, min(parsed, 200))
+
+
+def _empty_log_filter_options() -> dict[str, list[Any]]:
+    return {
+        "request_ids": [],
+        "models": [],
+        "upstream_models": [],
+        "channel_ids": [],
+        "paths": [],
+        "status_codes": [],
+        "request_statuses": ["success", "failed"],
+    }
+
+
+def _distinct_text_values(conn: sqlite3.Connection, field: str) -> list[str]:
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT {field}
+        FROM request_logs
+        WHERE {field} IS NOT NULL AND {field} != ''
+        ORDER BY {field} ASC
+        LIMIT 200
+        """
+    ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def _distinct_int_values(conn: sqlite3.Connection, field: str) -> list[int]:
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT {field}
+        FROM request_logs
+        WHERE {field} IS NOT NULL
+        ORDER BY {field} ASC
+        LIMIT 200
+        """
+    ).fetchall()
+    values: list[int] = []
+    for row in rows:
+        try:
+            values.append(int(row[0]))
+        except (TypeError, ValueError):
+            continue
+    return values

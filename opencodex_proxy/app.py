@@ -5,6 +5,7 @@ import json
 import sqlite3
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 from flask import (
@@ -15,6 +16,7 @@ from flask import (
     render_template,
     request,
     session,
+    send_from_directory,
     stream_with_context,
     url_for,
 )
@@ -27,9 +29,15 @@ from .config import (
     strip_removed_config_fields,
     validate_channel,
 )
-from .db import AsyncDBWriter, calculate_cost, extract_usage, read_logs
+from .db import (
+    AsyncDBWriter,
+    calculate_cost,
+    extract_usage,
+    read_log_filter_options,
+    read_logs_page,
+)
 from .errors import BadRequestError, ProxyError
-from .logging_utils import configure_logging, log_event, read_log_events, redact
+from .logging_utils import configure_logging, log_event, redact
 from .protocols import convert_request, convert_response
 from .reasoning_cache import ReasoningCache
 from .routing import choose_channel
@@ -74,6 +82,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     app = Flask(__name__)
     app.secret_key = settings.secret_key
+    admin_static_dir = (Path(__file__).parent / "static" / "admin").resolve()
     app.config["OPENCODEX_SETTINGS"] = settings
     app.config["OPENCODEX_CONFIG_MANAGER"] = config_manager
     app.config["OPENCODEX_LOGGER"] = logger
@@ -101,6 +110,8 @@ def create_app(settings: Settings | None = None) -> Flask:
                 return redirect(url_for("admin"))
             error = "密码错误"
             log_event(logger, "WARNING", "admin login failed", path="/admin")
+        if request.method == "GET" and (admin_static_dir / "index.html").exists():
+            return _spa_index_response(admin_static_dir)
         if not is_admin_authenticated():
             return render_template("login.html", error=error)
         return render_template(
@@ -109,10 +120,41 @@ def create_app(settings: Settings | None = None) -> Flask:
             log_levels=["BASIC", "DEBUG", "TRACE"],
         )
 
+    @app.get("/admin/<path:asset_path>")
+    def admin_assets(asset_path: str):
+        if (admin_static_dir / asset_path).is_file():
+            return send_from_directory(admin_static_dir, asset_path)
+        if (admin_static_dir / "index.html").exists():
+            return _spa_index_response(admin_static_dir)
+        return redirect(url_for("admin"))
+
+    @app.get("/admin/api/session")
+    def admin_session():
+        return jsonify({"authenticated": is_admin_authenticated()})
+
+    @app.post("/admin/api/login")
+    def admin_login():
+        body = request.get_json(silent=True)
+        password = ""
+        if isinstance(body, dict):
+            password = str(body.get("password", ""))
+        else:
+            password = request.form.get("password", "")
+        if password == settings.admin_password:
+            session["admin_authenticated"] = True
+            return jsonify({"authenticated": True})
+        log_event(logger, "WARNING", "admin login failed", path="/admin/api/login")
+        return jsonify({"error": "密码错误"}), 401
+
     @app.post("/admin/logout")
     def admin_logout():
         session.clear()
         return redirect(url_for("admin"))
+
+    @app.post("/admin/api/logout")
+    def admin_api_logout():
+        session.clear()
+        return jsonify({"authenticated": False})
 
     @app.get("/admin/api/config")
     def admin_get_config():
@@ -222,13 +264,20 @@ def create_app(settings: Settings | None = None) -> Flask:
                 "is_stream",
                 "client_ip",
                 "error",
+                "request_status",
                 "created_from",
                 "created_to",
             )
             if request.args.get(key) not in (None, "")
         }
-        events = read_logs(settings.db_path, request.args.get("limit", "200"), filters)
-        return jsonify({"events": events})
+        page = read_logs_page(
+            settings.db_path,
+            page=request.args.get("page", "1"),
+            page_size=request.args.get("page_size", "50"),
+            filters=filters,
+        )
+        page["filter_options"] = read_log_filter_options(settings.db_path)
+        return jsonify(page)
 
     @app.post("/admin/api/channels/discover-models")
     def admin_discover_models():
@@ -382,12 +431,7 @@ def create_app(settings: Settings | None = None) -> Flask:
                 if response_protocol is not None:
                     usage = extract_usage(response_body, response_protocol)
                     db_record.update(usage)
-                    db_record["cost"] = calculate_cost(
-                        db_record["model"] or "",
-                        usage["input_tokens"],
-                        usage["cached_tokens"],
-                        usage["output_tokens"],
-                    )
+                    db_record["cost"] = _calculate_record_cost(db_record, usage, response_body)
                 db_record["response_body"] = json.dumps(redact(response_body), ensure_ascii=False)
 
             db_writer.write(db_record)
@@ -475,11 +519,11 @@ def create_app(settings: Settings | None = None) -> Flask:
                     request.headers.get("Authorization"),
                     settings.default_timeout,
                 )
-                first_token_recorded = False
+                ttft_recorded = False
                 streamed_upstream_response = None
 
                 def stream_with_ttft():
-                    nonlocal first_token_recorded, streamed_upstream_response, ttft_ms
+                    nonlocal ttft_recorded, streamed_upstream_response, ttft_ms
                     stream_error = None
 
                     def remember_streamed_response(response: dict[str, Any]) -> None:
@@ -505,8 +549,8 @@ def create_app(settings: Settings | None = None) -> Flask:
                             )
                         )
                         for line in event_iter:
-                            if not first_token_recorded and "response.output_text.delta" in line:
-                                first_token_recorded = True
+                            if not ttft_recorded and _counts_for_ttft(line):
+                                ttft_recorded = True
                                 ttft_ms = int((time.time() - ttft_start) * 1000)
                             yield line
                     except Exception as exc:
@@ -551,9 +595,15 @@ def create_app(settings: Settings | None = None) -> Flask:
             )
             if stream_requested:
                 def stream_synthesized_response():
+                    nonlocal ttft_ms
                     stream_error = None
+                    ttft_recorded = False
                     try:
-                        yield from responses_sse_events(response_payload)
+                        for line in responses_sse_events(response_payload):
+                            if not ttft_recorded and _counts_for_ttft(line):
+                                ttft_recorded = True
+                                ttft_ms = int((time.time() - started) * 1000)
+                            yield line
                     except Exception as exc:
                         stream_error = str(exc)
                         raise
@@ -615,6 +665,13 @@ def require_admin() -> None:
         raise BadRequestError("admin authentication required", status_code=401)
 
 
+def _spa_index_response(admin_static_dir: Path) -> Response:
+    return Response(
+        (admin_static_dir / "index.html").read_text(encoding="utf-8"),
+        mimetype="text/html",
+    )
+
+
 def _draft_channel_from_request(default_timeout: int) -> dict[str, Any]:
     body = request.get_json(silent=True)
     if not isinstance(body, dict):
@@ -657,6 +714,39 @@ def _test_models(channel: dict[str, Any], model: Any) -> tuple[str, str]:
 def _visible_params(payload: dict[str, Any]) -> dict[str, Any]:
     hidden = {"messages", "input", "instructions", "system", "tools"}
     return {key: redact(value) for key, value in payload.items() if key not in hidden}
+
+
+def _counts_for_ttft(sse_line: str) -> bool:
+    return any(
+        event_name in sse_line
+        for event_name in (
+            "response.output_text.delta",
+            "response.reasoning_summary_text.delta",
+            "response.function_call_arguments.delta",
+            "response.output_item.done",
+        )
+    )
+
+
+def _calculate_record_cost(
+    db_record: dict[str, Any],
+    usage: dict[str, int],
+    response_body: dict[str, Any],
+) -> float:
+    for model in (
+        db_record.get("model"),
+        db_record.get("upstream_model"),
+        response_body.get("model"),
+    ):
+        cost = calculate_cost(
+            str(model or ""),
+            usage["input_tokens"],
+            usage["cached_tokens"],
+            usage["output_tokens"],
+        )
+        if cost:
+            return cost
+    return 0.0
 
 
 def _request_cache_namespace(payload: dict[str, Any], request_id: str) -> str:

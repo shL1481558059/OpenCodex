@@ -50,12 +50,13 @@ class TestExtractUsage(unittest.TestCase):
         response = {
             "usage": {
                 "prompt_tokens": 100,
+                "prompt_tokens_details": {"cached_tokens": 25},
                 "completion_tokens": 50,
             }
         }
         result = extract_usage(response, "chat")
         self.assertEqual(result["input_tokens"], 100)
-        self.assertEqual(result["cached_tokens"], 0)
+        self.assertEqual(result["cached_tokens"], 25)
         self.assertEqual(result["output_tokens"], 50)
 
     def test_missing_usage(self):
@@ -192,6 +193,84 @@ class TestAsyncDBWriter(unittest.TestCase):
         writer.stop()
         logs = read_logs(self.db_path, limit=3)
         self.assertEqual(len(logs), 3)
+
+    def test_paginated_logs_include_total_and_request_status(self):
+        writer = AsyncDBWriter(self.db_path)
+        writer.start()
+        for i in range(5):
+            record = {
+                "request_id": f"req_{i}",
+                "created_at": time.time(),
+                "method": "POST",
+                "path": "/v1/responses",
+                "client_ip": "127.0.0.1",
+                "request_headers": "{}",
+                "request_body": "{}",
+                "model": "gpt-4o",
+                "upstream_model": "gpt-4o",
+                "channel_id": "openai",
+                "is_stream": 0,
+                "ttft_ms": None,
+                "duration_ms": 100,
+                "status_code": 500 if i == 0 else 200,
+                "response_body": "{}",
+                "input_tokens": 100,
+                "cached_tokens": 0,
+                "output_tokens": 50,
+                "cost": 0.001,
+                "error": "boom" if i == 0 else None,
+            }
+            writer.write(record)
+        time.sleep(0.2)
+        writer.stop()
+
+        from opencodex_proxy.db import read_logs_page
+
+        page = read_logs_page(self.db_path, page=2, page_size=2)
+
+        self.assertEqual(page["total"], 5)
+        self.assertEqual(page["page"], 2)
+        self.assertEqual(page["page_size"], 2)
+        self.assertEqual(len(page["events"]), 2)
+        self.assertIn(page["events"][0]["request_status"], {"success", "failed"})
+
+    def test_log_filter_options_are_loaded_from_existing_logs(self):
+        writer = AsyncDBWriter(self.db_path)
+        writer.start()
+        for status_code, model in ((200, "gpt-4o"), (502, "claude-3-5-sonnet")):
+            writer.write(
+                {
+                    "request_id": f"req_{status_code}",
+                    "created_at": time.time(),
+                    "method": "POST",
+                    "path": "/v1/responses",
+                    "client_ip": "127.0.0.1",
+                    "request_headers": "{}",
+                    "request_body": "{}",
+                    "model": model,
+                    "upstream_model": model,
+                    "channel_id": "openai",
+                    "is_stream": 0,
+                    "ttft_ms": None,
+                    "duration_ms": 100,
+                    "status_code": status_code,
+                    "response_body": "{}",
+                    "input_tokens": 100,
+                    "cached_tokens": 0,
+                    "output_tokens": 50,
+                    "cost": 0.001,
+                    "error": None,
+                }
+            )
+        time.sleep(0.2)
+        writer.stop()
+
+        from opencodex_proxy.db import read_log_filter_options
+
+        options = read_log_filter_options(self.db_path)
+
+        self.assertEqual(options["models"], ["claude-3-5-sonnet", "gpt-4o"])
+        self.assertEqual(options["status_codes"], [200, 502])
 
     def test_filters_logs_by_common_fields(self):
         writer = AsyncDBWriter(self.db_path)
