@@ -12,14 +12,12 @@ body {
 .app-page {
   box-sizing: border-box;
   min-height: 100vh;
-  padding: 32px;
 }
 
 .app-shell {
   box-sizing: border-box;
-  min-height: calc(100vh - 64px);
+  min-height: 100vh;
   overflow: hidden;
-  border-radius: 14px;
   background: var(--el-bg-color);
 }
 
@@ -38,7 +36,7 @@ body {
 }
 
 .app-body {
-  min-height: calc(100vh - 184px);
+  min-height: calc(100vh - 120px);
 }
 
 .app-aside {
@@ -132,6 +130,42 @@ body {
   padding-left: 68px;
 }
 
+.log-table .el-table__cell {
+  padding: 5px 0;
+}
+
+.log-column-settings__header,
+.log-column-settings__item,
+.log-column-settings__actions {
+  display: flex;
+  align-items: center;
+}
+
+.log-column-settings__header,
+.log-column-settings__item {
+  justify-content: space-between;
+}
+
+.log-column-settings__header {
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.log-column-settings__list {
+  display: grid;
+  gap: 4px;
+}
+
+.log-column-settings__item {
+  min-height: 32px;
+  gap: 8px;
+}
+
+.log-column-settings__actions {
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
 .pagination-bar {
   display: flex;
   justify-content: flex-end;
@@ -187,11 +221,11 @@ body {
 
 @media (max-width: 900px) {
   .app-page {
-    padding: 12px;
+    min-height: 100vh;
   }
 
   .app-shell {
-    min-height: calc(100vh - 24px);
+    min-height: 100vh;
   }
 
   .app-header {
@@ -204,6 +238,7 @@ body {
 
   .app-body {
     display: block;
+    min-height: calc(100vh - 88px);
   }
 
   .app-aside {
