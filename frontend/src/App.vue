@@ -29,224 +29,223 @@
     </el-card>
   </div>
 
-  <el-container v-else class="app-shell">
-    <el-aside width="220px">
-      <el-menu :default-active="activeTab" @select="activeTab = $event">
-        <el-menu-item index="channels">
-          <el-icon><Connection /></el-icon>
-          <span>渠道配置</span>
-        </el-menu-item>
-        <el-menu-item index="logs">
-          <el-icon><Tickets /></el-icon>
-          <span>请求日志</span>
-        </el-menu-item>
-      </el-menu>
-    </el-aside>
-
-    <el-container>
-      <el-header>
-        <div class="toolbar">
-          <div>
-            <strong>OpenCodex Proxy</strong>
-            <div class="text-muted">渠道配置和请求日志</div>
-          </div>
-          <el-button :icon="SwitchButton" @click="logout">退出</el-button>
-        </div>
+  <div v-else class="app-page">
+    <el-container class="app-shell">
+      <el-header class="app-header">
+        <strong>OpenCodex Proxy</strong>
+        <el-button :icon="SwitchButton" @click="logout">退出</el-button>
       </el-header>
 
-      <el-main class="main-content">
-        <section v-show="activeTab === 'channels'">
-          <div class="toolbar">
-            <div>
-              <h2>渠道配置</h2>
-              <div class="text-muted">保存单个渠道后立即生效</div>
-            </div>
-            <div class="toolbar-actions">
-              <el-upload :show-file-list="false" accept="application/json" :before-upload="importConfig">
-                <template #trigger>
-                  <el-button :icon="Upload">导入配置</el-button>
-                </template>
-              </el-upload>
-              <el-button :icon="Download" @click="exportConfig">导出配置</el-button>
-              <el-button :icon="Refresh" @click="loadConfig">刷新</el-button>
-              <el-button type="primary" :icon="Plus" @click="openChannelDrawer()">新增渠道</el-button>
-            </div>
-          </div>
+      <el-container class="app-body">
+        <el-aside width="260px" class="app-aside">
+          <el-menu class="side-menu" :default-active="activeTab" @select="activeTab = $event">
+            <el-menu-item index="channels">
+              <el-icon><Connection /></el-icon>
+              <span>渠道配置</span>
+            </el-menu-item>
+            <el-menu-item index="logs">
+              <el-icon><Tickets /></el-icon>
+              <span>请求日志</span>
+            </el-menu-item>
+          </el-menu>
+        </el-aside>
 
-          <el-row :gutter="12">
-            <el-col :span="8">
-              <el-statistic title="渠道总数" :value="channels.length" />
-            </el-col>
-            <el-col :span="8">
-              <el-statistic title="启用渠道" :value="enabledChannelCount" />
-            </el-col>
-            <el-col :span="8">
-              <el-statistic title="模型映射" :value="modelMappingCount" />
-            </el-col>
-          </el-row>
-
-          <el-table
-            v-loading="configLoading"
-            :data="channels"
-            row-key="id"
-            style="width: 100%; margin-top: 16px"
-            empty-text="暂无渠道"
-          >
-            <el-table-column prop="id" label="ID" min-width="160" show-overflow-tooltip />
-            <el-table-column prop="name" label="名称" min-width="140" show-overflow-tooltip />
-            <el-table-column prop="type" label="服务类型" width="110">
-              <template #default="{ row }">
-                <el-tag>{{ row.type }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="baseurl" label="Base URL" min-width="220" show-overflow-tooltip />
-            <el-table-column label="模型映射" width="110">
-              <template #default="{ row }">{{ normalizeModels(row.models).length }}</template>
-            </el-table-column>
-            <el-table-column label="状态" width="100">
-              <template #default="{ row }">
-                <el-tag :type="row.enabled === false ? 'warning' : 'success'">
-                  {{ row.enabled === false ? "停用" : "启用" }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="操作" width="250" fixed="right">
-              <template #default="{ row, $index }">
-                <div class="inline-actions">
-                  <el-button size="small" :icon="Edit" @click="openChannelDrawer(row, $index)">编辑</el-button>
-                  <el-button size="small" :disabled="$index === 0" @click="moveChannel($index, -1)">上移</el-button>
-                  <el-button size="small" :disabled="$index === channels.length - 1" @click="moveChannel($index, 1)">
-                    下移
-                  </el-button>
-                  <el-popconfirm title="删除这个渠道？" @confirm="deleteChannel($index)">
-                    <template #reference>
-                      <el-button size="small" type="danger" :icon="Delete">删除</el-button>
-                    </template>
-                  </el-popconfirm>
+        <el-main class="main-content">
+          <div class="content-panel">
+            <section v-show="activeTab === 'channels'">
+              <div class="toolbar">
+                <div>
+                  <h2>渠道配置</h2>
+                  <div class="text-muted">保存单个渠道后立即生效</div>
                 </div>
-              </template>
-            </el-table-column>
-          </el-table>
-        </section>
+                <div class="toolbar-actions">
+                  <el-upload :show-file-list="false" accept="application/json" :before-upload="importConfig">
+                    <template #trigger>
+                      <el-button :icon="Upload">导入配置</el-button>
+                    </template>
+                  </el-upload>
+                  <el-button :icon="Download" @click="exportConfig">导出配置</el-button>
+                  <el-button :icon="Refresh" @click="loadConfig">刷新</el-button>
+                  <el-button type="primary" :icon="Plus" @click="openChannelDrawer()">新增渠道</el-button>
+                </div>
+              </div>
 
-        <section v-show="activeTab === 'logs'">
-          <div class="toolbar">
-            <div>
-              <h2>请求日志</h2>
-              <div class="text-muted">表格分页展示，详情中查看完整请求与响应</div>
-            </div>
-            <div class="toolbar-actions">
-              <el-button :icon="Refresh" @click="loadLogs">刷新</el-button>
-              <el-button @click="resetLogFilters">重置</el-button>
-            </div>
+              <el-row :gutter="12">
+                <el-col :span="8">
+                  <el-statistic title="渠道总数" :value="channels.length" />
+                </el-col>
+                <el-col :span="8">
+                  <el-statistic title="启用渠道" :value="enabledChannelCount" />
+                </el-col>
+                <el-col :span="8">
+                  <el-statistic title="模型映射" :value="modelMappingCount" />
+                </el-col>
+              </el-row>
+
+              <el-table
+                v-loading="configLoading"
+                :data="channels"
+                row-key="id"
+                style="width: 100%; margin-top: 16px"
+                empty-text="暂无渠道"
+              >
+                <el-table-column prop="id" label="ID" min-width="160" show-overflow-tooltip />
+                <el-table-column prop="name" label="名称" min-width="140" show-overflow-tooltip />
+                <el-table-column prop="type" label="服务类型" width="110">
+                  <template #default="{ row }">
+                    <el-tag>{{ row.type }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="baseurl" label="Base URL" min-width="220" show-overflow-tooltip />
+                <el-table-column label="模型映射" width="110">
+                  <template #default="{ row }">{{ normalizeModels(row.models).length }}</template>
+                </el-table-column>
+                <el-table-column label="状态" width="100">
+                  <template #default="{ row }">
+                    <el-tag :type="row.enabled === false ? 'warning' : 'success'">
+                      {{ row.enabled === false ? "停用" : "启用" }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="250">
+                  <template #default="{ row, $index }">
+                    <div class="inline-actions">
+                      <el-button size="small" :icon="Edit" @click="openChannelDrawer(row, $index)">编辑</el-button>
+                      <el-button size="small" :disabled="$index === 0" @click="moveChannel($index, -1)">上移</el-button>
+                      <el-button size="small" :disabled="$index === channels.length - 1" @click="moveChannel($index, 1)">
+                        下移
+                      </el-button>
+                      <el-popconfirm title="删除这个渠道？" @confirm="deleteChannel($index)">
+                        <template #reference>
+                          <el-button size="small" type="danger" :icon="Delete">删除</el-button>
+                        </template>
+                      </el-popconfirm>
+                    </div>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </section>
+
+            <section v-show="activeTab === 'logs'">
+              <div class="toolbar">
+                <div>
+                  <h2>请求日志</h2>
+                  <div class="text-muted">表格分页展示，详情中查看完整请求与响应</div>
+                </div>
+                <div class="toolbar-actions">
+                  <el-button :icon="Refresh" @click="loadLogs">刷新</el-button>
+                  <el-button @click="resetLogFilters">重置</el-button>
+                </div>
+              </div>
+
+              <el-form class="log-filter-form" :model="logFilters">
+                <el-form-item label="请求 ID">
+                  <el-autocomplete
+                    v-model="logFilters.request_id"
+                    :fetch-suggestions="requestIdSuggestions"
+                    clearable
+                    @select="loadLogs(1)"
+                  />
+                </el-form-item>
+                <el-form-item label="模型">
+                  <el-autocomplete
+                    v-model="logFilters.model"
+                    :fetch-suggestions="modelSuggestions"
+                    clearable
+                    @select="loadLogs(1)"
+                  />
+                </el-form-item>
+                <el-form-item label="渠道">
+                  <el-select v-model="logFilters.channel_id" clearable filterable @change="loadLogs(1)">
+                    <el-option v-for="item in filterOptions.channel_ids" :key="item" :label="item" :value="item" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="状态码">
+                  <el-select v-model="logFilters.status_code" clearable filterable @change="loadLogs(1)">
+                    <el-option v-for="item in filterOptions.status_codes" :key="item" :label="item" :value="item" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="请求状态">
+                  <el-select v-model="logFilters.request_status" clearable @change="loadLogs(1)">
+                    <el-option label="成功" value="success" />
+                    <el-option label="失败" value="failed" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="路径">
+                  <el-select v-model="logFilters.path" clearable filterable @change="loadLogs(1)">
+                    <el-option v-for="item in filterOptions.paths" :key="item" :label="item" :value="item" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item class="log-filter-actions">
+                  <el-button type="primary" :icon="Search" @click="loadLogs(1)">查询</el-button>
+                </el-form-item>
+              </el-form>
+
+              <el-table
+                v-loading="logsLoading"
+                :data="logs"
+                style="width: 100%"
+                empty-text="暂无日志"
+              >
+                <el-table-column prop="created_at" label="时间" width="180">
+                  <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
+                </el-table-column>
+                <el-table-column prop="request_id" label="请求" width="130" show-overflow-tooltip />
+                <el-table-column prop="request_status" label="状态" width="90">
+                  <template #default="{ row }">
+                    <el-tag :type="row.request_status === 'success' ? 'success' : 'danger'">
+                      {{ row.request_status === "success" ? "成功" : "失败" }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="model" label="模型" min-width="160" show-overflow-tooltip />
+                <el-table-column prop="channel_id" label="渠道" min-width="130" show-overflow-tooltip />
+                <el-table-column prop="status_code" label="状态码" width="90" />
+                <el-table-column prop="duration_ms" label="耗时" width="95">
+                  <template #default="{ row }">{{ displayMs(row.duration_ms) }}</template>
+                </el-table-column>
+                <el-table-column prop="ttft_ms" label="TTFT" width="95">
+                  <template #default="{ row }">{{ displayMs(row.ttft_ms) }}</template>
+                </el-table-column>
+                <el-table-column label="Token" width="190">
+                  <template #default="{ row }">
+                    {{ row.input_tokens || 0 }} / {{ row.cached_tokens || 0 }} / {{ row.output_tokens || 0 }}
+                  </template>
+                </el-table-column>
+                <el-table-column prop="cost" label="成本" width="110">
+                  <template #default="{ row }">{{ formatCost(row.cost) }}</template>
+                </el-table-column>
+                <el-table-column label="请求 Body" min-width="220">
+                  <template #default="{ row }">{{ previewJson(row.request_body) }}</template>
+                </el-table-column>
+                <el-table-column label="响应" min-width="220">
+                  <template #default="{ row }">{{ previewJson(row.response_body || row.error) }}</template>
+                </el-table-column>
+                <el-table-column label="操作" width="90">
+                  <template #default="{ row }">
+                    <el-button size="small" :icon="View" @click="openLogDetail(row)">详情</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+
+              <div class="pagination-bar">
+                <el-pagination
+                  v-model:current-page="logPage"
+                  v-model:page-size="logPageSize"
+                  background
+                  layout="total, sizes, prev, pager, next"
+                  :page-sizes="[20, 50, 100, 200]"
+                  :total="logTotal"
+                  @current-change="loadLogs"
+                  @size-change="handleLogPageSizeChange"
+                />
+              </div>
+            </section>
           </div>
-
-          <el-form :inline="true" :model="logFilters">
-            <el-form-item label="请求 ID">
-              <el-autocomplete
-                v-model="logFilters.request_id"
-                :fetch-suggestions="requestIdSuggestions"
-                clearable
-                @select="loadLogs(1)"
-              />
-            </el-form-item>
-            <el-form-item label="模型">
-              <el-autocomplete
-                v-model="logFilters.model"
-                :fetch-suggestions="modelSuggestions"
-                clearable
-                @select="loadLogs(1)"
-              />
-            </el-form-item>
-            <el-form-item label="渠道">
-              <el-select v-model="logFilters.channel_id" clearable filterable style="width: 180px" @change="loadLogs(1)">
-                <el-option v-for="item in filterOptions.channel_ids" :key="item" :label="item" :value="item" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="状态码">
-              <el-select v-model="logFilters.status_code" clearable filterable style="width: 140px" @change="loadLogs(1)">
-                <el-option v-for="item in filterOptions.status_codes" :key="item" :label="item" :value="item" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="请求状态">
-              <el-select v-model="logFilters.request_status" clearable style="width: 140px" @change="loadLogs(1)">
-                <el-option label="成功" value="success" />
-                <el-option label="失败" value="failed" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="路径">
-              <el-select v-model="logFilters.path" clearable filterable style="width: 190px" @change="loadLogs(1)">
-                <el-option v-for="item in filterOptions.paths" :key="item" :label="item" :value="item" />
-              </el-select>
-            </el-form-item>
-            <el-form-item>
-              <el-button type="primary" :icon="Search" @click="loadLogs(1)">查询</el-button>
-            </el-form-item>
-          </el-form>
-
-          <el-table
-            v-loading="logsLoading"
-            :data="logs"
-            style="width: 100%"
-            empty-text="暂无日志"
-          >
-            <el-table-column prop="created_at" label="时间" width="180">
-              <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
-            </el-table-column>
-            <el-table-column prop="request_id" label="请求" width="130" show-overflow-tooltip />
-            <el-table-column prop="request_status" label="状态" width="90">
-              <template #default="{ row }">
-                <el-tag :type="row.request_status === 'success' ? 'success' : 'danger'">
-                  {{ row.request_status === "success" ? "成功" : "失败" }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="model" label="模型" min-width="160" show-overflow-tooltip />
-            <el-table-column prop="channel_id" label="渠道" min-width="130" show-overflow-tooltip />
-            <el-table-column prop="status_code" label="状态码" width="90" />
-            <el-table-column prop="duration_ms" label="耗时" width="95">
-              <template #default="{ row }">{{ displayMs(row.duration_ms) }}</template>
-            </el-table-column>
-            <el-table-column prop="ttft_ms" label="TTFT" width="95">
-              <template #default="{ row }">{{ displayMs(row.ttft_ms) }}</template>
-            </el-table-column>
-            <el-table-column label="Token" width="190">
-              <template #default="{ row }">
-                {{ row.input_tokens || 0 }} / {{ row.cached_tokens || 0 }} / {{ row.output_tokens || 0 }}
-              </template>
-            </el-table-column>
-            <el-table-column prop="cost" label="成本" width="110">
-              <template #default="{ row }">{{ formatCost(row.cost) }}</template>
-            </el-table-column>
-            <el-table-column label="请求 Body" min-width="220">
-              <template #default="{ row }">{{ previewJson(row.request_body) }}</template>
-            </el-table-column>
-            <el-table-column label="响应" min-width="220">
-              <template #default="{ row }">{{ previewJson(row.response_body || row.error) }}</template>
-            </el-table-column>
-            <el-table-column label="操作" width="90" fixed="right">
-              <template #default="{ row }">
-                <el-button size="small" :icon="View" @click="openLogDetail(row)">详情</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-
-          <div style="margin-top: 16px; display: flex; justify-content: flex-end">
-            <el-pagination
-              v-model:current-page="logPage"
-              v-model:page-size="logPageSize"
-              background
-              layout="total, sizes, prev, pager, next"
-              :page-sizes="[20, 50, 100, 200]"
-              :total="logTotal"
-              @current-change="loadLogs"
-              @size-change="handleLogPageSizeChange"
-            />
-          </div>
-        </section>
-      </el-main>
+        </el-main>
+      </el-container>
     </el-container>
-  </el-container>
+  </div>
 
   <el-drawer v-model="channelDrawerVisible" :title="editingIndex === -1 ? '新增渠道' : '编辑渠道'" size="720px">
     <el-form label-position="top" :model="channelDraft">
