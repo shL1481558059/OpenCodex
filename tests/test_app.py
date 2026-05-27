@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from opencodex_proxy.app import create_app
+from opencodex_proxy.app import create_app, _spa_index_response
 from opencodex_proxy.db import read_channels, read_logs
 from opencodex_proxy.errors import UpstreamError
 from opencodex_proxy.settings import Settings
@@ -74,6 +74,36 @@ class AppTests(unittest.TestCase):
     def test_admin_requires_login(self):
         response = self.client.get("/admin/api/config")
         self.assertEqual(response.status_code, 401)
+
+    def test_admin_api_login_and_session(self):
+        response = self.client.get("/admin/api/session")
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.get_json()["authenticated"])
+
+        response = self.client.post("/admin/api/login", json={"password": "pw"})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["authenticated"])
+
+        response = self.client.get("/admin/api/session")
+        self.assertTrue(response.get_json()["authenticated"])
+
+        response = self.client.post("/admin/api/logout")
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.get_json()["authenticated"])
+
+    def test_spa_index_response_serves_built_index(self):
+        admin_static_dir = self.root / "static" / "admin"
+        admin_static_dir.mkdir(parents=True)
+        (admin_static_dir / "index.html").write_text(
+            '<!doctype html><div id="app"></div>',
+            encoding="utf-8",
+        )
+
+        response = _spa_index_response(admin_static_dir)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "text/html")
+        self.assertIn('id="app"', response.get_data(as_text=True))
 
     def test_admin_save_hot_reloads(self):
         self.login()
@@ -1242,6 +1272,55 @@ class AppTests(unittest.TestCase):
         upstream_payload = mock_post.call_args.args[1]
         self.assertIs(upstream_payload["stream"], False)
 
+    @patch("opencodex_proxy.app.post_upstream")
+    def test_synthesized_responses_stream_records_ttft(self, mock_post):
+        manager = self.app.config["OPENCODEX_CONFIG_MANAGER"]
+        manager.save(
+            {
+                "channels": [
+                    {
+                        "id": "responses",
+                        "type": "responses",
+                        "baseurl": "https://example.test/v1",
+                        "apikey": "secret",
+                        "auth_mode": "config",
+                        "timeout_seconds": 30,
+                        "compat": {},
+                    }
+                ]
+            }
+        )
+        mock_post.return_value = {
+            "id": "resp_1",
+            "object": "response",
+            "created_at": 1,
+            "status": "completed",
+            "model": "gpt-4o",
+            "output": [
+                {
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "pong"}],
+                }
+            ],
+            "usage": {"input_tokens": 3, "output_tokens": 2},
+        }
+
+        response = self.client.post(
+            "/v1/responses", json={"model": "gpt-4o", "input": "ping", "stream": True}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("event: response.completed", body)
+
+        db_writer = self.app.config["OPENCODEX_DB_WRITER"]
+        db_writer.stop()
+        logs = read_logs(self.db_path)
+        self.assertEqual(len(logs), 1)
+        self.assertIsNotNone(logs[0]["ttft_ms"])
+
     @patch("opencodex_proxy.app.stream_upstream")
     def test_responses_stream_to_messages_streams_upstream(self, mock_stream):
         manager = self.app.config["OPENCODEX_CONFIG_MANAGER"]
@@ -1865,22 +1944,81 @@ class AppTests(unittest.TestCase):
             "pong",
         )
 
+    @patch("opencodex_proxy.app.stream_upstream")
+    def test_chat_stream_tool_call_records_ttft(self, mock_stream):
+        manager = self.app.config["OPENCODEX_CONFIG_MANAGER"]
+        manager.save(
+            {
+                "channels": [
+                    {
+                        "id": "chat",
+                        "type": "chat",
+                        "baseurl": "https://example.test/v1",
+                        "apikey": "secret",
+                        "auth_mode": "config",
+                        "timeout_seconds": 30,
+                        "compat": {},
+                    }
+                ]
+            }
+        )
+        mock_stream.return_value = iter(
+            [
+                'data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"exec_command","arguments":"{\\"cmd\\":"}}]},"finish_reason":null}]}\n',
+                "\n",
+                'data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"pwd\\"}"}}]},"finish_reason":null}]}\n',
+                "\n",
+                'data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}\n',
+                "\n",
+                "data: [DONE]\n",
+                "\n",
+            ]
+        )
+
+        response = self.client.post(
+            "/v1/responses", json={"model": "deepseek-v4-pro", "input": "run", "stream": True}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("event: response.output_item.added", body)
+        self.assertIn("event: response.function_call_arguments.delta", body)
+
+        db_writer = self.app.config["OPENCODEX_DB_WRITER"]
+        db_writer.stop()
+        logs = read_logs(self.db_path)
+        self.assertEqual(len(logs), 1)
+        self.assertIsNotNone(logs[0]["ttft_ms"])
+
     @patch("opencodex_proxy.app.post_upstream")
     def test_logs_are_available_and_basic(self, mock_post):
         mock_post.return_value = {
             "id": "chatcmpl_1",
-            "model": "upstream",
+            "model": "gpt-4o",
             "choices": [{"message": {"role": "assistant", "content": "pong"}}],
+            "usage": {
+                "prompt_tokens": 100,
+                "prompt_tokens_details": {"cached_tokens": 20},
+                "completion_tokens": 50,
+            },
         }
         self.client.post("/v1/responses", json={"model": "m", "input": "ping"})
         db_writer = self.app.config["OPENCODEX_DB_WRITER"]
         db_writer.stop()
         self.login()
-        response = self.client.get("/admin/api/logs")
+        response = self.client.get("/admin/api/logs?page=1&page_size=10")
         self.assertEqual(response.status_code, 200)
-        events = response.get_json()["events"]
+        payload = response.get_json()
+        self.assertEqual(payload["page"], 1)
+        self.assertEqual(payload["page_size"], 10)
+        self.assertEqual(payload["total"], 1)
+        self.assertIn("filter_options", payload)
+        events = payload["events"]
         self.assertTrue(events)
-        self.assertIn("status_code", events[-1])
+        self.assertIn("status_code", events[0])
+        self.assertEqual(events[0]["request_status"], "success")
+        self.assertEqual(events[0]["cached_tokens"], 20)
+        self.assertGreater(events[0]["cost"], 0)
 
     @patch("opencodex_proxy.app.post_upstream")
     def test_admin_logs_can_filter_common_fields(self, mock_post):
@@ -1902,6 +2040,28 @@ class AppTests(unittest.TestCase):
         events = response.get_json()["events"]
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["model"], "visible-model")
+
+    @patch("opencodex_proxy.app.post_upstream")
+    def test_admin_logs_mark_failed_requests(self, mock_post):
+        mock_post.side_effect = UpstreamError(
+            "upstream returned HTTP 502",
+            status_code=502,
+            body={"error": {"message": "bad gateway"}},
+            channel_id="chat",
+        )
+        self.client.post("/v1/responses", json={"model": "failed-model", "input": "ping"})
+        db_writer = self.app.config["OPENCODEX_DB_WRITER"]
+        db_writer.stop()
+        self.login()
+
+        response = self.client.get("/admin/api/logs?request_status=failed")
+
+        self.assertEqual(response.status_code, 200)
+        events = response.get_json()["events"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["request_status"], "failed")
+        self.assertEqual(events[0]["status_code"], 502)
+        self.assertIn("upstream returned HTTP 502", events[0]["error"])
 
     @patch("opencodex_proxy.app.post_upstream")
     def test_proxy_uses_first_enabled_channel(self, mock_post):

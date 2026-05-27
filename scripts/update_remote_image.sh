@@ -31,6 +31,9 @@ echo "Packing source from $ROOT_DIR"
     --exclude='.venv' \
     --exclude='.env' \
     --exclude='.DS_Store' \
+    --exclude='node_modules' \
+    --exclude='frontend/node_modules' \
+    --exclude='opencodex_proxy/static/admin' \
     --exclude='AGENTS.md' \
     --exclude='config.json' \
     --exclude='logs' \
@@ -38,7 +41,7 @@ echo "Packing source from $ROOT_DIR"
     --exclude='*.tar.gz' \
     --exclude='*.zip' \
     -czf "$ARCHIVE" \
-    Dockerfile requirements.txt .env.example opencodex_proxy tests
+    Dockerfile package.json requirements.txt .env.example frontend opencodex_proxy tests
 )
 
 echo "Uploading archive to $SSH_TARGET:$REMOTE_ARCHIVE"

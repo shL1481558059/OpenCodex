@@ -5,6 +5,7 @@ __pycache__/
 config.json
 logs/
 .pytest_cache/
+.playwright-cli/
 .DS_Store
 AGENTS.md
 
@@ -18,6 +19,9 @@ dist/
 htmlcov/
 .mypy_cache/
 .ruff_cache/
+node_modules/
+frontend/node_modules/
+opencodex_proxy/static/admin/
 
 # Local artifacts
 *.tar
