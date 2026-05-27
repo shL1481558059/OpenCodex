@@ -7,9 +7,9 @@ from collections.abc import Callable
 from typing import Any, Iterable
 
 from .protocols import (
-    _apply_patch_input_from_tool_call,
     _is_apply_patch_tool_name,
     _normalize_annotations,
+    _responses_apply_patch_item_from_tool_call,
 )
 
 
@@ -639,7 +639,22 @@ def chat_sse_to_responses_events(
                 next_output_index += 1
             output_index = allocate_output_index()
         output_by_index[output_index] = item
-        if meta.get("item_added") and item.get("type") == "function_call":
+        if not meta.get("item_added") and item.get("type") == "function_call":
+            yield emit(
+                "response.output_item.added",
+                {
+                    "output_index": output_index,
+                    "item": {
+                        "id": item["id"],
+                        "type": "function_call",
+                        "status": "in_progress",
+                        "call_id": item.get("call_id"),
+                        "name": item.get("name"),
+                        "arguments": "",
+                    },
+                },
+            )
+        if item.get("type") == "function_call":
             yield emit(
                 "response.function_call_arguments.done",
                 {
@@ -737,14 +752,7 @@ def _responses_tool_call_item(
 ) -> dict[str, Any]:
     tool_name = str(name or "")
     if _is_apply_patch_tool_name(tool_name):
-        return {
-            "id": item_id or f"ctc_{uuid.uuid4().hex}",
-            "type": "custom_tool_call",
-            "status": "completed",
-            "call_id": call_id,
-            "name": "apply_patch",
-            "input": _apply_patch_input_from_tool_call(tool_name, arguments),
-        }
+        return _responses_apply_patch_item_from_tool_call(call_id, tool_name, arguments, item_id)
     return {
         "id": item_id or f"fc_{uuid.uuid4().hex}",
         "type": "function_call",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+import base64
 from copy import deepcopy
 from typing import Any
 
@@ -987,16 +988,11 @@ def _canonical_to_responses_response(canonical: dict[str, Any]) -> dict[str, Any
         tool_name = str(tool_call.get("name") or "")
         if _is_apply_patch_tool_name(tool_name):
             output.append(
-                {
-                    "id": f"ctc_{uuid.uuid4().hex}",
-                    "type": "custom_tool_call",
-                    "status": "completed",
-                    "call_id": tool_call.get("id"),
-                    "name": "apply_patch",
-                    "input": _apply_patch_input_from_tool_call(
-                        tool_name, tool_call.get("arguments", "{}")
-                    ),
-                }
+                _responses_apply_patch_item_from_tool_call(
+                    tool_call.get("id"),
+                    tool_name,
+                    tool_call.get("arguments", "{}"),
+                )
             )
             continue
         output.append(
@@ -1355,6 +1351,29 @@ def _apply_patch_input_from_tool_call(name: str, arguments: Any) -> str:
     return _apply_patch_input_from_arguments(arguments)
 
 
+def _responses_apply_patch_item_from_tool_call(
+    call_id: Any, name: str, arguments: Any, item_id: Any | None = None
+) -> dict[str, Any]:
+    command = _apply_patch_exec_fallback_command(name, arguments)
+    if command is not None:
+        return {
+            "id": item_id or f"fc_{uuid.uuid4().hex}",
+            "type": "function_call",
+            "status": "completed",
+            "call_id": call_id,
+            "name": "exec_command",
+            "arguments": json.dumps({"cmd": command}, ensure_ascii=False),
+        }
+    return {
+        "id": item_id or f"ctc_{uuid.uuid4().hex}",
+        "type": "custom_tool_call",
+        "status": "completed",
+        "call_id": call_id,
+        "name": "apply_patch",
+        "input": _apply_patch_input_from_tool_call(name, arguments),
+    }
+
+
 def _apply_patch_input_from_arguments(arguments: Any) -> str:
     value = _decode_json_value(arguments)
     patch = _extract_patch_value(value)
@@ -1385,6 +1404,178 @@ def _rebuild_apply_patch_grammar(name: str, arguments: Any) -> str | None:
     if not body:
         return None
     return "\n".join(["*** Begin Patch", *body, "*** End Patch"])
+
+
+def _apply_patch_exec_fallback_command(name: str, arguments: Any) -> str | None:
+    operations = _apply_patch_proxy_operations(name, arguments)
+    if not operations or not _apply_patch_operations_need_exec_fallback(operations):
+        patch = _apply_patch_input_from_arguments(arguments)
+        if not _is_apply_patch_name(name) or not isinstance(patch, str) or not _looks_like_patch(patch):
+            return None
+        operations = _parse_apply_patch_operations_with_multiline_paths(patch)
+        if operations and _apply_patch_operations_need_exec_fallback(operations):
+            return _apply_patch_python_fallback_command(operations)
+        return _apply_patch_shell_command(patch)
+    return _apply_patch_python_fallback_command(operations)
+
+
+def _apply_patch_shell_command(patch: str) -> str:
+    encoded = base64.b64encode(
+        json.dumps({"patch": patch}, ensure_ascii=False).encode("utf-8")
+    ).decode("ascii")
+    return "\n".join(
+        [
+            *_python_bin_script_prefix(),
+            '"$PYTHON_BIN" - <<\'PY\'',
+            "import base64, json, subprocess, sys",
+            f"payload = json.loads(base64.b64decode('{encoded}').decode('utf-8'))",
+            "try:",
+            "    completed = subprocess.run(['apply_patch'], input=payload['patch'], text=True)",
+            "except FileNotFoundError:",
+            "    print('apply_patch command not found', file=sys.stderr)",
+            "    raise SystemExit(127)",
+            "raise SystemExit(completed.returncode)",
+            "PY",
+        ]
+    )
+
+
+def _apply_patch_python_fallback_command(operations: list[dict[str, Any]]) -> str:
+    encoded = base64.b64encode(
+        json.dumps({"operations": operations}, ensure_ascii=False).encode("utf-8")
+    ).decode("ascii")
+    return "\n".join(
+        [
+            *_python_bin_script_prefix(),
+            '"$PYTHON_BIN" - <<\'PY\'',
+            "import base64, json, pathlib, sys",
+            f"payload = json.loads(base64.b64decode('{encoded}').decode('utf-8'))",
+            "def fail(message):",
+            "    print(message, file=sys.stderr)",
+            "    raise SystemExit(1)",
+            "def path(value):",
+            "    text = str(value or '')",
+            "    if not text:",
+            "        fail('empty path')",
+            "    return pathlib.Path(text)",
+            "def read_text(target):",
+            "    try:",
+            "        return target.read_text(encoding='utf-8')",
+            "    except FileNotFoundError:",
+            "        fail(f'file not found: {target}')",
+            "def split_text(text):",
+            "    return [] if text == '' else text.split('\\n')",
+            "def find_sequence(lines, needle, start, eof):",
+            "    if not needle:",
+            "        return len(lines) - (1 if eof and lines[-1:] == [''] else 0)",
+            "    logical_end = len(lines) - (1 if lines[-1:] == [''] else 0)",
+            "    last = logical_end if eof else len(lines)",
+            "    for index in range(start, last - len(needle) + 1):",
+            "        if lines[index:index + len(needle)] == needle and (not eof or index + len(needle) == logical_end):",
+            "            return index",
+            "    return -1",
+            "def apply_hunks(text, hunks):",
+            "    lines = split_text(text)",
+            "    cursor = 0",
+            "    for hunk in hunks or []:",
+            "        hunk_lines = hunk.get('lines') if isinstance(hunk, dict) else None",
+            "        if not isinstance(hunk_lines, list):",
+            "            fail('invalid hunk lines')",
+            "        old, new, eof = [], [], False",
+            "        for line in hunk_lines:",
+            "            op = line.get('op') if isinstance(line, dict) else None",
+            "            text_line = str(line.get('text') or '') if isinstance(line, dict) else ''",
+            "            if op == 'context':",
+            "                old.append(text_line); new.append(text_line)",
+            "            elif op == 'remove':",
+            "                old.append(text_line)",
+            "            elif op == 'add':",
+            "                new.append(text_line)",
+            "            elif op == 'eof':",
+            "                eof = True",
+            "            else:",
+            "                fail(f'invalid hunk op: {op}')",
+            "        index = find_sequence(lines, old, cursor, eof)",
+            "        if index < 0:",
+            "            fail('apply_patch fallback failed: hunk context not found')",
+            "        lines[index:index + len(old)] = new",
+            "        cursor = index + len(new)",
+            "    return '\\n'.join(lines)",
+            "for operation in payload.get('operations') or []:",
+            "    op_type = operation.get('type')",
+            "    target = path(operation.get('path'))",
+            "    if op_type == 'add_file':",
+            "        if target.exists():",
+            "            fail(f'file already exists: {target}')",
+            "        target.parent.mkdir(parents=True, exist_ok=True)",
+            "        target.write_text(str(operation.get('content') or ''), encoding='utf-8')",
+            "    elif op_type == 'delete_file':",
+            "        try:",
+            "            target.unlink()",
+            "        except FileNotFoundError:",
+            "            fail(f'file not found: {target}')",
+            "    elif op_type == 'replace_file':",
+            "        if not target.exists():",
+            "            fail(f'file not found: {target}')",
+            "        target.write_text(str(operation.get('content') or ''), encoding='utf-8')",
+            "    elif op_type == 'update_file':",
+            "        if target.exists():",
+            "            original = read_text(target)",
+            "        elif operation.get('allow_missing'):",
+            "            original = ''",
+            "        else:",
+            "            original = read_text(target)",
+            "        updated = apply_hunks(original, operation.get('hunks'))",
+            "        move_to = str(operation.get('move_to') or '')",
+            "        destination = path(move_to) if move_to.strip() else target",
+            "        if destination != target and destination.exists():",
+            "            fail(f'file already exists: {destination}')",
+            "        destination.parent.mkdir(parents=True, exist_ok=True)",
+            "        destination.write_text(updated, encoding='utf-8')",
+            "        if destination != target:",
+            "            target.unlink()",
+            "    else:",
+            "        fail(f'invalid operation type: {op_type}')",
+            "PY",
+        ]
+    )
+
+
+def _python_bin_script_prefix() -> list[str]:
+    return [
+        "if command -v python3 >/dev/null 2>&1; then",
+        "    PYTHON_BIN=python3",
+        "else",
+        "    PYTHON_BIN=python",
+        "fi",
+    ]
+
+
+def _apply_patch_proxy_operations(name: str, arguments: Any) -> list[dict[str, Any]] | None:
+    normalized = name.replace("-", "_")
+    if not normalized.startswith("apply_patch_") or normalized == "apply_patch":
+        return None
+    value = _decode_json_value(arguments)
+    if not isinstance(value, dict):
+        return None
+    action = normalized.removeprefix("apply_patch_")
+    if action == "batch":
+        operations = value.get("operations")
+        return operations if isinstance(operations, list) else None
+    operation = dict(value)
+    operation["type"] = action
+    return [operation]
+
+
+def _apply_patch_operations_need_exec_fallback(operations: list[dict[str, Any]]) -> bool:
+    for operation in operations:
+        if not isinstance(operation, dict):
+            continue
+        for key in ("path", "move_to"):
+            value = operation.get(key)
+            if isinstance(value, str) and ("\n" in value or "\r" in value):
+                return True
+    return False
 
 
 def _apply_patch_operation_lines(operation: dict[str, Any]) -> list[str]:
@@ -1505,6 +1696,118 @@ def _parse_apply_patch_operations(patch: str) -> list[dict[str, Any]] | None:
             continue
         return None
     return operations
+
+
+def _parse_apply_patch_operations_with_multiline_paths(
+    patch: str,
+) -> list[dict[str, Any]] | None:
+    lines = patch.strip("\n").split("\n")
+    if len(lines) < 2 or lines[0] != "*** Begin Patch" or lines[-1] != "*** End Patch":
+        return None
+    operations: list[dict[str, Any]] = []
+    index = 1
+    end = len(lines) - 1
+    while index < end:
+        line = lines[index]
+        if line.startswith("*** Add File: "):
+            path, index = _parse_multiline_path(lines, index, end, "*** Add File: ")
+            if not path:
+                return None
+            content: list[str] = []
+            while index < end and not lines[index].startswith("*** "):
+                if not lines[index].startswith("+"):
+                    return None
+                content.append(lines[index][1:])
+                index += 1
+            operations.append(
+                {"type": "add_file", "path": path, "content": "\n".join(content)}
+            )
+            continue
+        if line.startswith("*** Delete File: "):
+            path, index = _parse_multiline_path(lines, index, end, "*** Delete File: ")
+            if not path:
+                return None
+            operations.append({"type": "delete_file", "path": path})
+            continue
+        if line.startswith("*** Update File: "):
+            operation, index = _parse_multiline_update_operation(lines, index, end)
+            if operation is None:
+                return None
+            operations.append(operation)
+            continue
+        return None
+    return operations
+
+
+def _parse_multiline_update_operation(
+    lines: list[str], index: int, end: int
+) -> tuple[dict[str, Any] | None, int]:
+    path, index = _parse_multiline_path(lines, index, end, "*** Update File: ")
+    if not path:
+        return None, index
+    operation: dict[str, Any] = {"type": "update_file", "path": path}
+    if index < end and lines[index].startswith("*** Move to: "):
+        move_to, index = _parse_multiline_path(lines, index, end, "*** Move to: ")
+        if move_to:
+            operation["move_to"] = move_to
+    hunks: list[dict[str, Any]] = []
+    while index < end and not lines[index].startswith("*** "):
+        if not lines[index].startswith("@@"):
+            return None, index
+        index += 1
+        hunk_lines: list[dict[str, str]] = []
+        while (
+            index < end
+            and not lines[index].startswith("@@")
+            and not lines[index].startswith("*** ")
+        ):
+            line = lines[index]
+            if not line:
+                return None, index
+            op = line[0]
+            text = line[1:]
+            if op == " ":
+                hunk_lines.append({"op": "context", "text": text})
+            elif op == "+":
+                hunk_lines.append({"op": "add", "text": text})
+            elif op == "-":
+                hunk_lines.append({"op": "remove", "text": text})
+            else:
+                return None, index
+            index += 1
+        if index < end and lines[index] == "*** End of File":
+            hunk_lines.append({"op": "eof", "text": ""})
+            index += 1
+        if not hunk_lines:
+            return None, index
+        hunks.append({"lines": hunk_lines})
+    if not hunks:
+        return None, index
+    operation["hunks"] = hunks
+    if any(
+        line.get("op") == "add"
+        for hunk in hunks
+        for line in hunk.get("lines", [])
+        if isinstance(line, dict)
+    ):
+        operation["allow_missing"] = True
+    return operation, index
+
+
+def _parse_multiline_path(
+    lines: list[str], index: int, end: int, prefix: str
+) -> tuple[str | None, int]:
+    path_lines = [lines[index].removeprefix(prefix).strip()]
+    index += 1
+    while index < end and _is_continuation_path_line(lines[index]):
+        path_lines.append(lines[index].strip())
+        index += 1
+    path = "\n".join(path_lines).strip()
+    return (path or None), index
+
+
+def _is_continuation_path_line(line: str) -> bool:
+    return bool(line) and not line.startswith(("*** ", "@@", "+", "-", " "))
 
 
 def _parse_apply_patch_update_operation(
