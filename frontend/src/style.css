@@ -22,8 +22,7 @@ body {
 }
 
 .app-header {
-  height: 120px;
-  padding: 0 52px;
+  padding: 12px;
   background: #34445c;
   color: #fff;
   font-size: 24px;
@@ -33,10 +32,12 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  height: auto;
 }
 
 .app-body {
-  min-height: calc(100vh - 120px);
+  flex: 1;
+  min-height: 0;
 }
 
 .app-aside {
@@ -87,6 +88,18 @@ body {
 
 .inline-actions {
   justify-content: flex-start;
+}
+
+.channel-table-actions {
+  justify-content: center;
+  flex-wrap: nowrap;
+}
+
+.channel-table-actions .el-button + .el-button,
+.channel-table-actions .el-button + .el-popconfirm,
+.channel-table-actions .el-popconfirm + .el-button,
+.channel-table-actions .el-popconfirm + .el-popconfirm {
+  margin-left: 0;
 }
 
 .main-content {
@@ -229,16 +242,13 @@ body {
   }
 
   .app-header {
-    min-height: 88px;
-    height: auto;
-    padding: 20px;
     gap: 12px;
     flex-wrap: wrap;
   }
 
   .app-body {
     display: block;
-    min-height: calc(100vh - 88px);
+    min-height: 0;
   }
 
   .app-aside {

@@ -107,9 +107,9 @@
                     </el-tag>
                   </template>
                 </el-table-column>
-                <el-table-column label="操作" width="160">
+                <el-table-column label="操作" width="160" align="center">
                   <template #default="{ row, $index }">
-                    <div class="inline-actions">
+                    <div class="inline-actions channel-table-actions">
                       <el-button size="small" :icon="Edit" @click="openChannelDrawer(row, $index)">编辑</el-button>
                       <el-popconfirm title="删除这个渠道？" @confirm="deleteChannel($index)">
                         <template #reference>
