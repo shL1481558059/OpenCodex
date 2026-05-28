@@ -396,6 +396,7 @@ class TestChannelStore(unittest.TestCase):
                     "auth_mode": "config",
                     "headers": {"X-Test": "yes"},
                     "timeout_seconds": 45,
+                    "retry_count": 2,
                     "compat": {"drop_params": ["store"]},
                     "models": [{"model": "gpt-5", "upstream_model": "gpt-4"}],
                     "enabled": False,
@@ -413,10 +414,12 @@ class TestChannelStore(unittest.TestCase):
 
         self.assertEqual([channel["id"] for channel in channels], ["first", "second"])
         self.assertEqual(channels[0]["headers"], {"X-Test": "yes"})
+        self.assertEqual(channels[0]["retry_count"], 2)
         self.assertEqual(channels[0]["compat"], {"drop_params": ["store"]})
         self.assertEqual(channels[0]["models"], [{"model": "gpt-5", "upstream_model": "gpt-4"}])
         self.assertFalse(channels[0]["enabled"])
         self.assertEqual(channels[1]["timeout_seconds"], 30)
+        self.assertEqual(channels[1]["retry_count"], 3)
         self.assertEqual(channels[1]["auth_mode"], "pass_through_or_config")
         self.assertTrue(channels[1]["enabled"])
 
@@ -439,7 +442,7 @@ class TestChannelStore(unittest.TestCase):
 
         self.assertEqual([channel["id"] for channel in channels], ["keep"])
 
-    def test_init_db_migrates_channels_models_column(self):
+    def test_init_db_migrates_channels_defaults_columns(self):
         conn = sqlite3.connect(str(self.db_path))
         conn.executescript(
             """
@@ -458,6 +461,15 @@ class TestChannelStore(unittest.TestCase):
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
             );
+
+            INSERT INTO channels (
+                id, position, name, type, baseurl, apikey, auth_mode,
+                headers_json, timeout_seconds, compat_json, enabled,
+                created_at, updated_at
+            ) VALUES (
+                'legacy', 0, '', 'chat', 'https://legacy.example.test/v1', '',
+                'pass_through_or_config', '{}', 30, '{}', 1, 1.0, 1.0
+            );
             """
         )
         conn.commit()
@@ -467,8 +479,13 @@ class TestChannelStore(unittest.TestCase):
 
         conn = sqlite3.connect(str(self.db_path))
         columns = {row[1] for row in conn.execute("PRAGMA table_info(channels)").fetchall()}
+        retry_count = conn.execute(
+            "SELECT retry_count FROM channels WHERE id = 'legacy'"
+        ).fetchone()[0]
         conn.close()
         self.assertIn("models_json", columns)
+        self.assertIn("retry_count", columns)
+        self.assertEqual(retry_count, 3)
 
 
 if __name__ == "__main__":

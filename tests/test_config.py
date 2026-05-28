@@ -28,9 +28,44 @@ class ConfigTests(unittest.TestCase):
                 ]
             }
             manager.save(valid)
+            self.assertEqual(manager.raw["channels"][0]["retry_count"], 3)
             with self.assertRaises(ConfigError):
                 manager.save({"channels": [{"id": "bad", "type": "chat"}]})
             self.assertEqual(manager.raw["channels"][0]["id"], "chat")
+
+    def test_retry_count_allows_zero_and_rejects_invalid_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "config.db"
+            manager = ConfigManager(db_path)
+            saved = manager.save(
+                {
+                    "channels": [
+                        {
+                            "id": "chat",
+                            "type": "chat",
+                            "baseurl": "https://example.test/v1",
+                            "retry_count": 0,
+                        }
+                    ]
+                }
+            )
+            self.assertEqual(saved["channels"][0]["retry_count"], 0)
+
+            for retry_count in (-1, 1.5, "3", True):
+                with self.subTest(retry_count=retry_count):
+                    with self.assertRaises(ConfigError):
+                        manager.save(
+                            {
+                                "channels": [
+                                    {
+                                        "id": "chat",
+                                        "type": "chat",
+                                        "baseurl": "https://example.test/v1",
+                                        "retry_count": retry_count,
+                                    }
+                                ]
+                            }
+                        )
 
     def test_legacy_routing_is_removed_on_save(self):
         with tempfile.TemporaryDirectory() as tmp:

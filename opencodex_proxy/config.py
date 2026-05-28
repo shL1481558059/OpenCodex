@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import init_db, read_channels, replace_channels
+from .defaults import DEFAULT_RETRY_COUNT
 
 
 CHANNEL_TYPES = {"responses", "chat", "messages"}
@@ -157,6 +158,14 @@ def validate_channel(channel: Any, default_timeout: int) -> None:
     timeout = channel.get("timeout_seconds", default_timeout)
     if not isinstance(timeout, int) or timeout <= 0:
         raise ConfigError(f"channel {channel_id} timeout_seconds must be positive")
+
+    retry_count = channel.get("retry_count", DEFAULT_RETRY_COUNT)
+    if (
+        isinstance(retry_count, bool)
+        or not isinstance(retry_count, int)
+        or retry_count < 0
+    ):
+        raise ConfigError(f"channel {channel_id} retry_count must be a non-negative integer")
 
     headers = channel.get("headers", {})
     if not isinstance(headers, dict):
