@@ -90,29 +90,60 @@ class ProtocolTests(unittest.TestCase):
         result = convert_request(payload, "responses", "chat", "upstream")
 
         self.assertEqual(result["model"], "upstream")
-        self.assertEqual(result["messages"][0], {"role": "system", "content": "system rule"})
-        self.assertEqual(result["messages"][1], {"role": "system", "content": "dev hint"})
-        self.assertEqual(result["messages"][2], {"role": "user", "content": "hi"})
-        self.assertEqual(result["messages"][3]["content"], "")
-        self.assertEqual(result["messages"][3]["reasoning_content"], "checked")
-        self.assertIn("web_search_call", result["messages"][4]["content"])
-        self.assertEqual(result["messages"][5]["role"], "assistant")
-        self.assertEqual(result["messages"][5]["tool_calls"][0]["id"], "call_patch")
         self.assertEqual(
-            result["messages"][5]["tool_calls"][0]["function"]["arguments"],
+            result["messages"][0], {"role": "system", "content": "system rule\n\ndev hint"}
+        )
+        self.assertEqual(result["messages"][1], {"role": "user", "content": "hi"})
+        self.assertEqual(result["messages"][2]["content"], "")
+        self.assertEqual(result["messages"][2]["reasoning_content"], "checked")
+        self.assertIn("web_search_call", result["messages"][3]["content"])
+        self.assertEqual(result["messages"][4]["role"], "assistant")
+        self.assertEqual(result["messages"][4]["tool_calls"][0]["id"], "call_patch")
+        self.assertEqual(
+            result["messages"][4]["tool_calls"][0]["function"]["arguments"],
             '{"patch": "*** Begin Patch\\n*** End Patch"}',
         )
         self.assertEqual(
-            result["messages"][6],
+            result["messages"][5],
             {"role": "tool", "tool_call_id": "call_patch", "content": "patched"},
         )
-        self.assertEqual(result["messages"][7], {"role": "assistant", "content": "done"})
+        self.assertEqual(result["messages"][6], {"role": "assistant", "content": "done"})
         self.assertEqual(result["tools"][0]["function"]["name"], "lookup")
         self.assertEqual(result["tools"][1]["function"]["name"], "local_shell")
         self.assertEqual(result["tools"][2]["function"]["name"], "apply_patch_add_file")
         self.assertEqual(result["tool_choice"], {"type": "function", "function": {"name": "lookup"}})
         self.assertEqual(result["max_tokens"], 64)
         self.assertEqual(result["temperature"], 0.2)
+
+    def test_responses_request_to_chat_appends_plan_mode_tag_instruction_to_single_system(self):
+        payload = {
+            "model": "local",
+            "instructions": "base system",
+            "input": [
+                {
+                    "role": "developer",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "Use <proposed_plan> for official plans.",
+                        }
+                    ],
+                },
+                {"role": "user", "content": [{"type": "input_text", "text": "plan it"}]},
+            ],
+        }
+
+        result = convert_request(payload, "responses", "chat", "upstream")
+
+        system_messages = [
+            message for message in result["messages"] if message.get("role") == "system"
+        ]
+        self.assertEqual(len(system_messages), 1)
+        self.assertEqual(result["messages"][0]["role"], "system")
+        self.assertIn("base system\n\nUse <proposed_plan>", result["messages"][0]["content"])
+        self.assertIn("You are currently in Codex Plan Mode.", result["messages"][0]["content"])
+        self.assertIn("</proposed_plan>", result["messages"][0]["content"])
+        self.assertEqual(result["messages"][1], {"role": "user", "content": "plan it"})
 
     def test_responses_apply_patch_tool_is_expanded_for_chat(self):
         payload = {
