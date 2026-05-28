@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .defaults import DEFAULT_RETRY_COUNT
+
 
 REQUEST_LOGS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS request_logs (
@@ -46,6 +48,7 @@ CREATE TABLE IF NOT EXISTS channels (
     auth_mode TEXT NOT NULL DEFAULT 'pass_through_or_config',
     headers_json TEXT NOT NULL DEFAULT '{}',
     timeout_seconds INTEGER NOT NULL,
+    retry_count INTEGER NOT NULL DEFAULT 3,
     compat_json TEXT NOT NULL DEFAULT '{}',
     models_json TEXT NOT NULL DEFAULT '[]',
     enabled INTEGER NOT NULL DEFAULT 1,
@@ -75,6 +78,8 @@ def _migrate_channels(conn: sqlite3.Connection) -> None:
     }
     if "models_json" not in columns:
         conn.execute("ALTER TABLE channels ADD COLUMN models_json TEXT NOT NULL DEFAULT '[]'")
+    if "retry_count" not in columns:
+        conn.execute("ALTER TABLE channels ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 3")
 
 
 class AsyncDBWriter:
@@ -148,7 +153,7 @@ def read_channels(db_path: Path) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT id, position, name, type, baseurl, apikey, auth_mode,
-               headers_json, timeout_seconds, compat_json, models_json, enabled
+               headers_json, timeout_seconds, retry_count, compat_json, models_json, enabled
         FROM channels
         ORDER BY position ASC, id ASC
         """
@@ -178,9 +183,10 @@ def replace_channels(
                     """
                     INSERT INTO channels (
                         id, position, name, type, baseurl, apikey, auth_mode,
-                        headers_json, timeout_seconds, compat_json, models_json, enabled,
+                        headers_json, timeout_seconds, retry_count, compat_json,
+                        models_json, enabled,
                         created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         channel["id"],
@@ -192,6 +198,7 @@ def replace_channels(
                         channel.get("auth_mode") or "pass_through_or_config",
                         json.dumps(channel.get("headers") or {}, ensure_ascii=False),
                         int(channel.get("timeout_seconds") or default_timeout),
+                        int(channel.get("retry_count", DEFAULT_RETRY_COUNT)),
                         json.dumps(channel.get("compat") or {}, ensure_ascii=False),
                         json.dumps(channel.get("models") or [], ensure_ascii=False),
                         1 if channel.get("enabled", True) is not False else 0,
@@ -213,6 +220,7 @@ def _row_to_channel(row: sqlite3.Row) -> dict[str, Any]:
         "auth_mode": row["auth_mode"],
         "headers": _parse_json_object(row["headers_json"]),
         "timeout_seconds": row["timeout_seconds"],
+        "retry_count": row["retry_count"],
         "compat": _parse_json_object(row["compat_json"]),
         "models": _parse_json_list(row["models_json"]),
         "enabled": bool(row["enabled"]),

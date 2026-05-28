@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import datetime
+import email.utils
 import json
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from typing import Any
 
+from .defaults import DEFAULT_RETRY_COUNT
 from .errors import UpstreamError
 
 
@@ -14,6 +18,9 @@ ENDPOINTS = {
     "chat": "/chat/completions",
     "messages": "/messages",
 }
+BASE_RETRY_DELAY_SECONDS = 0.5
+MAX_RETRY_DELAY_SECONDS = 8.0
+MAX_RETRY_AFTER_SECONDS = 30.0
 
 
 def post_upstream(
@@ -28,8 +35,9 @@ def post_upstream(
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(url, data=data, headers=headers, method="POST")
     timeout = int(channel.get("timeout_seconds") or default_timeout)
+    retry_count = _channel_retry_count(channel)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _urlopen_with_retries(request, timeout, retry_count) as response:
             body = response.read().decode("utf-8")
             return json.loads(body) if body else {}
     except urllib.error.HTTPError as exc:
@@ -70,8 +78,9 @@ def list_upstream_models(
     headers = build_headers(channel, client_authorization)
     request = urllib.request.Request(url, headers=headers, method="GET")
     timeout = int(channel.get("timeout_seconds") or default_timeout)
+    retry_count = _channel_retry_count(channel)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _urlopen_with_retries(request, timeout, retry_count) as response:
             body = response.read().decode("utf-8")
             return json.loads(body) if body else {}
     except urllib.error.HTTPError as exc:
@@ -115,8 +124,9 @@ def stream_upstream(
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(url, data=data, headers=headers, method="POST")
     timeout = int(channel.get("timeout_seconds") or default_timeout)
+    retry_count = _channel_retry_count(channel)
     try:
-        response = urllib.request.urlopen(request, timeout=timeout)
+        response = _urlopen_with_retries(request, timeout, retry_count)
     except urllib.error.HTTPError as exc:
         body_text = exc.read().decode("utf-8", errors="replace")
         body = _decode_body(body_text)
@@ -185,6 +195,80 @@ def _join_url(baseurl: str, endpoint: str) -> str:
     if base.endswith("/v1"):
         return f"{base}{endpoint}"
     return f"{base}/v1{endpoint}"
+
+
+def _urlopen_with_retries(
+    request: urllib.request.Request,
+    timeout: int,
+    retry_count: int,
+):
+    for retry_index in range(retry_count + 1):
+        try:
+            return urllib.request.urlopen(request, timeout=timeout)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+            if retry_index >= retry_count or not _is_retryable_exception(exc):
+                raise
+            delay = _retry_delay_seconds(retry_index, exc)
+            _close_retry_exception(exc)
+            time.sleep(delay)
+
+    raise RuntimeError("unreachable retry state")
+
+
+def _channel_retry_count(channel: dict[str, Any]) -> int:
+    retry_count = channel.get("retry_count", DEFAULT_RETRY_COUNT)
+    if (
+        isinstance(retry_count, bool)
+        or not isinstance(retry_count, int)
+        or retry_count < 0
+    ):
+        return DEFAULT_RETRY_COUNT
+    return retry_count
+
+
+def _is_retryable_exception(exc: BaseException) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code == 429 or 500 <= exc.code <= 599
+    return isinstance(exc, (urllib.error.URLError, TimeoutError))
+
+
+def _retry_delay_seconds(retry_index: int, exc: BaseException) -> float:
+    retry_after = _retry_after_seconds(exc)
+    if retry_after is not None:
+        return min(retry_after, MAX_RETRY_AFTER_SECONDS)
+    delay = BASE_RETRY_DELAY_SECONDS * (2 ** retry_index)
+    return min(delay, MAX_RETRY_DELAY_SECONDS)
+
+
+def _retry_after_seconds(exc: BaseException) -> float | None:
+    if not isinstance(exc, urllib.error.HTTPError):
+        return None
+    raw = exc.headers.get("Retry-After") if exc.headers else None
+    if raw is None:
+        return None
+
+    text = str(raw).strip()
+    try:
+        seconds = float(text)
+    except ValueError:
+        seconds = None
+    if seconds is not None:
+        return seconds if seconds >= 0 else None
+
+    try:
+        parsed = email.utils.parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return max(0.0, (parsed - now).total_seconds())
+
+
+def _close_retry_exception(exc: BaseException) -> None:
+    close = getattr(exc, "close", None)
+    if callable(close):
+        close()
 
 
 def _decode_body(body_text: str) -> object:
