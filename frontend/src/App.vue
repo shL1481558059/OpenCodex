@@ -107,9 +107,12 @@
                     </el-tag>
                   </template>
                 </el-table-column>
-                <el-table-column label="操作" width="160" align="center">
+                <el-table-column label="操作" width="260" align="center">
                   <template #default="{ row, $index }">
                     <div class="inline-actions channel-table-actions">
+                      <el-button size="small" type="primary" plain :icon="Connection" @click="openChannelTest(row)">
+                        测试连接
+                      </el-button>
                       <el-button size="small" :icon="Edit" @click="openChannelDrawer(row, $index)">编辑</el-button>
                       <el-popconfirm title="删除这个渠道？" @confirm="deleteChannel($index)">
                         <template #reference>
@@ -338,6 +341,15 @@
       <el-button style="margin-top: 8px" :icon="Plus" @click="channelDraft.models.push({ model: '', upstream_model: '' })">
         添加模型
       </el-button>
+      <el-button style="margin-top: 8px; margin-left: 8px" :loading="discoverLoading" @click="discoverModels">
+        发现模型
+      </el-button>
+      <el-alert v-if="discoveredModels.length" style="margin-top: 12px" type="info" :closable="false">
+        <el-checkbox-group v-model="selectedDiscoveredModels">
+          <el-checkbox v-for="model in discoveredModels" :key="model" :label="model" />
+        </el-checkbox-group>
+        <el-button size="small" style="margin-top: 8px" @click="addSelectedModels">加入映射</el-button>
+      </el-alert>
 
       <el-divider content-position="left">兼容规则</el-divider>
       <el-row :gutter="12">
@@ -372,23 +384,6 @@
           </el-form-item>
         </el-col>
       </el-row>
-
-      <el-divider content-position="left">渠道测试</el-divider>
-      <el-input v-model="testPayloadText" type="textarea" :rows="6" />
-      <div class="inline-actions" style="margin-top: 8px">
-        <el-button :icon="Refresh" @click="resetTestPayload">重置测试请求</el-button>
-        <el-button :loading="discoverLoading" @click="discoverModels">发现模型</el-button>
-        <el-button type="primary" :loading="testLoading" @click="testChannel">测试渠道</el-button>
-      </div>
-      <el-alert v-if="testResult" style="margin-top: 12px" :type="testResult.ok === false ? 'error' : 'success'" :closable="false">
-        <pre class="json-view">{{ formatJson(testResult) }}</pre>
-      </el-alert>
-      <el-alert v-if="discoveredModels.length" style="margin-top: 12px" type="info" :closable="false">
-        <el-checkbox-group v-model="selectedDiscoveredModels">
-          <el-checkbox v-for="model in discoveredModels" :key="model" :label="model" />
-        </el-checkbox-group>
-        <el-button size="small" style="margin-top: 8px" @click="addSelectedModels">加入映射</el-button>
-      </el-alert>
     </el-form>
 
     <template #footer>
@@ -398,6 +393,60 @@
       </div>
     </template>
   </el-drawer>
+
+  <el-dialog v-model="channelTestVisible" :title="channelTestTitle" width="640px">
+    <el-descriptions v-if="testingChannel" :column="2" border class="channel-test-summary">
+      <el-descriptions-item label="渠道">{{ testingChannel.name || testingChannel.id }}</el-descriptions-item>
+      <el-descriptions-item label="服务类型">{{ testingChannel.type }}</el-descriptions-item>
+      <el-descriptions-item label="ID">{{ testingChannel.id }}</el-descriptions-item>
+      <el-descriptions-item label="状态">
+        {{ testingChannel.enabled === false ? "停用" : "启用" }}
+      </el-descriptions-item>
+    </el-descriptions>
+
+    <el-form label-position="top" :model="channelTestForm" class="channel-test-form">
+      <el-form-item label="模型">
+        <el-autocomplete
+          v-model="channelTestForm.model"
+          :fetch-suggestions="channelTestModelSuggestions"
+          clearable
+          class="full-width"
+          placeholder="选择或输入模型"
+        />
+      </el-form-item>
+      <el-form-item label="提示词">
+        <el-input
+          v-model="channelTestForm.prompt"
+          type="textarea"
+          :rows="4"
+          placeholder="请输入用于测试连接的提示词"
+        />
+      </el-form-item>
+    </el-form>
+
+    <el-alert
+      v-if="testResult"
+      class="channel-test-result"
+      :title="testResult.ok === false ? '连接测试失败' : '连接测试成功'"
+      :type="testResult.ok === false ? 'error' : 'success'"
+      show-icon
+      :closable="false"
+    >
+      <div class="channel-test-result__meta">
+        <span v-if="testResult.duration_ms !== undefined">耗时 {{ displayMs(testResult.duration_ms) }}</span>
+        <span v-if="testResult.status_code">状态码 {{ testResult.status_code }}</span>
+        <span v-if="testResult.upstream_model">上游模型 {{ testResult.upstream_model }}</span>
+      </div>
+      <div class="channel-test-output">{{ formatChannelTestResult(testResult) }}</div>
+    </el-alert>
+
+    <template #footer>
+      <div class="drawer-footer">
+        <el-button @click="channelTestVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="testLoading" @click="testChannel">测试连接</el-button>
+      </div>
+    </template>
+  </el-dialog>
 
   <el-dialog v-model="logDetailVisible" title="日志详情" width="900px">
     <el-descriptions v-if="selectedLog" :column="2" border>
@@ -433,6 +482,7 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
 import {
+  Connection,
   Delete,
   Download,
   Edit,
@@ -469,8 +519,13 @@ const compatTexts = reactive({
   default_params: "",
   unsupported_params: ""
 });
-const testPayloadText = ref("");
 const testResult = ref(null);
+const channelTestVisible = ref(false);
+const testingChannel = ref(null);
+const channelTestForm = reactive({
+  model: "",
+  prompt: "ping"
+});
 const discoveredModels = ref([]);
 const selectedDiscoveredModels = ref([]);
 
@@ -522,6 +577,11 @@ const enabledChannelCount = computed(() => channels.value.filter((channel) => ch
 const modelMappingCount = computed(() =>
   channels.value.reduce((total, channel) => total + normalizeModels(channel.models).length, 0)
 );
+const channelTestModelOptions = computed(() => normalizeModels(testingChannel.value?.models).map((item) => item.model));
+const channelTestTitle = computed(() => {
+  const channelName = testingChannel.value?.name || testingChannel.value?.id || "";
+  return channelName ? `测试连接 - ${channelName}` : "测试连接";
+});
 const orderedLogColumns = computed(() =>
   logColumnOrder.value.map((key) => logColumnMap[key]).filter(Boolean)
 );
@@ -607,11 +667,18 @@ function openChannelDrawer(channel = null, index = -1) {
   assignChannelDraft(channel ? clone(channel) : defaultChannel());
   headersText.value = formatJson(channelDraft.headers || {});
   assignCompat(channelDraft.compat || {});
-  resetTestPayload();
-  testResult.value = null;
   discoveredModels.value = [];
   selectedDiscoveredModels.value = [];
   channelDrawerVisible.value = true;
+}
+
+function openChannelTest(channel) {
+  testingChannel.value = clone(channel);
+  const models = normalizeModels(testingChannel.value.models).map((item) => item.model);
+  channelTestForm.model = models[0] || "";
+  channelTestForm.prompt = "ping";
+  testResult.value = null;
+  channelTestVisible.value = true;
 }
 
 async function saveChannel() {
@@ -686,11 +753,13 @@ async function discoverModels() {
 async function testChannel() {
   testLoading.value = true;
   try {
-    const channel = buildChannelFromDraft();
-    const payload = parseJsonText(testPayloadText.value, "测试请求");
+    if (!testingChannel.value) {
+      throw new Error("请选择要测试的渠道");
+    }
+    const payload = buildChannelTestPayload(testingChannel.value);
     testResult.value = await api("/admin/api/channels/test", {
       method: "POST",
-      body: JSON.stringify({ channel, payload })
+      body: JSON.stringify({ channel: testingChannel.value, payload })
     });
   } catch (error) {
     ElMessage.error(error.message);
@@ -709,15 +778,34 @@ function addSelectedModels() {
   }
 }
 
-function resetTestPayload() {
-  const model = normalizeModels(channelDraft.models)[0]?.model || "test-model";
-  const content =
-    channelDraft.type === "messages"
-      ? { model, messages: [{ role: "user", content: [{ type: "text", text: "ping" }] }], max_tokens: 32 }
-      : channelDraft.type === "chat"
-        ? { model, messages: [{ role: "user", content: "ping" }], max_tokens: 32 }
-        : { model, input: "ping", max_output_tokens: 32 };
-  testPayloadText.value = formatJson(content);
+function buildChannelTestPayload(channel) {
+  const model = String(channelTestForm.model || "").trim();
+  const prompt = String(channelTestForm.prompt || "").trim();
+  if (!model) {
+    throw new Error("请输入要测试的模型");
+  }
+  if (!prompt) {
+    throw new Error("请输入测试提示词");
+  }
+  if (channel.type === "messages") {
+    return {
+      model,
+      messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
+      max_tokens: 256
+    };
+  }
+  if (channel.type === "chat") {
+    return {
+      model,
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: 256
+    };
+  }
+  return {
+    model,
+    input: prompt,
+    max_output_tokens: 256
+  };
 }
 
 async function loadLogs(page = logPage.value) {
@@ -788,6 +876,10 @@ function requestIdSuggestions(query, callback) {
 
 function modelSuggestions(query, callback) {
   callback(buildSuggestions(filterOptions.models, query));
+}
+
+function channelTestModelSuggestions(query, callback) {
+  callback(buildSuggestions(channelTestModelOptions.value, query));
 }
 
 function buildSuggestions(values, query) {
@@ -980,6 +1072,89 @@ function formatLogCell(row, column) {
     default:
       return row[column.prop] ?? "";
   }
+}
+
+function formatChannelTestResult(result) {
+  if (!result) {
+    return "";
+  }
+  if (result.ok === false) {
+    const details = extractErrorMessage(result.body);
+    return [result.error || "上游请求失败", details].filter(Boolean).join("\n");
+  }
+  const responseText = extractResponseText(result.response);
+  if (responseText) {
+    return responseText;
+  }
+  return "连接已打通，但响应中没有可展示的文本内容。";
+}
+
+function extractErrorMessage(value) {
+  if (!value) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value.error === "string") {
+    return value.error;
+  }
+  if (value.error?.message) {
+    return String(value.error.message);
+  }
+  if (value.message) {
+    return String(value.message);
+  }
+  return "";
+}
+
+function extractResponseText(response) {
+  if (!response || typeof response !== "object") {
+    return "";
+  }
+  const outputText = String(response.output_text || "").trim();
+  if (outputText) {
+    return outputText;
+  }
+  const choiceContent = response.choices?.[0]?.message?.content;
+  const choiceText = stringifyContent(choiceContent).trim();
+  if (choiceText) {
+    return choiceText;
+  }
+  const messageText = stringifyContent(response.content).trim();
+  if (messageText) {
+    return messageText;
+  }
+  const output = Array.isArray(response.output) ? response.output : [];
+  const outputParts = [];
+  for (const item of output) {
+    const content = Array.isArray(item?.content) ? item.content : [];
+    for (const block of content) {
+      const text = block?.text || block?.output_text;
+      if (text) {
+        outputParts.push(String(text));
+      }
+    }
+  }
+  return outputParts.join("\n").trim();
+}
+
+function stringifyContent(content) {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .map((item) => {
+      if (typeof item === "string") {
+        return item;
+      }
+      return item?.text || "";
+    })
+    .filter(Boolean)
+    .join("\n");
 }
 
 function formatJson(value) {

@@ -218,6 +218,35 @@ body {
   gap: 12px;
 }
 
+.channel-test-summary {
+  margin-bottom: 16px;
+}
+
+.channel-test-form {
+  margin-top: 16px;
+}
+
+.channel-test-result {
+  margin-top: 16px;
+}
+
+.channel-test-result__meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+
+.channel-test-output {
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
+}
+
 .drawer-footer {
   display: flex;
   justify-content: flex-end;
