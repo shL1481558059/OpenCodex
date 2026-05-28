@@ -179,6 +179,30 @@ body {
   gap: 4px;
 }
 
+.log-auto-refresh-menu {
+  min-width: 180px;
+}
+
+.log-auto-refresh-menu__title {
+  margin: 6px 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-secondary);
+}
+
+.log-auto-refresh-menu__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 128px;
+  gap: 24px;
+}
+
+.log-auto-refresh-menu__item .el-icon {
+  color: var(--el-color-primary);
+}
+
 .pagination-bar {
   display: flex;
   justify-content: flex-end;
