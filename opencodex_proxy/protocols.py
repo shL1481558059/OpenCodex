@@ -14,6 +14,16 @@ PROTOCOL_RESPONSES = "responses"
 PROTOCOL_CHAT = "chat"
 PROTOCOL_MESSAGES = "messages"
 
+PLAN_MODE_TAG_INSTRUCTION = """You are currently in Codex Plan Mode.
+
+If you present an official plan, your entire final answer must be wrapped exactly like this:
+
+<proposed_plan>
+...markdown plan...
+</proposed_plan>
+
+The opening and closing tags must each be on their own line. Do not translate the tags. The client will not recognize the plan without these tags."""
+
 
 RESPONSES_TOOL_CALL_TYPES = {
     "function_call",
@@ -106,6 +116,7 @@ def from_canonical_response(canonical: dict[str, Any], protocol: str) -> dict[st
 def _responses_request_to_canonical(payload: dict[str, Any]) -> dict[str, Any]:
     messages: list[dict[str, Any]] = []
     instructions = payload.get("instructions")
+    has_plan_mode_tag = _responses_payload_has_plan_mode_tag(payload)
     if instructions:
         messages.append({"role": "system", "content": _stringify_content(instructions)})
 
@@ -120,6 +131,9 @@ def _responses_request_to_canonical(payload: dict[str, Any]) -> dict[str, Any]:
     messages = _normalize_chat_tool_history(
         _merge_consecutive_assistant_tool_call_messages(messages)
     )
+    messages = _merge_system_messages(messages)
+    if has_plan_mode_tag:
+        messages = _append_system_instruction(messages, PLAN_MODE_TAG_INSTRUCTION)
 
     return {
         "model": payload.get("model"),
@@ -128,6 +142,46 @@ def _responses_request_to_canonical(payload: dict[str, Any]) -> dict[str, Any]:
         "tool_choice": payload.get("tool_choice"),
         "params": _copy_common_request_params(payload, "responses"),
     }
+
+
+def _merge_system_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    system_parts: list[str] = []
+    non_system_messages: list[dict[str, Any]] = []
+
+    for message in messages:
+        if message.get("role") == "system":
+            content = _stringify_content(message.get("content", ""))
+            if content:
+                system_parts.append(content)
+            continue
+        non_system_messages.append(message)
+
+    if not system_parts:
+        return non_system_messages
+
+    return [{"role": "system", "content": "\n\n".join(system_parts)}, *non_system_messages]
+
+
+def _append_system_instruction(
+    messages: list[dict[str, Any]], instruction: str
+) -> list[dict[str, Any]]:
+    if not instruction:
+        return messages
+    if messages and messages[0].get("role") == "system":
+        result = [deepcopy(messages[0]), *messages[1:]]
+        content = _stringify_content(result[0].get("content", ""))
+        result[0]["content"] = f"{content}\n\n{instruction}" if content else instruction
+        return result
+    return [{"role": "system", "content": instruction}, *messages]
+
+
+def _responses_payload_has_plan_mode_tag(payload: dict[str, Any]) -> bool:
+    return "<proposed_plan>" in _stringify_content(
+        {
+            "instructions": payload.get("instructions", ""),
+            "input": payload.get("input", []),
+        }
+    )
 
 
 def _chat_request_to_canonical(payload: dict[str, Any]) -> dict[str, Any]:
