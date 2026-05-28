@@ -167,6 +167,28 @@
                     </div>
                   </el-popover>
                   <el-button :icon="Refresh" @click="loadLogs">刷新</el-button>
+                  <el-dropdown trigger="click" @command="setLogAutoRefreshSeconds">
+                    <el-button :type="logAutoRefreshSeconds ? 'primary' : 'default'" :icon="Refresh">
+                      {{ logAutoRefreshLabel }}
+                    </el-button>
+                    <template #dropdown>
+                      <el-dropdown-menu class="log-auto-refresh-menu">
+                        <div class="log-auto-refresh-menu__title">启用自动刷新</div>
+                        <el-dropdown-item :command="0">
+                          <span class="log-auto-refresh-menu__item">
+                            <span>关闭</span>
+                            <el-icon v-if="logAutoRefreshSeconds === 0"><Check /></el-icon>
+                          </span>
+                        </el-dropdown-item>
+                        <el-dropdown-item v-for="seconds in logAutoRefreshOptions" :key="seconds" :command="seconds">
+                          <span class="log-auto-refresh-menu__item">
+                            <span>{{ seconds }} 秒</span>
+                            <el-icon v-if="logAutoRefreshSeconds === seconds"><Check /></el-icon>
+                          </span>
+                        </el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
                   <el-button @click="resetLogFilters">重置</el-button>
                 </div>
               </div>
@@ -308,6 +330,17 @@
         <el-col :span="12">
           <el-form-item label="超时秒数">
             <el-input-number v-model="channelDraft.timeout_seconds" :min="1" class="full-width" />
+          </el-form-item>
+        </el-col>
+        <el-col :span="12">
+          <el-form-item label="重试次数">
+            <el-input-number
+              v-model="channelDraft.retry_count"
+              :min="0"
+              :step="1"
+              step-strictly
+              class="full-width"
+            />
           </el-form-item>
         </el-col>
         <el-col :span="12">
@@ -479,9 +512,10 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
 import {
+  Check,
   Connection,
   Delete,
   Download,
@@ -533,6 +567,9 @@ const logs = ref([]);
 const logPage = ref(1);
 const logPageSize = ref(20);
 const logTotal = ref(0);
+const logAutoRefreshOptions = [5, 10, 30, 60];
+const logAutoRefreshSeconds = ref(0);
+let logAutoRefreshTimer = null;
 const filterOptions = reactive({
   request_ids: [],
   models: [],
@@ -588,9 +625,16 @@ const orderedLogColumns = computed(() =>
 const visibleLogColumns = computed(() =>
   orderedLogColumns.value.filter((column) => visibleLogColumnKeys.value.includes(column.key))
 );
+const logAutoRefreshLabel = computed(() =>
+  logAutoRefreshSeconds.value ? `${logAutoRefreshSeconds.value} 秒刷新` : "自动刷新"
+);
 
 onMounted(async () => {
   await checkSession();
+});
+
+onBeforeUnmount(() => {
+  stopLogAutoRefreshTimer();
 });
 
 async function api(url, options = {}) {
@@ -639,6 +683,7 @@ async function login() {
 
 async function logout() {
   await api("/admin/api/logout", { method: "POST", body: "{}" });
+  setLogAutoRefreshSeconds(0);
   authenticated.value = false;
 }
 
@@ -832,6 +877,41 @@ async function loadLogs(page = logPage.value) {
   }
 }
 
+function setLogAutoRefreshSeconds(seconds) {
+  const nextSeconds = Number(seconds || 0);
+  logAutoRefreshSeconds.value = logAutoRefreshOptions.includes(nextSeconds) ? nextSeconds : 0;
+  restartLogAutoRefreshTimer();
+  if (logAutoRefreshSeconds.value > 0) {
+    refreshLogsFromAutoRefresh();
+  }
+}
+
+function restartLogAutoRefreshTimer() {
+  stopLogAutoRefreshTimer();
+  if (logAutoRefreshSeconds.value === 0) {
+    return;
+  }
+  logAutoRefreshTimer = window.setInterval(
+    refreshLogsFromAutoRefresh,
+    logAutoRefreshSeconds.value * 1000
+  );
+}
+
+function stopLogAutoRefreshTimer() {
+  if (logAutoRefreshTimer === null) {
+    return;
+  }
+  window.clearInterval(logAutoRefreshTimer);
+  logAutoRefreshTimer = null;
+}
+
+async function refreshLogsFromAutoRefresh() {
+  if (!authenticated.value || activeTab.value !== "logs" || logsLoading.value) {
+    return;
+  }
+  await loadLogs();
+}
+
 function handleLogPageSizeChange() {
   logPage.value = 1;
   loadLogs(1);
@@ -899,6 +979,7 @@ function defaultChannel() {
     auth_mode: "pass_through_or_config",
     headers: {},
     timeout_seconds: 120,
+    retry_count: 3,
     compat: {},
     models: [],
     enabled: true
@@ -940,6 +1021,7 @@ function buildChannelFromDraft() {
     auth_mode: channelDraft.auth_mode,
     headers,
     timeout_seconds: Number(channelDraft.timeout_seconds || 120),
+    retry_count: Number(channelDraft.retry_count ?? 3),
     enabled: channelDraft.enabled === true,
     models: normalizeModels(channelDraft.models).filter((item) => item.model),
     compat: buildCompat()
