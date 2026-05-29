@@ -582,6 +582,39 @@ class TestWebSearchStore(unittest.TestCase):
                 },
             )
 
+    def test_save_and_read_web_search_config_allows_custom_usage_count(self):
+        saved = replace_web_search_config(
+            self.db_path,
+            {
+                "enabled": True,
+                "keys": [{"key": "tvly-first", "enabled": True, "usage_count": 7}],
+            },
+        )
+
+        self.assertEqual(saved["keys"][0]["usage_count"], 7)
+
+        loaded = read_web_search_config(self.db_path)
+        self.assertEqual(loaded["keys"][0]["usage_count"], 7)
+
+    def test_web_search_usage_count_must_be_non_negative_integer(self):
+        invalid_values = [-1, "1.5", True]
+        for value in invalid_values:
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    replace_web_search_config(
+                        self.db_path,
+                        {
+                            "enabled": True,
+                            "keys": [
+                                {
+                                    "key": "tvly-first",
+                                    "enabled": True,
+                                    "usage_count": value,
+                                }
+                            ],
+                        },
+                    )
+
     def test_reserve_uses_enabled_keys_by_position_and_counts_on_request_start(self):
         replace_web_search_config(
             self.db_path,

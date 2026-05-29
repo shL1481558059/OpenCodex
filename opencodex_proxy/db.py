@@ -353,7 +353,13 @@ def replace_web_search_config(db_path: Path, config: dict[str, Any]) -> dict[str
                     raise ValueError(f"web search keys[{position + 1}].key is required")
                 existing_id = _parse_positive_int(item.get("id"))
                 old = existing.get(existing_id) if existing_id is not None else None
-                if old and old["api_key"] == api_key:
+                if "usage_count" in item:
+                    usage_count = _parse_required_non_negative_int(
+                        item.get("usage_count"),
+                        f"web search keys[{position + 1}].usage_count",
+                    )
+                    created_at = old["created_at"] if old and old["api_key"] == api_key else now
+                elif old and old["api_key"] == api_key:
                     usage_count = old["usage_count"]
                     created_at = old["created_at"]
                 else:
@@ -472,6 +478,20 @@ def _parse_required_positive_int(value: Any, label: str) -> int:
         raise ValueError(f"{label} must be a positive integer") from None
     if parsed <= 0:
         raise ValueError(f"{label} must be a positive integer")
+    return parsed
+
+
+def _parse_required_non_negative_int(value: Any, label: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be a non-negative integer")
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError(f"{label} must be a non-negative integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a non-negative integer") from exc
+    if parsed < 0:
+        raise ValueError(f"{label} must be a non-negative integer")
     return parsed
 
 
