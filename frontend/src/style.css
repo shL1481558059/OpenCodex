@@ -50,9 +50,9 @@ body {
 }
 
 .side-menu .el-menu-item {
-  height: 56px;
-  font-size: 18px;
-  font-weight: 600;
+  height: 48px;
+  font-size: 15px;
+  font-weight: 500;
   color: #8fa1ba;
 }
 
