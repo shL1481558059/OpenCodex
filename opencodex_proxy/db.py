@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS request_logs (
     cached_tokens INTEGER,
     output_tokens INTEGER,
     cost REAL,
+    web_search_json TEXT,
     error TEXT
 );
 """
@@ -59,7 +60,30 @@ CREATE TABLE IF NOT EXISTS channels (
 CREATE INDEX IF NOT EXISTS idx_channels_position ON channels(position);
 """
 
-SCHEMA = REQUEST_LOGS_SCHEMA + "\n" + CHANNELS_SCHEMA
+WEB_SEARCH_SCHEMA = """
+CREATE TABLE IF NOT EXISTS web_search_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tavily_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    position INTEGER NOT NULL,
+    api_key TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    usage_count INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tavily_keys_position ON tavily_keys(position);
+"""
+
+TAVILY_KEY_USAGE_LIMIT = 1000
+
+SCHEMA = REQUEST_LOGS_SCHEMA + "\n" + CHANNELS_SCHEMA + "\n" + WEB_SEARCH_SCHEMA
 
 
 def init_db(db_path: Path) -> None:
@@ -72,6 +96,13 @@ def init_db(db_path: Path) -> None:
 
 
 def _migrate_channels(conn: sqlite3.Connection) -> None:
+    log_columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(request_logs)").fetchall()
+    }
+    if "web_search_json" not in log_columns:
+        conn.execute("ALTER TABLE request_logs ADD COLUMN web_search_json TEXT")
+
     columns = {
         row[1]
         for row in conn.execute("PRAGMA table_info(channels)").fetchall()
@@ -133,15 +164,16 @@ class AsyncDBWriter:
             request_headers, request_body, model, upstream_model,
             channel_id, is_stream, ttft_ms, duration_ms, status_code,
             response_body, input_tokens, cached_tokens, output_tokens,
-            cost, error
+            cost, web_search_json, error
         ) VALUES (
             :request_id, :created_at, :method, :path, :client_ip,
             :request_headers, :request_body, :model, :upstream_model,
             :channel_id, :is_stream, :ttft_ms, :duration_ms, :status_code,
             :response_body, :input_tokens, :cached_tokens, :output_tokens,
-            :cost, :error
+            :cost, :web_search_json, :error
         )
         """
+        record.setdefault("web_search_json", None)
         conn.execute(sql, record)
         conn.commit()
 
@@ -225,6 +257,182 @@ def _row_to_channel(row: sqlite3.Row) -> dict[str, Any]:
         "models": _parse_json_list(row["models_json"]),
         "enabled": bool(row["enabled"]),
     }
+
+
+def read_web_search_config(db_path: Path) -> dict[str, Any]:
+    init_db(db_path)
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        settings = conn.execute(
+            "SELECT enabled FROM web_search_settings WHERE id = 1"
+        ).fetchone()
+        rows = conn.execute(
+            """
+            SELECT id, position, api_key, enabled, usage_count
+            FROM tavily_keys
+            ORDER BY position ASC, id ASC
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    return {
+        "enabled": bool(settings["enabled"]) if settings else False,
+        "keys": [_row_to_tavily_key(row) for row in rows],
+        "key_usage_limit": TAVILY_KEY_USAGE_LIMIT,
+    }
+
+
+def replace_web_search_config(db_path: Path, config: dict[str, Any]) -> dict[str, Any]:
+    init_db(db_path)
+    if not isinstance(config, dict):
+        raise ValueError("web search config must be a JSON object")
+    keys = config.get("keys", [])
+    if not isinstance(keys, list):
+        raise ValueError("web search keys must be a list")
+
+    now = time.time()
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        existing = {
+            int(row["id"]): {
+                "api_key": row["api_key"],
+                "usage_count": int(row["usage_count"] or 0),
+                "created_at": float(row["created_at"] or now),
+            }
+            for row in conn.execute(
+                "SELECT id, api_key, usage_count, created_at FROM tavily_keys"
+            ).fetchall()
+        }
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO web_search_settings (id, enabled, created_at, updated_at)
+                VALUES (1, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    updated_at = excluded.updated_at
+                """,
+                (1 if config.get("enabled") is True else 0, now, now),
+            )
+            conn.execute("DELETE FROM tavily_keys")
+            for position, item in enumerate(keys):
+                if not isinstance(item, dict):
+                    raise ValueError(f"web search keys[{position + 1}] must be an object")
+                api_key = str(item.get("key") or item.get("api_key") or "").strip()
+                if not api_key:
+                    raise ValueError(f"web search keys[{position + 1}].key is required")
+                existing_id = _parse_positive_int(item.get("id"))
+                old = existing.get(existing_id) if existing_id is not None else None
+                if old and old["api_key"] == api_key:
+                    usage_count = old["usage_count"]
+                    created_at = old["created_at"]
+                else:
+                    usage_count = 0
+                    created_at = now
+                conn.execute(
+                    """
+                    INSERT INTO tavily_keys (
+                        id, position, api_key, enabled, usage_count,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        existing_id,
+                        position,
+                        api_key,
+                        1 if item.get("enabled", True) is not False else 0,
+                        usage_count,
+                        created_at,
+                        now,
+                    ),
+                )
+    finally:
+        conn.close()
+    return read_web_search_config(db_path)
+
+
+def reserve_tavily_key(db_path: Path) -> dict[str, Any] | None:
+    return _reserve_tavily_key(db_path, key_id=None, allow_disabled=False)
+
+
+def reserve_tavily_key_by_id(db_path: Path, key_id: int) -> dict[str, Any] | None:
+    return _reserve_tavily_key(db_path, key_id=key_id, allow_disabled=True)
+
+
+def _reserve_tavily_key(
+    db_path: Path,
+    *,
+    key_id: int | None,
+    allow_disabled: bool,
+) -> dict[str, Any] | None:
+    init_db(db_path)
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if key_id is None:
+            row = conn.execute(
+                """
+                SELECT id, position, api_key, enabled, usage_count
+                FROM tavily_keys
+                WHERE enabled = 1 AND usage_count < ?
+                ORDER BY position ASC, id ASC
+                LIMIT 1
+                """,
+                (TAVILY_KEY_USAGE_LIMIT,),
+            ).fetchone()
+        else:
+            enabled_clause = "" if allow_disabled else "AND enabled = 1"
+            row = conn.execute(
+                f"""
+                SELECT id, position, api_key, enabled, usage_count
+                FROM tavily_keys
+                WHERE id = ? {enabled_clause} AND usage_count < ?
+                """,
+                (key_id, TAVILY_KEY_USAGE_LIMIT),
+            ).fetchone()
+        if row is None:
+            conn.rollback()
+            return None
+        next_usage = int(row["usage_count"] or 0) + 1
+        conn.execute(
+            "UPDATE tavily_keys SET usage_count = ?, updated_at = ? WHERE id = ?",
+            (next_usage, time.time(), row["id"]),
+        )
+        conn.commit()
+        return {
+            "id": int(row["id"]),
+            "position": int(row["position"]),
+            "key": row["api_key"],
+            "enabled": bool(row["enabled"]),
+            "usage_count": next_usage,
+            "key_usage_limit": TAVILY_KEY_USAGE_LIMIT,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _row_to_tavily_key(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "key": row["api_key"],
+        "enabled": bool(row["enabled"]),
+        "usage_count": int(row["usage_count"] or 0),
+        "key_usage_limit": TAVILY_KEY_USAGE_LIMIT,
+    }
+
+
+def _parse_positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _parse_json_object(raw: str | None) -> dict[str, Any]:

@@ -271,6 +271,22 @@ body {
   line-height: 1.6;
 }
 
+.web-search-control-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.web-search-control-row > span {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+.web-search-test-query {
+  width: min(360px, 100%);
+}
+
 .drawer-footer {
   display: flex;
   justify-content: flex-end;
@@ -337,5 +353,14 @@ body {
 
   .log-filter-actions {
     padding-left: 0;
+  }
+
+  .web-search-control-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .web-search-test-query {
+    width: 100%;
   }
 }

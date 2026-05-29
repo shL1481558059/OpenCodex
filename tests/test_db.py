@@ -9,12 +9,17 @@ from pathlib import Path
 
 from opencodex_proxy.db import (
     AsyncDBWriter,
+    TAVILY_KEY_USAGE_LIMIT,
     calculate_cost,
     extract_usage,
     init_db,
     read_channels,
     read_logs,
+    read_web_search_config,
     replace_channels,
+    replace_web_search_config,
+    reserve_tavily_key,
+    reserve_tavily_key_by_id,
 )
 
 
@@ -486,6 +491,166 @@ class TestChannelStore(unittest.TestCase):
         self.assertIn("models_json", columns)
         self.assertIn("retry_count", columns)
         self.assertEqual(retry_count, 3)
+
+
+class TestWebSearchStore(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "test.db"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_save_and_read_web_search_config_keeps_full_keys_and_order(self):
+        saved = replace_web_search_config(
+            self.db_path,
+            {
+                "enabled": True,
+                "keys": [
+                    {"key": "tvly-first", "enabled": True},
+                    {"key": "tvly-second", "enabled": False},
+                ],
+            },
+        )
+
+        self.assertTrue(saved["enabled"])
+        self.assertEqual(saved["key_usage_limit"], TAVILY_KEY_USAGE_LIMIT)
+        self.assertEqual([item["key"] for item in saved["keys"]], ["tvly-first", "tvly-second"])
+        self.assertEqual([item["usage_count"] for item in saved["keys"]], [0, 0])
+        self.assertFalse(saved["keys"][1]["enabled"])
+
+        loaded = read_web_search_config(self.db_path)
+        self.assertEqual([item["key"] for item in loaded["keys"]], ["tvly-first", "tvly-second"])
+
+    def test_reserve_uses_enabled_keys_by_position_and_counts_on_request_start(self):
+        replace_web_search_config(
+            self.db_path,
+            {
+                "enabled": True,
+                "keys": [
+                    {"key": "disabled", "enabled": False},
+                    {"key": "first", "enabled": True},
+                    {"key": "second", "enabled": True},
+                ],
+            },
+        )
+
+        reserved = reserve_tavily_key(self.db_path)
+
+        self.assertIsNotNone(reserved)
+        self.assertEqual(reserved["key"], "first")
+        self.assertEqual(reserved["position"], 1)
+        self.assertEqual(reserved["usage_count"], 1)
+        config = read_web_search_config(self.db_path)
+        self.assertEqual([item["usage_count"] for item in config["keys"]], [0, 1, 0])
+
+    def test_reserve_switches_to_next_key_after_usage_limit(self):
+        saved = replace_web_search_config(
+            self.db_path,
+            {
+                "enabled": True,
+                "keys": [
+                    {"key": "first", "enabled": True},
+                    {"key": "second", "enabled": True},
+                ],
+            },
+        )
+        first_id = saved["keys"][0]["id"]
+        conn = sqlite3.connect(str(self.db_path))
+        conn.execute(
+            "UPDATE tavily_keys SET usage_count = ? WHERE id = ?",
+            (TAVILY_KEY_USAGE_LIMIT, first_id),
+        )
+        conn.commit()
+        conn.close()
+
+        reserved = reserve_tavily_key(self.db_path)
+
+        self.assertIsNotNone(reserved)
+        self.assertEqual(reserved["key"], "second")
+        self.assertEqual(reserved["usage_count"], 1)
+
+    def test_test_reserve_can_use_disabled_key_but_not_exhausted_key(self):
+        saved = replace_web_search_config(
+            self.db_path,
+            {
+                "enabled": True,
+                "keys": [
+                    {"key": "disabled", "enabled": False},
+                    {"key": "exhausted", "enabled": True},
+                ],
+            },
+        )
+        disabled_id = saved["keys"][0]["id"]
+        exhausted_id = saved["keys"][1]["id"]
+        conn = sqlite3.connect(str(self.db_path))
+        conn.execute(
+            "UPDATE tavily_keys SET usage_count = ? WHERE id = ?",
+            (TAVILY_KEY_USAGE_LIMIT, exhausted_id),
+        )
+        conn.commit()
+        conn.close()
+
+        disabled = reserve_tavily_key_by_id(self.db_path, disabled_id)
+        exhausted = reserve_tavily_key_by_id(self.db_path, exhausted_id)
+
+        self.assertIsNotNone(disabled)
+        self.assertEqual(disabled["key"], "disabled")
+        self.assertIsNone(exhausted)
+
+    def test_key_string_change_resets_usage_but_enabled_change_preserves_usage(self):
+        saved = replace_web_search_config(
+            self.db_path,
+            {"enabled": True, "keys": [{"key": "same", "enabled": True}]},
+        )
+        key_id = saved["keys"][0]["id"]
+        reserve_tavily_key(self.db_path)
+
+        toggled = replace_web_search_config(
+            self.db_path,
+            {"enabled": True, "keys": [{"id": key_id, "key": "same", "enabled": False}]},
+        )
+        changed = replace_web_search_config(
+            self.db_path,
+            {"enabled": True, "keys": [{"id": key_id, "key": "changed", "enabled": True}]},
+        )
+
+        self.assertEqual(toggled["keys"][0]["usage_count"], 1)
+        self.assertEqual(changed["keys"][0]["usage_count"], 0)
+
+    def test_request_log_can_store_web_search_json(self):
+        writer = AsyncDBWriter(self.db_path)
+        writer.start()
+        writer.write(
+            {
+                "request_id": "req_web",
+                "created_at": time.time(),
+                "method": "POST",
+                "path": "/v1/responses",
+                "client_ip": "127.0.0.1",
+                "request_headers": "{}",
+                "request_body": "{}",
+                "model": "gpt-4o",
+                "upstream_model": "gpt-4o",
+                "channel_id": "openai",
+                "is_stream": 0,
+                "ttft_ms": None,
+                "duration_ms": 100,
+                "status_code": 200,
+                "response_body": "{}",
+                "input_tokens": 100,
+                "cached_tokens": 0,
+                "output_tokens": 50,
+                "cost": 0.001,
+                "web_search_json": json.dumps({"calls": [{"query": "OpenAI"}]}),
+                "error": None,
+            }
+        )
+        writer.stop()
+
+        logs = read_logs(self.db_path)
+
+        self.assertEqual(json.loads(logs[0]["web_search_json"])["calls"][0]["query"], "OpenAI")
 
 
 if __name__ == "__main__":

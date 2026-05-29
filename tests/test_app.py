@@ -7,9 +7,104 @@ from pathlib import Path
 from unittest.mock import patch
 
 from opencodex_proxy.app import create_app, _spa_index_response
-from opencodex_proxy.db import read_channels, read_logs
+from opencodex_proxy.db import (
+    read_channels,
+    read_logs,
+    read_web_search_config,
+    replace_web_search_config,
+)
 from opencodex_proxy.errors import UpstreamError
 from opencodex_proxy.settings import Settings
+
+
+def chat_text_response(content: str, *, model: str = "m", response_id: str = "chatcmpl_text"):
+    return {
+        "id": response_id,
+        "model": model,
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+
+
+def chat_tool_response(
+    *tool_calls: dict,
+    model: str = "m",
+    response_id: str = "chatcmpl_tool",
+):
+    return {
+        "id": response_id,
+        "model": model,
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": list(tool_calls),
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+
+
+def function_tool_call(call_id: str, name: str, arguments: dict):
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": json.dumps(arguments, ensure_ascii=False),
+        },
+    }
+
+
+def tavily_success(answer: str = "answer", url: str = "https://example.test/result"):
+    return {
+        "ok": True,
+        "status_code": 200,
+        "duration_ms": 12,
+        "raw": {
+            "answer": answer,
+            "results": [
+                {
+                    "title": "Example Result",
+                    "url": url,
+                    "content": "source content",
+                    "score": 0.9,
+                }
+            ],
+            "usage": {"searches": 1},
+        },
+        "summary": {
+            "answer": answer,
+            "results": [
+                {
+                    "title": "Example Result",
+                    "url": url,
+                    "content": "source content",
+                    "score": 0.9,
+                }
+            ],
+            "error": None,
+        },
+    }
+
+
+def tavily_http_error():
+    return {
+        "ok": False,
+        "status_code": 429,
+        "duration_ms": 7,
+        "error_type": "http_error",
+        "raw": {"error": "rate limited"},
+        "summary": {"answer": "", "results": [], "error": "Tavily returned HTTP 429"},
+    }
 
 
 class AppTests(unittest.TestCase):
@@ -56,6 +151,15 @@ class AppTests(unittest.TestCase):
 
     def login(self):
         return self.client.post("/admin", data={"password": "pw"})
+
+    def enable_web_search(self, keys=None, enabled=True):
+        return replace_web_search_config(
+            self.db_path,
+            {
+                "enabled": enabled,
+                "keys": keys if keys is not None else [{"key": "tvly-test", "enabled": True}],
+            },
+        )
 
     def parse_sse_events(self, body: str) -> list[tuple[str, dict]]:
         events = []
@@ -126,6 +230,7 @@ class AppTests(unittest.TestCase):
 
     def test_admin_export_config_includes_full_apikey(self):
         self.login()
+        self.enable_web_search(keys=[{"key": "tvly-secret", "enabled": True}])
 
         response = self.client.get("/admin/api/config/export")
 
@@ -136,8 +241,63 @@ class AppTests(unittest.TestCase):
             response.headers.get("Content-Disposition", ""),
         )
         exported = json.loads(response.get_data(as_text=True))
+        self.assertEqual(sorted(exported), ["channels"])
         self.assertEqual(exported["channels"][0]["id"], "chat")
         self.assertEqual(exported["channels"][0]["apikey"], "secret")
+        self.assertNotIn("web_search", exported)
+        self.assertNotIn("tavily_keys", exported)
+
+    def test_admin_can_get_and_save_web_search_config(self):
+        self.login()
+
+        response = self.client.get("/admin/api/web-search")
+
+        self.assertEqual(response.status_code, 200)
+        initial = response.get_json()
+        self.assertFalse(initial["enabled"])
+        self.assertEqual(initial["key_usage_limit"], 1000)
+        self.assertEqual(initial["keys"], [])
+
+        response = self.client.post(
+            "/admin/api/web-search",
+            json={
+                "enabled": True,
+                "keys": [
+                    {"key": "tvly-a", "enabled": True},
+                    {"key": "tvly-b", "enabled": False},
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        saved = response.get_json()
+        self.assertTrue(saved["enabled"])
+        self.assertEqual([item["key"] for item in saved["keys"]], ["tvly-a", "tvly-b"])
+        self.assertEqual([item["usage_count"] for item in saved["keys"]], [0, 0])
+        stored = read_web_search_config(self.db_path)
+        self.assertEqual([item["key"] for item in stored["keys"]], ["tvly-a", "tvly-b"])
+
+    @patch("opencodex_proxy.app.tavily_search")
+    def test_admin_web_search_test_key_allows_disabled_key_and_counts_usage(
+        self, mock_tavily
+    ):
+        self.login()
+        saved = self.enable_web_search(keys=[{"key": "tvly-disabled", "enabled": False}])
+        key_id = saved["keys"][0]["id"]
+        mock_tavily.return_value = tavily_success("ok")
+
+        response = self.client.post(
+            "/admin/api/web-search/test-key",
+            json={"id": key_id, "query": "OpenAI"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["key"]["usage_count"], 1)
+        self.assertEqual(data["config"]["keys"][0]["usage_count"], 1)
+        self.assertFalse(data["config"]["keys"][0]["enabled"])
+        self.assertEqual(mock_tavily.call_args.args, ("tvly-disabled", "OpenAI"))
 
     def test_admin_import_config_appends_without_overwriting_existing_ids(self):
         self.login()
@@ -563,6 +723,233 @@ class AppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("upstream does not support parameter(s): reasoning", response.get_json()["error"]["message"])
+
+    @patch("opencodex_proxy.app.tavily_search")
+    @patch("opencodex_proxy.app.post_upstream")
+    def test_responses_web_search_simulation_runs_only_after_model_tool_call(
+        self, mock_post, mock_tavily
+    ):
+        self.enable_web_search()
+        mock_tavily.return_value = tavily_success("OpenAI was founded in 2015.")
+        mock_post.side_effect = [
+            chat_tool_response(function_tool_call("call_web", "web_search", {"query": "OpenAI"})),
+            chat_text_response("OpenAI was founded in 2015."),
+        ]
+
+        response = self.client.post(
+            "/v1/responses",
+            json={"model": "m", "input": "search", "tools": [{"type": "web_search"}]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual([item["type"] for item in payload["output"]], ["web_search_call", "message"])
+        self.assertEqual(payload["output"][0]["action"], {"type": "search", "query": "OpenAI"})
+        message_text = payload["output"][1]["content"][0]["text"]
+        self.assertIn("OpenAI was founded in 2015.", message_text)
+        self.assertIn("来源:", message_text)
+        self.assertEqual(payload["output"][1]["content"][0]["annotations"][0]["type"], "url_citation")
+        self.assertEqual(mock_tavily.call_args.args, ("tvly-test", "OpenAI"))
+        self.assertEqual(mock_post.call_count, 2)
+        second_upstream_payload = mock_post.call_args_list[1].args[1]
+        self.assertEqual(second_upstream_payload["messages"][-1]["role"], "tool")
+        self.assertIn("OpenAI was founded", second_upstream_payload["messages"][-1]["content"])
+
+        db_writer = self.app.config["OPENCODEX_DB_WRITER"]
+        db_writer.stop()
+        logs = read_logs(self.db_path)
+        web_log = json.loads(logs[0]["web_search_json"])
+        self.assertEqual(web_log["calls"][0]["query"], "OpenAI")
+        self.assertEqual(web_log["calls"][0]["key_position"], 0)
+        self.assertEqual(web_log["calls"][0]["key_usage_count"], 1)
+        self.assertEqual(read_web_search_config(self.db_path)["keys"][0]["usage_count"], 1)
+
+    @patch("opencodex_proxy.app.tavily_search")
+    @patch("opencodex_proxy.app.post_upstream")
+    def test_responses_web_search_declared_but_model_does_not_call_tool_skips_tavily(
+        self, mock_post, mock_tavily
+    ):
+        self.enable_web_search()
+        mock_post.return_value = chat_text_response("no search needed")
+
+        response = self.client.post(
+            "/v1/responses",
+            json={"model": "m", "input": "hello", "tools": [{"type": "web_search"}]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["output"][0]["content"][0]["text"], "no search needed")
+        mock_tavily.assert_not_called()
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch("opencodex_proxy.app.tavily_search")
+    @patch("opencodex_proxy.app.post_upstream")
+    def test_responses_web_search_disabled_returns_model_tool_call_without_tavily(
+        self, mock_post, mock_tavily
+    ):
+        self.enable_web_search(enabled=False)
+        mock_post.return_value = chat_tool_response(
+            function_tool_call("call_web", "web_search", {"query": "OpenAI"})
+        )
+
+        response = self.client.post(
+            "/v1/responses",
+            json={"model": "m", "input": "search", "tools": [{"type": "web_search"}]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        item = response.get_json()["output"][0]
+        self.assertEqual(item["type"], "function_call")
+        self.assertEqual(item["name"], "web_search")
+        mock_tavily.assert_not_called()
+
+    @patch("opencodex_proxy.app.post_upstream")
+    def test_responses_web_search_no_key_is_fed_back_as_tool_result(self, mock_post):
+        self.enable_web_search(keys=[])
+        mock_post.side_effect = [
+            chat_tool_response(function_tool_call("call_web", "web_search", {"query": "OpenAI"})),
+            chat_text_response("search was unavailable"),
+        ]
+
+        response = self.client.post(
+            "/v1/responses",
+            json={"model": "m", "input": "search", "tools": [{"type": "web_search"}]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["output"][0]["type"], "web_search_call")
+        tool_message = mock_post.call_args_list[1].args[1]["messages"][-1]
+        self.assertEqual(json.loads(tool_message["content"])["error"], "搜索不可用")
+
+    @patch("opencodex_proxy.app.tavily_search")
+    @patch("opencodex_proxy.app.post_upstream")
+    def test_responses_web_search_tavily_failure_is_logged_and_fed_back(
+        self, mock_post, mock_tavily
+    ):
+        self.enable_web_search()
+        mock_tavily.return_value = tavily_http_error()
+        mock_post.side_effect = [
+            chat_tool_response(function_tool_call("call_web", "web_search", {"query": "OpenAI"})),
+            chat_text_response("I could not search."),
+        ]
+
+        response = self.client.post(
+            "/v1/responses",
+            json={"model": "m", "input": "search", "tools": [{"type": "web_search"}]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        tool_message = mock_post.call_args_list[1].args[1]["messages"][-1]
+        self.assertEqual(json.loads(tool_message["content"])["error"], "搜索不可用")
+        db_writer = self.app.config["OPENCODEX_DB_WRITER"]
+        db_writer.stop()
+        web_log = json.loads(read_logs(self.db_path)[0]["web_search_json"])
+        self.assertEqual(web_log["calls"][0]["error_type"], "http_error")
+        self.assertEqual(web_log["calls"][0]["http_status"], 429)
+        self.assertEqual(web_log["calls"][0]["key_position"], 0)
+        self.assertEqual(web_log["upstream_call_summary"][0]["tool_names"], ["web_search"])
+
+    @patch("opencodex_proxy.app.tavily_search")
+    @patch("opencodex_proxy.app.post_upstream")
+    def test_responses_web_search_final_upstream_error_keeps_tavily_log(
+        self, mock_post, mock_tavily
+    ):
+        self.enable_web_search()
+        mock_tavily.return_value = tavily_success("OpenAI was founded in 2015.")
+        mock_post.side_effect = [
+            chat_tool_response(function_tool_call("call_web", "web_search", {"query": "OpenAI"})),
+            UpstreamError(
+                "upstream returned HTTP 502",
+                status_code=502,
+                body={"error": "bad gateway"},
+                channel_id="chat",
+            ),
+        ]
+
+        response = self.client.post(
+            "/v1/responses",
+            json={"model": "m", "input": "search", "tools": [{"type": "web_search"}]},
+        )
+
+        self.assertEqual(response.status_code, 502)
+        payload = response.get_json()
+        self.assertEqual(payload["error"]["type"], "upstream_error")
+        self.assertEqual(payload["error"]["upstream"], {"error": "bad gateway"})
+        db_writer = self.app.config["OPENCODEX_DB_WRITER"]
+        db_writer.stop()
+        web_log = json.loads(read_logs(self.db_path)[0]["web_search_json"])
+        self.assertEqual(web_log["calls"][0]["query"], "OpenAI")
+        self.assertEqual(web_log["calls"][0]["status"], "completed")
+        self.assertEqual(web_log["calls"][0]["key_usage_count"], 1)
+        self.assertEqual(web_log["upstream_error"], "upstream returned HTTP 502")
+        self.assertEqual(web_log["upstream_call_summary"][0]["tool_names"], ["web_search"])
+
+    @patch("opencodex_proxy.app.tavily_search")
+    @patch("opencodex_proxy.app.post_upstream")
+    def test_responses_web_search_mixed_tool_calls_return_client_visible_placeholder(
+        self, mock_post, mock_tavily
+    ):
+        self.enable_web_search()
+        mock_tavily.return_value = tavily_success()
+        mock_post.return_value = chat_tool_response(
+            function_tool_call("call_web", "web_search", {"query": "OpenAI"}),
+            function_tool_call("call_lookup", "lookup", {"id": "1"}),
+        )
+
+        response = self.client.post(
+            "/v1/responses",
+            json={
+                "model": "m",
+                "input": "search and lookup",
+                "tools": [
+                    {"type": "web_search"},
+                    {"type": "function", "name": "lookup", "parameters": {"type": "object"}},
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        output = response.get_json()["output"]
+        self.assertEqual(output[0]["type"], "web_search_call")
+        self.assertIn("opencodex_result", output[0])
+        self.assertEqual(output[1]["type"], "function_call")
+        self.assertEqual(output[1]["name"], "lookup")
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch("opencodex_proxy.app.tavily_search")
+    @patch("opencodex_proxy.app.post_upstream")
+    def test_responses_web_search_stream_is_synthesized_with_web_search_call(
+        self, mock_post, mock_tavily
+    ):
+        self.enable_web_search()
+        mock_tavily.return_value = tavily_success()
+        mock_post.side_effect = [
+            chat_tool_response(function_tool_call("call_web", "web_search", {"query": "OpenAI"})),
+            chat_text_response("answer"),
+        ]
+
+        response = self.client.post(
+            "/v1/responses",
+            json={
+                "model": "m",
+                "input": "search",
+                "tools": [{"type": "web_search"}],
+                "stream": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "text/event-stream")
+        body = response.get_data(as_text=True)
+        self.assertIn("event: response.output_item.added", body)
+        self.assertIn("\"type\":\"web_search_call\"", body)
+        completed = next(
+            data
+            for event, data in self.parse_sse_events(body)
+            if event == "response.completed"
+        )
+        self.assertEqual(completed["response"]["output"][0]["type"], "web_search_call")
 
     @patch("opencodex_proxy.app.post_upstream")
     def test_responses_chat_tool_calls_are_returned_as_function_call_items(self, mock_post):

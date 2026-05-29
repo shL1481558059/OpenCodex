@@ -530,6 +530,31 @@ def _responses_input_item_to_messages(item: Any) -> list[dict[str, Any]]:
         text = _responses_reasoning_to_text(item)
         return [{"role": "assistant", "content": "", "reasoning_content": text}] if text else []
     if item_type == "web_search_call":
+        if "opencodex_result" in item:
+            call_id = item.get("call_id") or item.get("id") or f"call_{uuid.uuid4().hex}"
+            action = item.get("action") or {}
+            query = action.get("query") if isinstance(action, dict) else ""
+            return [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": _json_dumps({"query": query or ""}),
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": _json_dumps(item.get("opencodex_result") or {}),
+                },
+            ]
         text = _responses_metadata_item_to_text(item)
         return [{"role": "assistant", "content": text}] if text else []
     if item_type and "role" not in item and "content" not in item:
@@ -629,6 +654,27 @@ def _responses_tool_to_canonical_items(tool: Any) -> list[dict[str, Any]]:
                 "description": tool.get("description", ""),
                 "parameters": tool.get("parameters") or {},
                 "native_type": "function",
+            }
+        ]
+    if tool_type == "web_search":
+        return [
+            {
+                "name": "web_search",
+                "description": tool.get("description")
+                or "Search the web for current information.",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The web search query.",
+                        }
+                    },
+                    "required": ["query"],
+                },
+                "native_type": "web_search",
+                "raw": deepcopy(tool),
             }
         ]
     return [_wrap_native_tool(tool_type, tool)]

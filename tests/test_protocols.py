@@ -43,6 +43,43 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(result["tools"][0]["function"]["name"], "lookup")
         self.assertEqual(result["max_tokens"], 32)
 
+    def test_responses_web_search_tool_to_chat_only_accepts_query(self):
+        payload = {
+            "model": "local",
+            "input": "search",
+            "tools": [{"type": "web_search"}],
+        }
+
+        result = convert_request(payload, "responses", "chat", "upstream")
+
+        tool = result["tools"][0]["function"]
+        self.assertEqual(tool["name"], "web_search")
+        self.assertEqual(tool["parameters"]["required"], ["query"])
+        self.assertFalse(tool["parameters"]["additionalProperties"])
+        self.assertEqual(list(tool["parameters"]["properties"]), ["query"])
+
+    def test_responses_web_search_call_with_embedded_result_replays_as_tool_result(self):
+        payload = {
+            "model": "local",
+            "input": [
+                {
+                    "type": "web_search_call",
+                    "id": "call_web",
+                    "status": "completed",
+                    "action": {"type": "search", "query": "OpenAI"},
+                    "opencodex_result": {"answer": "result", "results": []},
+                }
+            ],
+        }
+
+        result = convert_request(payload, "responses", "chat", "upstream")
+
+        self.assertEqual(result["messages"][0]["tool_calls"][0]["id"], "call_web")
+        self.assertEqual(result["messages"][0]["tool_calls"][0]["function"]["name"], "web_search")
+        self.assertEqual(result["messages"][1]["role"], "tool")
+        self.assertEqual(result["messages"][1]["tool_call_id"], "call_web")
+        self.assertEqual(json.loads(result["messages"][1]["content"])["answer"], "result")
+
     def test_responses_request_to_chat_preserves_mixed_history_and_native_tools(self):
         payload = {
             "model": "local",
