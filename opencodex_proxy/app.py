@@ -32,6 +32,7 @@ from .config import (
 )
 from .db import (
     AsyncDBWriter,
+    TAVILY_KEY_USAGE_LIMIT,
     calculate_cost,
     extract_usage,
     read_log_filter_options,
@@ -312,9 +313,11 @@ def create_app(settings: Settings | None = None) -> Flask:
         except (TypeError, ValueError):
             return jsonify({"error": "id is required"}), 400
         query = str(body.get("query") or "OpenAI").strip() or "OpenAI"
+        web_search_config = read_web_search_config(settings.db_path)
         reserved = reserve_tavily_key_by_id(settings.db_path, key_id)
         if reserved is None:
-            return jsonify({"error": "Tavily key is unavailable or has reached 1000 uses"}), 400
+            limit = web_search_config.get("key_usage_limit", TAVILY_KEY_USAGE_LIMIT)
+            return jsonify({"error": f"Tavily key is unavailable or has reached {limit} uses"}), 400
         result = tavily_search(reserved["key"], query)
         return jsonify(
             {

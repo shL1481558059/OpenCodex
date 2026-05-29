@@ -157,6 +157,15 @@
               <div class="web-search-control-row">
                 <span>启用 Web Search 模拟</span>
                 <el-switch v-model="webSearchConfig.enabled" />
+                <span>单 Key 调用上限</span>
+                <el-input-number
+                  v-model="webSearchConfig.key_usage_limit"
+                  style="width: 180px"
+                  :min="1"
+                  :step="100"
+                  :precision="0"
+                  controls-position="right"
+                />
                 <el-input
                   v-model="webSearchTestQuery"
                   class="web-search-test-query"
@@ -182,7 +191,7 @@
                 </el-table-column>
                 <el-table-column label="调用次数" width="160">
                   <template #default="{ row }">
-                    {{ Number(row.usage_count || 0) }} / {{ row.key_usage_limit || webSearchConfig.key_usage_limit }}
+                    {{ Number(row.usage_count || 0) }} / {{ webSearchKeyUsageLimit }}
                   </template>
                 </el-table-column>
                 <el-table-column label="状态" width="100">
@@ -220,7 +229,7 @@
               >
                 <div class="channel-test-result__meta">
                   <span>耗时 {{ displayMs(webSearchTestResult.duration_ms) }}</span>
-                  <span v-if="webSearchTestResult.key">调用 {{ webSearchTestResult.key.usage_count }} / {{ webSearchTestResult.key.key_usage_limit }}</span>
+                  <span v-if="webSearchTestResult.key">调用 {{ webSearchTestResult.key.usage_count }} / {{ webSearchTestResult.key.key_usage_limit || webSearchKeyUsageLimit }}</span>
                 </div>
                 <div class="channel-test-output">{{ formatWebSearchTestResult(webSearchTestResult) }}</div>
               </el-alert>
@@ -724,8 +733,9 @@ const enabledChannelCount = computed(() => channels.value.filter((channel) => ch
 const modelMappingCount = computed(() =>
   channels.value.reduce((total, channel) => total + normalizeModels(channel.models).length, 0)
 );
+const webSearchKeyUsageLimit = computed(() => normalizePositiveInteger(webSearchConfig.key_usage_limit, 1000));
 const webSearchEnabledKeyCount = computed(() =>
-  webSearchConfig.keys.filter((key) => key.enabled !== false && Number(key.usage_count || 0) < Number(key.key_usage_limit || webSearchConfig.key_usage_limit)).length
+  webSearchConfig.keys.filter((key) => key.enabled !== false && Number(key.usage_count || 0) < webSearchKeyUsageLimit.value).length
 );
 const webSearchTotalUsage = computed(() =>
   webSearchConfig.keys.reduce((total, key) => total + Number(key.usage_count || 0), 0)
@@ -1187,14 +1197,14 @@ function defaultWebSearchKey() {
     key: "",
     enabled: true,
     usage_count: 0,
-    key_usage_limit: webSearchConfig?.key_usage_limit || 1000
+    key_usage_limit: webSearchKeyUsageLimit.value
   };
 }
 
 function assignWebSearchConfig(data) {
   Object.assign(webSearchConfig, defaultWebSearchConfig(), data || {}, {
     enabled: data?.enabled === true,
-    key_usage_limit: Number(data?.key_usage_limit || 1000),
+    key_usage_limit: normalizePositiveInteger(data?.key_usage_limit, 1000),
     keys: normalizeWebSearchKeys(data?.keys || [])
   });
 }
@@ -1209,11 +1219,15 @@ function normalizeWebSearchKeys(keys) {
     key: String(item?.key || item?.api_key || ""),
     enabled: item?.enabled !== false,
     usage_count: Number(item?.usage_count || 0),
-    key_usage_limit: Number(item?.key_usage_limit || webSearchConfig.key_usage_limit || 1000)
+    key_usage_limit: normalizePositiveInteger(item?.key_usage_limit, webSearchKeyUsageLimit.value)
   }));
 }
 
 function buildWebSearchPayload() {
+  const keyUsageLimit = normalizePositiveInteger(webSearchConfig.key_usage_limit, 0);
+  if (!keyUsageLimit) {
+    throw new Error("单 Key 调用上限必须大于 0");
+  }
   const keys = webSearchConfig.keys.map((item) => ({
     id: item.id || undefined,
     key: String(item.key || "").trim(),
@@ -1225,8 +1239,17 @@ function buildWebSearchPayload() {
   }
   return {
     enabled: webSearchConfig.enabled === true,
+    key_usage_limit: keyUsageLimit,
     keys
   };
+}
+
+function normalizePositiveInteger(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.floor(parsed);
 }
 
 function assignChannelDraft(channel) {
