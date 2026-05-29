@@ -138,7 +138,7 @@
                 <div class="toolbar-actions">
                   <el-button :icon="Refresh" @click="loadWebSearch">刷新</el-button>
                   <el-button type="primary" :loading="webSearchSaving" @click="saveWebSearch">保存配置</el-button>
-                  <el-button :icon="Plus" @click="addWebSearchKey">新增 Tavily Key</el-button>
+                  <el-button :icon="Plus" @click="openWebSearchKeyDrawer()">新增 Tavily Key</el-button>
                 </div>
               </div>
 
@@ -186,7 +186,7 @@
                 </el-table-column>
                 <el-table-column label="Tavily Key" min-width="260">
                   <template #default="{ row }">
-                    <el-input v-model="row.key" type="password" show-password />
+                    <span class="masked-key">{{ maskWebSearchKey(row.key) }}</span>
                   </template>
                 </el-table-column>
                 <el-table-column label="调用次数" width="160">
@@ -196,10 +196,12 @@
                 </el-table-column>
                 <el-table-column label="状态" width="100">
                   <template #default="{ row }">
-                    <el-switch v-model="row.enabled" />
+                    <el-tag :type="row.enabled === false ? 'warning' : 'success'">
+                      {{ row.enabled === false ? "停用" : "启用" }}
+                    </el-tag>
                   </template>
                 </el-table-column>
-                <el-table-column label="操作" width="180" align="center">
+                <el-table-column label="操作" width="240" align="center">
                   <template #default="{ row, $index }">
                     <div class="inline-actions channel-table-actions">
                       <el-button
@@ -211,9 +213,12 @@
                       >
                         测试
                       </el-button>
-                      <el-button size="small" type="danger" :icon="Delete" @click="deleteWebSearchKey($index)">
-                        删除
-                      </el-button>
+                      <el-button size="small" :icon="Edit" @click="openWebSearchKeyDrawer(row, $index)">编辑</el-button>
+                      <el-popconfirm title="删除这个 Tavily Key？" @confirm="deleteWebSearchKey($index)">
+                        <template #reference>
+                          <el-button size="small" type="danger" :icon="Delete">删除</el-button>
+                        </template>
+                      </el-popconfirm>
                     </div>
                   </template>
                 </el-table-column>
@@ -537,6 +542,51 @@
     </template>
   </el-drawer>
 
+  <el-drawer
+    v-model="webSearchKeyDrawerVisible"
+    :title="webSearchKeyEditingIndex === -1 ? '新增 Tavily Key' : '编辑 Tavily Key'"
+    size="520px"
+  >
+    <el-form label-position="top" :model="webSearchKeyDraft">
+      <el-form-item label="Tavily Key">
+        <el-input
+          v-model="webSearchKeyDraft.key"
+          type="password"
+          show-password
+          placeholder="请输入 Tavily Key"
+          autocomplete="off"
+        />
+      </el-form-item>
+      <el-form-item label="启用">
+        <el-switch v-model="webSearchKeyDraft.enabled" />
+      </el-form-item>
+      <el-form-item label="已用次数">
+        <el-input-number
+          v-model="webSearchKeyDraft.usage_count"
+          class="full-width"
+          :min="0"
+          :step="1"
+          :precision="0"
+          controls-position="right"
+        />
+      </el-form-item>
+      <el-alert
+        type="info"
+        :closable="false"
+        title="此处只更新当前配置草稿，仍需点击页面上的“保存配置”才会生效。"
+      />
+    </el-form>
+
+    <template #footer>
+      <div class="drawer-footer">
+        <el-button @click="webSearchKeyDrawerVisible = false">取消</el-button>
+        <el-button type="primary" @click="applyWebSearchKeyDraft">
+          应用
+        </el-button>
+      </div>
+    </template>
+  </el-drawer>
+
   <el-dialog v-model="channelTestVisible" :title="channelTestTitle" width="640px">
     <el-descriptions v-if="testingChannel" :column="2" border class="channel-test-summary">
       <el-descriptions-item label="渠道">{{ testingChannel.name || testingChannel.id }}</el-descriptions-item>
@@ -660,6 +710,9 @@ const config = reactive({ channels: [] });
 const webSearchConfig = reactive(defaultWebSearchConfig());
 const webSearchTestQuery = ref("OpenAI");
 const webSearchTestResult = ref(null);
+const webSearchKeyDrawerVisible = ref(false);
+const webSearchKeyEditingIndex = ref(-1);
+const webSearchKeyDraft = reactive(defaultWebSearchKeyDraft());
 const channelDrawerVisible = ref(false);
 const editingIndex = ref(-1);
 const channelDraft = reactive(defaultChannel());
@@ -932,9 +985,26 @@ async function saveWebSearch() {
   }
 }
 
-function addWebSearchKey() {
-  webSearchConfig.keys.push(defaultWebSearchKey());
+function openWebSearchKeyDrawer(key = null, index = -1) {
+  webSearchKeyEditingIndex.value = index;
+  assignWebSearchKeyDraft(key ? clone(key) : defaultWebSearchKey());
   webSearchTestResult.value = null;
+  webSearchKeyDrawerVisible.value = true;
+}
+
+function applyWebSearchKeyDraft() {
+  try {
+    const key = buildWebSearchKeyFromDraft();
+    if (webSearchKeyEditingIndex.value === -1) {
+      webSearchConfig.keys.push(key);
+    } else {
+      webSearchConfig.keys.splice(webSearchKeyEditingIndex.value, 1, key);
+    }
+    webSearchTestResult.value = null;
+    webSearchKeyDrawerVisible.value = false;
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
 }
 
 function deleteWebSearchKey(index) {
@@ -1201,6 +1271,45 @@ function defaultWebSearchKey() {
   };
 }
 
+function defaultWebSearchKeyDraft() {
+  return {
+    client_id: "",
+    id: null,
+    key: "",
+    enabled: true,
+    usage_count: 0,
+    key_usage_limit: 1000
+  };
+}
+
+function assignWebSearchKeyDraft(key) {
+  Object.assign(webSearchKeyDraft, defaultWebSearchKeyDraft(), key || {}, {
+    key: String(key?.key || ""),
+    enabled: key?.enabled !== false,
+    usage_count: normalizeNonNegativeInteger(key?.usage_count, 0),
+    key_usage_limit: normalizePositiveInteger(key?.key_usage_limit, webSearchKeyUsageLimit.value)
+  });
+}
+
+function buildWebSearchKeyFromDraft() {
+  const key = String(webSearchKeyDraft.key || "").trim();
+  if (!key) {
+    throw new Error("Tavily Key 不能为空");
+  }
+  const usageCount = normalizeNonNegativeInteger(webSearchKeyDraft.usage_count, -1);
+  if (usageCount < 0) {
+    throw new Error("已用次数必须是大于等于 0 的整数");
+  }
+  return {
+    client_id: webSearchKeyDraft.client_id || `new-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    id: webSearchKeyDraft.id || null,
+    key,
+    enabled: webSearchKeyDraft.enabled !== false,
+    usage_count: usageCount,
+    key_usage_limit: normalizePositiveInteger(webSearchKeyDraft.key_usage_limit, webSearchKeyUsageLimit.value)
+  };
+}
+
 function assignWebSearchConfig(data) {
   Object.assign(webSearchConfig, defaultWebSearchConfig(), data || {}, {
     enabled: data?.enabled === true,
@@ -1218,7 +1327,7 @@ function normalizeWebSearchKeys(keys) {
     id: item?.id || null,
     key: String(item?.key || item?.api_key || ""),
     enabled: item?.enabled !== false,
-    usage_count: Number(item?.usage_count || 0),
+    usage_count: normalizeNonNegativeInteger(item?.usage_count, 0),
     key_usage_limit: normalizePositiveInteger(item?.key_usage_limit, webSearchKeyUsageLimit.value)
   }));
 }
@@ -1231,7 +1340,8 @@ function buildWebSearchPayload() {
   const keys = webSearchConfig.keys.map((item) => ({
     id: item.id || undefined,
     key: String(item.key || "").trim(),
-    enabled: item.enabled !== false
+    enabled: item.enabled !== false,
+    usage_count: normalizeNonNegativeInteger(item.usage_count, 0)
   }));
   const emptyIndex = keys.findIndex((item) => !item.key);
   if (emptyIndex !== -1) {
@@ -1247,6 +1357,14 @@ function buildWebSearchPayload() {
 function normalizePositiveInteger(value, fallback) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.floor(parsed);
+}
+
+function normalizeNonNegativeInteger(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
     return fallback;
   }
   return Math.floor(parsed);
@@ -1456,6 +1574,17 @@ function formatWebSearchTestResult(result) {
     })
     .join("\n");
   return [answer || "Tavily 已返回结果。", links].filter(Boolean).join("\n\n");
+}
+
+function maskWebSearchKey(value) {
+  const key = String(value || "").trim();
+  if (!key) {
+    return "-";
+  }
+  if (key.length <= 8) {
+    return "*".repeat(key.length);
+  }
+  return `${key.slice(0, 4)}${"*".repeat(Math.min(16, key.length - 8))}${key.slice(-4)}`;
 }
 
 function extractErrorMessage(value) {

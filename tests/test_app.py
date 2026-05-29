@@ -264,8 +264,8 @@ class AppTests(unittest.TestCase):
                 "enabled": True,
                 "key_usage_limit": 250,
                 "keys": [
-                    {"key": "tvly-a", "enabled": True},
-                    {"key": "tvly-b", "enabled": False},
+                    {"key": "tvly-a", "enabled": True, "usage_count": 3},
+                    {"key": "tvly-b", "enabled": False, "usage_count": 8},
                 ],
             },
         )
@@ -276,10 +276,11 @@ class AppTests(unittest.TestCase):
         self.assertEqual(saved["key_usage_limit"], 250)
         self.assertEqual(saved["keys"][0]["key_usage_limit"], 250)
         self.assertEqual([item["key"] for item in saved["keys"]], ["tvly-a", "tvly-b"])
-        self.assertEqual([item["usage_count"] for item in saved["keys"]], [0, 0])
+        self.assertEqual([item["usage_count"] for item in saved["keys"]], [3, 8])
         stored = read_web_search_config(self.db_path)
         self.assertEqual(stored["key_usage_limit"], 250)
         self.assertEqual([item["key"] for item in stored["keys"]], ["tvly-a", "tvly-b"])
+        self.assertEqual([item["usage_count"] for item in stored["keys"]], [3, 8])
 
     @patch("opencodex_proxy.app.tavily_search")
     def test_admin_web_search_test_key_allows_disabled_key_and_counts_usage(
