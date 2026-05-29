@@ -16,7 +16,7 @@ class RouteResult:
 def choose_channel(config: dict[str, Any], model: str | None) -> RouteResult:
     channels = config.get("channels", [])
     if not channels:
-        raise RoutingError("no channels configured")
+        raise RoutingError("no enabled channels configured")
 
     model = str(model or "").strip()
     enabled_channels = [channel for channel in channels if _channel_enabled(channel)]
