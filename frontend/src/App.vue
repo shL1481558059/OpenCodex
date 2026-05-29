@@ -289,7 +289,7 @@
                 <div class="toolbar-actions">
                   <el-button :icon="Refresh" @click="loadWebSearch">刷新</el-button>
                   <el-button type="primary" :loading="webSearchSaving" @click="saveWebSearch">保存配置</el-button>
-                  <el-button :icon="Plus" @click="openWebSearchKeyDrawer()">新增 Tavily Key</el-button>
+                  <el-button :icon="Plus" @click="openWebSearchKeyDrawer()">新增 Web Search Key</el-button>
                 </div>
               </div>
 
@@ -308,21 +308,6 @@
               <div class="web-search-control-row">
                 <span>启用 Web Search 模拟</span>
                 <el-switch v-model="webSearchConfig.enabled" />
-                <span>单 Key 调用上限</span>
-                <el-input-number
-                  v-model="webSearchConfig.key_usage_limit"
-                  style="width: 180px"
-                  :min="1"
-                  :step="100"
-                  :precision="0"
-                  controls-position="right"
-                />
-                <el-input
-                  v-model="webSearchTestQuery"
-                  class="web-search-test-query"
-                  placeholder="测试查询"
-                  clearable
-                />
               </div>
 
               <el-table
@@ -330,19 +315,29 @@
                 :data="webSearchConfig.keys"
                 row-key="client_id"
                 style="width: 100%; margin-top: 16px"
-                empty-text="暂无 Tavily Key"
+                empty-text="暂无 Web Search Key"
               >
                 <el-table-column label="#" width="64">
                   <template #default="{ $index }">{{ $index + 1 }}</template>
                 </el-table-column>
-                <el-table-column label="Tavily Key" min-width="260">
+                <el-table-column label="服务商" width="120">
+                  <template #default="{ row }">
+                    {{ formatWebSearchProvider(row.provider) }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="API Key" min-width="240">
                   <template #default="{ row }">
                     <span class="masked-key">{{ maskWebSearchKey(row.key) }}</span>
                   </template>
                 </el-table-column>
                 <el-table-column label="调用次数" width="160">
                   <template #default="{ row }">
-                    {{ Number(row.usage_count || 0) }} / {{ webSearchKeyUsageLimit }}
+                    {{ Number(row.usage_count || 0) }} / {{ webSearchKeyLimit(row) }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="单 Key 上限" width="130">
+                  <template #default="{ row }">
+                    {{ webSearchKeyLimit(row) }}
                   </template>
                 </el-table-column>
                 <el-table-column label="状态" width="100">
@@ -365,7 +360,7 @@
                         测试
                       </el-button>
                       <el-button size="small" :icon="Edit" @click="openWebSearchKeyDrawer(row, $index)">编辑</el-button>
-                      <el-popconfirm title="删除这个 Tavily Key？" @confirm="deleteWebSearchKey($index)">
+                      <el-popconfirm title="删除这个 Web Search Key？" @confirm="deleteWebSearchKey($index)">
                         <template #reference>
                           <el-button size="small" type="danger" :icon="Delete">删除</el-button>
                         </template>
@@ -378,14 +373,14 @@
               <el-alert
                 v-if="webSearchTestResult"
                 class="channel-test-result"
-                :title="webSearchTestResult.ok ? 'Tavily 测试成功' : 'Tavily 测试失败'"
+                :title="webSearchTestResult.ok ? 'Web Search Key 测试成功' : 'Web Search Key 测试失败'"
                 :type="webSearchTestResult.ok ? 'success' : 'error'"
                 show-icon
                 :closable="false"
               >
                 <div class="channel-test-result__meta">
                   <span>耗时 {{ displayMs(webSearchTestResult.duration_ms) }}</span>
-                  <span v-if="webSearchTestResult.key">调用 {{ webSearchTestResult.key.usage_count }} / {{ webSearchTestResult.key.key_usage_limit || webSearchKeyUsageLimit }}</span>
+                  <span v-if="webSearchTestResult.key">调用 {{ webSearchTestResult.key.usage_count }} / {{ webSearchTestResult.key.usage_limit || webSearchTestResult.key.key_usage_limit || webSearchConfig.default_key_usage_limit }}</span>
                 </div>
                 <div class="channel-test-output">{{ formatWebSearchTestResult(webSearchTestResult) }}</div>
               </el-alert>
@@ -710,16 +705,26 @@
 
   <el-drawer
     v-model="webSearchKeyDrawerVisible"
-    :title="webSearchKeyEditingIndex === -1 ? '新增 Tavily Key' : '编辑 Tavily Key'"
+    :title="webSearchKeyEditingIndex === -1 ? '新增 Web Search Key' : '编辑 Web Search Key'"
     size="520px"
   >
     <el-form label-position="top" :model="webSearchKeyDraft">
-      <el-form-item label="Tavily Key">
+      <el-form-item label="服务商">
+        <el-select v-model="webSearchKeyDraft.provider" class="full-width">
+          <el-option
+            v-for="provider in webSearchProviderOptions"
+            :key="provider.value"
+            :label="provider.label"
+            :value="provider.value"
+          />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="API Key">
         <el-input
           v-model="webSearchKeyDraft.key"
           type="password"
           show-password
-          placeholder="请输入 Tavily Key"
+          placeholder="请输入 Web Search API Key"
           autocomplete="off"
         />
       </el-form-item>
@@ -732,6 +737,16 @@
           class="full-width"
           :min="0"
           :step="1"
+          :precision="0"
+          controls-position="right"
+        />
+      </el-form-item>
+      <el-form-item label="单 Key 上限">
+        <el-input-number
+          v-model="webSearchKeyDraft.usage_limit"
+          class="full-width"
+          :min="1"
+          :step="100"
           :precision="0"
           controls-position="right"
         />
@@ -937,6 +952,10 @@ import {
   View
 } from "@element-plus/icons-vue";
 
+const WEB_SEARCH_PROVIDER_LABELS = {
+  tavily: "Tavily"
+};
+
 const activeTab = ref("channels");
 const authenticated = ref(false);
 const loadingSession = ref(true);
@@ -967,7 +986,6 @@ const resetPasswordDraft = reactive(defaultResetPasswordDraft());
 
 const config = reactive({ channels: [] });
 const webSearchConfig = reactive(defaultWebSearchConfig());
-const webSearchTestQuery = ref("OpenAI");
 const webSearchTestResult = ref(null);
 const webSearchKeyDrawerVisible = ref(false);
 const webSearchKeyEditingIndex = ref(-1);
@@ -1053,9 +1071,14 @@ const enabledChannelCount = computed(() => channels.value.filter((channel) => ch
 const modelMappingCount = computed(() =>
   channels.value.reduce((total, channel) => total + normalizeModels(channel.models).length, 0)
 );
-const webSearchKeyUsageLimit = computed(() => normalizePositiveInteger(webSearchConfig.key_usage_limit, 1000));
+const webSearchProviderOptions = computed(() =>
+  normalizeWebSearchProviders(webSearchConfig.providers).map((provider) => ({
+    value: provider,
+    label: formatWebSearchProvider(provider)
+  }))
+);
 const webSearchEnabledKeyCount = computed(() =>
-  webSearchConfig.keys.filter((key) => key.enabled !== false && Number(key.usage_count || 0) < webSearchKeyUsageLimit.value).length
+  webSearchConfig.keys.filter((key) => key.enabled !== false && Number(key.usage_count || 0) < webSearchKeyLimit(key)).length
 );
 const webSearchTotalUsage = computed(() =>
   webSearchConfig.keys.reduce((total, key) => total + Number(key.usage_count || 0), 0)
@@ -1517,7 +1540,7 @@ function deleteWebSearchKey(index) {
 
 async function testWebSearchKey(row) {
   if (!row?.id) {
-    ElMessage.warning("请先保存配置后再测试这个 Tavily Key");
+    ElMessage.warning("请先保存配置后再测试这个 Web Search Key");
     return;
   }
   webSearchTestingId.value = row.id;
@@ -1525,19 +1548,16 @@ async function testWebSearchKey(row) {
   try {
     const data = await api("/admin/api/web-search/test-key", {
       method: "POST",
-      body: JSON.stringify({
-        id: row.id,
-        query: String(webSearchTestQuery.value || "").trim() || "OpenAI"
-      })
+      body: JSON.stringify({ id: row.id })
     });
     webSearchTestResult.value = data;
     if (data.config) {
       assignWebSearchConfig(data.config);
     }
     if (data.ok) {
-      ElMessage.success("Tavily Key 测试成功");
+      ElMessage.success("Web Search Key 测试成功");
     } else {
-      ElMessage.warning("Tavily Key 测试失败");
+      ElMessage.warning("Web Search Key 测试失败");
     }
   } catch (error) {
     ElMessage.error(error.message);
@@ -1782,101 +1802,166 @@ function defaultResetPasswordDraft() {
 function defaultWebSearchConfig() {
   return {
     enabled: false,
-    key_usage_limit: 1000,
+    providers: ["tavily"],
+    default_key_usage_limit: 1000,
     keys: []
   };
 }
 
 function defaultWebSearchKey() {
+  const usageLimit = defaultWebSearchKeyUsageLimit();
   return {
     client_id: `new-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     id: null,
+    provider: firstWebSearchProvider(),
     key: "",
     enabled: true,
     usage_count: 0,
-    key_usage_limit: webSearchKeyUsageLimit.value
+    usage_limit: usageLimit,
+    key_usage_limit: usageLimit
   };
 }
 
 function defaultWebSearchKeyDraft() {
+  const usageLimit = defaultWebSearchKeyUsageLimit();
   return {
     client_id: "",
     id: null,
+    provider: firstWebSearchProvider(),
     key: "",
     enabled: true,
     usage_count: 0,
-    key_usage_limit: 1000
+    usage_limit: usageLimit,
+    key_usage_limit: usageLimit
   };
 }
 
 function assignWebSearchKeyDraft(key) {
+  const usageLimit = webSearchKeyLimit(key);
   Object.assign(webSearchKeyDraft, defaultWebSearchKeyDraft(), key || {}, {
+    provider: normalizeWebSearchProvider(key?.provider),
     key: String(key?.key || ""),
     enabled: key?.enabled !== false,
     usage_count: normalizeNonNegativeInteger(key?.usage_count, 0),
-    key_usage_limit: normalizePositiveInteger(key?.key_usage_limit, webSearchKeyUsageLimit.value)
+    usage_limit: usageLimit,
+    key_usage_limit: usageLimit
   });
 }
 
 function buildWebSearchKeyFromDraft() {
+  const provider = normalizeWebSearchProvider(webSearchKeyDraft.provider);
   const key = String(webSearchKeyDraft.key || "").trim();
   if (!key) {
-    throw new Error("Tavily Key 不能为空");
+    throw new Error("Web Search Key 不能为空");
   }
   const usageCount = normalizeNonNegativeInteger(webSearchKeyDraft.usage_count, -1);
   if (usageCount < 0) {
     throw new Error("已用次数必须是大于等于 0 的整数");
   }
+  const usageLimit = normalizePositiveInteger(webSearchKeyDraft.usage_limit || webSearchKeyDraft.key_usage_limit, 0);
+  if (!usageLimit) {
+    throw new Error("单 Key 调用上限必须大于 0");
+  }
   return {
     client_id: webSearchKeyDraft.client_id || `new-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     id: webSearchKeyDraft.id || null,
+    provider,
     key,
     enabled: webSearchKeyDraft.enabled !== false,
     usage_count: usageCount,
-    key_usage_limit: normalizePositiveInteger(webSearchKeyDraft.key_usage_limit, webSearchKeyUsageLimit.value)
+    usage_limit: usageLimit,
+    key_usage_limit: usageLimit
   };
 }
 
 function assignWebSearchConfig(data) {
   Object.assign(webSearchConfig, defaultWebSearchConfig(), data || {}, {
     enabled: data?.enabled === true,
-    key_usage_limit: normalizePositiveInteger(data?.key_usage_limit, 1000),
+    providers: normalizeWebSearchProviders(data?.providers),
+    default_key_usage_limit: normalizePositiveInteger(
+      data?.default_key_usage_limit || data?.key_usage_limit,
+      1000
+    ),
     keys: normalizeWebSearchKeys(data?.keys || [])
   });
+}
+
+function normalizeWebSearchProviders(providers) {
+  if (!Array.isArray(providers) || providers.length === 0) {
+    return ["tavily"];
+  }
+  const normalized = providers
+    .map((provider) => String(provider || "").trim().toLowerCase())
+    .filter(Boolean);
+  return normalized.length ? Array.from(new Set(normalized)) : ["tavily"];
+}
+
+function firstWebSearchProvider() {
+  return normalizeWebSearchProviders(webSearchConfig.providers)[0] || "tavily";
+}
+
+function normalizeWebSearchProvider(provider) {
+  const normalized = String(provider || firstWebSearchProvider()).trim().toLowerCase();
+  const options = normalizeWebSearchProviders(webSearchConfig.providers);
+  return options.includes(normalized) ? normalized : firstWebSearchProvider();
+}
+
+function formatWebSearchProvider(provider) {
+  const normalized = String(provider || "tavily").trim().toLowerCase();
+  return WEB_SEARCH_PROVIDER_LABELS[normalized] || provider || "tavily";
+}
+
+function defaultWebSearchKeyUsageLimit() {
+  return normalizePositiveInteger(webSearchConfig.default_key_usage_limit, 1000);
+}
+
+function webSearchKeyLimit(key) {
+  return normalizePositiveInteger(
+    key?.usage_limit || key?.key_usage_limit,
+    defaultWebSearchKeyUsageLimit()
+  );
 }
 
 function normalizeWebSearchKeys(keys) {
   if (!Array.isArray(keys)) {
     return [];
   }
-  return keys.map((item, index) => ({
-    client_id: item?.id ? `saved-${item.id}` : item?.client_id || `new-${index}-${Date.now()}`,
-    id: item?.id || null,
-    key: String(item?.key || item?.api_key || ""),
-    enabled: item?.enabled !== false,
-    usage_count: normalizeNonNegativeInteger(item?.usage_count, 0),
-    key_usage_limit: normalizePositiveInteger(item?.key_usage_limit, webSearchKeyUsageLimit.value)
-  }));
+  return keys.map((item, index) => {
+    const usageLimit = normalizePositiveInteger(
+      item?.usage_limit || item?.key_usage_limit,
+      defaultWebSearchKeyUsageLimit()
+    );
+    return {
+      client_id: item?.id ? `saved-${item.id}` : item?.client_id || `new-${index}-${Date.now()}`,
+      id: item?.id || null,
+      provider: normalizeWebSearchProvider(item?.provider),
+      key: String(item?.key || item?.api_key || ""),
+      enabled: item?.enabled !== false,
+      usage_count: normalizeNonNegativeInteger(item?.usage_count, 0),
+      usage_limit: usageLimit,
+      key_usage_limit: usageLimit
+    };
+  });
 }
 
 function buildWebSearchPayload() {
-  const keyUsageLimit = normalizePositiveInteger(webSearchConfig.key_usage_limit, 0);
-  if (!keyUsageLimit) {
-    throw new Error("单 Key 调用上限必须大于 0");
-  }
-  const keys = webSearchConfig.keys.map((item) => ({
-    id: item.id || undefined,
-    key: String(item.key || "").trim(),
-    enabled: item.enabled !== false,
-    usage_count: normalizeNonNegativeInteger(item.usage_count, 0)
-  }));
+  const keys = webSearchConfig.keys.map((item) => {
+    const usageLimit = webSearchKeyLimit(item);
+    return {
+      id: item.id || undefined,
+      provider: normalizeWebSearchProvider(item.provider),
+      key: String(item.key || "").trim(),
+      enabled: item.enabled !== false,
+      usage_count: normalizeNonNegativeInteger(item.usage_count, 0),
+      usage_limit: usageLimit
+    };
+  });
   const emptyIndex = keys.findIndex((item) => !item.key);
   if (emptyIndex !== -1) {
-    throw new Error(`第 ${emptyIndex + 1} 个 Tavily Key 不能为空`);
+    throw new Error(`第 ${emptyIndex + 1} 个 Web Search Key 不能为空`);
   }
   return {
     enabled: webSearchConfig.enabled === true,
-    key_usage_limit: keyUsageLimit,
     keys
   };
 }
@@ -2088,7 +2173,7 @@ function formatWebSearchTestResult(result) {
   }
   if (result.ok === false) {
     const error = result.result?.error || result.result?.summary?.error || result.result?.raw?.error;
-    return error ? String(error) : "Tavily 请求失败";
+    return error ? String(error) : "Web Search 请求失败";
   }
   const summary = result.result?.summary || {};
   const answer = String(summary.answer || result.result?.raw?.answer || "").trim();
@@ -2100,7 +2185,7 @@ function formatWebSearchTestResult(result) {
       return url ? `${index + 1}. ${title}\n${url}` : `${index + 1}. ${title}`;
     })
     .join("\n");
-  return [answer || "Tavily 已返回结果。", links].filter(Boolean).join("\n\n");
+  return [answer || "Web Search 已返回结果。", links].filter(Boolean).join("\n\n");
 }
 
 function maskWebSearchKey(value) {

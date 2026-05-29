@@ -716,6 +716,43 @@ class TestChannelStore(unittest.TestCase):
         self.assertIn("key_usage_limit", columns)
         self.assertEqual(key_usage_limit, TAVILY_KEY_USAGE_LIMIT)
 
+    def test_init_db_migrates_web_search_key_provider_and_usage_limit(self):
+        conn = sqlite3.connect(str(self.db_path))
+        conn.executescript(
+            """
+            CREATE TABLE web_search_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                enabled INTEGER NOT NULL DEFAULT 0,
+                key_usage_limit INTEGER NOT NULL DEFAULT 1000,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+
+            CREATE TABLE tavily_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                position INTEGER NOT NULL,
+                api_key TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                usage_count INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+
+            INSERT INTO web_search_settings (id, enabled, key_usage_limit, created_at, updated_at)
+            VALUES (1, 1, 1000, 1.0, 1.0);
+            INSERT INTO tavily_keys (position, api_key, enabled, usage_count, created_at, updated_at)
+            VALUES (0, 'tvly-old', 1, 2, 1.0, 1.0);
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        init_db(self.db_path)
+
+        config = read_web_search_config(self.db_path)
+        self.assertEqual(config["keys"][0]["provider"], "tavily")
+        self.assertEqual(config["keys"][0]["usage_limit"], TAVILY_KEY_USAGE_LIMIT)
+
 
 class TestUserAndAccessKeyStore(unittest.TestCase):
     def setUp(self):
@@ -807,22 +844,27 @@ class TestWebSearchStore(unittest.TestCase):
             {
                 "enabled": True,
                 "keys": [
-                    {"key": "tvly-first", "enabled": True},
-                    {"key": "tvly-second", "enabled": False},
+                    {"provider": "tavily", "key": "tvly-first", "enabled": True, "usage_limit": 2},
+                    {"provider": "tavily", "key": "tvly-second", "enabled": False, "usage_limit": 3},
                 ],
             },
         )
 
         self.assertTrue(saved["enabled"])
-        self.assertEqual(saved["key_usage_limit"], TAVILY_KEY_USAGE_LIMIT)
+        self.assertEqual(saved["providers"], ["tavily"])
+        self.assertEqual(saved["default_key_usage_limit"], TAVILY_KEY_USAGE_LIMIT)
+        self.assertNotIn("key_usage_limit", saved)
         self.assertEqual([item["key"] for item in saved["keys"]], ["tvly-first", "tvly-second"])
+        self.assertEqual([item["provider"] for item in saved["keys"]], ["tavily", "tavily"])
+        self.assertEqual([item["usage_limit"] for item in saved["keys"]], [2, 3])
         self.assertEqual([item["usage_count"] for item in saved["keys"]], [0, 0])
         self.assertFalse(saved["keys"][1]["enabled"])
 
         loaded = read_web_search_config(self.db_path)
         self.assertEqual([item["key"] for item in loaded["keys"]], ["tvly-first", "tvly-second"])
+        self.assertEqual([item["usage_limit"] for item in loaded["keys"]], [2, 3])
 
-    def test_save_and_read_web_search_config_allows_custom_usage_limit(self):
+    def test_save_and_read_web_search_config_allows_legacy_default_usage_limit(self):
         saved = replace_web_search_config(
             self.db_path,
             {
@@ -832,12 +874,14 @@ class TestWebSearchStore(unittest.TestCase):
             },
         )
 
-        self.assertEqual(saved["key_usage_limit"], 2)
+        self.assertNotIn("key_usage_limit", saved)
         self.assertEqual(saved["keys"][0]["key_usage_limit"], 2)
+        self.assertEqual(saved["keys"][0]["usage_limit"], 2)
 
         loaded = read_web_search_config(self.db_path)
-        self.assertEqual(loaded["key_usage_limit"], 2)
+        self.assertNotIn("key_usage_limit", loaded)
         self.assertEqual(loaded["keys"][0]["key_usage_limit"], 2)
+        self.assertEqual(loaded["keys"][0]["usage_limit"], 2)
 
     def test_web_search_usage_limit_must_be_positive_integer(self):
         with self.assertRaises(ValueError):
@@ -845,8 +889,17 @@ class TestWebSearchStore(unittest.TestCase):
                 self.db_path,
                 {
                     "enabled": True,
-                    "key_usage_limit": 0,
-                    "keys": [{"key": "tvly-first", "enabled": True}],
+                    "keys": [{"key": "tvly-first", "enabled": True, "usage_limit": 0}],
+                },
+            )
+
+    def test_web_search_provider_must_be_supported(self):
+        with self.assertRaises(ValueError):
+            replace_web_search_config(
+                self.db_path,
+                {
+                    "enabled": True,
+                    "keys": [{"provider": "other", "key": "search-key", "enabled": True}],
                 },
             )
 
@@ -911,7 +964,7 @@ class TestWebSearchStore(unittest.TestCase):
             {
                 "enabled": True,
                 "keys": [
-                    {"key": "first", "enabled": True},
+                    {"key": "first", "enabled": True, "usage_limit": 1},
                     {"key": "second", "enabled": True},
                 ],
             },
@@ -920,7 +973,7 @@ class TestWebSearchStore(unittest.TestCase):
         conn = sqlite3.connect(str(self.db_path))
         conn.execute(
             "UPDATE tavily_keys SET usage_count = ? WHERE id = ?",
-            (TAVILY_KEY_USAGE_LIMIT, first_id),
+            (1, first_id),
         )
         conn.commit()
         conn.close()
@@ -932,15 +985,14 @@ class TestWebSearchStore(unittest.TestCase):
         self.assertEqual(reserved["usage_count"], 1)
         self.assertEqual(reserved["key_usage_limit"], TAVILY_KEY_USAGE_LIMIT)
 
-    def test_reserve_switches_to_next_key_after_configured_usage_limit(self):
+    def test_reserve_switches_to_next_key_after_per_key_usage_limit(self):
         saved = replace_web_search_config(
             self.db_path,
             {
                 "enabled": True,
-                "key_usage_limit": 2,
                 "keys": [
-                    {"key": "first", "enabled": True},
-                    {"key": "second", "enabled": True},
+                    {"key": "first", "enabled": True, "usage_limit": 2},
+                    {"key": "second", "enabled": True, "usage_limit": 5},
                 ],
             },
         )
@@ -949,13 +1001,13 @@ class TestWebSearchStore(unittest.TestCase):
         second = reserve_tavily_key(self.db_path)
         third = reserve_tavily_key(self.db_path)
 
-        self.assertEqual(saved["key_usage_limit"], 2)
+        self.assertEqual(saved["keys"][0]["usage_limit"], 2)
         self.assertEqual(first["key"], "first")
         self.assertEqual(first["key_usage_limit"], 2)
         self.assertEqual(second["key"], "first")
         self.assertEqual(second["usage_count"], 2)
         self.assertEqual(third["key"], "second")
-        self.assertEqual(third["key_usage_limit"], 2)
+        self.assertEqual(third["key_usage_limit"], 5)
 
     def test_test_reserve_can_use_disabled_key_but_not_exhausted_key(self):
         saved = replace_web_search_config(
@@ -964,7 +1016,7 @@ class TestWebSearchStore(unittest.TestCase):
                 "enabled": True,
                 "keys": [
                     {"key": "disabled", "enabled": False},
-                    {"key": "exhausted", "enabled": True},
+                    {"key": "exhausted", "enabled": True, "usage_limit": 1},
                 ],
             },
         )
@@ -973,7 +1025,7 @@ class TestWebSearchStore(unittest.TestCase):
         conn = sqlite3.connect(str(self.db_path))
         conn.execute(
             "UPDATE tavily_keys SET usage_count = ? WHERE id = ?",
-            (TAVILY_KEY_USAGE_LIMIT, exhausted_id),
+            (1, exhausted_id),
         )
         conn.commit()
         conn.close()
@@ -988,22 +1040,39 @@ class TestWebSearchStore(unittest.TestCase):
     def test_key_string_change_resets_usage_but_enabled_change_preserves_usage(self):
         saved = replace_web_search_config(
             self.db_path,
-            {"enabled": True, "keys": [{"key": "same", "enabled": True}]},
+            {"enabled": True, "keys": [{"provider": "tavily", "key": "same", "enabled": True, "usage_limit": 10}]},
         )
         key_id = saved["keys"][0]["id"]
         reserve_tavily_key(self.db_path)
 
         toggled = replace_web_search_config(
             self.db_path,
-            {"enabled": True, "keys": [{"id": key_id, "key": "same", "enabled": False}]},
+            {"enabled": True, "keys": [{"id": key_id, "provider": "tavily", "key": "same", "enabled": False, "usage_limit": 20}]},
         )
         changed = replace_web_search_config(
             self.db_path,
-            {"enabled": True, "keys": [{"id": key_id, "key": "changed", "enabled": True}]},
+            {"enabled": True, "keys": [{"id": key_id, "provider": "tavily", "key": "changed", "enabled": True, "usage_limit": 20}]},
         )
 
         self.assertEqual(toggled["keys"][0]["usage_count"], 1)
+        self.assertEqual(toggled["keys"][0]["usage_limit"], 20)
         self.assertEqual(changed["keys"][0]["usage_count"], 0)
+
+    def test_key_provider_case_normalizes_and_preserves_usage(self):
+        saved = replace_web_search_config(
+            self.db_path,
+            {"enabled": True, "keys": [{"provider": "tavily", "key": "same", "enabled": True}]},
+        )
+        key_id = saved["keys"][0]["id"]
+        reserve_tavily_key(self.db_path)
+
+        changed = replace_web_search_config(
+            self.db_path,
+            {"enabled": True, "keys": [{"id": key_id, "provider": "TAVILY", "key": "same", "enabled": True}]},
+        )
+
+        self.assertEqual(changed["keys"][0]["provider"], "tavily")
+        self.assertEqual(changed["keys"][0]["usage_count"], 1)
 
     def test_request_log_can_store_web_search_json(self):
         writer = AsyncDBWriter(self.db_path)
