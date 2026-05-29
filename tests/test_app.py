@@ -152,14 +152,14 @@ class AppTests(unittest.TestCase):
     def login(self):
         return self.client.post("/admin", data={"password": "pw"})
 
-    def enable_web_search(self, keys=None, enabled=True):
-        return replace_web_search_config(
-            self.db_path,
-            {
-                "enabled": enabled,
-                "keys": keys if keys is not None else [{"key": "tvly-test", "enabled": True}],
-            },
-        )
+    def enable_web_search(self, keys=None, enabled=True, key_usage_limit=None):
+        config = {
+            "enabled": enabled,
+            "keys": keys if keys is not None else [{"key": "tvly-test", "enabled": True}],
+        }
+        if key_usage_limit is not None:
+            config["key_usage_limit"] = key_usage_limit
+        return replace_web_search_config(self.db_path, config)
 
     def parse_sse_events(self, body: str) -> list[tuple[str, dict]]:
         events = []
@@ -262,6 +262,7 @@ class AppTests(unittest.TestCase):
             "/admin/api/web-search",
             json={
                 "enabled": True,
+                "key_usage_limit": 250,
                 "keys": [
                     {"key": "tvly-a", "enabled": True},
                     {"key": "tvly-b", "enabled": False},
@@ -272,9 +273,12 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         saved = response.get_json()
         self.assertTrue(saved["enabled"])
+        self.assertEqual(saved["key_usage_limit"], 250)
+        self.assertEqual(saved["keys"][0]["key_usage_limit"], 250)
         self.assertEqual([item["key"] for item in saved["keys"]], ["tvly-a", "tvly-b"])
         self.assertEqual([item["usage_count"] for item in saved["keys"]], [0, 0])
         stored = read_web_search_config(self.db_path)
+        self.assertEqual(stored["key_usage_limit"], 250)
         self.assertEqual([item["key"] for item in stored["keys"]], ["tvly-a", "tvly-b"])
 
     @patch("opencodex_proxy.app.tavily_search")
@@ -298,6 +302,31 @@ class AppTests(unittest.TestCase):
         self.assertEqual(data["config"]["keys"][0]["usage_count"], 1)
         self.assertFalse(data["config"]["keys"][0]["enabled"])
         self.assertEqual(mock_tavily.call_args.args, ("tvly-disabled", "OpenAI"))
+
+    @patch("opencodex_proxy.app.tavily_search")
+    def test_admin_web_search_test_key_uses_configured_usage_limit_message(
+        self, mock_tavily
+    ):
+        self.login()
+        saved = self.enable_web_search(
+            keys=[{"key": "tvly-limited", "enabled": True}],
+            key_usage_limit=1,
+        )
+        key_id = saved["keys"][0]["id"]
+        mock_tavily.return_value = tavily_success("ok")
+
+        first = self.client.post(
+            "/admin/api/web-search/test-key",
+            json={"id": key_id, "query": "OpenAI"},
+        )
+        second = self.client.post(
+            "/admin/api/web-search/test-key",
+            json={"id": key_id, "query": "OpenAI"},
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 400)
+        self.assertIn("reached 1 uses", second.get_json()["error"])
 
     def test_admin_import_config_appends_without_overwriting_existing_ids(self):
         self.login()
