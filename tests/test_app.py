@@ -350,17 +350,18 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         initial = response.get_json()
         self.assertFalse(initial["enabled"])
-        self.assertEqual(initial["key_usage_limit"], 1000)
+        self.assertEqual(initial["providers"], ["tavily"])
+        self.assertEqual(initial["default_key_usage_limit"], 1000)
+        self.assertNotIn("key_usage_limit", initial)
         self.assertEqual(initial["keys"], [])
 
         response = self.client.post(
             "/admin/api/web-search",
             json={
                 "enabled": True,
-                "key_usage_limit": 250,
                 "keys": [
-                    {"key": "tvly-a", "enabled": True, "usage_count": 3},
-                    {"key": "tvly-b", "enabled": False, "usage_count": 8},
+                    {"provider": "tavily", "key": "tvly-a", "enabled": True, "usage_count": 3, "usage_limit": 250},
+                    {"provider": "tavily", "key": "tvly-b", "enabled": False, "usage_count": 8, "usage_limit": 500},
                 ],
             },
         )
@@ -368,12 +369,15 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         saved = response.get_json()
         self.assertTrue(saved["enabled"])
-        self.assertEqual(saved["key_usage_limit"], 250)
+        self.assertNotIn("key_usage_limit", saved)
+        self.assertEqual(saved["keys"][0]["provider"], "tavily")
+        self.assertEqual(saved["keys"][0]["usage_limit"], 250)
         self.assertEqual(saved["keys"][0]["key_usage_limit"], 250)
         self.assertEqual([item["key"] for item in saved["keys"]], ["tvly-a", "tvly-b"])
+        self.assertEqual([item["usage_limit"] for item in saved["keys"]], [250, 500])
         self.assertEqual([item["usage_count"] for item in saved["keys"]], [3, 8])
         stored = read_web_search_config(self.db_path)
-        self.assertEqual(stored["key_usage_limit"], 250)
+        self.assertNotIn("key_usage_limit", stored)
         self.assertEqual([item["key"] for item in stored["keys"]], ["tvly-a", "tvly-b"])
         self.assertEqual([item["usage_count"] for item in stored["keys"]], [3, 8])
 
@@ -394,7 +398,9 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.get_json()
         self.assertTrue(data["ok"])
+        self.assertEqual(data["key"]["provider"], "tavily")
         self.assertEqual(data["key"]["usage_count"], 1)
+        self.assertEqual(data["key"]["usage_limit"], 1000)
         self.assertEqual(data["config"]["keys"][0]["usage_count"], 1)
         self.assertFalse(data["config"]["keys"][0]["enabled"])
         self.assertEqual(mock_tavily.call_args.args, ("tvly-disabled", "OpenAI"))
@@ -405,8 +411,7 @@ class AppTests(unittest.TestCase):
     ):
         self.login()
         saved = self.enable_web_search(
-            keys=[{"key": "tvly-limited", "enabled": True}],
-            key_usage_limit=1,
+            keys=[{"key": "tvly-limited", "enabled": True, "usage_limit": 1}],
         )
         key_id = saved["keys"][0]["id"]
         mock_tavily.return_value = tavily_success("ok")
@@ -422,7 +427,7 @@ class AppTests(unittest.TestCase):
 
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 400)
-        self.assertIn("reached 1 uses", second.get_json()["error"])
+        self.assertIn("usage limit", second.get_json()["error"])
 
     def test_admin_import_config_appends_without_overwriting_existing_ids(self):
         self.login()

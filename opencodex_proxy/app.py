@@ -33,7 +33,6 @@ from .config import (
 )
 from .db import (
     AsyncDBWriter,
-    TAVILY_KEY_USAGE_LIMIT,
     authenticate_access_api_key,
     authenticate_user,
     calculate_cost,
@@ -470,19 +469,19 @@ def create_app(settings: Settings | None = None) -> Flask:
         except (TypeError, ValueError):
             return jsonify({"error": "id is required"}), 400
         query = str(body.get("query") or "OpenAI").strip() or "OpenAI"
-        web_search_config = read_web_search_config(settings.db_path)
         reserved = reserve_tavily_key_by_id(settings.db_path, key_id)
         if reserved is None:
-            limit = web_search_config.get("key_usage_limit", TAVILY_KEY_USAGE_LIMIT)
-            return jsonify({"error": f"Tavily key is unavailable or has reached {limit} uses"}), 400
-        result = tavily_search(reserved["key"], query)
+            return jsonify({"error": "Web Search key is unavailable or has reached its usage limit"}), 400
+        result = _web_search_provider_search(reserved, query)
         return jsonify(
             {
                 "ok": result.get("ok") is True,
                 "duration_ms": int((time.time() - started) * 1000),
                 "key": {
                     "id": reserved["id"],
+                    "provider": reserved["provider"],
                     "usage_count": reserved["usage_count"],
+                    "usage_limit": reserved["usage_limit"],
                     "key_usage_limit": reserved["key_usage_limit"],
                 },
                 "result": redact(result),
@@ -1106,6 +1105,24 @@ def _spa_index_response(admin_static_dir: Path) -> Response:
     )
 
 
+def _web_search_provider_search(reserved_key: dict[str, Any], query: str) -> dict[str, Any]:
+    provider = str(reserved_key.get("provider") or "tavily").strip().lower()
+    if provider == "tavily":
+        return tavily_search(reserved_key["key"], query)
+    return {
+        "ok": False,
+        "status_code": None,
+        "duration_ms": 0,
+        "error_type": "unsupported_provider",
+        "summary": {
+            "answer": "",
+            "results": [],
+            "error": f"unsupported web search provider: {provider}",
+        },
+        "raw": None,
+    }
+
+
 def _run_web_search_simulation(
     *,
     channel: dict[str, Any],
@@ -1208,7 +1225,7 @@ def _run_web_search_simulation(
                 continue
 
             web_executed += 1
-            tavily_result = tavily_search(reserved["key"], query or "")
+            tavily_result = _web_search_provider_search(reserved, query or "")
             summary = tavily_result.get("summary") or {}
             result = make_tool_result(
                 call_id=str(tool_call.get("id")),

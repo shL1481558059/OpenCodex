@@ -326,10 +326,6 @@ body {
   font-weight: 600;
 }
 
-.web-search-test-query {
-  width: min(360px, 100%);
-}
-
 .drawer-footer {
   display: flex;
   justify-content: flex-end;
@@ -410,10 +406,6 @@ body {
   .web-search-control-row {
     align-items: flex-start;
     flex-direction: column;
-  }
-
-  .web-search-test-query {
-    width: 100%;
   }
 
   .created-key-box {

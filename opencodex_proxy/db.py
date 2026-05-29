@@ -104,9 +104,11 @@ CREATE TABLE IF NOT EXISTS web_search_settings (
 CREATE TABLE IF NOT EXISTS tavily_keys (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     position INTEGER NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'tavily',
     api_key TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
     usage_count INTEGER NOT NULL DEFAULT 0,
+    usage_limit INTEGER NOT NULL DEFAULT 1000,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -114,7 +116,9 @@ CREATE TABLE IF NOT EXISTS tavily_keys (
 CREATE INDEX IF NOT EXISTS idx_tavily_keys_position ON tavily_keys(position);
 """
 
-TAVILY_KEY_USAGE_LIMIT = 1000
+DEFAULT_WEB_SEARCH_KEY_USAGE_LIMIT = 1000
+WEB_SEARCH_PROVIDERS = {"tavily"}
+TAVILY_KEY_USAGE_LIMIT = DEFAULT_WEB_SEARCH_KEY_USAGE_LIMIT
 PASSWORD_HASH_ITERATIONS = 200_000
 ACCESS_KEY_PREFIX = "ocx_"
 USER_ROLES = {"superadmin", "user"}
@@ -195,6 +199,16 @@ def _migrate_channels(conn: sqlite3.Connection, default_owner_username: str = "a
     if "key_usage_limit" not in web_search_columns:
         conn.execute(
             "ALTER TABLE web_search_settings ADD COLUMN key_usage_limit INTEGER NOT NULL DEFAULT 1000"
+        )
+    web_key_columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(tavily_keys)").fetchall()
+    }
+    if "provider" not in web_key_columns:
+        conn.execute("ALTER TABLE tavily_keys ADD COLUMN provider TEXT NOT NULL DEFAULT 'tavily'")
+    if "usage_limit" not in web_key_columns:
+        conn.execute(
+            "ALTER TABLE tavily_keys ADD COLUMN usage_limit INTEGER NOT NULL DEFAULT 1000"
         )
 
 
@@ -928,26 +942,22 @@ def read_web_search_config(db_path: Path) -> dict[str, Any]:
     conn.row_factory = sqlite3.Row
     try:
         settings = conn.execute(
-            "SELECT enabled, key_usage_limit FROM web_search_settings WHERE id = 1"
+            "SELECT enabled FROM web_search_settings WHERE id = 1"
         ).fetchone()
         rows = conn.execute(
             """
-            SELECT id, position, api_key, enabled, usage_count
+            SELECT id, position, provider, api_key, enabled, usage_count, usage_limit
             FROM tavily_keys
             ORDER BY position ASC, id ASC
             """
         ).fetchall()
     finally:
         conn.close()
-    key_usage_limit = (
-        int(settings["key_usage_limit"] or TAVILY_KEY_USAGE_LIMIT)
-        if settings
-        else TAVILY_KEY_USAGE_LIMIT
-    )
     return {
         "enabled": bool(settings["enabled"]) if settings else False,
-        "keys": [_row_to_tavily_key(row, key_usage_limit) for row in rows],
-        "key_usage_limit": key_usage_limit,
+        "providers": sorted(WEB_SEARCH_PROVIDERS),
+        "default_key_usage_limit": DEFAULT_WEB_SEARCH_KEY_USAGE_LIMIT,
+        "keys": [_row_to_tavily_key(row) for row in rows],
     }
 
 
@@ -966,23 +976,25 @@ def replace_web_search_config(db_path: Path, config: dict[str, Any]) -> dict[str
         settings = conn.execute(
             "SELECT key_usage_limit FROM web_search_settings WHERE id = 1"
         ).fetchone()
-        current_key_usage_limit = (
+        current_default_key_usage_limit = (
             int(settings["key_usage_limit"] or TAVILY_KEY_USAGE_LIMIT)
             if settings
             else TAVILY_KEY_USAGE_LIMIT
         )
-        key_usage_limit = _parse_required_positive_int(
-            config.get("key_usage_limit", current_key_usage_limit),
+        default_key_usage_limit = _parse_required_positive_int(
+            config.get("key_usage_limit", current_default_key_usage_limit),
             "web search key_usage_limit",
         )
         existing = {
             int(row["id"]): {
                 "api_key": row["api_key"],
+                "provider": row["provider"],
                 "usage_count": int(row["usage_count"] or 0),
+                "usage_limit": int(row["usage_limit"] or DEFAULT_WEB_SEARCH_KEY_USAGE_LIMIT),
                 "created_at": float(row["created_at"] or now),
             }
             for row in conn.execute(
-                "SELECT id, api_key, usage_count, created_at FROM tavily_keys"
+                "SELECT id, provider, api_key, usage_count, usage_limit, created_at FROM tavily_keys"
             ).fetchall()
         }
         with conn:
@@ -995,24 +1007,34 @@ def replace_web_search_config(db_path: Path, config: dict[str, Any]) -> dict[str
                     key_usage_limit = excluded.key_usage_limit,
                     updated_at = excluded.updated_at
                 """,
-                (1 if config.get("enabled") is True else 0, key_usage_limit, now, now),
+                (1 if config.get("enabled") is True else 0, default_key_usage_limit, now, now),
             )
             conn.execute("DELETE FROM tavily_keys")
             for position, item in enumerate(keys):
                 if not isinstance(item, dict):
                     raise ValueError(f"web search keys[{position + 1}] must be an object")
+                provider = _normalize_web_search_provider(item.get("provider"))
                 api_key = str(item.get("key") or item.get("api_key") or "").strip()
                 if not api_key:
                     raise ValueError(f"web search keys[{position + 1}].key is required")
                 existing_id = _parse_positive_int(item.get("id"))
                 old = existing.get(existing_id) if existing_id is not None else None
+                usage_limit_source = item.get("usage_limit", item.get("key_usage_limit"))
+                if usage_limit_source is None and old and old["api_key"] == api_key and old["provider"] == provider:
+                    usage_limit = old["usage_limit"]
+                else:
+                    usage_limit = _parse_required_positive_int(
+                        usage_limit_source if usage_limit_source is not None else default_key_usage_limit,
+                        f"web search keys[{position + 1}].usage_limit",
+                    )
+                same_key = old is not None and old["api_key"] == api_key and old["provider"] == provider
                 if "usage_count" in item:
                     usage_count = _parse_required_non_negative_int(
                         item.get("usage_count"),
                         f"web search keys[{position + 1}].usage_count",
                     )
-                    created_at = old["created_at"] if old and old["api_key"] == api_key else now
-                elif old and old["api_key"] == api_key:
+                    created_at = old["created_at"] if same_key else now
+                elif same_key:
                     usage_count = old["usage_count"]
                     created_at = old["created_at"]
                 else:
@@ -1021,16 +1043,18 @@ def replace_web_search_config(db_path: Path, config: dict[str, Any]) -> dict[str
                 conn.execute(
                     """
                     INSERT INTO tavily_keys (
-                        id, position, api_key, enabled, usage_count,
-                        created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        id, position, provider, api_key, enabled, usage_count,
+                        usage_limit, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         existing_id,
                         position,
+                        provider,
                         api_key,
                         1 if item.get("enabled", True) is not False else 0,
                         usage_count,
+                        usage_limit,
                         created_at,
                         now,
                     ),
@@ -1059,39 +1083,31 @@ def _reserve_tavily_key(
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("BEGIN IMMEDIATE")
-        settings = conn.execute(
-            "SELECT key_usage_limit FROM web_search_settings WHERE id = 1"
-        ).fetchone()
-        key_usage_limit = (
-            int(settings["key_usage_limit"] or TAVILY_KEY_USAGE_LIMIT)
-            if settings
-            else TAVILY_KEY_USAGE_LIMIT
-        )
         if key_id is None:
             row = conn.execute(
                 """
-                SELECT id, position, api_key, enabled, usage_count
+                SELECT id, position, provider, api_key, enabled, usage_count, usage_limit
                 FROM tavily_keys
-                WHERE enabled = 1 AND usage_count < ?
+                WHERE enabled = 1 AND usage_count < usage_limit
                 ORDER BY position ASC, id ASC
                 LIMIT 1
-                """,
-                (key_usage_limit,),
+                """
             ).fetchone()
         else:
             enabled_clause = "" if allow_disabled else "AND enabled = 1"
             row = conn.execute(
                 f"""
-                SELECT id, position, api_key, enabled, usage_count
+                SELECT id, position, provider, api_key, enabled, usage_count, usage_limit
                 FROM tavily_keys
-                WHERE id = ? {enabled_clause} AND usage_count < ?
+                WHERE id = ? {enabled_clause} AND usage_count < usage_limit
                 """,
-                (key_id, key_usage_limit),
+                (key_id,),
             ).fetchone()
         if row is None:
             conn.rollback()
             return None
         next_usage = int(row["usage_count"] or 0) + 1
+        usage_limit = int(row["usage_limit"] or DEFAULT_WEB_SEARCH_KEY_USAGE_LIMIT)
         conn.execute(
             "UPDATE tavily_keys SET usage_count = ?, updated_at = ? WHERE id = ?",
             (next_usage, time.time(), row["id"]),
@@ -1100,10 +1116,12 @@ def _reserve_tavily_key(
         return {
             "id": int(row["id"]),
             "position": int(row["position"]),
+            "provider": row["provider"],
             "key": row["api_key"],
             "enabled": bool(row["enabled"]),
             "usage_count": next_usage,
-            "key_usage_limit": key_usage_limit,
+            "usage_limit": usage_limit,
+            "key_usage_limit": usage_limit,
         }
     except Exception:
         conn.rollback()
@@ -1112,14 +1130,24 @@ def _reserve_tavily_key(
         conn.close()
 
 
-def _row_to_tavily_key(row: sqlite3.Row, key_usage_limit: int) -> dict[str, Any]:
+def _row_to_tavily_key(row: sqlite3.Row) -> dict[str, Any]:
+    usage_limit = int(row["usage_limit"] or DEFAULT_WEB_SEARCH_KEY_USAGE_LIMIT)
     return {
         "id": int(row["id"]),
+        "provider": row["provider"],
         "key": row["api_key"],
         "enabled": bool(row["enabled"]),
         "usage_count": int(row["usage_count"] or 0),
-        "key_usage_limit": key_usage_limit,
+        "usage_limit": usage_limit,
+        "key_usage_limit": usage_limit,
     }
+
+
+def _normalize_web_search_provider(value: Any) -> str:
+    provider = str(value or "tavily").strip().lower()
+    if provider not in WEB_SEARCH_PROVIDERS:
+        raise ValueError(f"unsupported web search provider: {provider}")
+    return provider
 
 
 def _parse_required_positive_int(value: Any, label: str) -> int:
