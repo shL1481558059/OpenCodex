@@ -12,6 +12,7 @@ from typing import Any
 from flask import (
     Flask,
     Response,
+    current_app,
     jsonify,
     redirect,
     render_template,
@@ -33,14 +34,26 @@ from .config import (
 from .db import (
     AsyncDBWriter,
     TAVILY_KEY_USAGE_LIMIT,
+    authenticate_access_api_key,
+    authenticate_user,
     calculate_cost,
+    create_access_api_key,
+    create_user,
+    delete_access_api_key,
+    ensure_superadmin,
     extract_usage,
+    get_user,
+    list_access_api_keys,
+    list_users,
     read_log_filter_options,
     read_logs_page,
     read_web_search_config,
     replace_web_search_config,
     reserve_tavily_key,
     reserve_tavily_key_by_id,
+    reset_user_password,
+    set_access_api_key_enabled,
+    set_user_enabled,
 )
 from .errors import BadRequestError, ProxyError
 from .logging_utils import configure_logging, log_event, redact
@@ -95,9 +108,14 @@ FALLBACK_REASONING_CONTENT = "Tool use continuation context unavailable after pr
 def create_app(settings: Settings | None = None) -> Flask:
     settings = settings or Settings.from_env()
     logger = configure_logging(settings.log_path, settings.log_level)
-    config_manager = ConfigManager(settings.db_path, settings.default_timeout)
+    ensure_superadmin(settings.db_path, settings.admin_username, settings.admin_password)
+    config_manager = ConfigManager(
+        settings.db_path,
+        settings.default_timeout,
+        default_owner_username=settings.admin_username,
+    )
     reasoning_cache = ReasoningCache()
-    db_writer = AsyncDBWriter(settings.db_path)
+    db_writer = AsyncDBWriter(settings.db_path, default_owner_username=settings.admin_username)
     db_writer.start()
     atexit.register(db_writer.stop)
 
@@ -125,15 +143,17 @@ def create_app(settings: Settings | None = None) -> Flask:
     def admin():
         error = None
         if request.method == "POST":
+            username = request.form.get("username", settings.admin_username)
             password = request.form.get("password", "")
-            if password == settings.admin_password:
-                session["admin_authenticated"] = True
+            user = authenticate_user(settings.db_path, username, password)
+            if user is not None:
+                _set_session_user(user)
                 return redirect(url_for("admin"))
-            error = "密码错误"
-            log_event(logger, "WARNING", "admin login failed", path="/admin")
+            error = "用户名或密码错误"
+            log_event(logger, "WARNING", "admin login failed", path="/admin", username=username)
         if request.method == "GET" and (admin_static_dir / "index.html").exists():
             return _spa_index_response(admin_static_dir)
-        if not is_admin_authenticated():
+        if not current_session_user():
             return render_template("login.html", error=error)
         return render_template(
             "admin.html",
@@ -151,21 +171,32 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.get("/admin/api/session")
     def admin_session():
-        return jsonify({"authenticated": is_admin_authenticated()})
+        user = current_session_user()
+        return jsonify({"authenticated": user is not None, "user": user})
 
     @app.post("/admin/api/login")
     def admin_login():
         body = request.get_json(silent=True)
+        username = settings.admin_username
         password = ""
         if isinstance(body, dict):
+            username = str(body.get("username") or username)
             password = str(body.get("password", ""))
         else:
+            username = request.form.get("username", username)
             password = request.form.get("password", "")
-        if password == settings.admin_password:
-            session["admin_authenticated"] = True
-            return jsonify({"authenticated": True})
-        log_event(logger, "WARNING", "admin login failed", path="/admin/api/login")
-        return jsonify({"error": "密码错误"}), 401
+        user = authenticate_user(settings.db_path, username, password)
+        if user is not None:
+            _set_session_user(user)
+            return jsonify({"authenticated": True, "user": _session_user_payload(user)})
+        log_event(
+            logger,
+            "WARNING",
+            "admin login failed",
+            path="/admin/api/login",
+            username=username,
+        )
+        return jsonify({"error": "用户名或密码错误"}), 401
 
     @app.post("/admin/logout")
     def admin_logout():
@@ -177,16 +208,127 @@ def create_app(settings: Settings | None = None) -> Flask:
         session.clear()
         return jsonify({"authenticated": False})
 
+    @app.get("/admin/api/users")
+    def admin_list_users():
+        require_superadmin()
+        return jsonify({"users": list_users(settings.db_path)})
+
+    @app.post("/admin/api/users")
+    def admin_create_user():
+        require_superadmin()
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({"error": "request body must be a JSON object"}), 400
+        try:
+            user = create_user(
+                settings.db_path,
+                str(body.get("username") or ""),
+                str(body.get("password") or ""),
+                role="user",
+                enabled=body.get("enabled", True) is not False,
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"user": user}), 201
+
+    @app.patch("/admin/api/users/<username>")
+    def admin_update_user(username: str):
+        require_superadmin()
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({"error": "request body must be a JSON object"}), 400
+        try:
+            if "enabled" in body:
+                user = set_user_enabled(
+                    settings.db_path,
+                    username,
+                    body.get("enabled") is True,
+                    protected_username=settings.admin_username,
+                )
+            else:
+                user = get_user(settings.db_path, username)
+                if user is None:
+                    return jsonify({"error": "user not found"}), 404
+            if "password" in body:
+                if username == settings.admin_username:
+                    return jsonify({"error": "environment superadmin password is managed by env"}), 400
+                user = reset_user_password(
+                    settings.db_path,
+                    username,
+                    str(body.get("password") or ""),
+                )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"user": user})
+
+    @app.get("/admin/api/api-keys")
+    def admin_list_api_keys():
+        user = require_user()
+        owner = request.args.get("owner_username")
+        if user["role"] != "superadmin":
+            owner = user["username"]
+        elif owner in (None, ""):
+            owner = None
+        return jsonify({"keys": list_access_api_keys(settings.db_path, owner)})
+
+    @app.post("/admin/api/api-keys")
+    def admin_create_api_key():
+        user = require_user()
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({"error": "request body must be a JSON object"}), 400
+        owner = str(body.get("owner_username") or user["username"])
+        if user["role"] != "superadmin":
+            owner = user["username"]
+        try:
+            key = create_access_api_key(
+                settings.db_path,
+                owner,
+                str(body.get("name") or ""),
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"key": key}), 201
+
+    @app.patch("/admin/api/api-keys/<int:key_id>")
+    def admin_update_api_key(key_id: int):
+        user = require_user()
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({"error": "request body must be a JSON object"}), 400
+        owner = None if user["role"] == "superadmin" else user["username"]
+        try:
+            key = set_access_api_key_enabled(
+                settings.db_path,
+                key_id,
+                body.get("enabled") is True,
+                owner_username=owner,
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 404
+        return jsonify({"key": key})
+
+    @app.delete("/admin/api/api-keys/<int:key_id>")
+    def admin_delete_api_key(key_id: int):
+        user = require_user()
+        owner = None if user["role"] == "superadmin" else user["username"]
+        try:
+            delete_access_api_key(settings.db_path, key_id, owner_username=owner)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 404
+        return jsonify({"deleted": True})
+
     @app.get("/admin/api/config")
     def admin_get_config():
-        require_admin()
-        return jsonify(config_manager.raw)
+        user = require_user()
+        return jsonify(_config_for_session_user(config_manager, user))
 
     @app.get("/admin/api/config/export")
     def admin_export_config():
-        require_admin()
+        user = require_user()
+        config = _config_for_session_user(config_manager, user)
         payload = json.dumps(
-            {"channels": config_manager.raw.get("channels", [])},
+            {"channels": config.get("channels", [])},
             ensure_ascii=False,
             indent=2,
         ) + "\n"
@@ -200,7 +342,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/admin/api/config/import")
     def admin_import_config():
-        require_admin()
+        user = require_user()
         candidate = request.get_json(silent=True)
         if not isinstance(candidate, dict):
             return jsonify({"error": "request body must be a JSON object"}), 400
@@ -209,10 +351,13 @@ def create_app(settings: Settings | None = None) -> Flask:
         if not isinstance(imported_channels, list):
             return jsonify({"error": "channels must be a list"}), 400
 
-        current = config_manager.raw
+        current = _config_for_session_user(config_manager, user)
         current_channels = current.get("channels", [])
         current_ids = {
-            str(channel.get("id", "")).strip()
+            (
+                str(channel.get("owner_username") or user["username"]).strip(),
+                str(channel.get("id", "")).strip(),
+            )
             for channel in current_channels
             if isinstance(channel, dict)
         }
@@ -224,14 +369,23 @@ def create_app(settings: Settings | None = None) -> Flask:
                 merged_channels.append(channel)
                 continue
             channel_id = str(channel.get("id", "")).strip()
-            if channel_id in current_ids:
+            owner_username = (
+                str(channel.get("owner_username") or user["username"]).strip()
+                if user["role"] == "superadmin"
+                else user["username"]
+            )
+            channel_key = (owner_username, channel_id)
+            if channel_key in current_ids:
                 skipped_ids.append(channel_id)
                 continue
-            current_ids.add(channel_id)
+            current_ids.add(channel_key)
             merged_channels.append(channel)
 
         try:
-            saved = config_manager.save({**current, "channels": merged_channels})
+            saved = config_manager.save(
+                {**current, "channels": merged_channels},
+                owner_username=None if user["role"] == "superadmin" else user["username"],
+            )
         except ConfigError as exc:
             log_event(logger, "WARNING", "config import rejected", error=str(exc))
             return jsonify({"error": str(exc)}), 400
@@ -259,12 +413,15 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/admin/api/config")
     def admin_save_config():
-        require_admin()
+        user = require_user()
         candidate = request.get_json(silent=True)
         if not isinstance(candidate, dict):
             return jsonify({"error": "request body must be a JSON object"}), 400
         try:
-            saved = config_manager.save(candidate)
+            saved = config_manager.save(
+                candidate,
+                owner_username=None if user["role"] == "superadmin" else user["username"],
+            )
         except ConfigError as exc:
             log_event(logger, "WARNING", "config save rejected", error=str(exc))
             return jsonify({"error": str(exc)}), 400
@@ -276,12 +433,12 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.get("/admin/api/web-search")
     def admin_get_web_search():
-        require_admin()
+        require_superadmin()
         return jsonify(read_web_search_config(settings.db_path))
 
     @app.post("/admin/api/web-search")
     def admin_save_web_search():
-        require_admin()
+        require_superadmin()
         candidate = request.get_json(silent=True)
         if not isinstance(candidate, dict):
             return jsonify({"error": "request body must be a JSON object"}), 400
@@ -303,7 +460,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/admin/api/web-search/test-key")
     def admin_test_web_search_key():
-        require_admin()
+        require_superadmin()
         started = time.time()
         body = request.get_json(silent=True)
         if not isinstance(body, dict):
@@ -335,7 +492,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.get("/admin/api/logs")
     def admin_logs():
-        require_admin()
+        user = require_user()
         filters = {
             key: request.args.get(key)
             for key in (
@@ -343,6 +500,8 @@ def create_app(settings: Settings | None = None) -> Flask:
                 "model",
                 "upstream_model",
                 "channel_id",
+                "owner_username",
+                "api_key_id",
                 "path",
                 "status_code",
                 "is_stream",
@@ -354,24 +513,29 @@ def create_app(settings: Settings | None = None) -> Flask:
             )
             if request.args.get(key) not in (None, "")
         }
+        scope_filters: dict[str, Any] = {}
+        if user["role"] != "superadmin":
+            filters["owner_username"] = user["username"]
+            scope_filters["owner_username"] = user["username"]
         page = read_logs_page(
             settings.db_path,
             page=request.args.get("page", "1"),
             page_size=request.args.get("page_size", "50"),
             filters=filters,
         )
-        page["filter_options"] = read_log_filter_options(settings.db_path)
+        page["filter_options"] = read_log_filter_options(settings.db_path, scope_filters)
         return jsonify(page)
 
     @app.post("/admin/api/channels/discover-models")
     def admin_discover_models():
-        require_admin()
+        require_user()
         started = time.time()
         try:
             channel = _draft_channel_from_request(settings.default_timeout)
+            _reject_pass_through_channel(channel)
             raw = list_upstream_models(
                 channel,
-                request.headers.get("Authorization"),
+                None,
                 settings.default_timeout,
             )
         except ConfigError as exc:
@@ -395,7 +559,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/admin/api/channels/test")
     def admin_test_channel():
-        require_admin()
+        require_user()
         started = time.time()
         try:
             body = request.get_json(silent=True)
@@ -405,6 +569,7 @@ def create_app(settings: Settings | None = None) -> Flask:
             if not isinstance(payload, dict):
                 return jsonify({"error": "payload must be a JSON object"}), 400
             channel = _draft_channel_from_request(settings.default_timeout)
+            _reject_pass_through_channel(channel)
             original_model, upstream_model = _test_models(channel, payload.get("model"))
             upstream_request = convert_request(
                 payload,
@@ -419,7 +584,7 @@ def create_app(settings: Settings | None = None) -> Flask:
             upstream_response = post_upstream(
                 channel,
                 upstream_request,
-                request.headers.get("Authorization"),
+                None,
                 settings.default_timeout,
             )
             response_payload = convert_response(
@@ -457,7 +622,7 @@ def create_app(settings: Settings | None = None) -> Flask:
     def proxy():
         request_method = request.method
         request_path = request.path
-        request_headers = json.dumps(dict(request.headers), ensure_ascii=False)
+        request_headers = json.dumps(redact(dict(request.headers)), ensure_ascii=False)
         client_ip = request.remote_addr
         entry_protocol = ENTRY_PROTOCOLS[request_path]
         started = time.time()
@@ -472,6 +637,10 @@ def create_app(settings: Settings | None = None) -> Flask:
         channel: dict[str, Any] | None = None
         upstream_response: dict[str, Any] | None = None
         web_search_details: dict[str, Any] | None = None
+        access_key: dict[str, Any] | None = None
+        request_user: dict[str, Any] | None = None
+        owner_username = settings.admin_username
+        api_key_id: int | None = None
         log_payload: dict[str, Any] = {
             "request_id": request_id,
             "path": request_path,
@@ -512,6 +681,8 @@ def create_app(settings: Settings | None = None) -> Flask:
                 "web_search_json": json.dumps(redact(web_search_details), ensure_ascii=False)
                 if web_search_details is not None
                 else None,
+                "owner_username": owner_username,
+                "api_key_id": api_key_id,
                 "error": error,
             }
 
@@ -525,6 +696,13 @@ def create_app(settings: Settings | None = None) -> Flask:
             db_writer.write(db_record)
 
         try:
+            access_key = _authenticate_proxy_access_key(settings.db_path)
+            request_user = access_key["user"]
+            owner_username = request_user["username"]
+            api_key_id = access_key["id"]
+            log_payload["owner_username"] = owner_username
+            log_payload["api_key_id"] = api_key_id
+
             payload = request.get_json(silent=True)
             if not isinstance(payload, dict):
                 raise BadRequestError("request body must be a JSON object")
@@ -536,8 +714,12 @@ def create_app(settings: Settings | None = None) -> Flask:
             trace_payload = redact(payload)
             cache_namespace = _request_cache_namespace(payload, request_id)
 
-            route = choose_channel(config_manager.expanded, payload.get("model"))
+            route = choose_channel(
+                config_manager.expanded_for_user(owner_username),
+                payload.get("model"),
+            )
             channel = route.channel
+            _reject_pass_through_channel(channel)
             log_payload.update(
                 {
                     "channel_id": channel.get("id"),
@@ -598,6 +780,8 @@ def create_app(settings: Settings | None = None) -> Flask:
             should_simulate_web_search = (
                 entry_protocol == "responses"
                 and channel["type"] in {"chat", "messages"}
+                and request_user is not None
+                and request_user.get("role") == "superadmin"
                 and request_declares_web_search(payload)
                 and read_web_search_config(settings.db_path).get("enabled") is True
             )
@@ -609,7 +793,7 @@ def create_app(settings: Settings | None = None) -> Flask:
                         upstream_request=upstream_request,
                         payload=payload,
                         original_model=route.original_model,
-                        client_authorization=request.headers.get("Authorization"),
+                        client_authorization=None,
                         default_timeout=settings.default_timeout,
                         db_path=settings.db_path,
                     )
@@ -663,7 +847,7 @@ def create_app(settings: Settings | None = None) -> Flask:
                 upstream_lines = stream_upstream(
                     channel,
                     upstream_request,
-                    request.headers.get("Authorization"),
+                    None,
                     settings.default_timeout,
                 )
                 ttft_recorded = False
@@ -726,7 +910,7 @@ def create_app(settings: Settings | None = None) -> Flask:
             upstream_response = post_upstream(
                 channel,
                 upstream_request,
-                request.headers.get("Authorization"),
+                None,
                 settings.default_timeout,
             )
             if channel["type"] == "chat":
@@ -778,6 +962,10 @@ def create_app(settings: Settings | None = None) -> Flask:
             if hasattr(exc, "body"):
                 log_payload["upstream_error"] = redact(getattr(exc, "body"))
             return jsonify(body), status_code
+        except ConfigError as exc:
+            status_code = 400
+            log_payload["error"] = str(exc)
+            return jsonify({"error": {"message": str(exc), "type": "config_error"}}), 400
         except Exception as exc:  # pragma: no cover - defensive logging
             status_code = 500
             log_payload["error"] = str(exc)
@@ -803,13 +991,112 @@ def create_app(settings: Settings | None = None) -> Flask:
     return app
 
 
+def _set_session_user(user: dict[str, Any]) -> None:
+    session["user"] = _session_user_payload(user)
+    session["admin_authenticated"] = True
+
+
+def _session_user_payload(user: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "username": user["username"],
+        "role": user["role"],
+        "enabled": user.get("enabled", True) is not False,
+    }
+
+
+def current_session_user() -> dict[str, Any] | None:
+    user = session.get("user")
+    if isinstance(user, dict) and user.get("username") and user.get("role"):
+        return {
+            "username": str(user.get("username")),
+            "role": str(user.get("role")),
+            "enabled": user.get("enabled", True) is not False,
+        }
+    if session.get("admin_authenticated"):
+        settings = current_app.config.get("OPENCODEX_SETTINGS")
+        if isinstance(settings, Settings):
+            return {
+                "username": settings.admin_username,
+                "role": "superadmin",
+                "enabled": True,
+            }
+    return None
+
+
 def is_admin_authenticated() -> bool:
-    return bool(session.get("admin_authenticated"))
+    return current_session_user() is not None
+
+
+def require_user() -> dict[str, Any]:
+    user = current_session_user()
+    if user is None:
+        raise BadRequestError("admin authentication required", status_code=401)
+    settings = current_app.config.get("OPENCODEX_SETTINGS")
+    if isinstance(settings, Settings):
+        stored_user = get_user(settings.db_path, user["username"])
+        if stored_user is None or stored_user.get("enabled") is False:
+            session.clear()
+            raise BadRequestError("admin authentication required", status_code=401)
+        _set_session_user(stored_user)
+        return stored_user
+    return user
+
+
+def require_superadmin() -> dict[str, Any]:
+    user = require_user()
+    if user.get("role") != "superadmin":
+        raise BadRequestError("superadmin required", status_code=403)
+    return user
 
 
 def require_admin() -> None:
-    if not is_admin_authenticated():
-        raise BadRequestError("admin authentication required", status_code=401)
+    require_user()
+
+
+def _config_for_session_user(
+    config_manager: ConfigManager,
+    user: dict[str, Any],
+) -> dict[str, Any]:
+    if user.get("role") == "superadmin":
+        return config_manager.raw
+    return config_manager.raw_for_user(user["username"])
+
+
+def _owned_config_candidate(
+    candidate: dict[str, Any],
+    owner_username: str,
+) -> dict[str, Any]:
+    next_candidate = deepcopy(candidate)
+    channels = next_candidate.get("channels")
+    if isinstance(channels, list):
+        for channel in channels:
+            if isinstance(channel, dict):
+                channel["owner_username"] = owner_username
+    return next_candidate
+
+
+def _authenticate_proxy_access_key(db_path: Path) -> dict[str, Any]:
+    token = _bearer_token(request.headers.get("Authorization"))
+    if token is None:
+        raise BadRequestError("valid bearer api key required", status_code=401)
+    access_key = authenticate_access_api_key(db_path, token)
+    if access_key is None:
+        raise BadRequestError("valid bearer api key required", status_code=401)
+    return access_key
+
+
+def _bearer_token(authorization: str | None) -> str | None:
+    value = str(authorization or "").strip()
+    if not value.lower().startswith("bearer "):
+        return None
+    token = value.split(" ", 1)[1].strip()
+    return token or None
+
+
+def _reject_pass_through_channel(channel: dict[str, Any]) -> None:
+    auth_mode = channel.get("auth_mode") or "pass_through_or_config"
+    if auth_mode == "pass_through":
+        raise ConfigError("channel auth_mode=pass_through cannot use proxy access api keys")
 
 
 def _spa_index_response(admin_static_dir: Path) -> Response:

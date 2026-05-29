@@ -8,11 +8,17 @@
       <template #header>
         <div>
           <strong>OpenCodex 管理台</strong>
-          <div class="text-muted">请输入管理员密码</div>
+          <div class="text-muted">请输入用户名和密码</div>
         </div>
       </template>
       <el-form label-position="top" @submit.prevent="login">
-        <input autocomplete="username" hidden value="admin" />
+        <el-form-item label="用户名">
+          <el-input
+            v-model="loginUsername"
+            autocomplete="username"
+            @keyup.enter="login"
+          />
+        </el-form-item>
         <el-form-item label="密码">
           <el-input
             v-model="loginPassword"
@@ -33,7 +39,15 @@
     <el-container class="app-shell">
       <el-header class="app-header">
         <strong>OpenCodex Proxy</strong>
-        <el-button :icon="SwitchButton" @click="logout">退出</el-button>
+        <div class="header-actions">
+          <div v-if="currentUser" class="current-user">
+            <span>{{ currentUser.username }}</span>
+            <el-tag size="small" :type="isSuperadmin ? 'success' : 'info'">
+              {{ isSuperadmin ? "超级管理员" : "普通用户" }}
+            </el-tag>
+          </div>
+          <el-button :icon="SwitchButton" @click="logout">退出</el-button>
+        </div>
       </el-header>
 
       <el-container class="app-body">
@@ -43,7 +57,15 @@
               <el-icon><Connection /></el-icon>
               <span>渠道配置</span>
             </el-menu-item>
-            <el-menu-item index="web-search">
+            <el-menu-item index="api-keys">
+              <el-icon><Key /></el-icon>
+              <span>API Key 管理</span>
+            </el-menu-item>
+            <el-menu-item v-if="isSuperadmin" index="users">
+              <el-icon><User /></el-icon>
+              <span>用户管理</span>
+            </el-menu-item>
+            <el-menu-item v-if="isSuperadmin" index="web-search">
               <el-icon><Search /></el-icon>
               <span>Web Search 模拟</span>
             </el-menu-item>
@@ -129,7 +151,136 @@
               </el-table>
             </section>
 
-            <section v-show="activeTab === 'web-search'">
+            <section v-show="activeTab === 'api-keys'">
+              <div class="toolbar">
+                <div>
+                  <h2>API Key 管理</h2>
+                  <div class="text-muted">用于调用 /v1/* 代理接口，明文只在创建时显示一次</div>
+                </div>
+                <div class="toolbar-actions">
+                  <el-button :icon="Refresh" @click="loadAccessKeys">刷新</el-button>
+                  <el-button type="primary" :icon="Plus" @click="openAccessKeyDialog()">新增 API Key</el-button>
+                </div>
+              </div>
+
+              <el-row :gutter="12">
+                <el-col :span="8">
+                  <el-statistic title="Key 总数" :value="accessKeys.length" />
+                </el-col>
+                <el-col :span="8">
+                  <el-statistic title="启用 Key" :value="enabledAccessKeyCount" />
+                </el-col>
+                <el-col :span="8">
+                  <el-statistic title="最近使用" :value="lastAccessKeyUsedLabel" />
+                </el-col>
+              </el-row>
+
+              <el-table
+                v-loading="accessKeysLoading"
+                :data="accessKeys"
+                row-key="id"
+                style="width: 100%; margin-top: 16px"
+                empty-text="暂无 API Key"
+              >
+                <el-table-column v-if="isSuperadmin" prop="owner_username" label="用户" min-width="130" show-overflow-tooltip />
+                <el-table-column prop="name" label="名称" min-width="160" show-overflow-tooltip />
+                <el-table-column prop="masked_key" label="Key" min-width="220" show-overflow-tooltip />
+                <el-table-column label="最近使用" width="180">
+                  <template #default="{ row }">{{ formatTime(row.last_used_at) || "-" }}</template>
+                </el-table-column>
+                <el-table-column label="状态" width="100">
+                  <template #default="{ row }">
+                    <el-tag :type="row.enabled === false ? 'warning' : 'success'">
+                      {{ row.enabled === false ? "停用" : "启用" }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="220" align="center">
+                  <template #default="{ row }">
+                    <div class="inline-actions channel-table-actions">
+                      <el-button
+                        size="small"
+                        :type="row.enabled === false ? 'success' : 'warning'"
+                        plain
+                        @click="toggleAccessKey(row)"
+                      >
+                        {{ row.enabled === false ? "启用" : "停用" }}
+                      </el-button>
+                      <el-popconfirm title="删除这个 API Key？" @confirm="deleteAccessKey(row)">
+                        <template #reference>
+                          <el-button size="small" type="danger" :icon="Delete">删除</el-button>
+                        </template>
+                      </el-popconfirm>
+                    </div>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </section>
+
+            <section v-if="isSuperadmin" v-show="activeTab === 'users'">
+              <div class="toolbar">
+                <div>
+                  <h2>用户管理</h2>
+                  <div class="text-muted">普通用户由超级管理员创建和停用</div>
+                </div>
+                <div class="toolbar-actions">
+                  <el-button :icon="Refresh" @click="loadUsers">刷新</el-button>
+                  <el-button type="primary" :icon="Plus" @click="openUserDialog()">新增用户</el-button>
+                </div>
+              </div>
+
+              <el-table
+                v-loading="usersLoading"
+                :data="users"
+                row-key="username"
+                style="width: 100%"
+                empty-text="暂无用户"
+              >
+                <el-table-column prop="username" label="用户名" min-width="160" show-overflow-tooltip />
+                <el-table-column label="角色" width="130">
+                  <template #default="{ row }">
+                    <el-tag :type="row.role === 'superadmin' ? 'success' : 'info'">
+                      {{ row.role === "superadmin" ? "超级管理员" : "普通用户" }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="状态" width="100">
+                  <template #default="{ row }">
+                    <el-tag :type="row.enabled === false ? 'warning' : 'success'">
+                      {{ row.enabled === false ? "停用" : "启用" }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="创建时间" width="180">
+                  <template #default="{ row }">{{ formatTime(row.created_at) || "-" }}</template>
+                </el-table-column>
+                <el-table-column label="操作" width="260" align="center">
+                  <template #default="{ row }">
+                    <div class="inline-actions channel-table-actions">
+                      <el-button
+                        size="small"
+                        :disabled="isProtectedSuperadmin(row)"
+                        :type="row.enabled === false ? 'success' : 'warning'"
+                        plain
+                        @click="toggleUser(row)"
+                      >
+                        {{ row.enabled === false ? "启用" : "停用" }}
+                      </el-button>
+                      <el-button
+                        size="small"
+                        :disabled="row.role === 'superadmin'"
+                        :icon="Edit"
+                        @click="openResetPasswordDialog(row)"
+                      >
+                        重置密码
+                      </el-button>
+                    </div>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </section>
+
+            <section v-if="isSuperadmin" v-show="activeTab === 'web-search'">
               <div class="toolbar">
                 <div>
                   <h2>Web Search 模拟</h2>
@@ -346,6 +497,16 @@
                     <el-option v-for="item in filterOptions.paths" :key="item" :label="item" :value="item" />
                   </el-select>
                 </el-form-item>
+                <el-form-item v-if="isSuperadmin" label="用户">
+                  <el-select v-model="logFilters.owner_username" clearable filterable @change="loadLogs(1)">
+                    <el-option v-for="item in filterOptions.owner_usernames" :key="item" :label="item" :value="item" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="Key ID">
+                  <el-select v-model="logFilters.api_key_id" clearable filterable @change="loadLogs(1)">
+                    <el-option v-for="item in filterOptions.api_key_ids" :key="item" :label="item" :value="String(item)" />
+                  </el-select>
+                </el-form-item>
                 <el-form-item class="log-filter-actions">
                   <el-button type="primary" :icon="Search" @click="loadLogs(1)">查询</el-button>
                 </el-form-item>
@@ -425,9 +586,14 @@
         <el-col :span="12">
           <el-form-item label="认证方式">
             <el-select v-model="channelDraft.auth_mode" class="full-width">
-              <el-option label="透传或配置" value="pass_through_or_config" />
-              <el-option label="透传" value="pass_through" />
-              <el-option label="配置" value="config" />
+              <el-option label="配置 Key" value="config" />
+              <el-option label="配置 Key（兼容旧值）" value="pass_through_or_config" />
+              <el-option
+                v-if="channelDraft.auth_mode === 'pass_through'"
+                label="透传（已禁用）"
+                value="pass_through"
+                disabled
+              />
               <el-option label="无" value="none" />
             </el-select>
           </el-form-item>
@@ -587,6 +753,82 @@
     </template>
   </el-drawer>
 
+  <el-dialog v-model="accessKeyDialogVisible" title="新增 API Key" width="560px" @closed="createdAccessKey = null">
+    <el-form label-position="top" :model="accessKeyDraft">
+      <el-form-item v-if="isSuperadmin" label="归属用户">
+        <el-select v-model="accessKeyDraft.owner_username" class="full-width" filterable>
+          <el-option
+            v-for="user in enabledUsers"
+            :key="user.username"
+            :label="`${user.username} (${user.role === 'superadmin' ? '超级管理员' : '普通用户'})`"
+            :value="user.username"
+          />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="名称">
+        <el-input v-model="accessKeyDraft.name" placeholder="例如：本机 Codex" autocomplete="off" />
+      </el-form-item>
+      <el-alert
+        v-if="createdAccessKey"
+        class="created-key-alert"
+        type="success"
+        :closable="false"
+        title="API Key 已创建"
+      >
+        <div class="created-key-box">
+          <code>{{ createdAccessKey.key }}</code>
+          <el-button size="small" @click="copyText(createdAccessKey.key)">复制</el-button>
+        </div>
+      </el-alert>
+    </el-form>
+
+    <template #footer>
+      <div class="drawer-footer">
+        <el-button @click="accessKeyDialogVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="accessKeySaving" @click="createAccessKey">创建</el-button>
+      </div>
+    </template>
+  </el-dialog>
+
+  <el-dialog v-model="userDialogVisible" title="新增用户" width="520px">
+    <el-form label-position="top" :model="userDraft">
+      <el-form-item label="用户名">
+        <el-input v-model="userDraft.username" autocomplete="off" />
+      </el-form-item>
+      <el-form-item label="密码">
+        <el-input v-model="userDraft.password" type="password" show-password autocomplete="new-password" />
+      </el-form-item>
+      <el-form-item label="启用">
+        <el-switch v-model="userDraft.enabled" />
+      </el-form-item>
+    </el-form>
+
+    <template #footer>
+      <div class="drawer-footer">
+        <el-button @click="userDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="userSaving" @click="createUser">创建用户</el-button>
+      </div>
+    </template>
+  </el-dialog>
+
+  <el-dialog v-model="resetPasswordDialogVisible" title="重置密码" width="520px">
+    <el-form label-position="top" :model="resetPasswordDraft">
+      <el-form-item label="用户名">
+        <el-input v-model="resetPasswordDraft.username" disabled />
+      </el-form-item>
+      <el-form-item label="新密码">
+        <el-input v-model="resetPasswordDraft.password" type="password" show-password autocomplete="new-password" />
+      </el-form-item>
+    </el-form>
+
+    <template #footer>
+      <div class="drawer-footer">
+        <el-button @click="resetPasswordDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="resetPasswordSaving" @click="resetUserPassword">保存</el-button>
+      </div>
+    </template>
+  </el-dialog>
+
   <el-dialog v-model="channelTestVisible" :title="channelTestTitle" width="640px">
     <el-descriptions v-if="testingChannel" :column="2" border class="channel-test-summary">
       <el-descriptions-item label="渠道">{{ testingChannel.name || testingChannel.id }}</el-descriptions-item>
@@ -683,18 +925,23 @@ import {
   Delete,
   Download,
   Edit,
+  Key,
   Plus,
   Refresh,
   Search,
   Setting,
   SwitchButton,
+  Tickets,
   Upload,
+  User,
   View
 } from "@element-plus/icons-vue";
 
 const activeTab = ref("channels");
 const authenticated = ref(false);
 const loadingSession = ref(true);
+const currentUser = ref(null);
+const loginUsername = ref("admin");
 const loginPassword = ref("");
 const loginLoading = ref(false);
 const configLoading = ref(false);
@@ -705,6 +952,18 @@ const discoverLoading = ref(false);
 const webSearchLoading = ref(false);
 const webSearchSaving = ref(false);
 const webSearchTestingId = ref(null);
+const accessKeysLoading = ref(false);
+const accessKeyDialogVisible = ref(false);
+const accessKeySaving = ref(false);
+const createdAccessKey = ref(null);
+const accessKeyDraft = reactive(defaultAccessKeyDraft());
+const usersLoading = ref(false);
+const userDialogVisible = ref(false);
+const userSaving = ref(false);
+const userDraft = reactive(defaultUserDraft());
+const resetPasswordDialogVisible = ref(false);
+const resetPasswordSaving = ref(false);
+const resetPasswordDraft = reactive(defaultResetPasswordDraft());
 
 const config = reactive({ channels: [] });
 const webSearchConfig = reactive(defaultWebSearchConfig());
@@ -734,6 +993,8 @@ const channelTestForm = reactive({
 });
 const discoveredModels = ref([]);
 const selectedDiscoveredModels = ref([]);
+const accessKeys = ref([]);
+const users = ref([]);
 
 const logs = ref([]);
 const logPage = ref(1);
@@ -747,6 +1008,8 @@ const filterOptions = reactive({
   models: [],
   upstream_models: [],
   channel_ids: [],
+  owner_usernames: [],
+  api_key_ids: [],
   paths: [],
   status_codes: [],
   request_statuses: ["success", "failed"]
@@ -755,6 +1018,8 @@ const logFilters = reactive({
   request_id: "",
   model: "",
   channel_id: "",
+  owner_username: "",
+  api_key_id: "",
   status_code: "",
   path: "",
   request_status: ""
@@ -766,6 +1031,8 @@ const logColumnDefinitions = [
   { key: "created_at", prop: "created_at", label: "时间", width: 180 },
   { key: "request_id", prop: "request_id", label: "请求", width: 130, showOverflowTooltip: true },
   { key: "request_status", prop: "request_status", label: "状态", width: 90 },
+  { key: "owner_username", prop: "owner_username", label: "用户", width: 120, showOverflowTooltip: true },
+  { key: "api_key_id", prop: "api_key_id", label: "Key ID", width: 90 },
   { key: "model", prop: "model", label: "模型", minWidth: 160, showOverflowTooltip: true },
   { key: "channel_id", prop: "channel_id", label: "渠道", minWidth: 130, showOverflowTooltip: true },
   { key: "status_code", prop: "status_code", label: "状态码", width: 90 },
@@ -807,6 +1074,16 @@ const visibleLogColumns = computed(() =>
 const logAutoRefreshLabel = computed(() =>
   logAutoRefreshSeconds.value ? `${logAutoRefreshSeconds.value} 秒刷新` : "自动刷新"
 );
+const isSuperadmin = computed(() => currentUser.value?.role === "superadmin");
+const enabledUsers = computed(() => users.value.filter((user) => user.enabled !== false));
+const enabledAccessKeyCount = computed(() => accessKeys.value.filter((key) => key.enabled !== false).length);
+const lastAccessKeyUsedLabel = computed(() => {
+  const timestamps = accessKeys.value
+    .map((key) => Number(key.last_used_at || 0))
+    .filter((value) => value > 0)
+    .sort((a, b) => b - a);
+  return timestamps.length ? formatTime(timestamps[0]) : "-";
+});
 
 onMounted(async () => {
   await checkSession();
@@ -834,9 +1111,9 @@ async function checkSession() {
   loadingSession.value = true;
   try {
     const data = await api("/admin/api/session");
-    authenticated.value = data.authenticated;
+    setAuthenticatedUser(data);
     if (authenticated.value) {
-      await Promise.all([loadConfig(), loadWebSearch(), loadLogs()]);
+      await loadInitialData();
     }
   } finally {
     loadingSession.value = false;
@@ -848,11 +1125,14 @@ async function login() {
   try {
     const data = await api("/admin/api/login", {
       method: "POST",
-      body: JSON.stringify({ password: loginPassword.value })
+      body: JSON.stringify({
+        username: loginUsername.value,
+        password: loginPassword.value
+      })
     });
-    authenticated.value = data.authenticated;
+    setAuthenticatedUser(data);
     loginPassword.value = "";
-    await Promise.all([loadConfig(), loadWebSearch(), loadLogs()]);
+    await loadInitialData();
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
@@ -864,6 +1144,31 @@ async function logout() {
   await api("/admin/api/logout", { method: "POST", body: "{}" });
   setLogAutoRefreshSeconds(0);
   authenticated.value = false;
+  currentUser.value = null;
+  accessKeys.value = [];
+  users.value = [];
+  assignWebSearchConfig(defaultWebSearchConfig());
+}
+
+function setAuthenticatedUser(data) {
+  authenticated.value = data.authenticated === true;
+  currentUser.value = authenticated.value ? data.user || null : null;
+  ensureAllowedActiveTab();
+}
+
+async function loadInitialData() {
+  ensureAllowedActiveTab();
+  const tasks = [loadConfig(), loadAccessKeys(), loadLogs()];
+  if (isSuperadmin.value) {
+    tasks.push(loadUsers(), loadWebSearch());
+  }
+  await Promise.all(tasks);
+}
+
+function ensureAllowedActiveTab() {
+  if (!isSuperadmin.value && ["users", "web-search"].includes(activeTab.value)) {
+    activeTab.value = "channels";
+  }
 }
 
 async function loadConfig() {
@@ -956,7 +1261,205 @@ function exportConfig() {
   window.location.href = "/admin/api/config/export";
 }
 
+async function loadAccessKeys() {
+  accessKeysLoading.value = true;
+  try {
+    const data = await api("/admin/api/api-keys");
+    accessKeys.value = Array.isArray(data.keys) ? data.keys : [];
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    accessKeysLoading.value = false;
+  }
+}
+
+function openAccessKeyDialog() {
+  Object.assign(accessKeyDraft, defaultAccessKeyDraft(), {
+    owner_username: currentUser.value?.username || ""
+  });
+  createdAccessKey.value = null;
+  accessKeyDialogVisible.value = true;
+}
+
+async function createAccessKey() {
+  accessKeySaving.value = true;
+  try {
+    const payload = {
+      name: String(accessKeyDraft.name || "").trim()
+    };
+    if (isSuperadmin.value) {
+      const owner = String(accessKeyDraft.owner_username || "").trim();
+      if (!owner) {
+        throw new Error("请选择归属用户");
+      }
+      payload.owner_username = owner;
+    }
+    const data = await api("/admin/api/api-keys", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+    createdAccessKey.value = data.key || null;
+    await loadAccessKeys();
+    ElMessage.success("API Key 已创建");
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    accessKeySaving.value = false;
+  }
+}
+
+async function toggleAccessKey(row) {
+  try {
+    await api(`/admin/api/api-keys/${row.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled: row.enabled === false })
+    });
+    await loadAccessKeys();
+    ElMessage.success(row.enabled === false ? "API Key 已启用" : "API Key 已停用");
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
+async function deleteAccessKey(row) {
+  try {
+    await api(`/admin/api/api-keys/${row.id}`, {
+      method: "DELETE",
+      body: "{}"
+    });
+    await loadAccessKeys();
+    ElMessage.success("API Key 已删除");
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
+async function copyText(text) {
+  const value = String(text || "");
+  if (!value) {
+    return;
+  }
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+    } else {
+      const textarea = document.createElement("textarea");
+      textarea.value = value;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    }
+    ElMessage.success("已复制");
+  } catch {
+    ElMessage.error("复制失败，请手动复制");
+  }
+}
+
+async function loadUsers() {
+  if (!isSuperadmin.value) {
+    users.value = [];
+    return;
+  }
+  usersLoading.value = true;
+  try {
+    const data = await api("/admin/api/users");
+    users.value = Array.isArray(data.users) ? data.users : [];
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    usersLoading.value = false;
+  }
+}
+
+function openUserDialog() {
+  Object.assign(userDraft, defaultUserDraft());
+  userDialogVisible.value = true;
+}
+
+async function createUser() {
+  userSaving.value = true;
+  try {
+    const username = String(userDraft.username || "").trim();
+    const password = String(userDraft.password || "");
+    if (!username) {
+      throw new Error("用户名不能为空");
+    }
+    if (!password) {
+      throw new Error("密码不能为空");
+    }
+    await api("/admin/api/users", {
+      method: "POST",
+      body: JSON.stringify({
+        username,
+        password,
+        enabled: userDraft.enabled !== false
+      })
+    });
+    userDialogVisible.value = false;
+    await Promise.all([loadUsers(), loadAccessKeys()]);
+    ElMessage.success("用户已创建");
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    userSaving.value = false;
+  }
+}
+
+async function toggleUser(row) {
+  try {
+    await api(`/admin/api/users/${encodeURIComponent(row.username)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled: row.enabled === false })
+    });
+    await Promise.all([loadUsers(), loadAccessKeys()]);
+    ElMessage.success(row.enabled === false ? "用户已启用" : "用户已停用");
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
+function openResetPasswordDialog(row) {
+  Object.assign(resetPasswordDraft, defaultResetPasswordDraft(), {
+    username: row.username
+  });
+  resetPasswordDialogVisible.value = true;
+}
+
+async function resetUserPassword() {
+  resetPasswordSaving.value = true;
+  try {
+    const username = String(resetPasswordDraft.username || "").trim();
+    const password = String(resetPasswordDraft.password || "");
+    if (!password) {
+      throw new Error("新密码不能为空");
+    }
+    await api(`/admin/api/users/${encodeURIComponent(username)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ password })
+    });
+    resetPasswordDialogVisible.value = false;
+    await loadUsers();
+    ElMessage.success("密码已重置");
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    resetPasswordSaving.value = false;
+  }
+}
+
+function isProtectedSuperadmin(row) {
+  return row.role === "superadmin";
+}
+
 async function loadWebSearch() {
+  if (!isSuperadmin.value) {
+    assignWebSearchConfig(defaultWebSearchConfig());
+    return;
+  }
   webSearchLoading.value = true;
   try {
     const data = await api("/admin/api/web-search");
@@ -1188,6 +1691,8 @@ function resetLogFilters() {
     request_id: "",
     model: "",
     channel_id: "",
+    owner_username: "",
+    api_key_id: "",
     status_code: "",
     path: "",
     request_status: ""
@@ -1242,13 +1747,35 @@ function defaultChannel() {
     type: "chat",
     baseurl: "",
     apikey: "",
-    auth_mode: "pass_through_or_config",
+    auth_mode: "config",
     headers: {},
     timeout_seconds: 120,
     retry_count: 3,
     compat: {},
     models: [],
     enabled: true
+  };
+}
+
+function defaultAccessKeyDraft() {
+  return {
+    owner_username: "",
+    name: ""
+  };
+}
+
+function defaultUserDraft() {
+  return {
+    username: "",
+    password: "",
+    enabled: true
+  };
+}
+
+function defaultResetPasswordDraft() {
+  return {
+    username: "",
+    password: ""
   };
 }
 

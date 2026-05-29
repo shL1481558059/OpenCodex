@@ -26,6 +26,7 @@ class Settings:
     log_view_level: str
     default_timeout: int
     secret_key: str
+    admin_username: str = "admin"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -34,6 +35,7 @@ class Settings:
         admin_password = os.getenv("OPENCODEX_ADMIN_PASSWORD", "").strip()
         if not admin_password:
             raise SettingsError("OPENCODEX_ADMIN_PASSWORD is required")
+        admin_username = os.getenv("OPENCODEX_ADMIN_USERNAME", "admin").strip() or "admin"
 
         log_level = os.getenv("OPENCODEX_LOG_LEVEL", "INFO").strip().upper()
         if log_level not in LOG_LEVELS:
@@ -59,6 +61,7 @@ class Settings:
             secret_key=os.getenv(
                 "OPENCODEX_SECRET_KEY", "change-me-session-secret"
             ),
+            admin_username=admin_username,
         )
 
 

@@ -20,6 +20,7 @@ mkdir -p logs
 ```env
 OPENCODEX_HOST=0.0.0.0
 OPENCODEX_PORT=8000
+OPENCODEX_ADMIN_USERNAME=admin
 OPENCODEX_ADMIN_PASSWORD=change-me
 OPENCODEX_DB_PATH=logs/opencodex.db
 OPENCODEX_LOG_PATH=logs/opencodex.log
@@ -27,7 +28,6 @@ OPENCODEX_LOG_LEVEL=INFO
 OPENCODEX_LOG_VIEW_LEVEL=BASIC
 OPENCODEX_DEFAULT_TIMEOUT=120
 OPENCODEX_SECRET_KEY=change-me-session-secret
-WINDHUB_API_KEY=sk-your-key
 ```
 
 启动：
@@ -42,6 +42,13 @@ WINDHUB_API_KEY=sk-your-key
 http://127.0.0.1:8000/admin
 ```
 
+使用 `OPENCODEX_ADMIN_USERNAME` 和 `OPENCODEX_ADMIN_PASSWORD` 登录。首次登录后建议先完成两件事：
+
+1. 在“渠道配置”中新增自己的上游渠道。渠道里的 `apikey` 是 Windhub、OpenAI 或其他上游服务的 Key。
+2. 在“API Key 管理”中创建访问 API Key。这个 Key 是客户端调用 OpenCodex Proxy 的 Bearer Key，明文只显示一次。
+
+普通用户只能由超级管理员创建。普通用户只能看到自己的渠道、自己的访问 API Key 和自己的请求日志；超级管理员能看到全部。Web Search 模拟只允许超级管理员配置和使用。
+
 ## Windhub MiMo 配置
 
 在管理台新增 `windhub-mimo-messages` 渠道，并将它放在渠道列表首位。
@@ -53,10 +60,12 @@ http://127.0.0.1:8000/admin
   "id": "windhub-mimo-messages",
   "type": "messages",
   "baseurl": "https://windhub.cc",
-  "apikey": "${WINDHUB_API_KEY}",
+  "apikey": "sk-your-windhub-upstream-key",
   "auth_mode": "config"
 }
 ```
+
+也可以把上游 Key 写成 `${WINDHUB_UPSTREAM_API_KEY}`，再在运行服务的环境中提供该变量。它只用于渠道上游鉴权，不是客户端调用代理的访问 API Key。
 
 ## x86/amd64 Docker 镜像
 
@@ -102,17 +111,17 @@ sandbox_mode = "workspace-write"
 [model_providers.opencodex-local]
 name = "OpenCodex Local Proxy"
 base_url = "http://127.0.0.1:8000/v1"
-env_key = "WINDHUB_API_KEY"
+env_key = "OPENCODEX_ACCESS_API_KEY"
 wire_api = "responses"
 requires_openai_auth = false
 EOF
 ```
 
-运行测试时只给该进程指定临时 `CODEX_HOME`：
+把管理台创建出来的访问 API Key 放入客户端环境变量，然后运行测试：
 
 ```bash
 CODEX_HOME=/tmp/opencodex-codex-home \
-WINDHUB_API_KEY="$WINDHUB_API_KEY" \
+OPENCODEX_ACCESS_API_KEY="ocx_..." \
 codex exec "使用工具创建一个名为 opencodex_tool_test.txt 的文件，内容为 OK，然后确认文件存在。"
 ```
 

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import queue
+import secrets
 import sqlite3
 import threading
 import time
@@ -34,13 +37,16 @@ CREATE TABLE IF NOT EXISTS request_logs (
     output_tokens INTEGER,
     cost REAL,
     web_search_json TEXT,
+    owner_username TEXT NOT NULL DEFAULT 'admin',
+    api_key_id INTEGER,
     error TEXT
 );
 """
 
 CHANNELS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS channels (
-    id TEXT PRIMARY KEY,
+    owner_username TEXT NOT NULL DEFAULT 'admin',
+    id TEXT NOT NULL,
     position INTEGER NOT NULL,
     name TEXT NOT NULL DEFAULT '',
     type TEXT NOT NULL,
@@ -54,10 +60,36 @@ CREATE TABLE IF NOT EXISTS channels (
     models_json TEXT NOT NULL DEFAULT '[]',
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (owner_username, id)
+);
+"""
+
+USERS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    username TEXT PRIMARY KEY,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_channels_position ON channels(position);
+CREATE TABLE IF NOT EXISTS access_api_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_username TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    key_hash TEXT NOT NULL UNIQUE,
+    key_prefix TEXT NOT NULL,
+    key_suffix TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    last_used_at REAL,
+    FOREIGN KEY (owner_username) REFERENCES users(username)
+);
+
+CREATE INDEX IF NOT EXISTS idx_access_api_keys_owner ON access_api_keys(owner_username, id);
 """
 
 WEB_SEARCH_SCHEMA = """
@@ -83,26 +115,50 @@ CREATE INDEX IF NOT EXISTS idx_tavily_keys_position ON tavily_keys(position);
 """
 
 TAVILY_KEY_USAGE_LIMIT = 1000
+PASSWORD_HASH_ITERATIONS = 200_000
+ACCESS_KEY_PREFIX = "ocx_"
+USER_ROLES = {"superadmin", "user"}
 
-SCHEMA = REQUEST_LOGS_SCHEMA + "\n" + CHANNELS_SCHEMA + "\n" + WEB_SEARCH_SCHEMA
+SCHEMA = (
+    REQUEST_LOGS_SCHEMA
+    + "\n"
+    + CHANNELS_SCHEMA
+    + "\n"
+    + USERS_SCHEMA
+    + "\n"
+    + WEB_SEARCH_SCHEMA
+)
 
 
-def init_db(db_path: Path) -> None:
+def init_db(db_path: Path, default_owner_username: str = "admin") -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     conn.executescript(SCHEMA)
-    _migrate_channels(conn)
+    _migrate_channels(conn, default_owner_username)
     conn.commit()
     conn.close()
 
 
-def _migrate_channels(conn: sqlite3.Connection) -> None:
+def _migrate_channels(conn: sqlite3.Connection, default_owner_username: str = "admin") -> None:
+    default_owner_username = _normalize_username(default_owner_username) or "admin"
     log_columns = {
         row[1]
         for row in conn.execute("PRAGMA table_info(request_logs)").fetchall()
     }
     if "web_search_json" not in log_columns:
         conn.execute("ALTER TABLE request_logs ADD COLUMN web_search_json TEXT")
+    if "owner_username" not in log_columns:
+        conn.execute("ALTER TABLE request_logs ADD COLUMN owner_username TEXT")
+    if "api_key_id" not in log_columns:
+        conn.execute("ALTER TABLE request_logs ADD COLUMN api_key_id INTEGER")
+    conn.execute(
+        """
+        UPDATE request_logs
+        SET owner_username = ?
+        WHERE owner_username IS NULL OR owner_username = ''
+        """,
+        (default_owner_username,),
+    )
 
     columns = {
         row[1]
@@ -112,6 +168,25 @@ def _migrate_channels(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE channels ADD COLUMN models_json TEXT NOT NULL DEFAULT '[]'")
     if "retry_count" not in columns:
         conn.execute("ALTER TABLE channels ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 3")
+    columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(channels)").fetchall()
+    }
+    if "owner_username" not in columns:
+        conn.execute("ALTER TABLE channels ADD COLUMN owner_username TEXT")
+    conn.execute(
+        """
+        UPDATE channels
+        SET owner_username = ?
+        WHERE owner_username IS NULL OR owner_username = ''
+        """,
+        (default_owner_username,),
+    )
+    if _channel_primary_key(conn) != ["owner_username", "id"]:
+        _rebuild_channels_with_owner_primary_key(conn, default_owner_username)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_channels_owner_position ON channels(owner_username, position)"
+    )
 
     web_search_columns = {
         row[1]
@@ -123,16 +198,558 @@ def _migrate_channels(conn: sqlite3.Connection) -> None:
         )
 
 
+def _channel_primary_key(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute("PRAGMA table_info(channels)").fetchall()
+    keyed = [(int(row[5] or 0), row[1]) for row in rows if int(row[5] or 0) > 0]
+    return [name for _, name in sorted(keyed)]
+
+
+def _rebuild_channels_with_owner_primary_key(
+    conn: sqlite3.Connection, default_owner_username: str
+) -> None:
+    conn.execute("ALTER TABLE channels RENAME TO channels_legacy")
+    conn.execute(
+        """
+        CREATE TABLE channels (
+            owner_username TEXT NOT NULL DEFAULT 'admin',
+            id TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            type TEXT NOT NULL,
+            baseurl TEXT NOT NULL,
+            apikey TEXT NOT NULL DEFAULT '',
+            auth_mode TEXT NOT NULL DEFAULT 'pass_through_or_config',
+            headers_json TEXT NOT NULL DEFAULT '{}',
+            timeout_seconds INTEGER NOT NULL,
+            retry_count INTEGER NOT NULL DEFAULT 3,
+            compat_json TEXT NOT NULL DEFAULT '{}',
+            models_json TEXT NOT NULL DEFAULT '[]',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            PRIMARY KEY (owner_username, id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO channels (
+            owner_username, id, position, name, type, baseurl, apikey, auth_mode,
+            headers_json, timeout_seconds, retry_count, compat_json, models_json,
+            enabled, created_at, updated_at
+        )
+        SELECT
+            COALESCE(NULLIF(owner_username, ''), ?), id, position, name, type,
+            baseurl, apikey, auth_mode, headers_json, timeout_seconds,
+            retry_count, compat_json, models_json, enabled, created_at, updated_at
+        FROM channels_legacy
+        """,
+        (default_owner_username,),
+    )
+    conn.execute("DROP TABLE channels_legacy")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_channels_owner_position ON channels(owner_username, position)"
+    )
+
+
+def ensure_superadmin(db_path: Path, username: str, password: str) -> dict[str, Any]:
+    init_db(db_path, username)
+    username = _normalize_username(username) or "admin"
+    now = time.time()
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        with conn:
+            row = conn.execute(
+                "SELECT username FROM users WHERE username = ?",
+                (username,),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    """
+                    INSERT INTO users (
+                        username, password_hash, role, enabled, created_at, updated_at
+                    ) VALUES (?, ?, 'superadmin', 1, ?, ?)
+                    """,
+                    (username, hash_password(password), now, now),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE users
+                    SET password_hash = ?, role = 'superadmin', enabled = 1, updated_at = ?
+                    WHERE username = ?
+                    """,
+                    (hash_password(password), now, username),
+                )
+    finally:
+        conn.close()
+    user = get_user(db_path, username)
+    if user is None:  # pragma: no cover - defensive guard
+        raise RuntimeError("failed to ensure superadmin user")
+    return user
+
+
+def create_user(
+    db_path: Path,
+    username: str,
+    password: str,
+    *,
+    role: str = "user",
+    enabled: bool = True,
+) -> dict[str, Any]:
+    init_db(db_path)
+    username = _normalize_username(username)
+    if not username:
+        raise ValueError("username is required")
+    if role not in USER_ROLES:
+        raise ValueError("role is invalid")
+    if not str(password or ""):
+        raise ValueError("password is required")
+    now = time.time()
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO users (
+                    username, password_hash, role, enabled, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    username,
+                    hash_password(password),
+                    role,
+                    1 if enabled else 0,
+                    now,
+                    now,
+                ),
+            )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("username already exists") from exc
+    finally:
+        conn.close()
+    user = get_user(db_path, username)
+    if user is None:  # pragma: no cover - defensive guard
+        raise RuntimeError("failed to create user")
+    return user
+
+
+def list_users(db_path: Path) -> list[dict[str, Any]]:
+    init_db(db_path)
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT username, role, enabled, created_at, updated_at
+            FROM users
+            ORDER BY role ASC, username ASC
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    return [_row_to_user(row) for row in rows]
+
+
+def get_user(db_path: Path, username: str) -> dict[str, Any] | None:
+    init_db(db_path, username)
+    username = _normalize_username(username)
+    if not username:
+        return None
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT username, role, enabled, created_at, updated_at
+            FROM users
+            WHERE username = ?
+            """,
+            (username,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return _row_to_user(row) if row else None
+
+
+def authenticate_user(db_path: Path, username: str, password: str) -> dict[str, Any] | None:
+    init_db(db_path, username)
+    username = _normalize_username(username)
+    if not username:
+        return None
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT username, password_hash, role, enabled, created_at, updated_at
+            FROM users
+            WHERE username = ?
+            """,
+            (username,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None or not bool(row["enabled"]):
+        return None
+    if not verify_password(password, row["password_hash"]):
+        return None
+    return _row_to_user(row)
+
+
+def set_user_enabled(
+    db_path: Path,
+    username: str,
+    enabled: bool,
+    *,
+    protected_username: str | None = None,
+) -> dict[str, Any]:
+    init_db(db_path, protected_username or username)
+    username = _normalize_username(username)
+    protected_username = _normalize_username(protected_username)
+    if not username:
+        raise ValueError("username is required")
+    if protected_username and username == protected_username and not enabled:
+        raise ValueError("cannot disable the environment superadmin")
+    conn = sqlite3.connect(str(db_path))
+    try:
+        with conn:
+            cursor = conn.execute(
+                """
+                UPDATE users
+                SET enabled = ?, updated_at = ?
+                WHERE username = ?
+                """,
+                (1 if enabled else 0, time.time(), username),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError("user not found")
+    finally:
+        conn.close()
+    user = get_user(db_path, username)
+    if user is None:  # pragma: no cover - defensive guard
+        raise RuntimeError("failed to update user")
+    return user
+
+
+def reset_user_password(
+    db_path: Path,
+    username: str,
+    password: str,
+) -> dict[str, Any]:
+    init_db(db_path, username)
+    username = _normalize_username(username)
+    if not username:
+        raise ValueError("username is required")
+    if not str(password or ""):
+        raise ValueError("password is required")
+    conn = sqlite3.connect(str(db_path))
+    try:
+        with conn:
+            cursor = conn.execute(
+                """
+                UPDATE users
+                SET password_hash = ?, updated_at = ?
+                WHERE username = ?
+                """,
+                (hash_password(password), time.time(), username),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError("user not found")
+    finally:
+        conn.close()
+    user = get_user(db_path, username)
+    if user is None:  # pragma: no cover - defensive guard
+        raise RuntimeError("failed to reset user password")
+    return user
+
+
+def create_access_api_key(
+    db_path: Path,
+    owner_username: str,
+    name: str = "",
+) -> dict[str, Any]:
+    init_db(db_path, owner_username)
+    owner_username = _normalize_username(owner_username)
+    if not owner_username:
+        raise ValueError("owner_username is required")
+    if get_user(db_path, owner_username) is None:
+        raise ValueError("user not found")
+    raw_key = generate_access_api_key()
+    now = time.time()
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        with conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO access_api_keys (
+                    owner_username, name, key_hash, key_prefix, key_suffix,
+                    enabled, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                """,
+                (
+                    owner_username,
+                    str(name or "").strip(),
+                    hash_access_api_key(raw_key),
+                    raw_key[:12],
+                    raw_key[-6:],
+                    now,
+                    now,
+                ),
+            )
+            key_id = int(cursor.lastrowid)
+    finally:
+        conn.close()
+    metadata = get_access_api_key(db_path, key_id)
+    if metadata is None:  # pragma: no cover - defensive guard
+        raise RuntimeError("failed to create access api key")
+    metadata["key"] = raw_key
+    return metadata
+
+
+def list_access_api_keys(
+    db_path: Path,
+    owner_username: str | None = None,
+) -> list[dict[str, Any]]:
+    init_db(db_path, owner_username or "admin")
+    owner_username = _normalize_username(owner_username) if owner_username is not None else None
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        if owner_username:
+            rows = conn.execute(
+                """
+                SELECT id, owner_username, name, key_prefix, key_suffix, enabled,
+                       created_at, updated_at, last_used_at
+                FROM access_api_keys
+                WHERE owner_username = ?
+                ORDER BY id DESC
+                """,
+                (owner_username,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT id, owner_username, name, key_prefix, key_suffix, enabled,
+                       created_at, updated_at, last_used_at
+                FROM access_api_keys
+                ORDER BY owner_username ASC, id DESC
+                """
+            ).fetchall()
+    finally:
+        conn.close()
+    return [_row_to_access_api_key(row) for row in rows]
+
+
+def get_access_api_key(db_path: Path, key_id: int) -> dict[str, Any] | None:
+    init_db(db_path)
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT id, owner_username, name, key_prefix, key_suffix, enabled,
+                   created_at, updated_at, last_used_at
+            FROM access_api_keys
+            WHERE id = ?
+            """,
+            (key_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return _row_to_access_api_key(row) if row else None
+
+
+def set_access_api_key_enabled(
+    db_path: Path,
+    key_id: int,
+    enabled: bool,
+    *,
+    owner_username: str | None = None,
+) -> dict[str, Any]:
+    init_db(db_path, owner_username or "admin")
+    owner_username = _normalize_username(owner_username) if owner_username is not None else None
+    conn = sqlite3.connect(str(db_path))
+    try:
+        with conn:
+            if owner_username:
+                cursor = conn.execute(
+                    """
+                    UPDATE access_api_keys
+                    SET enabled = ?, updated_at = ?
+                    WHERE id = ? AND owner_username = ?
+                    """,
+                    (1 if enabled else 0, time.time(), key_id, owner_username),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    UPDATE access_api_keys
+                    SET enabled = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (1 if enabled else 0, time.time(), key_id),
+                )
+            if cursor.rowcount == 0:
+                raise ValueError("api key not found")
+    finally:
+        conn.close()
+    key = get_access_api_key(db_path, key_id)
+    if key is None:  # pragma: no cover - defensive guard
+        raise RuntimeError("failed to update api key")
+    return key
+
+
+def delete_access_api_key(
+    db_path: Path,
+    key_id: int,
+    *,
+    owner_username: str | None = None,
+) -> None:
+    init_db(db_path, owner_username or "admin")
+    owner_username = _normalize_username(owner_username) if owner_username is not None else None
+    conn = sqlite3.connect(str(db_path))
+    try:
+        with conn:
+            if owner_username:
+                cursor = conn.execute(
+                    "DELETE FROM access_api_keys WHERE id = ? AND owner_username = ?",
+                    (key_id, owner_username),
+                )
+            else:
+                cursor = conn.execute(
+                    "DELETE FROM access_api_keys WHERE id = ?",
+                    (key_id,),
+                )
+            if cursor.rowcount == 0:
+                raise ValueError("api key not found")
+    finally:
+        conn.close()
+
+
+def authenticate_access_api_key(db_path: Path, raw_key: str) -> dict[str, Any] | None:
+    raw_key = str(raw_key or "").strip()
+    if not raw_key:
+        return None
+    init_db(db_path)
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT
+                k.id, k.owner_username, k.name, k.key_prefix, k.key_suffix,
+                k.enabled, k.created_at, k.updated_at, k.last_used_at,
+                u.role AS user_role, u.enabled AS user_enabled
+            FROM access_api_keys k
+            JOIN users u ON u.username = k.owner_username
+            WHERE k.key_hash = ?
+            """,
+            (hash_access_api_key(raw_key),),
+        ).fetchone()
+        if row is None or not bool(row["enabled"]) or not bool(row["user_enabled"]):
+            conn.rollback()
+            return None
+        now = time.time()
+        conn.execute(
+            "UPDATE access_api_keys SET last_used_at = ?, updated_at = ? WHERE id = ?",
+            (now, now, row["id"]),
+        )
+        conn.commit()
+        key = _row_to_access_api_key(row)
+        key["user"] = {
+            "username": row["owner_username"],
+            "role": row["user_role"],
+            "enabled": bool(row["user_enabled"]),
+        }
+        key["last_used_at"] = now
+        return key
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def generate_access_api_key() -> str:
+    return ACCESS_KEY_PREFIX + secrets.token_urlsafe(32)
+
+
+def hash_access_api_key(raw_key: str) -> str:
+    return hashlib.sha256(str(raw_key or "").encode("utf-8")).hexdigest()
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        str(password or "").encode("utf-8"),
+        bytes.fromhex(salt),
+        PASSWORD_HASH_ITERATIONS,
+    ).hex()
+    return f"pbkdf2_sha256${PASSWORD_HASH_ITERATIONS}${salt}${digest}"
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        algorithm, iterations, salt, digest = str(stored_hash or "").split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        candidate = hashlib.pbkdf2_hmac(
+            "sha256",
+            str(password or "").encode("utf-8"),
+            bytes.fromhex(salt),
+            int(iterations),
+        ).hex()
+    except (TypeError, ValueError):
+        return False
+    return hmac.compare_digest(candidate, digest)
+
+
+def _row_to_user(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "username": row["username"],
+        "role": row["role"],
+        "enabled": bool(row["enabled"]),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _row_to_access_api_key(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "owner_username": row["owner_username"],
+        "name": row["name"],
+        "key_prefix": row["key_prefix"],
+        "key_suffix": row["key_suffix"],
+        "masked_key": f"{row['key_prefix']}...{row['key_suffix']}",
+        "enabled": bool(row["enabled"]),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "last_used_at": row["last_used_at"],
+    }
+
+
+def _normalize_username(value: Any) -> str:
+    return str(value or "").strip()
+
+
 class AsyncDBWriter:
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, default_owner_username: str = "admin") -> None:
         self.db_path = db_path
+        self.default_owner_username = _normalize_username(default_owner_username) or "admin"
         self._queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._running = False
         self._init_db()
 
     def _init_db(self) -> None:
-        init_db(self.db_path)
+        init_db(self.db_path, self.default_owner_username)
 
     def start(self) -> None:
         if self._running:
@@ -174,32 +791,51 @@ class AsyncDBWriter:
             request_headers, request_body, model, upstream_model,
             channel_id, is_stream, ttft_ms, duration_ms, status_code,
             response_body, input_tokens, cached_tokens, output_tokens,
-            cost, web_search_json, error
+            cost, web_search_json, owner_username, api_key_id, error
         ) VALUES (
             :request_id, :created_at, :method, :path, :client_ip,
             :request_headers, :request_body, :model, :upstream_model,
             :channel_id, :is_stream, :ttft_ms, :duration_ms, :status_code,
             :response_body, :input_tokens, :cached_tokens, :output_tokens,
-            :cost, :web_search_json, :error
+            :cost, :web_search_json, :owner_username, :api_key_id, :error
         )
         """
         record.setdefault("web_search_json", None)
+        record.setdefault("owner_username", self.default_owner_username)
+        record.setdefault("api_key_id", None)
         conn.execute(sql, record)
         conn.commit()
 
 
-def read_channels(db_path: Path) -> list[dict[str, Any]]:
-    init_db(db_path)
+def read_channels(
+    db_path: Path,
+    owner_username: str | None = None,
+    default_owner_username: str = "admin",
+) -> list[dict[str, Any]]:
+    init_db(db_path, default_owner_username)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        """
-        SELECT id, position, name, type, baseurl, apikey, auth_mode,
-               headers_json, timeout_seconds, retry_count, compat_json, models_json, enabled
-        FROM channels
-        ORDER BY position ASC, id ASC
-        """
-    ).fetchall()
+    owner_username = _normalize_username(owner_username) if owner_username is not None else None
+    if owner_username:
+        rows = conn.execute(
+            """
+            SELECT owner_username, id, position, name, type, baseurl, apikey, auth_mode,
+                   headers_json, timeout_seconds, retry_count, compat_json, models_json, enabled
+            FROM channels
+            WHERE owner_username = ?
+            ORDER BY position ASC, id ASC
+            """,
+            (owner_username,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT owner_username, id, position, name, type, baseurl, apikey, auth_mode,
+                   headers_json, timeout_seconds, retry_count, compat_json, models_json, enabled
+            FROM channels
+            ORDER BY owner_username ASC, position ASC, id ASC
+            """
+        ).fetchall()
     conn.close()
     return [_row_to_channel(row) for row in rows]
 
@@ -208,29 +844,45 @@ def replace_channels(
     db_path: Path,
     channels: list[dict[str, Any]],
     default_timeout: int = 120,
+    owner_username: str | None = "admin",
+    default_owner_username: str = "admin",
 ) -> None:
-    init_db(db_path)
+    default_owner_username = _normalize_username(default_owner_username) or "admin"
+    owner_username = _normalize_username(owner_username) if owner_username is not None else None
+    init_db(db_path, default_owner_username)
     now = time.time()
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
         existing_created = {
-            row["id"]: row["created_at"]
-            for row in conn.execute("SELECT id, created_at FROM channels").fetchall()
+            (row["owner_username"], row["id"]): row["created_at"]
+            for row in conn.execute(
+                "SELECT owner_username, id, created_at FROM channels"
+            ).fetchall()
         }
         with conn:
-            conn.execute("DELETE FROM channels")
+            if owner_username is None:
+                conn.execute("DELETE FROM channels")
+            else:
+                conn.execute(
+                    "DELETE FROM channels WHERE owner_username = ?",
+                    (owner_username,),
+                )
             for position, channel in enumerate(channels):
+                channel_owner = owner_username or _normalize_username(
+                    channel.get("owner_username")
+                ) or default_owner_username
                 conn.execute(
                     """
                     INSERT INTO channels (
-                        id, position, name, type, baseurl, apikey, auth_mode,
+                        owner_username, id, position, name, type, baseurl, apikey, auth_mode,
                         headers_json, timeout_seconds, retry_count, compat_json,
                         models_json, enabled,
                         created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
+                        channel_owner,
                         channel["id"],
                         position,
                         channel.get("name") or "",
@@ -244,7 +896,7 @@ def replace_channels(
                         json.dumps(channel.get("compat") or {}, ensure_ascii=False),
                         json.dumps(channel.get("models") or [], ensure_ascii=False),
                         1 if channel.get("enabled", True) is not False else 0,
-                        existing_created.get(channel["id"], now),
+                        existing_created.get((channel_owner, channel["id"]), now),
                         now,
                     ),
                 )
@@ -254,6 +906,7 @@ def replace_channels(
 
 def _row_to_channel(row: sqlite3.Row) -> dict[str, Any]:
     return {
+        "owner_username": row["owner_username"],
         "id": row["id"],
         "name": row["name"],
         "type": row["type"],
@@ -586,12 +1239,13 @@ TEXT_FILTER_FIELDS = {
     "model",
     "upstream_model",
     "channel_id",
+    "owner_username",
     "path",
     "client_ip",
     "error",
 }
 
-INTEGER_FILTER_FIELDS = {"status_code", "is_stream"}
+INTEGER_FILTER_FIELDS = {"status_code", "is_stream", "api_key_id"}
 REQUEST_STATUS_VALUES = {"success", "failed"}
 
 
@@ -654,18 +1308,28 @@ def read_logs_page(
     }
 
 
-def read_log_filter_options(db_path: Path) -> dict[str, list[Any]]:
+def read_log_filter_options(
+    db_path: Path,
+    filters: dict[str, Any] | None = None,
+) -> dict[str, list[Any]]:
     if not db_path.exists():
         return _empty_log_filter_options()
+    where_clause, params = _log_where_clause(filters or {})
     conn = sqlite3.connect(str(db_path))
     try:
         return {
-            "request_ids": _distinct_text_values(conn, "request_id"),
-            "models": _distinct_text_values(conn, "model"),
-            "upstream_models": _distinct_text_values(conn, "upstream_model"),
-            "channel_ids": _distinct_text_values(conn, "channel_id"),
-            "paths": _distinct_text_values(conn, "path"),
-            "status_codes": _distinct_int_values(conn, "status_code"),
+            "request_ids": _distinct_text_values(conn, "request_id", where_clause, params),
+            "models": _distinct_text_values(conn, "model", where_clause, params),
+            "upstream_models": _distinct_text_values(
+                conn, "upstream_model", where_clause, params
+            ),
+            "channel_ids": _distinct_text_values(conn, "channel_id", where_clause, params),
+            "owner_usernames": _distinct_text_values(
+                conn, "owner_username", where_clause, params
+            ),
+            "paths": _distinct_text_values(conn, "path", where_clause, params),
+            "status_codes": _distinct_int_values(conn, "status_code", where_clause, params),
+            "api_key_ids": _distinct_int_values(conn, "api_key_id", where_clause, params),
             "request_statuses": ["success", "failed"],
         }
     finally:
@@ -754,34 +1418,52 @@ def _empty_log_filter_options() -> dict[str, list[Any]]:
         "models": [],
         "upstream_models": [],
         "channel_ids": [],
+        "owner_usernames": [],
         "paths": [],
         "status_codes": [],
+        "api_key_ids": [],
         "request_statuses": ["success", "failed"],
     }
 
 
-def _distinct_text_values(conn: sqlite3.Connection, field: str) -> list[str]:
+def _distinct_text_values(
+    conn: sqlite3.Connection,
+    field: str,
+    where_clause: str = "",
+    params: tuple[Any, ...] = (),
+) -> list[str]:
+    scoped_where = _append_where_condition(
+        where_clause, f"{field} IS NOT NULL AND {field} != ''"
+    )
     rows = conn.execute(
         f"""
         SELECT DISTINCT {field}
         FROM request_logs
-        WHERE {field} IS NOT NULL AND {field} != ''
+        {scoped_where}
         ORDER BY {field} ASC
         LIMIT 200
-        """
+        """,
+        params,
     ).fetchall()
     return [str(row[0]) for row in rows]
 
 
-def _distinct_int_values(conn: sqlite3.Connection, field: str) -> list[int]:
+def _distinct_int_values(
+    conn: sqlite3.Connection,
+    field: str,
+    where_clause: str = "",
+    params: tuple[Any, ...] = (),
+) -> list[int]:
+    scoped_where = _append_where_condition(where_clause, f"{field} IS NOT NULL")
     rows = conn.execute(
         f"""
         SELECT DISTINCT {field}
         FROM request_logs
-        WHERE {field} IS NOT NULL
+        {scoped_where}
         ORDER BY {field} ASC
         LIMIT 200
-        """
+        """,
+        params,
     ).fetchall()
     values: list[int] = []
     for row in rows:
@@ -790,3 +1472,9 @@ def _distinct_int_values(conn: sqlite3.Connection, field: str) -> list[int]:
         except (TypeError, ValueError):
             continue
     return values
+
+
+def _append_where_condition(where_clause: str, condition: str) -> str:
+    if where_clause:
+        return f"{where_clause} AND {condition}"
+    return f"WHERE {condition}"

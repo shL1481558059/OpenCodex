@@ -8,6 +8,10 @@ from unittest.mock import patch
 
 from opencodex_proxy.app import create_app, _spa_index_response
 from opencodex_proxy.db import (
+    authenticate_access_api_key,
+    create_access_api_key,
+    create_user,
+    list_access_api_keys,
     read_channels,
     read_logs,
     read_web_search_config,
@@ -142,6 +146,10 @@ class AppTests(unittest.TestCase):
             }
         )
         self.client = self.app.test_client()
+        self.raw_client = self.client
+        self.access_key = create_access_api_key(self.db_path, "admin", "test")["key"]
+        self.auth_headers = {"Authorization": f"Bearer {self.access_key}"}
+        self._install_default_proxy_auth()
 
     def tearDown(self):
         db_writer = self.app.config.get("OPENCODEX_DB_WRITER")
@@ -151,6 +159,30 @@ class AppTests(unittest.TestCase):
 
     def login(self):
         return self.client.post("/admin", data={"password": "pw"})
+
+    def login_api(self, username: str = "admin", password: str = "pw"):
+        return self.client.post(
+            "/admin/api/login",
+            json={"username": username, "password": password},
+        )
+
+    def _install_default_proxy_auth(self):
+        original_open = self.client.open
+        self._client_open_without_default_proxy_auth = original_open
+
+        def authed_open(*args, **kwargs):
+            path = ""
+            if args:
+                path = str(args[0])
+            if not path:
+                path = str(kwargs.get("path") or kwargs.get("full_path") or "")
+            if path.startswith("/v1"):
+                headers = dict(kwargs.get("headers") or {})
+                headers.setdefault("Authorization", self.auth_headers["Authorization"])
+                kwargs["headers"] = headers
+            return original_open(*args, **kwargs)
+
+        self.client.open = authed_open
 
     def enable_web_search(self, keys=None, enabled=True, key_usage_limit=None):
         config = {
@@ -184,16 +216,79 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.get_json()["authenticated"])
 
-        response = self.client.post("/admin/api/login", json={"password": "pw"})
+        response = self.login_api()
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.get_json()["authenticated"])
+        self.assertEqual(
+            response.get_json()["user"],
+            {"username": "admin", "role": "superadmin", "enabled": True},
+        )
 
         response = self.client.get("/admin/api/session")
         self.assertTrue(response.get_json()["authenticated"])
+        self.assertEqual(response.get_json()["user"]["username"], "admin")
 
         response = self.client.post("/admin/api/logout")
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.get_json()["authenticated"])
+
+    def test_regular_user_login_and_superadmin_apis_are_forbidden(self):
+        create_user(self.db_path, "alice", "alice-pw")
+
+        response = self.login_api("alice", "alice-pw")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["user"]["role"], "user")
+        self.assertEqual(self.client.get("/admin/api/users").status_code, 403)
+        self.assertEqual(self.client.get("/admin/api/web-search").status_code, 403)
+        self.assertEqual(
+            self.client.post("/admin/api/web-search", json={"enabled": True}).status_code,
+            403,
+        )
+
+    def test_regular_user_api_key_management_returns_plaintext_only_on_create(self):
+        create_user(self.db_path, "alice", "alice-pw")
+        self.login_api("alice", "alice-pw")
+
+        response = self.client.post("/admin/api/api-keys", json={"name": "Laptop"})
+
+        self.assertEqual(response.status_code, 201)
+        created = response.get_json()["key"]
+        self.assertEqual(created["owner_username"], "alice")
+        self.assertTrue(created["key"].startswith("ocx_"))
+        self.assertEqual(authenticate_access_api_key(self.db_path, created["key"])["user"]["username"], "alice")
+
+        response = self.client.get("/admin/api/api-keys")
+
+        self.assertEqual(response.status_code, 200)
+        listed = response.get_json()["keys"]
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["masked_key"], created["masked_key"])
+        self.assertNotIn("key", listed[0])
+        self.assertNotIn(created["key"], json.dumps(listed))
+        self.assertNotIn(created["key"], json.dumps(list_access_api_keys(self.db_path, "alice")))
+
+    def test_regular_user_cannot_manage_other_users_api_keys(self):
+        create_user(self.db_path, "alice", "alice-pw")
+        create_user(self.db_path, "bob", "bob-pw")
+        bob_key = create_access_api_key(self.db_path, "bob", "bob")
+        self.login_api("alice", "alice-pw")
+
+        response = self.client.get("/admin/api/api-keys?owner_username=bob")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["keys"], [])
+
+        self.assertEqual(
+            self.client.patch(
+                f"/admin/api/api-keys/{bob_key['id']}",
+                json={"enabled": False},
+            ).status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.delete(f"/admin/api/api-keys/{bob_key['id']}").status_code,
+            404,
+        )
 
     def test_spa_index_response_serves_built_index(self):
         admin_static_dir = self.root / "static" / "admin"
@@ -2436,6 +2531,9 @@ class AppTests(unittest.TestCase):
         self.assertEqual(events[0]["request_status"], "success")
         self.assertEqual(events[0]["cached_tokens"], 20)
         self.assertGreater(events[0]["cost"], 0)
+        request_headers = json.loads(events[0]["request_headers"])
+        self.assertNotEqual(request_headers["Authorization"], self.auth_headers["Authorization"])
+        self.assertIn("...", request_headers["Authorization"])
 
     @patch("opencodex_proxy.app.post_upstream")
     def test_admin_logs_can_filter_common_fields(self, mock_post):
@@ -2479,6 +2577,237 @@ class AppTests(unittest.TestCase):
         self.assertEqual(events[0]["request_status"], "failed")
         self.assertEqual(events[0]["status_code"], 502)
         self.assertIn("upstream returned HTTP 502", events[0]["error"])
+
+    def test_proxy_requires_user_access_api_key(self):
+        response = self._client_open_without_default_proxy_auth(
+            "/v1/responses",
+            method="POST",
+            json={"model": "m", "input": "ping"},
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("valid bearer api key required", response.get_json()["error"]["message"])
+
+    @patch("opencodex_proxy.app.post_upstream")
+    def test_proxy_routes_same_channel_id_by_access_key_owner(self, mock_post):
+        create_user(self.db_path, "alice", "alice-pw")
+        alice_key = create_access_api_key(self.db_path, "alice", "alice")["key"]
+        manager = self.app.config["OPENCODEX_CONFIG_MANAGER"]
+        manager.save(
+            {
+                "channels": [
+                    {
+                        "id": "chat",
+                        "type": "chat",
+                        "baseurl": "https://admin.example.test/v1",
+                        "apikey": "admin-upstream-key",
+                        "auth_mode": "config",
+                        "timeout_seconds": 30,
+                    },
+                    {
+                        "owner_username": "alice",
+                        "id": "chat",
+                        "type": "chat",
+                        "baseurl": "https://alice.example.test/v1",
+                        "apikey": "alice-upstream-key",
+                        "auth_mode": "config",
+                        "timeout_seconds": 30,
+                    },
+                ]
+            },
+            owner_username=None,
+        )
+        mock_post.return_value = chat_text_response("pong")
+
+        admin_response = self.client.post(
+            "/v1/responses",
+            json={"model": "m", "input": "admin"},
+        )
+        alice_response = self.client.post(
+            "/v1/responses",
+            headers={"Authorization": f"Bearer {alice_key}"},
+            json={"model": "m", "input": "alice"},
+        )
+
+        self.assertEqual(admin_response.status_code, 200)
+        self.assertEqual(alice_response.status_code, 200)
+        self.assertEqual(mock_post.call_args_list[0].args[0]["baseurl"], "https://admin.example.test/v1")
+        self.assertEqual(mock_post.call_args_list[0].args[2], None)
+        self.assertEqual(mock_post.call_args_list[1].args[0]["baseurl"], "https://alice.example.test/v1")
+        self.assertEqual(mock_post.call_args_list[1].args[2], None)
+
+    def test_proxy_rejects_disabled_or_deleted_access_key(self):
+        response = self.client.patch(
+            "/admin/api/api-keys/1",
+            json={"enabled": False},
+        )
+        self.assertEqual(response.status_code, 401)
+
+        self.login_api()
+        response = self.client.patch(
+            "/admin/api/api-keys/1",
+            json={"enabled": False},
+        )
+        self.assertEqual(response.status_code, 200)
+
+        response = self.client.post("/v1/responses", json={"model": "m", "input": "ping"})
+        self.assertEqual(response.status_code, 401)
+
+        self.client.delete("/admin/api/api-keys/1")
+        response = self.client.post("/v1/responses", json={"model": "m", "input": "ping"})
+        self.assertEqual(response.status_code, 401)
+
+    def test_disabled_user_access_key_is_rejected(self):
+        create_user(self.db_path, "alice", "alice-pw")
+        alice_key = create_access_api_key(self.db_path, "alice", "alice")["key"]
+        self.login_api()
+        self.client.patch("/admin/api/users/alice", json={"enabled": False})
+
+        response = self.client.post(
+            "/v1/responses",
+            headers={"Authorization": f"Bearer {alice_key}"},
+            json={"model": "m", "input": "ping"},
+        )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_regular_user_without_channels_does_not_fall_back_to_admin_channels(self):
+        create_user(self.db_path, "alice", "alice-pw")
+        alice_key = create_access_api_key(self.db_path, "alice", "alice")["key"]
+
+        response = self.client.post(
+            "/v1/responses",
+            headers={"Authorization": f"Bearer {alice_key}"},
+            json={"model": "m", "input": "ping"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("no enabled channels configured", response.get_json()["error"]["message"])
+
+    @patch("opencodex_proxy.app.post_upstream")
+    def test_logs_are_isolated_by_user(self, mock_post):
+        create_user(self.db_path, "alice", "alice-pw")
+        alice_key = create_access_api_key(self.db_path, "alice", "alice")["key"]
+        manager = self.app.config["OPENCODEX_CONFIG_MANAGER"]
+        manager.save(
+            {
+                "channels": [
+                    {
+                        "id": "chat",
+                        "type": "chat",
+                        "baseurl": "https://admin.example.test/v1",
+                        "apikey": "admin-upstream-key",
+                        "auth_mode": "config",
+                        "timeout_seconds": 30,
+                    },
+                    {
+                        "owner_username": "alice",
+                        "id": "chat",
+                        "type": "chat",
+                        "baseurl": "https://alice.example.test/v1",
+                        "apikey": "alice-upstream-key",
+                        "auth_mode": "config",
+                        "timeout_seconds": 30,
+                    },
+                ]
+            },
+            owner_username=None,
+        )
+        mock_post.return_value = chat_text_response("pong")
+        self.client.post("/v1/responses", json={"model": "admin-model", "input": "ping"})
+        self.client.post(
+            "/v1/responses",
+            headers={"Authorization": f"Bearer {alice_key}"},
+            json={"model": "alice-model", "input": "ping"},
+        )
+        db_writer = self.app.config["OPENCODEX_DB_WRITER"]
+        db_writer.stop()
+
+        self.login_api("alice", "alice-pw")
+        response = self.client.get("/admin/api/logs?page=1&page_size=10")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["events"][0]["owner_username"], "alice")
+        self.assertEqual(payload["events"][0]["model"], "alice-model")
+        self.assertEqual(payload["filter_options"]["owner_usernames"], ["alice"])
+
+        self.login_api()
+        response = self.client.get("/admin/api/logs?page=1&page_size=10&owner_username=alice")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["events"][0]["owner_username"], "alice")
+
+        response = self.client.get("/admin/api/logs?page=1&page_size=10")
+        self.assertEqual(response.get_json()["total"], 2)
+
+    def test_regular_user_config_save_forces_own_owner(self):
+        create_user(self.db_path, "alice", "alice-pw")
+        self.login_api("alice", "alice-pw")
+
+        response = self.client.post(
+            "/admin/api/config",
+            json={
+                "channels": [
+                    {
+                        "owner_username": "admin",
+                        "id": "chat",
+                        "type": "chat",
+                        "baseurl": "https://alice.example.test/v1",
+                        "apikey": "alice-key",
+                        "auth_mode": "config",
+                        "timeout_seconds": 30,
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["channels"][0]["owner_username"], "alice")
+        alice_channels = read_channels(self.db_path, owner_username="alice")
+        admin_channels = read_channels(self.db_path, owner_username="admin")
+        self.assertEqual(alice_channels[0]["baseurl"], "https://alice.example.test/v1")
+        self.assertEqual(admin_channels[0]["baseurl"], "https://example.test/v1")
+
+    @patch("opencodex_proxy.app.tavily_search")
+    @patch("opencodex_proxy.app.post_upstream")
+    def test_regular_user_web_search_declaration_does_not_run_local_simulation(
+        self, mock_post, mock_tavily
+    ):
+        create_user(self.db_path, "alice", "alice-pw")
+        alice_key = create_access_api_key(self.db_path, "alice", "alice")["key"]
+        manager = self.app.config["OPENCODEX_CONFIG_MANAGER"]
+        manager.save(
+            {
+                "channels": [
+                    {
+                        "id": "chat",
+                        "type": "chat",
+                        "baseurl": "https://alice.example.test/v1",
+                        "apikey": "alice-upstream-key",
+                        "auth_mode": "config",
+                        "timeout_seconds": 30,
+                    }
+                ]
+            },
+            owner_username="alice",
+        )
+        self.enable_web_search()
+        mock_post.return_value = chat_tool_response(
+            function_tool_call("call_web", "web_search", {"query": "OpenAI"})
+        )
+
+        response = self.client.post(
+            "/v1/responses",
+            headers={"Authorization": f"Bearer {alice_key}"},
+            json={"model": "m", "input": "search", "tools": [{"type": "web_search"}]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["output"][0]["type"], "function_call")
+        mock_tavily.assert_not_called()
+        self.assertEqual(mock_post.call_count, 1)
 
     @patch("opencodex_proxy.app.post_upstream")
     def test_proxy_uses_first_enabled_channel(self, mock_post):

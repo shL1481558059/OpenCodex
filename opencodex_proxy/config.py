@@ -24,13 +24,19 @@ class ConfigError(ValueError):
 
 
 class ConfigManager:
-    def __init__(self, db_path: Path, default_timeout: int = 120):
+    def __init__(
+        self,
+        db_path: Path,
+        default_timeout: int = 120,
+        default_owner_username: str = "admin",
+    ):
         self.db_path = db_path
         self.default_timeout = default_timeout
+        self.default_owner_username = default_owner_username
         self._lock = threading.RLock()
         self._raw: dict[str, Any] = deepcopy(EMPTY_CONFIG)
         self._expanded: dict[str, Any] = deepcopy(EMPTY_CONFIG)
-        init_db(self.db_path)
+        init_db(self.db_path, self.default_owner_username)
         self.reload()
 
     @property
@@ -45,28 +51,81 @@ class ConfigManager:
 
     def reload(self) -> None:
         with self._lock:
-            raw = strip_removed_config_fields({"channels": read_channels(self.db_path)})
+            raw = strip_removed_config_fields(
+                {
+                    "channels": read_channels(
+                        self.db_path,
+                        owner_username=None,
+                        default_owner_username=self.default_owner_username,
+                    )
+                }
+            )
             expanded = expand_env(raw)
             validate_config(expanded, self.default_timeout)
             self._raw = raw
             self._expanded = expanded
 
-    def save(self, candidate: dict[str, Any]) -> dict[str, Any]:
+    def raw_for_user(self, username: str) -> dict[str, Any]:
+        return self._config_for_user(self.raw, username)
+
+    def expanded_for_user(self, username: str) -> dict[str, Any]:
+        return self._config_for_user(self.expanded, username)
+
+    def save(
+        self,
+        candidate: dict[str, Any],
+        *,
+        owner_username: str | None = "admin",
+    ) -> dict[str, Any]:
         if not isinstance(candidate, dict):
             raise ConfigError("config must be a JSON object")
         candidate = strip_removed_config_fields(candidate)
+        candidate = self._with_effective_owner(candidate, owner_username)
         expanded = expand_env(candidate)
         validate_config(expanded, self.default_timeout)
         replace_channels(
             self.db_path,
             candidate.get("channels", []),
             default_timeout=self.default_timeout,
+            owner_username=owner_username,
+            default_owner_username=self.default_owner_username,
         )
+        self.reload()
+        if owner_username is None:
+            return self.raw
+        return self.raw_for_user(owner_username)
+
+    def _config_for_user(self, config: dict[str, Any], username: str) -> dict[str, Any]:
+        username = str(username or "").strip()
         with self._lock:
-            raw = strip_removed_config_fields({"channels": read_channels(self.db_path)})
-            self._raw = raw
-            self._expanded = expand_env(raw)
-        return self.raw
+            return {
+                "channels": [
+                    deepcopy(channel)
+                    for channel in config.get("channels", [])
+                    if channel.get("owner_username") == username
+                ]
+            }
+
+    def _with_effective_owner(
+        self,
+        candidate: dict[str, Any],
+        owner_username: str | None,
+    ) -> dict[str, Any]:
+        next_candidate = deepcopy(candidate)
+        channels = next_candidate.get("channels")
+        if not isinstance(channels, list):
+            return next_candidate
+        for channel in channels:
+            if not isinstance(channel, dict):
+                continue
+            if owner_username is not None:
+                channel["owner_username"] = owner_username
+            else:
+                channel["owner_username"] = (
+                    str(channel.get("owner_username") or "").strip()
+                    or self.default_owner_username
+                )
+        return next_candidate
 
 
 def expand_env(value: Any) -> Any:
@@ -125,13 +184,15 @@ def validate_config(config: dict[str, Any], default_timeout: int = 120) -> None:
     if not isinstance(channels, list):
         raise ConfigError("channels must be a list")
 
-    ids: set[str] = set()
+    ids: set[tuple[str, str]] = set()
     for channel in channels:
         validate_channel(channel, default_timeout)
         channel_id = channel["id"]
-        if channel_id in ids:
+        owner_username = str(channel.get("owner_username", "")).strip()
+        channel_key = (owner_username, channel_id)
+        if channel_key in ids:
             raise ConfigError(f"duplicated channel id: {channel_id}")
-        ids.add(channel_id)
+        ids.add(channel_key)
 
 
 def validate_channel(channel: Any, default_timeout: int) -> None:

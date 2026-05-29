@@ -10,9 +10,17 @@ from pathlib import Path
 from opencodex_proxy.db import (
     AsyncDBWriter,
     TAVILY_KEY_USAGE_LIMIT,
+    authenticate_access_api_key,
+    authenticate_user,
     calculate_cost,
+    create_access_api_key,
+    create_user,
+    delete_access_api_key,
+    ensure_superadmin,
     extract_usage,
     init_db,
+    list_access_api_keys,
+    read_log_filter_options,
     read_channels,
     read_logs,
     read_web_search_config,
@@ -20,6 +28,8 @@ from opencodex_proxy.db import (
     replace_web_search_config,
     reserve_tavily_key,
     reserve_tavily_key_by_id,
+    set_access_api_key_enabled,
+    set_user_enabled,
 )
 
 
@@ -348,6 +358,53 @@ class TestAsyncDBWriter(unittest.TestCase):
         self.assertEqual(len(logs), 1)
         self.assertEqual(logs[0]["request_id"], "req_error")
 
+    def test_filters_logs_by_owner_and_access_key(self):
+        writer = AsyncDBWriter(self.db_path)
+        writer.start()
+        now = time.time()
+        for owner_username, api_key_id in (("alice", 7), ("bob", 8)):
+            writer.write(
+                {
+                    "request_id": f"req_{owner_username}",
+                    "created_at": now,
+                    "method": "POST",
+                    "path": "/v1/responses",
+                    "client_ip": "127.0.0.1",
+                    "request_headers": "{}",
+                    "request_body": "{}",
+                    "model": "gpt-4o",
+                    "upstream_model": "gpt-4o",
+                    "channel_id": "openai",
+                    "is_stream": 0,
+                    "ttft_ms": None,
+                    "duration_ms": 100,
+                    "status_code": 200,
+                    "response_body": "{}",
+                    "input_tokens": 100,
+                    "cached_tokens": 0,
+                    "output_tokens": 50,
+                    "cost": 0.001,
+                    "owner_username": owner_username,
+                    "api_key_id": api_key_id,
+                    "error": None,
+                }
+            )
+        writer.stop()
+
+        logs = read_logs(
+            self.db_path,
+            filters={"owner_username": "alice", "api_key_id": 7},
+        )
+        options = read_log_filter_options(
+            self.db_path,
+            filters={"owner_username": "alice"},
+        )
+
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0]["request_id"], "req_alice")
+        self.assertEqual(options["owner_usernames"], ["alice"])
+        self.assertEqual(options["api_key_ids"], [7])
+
     def test_stop_flushes_queued_records(self):
         writer = AsyncDBWriter(self.db_path)
         writer.start()
@@ -447,6 +504,41 @@ class TestChannelStore(unittest.TestCase):
 
         self.assertEqual([channel["id"] for channel in channels], ["keep"])
 
+    def test_replace_channels_scopes_rows_by_owner(self):
+        replace_channels(
+            self.db_path,
+            [
+                {
+                    "id": "chat",
+                    "type": "chat",
+                    "baseurl": "https://alice.example.test/v1",
+                }
+            ],
+            owner_username="alice",
+        )
+        replace_channels(
+            self.db_path,
+            [
+                {
+                    "id": "chat",
+                    "type": "chat",
+                    "baseurl": "https://bob.example.test/v1",
+                }
+            ],
+            owner_username="bob",
+        )
+
+        all_channels = read_channels(self.db_path)
+        alice_channels = read_channels(self.db_path, owner_username="alice")
+        bob_channels = read_channels(self.db_path, owner_username="bob")
+
+        self.assertEqual(
+            [(channel["owner_username"], channel["id"]) for channel in all_channels],
+            [("alice", "chat"), ("bob", "chat")],
+        )
+        self.assertEqual(alice_channels[0]["baseurl"], "https://alice.example.test/v1")
+        self.assertEqual(bob_channels[0]["baseurl"], "https://bob.example.test/v1")
+
     def test_init_db_migrates_channels_defaults_columns(self):
         conn = sqlite3.connect(str(self.db_path))
         conn.executescript(
@@ -492,6 +584,106 @@ class TestChannelStore(unittest.TestCase):
         self.assertIn("retry_count", columns)
         self.assertEqual(retry_count, 3)
 
+    def test_init_db_migrates_legacy_owner_fields(self):
+        conn = sqlite3.connect(str(self.db_path))
+        conn.executescript(
+            """
+            CREATE TABLE channels (
+                id TEXT PRIMARY KEY,
+                position INTEGER NOT NULL,
+                name TEXT NOT NULL DEFAULT '',
+                type TEXT NOT NULL,
+                baseurl TEXT NOT NULL,
+                apikey TEXT NOT NULL DEFAULT '',
+                auth_mode TEXT NOT NULL DEFAULT 'pass_through_or_config',
+                headers_json TEXT NOT NULL DEFAULT '{}',
+                timeout_seconds INTEGER NOT NULL,
+                compat_json TEXT NOT NULL DEFAULT '{}',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+
+            INSERT INTO channels (
+                id, position, name, type, baseurl, apikey, auth_mode,
+                headers_json, timeout_seconds, compat_json, enabled,
+                created_at, updated_at
+            ) VALUES (
+                'legacy', 0, '', 'chat', 'https://legacy.example.test/v1', '',
+                'pass_through_or_config', '{}', 30, '{}', 1, 1.0, 1.0
+            );
+
+            CREATE TABLE request_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT,
+                created_at REAL,
+                method TEXT,
+                path TEXT,
+                client_ip TEXT,
+                request_headers TEXT,
+                request_body TEXT,
+                model TEXT,
+                upstream_model TEXT,
+                channel_id TEXT,
+                is_stream INTEGER DEFAULT 0,
+                ttft_ms INTEGER,
+                duration_ms INTEGER,
+                status_code INTEGER,
+                response_body TEXT,
+                input_tokens INTEGER,
+                cached_tokens INTEGER,
+                output_tokens INTEGER,
+                cost REAL,
+                error TEXT
+            );
+
+            INSERT INTO request_logs (
+                request_id, created_at, method, path, client_ip, request_headers,
+                request_body, model, upstream_model, channel_id, is_stream,
+                ttft_ms, duration_ms, status_code, response_body, input_tokens,
+                cached_tokens, output_tokens, cost, error
+            ) VALUES (
+                'legacy_req', 1.0, 'POST', '/v1/responses', '127.0.0.1', '{}',
+                '{}', 'gpt-4o', 'gpt-4o', 'legacy', 0,
+                NULL, 10, 200, '{}', 1, 0, 1, 0.0, NULL
+            );
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        init_db(self.db_path, default_owner_username="root")
+
+        conn = sqlite3.connect(str(self.db_path))
+        channel_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(channels)").fetchall()
+        }
+        log_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(request_logs)").fetchall()
+        }
+        channel_pk = [
+            row[1]
+            for row in sorted(
+                conn.execute("PRAGMA table_info(channels)").fetchall(),
+                key=lambda row: row[5],
+            )
+            if row[5]
+        ]
+        conn.close()
+        channels = read_channels(self.db_path, default_owner_username="root")
+        logs = read_logs(self.db_path)
+
+        self.assertIn("owner_username", channel_columns)
+        self.assertIn("owner_username", log_columns)
+        self.assertIn("api_key_id", log_columns)
+        self.assertIn("web_search_json", log_columns)
+        self.assertEqual(channel_pk, ["owner_username", "id"])
+        self.assertEqual(channels[0]["owner_username"], "root")
+        self.assertEqual(logs[0]["owner_username"], "root")
+        self.assertIsNone(logs[0]["api_key_id"])
+
     def test_init_db_migrates_web_search_usage_limit(self):
         conn = sqlite3.connect(str(self.db_path))
         conn.executescript(
@@ -523,6 +715,82 @@ class TestChannelStore(unittest.TestCase):
         conn.close()
         self.assertIn("key_usage_limit", columns)
         self.assertEqual(key_usage_limit, TAVILY_KEY_USAGE_LIMIT)
+
+
+class TestUserAndAccessKeyStore(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "test.db"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_superadmin_is_env_authoritative(self):
+        ensure_superadmin(self.db_path, "root", "first")
+        self.assertIsNotNone(authenticate_user(self.db_path, "root", "first"))
+
+        ensure_superadmin(self.db_path, "root", "second")
+
+        user = authenticate_user(self.db_path, "root", "second")
+        self.assertIsNotNone(user)
+        self.assertEqual(user["role"], "superadmin")
+        self.assertIsNone(authenticate_user(self.db_path, "root", "first"))
+
+    def test_access_api_key_is_hashed_and_returned_only_once(self):
+        ensure_superadmin(self.db_path, "root", "pw")
+        create_user(self.db_path, "alice", "alice-pw")
+
+        created = create_access_api_key(self.db_path, "alice", "Laptop")
+        raw_key = created["key"]
+
+        self.assertTrue(raw_key.startswith("ocx_"))
+        self.assertEqual(created["owner_username"], "alice")
+        listed = list_access_api_keys(self.db_path, "alice")
+        self.assertEqual(len(listed), 1)
+        self.assertNotIn("key", listed[0])
+        self.assertEqual(listed[0]["masked_key"], created["masked_key"])
+
+        conn = sqlite3.connect(str(self.db_path))
+        row = conn.execute(
+            "SELECT key_hash, key_prefix, key_suffix FROM access_api_keys WHERE id = ?",
+            (created["id"],),
+        ).fetchone()
+        conn.close()
+
+        self.assertEqual(len(row[0]), 64)
+        self.assertNotEqual(row[0], raw_key)
+        self.assertEqual(row[1], raw_key[:12])
+        self.assertEqual(row[2], raw_key[-6:])
+        self.assertNotIn(raw_key, json.dumps(listed))
+
+        authenticated = authenticate_access_api_key(self.db_path, raw_key)
+        self.assertIsNotNone(authenticated)
+        self.assertEqual(authenticated["user"]["username"], "alice")
+        self.assertIsNotNone(authenticated["last_used_at"])
+
+    def test_disabled_or_deleted_access_api_key_is_rejected(self):
+        ensure_superadmin(self.db_path, "root", "pw")
+        create_user(self.db_path, "alice", "alice-pw")
+        created = create_access_api_key(self.db_path, "alice", "Laptop")
+
+        set_access_api_key_enabled(self.db_path, created["id"], False)
+        self.assertIsNone(authenticate_access_api_key(self.db_path, created["key"]))
+
+        set_access_api_key_enabled(self.db_path, created["id"], True)
+        self.assertIsNotNone(authenticate_access_api_key(self.db_path, created["key"]))
+
+        delete_access_api_key(self.db_path, created["id"])
+        self.assertIsNone(authenticate_access_api_key(self.db_path, created["key"]))
+
+    def test_disabled_user_access_api_key_is_rejected(self):
+        ensure_superadmin(self.db_path, "root", "pw")
+        create_user(self.db_path, "alice", "alice-pw")
+        created = create_access_api_key(self.db_path, "alice", "Laptop")
+
+        set_user_enabled(self.db_path, "alice", False)
+
+        self.assertIsNone(authenticate_user(self.db_path, "alice", "alice-pw"))
+        self.assertIsNone(authenticate_access_api_key(self.db_path, created["key"]))
 
 
 class TestWebSearchStore(unittest.TestCase):
