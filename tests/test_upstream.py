@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import http.client
 import unittest
 import urllib.error
 from email.message import Message
@@ -65,6 +66,22 @@ class UpstreamRetryTests(unittest.TestCase):
 
     @patch("opencodex_proxy.upstream.time.sleep")
     @patch("opencodex_proxy.upstream.urllib.request.urlopen")
+    def test_post_upstream_retries_remote_disconnected_until_success(
+        self, mock_urlopen, mock_sleep
+    ):
+        mock_urlopen.side_effect = [
+            http.client.RemoteDisconnected("remote end closed connection without response"),
+            FakeResponse('{"ok": true}'),
+        ]
+
+        result = post_upstream(make_channel(retry_count=1), {"model": "m"}, None, 30)
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(mock_urlopen.call_count, 2)
+        mock_sleep.assert_called_once_with(0.5)
+
+    @patch("opencodex_proxy.upstream.time.sleep")
+    @patch("opencodex_proxy.upstream.urllib.request.urlopen")
     def test_post_upstream_retries_retryable_http_statuses(self, mock_urlopen, mock_sleep):
         for status_code in (429, 500):
             with self.subTest(status_code=status_code):
@@ -101,6 +118,24 @@ class UpstreamRetryTests(unittest.TestCase):
         with self.assertRaises(UpstreamError):
             post_upstream(make_channel(retry_count=0), {"model": "m"}, None, 30)
 
+        self.assertEqual(mock_urlopen.call_count, 1)
+        mock_sleep.assert_not_called()
+
+    @patch("opencodex_proxy.upstream.time.sleep")
+    @patch("opencodex_proxy.upstream.urllib.request.urlopen")
+    def test_post_upstream_remote_disconnected_becomes_upstream_error(
+        self, mock_urlopen, mock_sleep
+    ):
+        mock_urlopen.side_effect = http.client.RemoteDisconnected(
+            "remote end closed connection without response"
+        )
+
+        with self.assertRaises(UpstreamError) as raised:
+            post_upstream(make_channel(retry_count=0), {"model": "m"}, None, 30)
+
+        self.assertEqual(raised.exception.status_code, 502)
+        self.assertEqual(raised.exception.channel_id, "chat")
+        self.assertIn("remote end closed connection", str(raised.exception))
         self.assertEqual(mock_urlopen.call_count, 1)
         mock_sleep.assert_not_called()
 

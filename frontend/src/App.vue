@@ -43,6 +43,10 @@
               <el-icon><Connection /></el-icon>
               <span>渠道配置</span>
             </el-menu-item>
+            <el-menu-item index="web-search">
+              <el-icon><Search /></el-icon>
+              <span>Web Search 模拟</span>
+            </el-menu-item>
             <el-menu-item index="logs">
               <el-icon><Tickets /></el-icon>
               <span>请求日志</span>
@@ -123,6 +127,103 @@
                   </template>
                 </el-table-column>
               </el-table>
+            </section>
+
+            <section v-show="activeTab === 'web-search'">
+              <div class="toolbar">
+                <div>
+                  <h2>Web Search 模拟</h2>
+                  <div class="text-muted">仅在 Responses 请求显式声明 web_search 工具且模型主动调用时启用</div>
+                </div>
+                <div class="toolbar-actions">
+                  <el-button :icon="Refresh" @click="loadWebSearch">刷新</el-button>
+                  <el-button type="primary" :loading="webSearchSaving" @click="saveWebSearch">保存配置</el-button>
+                  <el-button :icon="Plus" @click="addWebSearchKey">新增 Tavily Key</el-button>
+                </div>
+              </div>
+
+              <el-row :gutter="12">
+                <el-col :span="8">
+                  <el-statistic title="全局开关" :value="webSearchConfig.enabled ? '启用' : '停用'" />
+                </el-col>
+                <el-col :span="8">
+                  <el-statistic title="可用 Key" :value="webSearchEnabledKeyCount" />
+                </el-col>
+                <el-col :span="8">
+                  <el-statistic title="累计调用" :value="webSearchTotalUsage" />
+                </el-col>
+              </el-row>
+
+              <div class="web-search-control-row">
+                <span>启用 Web Search 模拟</span>
+                <el-switch v-model="webSearchConfig.enabled" />
+                <el-input
+                  v-model="webSearchTestQuery"
+                  class="web-search-test-query"
+                  placeholder="测试查询"
+                  clearable
+                />
+              </div>
+
+              <el-table
+                v-loading="webSearchLoading"
+                :data="webSearchConfig.keys"
+                row-key="client_id"
+                style="width: 100%; margin-top: 16px"
+                empty-text="暂无 Tavily Key"
+              >
+                <el-table-column label="#" width="64">
+                  <template #default="{ $index }">{{ $index + 1 }}</template>
+                </el-table-column>
+                <el-table-column label="Tavily Key" min-width="260">
+                  <template #default="{ row }">
+                    <el-input v-model="row.key" type="password" show-password />
+                  </template>
+                </el-table-column>
+                <el-table-column label="调用次数" width="160">
+                  <template #default="{ row }">
+                    {{ Number(row.usage_count || 0) }} / {{ row.key_usage_limit || webSearchConfig.key_usage_limit }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="状态" width="100">
+                  <template #default="{ row }">
+                    <el-switch v-model="row.enabled" />
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="180" align="center">
+                  <template #default="{ row, $index }">
+                    <div class="inline-actions channel-table-actions">
+                      <el-button
+                        size="small"
+                        type="primary"
+                        plain
+                        :loading="row.id && webSearchTestingId === row.id"
+                        @click="testWebSearchKey(row)"
+                      >
+                        测试
+                      </el-button>
+                      <el-button size="small" type="danger" :icon="Delete" @click="deleteWebSearchKey($index)">
+                        删除
+                      </el-button>
+                    </div>
+                  </template>
+                </el-table-column>
+              </el-table>
+
+              <el-alert
+                v-if="webSearchTestResult"
+                class="channel-test-result"
+                :title="webSearchTestResult.ok ? 'Tavily 测试成功' : 'Tavily 测试失败'"
+                :type="webSearchTestResult.ok ? 'success' : 'error'"
+                show-icon
+                :closable="false"
+              >
+                <div class="channel-test-result__meta">
+                  <span>耗时 {{ displayMs(webSearchTestResult.duration_ms) }}</span>
+                  <span v-if="webSearchTestResult.key">调用 {{ webSearchTestResult.key.usage_count }} / {{ webSearchTestResult.key.key_usage_limit }}</span>
+                </div>
+                <div class="channel-test-output">{{ formatWebSearchTestResult(webSearchTestResult) }}</div>
+              </el-alert>
             </section>
 
             <section v-show="activeTab === 'logs'">
@@ -507,6 +608,9 @@
           <pre class="json-view">{{ formatStoredJson(selectedLog?.response_body) }}</pre>
         </div>
       </el-tab-pane>
+      <el-tab-pane label="Web Search">
+        <pre class="json-view">{{ formatStoredJson(selectedLog?.web_search_json) }}</pre>
+      </el-tab-pane>
     </el-tabs>
   </el-dialog>
 </template>
@@ -539,8 +643,14 @@ const saveLoading = ref(false);
 const logsLoading = ref(false);
 const testLoading = ref(false);
 const discoverLoading = ref(false);
+const webSearchLoading = ref(false);
+const webSearchSaving = ref(false);
+const webSearchTestingId = ref(null);
 
 const config = reactive({ channels: [] });
+const webSearchConfig = reactive(defaultWebSearchConfig());
+const webSearchTestQuery = ref("OpenAI");
+const webSearchTestResult = ref(null);
 const channelDrawerVisible = ref(false);
 const editingIndex = ref(-1);
 const channelDraft = reactive(defaultChannel());
@@ -614,6 +724,12 @@ const enabledChannelCount = computed(() => channels.value.filter((channel) => ch
 const modelMappingCount = computed(() =>
   channels.value.reduce((total, channel) => total + normalizeModels(channel.models).length, 0)
 );
+const webSearchEnabledKeyCount = computed(() =>
+  webSearchConfig.keys.filter((key) => key.enabled !== false && Number(key.usage_count || 0) < Number(key.key_usage_limit || webSearchConfig.key_usage_limit)).length
+);
+const webSearchTotalUsage = computed(() =>
+  webSearchConfig.keys.reduce((total, key) => total + Number(key.usage_count || 0), 0)
+);
 const channelTestModelOptions = computed(() => normalizeModels(testingChannel.value?.models).map((item) => item.model));
 const channelTestTitle = computed(() => {
   const channelName = testingChannel.value?.name || testingChannel.value?.id || "";
@@ -657,7 +773,7 @@ async function checkSession() {
     const data = await api("/admin/api/session");
     authenticated.value = data.authenticated;
     if (authenticated.value) {
-      await Promise.all([loadConfig(), loadLogs()]);
+      await Promise.all([loadConfig(), loadWebSearch(), loadLogs()]);
     }
   } finally {
     loadingSession.value = false;
@@ -673,7 +789,7 @@ async function login() {
     });
     authenticated.value = data.authenticated;
     loginPassword.value = "";
-    await Promise.all([loadConfig(), loadLogs()]);
+    await Promise.all([loadConfig(), loadWebSearch(), loadLogs()]);
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
@@ -775,6 +891,76 @@ async function importConfig(file) {
 
 function exportConfig() {
   window.location.href = "/admin/api/config/export";
+}
+
+async function loadWebSearch() {
+  webSearchLoading.value = true;
+  try {
+    const data = await api("/admin/api/web-search");
+    assignWebSearchConfig(data);
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    webSearchLoading.value = false;
+  }
+}
+
+async function saveWebSearch() {
+  webSearchSaving.value = true;
+  try {
+    const payload = buildWebSearchPayload();
+    const data = await api("/admin/api/web-search", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+    assignWebSearchConfig(data);
+    ElMessage.success("Web Search 模拟配置已保存");
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    webSearchSaving.value = false;
+  }
+}
+
+function addWebSearchKey() {
+  webSearchConfig.keys.push(defaultWebSearchKey());
+  webSearchTestResult.value = null;
+}
+
+function deleteWebSearchKey(index) {
+  webSearchConfig.keys.splice(index, 1);
+  webSearchTestResult.value = null;
+}
+
+async function testWebSearchKey(row) {
+  if (!row?.id) {
+    ElMessage.warning("请先保存配置后再测试这个 Tavily Key");
+    return;
+  }
+  webSearchTestingId.value = row.id;
+  webSearchTestResult.value = null;
+  try {
+    const data = await api("/admin/api/web-search/test-key", {
+      method: "POST",
+      body: JSON.stringify({
+        id: row.id,
+        query: String(webSearchTestQuery.value || "").trim() || "OpenAI"
+      })
+    });
+    webSearchTestResult.value = data;
+    if (data.config) {
+      assignWebSearchConfig(data.config);
+    }
+    if (data.ok) {
+      ElMessage.success("Tavily Key 测试成功");
+    } else {
+      ElMessage.warning("Tavily Key 测试失败");
+    }
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    webSearchTestingId.value = null;
+  }
 }
 
 async function discoverModels() {
@@ -986,6 +1172,63 @@ function defaultChannel() {
   };
 }
 
+function defaultWebSearchConfig() {
+  return {
+    enabled: false,
+    key_usage_limit: 1000,
+    keys: []
+  };
+}
+
+function defaultWebSearchKey() {
+  return {
+    client_id: `new-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    id: null,
+    key: "",
+    enabled: true,
+    usage_count: 0,
+    key_usage_limit: webSearchConfig?.key_usage_limit || 1000
+  };
+}
+
+function assignWebSearchConfig(data) {
+  Object.assign(webSearchConfig, defaultWebSearchConfig(), data || {}, {
+    enabled: data?.enabled === true,
+    key_usage_limit: Number(data?.key_usage_limit || 1000),
+    keys: normalizeWebSearchKeys(data?.keys || [])
+  });
+}
+
+function normalizeWebSearchKeys(keys) {
+  if (!Array.isArray(keys)) {
+    return [];
+  }
+  return keys.map((item, index) => ({
+    client_id: item?.id ? `saved-${item.id}` : item?.client_id || `new-${index}-${Date.now()}`,
+    id: item?.id || null,
+    key: String(item?.key || item?.api_key || ""),
+    enabled: item?.enabled !== false,
+    usage_count: Number(item?.usage_count || 0),
+    key_usage_limit: Number(item?.key_usage_limit || webSearchConfig.key_usage_limit || 1000)
+  }));
+}
+
+function buildWebSearchPayload() {
+  const keys = webSearchConfig.keys.map((item) => ({
+    id: item.id || undefined,
+    key: String(item.key || "").trim(),
+    enabled: item.enabled !== false
+  }));
+  const emptyIndex = keys.findIndex((item) => !item.key);
+  if (emptyIndex !== -1) {
+    throw new Error(`第 ${emptyIndex + 1} 个 Tavily Key 不能为空`);
+  }
+  return {
+    enabled: webSearchConfig.enabled === true,
+    keys
+  };
+}
+
 function assignChannelDraft(channel) {
   Object.assign(channelDraft, defaultChannel(), channel, {
     headers: channel.headers || {},
@@ -1169,6 +1412,27 @@ function formatChannelTestResult(result) {
     return responseText;
   }
   return "连接已打通，但响应中没有可展示的文本内容。";
+}
+
+function formatWebSearchTestResult(result) {
+  if (!result) {
+    return "";
+  }
+  if (result.ok === false) {
+    const error = result.result?.error || result.result?.summary?.error || result.result?.raw?.error;
+    return error ? String(error) : "Tavily 请求失败";
+  }
+  const summary = result.result?.summary || {};
+  const answer = String(summary.answer || result.result?.raw?.answer || "").trim();
+  const rows = Array.isArray(summary.results) ? summary.results : [];
+  const links = rows
+    .map((item, index) => {
+      const title = String(item?.title || item?.url || `结果 ${index + 1}`).trim();
+      const url = String(item?.url || "").trim();
+      return url ? `${index + 1}. ${title}\n${url}` : `${index + 1}. ${title}`;
+    })
+    .join("\n");
+  return [answer || "Tavily 已返回结果。", links].filter(Boolean).join("\n\n");
 }
 
 function extractErrorMessage(value) {

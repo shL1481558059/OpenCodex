@@ -34,8 +34,17 @@ def responses_sse_events(response_payload: dict[str, Any]) -> Iterable[str]:
     }
     yield emit("response.created", created)
 
-    for item in response_payload.get("output", []) or []:
-        yield emit("response.output_item.done", {"item": item})
+    for output_index, item in enumerate(response_payload.get("output", []) or []):
+        in_progress = dict(item)
+        in_progress["status"] = "in_progress"
+        yield emit(
+            "response.output_item.added",
+            {"output_index": output_index, "item": in_progress},
+        )
+        yield emit(
+            "response.output_item.done",
+            {"output_index": output_index, "item": item},
+        )
 
     completed_response = dict(response_payload)
     completed_response["end_turn"] = True

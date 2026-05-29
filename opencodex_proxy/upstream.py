@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import email.utils
+import http.client
 import json
 import time
 import urllib.error
@@ -55,6 +56,12 @@ def post_upstream(
             status_code=502,
             channel_id=channel.get("id"),
         ) from exc
+    except http.client.RemoteDisconnected as exc:
+        raise UpstreamError(
+            f"failed to reach upstream: {exc}",
+            status_code=502,
+            channel_id=channel.get("id"),
+        ) from exc
     except TimeoutError as exc:
         raise UpstreamError(
             "upstream request timed out",
@@ -95,6 +102,12 @@ def list_upstream_models(
     except urllib.error.URLError as exc:
         raise UpstreamError(
             f"failed to reach upstream: {exc.reason}",
+            status_code=502,
+            channel_id=channel.get("id"),
+        ) from exc
+    except http.client.RemoteDisconnected as exc:
+        raise UpstreamError(
+            f"failed to reach upstream: {exc}",
             status_code=502,
             channel_id=channel.get("id"),
         ) from exc
@@ -139,6 +152,12 @@ def stream_upstream(
     except urllib.error.URLError as exc:
         raise UpstreamError(
             f"failed to reach upstream: {exc.reason}",
+            status_code=502,
+            channel_id=channel.get("id"),
+        ) from exc
+    except http.client.RemoteDisconnected as exc:
+        raise UpstreamError(
+            f"failed to reach upstream: {exc}",
             status_code=502,
             channel_id=channel.get("id"),
         ) from exc
@@ -205,7 +224,12 @@ def _urlopen_with_retries(
     for retry_index in range(retry_count + 1):
         try:
             return urllib.request.urlopen(request, timeout=timeout)
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+        except (
+            urllib.error.HTTPError,
+            urllib.error.URLError,
+            http.client.RemoteDisconnected,
+            TimeoutError,
+        ) as exc:
             if retry_index >= retry_count or not _is_retryable_exception(exc):
                 raise
             delay = _retry_delay_seconds(retry_index, exc)
@@ -229,7 +253,7 @@ def _channel_retry_count(channel: dict[str, Any]) -> int:
 def _is_retryable_exception(exc: BaseException) -> bool:
     if isinstance(exc, urllib.error.HTTPError):
         return exc.code == 429 or 500 <= exc.code <= 599
-    return isinstance(exc, (urllib.error.URLError, TimeoutError))
+    return isinstance(exc, (urllib.error.URLError, http.client.RemoteDisconnected, TimeoutError))
 
 
 def _retry_delay_seconds(retry_index: int, exc: BaseException) -> float:

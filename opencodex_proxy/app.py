@@ -5,6 +5,7 @@ import json
 import sqlite3
 import time
 import uuid
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,10 @@ from .db import (
     extract_usage,
     read_log_filter_options,
     read_logs_page,
+    read_web_search_config,
+    replace_web_search_config,
+    reserve_tavily_key,
+    reserve_tavily_key_by_id,
 )
 from .errors import BadRequestError, ProxyError
 from .logging_utils import configure_logging, log_event, redact
@@ -48,6 +53,21 @@ from .streaming import (
     responses_sse_events,
 )
 from .upstream import list_upstream_models, post_upstream, stream_upstream
+from .web_search import (
+    add_source_annotations,
+    append_tool_results,
+    extract_tool_calls,
+    max_web_search_calls,
+    non_web_search_calls,
+    parse_web_search_query,
+    prepend_web_search_items,
+    replace_web_search_function_items,
+    request_declares_web_search,
+    tavily_search,
+    web_search_calls,
+    web_search_log,
+    make_tool_result,
+)
 
 
 ENTRY_PROTOCOLS = {
@@ -164,7 +184,11 @@ def create_app(settings: Settings | None = None) -> Flask:
     @app.get("/admin/api/config/export")
     def admin_export_config():
         require_admin()
-        payload = json.dumps(config_manager.raw, ensure_ascii=False, indent=2) + "\n"
+        payload = json.dumps(
+            {"channels": config_manager.raw.get("channels", [])},
+            ensure_ascii=False,
+            indent=2,
+        ) + "\n"
         return Response(
             payload,
             mimetype="application/json",
@@ -248,6 +272,63 @@ def create_app(settings: Settings | None = None) -> Flask:
             return jsonify({"error": f"failed to save config: {exc}"}), 500
         log_event(logger, "INFO", "config saved", channels=len(saved.get("channels", [])))
         return jsonify(saved)
+
+    @app.get("/admin/api/web-search")
+    def admin_get_web_search():
+        require_admin()
+        return jsonify(read_web_search_config(settings.db_path))
+
+    @app.post("/admin/api/web-search")
+    def admin_save_web_search():
+        require_admin()
+        candidate = request.get_json(silent=True)
+        if not isinstance(candidate, dict):
+            return jsonify({"error": "request body must be a JSON object"}), 400
+        try:
+            saved = replace_web_search_config(settings.db_path, candidate)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except sqlite3.DatabaseError as exc:
+            log_event(logger, "ERROR", "web search config save failed", error=str(exc))
+            return jsonify({"error": f"failed to save web search config: {exc}"}), 500
+        log_event(
+            logger,
+            "INFO",
+            "web search config saved",
+            keys=len(saved.get("keys", [])),
+            enabled=saved.get("enabled"),
+        )
+        return jsonify(saved)
+
+    @app.post("/admin/api/web-search/test-key")
+    def admin_test_web_search_key():
+        require_admin()
+        started = time.time()
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({"error": "request body must be a JSON object"}), 400
+        try:
+            key_id = int(body.get("id"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "id is required"}), 400
+        query = str(body.get("query") or "OpenAI").strip() or "OpenAI"
+        reserved = reserve_tavily_key_by_id(settings.db_path, key_id)
+        if reserved is None:
+            return jsonify({"error": "Tavily key is unavailable or has reached 1000 uses"}), 400
+        result = tavily_search(reserved["key"], query)
+        return jsonify(
+            {
+                "ok": result.get("ok") is True,
+                "duration_ms": int((time.time() - started) * 1000),
+                "key": {
+                    "id": reserved["id"],
+                    "usage_count": reserved["usage_count"],
+                    "key_usage_limit": reserved["key_usage_limit"],
+                },
+                "result": redact(result),
+                "config": read_web_search_config(settings.db_path),
+            }
+        )
 
     @app.get("/admin/api/logs")
     def admin_logs():
@@ -387,6 +468,7 @@ def create_app(settings: Settings | None = None) -> Flask:
         route = None
         channel: dict[str, Any] | None = None
         upstream_response: dict[str, Any] | None = None
+        web_search_details: dict[str, Any] | None = None
         log_payload: dict[str, Any] = {
             "request_id": request_id,
             "path": request_path,
@@ -424,6 +506,9 @@ def create_app(settings: Settings | None = None) -> Flask:
                 "cached_tokens": 0,
                 "output_tokens": 0,
                 "cost": 0.0,
+                "web_search_json": json.dumps(redact(web_search_details), ensure_ascii=False)
+                if web_search_details is not None
+                else None,
                 "error": error,
             }
 
@@ -507,6 +592,65 @@ def create_app(settings: Settings | None = None) -> Flask:
             log_payload["compat"] = compat_details
             log_payload["request_body"] = trace_payload
             log_payload["upstream_request_body"] = redact(upstream_request)
+            should_simulate_web_search = (
+                entry_protocol == "responses"
+                and channel["type"] in {"chat", "messages"}
+                and request_declares_web_search(payload)
+                and read_web_search_config(settings.db_path).get("enabled") is True
+            )
+
+            if should_simulate_web_search:
+                try:
+                    response_payload, upstream_response, web_search_details = _run_web_search_simulation(
+                        channel=channel,
+                        upstream_request=upstream_request,
+                        payload=payload,
+                        original_model=route.original_model,
+                        client_authorization=request.headers.get("Authorization"),
+                        default_timeout=settings.default_timeout,
+                        db_path=settings.db_path,
+                    )
+                except WebSearchSimulationUpstreamError as exc:
+                    web_search_details = exc.details
+                    log_payload["web_search"] = redact(web_search_details)
+                    raise exc.proxy_error from exc
+                log_payload["web_search"] = redact(web_search_details)
+                log_payload["upstream_response_body"] = redact(upstream_response)
+                if channel["type"] == "chat":
+                    reasoning_cache.remember_chat_response(upstream_response, cache_namespace)
+                if channel["type"] == "messages":
+                    reasoning_cache.remember_messages_response(upstream_response, cache_namespace)
+                if stream_requested:
+                    def stream_web_search_response():
+                        nonlocal ttft_ms
+                        stream_error = None
+                        ttft_recorded = False
+                        try:
+                            for line in responses_sse_events(response_payload):
+                                if not ttft_recorded and _counts_for_ttft(line):
+                                    ttft_recorded = True
+                                    ttft_ms = int((time.time() - started) * 1000)
+                                yield line
+                        except Exception as exc:
+                            stream_error = str(exc)
+                            raise
+                        finally:
+                            write_db_record(
+                                record_status_code=200,
+                                record_duration_ms=int((time.time() - started) * 1000),
+                                record_ttft_ms=ttft_ms,
+                                response_body=upstream_response,
+                                response_protocol=channel["type"] if channel is not None else None,
+                                error=stream_error,
+                            )
+
+                    defer_db_write = True
+                    return Response(
+                        stream_with_context(stream_web_search_response()),
+                        mimetype="text/event-stream",
+                        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                    )
+                return jsonify(response_payload)
 
             if stream_requested and channel["type"] in {"messages", "chat"}:
                 upstream_request["stream"] = True
@@ -670,6 +814,228 @@ def _spa_index_response(admin_static_dir: Path) -> Response:
         (admin_static_dir / "index.html").read_text(encoding="utf-8"),
         mimetype="text/html",
     )
+
+
+def _run_web_search_simulation(
+    *,
+    channel: dict[str, Any],
+    upstream_request: dict[str, Any],
+    payload: dict[str, Any],
+    original_model: str | None,
+    client_authorization: str | None,
+    default_timeout: int,
+    db_path: Path,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    protocol = channel["type"]
+    request_payload = deepcopy(upstream_request)
+    request_payload["stream"] = False
+    web_results: list[dict[str, Any]] = []
+    upstream_calls: list[dict[str, Any]] = []
+    web_limit = max_web_search_calls(payload)
+    web_executed = 0
+    max_iterations = max(web_limit + 3, 3)
+    upstream_response: dict[str, Any] = {}
+
+    for iteration in range(max_iterations):
+        upstream_response = _web_search_post_upstream(
+            channel=channel,
+            request_payload=request_payload,
+            client_authorization=client_authorization,
+            default_timeout=default_timeout,
+            web_results=web_results,
+            upstream_calls=upstream_calls,
+        )
+        tool_calls = extract_tool_calls(upstream_response, protocol)
+        web_calls = web_search_calls(tool_calls)
+        other_calls = non_web_search_calls(tool_calls)
+        upstream_calls.append(
+            {
+                "iteration": iteration + 1,
+                "tool_calls": [
+                    {
+                        "id": tool_call.get("id"),
+                        "name": tool_call.get("name"),
+                    }
+                    for tool_call in tool_calls
+                ],
+            }
+        )
+
+        if not web_calls:
+            response_payload = convert_response(
+                upstream_response,
+                "responses",
+                protocol,
+                original_model,
+            )
+            if web_results:
+                response_payload = prepend_web_search_items(
+                    response_payload,
+                    web_results,
+                    include_result=False,
+                )
+                response_payload = add_source_annotations(response_payload, web_results)
+            return response_payload, upstream_response, web_search_log(web_results, upstream_calls)
+
+        current_results: list[dict[str, Any]] = []
+        current_requires_final_answer = False
+        for tool_call in web_calls:
+            if web_executed >= web_limit:
+                result = make_tool_result(
+                    call_id=str(tool_call.get("id")),
+                    query="",
+                    status="failed",
+                    error="已达到 web_search 调用上限，不能继续搜索",
+                )
+                current_results.append(result)
+                web_results.append(result)
+                current_requires_final_answer = True
+                continue
+
+            query, parse_error = parse_web_search_query(tool_call.get("arguments"))
+            if parse_error is not None:
+                result = make_tool_result(
+                    call_id=str(tool_call.get("id")),
+                    query=query,
+                    status="failed",
+                    error=parse_error,
+                )
+                current_results.append(result)
+                web_results.append(result)
+                continue
+
+            reserved = reserve_tavily_key(db_path)
+            if reserved is None:
+                result = make_tool_result(
+                    call_id=str(tool_call.get("id")),
+                    query=query,
+                    status="failed",
+                    error="搜索不可用",
+                )
+                current_results.append(result)
+                web_results.append(result)
+                current_requires_final_answer = True
+                continue
+
+            web_executed += 1
+            tavily_result = tavily_search(reserved["key"], query or "")
+            summary = tavily_result.get("summary") or {}
+            result = make_tool_result(
+                call_id=str(tool_call.get("id")),
+                query=query,
+                status="completed" if tavily_result.get("ok") is True else "failed",
+                answer=str(summary.get("answer") or ""),
+                results=summary.get("results") if isinstance(summary.get("results"), list) else [],
+                error=None if tavily_result.get("ok") is True else "搜索不可用",
+                log_error=summary.get("error"),
+                error_type=tavily_result.get("error_type"),
+                http_status=tavily_result.get("status_code"),
+                key=reserved,
+                raw=tavily_result.get("raw") if isinstance(tavily_result, dict) else None,
+            )
+            current_results.append(result)
+            web_results.append(result)
+            if tavily_result.get("ok") is not True:
+                current_requires_final_answer = True
+
+        if other_calls:
+            response_payload = convert_response(
+                upstream_response,
+                "responses",
+                protocol,
+                original_model,
+            )
+            response_payload = replace_web_search_function_items(
+                response_payload,
+                current_results,
+                include_result=True,
+            )
+            return response_payload, upstream_response, web_search_log(web_results, upstream_calls)
+
+        request_payload = append_tool_results(
+            request_payload,
+            upstream_response,
+            protocol,
+            current_results,
+        )
+        if current_requires_final_answer:
+            next_response = _web_search_post_upstream(
+                channel=channel,
+                request_payload=request_payload,
+                client_authorization=client_authorization,
+                default_timeout=default_timeout,
+                web_results=web_results,
+                upstream_calls=upstream_calls,
+            )
+            upstream_response = next_response
+            upstream_calls.append(
+                {
+                    "iteration": iteration + 2,
+                    "after_limit": True,
+                    "tool_calls": [
+                        {"id": item.get("id"), "name": item.get("name")}
+                        for item in extract_tool_calls(next_response, protocol)
+                    ],
+                }
+            )
+            response_payload = convert_response(
+                next_response,
+                "responses",
+                protocol,
+                original_model,
+            )
+            response_payload = prepend_web_search_items(
+                response_payload,
+                web_results,
+                include_result=False,
+            )
+            response_payload = add_source_annotations(response_payload, web_results)
+            return response_payload, upstream_response, web_search_log(web_results, upstream_calls)
+
+    response_payload = convert_response(
+        upstream_response,
+        "responses",
+        protocol,
+        original_model,
+    )
+    response_payload = prepend_web_search_items(
+        response_payload,
+        web_results,
+        include_result=False,
+    )
+    response_payload = add_source_annotations(response_payload, web_results)
+    details = web_search_log(web_results, upstream_calls)
+    details["error"] = "web_search simulation stopped after iteration guard"
+    return response_payload, upstream_response, details
+
+
+class WebSearchSimulationUpstreamError(Exception):
+    def __init__(self, proxy_error: ProxyError, details: dict[str, Any]) -> None:
+        super().__init__(str(proxy_error))
+        self.proxy_error = proxy_error
+        self.details = details
+
+
+def _web_search_post_upstream(
+    *,
+    channel: dict[str, Any],
+    request_payload: dict[str, Any],
+    client_authorization: str | None,
+    default_timeout: int,
+    web_results: list[dict[str, Any]],
+    upstream_calls: list[dict[str, Any]],
+) -> dict[str, Any]:
+    try:
+        return post_upstream(
+            channel,
+            request_payload,
+            client_authorization,
+            default_timeout,
+        )
+    except ProxyError as exc:
+        details = web_search_log(web_results, upstream_calls)
+        details["upstream_error"] = str(exc)
+        raise WebSearchSimulationUpstreamError(exc, details) from exc
 
 
 def _draft_channel_from_request(default_timeout: int) -> dict[str, Any]:
