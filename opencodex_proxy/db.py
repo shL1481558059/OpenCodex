@@ -487,6 +487,51 @@ def reset_user_password(
     return user
 
 
+def delete_user(
+    db_path: Path,
+    username: str,
+    *,
+    protected_username: str,
+) -> dict[str, Any]:
+    init_db(db_path, protected_username)
+    username = _normalize_username(username)
+    protected_username = _normalize_username(protected_username)
+    if not username:
+        raise ValueError("username is required")
+    if not protected_username:
+        raise ValueError("protected_username is required")
+    if protected_username and username == protected_username:
+        raise ValueError("cannot delete current user")
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        with conn:
+            row = conn.execute(
+                """
+                SELECT username, role, enabled, created_at, updated_at
+                FROM users
+                WHERE username = ?
+                """,
+                (username,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("user not found")
+            deleted_user = _row_to_user(row)
+            conn.execute(
+                "DELETE FROM access_api_keys WHERE owner_username = ?",
+                (username,),
+            )
+            conn.execute(
+                "DELETE FROM channels WHERE owner_username = ?",
+                (username,),
+            )
+            conn.execute("DELETE FROM users WHERE username = ?", (username,))
+    finally:
+        conn.close()
+    return deleted_user
+
+
 def create_access_api_key(
     db_path: Path,
     owner_username: str,

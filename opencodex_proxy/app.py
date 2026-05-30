@@ -39,6 +39,7 @@ from .db import (
     create_access_api_key,
     create_user,
     delete_access_api_key,
+    delete_user,
     ensure_superadmin,
     extract_usage,
     get_user,
@@ -259,6 +260,21 @@ def create_app(settings: Settings | None = None) -> Flask:
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         return jsonify({"user": user})
+
+    @app.delete("/admin/api/users/<username>")
+    def admin_delete_user(username: str):
+        user = require_superadmin()
+        try:
+            deleted_user = delete_user(
+                settings.db_path,
+                username,
+                protected_username=user["username"],
+            )
+        except ValueError as exc:
+            status_code = 404 if str(exc) == "user not found" else 400
+            return jsonify({"error": str(exc)}), status_code
+        config_manager.reload()
+        return jsonify({"deleted": True, "user": deleted_user})
 
     @app.get("/admin/api/api-keys")
     def admin_list_api_keys():
