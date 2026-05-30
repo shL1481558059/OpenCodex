@@ -9,6 +9,7 @@ from unittest.mock import patch
 from opencodex_proxy.app import create_app, _spa_index_response
 from opencodex_proxy.db import (
     authenticate_access_api_key,
+    authenticate_user,
     create_access_api_key,
     create_user,
     list_access_api_keys,
@@ -245,6 +246,82 @@ class AppTests(unittest.TestCase):
             self.client.post("/admin/api/web-search", json={"enabled": True}).status_code,
             403,
         )
+
+    def test_regular_user_cannot_delete_users(self):
+        create_user(self.db_path, "alice", "alice-pw")
+        create_user(self.db_path, "bob", "bob-pw")
+        self.login_api("alice", "alice-pw")
+
+        response = self.client.delete("/admin/api/users/bob")
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIsNotNone(authenticate_user(self.db_path, "bob", "bob-pw"))
+
+    def test_superadmin_cannot_delete_current_user(self):
+        self.login_api()
+
+        response = self.client.delete("/admin/api/users/admin")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["error"], "cannot delete current user")
+        self.assertIsNotNone(authenticate_user(self.db_path, "admin", "pw"))
+
+    def test_superadmin_can_delete_other_users_including_superadmins(self):
+        create_user(self.db_path, "alice", "alice-pw")
+        create_user(self.db_path, "ops", "ops-pw", role="superadmin")
+        alice_key = create_access_api_key(self.db_path, "alice", "Laptop")["key"]
+        ops_key = create_access_api_key(self.db_path, "ops", "Ops")["key"]
+        manager = self.app.config["OPENCODEX_CONFIG_MANAGER"]
+        manager.save(
+            {
+                "channels": [
+                    {
+                        "id": "chat",
+                        "type": "chat",
+                        "baseurl": "https://alice.example.test/v1",
+                        "apikey": "alice-key",
+                        "auth_mode": "config",
+                        "timeout_seconds": 30,
+                    }
+                ]
+            },
+            owner_username="alice",
+        )
+        manager.save(
+            {
+                "channels": [
+                    {
+                        "id": "messages",
+                        "type": "messages",
+                        "baseurl": "https://ops.example.test/v1",
+                        "apikey": "ops-key",
+                        "auth_mode": "config",
+                        "timeout_seconds": 30,
+                    }
+                ]
+            },
+            owner_username="ops",
+        )
+        self.login_api()
+
+        alice_response = self.client.delete("/admin/api/users/alice")
+        ops_response = self.client.delete("/admin/api/users/ops")
+
+        self.assertEqual(alice_response.status_code, 200)
+        self.assertTrue(alice_response.get_json()["deleted"])
+        self.assertEqual(alice_response.get_json()["user"]["username"], "alice")
+        self.assertEqual(ops_response.status_code, 200)
+        self.assertEqual(ops_response.get_json()["user"]["role"], "superadmin")
+        self.assertIsNone(authenticate_user(self.db_path, "alice", "alice-pw"))
+        self.assertIsNone(authenticate_user(self.db_path, "ops", "ops-pw"))
+        self.assertIsNone(authenticate_access_api_key(self.db_path, alice_key))
+        self.assertIsNone(authenticate_access_api_key(self.db_path, ops_key))
+        self.assertEqual(list_access_api_keys(self.db_path, "alice"), [])
+        self.assertEqual(list_access_api_keys(self.db_path, "ops"), [])
+        self.assertEqual(read_channels(self.db_path, owner_username="alice"), [])
+        self.assertEqual(read_channels(self.db_path, owner_username="ops"), [])
+        self.assertEqual(manager.raw_for_user("alice")["channels"], [])
+        self.assertEqual(manager.raw_for_user("ops")["channels"], [])
 
     def test_regular_user_api_key_management_returns_plaintext_for_copying(self):
         create_user(self.db_path, "alice", "alice-pw")

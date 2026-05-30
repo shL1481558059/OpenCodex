@@ -229,7 +229,7 @@
               <div class="toolbar">
                 <div>
                   <h2>用户管理</h2>
-                  <div class="text-muted">普通用户由超级管理员创建和停用</div>
+                  <div class="text-muted">普通用户由超级管理员创建、停用和删除</div>
                 </div>
                 <div class="toolbar-actions">
                   <el-button :icon="Refresh" @click="loadUsers">刷新</el-button>
@@ -262,7 +262,7 @@
                 <el-table-column label="创建时间" width="180">
                   <template #default="{ row }">{{ formatTime(row.created_at) || "-" }}</template>
                 </el-table-column>
-                <el-table-column label="操作" width="260" align="center">
+                <el-table-column label="操作" width="340" align="center">
                   <template #default="{ row }">
                     <div class="inline-actions channel-table-actions">
                       <el-button
@@ -282,6 +282,21 @@
                       >
                         重置密码
                       </el-button>
+                      <el-popconfirm
+                        :title="`删除用户 ${row.username}？`"
+                        @confirm="deleteUser(row)"
+                      >
+                        <template #reference>
+                          <el-button
+                            size="small"
+                            type="danger"
+                            :icon="Delete"
+                            :disabled="isCurrentUser(row)"
+                          >
+                            删除
+                          </el-button>
+                        </template>
+                      </el-popconfirm>
                     </div>
                   </template>
                 </el-table-column>
@@ -1490,6 +1505,23 @@ async function resetUserPassword() {
 
 function isProtectedSuperadmin(row) {
   return row.role === "superadmin";
+}
+
+function isCurrentUser(row) {
+  return row.username === currentUser.value?.username;
+}
+
+async function deleteUser(row) {
+  try {
+    await api(`/admin/api/users/${encodeURIComponent(row.username)}`, {
+      method: "DELETE",
+      body: "{}"
+    });
+    await Promise.all([loadUsers(), loadAccessKeys(), loadConfig(), loadLogs()]);
+    ElMessage.success("用户已删除");
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
 }
 
 async function loadWebSearch() {

@@ -30,6 +30,7 @@ from opencodex_proxy.db import (
     reserve_tavily_key_by_id,
     set_access_api_key_enabled,
     set_user_enabled,
+    delete_user,
 )
 
 
@@ -860,6 +861,27 @@ class TestUserAndAccessKeyStore(unittest.TestCase):
 
         self.assertIsNone(authenticate_user(self.db_path, "alice", "alice-pw"))
         self.assertIsNone(authenticate_access_api_key(self.db_path, created["key"]))
+
+    def test_delete_user_removes_owned_api_keys_and_channels_but_not_current_user(self):
+        ensure_superadmin(self.db_path, "root", "pw")
+        create_user(self.db_path, "alice", "alice-pw")
+        created = create_access_api_key(self.db_path, "alice", "Laptop")
+        replace_channels(
+            self.db_path,
+            [{"id": "chat", "type": "chat", "baseurl": "https://alice.example.test/v1"}],
+            owner_username="alice",
+            default_owner_username="root",
+        )
+
+        deleted = delete_user(self.db_path, "alice", protected_username="root")
+
+        self.assertEqual(deleted["username"], "alice")
+        self.assertIsNone(authenticate_user(self.db_path, "alice", "alice-pw"))
+        self.assertIsNone(authenticate_access_api_key(self.db_path, created["key"]))
+        self.assertEqual(list_access_api_keys(self.db_path, "alice"), [])
+        self.assertEqual(read_channels(self.db_path, owner_username="alice"), [])
+        with self.assertRaisesRegex(ValueError, "cannot delete current user"):
+            delete_user(self.db_path, "root", protected_username="root")
 
 
 class TestWebSearchStore(unittest.TestCase):
