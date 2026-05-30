@@ -2442,7 +2442,9 @@ function displayMs(value) {
 
 function formatCost(value) {
   const number = Number(value || 0);
-  return number ? `$${number.toFixed(6)}` : "$0.000000";
+  if (!number) return "¥0.000000 / $0.000000";
+  const usd = number / 7.3;
+  return `¥${number.toFixed(6)} / $${usd.toFixed(6)}`;
 }
 
 function clone(value) {
