@@ -1,4 +1,4 @@
-FROM node:24-slim AS frontend-build
+FROM --platform=$BUILDPLATFORM node:24-slim AS frontend-build
 
 WORKDIR /app
 

@@ -69,10 +69,16 @@ http://127.0.0.1:8000/admin
 
 ## x86/amd64 Docker 镜像
 
-构建 linux/amd64 镜像：
+本地构建并推送 linux/amd64 镜像：
 
 ```bash
-docker buildx build --platform linux/amd64 -t opencodex-proxy:test --load .
+docker buildx build --platform linux/amd64 -t shl148155/opencodexp:latest --push .
+```
+
+服务器只拉取镜像，不在服务器构建：
+
+```bash
+docker pull shl148155/opencodexp:latest
 ```
 
 运行容器：
@@ -86,7 +92,7 @@ docker run --rm \
   -p 8000:8000 \
   --env-file .env \
   -v "$PWD/logs:/app/logs" \
-  opencodex-proxy:test
+  shl148155/opencodexp:latest
 ```
 
 如果 `.env` 里使用容器路径，请保持：

@@ -68,12 +68,13 @@ Authorization: Bearer ocx_...
 ## Docker
 
 ```bash
-docker buildx build --platform linux/amd64 -t opencodex-proxy:test --load .
+docker buildx build --platform linux/amd64 -t shl148155/opencodexp:latest --push .
+docker pull shl148155/opencodexp:latest
 docker run --rm -p 8000:8000 \
   --platform linux/amd64 \
   --env-file .env \
   -v "$PWD/logs:/app/logs" \
-  opencodex-proxy:test
+  shl148155/opencodexp:latest
 ```
 
 完整部署步骤见 [DEPLOYMENT.md](/Users/w/shL/work/shl/OpenCodex/DEPLOYMENT.md)。
