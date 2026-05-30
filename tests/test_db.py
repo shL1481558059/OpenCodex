@@ -85,19 +85,47 @@ class TestExtractUsage(unittest.TestCase):
 
 
 class TestCalculateCost(unittest.TestCase):
-    def test_gpt4o(self):
-        cost = calculate_cost("gpt-4o", 1000, 500, 500)
-        expected = (500 * 2.5 + 500 * 1.25 + 500 * 10.0) / 1_000_000
+    def test_deepseek_v4_pro(self):
+        cost = calculate_cost("deepseek-v4-pro", 100000, 50000, 2000)
+        expected = (50000 * 3 + 50000 * 0.025 + 2000 * 6) / 1_000_000
         self.assertAlmostEqual(cost, expected)
 
-    def test_gpt4o_mini(self):
-        cost = calculate_cost("gpt-4o-mini", 1000, 0, 500)
-        expected = (1000 * 0.15 + 500 * 0.6) / 1_000_000
+    def test_deepseek_v4_flash(self):
+        cost = calculate_cost("deepseek-v4-flash", 100000, 50000, 2000)
+        expected = (50000 * 1 + 50000 * 0.02 + 2000 * 2) / 1_000_000
         self.assertAlmostEqual(cost, expected)
 
-    def test_claude(self):
-        cost = calculate_cost("claude-3-5-sonnet", 1000, 200, 800)
-        expected = (800 * 3.0 + 200 * 0.3 + 800 * 15.0) / 1_000_000
+    def test_glm51_below_32k(self):
+        cost = calculate_cost("glm-5.1", 20000, 10000, 2000)
+        # total_input = 30000 < 32000, use tier1
+        # non_cached = 20000 - 10000 = 10000
+        expected = (10000 * 6 + 10000 * 1.3 + 2000 * 24) / 1_000_000
+        self.assertAlmostEqual(cost, expected)
+
+    def test_glm51_above_32k(self):
+        cost = calculate_cost("glm-5.1", 50000, 30000, 2000)
+        # total_input = 80000 >= 32000, use tier2
+        expected = (20000 * 8 + 30000 * 2 + 2000 * 28) / 1_000_000
+        self.assertAlmostEqual(cost, expected)
+
+    def test_gpt54(self):
+        cost = calculate_cost("gpt-5.4", 1000, 500, 500)
+        expected = (500 * 18.25 + 500 * 1.82 + 500 * 109.5) / 1_000_000
+        self.assertAlmostEqual(cost, expected)
+
+    def test_gpt54_mini(self):
+        cost = calculate_cost("gpt-5.4-mini", 1000, 0, 500)
+        expected = (1000 * 5.47 + 0 * 0.55 + 500 * 32.85) / 1_000_000
+        self.assertAlmostEqual(cost, expected)
+
+    def test_gpt55(self):
+        cost = calculate_cost("gpt-5.5", 1000, 500, 500)
+        expected = (500 * 36.5 + 500 * 3.65 + 500 * 219.0) / 1_000_000
+        self.assertAlmostEqual(cost, expected)
+
+    def test_fuzzy_match(self):
+        cost = calculate_cost("deepseek-v4-pro-20260501", 100000, 50000, 2000)
+        expected = (50000 * 3 + 50000 * 0.025 + 2000 * 6) / 1_000_000
         self.assertAlmostEqual(cost, expected)
 
     def test_unknown_model(self):

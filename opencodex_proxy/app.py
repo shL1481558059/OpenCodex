@@ -1691,9 +1691,10 @@ def _calculate_record_cost(
     usage: dict[str, int],
     response_body: dict[str, Any],
 ) -> float:
+    # 优先用 upstream_model 算成本（反映真实支出），再回落到请求模型
     for model in (
-        db_record.get("model"),
         db_record.get("upstream_model"),
+        db_record.get("model"),
         response_body.get("model"),
     ):
         cost = calculate_cost(
@@ -1850,6 +1851,9 @@ def _web_search_simulation_stream(
     sequence_number = 0
     next_output_index = max(0, int(initial_output_index or 0))
     usage_totals = {"input_tokens": 0, "cached_tokens": 0, "output_tokens": 0}
+    pending_upstream_response = initial_upstream_response
+    pending_usage_counted = False
+    completed_prefix_output_items: dict[int, dict[str, Any]] = {}
 
     def emit(event: str, payload_data: dict[str, Any]) -> str:
         nonlocal sequence_number
@@ -1864,17 +1868,14 @@ def _web_search_simulation_stream(
         return idx
 
     for iteration in range(max_iterations):
-        if iteration == 0 and initial_upstream_response is not None:
-            upstream_response = initial_upstream_response
-        else:
-            upstream_response = _web_search_post_upstream(
-                channel=channel,
-                request_payload=request_payload,
-                default_timeout=default_timeout,
-                web_results=web_results,
-                upstream_calls=upstream_calls,
-            )
-        _add_usage_totals(usage_totals, upstream_response, protocol)
+        if pending_upstream_response is None:
+            break
+        upstream_response = pending_upstream_response
+        usage_already_counted = pending_usage_counted
+        pending_upstream_response = None
+        pending_usage_counted = False
+        if not usage_already_counted:
+            _add_usage_totals(usage_totals, upstream_response, protocol)
         tool_calls = extract_tool_calls(upstream_response, protocol)
         web_calls = web_search_calls(tool_calls)
         other_calls = non_web_search_calls(tool_calls)
@@ -1887,56 +1888,24 @@ def _web_search_simulation_stream(
         })
 
         if not web_calls:
-            # Final round: stream from upstream
-            request_payload["stream"] = True
             if web_search_details is not None:
                 web_search_details.update(web_search_log(web_results, upstream_calls))
-            try:
-                upstream_lines = stream_upstream(channel, request_payload, default_timeout)
-            except ProxyError as exc:
-                if web_search_details is not None:
-                    web_search_details["stream_fallback_error"] = str(exc)
-                response_payload = convert_response(
-                    upstream_response, "responses", protocol, original_model,
-                )
-                response_payload = _replace_or_prepend_web_search_items(
-                    response_payload, web_results
-                )
+            response_payload = convert_response(
+                upstream_response, "responses", protocol, original_model,
+            )
+            if web_results:
                 response_payload = add_source_annotations(response_payload, web_results)
-                if on_response is not None:
-                    on_response(_response_with_usage_totals(upstream_response, protocol, usage_totals))
-                for line in responses_sse_events(response_payload, skip_response_created=True):
-                    if line.startswith("event: response.completed\n"):
-                        line = _patch_completed_usage(line, usage_totals)
-                    line = _patch_sse_sequence_numbers(line, sequence_number)
-                    yield line
-                return
-
-            def remember(resp: dict[str, Any]) -> None:
-                _add_usage_totals(usage_totals, resp, protocol)
-                if on_response is not None:
-                    on_response(_response_with_usage_totals(resp, protocol, usage_totals))
-                if reasoning_cache is not None:
-                    if protocol == "messages":
-                        reasoning_cache.remember_messages_response(resp, cache_namespace)
-                    elif protocol == "chat":
-                        reasoning_cache.remember_chat_response(resp, cache_namespace)
-
-            if protocol == "chat":
-                event_iter = chat_sse_to_responses_events(
-                    upstream_lines, model_for_sse, remember,
-                    skip_tool_names={"web_search"}, skip_response_created=True,
-                )
-            else:
-                event_iter = messages_sse_to_responses_events(
-                    upstream_lines, model_for_sse, remember,
-                    skip_response_created=True,
-                )
-            for line in event_iter:
+            if on_response is not None:
+                on_response(_response_with_usage_totals(upstream_response, protocol, usage_totals))
+            for line in responses_sse_events(response_payload, skip_response_created=True):
                 line = _patch_sse_output_indices(line, next_output_index)
                 if line.startswith("event: response.completed\n"):
-                    line = _inject_web_search_into_completed_sse(
-                        line, web_results, next_output_index,
+                    line = _prepend_completed_output_items(
+                        line,
+                        [
+                            completed_prefix_output_items[index]
+                            for index in sorted(completed_prefix_output_items)
+                        ],
                     )
                     line = _patch_completed_usage(line, usage_totals)
                 line = _patch_sse_sequence_numbers(line, sequence_number)
@@ -2010,6 +1979,7 @@ def _web_search_simulation_stream(
                 "response.output_item.done",
                 {"output_index": item_idx, "item": web_item},
             )
+            completed_prefix_output_items[item_idx] = web_item
 
         if other_calls:
             # Model produced non-web-search tool calls - stream from upstream
@@ -2072,6 +2042,100 @@ def _web_search_simulation_stream(
         request_payload = append_tool_results(
             request_payload, upstream_response, protocol, current_results,
         )
+        request_payload["stream"] = True
+        if web_search_details is not None:
+            web_search_details.update(web_search_log(web_results, upstream_calls))
+        try:
+            upstream_lines = stream_upstream(channel, request_payload, default_timeout)
+        except ProxyError as exc:
+            if web_search_details is not None:
+                web_search_details["stream_fallback_error"] = str(exc)
+            response_payload = convert_response(
+                upstream_response, "responses", protocol, original_model,
+            )
+            response_payload = _replace_or_prepend_web_search_items(
+                response_payload, web_results
+            )
+            response_payload = add_source_annotations(response_payload, web_results)
+            if on_response is not None:
+                on_response(_response_with_usage_totals(upstream_response, protocol, usage_totals))
+            for line in responses_sse_events(response_payload, skip_response_created=True):
+                if line.startswith("event: response.completed\n"):
+                    line = _patch_completed_usage(line, usage_totals)
+                line = _patch_sse_sequence_numbers(line, sequence_number)
+                yield line
+            return
+
+        streamed_response: dict[str, Any] | None = None
+
+        def remember(resp: dict[str, Any]) -> None:
+            nonlocal streamed_response
+            streamed_response = resp
+            _add_usage_totals(usage_totals, resp, protocol)
+            if on_response is not None:
+                on_response(_response_with_usage_totals(resp, protocol, usage_totals))
+            if reasoning_cache is not None:
+                if protocol == "messages":
+                    reasoning_cache.remember_messages_response(resp, cache_namespace)
+                elif protocol == "chat":
+                    reasoning_cache.remember_chat_response(resp, cache_namespace)
+
+        if protocol == "chat":
+            event_iter = chat_sse_to_responses_events(
+                upstream_lines, model_for_sse, remember,
+                skip_tool_names={"web_search"}, skip_response_created=True,
+            )
+        else:
+            event_iter = messages_sse_to_responses_events(
+                upstream_lines, model_for_sse, remember,
+                skip_response_created=True,
+            )
+        pending_completed_line: str | None = None
+        round_output_items: dict[int, dict[str, Any]] = {}
+        round_sequence_offset = sequence_number
+        round_output_offset = next_output_index
+        for line in event_iter:
+            line = _patch_sse_output_indices(line, round_output_offset)
+            line = _patch_sse_sequence_numbers(line, round_sequence_offset)
+            event_name, event_payload = _parse_sse_event(line)
+            if event_name == "response.completed":
+                pending_completed_line = line
+                continue
+            item_done = _output_item_done_payload(event_name, event_payload)
+            if item_done is not None:
+                output_index, item = item_done
+                round_output_items[output_index] = item
+            yield line
+            sequence_number = max(
+                sequence_number,
+                _next_sequence_number(event_payload),
+            )
+            next_output_index = max(
+                next_output_index,
+                _next_output_index(event_payload),
+            )
+        streamed_tool_calls = (
+            extract_tool_calls(streamed_response, protocol)
+            if streamed_response is not None
+            else []
+        )
+        if web_search_calls(streamed_tool_calls):
+            completed_prefix_output_items.update(round_output_items)
+            pending_upstream_response = streamed_response
+            pending_usage_counted = True
+            continue
+        if pending_completed_line is not None:
+            prefix_items = [
+                completed_prefix_output_items[index]
+                for index in sorted(completed_prefix_output_items)
+            ]
+            line = _prepend_completed_output_items(
+                pending_completed_line,
+                prefix_items,
+            )
+            line = _patch_completed_usage(line, usage_totals)
+            yield line
+        return
 
     # Max iterations guard — should not normally be reached
     response_payload = convert_response(

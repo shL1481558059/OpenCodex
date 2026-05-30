@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import queue
 import secrets
 import sqlite3
@@ -1314,29 +1315,76 @@ def _chat_cached_tokens(usage: dict[str, Any]) -> int:
         return 0
 
 
+_pricing_cache: dict[str, Any] | None = None
+_pricing_mtime: float = 0.0
+
+
+def _load_pricing() -> dict[str, Any]:
+    global _pricing_cache, _pricing_mtime
+    pricing_path = Path(__file__).parent / "pricing.json"
+    try:
+        mtime = os.path.getmtime(pricing_path)
+    except OSError:
+        return _pricing_cache or {}
+    if _pricing_cache is not None and mtime == _pricing_mtime:
+        return _pricing_cache
+    try:
+        with open(pricing_path, encoding="utf-8") as f:
+            data = json.load(f)
+        _pricing_cache = data
+        _pricing_mtime = mtime
+        return data
+    except (OSError, json.JSONDecodeError):
+        return _pricing_cache or {}
+
+
+def _match_tier(tiers: list[dict[str, Any]], total_input_tokens: int) -> dict[str, Any] | None:
+    for tier in tiers:
+        lo = tier.get("min_input_tokens", 0) or 0
+        hi = tier.get("max_input_tokens")
+        if total_input_tokens >= lo and (hi is None or total_input_tokens < hi):
+            return tier
+    if tiers:
+        return tiers[-1]
+    return None
+
+
 def calculate_cost(
     model: str,
     input_tokens: int,
     cached_tokens: int,
     output_tokens: int,
 ) -> float:
-    pricing: dict[str, dict[str, float]] = {
-        "gpt-4o": {"input": 2.5, "cached_input": 1.25, "output": 10.0},
-        "gpt-4o-mini": {"input": 0.15, "cached_input": 0.075, "output": 0.6},
-        "claude-3-5-sonnet": {"input": 3.0, "cached_input": 0.3, "output": 15.0},
-        "claude-3-opus": {"input": 15.0, "cached_input": 1.5, "output": 75.0},
-    }
+    pricing_data = _load_pricing()
     model_lower = model.lower()
-    matched = None
+    matched_key = None
     best_len = 0
-    for key in pricing:
+    for key in pricing_data:
+        if key.startswith("_"):
+            continue
         if key in model_lower and len(key) > best_len:
-            matched = pricing[key]
+            matched_key = key
             best_len = len(key)
-    if not matched:
+    if not matched_key:
         return 0.0
+    entry = pricing_data[matched_key]
+    total_input = input_tokens + cached_tokens
     non_cached = max(0, input_tokens - cached_tokens)
-    return (non_cached * matched["input"] + cached_tokens * matched["cached_input"] + output_tokens * matched["output"]) / 1_000_000
+
+    # 支持分段定价 (如 glm-5.1)
+    if "tiers" in entry:
+        tier = _match_tier(entry["tiers"], total_input)
+        if not tier:
+            return 0.0
+        inp_price = tier["input"]
+        cached_price = tier["cached_input"]
+        out_price = tier["output"]
+    else:
+        inp_price = entry["input"]
+        cached_price = entry["cached_input"]
+        out_price = entry["output"]
+
+    return (non_cached * inp_price + cached_tokens * cached_price + output_tokens * out_price) / 1_000_000
 
 
 TEXT_FILTER_FIELDS = {
