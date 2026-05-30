@@ -13,7 +13,10 @@ from .protocols import (
 )
 
 
-def responses_sse_events(response_payload: dict[str, Any]) -> Iterable[str]:
+def responses_sse_events(
+    response_payload: dict[str, Any],
+    skip_response_created: bool = False,
+) -> Iterable[str]:
     sequence_number = 0
 
     def emit(event: str, payload: dict[str, Any]) -> str:
@@ -32,7 +35,8 @@ def responses_sse_events(response_payload: dict[str, Any]) -> Iterable[str]:
             "output": [],
         },
     }
-    yield emit("response.created", created)
+    if not skip_response_created:
+        yield emit("response.created", created)
 
     for output_index, item in enumerate(response_payload.get("output", []) or []):
         in_progress = dict(item)
@@ -59,6 +63,7 @@ def messages_sse_to_responses_events(
     upstream_lines: Iterable[str],
     model: str | None = None,
     on_message: Callable[[dict[str, Any]], None] | None = None,
+    skip_response_created: bool = False,
 ) -> Iterable[str]:
     response_id = f"resp_{uuid.uuid4().hex}"
     message_item_id = f"msg_{uuid.uuid4().hex}"
@@ -78,19 +83,20 @@ def messages_sse_to_responses_events(
         sequence_number += 1
         return _sse(event, enriched)
 
-    yield emit(
-        "response.created",
-        {
-            "response": {
-                "id": response_id,
-                "object": "response",
-                "created_at": created_at,
-                "status": "in_progress",
-                "model": response_model,
-                "output": [],
+    if not skip_response_created:
+        yield emit(
+            "response.created",
+            {
+                "response": {
+                    "id": response_id,
+                    "object": "response",
+                    "created_at": created_at,
+                    "status": "in_progress",
+                    "model": response_model,
+                    "output": [],
+                },
             },
-        },
-    )
+        )
 
     for event in _iter_sse_events(upstream_lines):
         payload = event.get("data")
@@ -262,6 +268,8 @@ def chat_sse_to_responses_events(
     upstream_lines: Iterable[str],
     model: str | None = None,
     on_response: Callable[[dict[str, Any]], None] | None = None,
+    skip_tool_names: set[str] | None = None,
+    skip_response_created: bool = False,
 ) -> Iterable[str]:
     response_id = f"resp_{uuid.uuid4().hex}"
     message_item_id = f"msg_{uuid.uuid4().hex}"
@@ -403,19 +411,22 @@ def chat_sse_to_responses_events(
         )
         return events
 
-    yield emit(
-        "response.created",
-        {
-            "response": {
-                "id": response_id,
-                "object": "response",
-                "created_at": created_at,
-                "status": "in_progress",
-                "model": response_model,
-                "output": [],
+    if not skip_response_created:
+        yield emit(
+            "response.created",
+            {
+                "response": {
+                    "id": response_id,
+                    "object": "response",
+                    "created_at": created_at,
+                    "status": "in_progress",
+                    "model": response_model,
+                    "output": [],
+                },
             },
-        },
-    )
+        )
+
+
 
     for event in _iter_sse_events(upstream_lines):
         payload = event.get("data")
@@ -513,6 +524,8 @@ def chat_sse_to_responses_events(
                         target["function"]["arguments"] += str(function["arguments"])
                 tool_name = target.get("function", {}).get("name")
                 if not target.get("id") or not tool_name or _is_apply_patch_tool_name(str(tool_name)):
+                    continue
+                if skip_tool_names and str(tool_name) in skip_tool_names:
                     continue
                 meta = tool_stream_meta.setdefault(index, {})
                 if "output_index" not in meta:
@@ -634,10 +647,13 @@ def chat_sse_to_responses_events(
         )
 
     for index, tool_call in zip(sorted(tool_calls), message["tool_calls"]):
+        tool_name = tool_call["function"].get("name")
+        if skip_tool_names and str(tool_name) in skip_tool_names:
+            continue
         meta = tool_stream_meta.get(index, {})
         item = _responses_tool_call_item(
             tool_call["id"],
-            tool_call["function"].get("name"),
+            tool_name,
             tool_call["function"].get("arguments", "{}"),
             meta.get("item_id"),
         )

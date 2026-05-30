@@ -182,6 +182,21 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn("</proposed_plan>", result["messages"][0]["content"])
         self.assertEqual(result["messages"][1], {"role": "user", "content": "plan it"})
 
+    def test_responses_request_plan_mode_tag_in_user_input_does_not_trigger_injection(self):
+        payload = {
+            "model": "local",
+            "instructions": "base system",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "Use <proposed_plan> for plans?"}]},
+            ],
+        }
+
+        result = convert_request(payload, "responses", "chat", "upstream")
+
+        self.assertIn("base system", result["messages"][0]["content"])
+        self.assertNotIn("You are currently in Codex Plan Mode.", result["messages"][0]["content"])
+        self.assertNotIn("The client will not recognize the plan", result["messages"][0]["content"])
+
     def test_responses_apply_patch_tool_is_expanded_for_chat(self):
         payload = {
             "model": "local",

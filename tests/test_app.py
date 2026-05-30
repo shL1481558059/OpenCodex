@@ -2600,9 +2600,18 @@ class AppTests(unittest.TestCase):
         self.assertEqual(events[0]["request_status"], "success")
         self.assertEqual(events[0]["cached_tokens"], 20)
         self.assertGreater(events[0]["cost"], 0)
-        request_headers = json.loads(events[0]["request_headers"])
+        self.assertLessEqual(len(events[0]["request_headers"]), 30)
+        self.assertLessEqual(len(events[0]["request_body"]), 30)
+        self.assertLessEqual(len(events[0]["response_body"]), 30)
+
+        detail_response = self.client.get(f"/admin/api/logs/{events[0]['id']}")
+        self.assertEqual(detail_response.status_code, 200)
+        detail = detail_response.get_json()
+        request_headers = json.loads(detail["request_headers"])
         self.assertNotEqual(request_headers["Authorization"], self.auth_headers["Authorization"])
         self.assertIn("...", request_headers["Authorization"])
+        self.assertIn("ping", detail["request_body"])
+        self.assertIn("pong", detail["response_body"])
 
     @patch("opencodex_proxy.app.post_upstream")
     def test_admin_logs_can_filter_common_fields(self, mock_post):

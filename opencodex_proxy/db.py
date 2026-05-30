@@ -1352,6 +1352,34 @@ TEXT_FILTER_FIELDS = {
 
 INTEGER_FILTER_FIELDS = {"status_code", "is_stream", "api_key_id"}
 REQUEST_STATUS_VALUES = {"success", "failed"}
+LOG_PREVIEW_LENGTH = 30
+REQUEST_LOG_COLUMNS = (
+    "id",
+    "request_id",
+    "created_at",
+    "method",
+    "path",
+    "client_ip",
+    "request_headers",
+    "request_body",
+    "model",
+    "upstream_model",
+    "channel_id",
+    "is_stream",
+    "ttft_ms",
+    "duration_ms",
+    "status_code",
+    "response_body",
+    "input_tokens",
+    "cached_tokens",
+    "output_tokens",
+    "cost",
+    "web_search_json",
+    "owner_username",
+    "api_key_id",
+    "error",
+)
+LOG_PREVIEW_FIELDS = {"request_headers", "request_body", "response_body", "web_search_json"}
 
 
 def read_logs(
@@ -1400,8 +1428,9 @@ def read_logs_page(
         f"SELECT COUNT(*) FROM request_logs {where_clause}",
         params,
     ).fetchone()[0]
+    select_columns = _log_select_columns(preview_large_fields=True)
     rows = conn.execute(
-        f"SELECT * FROM request_logs {where_clause} ORDER BY id DESC LIMIT ? OFFSET ?",
+        f"SELECT {select_columns} FROM request_logs {where_clause} ORDER BY id DESC LIMIT ? OFFSET ?",
         (*params, parsed_page_size, offset),
     ).fetchall()
     conn.close()
@@ -1411,6 +1440,34 @@ def read_logs_page(
         "page": parsed_page,
         "page_size": parsed_page_size,
     }
+
+
+def read_log_by_id(
+    db_path: Path,
+    log_id: Any,
+    filters: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if not db_path.exists():
+        return None
+    try:
+        parsed_id = int(log_id)
+    except (TypeError, ValueError):
+        return None
+
+    where_clause, params = _log_where_clause(filters or {})
+    if where_clause:
+        where_clause = f"{where_clause} AND id = ?"
+    else:
+        where_clause = "WHERE id = ?"
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        f"SELECT * FROM request_logs {where_clause}",
+        (*params, parsed_id),
+    ).fetchone()
+    conn.close()
+    return _row_to_log(row) if row is not None else None
 
 
 def read_log_filter_options(
@@ -1483,6 +1540,20 @@ def _log_where_clause(filters: dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
 
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     return where_clause, tuple(params)
+
+
+def _log_select_columns(preview_large_fields: bool = False) -> str:
+    columns: list[str] = []
+    for column in REQUEST_LOG_COLUMNS:
+        if preview_large_fields and column in LOG_PREVIEW_FIELDS:
+            columns.append(f"substr({column}, 1, {LOG_PREVIEW_LENGTH}) AS {column}")
+            columns.append(
+                f"CASE WHEN {column} IS NOT NULL AND length({column}) > {LOG_PREVIEW_LENGTH} "
+                f"THEN 1 ELSE 0 END AS {column}_truncated"
+            )
+        else:
+            columns.append(column)
+    return ", ".join(columns)
 
 
 def _row_to_log(row: sqlite3.Row) -> dict[str, Any]:
