@@ -55,7 +55,7 @@ Authorization: Bearer ocx_...
 
 访问 API Key 是 OpenCodex Proxy 的调用凭证，不是上游模型服务的 Key。它只在创建成功时显示一次明文，数据库只保存哈希；停用或删除后立即不能继续调用。后端会按这个 Key 识别用户，并且只在该用户自己的渠道中路由请求。普通用户没有启用渠道时会返回 `no enabled channels configured`，不会回退使用超级管理员渠道。
 
-上游模型服务 Key 仍然放在渠道配置的 `apikey` 或自定义 headers 中。代理不会把客户端传入的访问 API Key 透传给上游；`auth_mode=pass_through` 渠道会被拒绝，建议使用 `auth_mode=config` 并在渠道里配置上游 Key。
+上游模型服务 Key 仍然放在渠道配置的 `apikey` 或自定义 headers 中。代理不会把客户端传入的访问 API Key 透传给上游；需要上游认证时使用 `auth_mode=config` 并在渠道里配置上游 Key。
 
 日志展示等级：
 

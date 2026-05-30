@@ -610,13 +610,6 @@
           <el-form-item label="认证方式">
             <el-select v-model="channelDraft.auth_mode" class="full-width">
               <el-option label="配置 Key" value="config" />
-              <el-option label="配置 Key（兼容旧值）" value="pass_through_or_config" />
-              <el-option
-                v-if="channelDraft.auth_mode === 'pass_through'"
-                label="透传（已禁用）"
-                value="pass_through"
-                disabled
-              />
               <el-option label="无" value="none" />
             </el-select>
           </el-form-item>
@@ -2110,10 +2103,6 @@ function normalizeModels(models) {
   }
   return models
     .map((item) => {
-      if (typeof item === "string") {
-        const model = item.trim();
-        return { model, upstream_model: model };
-      }
       const model = String(item?.model || "").trim();
       return { model, upstream_model: String(item?.upstream_model || model).trim() || model };
     })

@@ -11,8 +11,16 @@ from .defaults import DEFAULT_RETRY_COUNT
 
 
 CHANNEL_TYPES = {"responses", "chat", "messages"}
-AUTH_MODES = {"pass_through_or_config", "pass_through", "config", "none"}
-REMOVED_COMPAT_FIELDS = {"force_protocol", "tool_request_protocol", "by_protocol"}
+AUTH_MODES = {"config", "none"}
+CONFIG_FIELDS = {"channels"}
+COMPAT_FIELDS = {
+    "rename_params",
+    "drop_params",
+    "force_params",
+    "default_params",
+    "unsupported_params",
+    "fallback_thinking_on_tool_use",
+}
 
 EMPTY_CONFIG: dict[str, Any] = {
     "channels": [],
@@ -51,7 +59,7 @@ class ConfigManager:
 
     def reload(self) -> None:
         with self._lock:
-            raw = strip_removed_config_fields(
+            raw = normalize_config(
                 {
                     "channels": read_channels(
                         self.db_path,
@@ -79,8 +87,9 @@ class ConfigManager:
     ) -> dict[str, Any]:
         if not isinstance(candidate, dict):
             raise ConfigError("config must be a JSON object")
-        candidate = strip_removed_config_fields(candidate)
-        candidate = self._with_effective_owner(candidate, owner_username)
+        candidate = normalize_config(
+            self._with_effective_owner(candidate, owner_username)
+        )
         expanded = expand_env(candidate)
         validate_config(expanded, self.default_timeout)
         replace_channels(
@@ -138,48 +147,35 @@ def expand_env(value: Any) -> Any:
     return value
 
 
-def strip_removed_config_fields(config: dict[str, Any]) -> dict[str, Any]:
+def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     candidate = deepcopy(config)
-    candidate.pop("routing", None)
     channels = candidate.get("channels")
-    if isinstance(channels, list):
-        for channel in channels:
-            if not isinstance(channel, dict):
+    if not isinstance(channels, list):
+        return candidate
+
+    for channel in channels:
+        if not isinstance(channel, dict):
+            continue
+        models = channel.get("models")
+        if not isinstance(models, list):
+            continue
+        for mapping in models:
+            if not isinstance(mapping, dict):
                 continue
-            compat = channel.get("compat")
-            if isinstance(compat, dict):
-                _strip_removed_compat_fields(compat)
-            channel["models"] = normalize_model_mappings(channel.get("models", []))
+            model = str(mapping.get("model", "")).strip()
+            upstream_model = str(mapping.get("upstream_model", "")).strip() or model
+            mapping["model"] = model
+            mapping["upstream_model"] = upstream_model
     return candidate
 
 
-def normalize_model_mappings(models: Any) -> list[dict[str, str]]:
-    if models in (None, ""):
-        return []
-    if not isinstance(models, list):
-        return []
-
-    normalized: list[dict[str, str]] = []
-    for item in models:
-        if isinstance(item, str):
-            model = item.strip()
-            upstream_model = model
-        elif isinstance(item, dict):
-            model = str(item.get("model", "")).strip()
-            upstream_model = str(item.get("upstream_model", "")).strip() or model
-        else:
-            continue
-        if model:
-            normalized.append({"model": model, "upstream_model": upstream_model})
-    return normalized
-
-
-def _strip_removed_compat_fields(compat: dict[str, Any]) -> None:
-    for field in REMOVED_COMPAT_FIELDS:
-        compat.pop(field, None)
-
-
 def validate_config(config: dict[str, Any], default_timeout: int = 120) -> None:
+    unsupported_fields = sorted(set(config) - CONFIG_FIELDS)
+    if unsupported_fields:
+        raise ConfigError(
+            f"unsupported config field(s): {', '.join(unsupported_fields)}"
+        )
+
     channels = config.get("channels", [])
     if not isinstance(channels, list):
         raise ConfigError("channels must be a list")
@@ -212,7 +208,7 @@ def validate_channel(channel: Any, default_timeout: int) -> None:
     if not baseurl.startswith(("http://", "https://")):
         raise ConfigError(f"channel {channel_id} baseurl must start with http(s)://")
 
-    auth_mode = str(channel.get("auth_mode", "pass_through_or_config")).strip()
+    auth_mode = str(channel.get("auth_mode", "config")).strip()
     if auth_mode not in AUTH_MODES:
         raise ConfigError(f"channel {channel_id} auth_mode is invalid")
 
@@ -241,7 +237,7 @@ def validate_channel(channel: Any, default_timeout: int) -> None:
 
 
 def validate_model_mappings(models: Any, channel_id: str) -> None:
-    if models in (None, ""):
+    if models is None:
         return
     if not isinstance(models, list):
         raise ConfigError(f"channel {channel_id} models must be a list")
@@ -262,7 +258,7 @@ def validate_model_mappings(models: Any, channel_id: str) -> None:
 
 
 def validate_compat(compat: Any, channel_id: str) -> None:
-    if compat in (None, ""):
+    if compat is None:
         return
     if not isinstance(compat, dict):
         raise ConfigError(f"channel {channel_id} compat must be an object")
@@ -270,6 +266,12 @@ def validate_compat(compat: Any, channel_id: str) -> None:
 
 
 def _validate_compat_fields(compat: dict[str, Any], label: str) -> None:
+    unsupported_fields = sorted(set(compat) - COMPAT_FIELDS)
+    if unsupported_fields:
+        raise ConfigError(
+            f"{label} has unsupported field(s): {', '.join(unsupported_fields)}"
+        )
+
     object_fields = ("rename_params", "force_params", "default_params")
     list_fields = ("drop_params", "unsupported_params")
     bool_fields = ("fallback_thinking_on_tool_use",)

@@ -28,7 +28,7 @@ from .config import (
     ConfigError,
     ConfigManager,
     expand_env,
-    strip_removed_config_fields,
+    normalize_config,
     validate_channel,
 )
 from .db import (
@@ -547,10 +547,8 @@ def create_app(settings: Settings | None = None) -> Flask:
         started = time.time()
         try:
             channel = _draft_channel_from_request(settings.default_timeout)
-            _reject_pass_through_channel(channel)
             raw = list_upstream_models(
                 channel,
-                None,
                 settings.default_timeout,
             )
         except ConfigError as exc:
@@ -584,7 +582,6 @@ def create_app(settings: Settings | None = None) -> Flask:
             if not isinstance(payload, dict):
                 return jsonify({"error": "payload must be a JSON object"}), 400
             channel = _draft_channel_from_request(settings.default_timeout)
-            _reject_pass_through_channel(channel)
             original_model, upstream_model = _test_models(channel, payload.get("model"))
             upstream_request = convert_request(
                 payload,
@@ -599,7 +596,6 @@ def create_app(settings: Settings | None = None) -> Flask:
             upstream_response = post_upstream(
                 channel,
                 upstream_request,
-                None,
                 settings.default_timeout,
             )
             response_payload = convert_response(
@@ -734,7 +730,6 @@ def create_app(settings: Settings | None = None) -> Flask:
                 payload.get("model"),
             )
             channel = route.channel
-            _reject_pass_through_channel(channel)
             log_payload.update(
                 {
                     "channel_id": channel.get("id"),
@@ -808,7 +803,6 @@ def create_app(settings: Settings | None = None) -> Flask:
                         upstream_request=upstream_request,
                         payload=payload,
                         original_model=route.original_model,
-                        client_authorization=None,
                         default_timeout=settings.default_timeout,
                         db_path=settings.db_path,
                     )
@@ -862,7 +856,6 @@ def create_app(settings: Settings | None = None) -> Flask:
                 upstream_lines = stream_upstream(
                     channel,
                     upstream_request,
-                    None,
                     settings.default_timeout,
                 )
                 ttft_recorded = False
@@ -925,7 +918,6 @@ def create_app(settings: Settings | None = None) -> Flask:
             upstream_response = post_upstream(
                 channel,
                 upstream_request,
-                None,
                 settings.default_timeout,
             )
             if channel["type"] == "chat":
@@ -1038,10 +1030,6 @@ def current_session_user() -> dict[str, Any] | None:
     return None
 
 
-def is_admin_authenticated() -> bool:
-    return current_session_user() is not None
-
-
 def require_user() -> dict[str, Any]:
     user = current_session_user()
     if user is None:
@@ -1064,10 +1052,6 @@ def require_superadmin() -> dict[str, Any]:
     return user
 
 
-def require_admin() -> None:
-    require_user()
-
-
 def _config_for_session_user(
     config_manager: ConfigManager,
     user: dict[str, Any],
@@ -1075,19 +1059,6 @@ def _config_for_session_user(
     if user.get("role") == "superadmin":
         return config_manager.raw
     return config_manager.raw_for_user(user["username"])
-
-
-def _owned_config_candidate(
-    candidate: dict[str, Any],
-    owner_username: str,
-) -> dict[str, Any]:
-    next_candidate = deepcopy(candidate)
-    channels = next_candidate.get("channels")
-    if isinstance(channels, list):
-        for channel in channels:
-            if isinstance(channel, dict):
-                channel["owner_username"] = owner_username
-    return next_candidate
 
 
 def _authenticate_proxy_access_key(db_path: Path) -> dict[str, Any]:
@@ -1106,12 +1077,6 @@ def _bearer_token(authorization: str | None) -> str | None:
         return None
     token = value.split(" ", 1)[1].strip()
     return token or None
-
-
-def _reject_pass_through_channel(channel: dict[str, Any]) -> None:
-    auth_mode = channel.get("auth_mode") or "pass_through_or_config"
-    if auth_mode == "pass_through":
-        raise ConfigError("channel auth_mode=pass_through cannot use proxy access api keys")
 
 
 def _spa_index_response(admin_static_dir: Path) -> Response:
@@ -1145,7 +1110,6 @@ def _run_web_search_simulation(
     upstream_request: dict[str, Any],
     payload: dict[str, Any],
     original_model: str | None,
-    client_authorization: str | None,
     default_timeout: int,
     db_path: Path,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -1163,7 +1127,6 @@ def _run_web_search_simulation(
         upstream_response = _web_search_post_upstream(
             channel=channel,
             request_payload=request_payload,
-            client_authorization=client_authorization,
             default_timeout=default_timeout,
             web_results=web_results,
             upstream_calls=upstream_calls,
@@ -1285,7 +1248,6 @@ def _run_web_search_simulation(
             next_response = _web_search_post_upstream(
                 channel=channel,
                 request_payload=request_payload,
-                client_authorization=client_authorization,
                 default_timeout=default_timeout,
                 web_results=web_results,
                 upstream_calls=upstream_calls,
@@ -1343,7 +1305,6 @@ def _web_search_post_upstream(
     *,
     channel: dict[str, Any],
     request_payload: dict[str, Any],
-    client_authorization: str | None,
     default_timeout: int,
     web_results: list[dict[str, Any]],
     upstream_calls: list[dict[str, Any]],
@@ -1352,7 +1313,6 @@ def _web_search_post_upstream(
         return post_upstream(
             channel,
             request_payload,
-            client_authorization,
             default_timeout,
         )
     except ProxyError as exc:
@@ -1368,7 +1328,7 @@ def _draft_channel_from_request(default_timeout: int) -> dict[str, Any]:
     channel = body.get("channel")
     if not isinstance(channel, dict):
         raise ConfigError("channel must be a JSON object")
-    normalized = strip_removed_config_fields({"channels": [channel]})
+    normalized = normalize_config({"channels": [channel]})
     expanded_channel = expand_env(normalized)["channels"][0]
     validate_channel(expanded_channel, default_timeout)
     return expanded_channel

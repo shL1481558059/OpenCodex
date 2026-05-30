@@ -27,12 +27,11 @@ MAX_RETRY_AFTER_SECONDS = 30.0
 def post_upstream(
     channel: dict[str, Any],
     payload: dict[str, Any],
-    client_authorization: str | None,
     default_timeout: int,
 ) -> dict[str, Any]:
     channel_type = channel["type"]
     url = _join_url(channel["baseurl"], ENDPOINTS[channel_type])
-    headers = build_headers(channel, client_authorization)
+    headers = build_headers(channel)
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(url, data=data, headers=headers, method="POST")
     timeout = int(channel.get("timeout_seconds") or default_timeout)
@@ -78,11 +77,10 @@ def post_upstream(
 
 def list_upstream_models(
     channel: dict[str, Any],
-    client_authorization: str | None,
     default_timeout: int,
 ) -> dict[str, Any]:
     url = _join_url(channel["baseurl"], "/models")
-    headers = build_headers(channel, client_authorization)
+    headers = build_headers(channel)
     request = urllib.request.Request(url, headers=headers, method="GET")
     timeout = int(channel.get("timeout_seconds") or default_timeout)
     retry_count = _channel_retry_count(channel)
@@ -128,12 +126,11 @@ def list_upstream_models(
 def stream_upstream(
     channel: dict[str, Any],
     payload: dict[str, Any],
-    client_authorization: str | None,
     default_timeout: int,
 ) -> Iterator[str]:
     channel_type = channel["type"]
     url = _join_url(channel["baseurl"], ENDPOINTS[channel_type])
-    headers = build_headers(channel, client_authorization)
+    headers = build_headers(channel)
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(url, data=data, headers=headers, method="POST")
     timeout = int(channel.get("timeout_seconds") or default_timeout)
@@ -176,9 +173,7 @@ def stream_upstream(
     return lines()
 
 
-def build_headers(
-    channel: dict[str, Any], client_authorization: str | None
-) -> dict[str, str]:
+def build_headers(channel: dict[str, Any]) -> dict[str, str]:
     headers = {
         "content-type": "application/json",
         "user-agent": "OpenCodex-Proxy/0.1",
@@ -186,15 +181,11 @@ def build_headers(
     for key, value in (channel.get("headers") or {}).items():
         headers[str(key)] = str(value)
 
-    auth_mode = channel.get("auth_mode") or "pass_through_or_config"
+    auth_mode = channel.get("auth_mode") or "config"
     api_key = channel.get("apikey") or ""
     auth_value = None
-    if auth_mode == "pass_through":
-        auth_value = client_authorization
-    elif auth_mode == "config":
+    if auth_mode == "config":
         auth_value = f"Bearer {api_key}" if api_key else None
-    elif auth_mode == "pass_through_or_config":
-        auth_value = client_authorization or (f"Bearer {api_key}" if api_key else None)
 
     if channel.get("type") == "messages":
         if auth_value and auth_value.lower().startswith("bearer "):
