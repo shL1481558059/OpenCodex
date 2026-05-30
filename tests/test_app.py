@@ -246,7 +246,7 @@ class AppTests(unittest.TestCase):
             403,
         )
 
-    def test_regular_user_api_key_management_returns_plaintext_only_on_create(self):
+    def test_regular_user_api_key_management_returns_plaintext_for_copying(self):
         create_user(self.db_path, "alice", "alice-pw")
         self.login_api("alice", "alice-pw")
 
@@ -264,9 +264,8 @@ class AppTests(unittest.TestCase):
         listed = response.get_json()["keys"]
         self.assertEqual(len(listed), 1)
         self.assertEqual(listed[0]["masked_key"], created["masked_key"])
-        self.assertNotIn("key", listed[0])
-        self.assertNotIn(created["key"], json.dumps(listed))
-        self.assertNotIn(created["key"], json.dumps(list_access_api_keys(self.db_path, "alice")))
+        self.assertEqual(listed[0]["key"], created["key"])
+        self.assertEqual(list_access_api_keys(self.db_path, "alice")[0]["key"], created["key"])
 
     def test_regular_user_cannot_manage_other_users_api_keys(self):
         create_user(self.db_path, "alice", "alice-pw")

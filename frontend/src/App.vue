@@ -155,7 +155,7 @@
               <div class="toolbar">
                 <div>
                   <h2>API Key 管理</h2>
-                  <div class="text-muted">用于调用 /v1/* 代理接口，明文只在创建时显示一次</div>
+                  <div class="text-muted">用于调用 /v1/* 代理接口，可在列表复制完整 Key</div>
                 </div>
                 <div class="toolbar-actions">
                   <el-button :icon="Refresh" @click="loadAccessKeys">刷新</el-button>
@@ -195,9 +195,17 @@
                     </el-tag>
                   </template>
                 </el-table-column>
-                <el-table-column label="操作" width="220" align="center">
+                <el-table-column label="操作" width="300" align="center">
                   <template #default="{ row }">
                     <div class="inline-actions channel-table-actions">
+                      <el-button
+                        size="small"
+                        :icon="CopyDocument"
+                        :disabled="!row.key"
+                        @click="copyText(row.key)"
+                      >
+                        复制
+                      </el-button>
                       <el-button
                         size="small"
                         :type="row.enabled === false ? 'success' : 'warning'"
@@ -287,9 +295,8 @@
                   <div class="text-muted">仅在 Responses 请求显式声明 web_search 工具且模型主动调用时启用</div>
                 </div>
                 <div class="toolbar-actions">
-                  <el-button :icon="Refresh" @click="loadWebSearch">刷新</el-button>
-                  <el-button type="primary" :loading="webSearchSaving" @click="saveWebSearch">保存配置</el-button>
-                  <el-button :icon="Plus" @click="openWebSearchKeyDrawer()">新增 Web Search Key</el-button>
+                  <el-button :icon="Refresh" :loading="webSearchLoading" :disabled="webSearchSaving" @click="loadWebSearch">刷新</el-button>
+                  <el-button :icon="Plus" :disabled="webSearchSaving" @click="openWebSearchKeyDrawer()">新增 Web Search Key</el-button>
                 </div>
               </div>
 
@@ -307,7 +314,12 @@
 
               <div class="web-search-control-row">
                 <span>启用 Web Search 模拟</span>
-                <el-switch v-model="webSearchConfig.enabled" />
+                <el-switch
+                  v-model="webSearchConfig.enabled"
+                  :loading="webSearchSaving"
+                  :disabled="webSearchLoading"
+                  @change="handleWebSearchEnabledChange"
+                />
               </div>
 
               <el-table
@@ -355,14 +367,15 @@
                         type="primary"
                         plain
                         :loading="row.id && webSearchTestingId === row.id"
+                        :disabled="webSearchSaving"
                         @click="testWebSearchKey(row)"
                       >
                         测试
                       </el-button>
-                      <el-button size="small" :icon="Edit" @click="openWebSearchKeyDrawer(row, $index)">编辑</el-button>
+                      <el-button size="small" :icon="Edit" :disabled="webSearchSaving" @click="openWebSearchKeyDrawer(row, $index)">编辑</el-button>
                       <el-popconfirm title="删除这个 Web Search Key？" @confirm="deleteWebSearchKey($index)">
                         <template #reference>
-                          <el-button size="small" type="danger" :icon="Delete">删除</el-button>
+                          <el-button size="small" type="danger" :icon="Delete" :disabled="webSearchSaving">删除</el-button>
                         </template>
                       </el-popconfirm>
                     </div>
@@ -754,14 +767,14 @@
       <el-alert
         type="info"
         :closable="false"
-        title="此处只更新当前配置草稿，仍需点击页面上的“保存配置”才会生效。"
+        title="点击“应用”后立即生效。"
       />
     </el-form>
 
     <template #footer>
       <div class="drawer-footer">
         <el-button @click="webSearchKeyDrawerVisible = false">取消</el-button>
-        <el-button type="primary" @click="applyWebSearchKeyDraft">
+        <el-button type="primary" :loading="webSearchSaving" @click="applyWebSearchKeyDraft">
           应用
         </el-button>
       </div>
@@ -937,6 +950,7 @@ import { ElMessage } from "element-plus";
 import {
   Check,
   Connection,
+  CopyDocument,
   Delete,
   Download,
   Edit,
@@ -1494,7 +1508,7 @@ async function loadWebSearch() {
   }
 }
 
-async function saveWebSearch() {
+async function persistWebSearchConfig(successMessage = "Web Search 模拟配置已生效") {
   webSearchSaving.value = true;
   try {
     const payload = buildWebSearchPayload();
@@ -1503,12 +1517,21 @@ async function saveWebSearch() {
       body: JSON.stringify(payload)
     });
     assignWebSearchConfig(data);
-    ElMessage.success("Web Search 模拟配置已保存");
+    if (successMessage) {
+      ElMessage.success(successMessage);
+    }
+    return true;
   } catch (error) {
     ElMessage.error(error.message);
+    await loadWebSearch();
+    return false;
   } finally {
     webSearchSaving.value = false;
   }
+}
+
+async function handleWebSearchEnabledChange() {
+  await persistWebSearchConfig("Web Search 模拟开关已生效");
 }
 
 function openWebSearchKeyDrawer(key = null, index = -1) {
@@ -1518,7 +1541,7 @@ function openWebSearchKeyDrawer(key = null, index = -1) {
   webSearchKeyDrawerVisible.value = true;
 }
 
-function applyWebSearchKeyDraft() {
+async function applyWebSearchKeyDraft() {
   try {
     const key = buildWebSearchKeyFromDraft();
     if (webSearchKeyEditingIndex.value === -1) {
@@ -1527,20 +1550,24 @@ function applyWebSearchKeyDraft() {
       webSearchConfig.keys.splice(webSearchKeyEditingIndex.value, 1, key);
     }
     webSearchTestResult.value = null;
-    webSearchKeyDrawerVisible.value = false;
+    const saved = await persistWebSearchConfig("Web Search Key 已生效");
+    if (saved) {
+      webSearchKeyDrawerVisible.value = false;
+    }
   } catch (error) {
     ElMessage.error(error.message);
   }
 }
 
-function deleteWebSearchKey(index) {
+async function deleteWebSearchKey(index) {
   webSearchConfig.keys.splice(index, 1);
   webSearchTestResult.value = null;
+  await persistWebSearchConfig("Web Search Key 已删除");
 }
 
 async function testWebSearchKey(row) {
   if (!row?.id) {
-    ElMessage.warning("请先保存配置后再测试这个 Web Search Key");
+    ElMessage.warning("这个 Web Search Key 尚未生效，点击“应用”后再测试");
     return;
   }
   webSearchTestingId.value = row.id;
