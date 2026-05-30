@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 import atexit
 import json
 import sqlite3
@@ -46,6 +48,7 @@ from .db import (
     list_access_api_keys,
     list_users,
     read_log_filter_options,
+    read_log_by_id,
     read_logs_page,
     read_web_search_config,
     replace_web_search_config,
@@ -81,6 +84,7 @@ from .web_search import (
     web_search_calls,
     web_search_log,
     make_tool_result,
+    build_web_search_item,
 )
 
 
@@ -541,6 +545,17 @@ def create_app(settings: Settings | None = None) -> Flask:
         page["filter_options"] = read_log_filter_options(settings.db_path, scope_filters)
         return jsonify(page)
 
+    @app.get("/admin/api/logs/<int:log_id>")
+    def admin_log_detail(log_id: int):
+        user = require_user()
+        filters: dict[str, Any] = {}
+        if user["role"] != "superadmin":
+            filters["owner_username"] = user["username"]
+        log = read_log_by_id(settings.db_path, log_id, filters=filters)
+        if log is None:
+            return jsonify({"error": "log not found"}), 404
+        return jsonify(log)
+
     @app.post("/admin/api/channels/discover-models")
     def admin_discover_models():
         require_user()
@@ -797,32 +812,49 @@ def create_app(settings: Settings | None = None) -> Flask:
             )
 
             if should_simulate_web_search:
-                try:
-                    response_payload, upstream_response, web_search_details = _run_web_search_simulation(
-                        channel=channel,
-                        upstream_request=upstream_request,
-                        payload=payload,
-                        original_model=route.original_model,
-                        default_timeout=settings.default_timeout,
-                        db_path=settings.db_path,
-                    )
-                except WebSearchSimulationUpstreamError as exc:
-                    web_search_details = exc.details
-                    log_payload["web_search"] = redact(web_search_details)
-                    raise exc.proxy_error from exc
-                log_payload["web_search"] = redact(web_search_details)
-                log_payload["upstream_response_body"] = redact(upstream_response)
-                if channel["type"] == "chat":
-                    reasoning_cache.remember_chat_response(upstream_response, cache_namespace)
-                if channel["type"] == "messages":
-                    reasoning_cache.remember_messages_response(upstream_response, cache_namespace)
+                web_search_details: dict[str, Any] = {}
                 if stream_requested:
+                    # ── streaming path: run the simulation incrementally ──
+                    # The generator yields web_search_call in_progress /
+                    # completed items *as* each search happens, then streams
+                    # the final model response from upstream so the client
+                    # sees a typewriter-style experience.
                     def stream_web_search_response():
                         nonlocal ttft_ms
                         stream_error = None
                         ttft_recorded = False
                         try:
-                            for line in responses_sse_events(response_payload):
+                            model_for_sse = route.original_model or payload.get("model")
+                            response_id = f"resp_{uuid.uuid4().hex}"
+                            def emit_sse(event: str, p: dict[str, Any]) -> str:
+                                data = json.dumps({"type": event, **p}, ensure_ascii=False, separators=(",", ":"))
+                                return f"event: {event}\ndata: {data}\n\n"
+                            yield emit_sse(
+                                "response.created",
+                                {
+                                    "response": {
+                                        "id": response_id,
+                                        "object": "response",
+                                        "created_at": int(time.time()),
+                                        "status": "in_progress",
+                                        "model": model_for_sse,
+                                        "output": [],
+                                    },
+                                },
+                            )
+
+                            for line in _web_search_simulation_stream(
+                                channel=channel,
+                                upstream_request=upstream_request,
+                                payload=payload,
+                                original_model=route.original_model,
+                                default_timeout=settings.default_timeout,
+                                db_path=settings.db_path,
+                                model_for_sse=model_for_sse,
+                                cache_namespace=cache_namespace,
+                                reasoning_cache=reasoning_cache,
+                                web_search_details=web_search_details,
+                            ):
                                 if not ttft_recorded and _counts_for_ttft(line):
                                     ttft_recorded = True
                                     ttft_ms = int((time.time() - started) * 1000)
@@ -831,11 +863,12 @@ def create_app(settings: Settings | None = None) -> Flask:
                             stream_error = str(exc)
                             raise
                         finally:
+                            log_payload["web_search"] = redact(web_search_details)
                             write_db_record(
                                 record_status_code=200,
                                 record_duration_ms=int((time.time() - started) * 1000),
                                 record_ttft_ms=ttft_ms,
-                                response_body=upstream_response,
+                                response_body=None,
                                 response_protocol=channel["type"] if channel is not None else None,
                                 error=stream_error,
                             )
@@ -846,6 +879,35 @@ def create_app(settings: Settings | None = None) -> Flask:
                         mimetype="text/event-stream",
                         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
                     )
+
+                # ── non-streaming path: block until complete ──
+                try:
+                    intermediate_rounds, final_upstream_request, final_nonstream_response, details = _run_web_search_simulation(
+                        channel=channel,
+                        upstream_request=upstream_request,
+                        payload=payload,
+                        original_model=route.original_model,
+                        default_timeout=settings.default_timeout,
+                        db_path=settings.db_path,
+                    )
+                    web_search_details = details
+                except WebSearchSimulationUpstreamError as exc:
+                    web_search_details = exc.details
+                    log_payload["web_search"] = redact(web_search_details)
+                    raise exc.proxy_error from exc
+                log_payload["web_search"] = redact(web_search_details)
+                log_payload["upstream_response_body"] = redact(final_nonstream_response) if final_nonstream_response is not None else None
+                if final_nonstream_response is not None:
+                    if channel["type"] == "chat":
+                        reasoning_cache.remember_chat_response(final_nonstream_response, cache_namespace)
+                    if channel["type"] == "messages":
+                        reasoning_cache.remember_messages_response(final_nonstream_response, cache_namespace)
+                response_payload = _build_web_search_final_response(
+                    intermediate_rounds,
+                    final_nonstream_response,
+                    route.original_model,
+                    channel["type"],
+                )
                 return jsonify(response_payload)
 
             if stream_requested and channel["type"] in {"messages", "chat"}:
@@ -1112,12 +1174,13 @@ def _run_web_search_simulation(
     original_model: str | None,
     default_timeout: int,
     db_path: Path,
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any] | None, dict[str, Any]]:
     protocol = channel["type"]
     request_payload = deepcopy(upstream_request)
     request_payload["stream"] = False
     web_results: list[dict[str, Any]] = []
     upstream_calls: list[dict[str, Any]] = []
+    intermediate_rounds: list[dict[str, Any]] = []
     web_limit = max_web_search_calls(payload)
     web_executed = 0
     max_iterations = max(web_limit + 3, 3)
@@ -1161,7 +1224,7 @@ def _run_web_search_simulation(
                     include_result=False,
                 )
                 response_payload = add_source_annotations(response_payload, web_results)
-            return response_payload, upstream_response, web_search_log(web_results, upstream_calls)
+            return intermediate_rounds, request_payload, upstream_response, web_search_log(web_results, upstream_calls)
 
         current_results: list[dict[str, Any]] = []
         current_requires_final_answer = False
@@ -1225,18 +1288,26 @@ def _run_web_search_simulation(
                 current_requires_final_answer = True
 
         if other_calls:
-            response_payload = convert_response(
-                upstream_response,
-                "responses",
-                protocol,
-                original_model,
-            )
-            response_payload = replace_web_search_function_items(
-                response_payload,
-                current_results,
-                include_result=True,
-            )
-            return response_payload, upstream_response, web_search_log(web_results, upstream_calls)
+            intermediate_rounds.append({
+                "iteration": iteration + 1,
+                "upstream_response": upstream_response,
+                "current_web_results": list(current_results),
+                "all_web_results": list(web_results),
+                "queries": [
+                    result.get("query") for result in current_results if result.get("query")
+                ],
+            })
+            return intermediate_rounds, request_payload, upstream_response, web_search_log(web_results, upstream_calls)
+
+        intermediate_rounds.append({
+            "iteration": iteration + 1,
+            "upstream_response": upstream_response,
+            "current_web_results": list(current_results),
+            "all_web_results": list(web_results),
+            "queries": [
+                result.get("query") for result in current_results if result.get("query")
+            ],
+        })
 
         request_payload = append_tool_results(
             request_payload,
@@ -1275,7 +1346,8 @@ def _run_web_search_simulation(
                 include_result=False,
             )
             response_payload = add_source_annotations(response_payload, web_results)
-            return response_payload, upstream_response, web_search_log(web_results, upstream_calls)
+            return intermediate_rounds, request_payload, upstream_response, web_search_log(web_results, upstream_calls)
+
 
     response_payload = convert_response(
         upstream_response,
@@ -1291,7 +1363,7 @@ def _run_web_search_simulation(
     response_payload = add_source_annotations(response_payload, web_results)
     details = web_search_log(web_results, upstream_calls)
     details["error"] = "web_search simulation stopped after iteration guard"
-    return response_payload, upstream_response, details
+    return intermediate_rounds, request_payload, upstream_response, details
 
 
 class WebSearchSimulationUpstreamError(Exception):
@@ -1363,6 +1435,68 @@ def _test_models(channel: dict[str, Any], model: Any) -> tuple[str, str]:
 def _visible_params(payload: dict[str, Any]) -> dict[str, Any]:
     hidden = {"messages", "input", "instructions", "system", "tools"}
     return {key: redact(value) for key, value in payload.items() if key not in hidden}
+
+
+def _patch_sse_output_indices(line: str, offset: int) -> str:
+    """Add *offset* to every output_index field in an SSE data payload."""
+    if offset <= 0:
+        return line
+    if '\n' not in line:
+        return line
+    event_part, data_str = line.split('\n', 1)
+    if not data_str.startswith('data: '):
+        return line
+    json_text = data_str[len('data: '):]
+    try:
+        payload = json.loads(json_text)
+    except json.JSONDecodeError:
+        return line
+    _add_offset(payload, offset)
+    new_data = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+    return f"{event_part}\ndata: {new_data}\n\n"
+
+
+def _inject_web_search_into_completed_sse(
+    line: str,
+    web_results: list[dict[str, Any]],
+    offset: int,
+) -> str:
+    """Modify a response.completed SSE line so its output array includes
+    web_search_call items (at the front) and indices match the stream."""
+    if not line.startswith('event: response.completed\n'):
+        return line
+    _, data_str = line.split('\n', 1)
+    if not data_str.startswith('data: '):
+        return line
+    json_text = data_str[len('data: '):]
+    try:
+        payload = json.loads(json_text)
+    except json.JSONDecodeError:
+        return line
+    response = payload.get('response', {})
+    output = list(response.get('output', []) or [])
+    web_items = [build_web_search_item(r, include_result=True) for r in web_results]
+    merged = [*web_items, *output]
+    response['output'] = merged
+    payload['response'] = response
+    # Re-apply offset since rebuild_would reset indices in completed payload
+    _add_offset(payload, offset)
+    new_data = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+    return f"event: response.completed\ndata: {new_data}\n\n"
+
+
+def _add_offset(obj: Any, offset: int) -> None:
+    """Recursively add *offset* to every 'output_index' integer in *obj*."""
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key == 'output_index' and isinstance(value, int):
+                obj[key] = value + offset
+            else:
+                _add_offset(value, offset)
+    elif isinstance(obj, list):
+        for item in obj:
+            _add_offset(item, offset)
+
 
 
 def _counts_for_ttft(sse_line: str) -> bool:
@@ -1503,6 +1637,306 @@ def _inject_fallback_thinking_on_tool_use(request_payload: dict[str, Any]) -> li
         ]
         injected.extend(tool_use_ids)
     return injected
+
+
+
+def _web_search_simulation_stream(
+    *,
+    channel: dict[str, Any],
+    upstream_request: dict[str, Any],
+    payload: dict[str, Any],
+    original_model: str | None,
+    default_timeout: int,
+    db_path: Path,
+    model_for_sse: str | None,
+    cache_namespace: str,
+    reasoning_cache: ReasoningCache | None = None,
+    web_search_details: dict[str, Any] | None = None,
+) -> Iterable[str]:
+    """Generator: yields SSE events as web search simulation progresses.
+
+    Unlike _run_web_search_simulation which collects everything and replays
+    at the end, this generator emits web_search_call in_progress/completed
+    items *as* each search happens, then streams the final model response
+    from upstream.  This gives the client a typewriter-style experience
+    instead of one big burst at the end.
+    """
+    protocol = channel["type"]
+    request_payload = deepcopy(upstream_request)
+    request_payload["stream"] = False
+    web_results: list[dict[str, Any]] = []
+    upstream_calls: list[dict[str, Any]] = []
+    web_limit = max_web_search_calls(payload)
+    web_executed = 0
+    max_iterations = max(web_limit + 3, 3)
+    sequence_number = 0
+    next_output_index = 0
+
+    def emit(event: str, payload_data: dict[str, Any]) -> str:
+        nonlocal sequence_number
+        enriched = {"type": event, **payload_data, "sequence_number": sequence_number}
+        sequence_number += 1
+        return f"event: {event}\ndata: {json.dumps(enriched, ensure_ascii=False, separators=(',', ':'))}\n\n"
+
+    def alloc_index() -> int:
+        nonlocal next_output_index
+        idx = next_output_index
+        next_output_index += 1
+        return idx
+
+    for iteration in range(max_iterations):
+        upstream_response = _web_search_post_upstream(
+            channel=channel,
+            request_payload=request_payload,
+            default_timeout=default_timeout,
+            web_results=web_results,
+            upstream_calls=upstream_calls,
+        )
+        tool_calls = extract_tool_calls(upstream_response, protocol)
+        web_calls = web_search_calls(tool_calls)
+        other_calls = non_web_search_calls(tool_calls)
+        upstream_calls.append({
+            "iteration": iteration + 1,
+            "tool_calls": [
+                {"id": tc.get("id"), "name": tc.get("name")}
+                for tc in tool_calls
+            ],
+        })
+
+        if not web_calls:
+            # Final round: stream from upstream
+            request_payload["stream"] = True
+            if web_search_details is not None:
+                web_search_details.update(web_search_log(web_results, upstream_calls))
+            try:
+                upstream_lines = stream_upstream(channel, request_payload, default_timeout)
+            except ProxyError as exc:
+                if web_search_details is not None:
+                    web_search_details["stream_fallback_error"] = str(exc)
+                response_payload = convert_response(
+                    upstream_response, "responses", protocol, original_model,
+                )
+                response_payload = _replace_or_prepend_web_search_items(
+                    response_payload, web_results
+                )
+                response_payload = add_source_annotations(response_payload, web_results)
+                for line in responses_sse_events(response_payload, skip_response_created=True):
+                    yield line
+                return
+
+            def remember(resp: dict[str, Any]) -> None:
+                if reasoning_cache is not None:
+                    if protocol == "messages":
+                        reasoning_cache.remember_messages_response(resp, cache_namespace)
+                    elif protocol == "chat":
+                        reasoning_cache.remember_chat_response(resp, cache_namespace)
+
+            if protocol == "chat":
+                event_iter = chat_sse_to_responses_events(
+                    upstream_lines, model_for_sse, remember,
+                    skip_tool_names={"web_search"}, skip_response_created=True,
+                )
+            else:
+                event_iter = messages_sse_to_responses_events(
+                    upstream_lines, model_for_sse, remember,
+                    skip_response_created=True,
+                )
+            for line in event_iter:
+                line = _patch_sse_output_indices(line, next_output_index)
+                if line.startswith("event: response.completed\n"):
+                    line = _inject_web_search_into_completed_sse(
+                        line, web_results, next_output_index,
+                    )
+                yield line
+            return
+
+        # Emit web_search_call items as each search happens
+        current_results: list[dict[str, Any]] = []
+        for tool_call in web_calls:
+            call_id = str(tool_call.get("id"))
+            item_idx = alloc_index()
+            item_id = f"ws_{uuid.uuid4().hex}"
+
+            query, parse_error = parse_web_search_query(tool_call.get("arguments"))
+
+            # Emit in_progress so the client immediately shows "searching..."
+            yield emit(
+                "response.output_item.added",
+                {
+                    "output_index": item_idx,
+                    "item": {
+                        "id": item_id,
+                        "type": "web_search_call",
+                        "status": "in_progress",
+                        "action": {"type": "search", "query": query or ""},
+                    },
+                },
+            )
+
+            # Execute search
+            if parse_error is not None:
+                result = make_tool_result(
+                    call_id=call_id, query=query,
+                    status="failed", error=parse_error,
+                )
+            elif web_executed >= web_limit:
+                result = make_tool_result(
+                    call_id=call_id, query="",
+                    status="failed", error="已达到 web_search 调用上限，不能继续搜索",
+                )
+            else:
+                reserved = reserve_tavily_key(db_path)
+                if reserved is None:
+                    result = make_tool_result(
+                        call_id=call_id, query=query,
+                        status="failed", error="搜索不可用",
+                    )
+                else:
+                    web_executed += 1
+                    tavily_result = _web_search_provider_search(reserved, query or "")
+                    summary = tavily_result.get("summary") or {}
+                    result = make_tool_result(
+                        call_id=call_id, query=query,
+                        status="completed" if tavily_result.get("ok") else "failed",
+                        answer=str(summary.get("answer") or ""),
+                        results=summary.get("results") if isinstance(summary.get("results"), list) else [],
+                        error=None if tavily_result.get("ok") else "搜索不可用",
+                        log_error=summary.get("error"),
+                        error_type=tavily_result.get("error_type"),
+                        http_status=tavily_result.get("status_code"),
+                        key=reserved,
+                        raw=tavily_result.get("raw") if isinstance(tavily_result, dict) else None,
+                    )
+
+            current_results.append(result)
+            web_results.append(result)
+
+            # Emit completed so the client shows the search results
+            web_item = build_web_search_item(result, include_result=True)
+            yield emit(
+                "response.output_item.done",
+                {"output_index": item_idx, "item": web_item},
+            )
+
+        if other_calls:
+            # Model produced non-web-search tool calls - stream from upstream
+            request_payload["stream"] = True
+            if web_search_details is not None:
+                web_search_details.update(web_search_log(web_results, upstream_calls))
+            try:
+                upstream_lines = stream_upstream(channel, request_payload, default_timeout)
+            except ProxyError as exc:
+                if web_search_details is not None:
+                    web_search_details["stream_fallback_error"] = str(exc)
+                response_payload = convert_response(
+                    upstream_response, "responses", protocol, original_model,
+                )
+                response_payload = _replace_or_prepend_web_search_items(
+                    response_payload, web_results
+                )
+                response_payload = add_source_annotations(response_payload, web_results)
+                for line in responses_sse_events(response_payload, skip_response_created=True):
+                    yield line
+                return
+
+            def remember(resp: dict[str, Any]) -> None:
+                if reasoning_cache is not None:
+                    if protocol == "messages":
+                        reasoning_cache.remember_messages_response(resp, cache_namespace)
+                    elif protocol == "chat":
+                        reasoning_cache.remember_chat_response(resp, cache_namespace)
+
+            if protocol == "chat":
+                event_iter = chat_sse_to_responses_events(
+                    upstream_lines, model_for_sse, remember,
+                    skip_tool_names={"web_search"}, skip_response_created=True,
+                )
+            else:
+                event_iter = messages_sse_to_responses_events(
+                    upstream_lines, model_for_sse, remember,
+                    skip_response_created=True,
+                )
+            for line in event_iter:
+                line = _patch_sse_output_indices(line, next_output_index)
+                if line.startswith("event: response.completed\n"):
+                    line = _inject_web_search_into_completed_sse(
+                        line, web_results, next_output_index,
+                    )
+                yield line
+            return
+
+        # Prepare for next iteration
+        request_payload = append_tool_results(
+            request_payload, upstream_response, protocol, current_results,
+        )
+
+    # Max iterations guard — should not normally be reached
+    response_payload = convert_response(
+        upstream_response, "responses", protocol, original_model,
+    )
+    if web_results:
+        response_payload = _replace_or_prepend_web_search_items(
+            response_payload, web_results
+        )
+        response_payload = add_source_annotations(response_payload, web_results)
+    for line in responses_sse_events(response_payload, skip_response_created=True):
+        yield line
+
+
+def _build_web_search_final_response(
+    intermediate_rounds: list[dict[str, Any]],
+    final_nonstream_response: dict[str, Any] | None,
+    original_model: str | None,
+    protocol: str,
+) -> dict[str, Any]:
+    """Build the final response payload for non-streaming web search."""
+    if final_nonstream_response is None:
+        return {}
+
+    response_payload = convert_response(
+        final_nonstream_response,
+        "responses",
+        protocol,
+        original_model,
+    )
+
+    # Collect all web search results from intermediate rounds
+    all_web_results: list[dict[str, Any]] = []
+    for intermediate in intermediate_rounds:
+        for r in intermediate.get("current_web_results") or []:
+            all_web_results.append(r)
+
+    if all_web_results:
+        response_payload = _replace_or_prepend_web_search_items(
+            response_payload, all_web_results
+        )
+        response_payload = add_source_annotations(response_payload, all_web_results)
+
+    return response_payload
+
+
+def _replace_or_prepend_web_search_items(
+    response_payload: dict[str, Any],
+    web_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    output = response_payload.get("output", []) or []
+    has_web_search_function = any(
+        isinstance(item, dict)
+        and item.get("type") == "function_call"
+        and item.get("name") == "web_search"
+        for item in output
+    )
+    if has_web_search_function:
+        return replace_web_search_function_items(
+            response_payload,
+            web_results,
+            include_result=True,
+        )
+    return prepend_web_search_items(
+        response_payload,
+        web_results,
+        include_result=False,
+    )
 
 
 def main() -> None:

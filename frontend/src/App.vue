@@ -920,35 +920,70 @@
   </el-dialog>
 
   <el-dialog v-model="logDetailVisible" title="日志详情" width="900px">
-    <el-descriptions v-if="selectedLog" :column="2" border>
-      <el-descriptions-item label="请求 ID">{{ selectedLog.request_id }}</el-descriptions-item>
-      <el-descriptions-item label="请求状态">
-        {{ selectedLog.request_status === "success" ? "成功" : "失败" }}
-      </el-descriptions-item>
-      <el-descriptions-item label="模型">{{ selectedLog.model }}</el-descriptions-item>
-      <el-descriptions-item label="上游模型">{{ selectedLog.upstream_model }}</el-descriptions-item>
-      <el-descriptions-item label="状态码">{{ selectedLog.status_code }}</el-descriptions-item>
-      <el-descriptions-item label="成本">{{ formatCost(selectedLog.cost) }}</el-descriptions-item>
-    </el-descriptions>
-    <el-tabs style="margin-top: 16px">
-      <el-tab-pane label="请求头">
-        <pre class="json-view">{{ formatStoredJson(selectedLog?.request_headers) }}</pre>
-      </el-tab-pane>
-      <el-tab-pane label="请求 Body">
-        <pre class="json-view">{{ formatStoredJson(selectedLog?.request_body) }}</pre>
-      </el-tab-pane>
-      <el-tab-pane label="响应">
-        <div class="detail-grid">
-          <el-alert v-if="selectedLog?.error" title="错误" type="error" :closable="false">
-            <pre class="json-view">{{ selectedLog.error }}</pre>
-          </el-alert>
-          <pre class="json-view">{{ formatStoredJson(selectedLog?.response_body) }}</pre>
-        </div>
-      </el-tab-pane>
-      <el-tab-pane label="Web Search">
-        <pre class="json-view">{{ formatStoredJson(selectedLog?.web_search_json) }}</pre>
-      </el-tab-pane>
-    </el-tabs>
+    <div v-loading="logDetailLoading">
+      <el-descriptions v-if="selectedLog" :column="2" border>
+        <el-descriptions-item label="请求 ID">{{ selectedLog.request_id }}</el-descriptions-item>
+        <el-descriptions-item label="请求状态">
+          {{ selectedLog.request_status === "success" ? "成功" : "失败" }}
+        </el-descriptions-item>
+        <el-descriptions-item label="模型">{{ selectedLog.model }}</el-descriptions-item>
+        <el-descriptions-item label="上游模型">{{ selectedLog.upstream_model }}</el-descriptions-item>
+        <el-descriptions-item label="状态码">{{ selectedLog.status_code }}</el-descriptions-item>
+        <el-descriptions-item label="成本">{{ formatCost(selectedLog.cost) }}</el-descriptions-item>
+      </el-descriptions>
+      <el-tabs v-if="selectedLog" style="margin-top: 16px">
+        <el-tab-pane label="请求头">
+          <div class="json-view-frame">
+            <el-tooltip content="复制请求头">
+              <el-button
+                class="json-copy-button"
+                :icon="CopyDocument"
+                circle
+                size="small"
+                @click="copyLogDetailContent('请求头', selectedLog?.request_headers)"
+              />
+            </el-tooltip>
+            <pre class="json-view json-view--with-action">{{ formatStoredJson(selectedLog?.request_headers) }}</pre>
+          </div>
+        </el-tab-pane>
+        <el-tab-pane label="请求 Body">
+          <div class="json-view-frame">
+            <el-tooltip content="复制请求 Body">
+              <el-button
+                class="json-copy-button"
+                :icon="CopyDocument"
+                circle
+                size="small"
+                @click="copyLogDetailContent('请求 Body', selectedLog?.request_body)"
+              />
+            </el-tooltip>
+            <pre class="json-view json-view--with-action">{{ formatStoredJson(selectedLog?.request_body) }}</pre>
+          </div>
+        </el-tab-pane>
+        <el-tab-pane label="响应">
+          <div class="detail-grid">
+            <el-alert v-if="selectedLog?.error" title="错误" type="error" :closable="false">
+              <pre class="json-view">{{ selectedLog.error }}</pre>
+            </el-alert>
+            <div class="json-view-frame">
+              <el-tooltip content="复制响应">
+                <el-button
+                  class="json-copy-button"
+                  :icon="CopyDocument"
+                  circle
+                  size="small"
+                  @click="copyLogDetailContent('响应', selectedLog?.response_body)"
+                />
+              </el-tooltip>
+              <pre class="json-view json-view--with-action">{{ formatStoredJson(selectedLog?.response_body) }}</pre>
+            </div>
+          </div>
+        </el-tab-pane>
+        <el-tab-pane label="Web Search">
+          <pre class="json-view">{{ formatStoredJson(selectedLog?.web_search_json) }}</pre>
+        </el-tab-pane>
+      </el-tabs>
+    </div>
   </el-dialog>
 </template>
 
@@ -1066,6 +1101,7 @@ const logFilters = reactive({
 });
 const selectedLog = ref(null);
 const logDetailVisible = ref(false);
+const logDetailLoading = ref(false);
 
 const logColumnDefinitions = [
   { key: "created_at", prop: "created_at", label: "时间", width: 180 },
@@ -1788,9 +1824,58 @@ function resetLogColumns() {
   visibleLogColumnKeys.value = defaultLogColumnKeys.slice();
 }
 
-function openLogDetail(row) {
+async function openLogDetail(row) {
   selectedLog.value = row;
   logDetailVisible.value = true;
+  logDetailLoading.value = true;
+  try {
+    selectedLog.value = await api(`/admin/api/logs/${row.id}`);
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    logDetailLoading.value = false;
+  }
+}
+
+async function copyLogDetailContent(label, value) {
+  const text = formatStoredJson(value);
+  if (!text) {
+    ElMessage.warning(`${label}没有可复制内容`);
+    return;
+  }
+  try {
+    await copyLogDetailText(text);
+    ElMessage.success(`${label}已复制`);
+  } catch (error) {
+    ElMessage.error(error.message || "复制失败");
+  }
+}
+
+async function copyLogDetailText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  fallbackCopyLogDetailText(text);
+}
+
+function fallbackCopyLogDetailText(text) {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.top = "0";
+  textarea.style.left = "0";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  if (!copied) {
+    throw new Error("浏览器拒绝了复制操作");
+  }
 }
 
 function requestIdSuggestions(query, callback) {

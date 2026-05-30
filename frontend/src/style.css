@@ -250,10 +250,29 @@ body {
 
 .json-view {
   margin: 0;
+  padding: 12px;
   max-height: 60vh;
   overflow: auto;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  background: var(--el-fill-color-lighter);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.json-view-frame {
+  position: relative;
+}
+
+.json-view--with-action {
+  padding-top: 44px;
+}
+
+.json-copy-button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
 }
 
 .detail-grid {

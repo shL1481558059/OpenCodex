@@ -176,10 +176,15 @@ def _append_system_instruction(
 
 
 def _responses_payload_has_plan_mode_tag(payload: dict[str, Any]) -> bool:
+    developer_inputs = [
+        item
+        for item in (payload.get("input") or [])
+        if isinstance(item, dict) and item.get("role") == "developer"
+    ]
     return "<proposed_plan>" in _stringify_content(
         {
             "instructions": payload.get("instructions", ""),
-            "input": payload.get("input", []),
+            "input": developer_inputs,
         }
     )
 

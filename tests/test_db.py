@@ -22,6 +22,7 @@ from opencodex_proxy.db import (
     list_access_api_keys,
     read_log_filter_options,
     read_channels,
+    read_log_by_id,
     read_logs,
     read_web_search_config,
     replace_channels,
@@ -249,6 +250,62 @@ class TestAsyncDBWriter(unittest.TestCase):
         self.assertEqual(page["page_size"], 2)
         self.assertEqual(len(page["events"]), 2)
         self.assertIn(page["events"][0]["request_status"], {"success", "failed"})
+
+    def test_paginated_logs_truncate_large_fields_but_detail_keeps_full_values(self):
+        writer = AsyncDBWriter(self.db_path)
+        writer.start()
+        long_headers = json.dumps({"authorization": "Bearer " + "x" * 80})
+        long_request = json.dumps({"input": "a" * 80})
+        long_response = json.dumps({"output": "b" * 80})
+        long_web_search = json.dumps({"calls": [{"query": "c" * 80}]})
+        writer.write(
+            {
+                "request_id": "req_long",
+                "created_at": time.time(),
+                "method": "POST",
+                "path": "/v1/responses",
+                "client_ip": "127.0.0.1",
+                "request_headers": long_headers,
+                "request_body": long_request,
+                "model": "gpt-4o",
+                "upstream_model": "gpt-4o",
+                "channel_id": "openai",
+                "is_stream": 0,
+                "ttft_ms": None,
+                "duration_ms": 100,
+                "status_code": 200,
+                "response_body": long_response,
+                "input_tokens": 100,
+                "cached_tokens": 0,
+                "output_tokens": 50,
+                "cost": 0.001,
+                "web_search_json": long_web_search,
+                "error": None,
+            }
+        )
+        time.sleep(0.1)
+        writer.stop()
+
+        from opencodex_proxy.db import read_logs_page
+
+        page = read_logs_page(self.db_path, page=1, page_size=10)
+        event = page["events"][0]
+
+        self.assertEqual(event["request_headers"], long_headers[:30])
+        self.assertEqual(event["request_body"], long_request[:30])
+        self.assertEqual(event["response_body"], long_response[:30])
+        self.assertEqual(event["web_search_json"], long_web_search[:30])
+        self.assertEqual(event["request_headers_truncated"], 1)
+        self.assertEqual(event["request_body_truncated"], 1)
+        self.assertEqual(event["response_body_truncated"], 1)
+        self.assertEqual(event["web_search_json_truncated"], 1)
+
+        detail = read_log_by_id(self.db_path, event["id"])
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail["request_headers"], long_headers)
+        self.assertEqual(detail["request_body"], long_request)
+        self.assertEqual(detail["response_body"], long_response)
+        self.assertEqual(detail["web_search_json"], long_web_search)
 
     def test_log_filter_options_are_loaded_from_existing_logs(self):
         writer = AsyncDBWriter(self.db_path)
