@@ -1316,11 +1316,11 @@ class AppTests(unittest.TestCase):
                 for item in completed["response"]["output"]
             )
         )
-        self.assertEqual(completed["response"]["usage"]["input_tokens"], 7)
-        self.assertEqual(completed["response"]["usage"]["output_tokens"], 6)
-        self.assertEqual(completed["response"]["usage"]["total_tokens"], 13)
+        self.assertEqual(completed["response"]["usage"]["input_tokens"], 6)
+        self.assertEqual(completed["response"]["usage"]["output_tokens"], 5)
+        self.assertEqual(completed["response"]["usage"]["total_tokens"], 11)
         self.assertEqual(mock_stream.call_count, 2)
-        self.assertEqual(mock_post.call_count, 1)
+        self.assertEqual(mock_post.call_count, 0)
         self.assertEqual(mock_tavily.call_args.args, ("tvly-test", "OpenAI"))
 
         db_writer = self.app.config["OPENCODEX_DB_WRITER"]
@@ -1328,11 +1328,89 @@ class AppTests(unittest.TestCase):
         logs = read_logs(self.db_path)
         self.assertEqual(len(logs), 1)
         log = logs[0]
-        self.assertEqual(log["input_tokens"], 7)
-        self.assertEqual(log["output_tokens"], 6)
+        self.assertEqual(log["input_tokens"], 6)
+        self.assertEqual(log["output_tokens"], 5)
         self.assertIsNotNone(log["response_body"])
         web_log = json.loads(log["web_search_json"])
         self.assertEqual(web_log["calls"][0]["query"], "OpenAI")
+
+    @patch("opencodex_proxy.app.tavily_search")
+    @patch("opencodex_proxy.app.post_upstream")
+    @patch("opencodex_proxy.app.stream_upstream")
+    def test_responses_web_search_stream_continues_when_stream_requests_more_search(
+        self, mock_stream, mock_post, mock_tavily
+    ):
+        self.enable_web_search()
+        mock_tavily.side_effect = [
+            tavily_success("first search"),
+            tavily_success("second search"),
+        ]
+        mock_stream.side_effect = [
+            iter(
+                [
+                    'data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_web_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\":\\"OpenAI\\"}"}}]},"finish_reason":null}]}\n',
+                    "\n",
+                    'data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}\n',
+                    "\n",
+                    "data: [DONE]\n",
+                    "\n",
+                ]
+            ),
+            iter(
+                [
+                    'data: {"id":"chatcmpl_more_tool","object":"chat.completion.chunk","created":2,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_web_2","type":"function","function":{"name":"web_search","arguments":"{\\"query\\":\\"OpenAI May\\"}"}}]},"finish_reason":null}]}\n',
+                    "\n",
+                    'data: {"id":"chatcmpl_more_tool","object":"chat.completion.chunk","created":2,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}\n',
+                    "\n",
+                    "data: [DONE]\n",
+                    "\n",
+                ]
+            ),
+            iter(
+                [
+                    'data: {"id":"chatcmpl_answer","object":"chat.completion.chunk","created":3,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"final answer"},"finish_reason":null}]}\n',
+                    "\n",
+                    'data: {"id":"chatcmpl_answer","object":"chat.completion.chunk","created":3,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":6,"completion_tokens":2,"total_tokens":8}}\n',
+                    "\n",
+                    "data: [DONE]\n",
+                    "\n",
+                ]
+            ),
+        ]
+        mock_post.side_effect = [
+            chat_text_response("probe answer"),
+            chat_text_response("probe final"),
+        ]
+
+        response = self.client.post(
+            "/v1/responses",
+            json={
+                "model": "m",
+                "input": "search",
+                "tools": [{"type": "web_search"}],
+                "stream": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("final answer", body)
+        events = self.parse_sse_events(body)
+        completed = next(
+            data
+            for event, data in events
+            if event == "response.completed"
+        )
+        self.assertEqual(
+            [item["type"] for item in completed["response"]["output"]],
+            ["web_search_call", "web_search_call", "message"],
+        )
+        self.assertEqual(mock_tavily.call_count, 2)
+        self.assertEqual(
+            [call.args[1] for call in mock_tavily.call_args_list],
+            ["OpenAI", "OpenAI May"],
+        )
+        mock_post.assert_not_called()
 
     @patch("opencodex_proxy.app.post_upstream")
     def test_responses_chat_tool_calls_are_returned_as_function_call_items(self, mock_post):
@@ -2752,7 +2830,7 @@ class AppTests(unittest.TestCase):
     def test_logs_are_available_and_basic(self, mock_post):
         mock_post.return_value = {
             "id": "chatcmpl_1",
-            "model": "gpt-4o",
+            "model": "gpt-5.4",
             "choices": [{"message": {"role": "assistant", "content": "pong"}}],
             "usage": {
                 "prompt_tokens": 100,
