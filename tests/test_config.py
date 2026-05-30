@@ -67,59 +67,44 @@ class ConfigTests(unittest.TestCase):
                             }
                         )
 
-    def test_legacy_routing_is_removed_on_save(self):
+    def test_unknown_top_level_config_fields_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "config.db"
             manager = ConfigManager(db_path)
-            saved = manager.save(
-                {
-                    "channels": [
-                        {
-                            "id": "chat",
-                            "type": "chat",
-                            "baseurl": "https://example.test/v1",
-                        }
-                    ],
-                    "routing": {"default_channel": "chat", "model_routes": []},
-                }
-            )
+            with self.assertRaises(ConfigError):
+                manager.save(
+                    {
+                        "channels": [
+                            {
+                                "id": "chat",
+                                "type": "chat",
+                                "baseurl": "https://example.test/v1",
+                            }
+                        ],
+                        "routing": {"default_channel": "chat", "model_routes": []},
+                    }
+                )
 
-            self.assertNotIn("routing", saved)
-            self.assertNotIn("routing", manager.raw)
-
-    def test_legacy_protocol_override_compat_fields_are_removed_on_save(self):
+    def test_unknown_compat_fields_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "config.db"
             manager = ConfigManager(db_path)
-            saved = manager.save(
-                {
-                    "channels": [
-                        {
-                            "id": "chat",
-                            "type": "chat",
-                            "baseurl": "https://example.test/v1",
-                            "compat": {
-                                "force_protocol": "messages",
-                                "tool_request_protocol": "messages",
-                                "drop_params": ["metadata"],
-                                "by_protocol": {
-                                    "messages": {
-                                        "force_protocol": "chat",
-                                        "tool_request_protocol": "responses",
-                                        "drop_params": ["parallel_tool_calls"],
-                                    }
+            with self.assertRaises(ConfigError):
+                manager.save(
+                    {
+                        "channels": [
+                            {
+                                "id": "chat",
+                                "type": "chat",
+                                "baseurl": "https://example.test/v1",
+                                "compat": {
+                                    "drop_params": ["metadata"],
+                                    "force_protocol": "messages",
                                 },
-                            },
-                        }
-                    ]
-                }
-            )
-
-            compat = saved["channels"][0]["compat"]
-            self.assertNotIn("force_protocol", compat)
-            self.assertNotIn("tool_request_protocol", compat)
-            self.assertNotIn("by_protocol", compat)
-            self.assertEqual(compat["drop_params"], ["metadata"])
+                            }
+                        ]
+                    }
+                )
 
     def test_first_enabled_channel_is_used(self):
         config = {
@@ -203,26 +188,23 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(RoutingError):
             choose_channel(config, "gpt-4o")
 
-    def test_model_mapping_string_array_is_normalized(self):
+    def test_model_mapping_string_array_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "config.db"
             manager = ConfigManager(db_path)
-            saved = manager.save(
-                {
-                    "channels": [
-                        {
-                            "id": "chat",
-                            "type": "chat",
-                            "baseurl": "https://example.test/v1",
-                            "models": ["gpt-4"],
-                        }
-                    ]
-                }
-            )
-            self.assertEqual(
-                saved["channels"][0]["models"],
-                [{"model": "gpt-4", "upstream_model": "gpt-4"}],
-            )
+            with self.assertRaises(ConfigError):
+                manager.save(
+                    {
+                        "channels": [
+                            {
+                                "id": "chat",
+                                "type": "chat",
+                                "baseurl": "https://example.test/v1",
+                                "models": ["gpt-4"],
+                            }
+                        ]
+                    }
+                )
 
     def test_model_mapping_empty_upstream_defaults_to_model(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -280,6 +262,26 @@ class ConfigTests(unittest.TestCase):
                         ]
                     }
                 )
+
+    def test_removed_auth_modes_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "config.db"
+            manager = ConfigManager(db_path)
+            for auth_mode in ("pass_through_or_config", "pass_through"):
+                with self.subTest(auth_mode=auth_mode):
+                    with self.assertRaises(ConfigError):
+                        manager.save(
+                            {
+                                "channels": [
+                                    {
+                                        "id": "chat",
+                                        "type": "chat",
+                                        "baseurl": "https://example.test/v1",
+                                        "auth_mode": auth_mode,
+                                    }
+                                ]
+                            }
+                        )
 
     def test_all_disabled_channels_are_not_routed(self):
         config = {

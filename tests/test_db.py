@@ -483,7 +483,7 @@ class TestChannelStore(unittest.TestCase):
         self.assertFalse(channels[0]["enabled"])
         self.assertEqual(channels[1]["timeout_seconds"], 30)
         self.assertEqual(channels[1]["retry_count"], 3)
-        self.assertEqual(channels[1]["auth_mode"], "pass_through_or_config")
+        self.assertEqual(channels[1]["auth_mode"], "config")
         self.assertTrue(channels[1]["enabled"])
 
     def test_replace_channels_removes_deleted_rows(self):
@@ -551,7 +551,7 @@ class TestChannelStore(unittest.TestCase):
                 type TEXT NOT NULL,
                 baseurl TEXT NOT NULL,
                 apikey TEXT NOT NULL DEFAULT '',
-                auth_mode TEXT NOT NULL DEFAULT 'pass_through_or_config',
+                auth_mode TEXT NOT NULL DEFAULT 'removed_auth_mode',
                 headers_json TEXT NOT NULL DEFAULT '{}',
                 timeout_seconds INTEGER NOT NULL,
                 compat_json TEXT NOT NULL DEFAULT '{}',
@@ -566,7 +566,7 @@ class TestChannelStore(unittest.TestCase):
                 created_at, updated_at
             ) VALUES (
                 'legacy', 0, '', 'chat', 'https://legacy.example.test/v1', '',
-                'pass_through_or_config', '{}', 30, '{}', 1, 1.0, 1.0
+                'removed_auth_mode', '{}', 30, '{}', 1, 1.0, 1.0
             );
             """
         )
@@ -580,10 +580,14 @@ class TestChannelStore(unittest.TestCase):
         retry_count = conn.execute(
             "SELECT retry_count FROM channels WHERE id = 'legacy'"
         ).fetchone()[0]
+        auth_mode = conn.execute(
+            "SELECT auth_mode FROM channels WHERE id = 'legacy'"
+        ).fetchone()[0]
         conn.close()
         self.assertIn("models_json", columns)
         self.assertIn("retry_count", columns)
         self.assertEqual(retry_count, 3)
+        self.assertEqual(auth_mode, "config")
 
     def test_init_db_migrates_legacy_owner_fields(self):
         conn = sqlite3.connect(str(self.db_path))
@@ -596,7 +600,7 @@ class TestChannelStore(unittest.TestCase):
                 type TEXT NOT NULL,
                 baseurl TEXT NOT NULL,
                 apikey TEXT NOT NULL DEFAULT '',
-                auth_mode TEXT NOT NULL DEFAULT 'pass_through_or_config',
+                auth_mode TEXT NOT NULL DEFAULT 'removed_auth_mode',
                 headers_json TEXT NOT NULL DEFAULT '{}',
                 timeout_seconds INTEGER NOT NULL,
                 compat_json TEXT NOT NULL DEFAULT '{}',
@@ -611,7 +615,7 @@ class TestChannelStore(unittest.TestCase):
                 created_at, updated_at
             ) VALUES (
                 'legacy', 0, '', 'chat', 'https://legacy.example.test/v1', '',
-                'pass_through_or_config', '{}', 30, '{}', 1, 1.0, 1.0
+                'removed_auth_mode', '{}', 30, '{}', 1, 1.0, 1.0
             );
 
             CREATE TABLE request_logs (
@@ -682,6 +686,7 @@ class TestChannelStore(unittest.TestCase):
         self.assertIn("web_search_json", log_columns)
         self.assertEqual(channel_pk, ["owner_username", "id"])
         self.assertEqual(channels[0]["owner_username"], "root")
+        self.assertEqual(channels[0]["auth_mode"], "config")
         self.assertEqual(logs[0]["owner_username"], "root")
         self.assertIsNone(logs[0]["api_key_id"])
 

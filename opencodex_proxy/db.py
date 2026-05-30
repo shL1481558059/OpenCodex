@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS channels (
     type TEXT NOT NULL,
     baseurl TEXT NOT NULL,
     apikey TEXT NOT NULL DEFAULT '',
-    auth_mode TEXT NOT NULL DEFAULT 'pass_through_or_config',
+    auth_mode TEXT NOT NULL DEFAULT 'config',
     headers_json TEXT NOT NULL DEFAULT '{}',
     timeout_seconds INTEGER NOT NULL,
     retry_count INTEGER NOT NULL DEFAULT 3,
@@ -187,6 +187,15 @@ def _migrate_channels(conn: sqlite3.Connection, default_owner_username: str = "a
         """,
         (default_owner_username,),
     )
+    conn.execute(
+        """
+        UPDATE channels
+        SET auth_mode = 'config'
+        WHERE auth_mode IS NULL
+           OR auth_mode = ''
+           OR auth_mode NOT IN ('config', 'none')
+        """
+    )
     if _channel_primary_key(conn) != ["owner_username", "id"]:
         _rebuild_channels_with_owner_primary_key(conn, default_owner_username)
     conn.execute(
@@ -239,7 +248,7 @@ def _rebuild_channels_with_owner_primary_key(
             type TEXT NOT NULL,
             baseurl TEXT NOT NULL,
             apikey TEXT NOT NULL DEFAULT '',
-            auth_mode TEXT NOT NULL DEFAULT 'pass_through_or_config',
+            auth_mode TEXT NOT NULL DEFAULT 'config',
             headers_json TEXT NOT NULL DEFAULT '{}',
             timeout_seconds INTEGER NOT NULL,
             retry_count INTEGER NOT NULL DEFAULT 3,
@@ -261,7 +270,15 @@ def _rebuild_channels_with_owner_primary_key(
         )
         SELECT
             COALESCE(NULLIF(owner_username, ''), ?), id, position, name, type,
-            baseurl, apikey, auth_mode, headers_json, timeout_seconds,
+            baseurl, apikey,
+            CASE
+                WHEN auth_mode IS NULL
+                  OR auth_mode = ''
+                  OR auth_mode NOT IN ('config', 'none')
+                THEN 'config'
+                ELSE auth_mode
+            END,
+            headers_json, timeout_seconds,
             retry_count, compat_json, models_json, enabled, created_at, updated_at
         FROM channels_legacy
         """,
@@ -963,7 +980,7 @@ def replace_channels(
                         channel["type"],
                         channel["baseurl"],
                         channel.get("apikey") or "",
-                        channel.get("auth_mode") or "pass_through_or_config",
+                        channel.get("auth_mode") or "config",
                         json.dumps(channel.get("headers") or {}, ensure_ascii=False),
                         int(channel.get("timeout_seconds") or default_timeout),
                         int(channel.get("retry_count", DEFAULT_RETRY_COUNT)),

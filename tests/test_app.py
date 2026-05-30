@@ -397,7 +397,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(read_channels(self.db_path)[0]["id"], "messages")
         manager = self.app.config["OPENCODEX_CONFIG_MANAGER"]
         self.assertEqual(manager.expanded["channels"][0]["id"], "messages")
-        self.assertNotIn("routing", manager.expanded)
+        self.assertEqual(manager.expanded["channels"][0]["auth_mode"], "config")
 
     def test_admin_export_config_includes_full_apikey(self):
         self.login()
@@ -1520,16 +1520,7 @@ class AppTests(unittest.TestCase):
                         "apikey": "secret",
                         "auth_mode": "config",
                         "timeout_seconds": 30,
-                        "compat": {
-                            "force_protocol": "messages",
-                            "tool_request_protocol": "messages",
-                            "by_protocol": {
-                                "messages": {
-                                    "default_params": {"max_tokens": 4096},
-                                    "drop_params": ["parallel_tool_calls"],
-                                }
-                            },
-                        },
+                        "compat": {},
                     }
                 ]
             }
@@ -1566,9 +1557,6 @@ class AppTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["output"][0]["content"][0]["text"], "done")
-        self.assertNotIn("force_protocol", manager.raw["channels"][0]["compat"])
-        self.assertNotIn("tool_request_protocol", manager.raw["channels"][0]["compat"])
-        self.assertNotIn("by_protocol", manager.raw["channels"][0]["compat"])
         upstream_channel = mock_post.call_args.args[0]
         upstream_payload = mock_post.call_args.args[1]
         self.assertEqual(upstream_channel["type"], "chat")
@@ -2713,9 +2701,9 @@ class AppTests(unittest.TestCase):
         self.assertEqual(admin_response.status_code, 200)
         self.assertEqual(alice_response.status_code, 200)
         self.assertEqual(mock_post.call_args_list[0].args[0]["baseurl"], "https://admin.example.test/v1")
-        self.assertEqual(mock_post.call_args_list[0].args[2], None)
+        self.assertEqual(mock_post.call_args_list[0].args[2], 30)
         self.assertEqual(mock_post.call_args_list[1].args[0]["baseurl"], "https://alice.example.test/v1")
-        self.assertEqual(mock_post.call_args_list[1].args[2], None)
+        self.assertEqual(mock_post.call_args_list[1].args[2], 30)
 
     def test_proxy_rejects_disabled_or_deleted_access_key(self):
         response = self.client.patch(

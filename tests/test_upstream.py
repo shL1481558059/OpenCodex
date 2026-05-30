@@ -58,7 +58,7 @@ class UpstreamRetryTests(unittest.TestCase):
             FakeResponse('{"ok": true}'),
         ]
 
-        result = post_upstream(make_channel(retry_count=3), {"model": "m"}, None, 30)
+        result = post_upstream(make_channel(retry_count=3), {"model": "m"}, 30)
 
         self.assertEqual(result, {"ok": True})
         self.assertEqual(mock_urlopen.call_count, 3)
@@ -74,7 +74,7 @@ class UpstreamRetryTests(unittest.TestCase):
             FakeResponse('{"ok": true}'),
         ]
 
-        result = post_upstream(make_channel(retry_count=1), {"model": "m"}, None, 30)
+        result = post_upstream(make_channel(retry_count=1), {"model": "m"}, 30)
 
         self.assertEqual(result, {"ok": True})
         self.assertEqual(mock_urlopen.call_count, 2)
@@ -92,7 +92,7 @@ class UpstreamRetryTests(unittest.TestCase):
                     FakeResponse('{"ok": true}'),
                 ]
 
-                result = post_upstream(make_channel(retry_count=1), {"model": "m"}, None, 30)
+                result = post_upstream(make_channel(retry_count=1), {"model": "m"}, 30)
 
                 self.assertEqual(result, {"ok": True})
                 self.assertEqual(mock_urlopen.call_count, 2)
@@ -104,7 +104,7 @@ class UpstreamRetryTests(unittest.TestCase):
         mock_urlopen.side_effect = http_error(400, '{"error":"bad request"}')
 
         with self.assertRaises(UpstreamError) as raised:
-            post_upstream(make_channel(retry_count=3), {"model": "m"}, None, 30)
+            post_upstream(make_channel(retry_count=3), {"model": "m"}, 30)
 
         self.assertEqual(raised.exception.status_code, 400)
         self.assertEqual(mock_urlopen.call_count, 1)
@@ -116,7 +116,7 @@ class UpstreamRetryTests(unittest.TestCase):
         mock_urlopen.side_effect = urllib.error.URLError("temporary")
 
         with self.assertRaises(UpstreamError):
-            post_upstream(make_channel(retry_count=0), {"model": "m"}, None, 30)
+            post_upstream(make_channel(retry_count=0), {"model": "m"}, 30)
 
         self.assertEqual(mock_urlopen.call_count, 1)
         mock_sleep.assert_not_called()
@@ -131,7 +131,7 @@ class UpstreamRetryTests(unittest.TestCase):
         )
 
         with self.assertRaises(UpstreamError) as raised:
-            post_upstream(make_channel(retry_count=0), {"model": "m"}, None, 30)
+            post_upstream(make_channel(retry_count=0), {"model": "m"}, 30)
 
         self.assertEqual(raised.exception.status_code, 502)
         self.assertEqual(raised.exception.channel_id, "chat")
@@ -150,7 +150,7 @@ class UpstreamRetryTests(unittest.TestCase):
         ]
 
         with self.assertRaises(UpstreamError) as raised:
-            post_upstream(make_channel(retry_count=1), {"model": "m"}, None, 30)
+            post_upstream(make_channel(retry_count=1), {"model": "m"}, 30)
 
         self.assertEqual(raised.exception.status_code, 502)
         self.assertEqual(raised.exception.body, {"error": "last"})
@@ -169,7 +169,7 @@ class UpstreamRetryTests(unittest.TestCase):
             FakeResponse('{"ok": true}'),
         ]
 
-        result = post_upstream(make_channel(retry_count=1), {"model": "m"}, None, 30)
+        result = post_upstream(make_channel(retry_count=1), {"model": "m"}, 30)
 
         self.assertEqual(result, {"ok": True})
         mock_sleep.assert_called_once_with(7.0)
@@ -182,7 +182,7 @@ class UpstreamRetryTests(unittest.TestCase):
             FakeResponse("", lines=[b"data: first\n", b"\n"]),
         ]
 
-        lines = list(stream_upstream(make_channel(retry_count=1), {"model": "m"}, None, 30))
+        lines = list(stream_upstream(make_channel(retry_count=1), {"model": "m"}, 30))
 
         self.assertEqual(lines, ["data: first\n", "\n"])
         self.assertEqual(mock_urlopen.call_count, 2)

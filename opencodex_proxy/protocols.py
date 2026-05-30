@@ -1179,13 +1179,6 @@ def _canonical_to_messages_response(canonical: dict[str, Any]) -> dict[str, Any]
     }
 
 
-def _responses_reasoning_summary_to_text(item: dict[str, Any]) -> str:
-    text = _responses_reasoning_to_text(item)
-    if text:
-        return f"Reasoning content:\n{text}"
-    return ""
-
-
 def _responses_reasoning_to_text(item: dict[str, Any]) -> str:
     encrypted_content = _stringify_content(item.get("encrypted_content", "")).strip()
     if encrypted_content:
