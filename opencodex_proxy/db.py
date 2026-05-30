@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS access_api_keys (
     owner_username TEXT NOT NULL,
     name TEXT NOT NULL DEFAULT '',
     key_hash TEXT NOT NULL UNIQUE,
+    key_plaintext TEXT,
     key_prefix TEXT NOT NULL,
     key_suffix TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
@@ -210,6 +211,12 @@ def _migrate_channels(conn: sqlite3.Connection, default_owner_username: str = "a
         conn.execute(
             "ALTER TABLE tavily_keys ADD COLUMN usage_limit INTEGER NOT NULL DEFAULT 1000"
         )
+    access_key_columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(access_api_keys)").fetchall()
+    }
+    if "key_plaintext" not in access_key_columns:
+        conn.execute("ALTER TABLE access_api_keys ADD COLUMN key_plaintext TEXT")
 
 
 def _channel_primary_key(conn: sqlite3.Connection) -> list[str]:
@@ -500,14 +507,15 @@ def create_access_api_key(
             cursor = conn.execute(
                 """
                 INSERT INTO access_api_keys (
-                    owner_username, name, key_hash, key_prefix, key_suffix,
+                    owner_username, name, key_hash, key_plaintext, key_prefix, key_suffix,
                     enabled, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
                 """,
                 (
                     owner_username,
                     str(name or "").strip(),
                     hash_access_api_key(raw_key),
+                    raw_key,
                     raw_key[:12],
                     raw_key[-6:],
                     now,
@@ -536,7 +544,7 @@ def list_access_api_keys(
         if owner_username:
             rows = conn.execute(
                 """
-                SELECT id, owner_username, name, key_prefix, key_suffix, enabled,
+                SELECT id, owner_username, name, key_plaintext, key_prefix, key_suffix, enabled,
                        created_at, updated_at, last_used_at
                 FROM access_api_keys
                 WHERE owner_username = ?
@@ -547,7 +555,7 @@ def list_access_api_keys(
         else:
             rows = conn.execute(
                 """
-                SELECT id, owner_username, name, key_prefix, key_suffix, enabled,
+                SELECT id, owner_username, name, key_plaintext, key_prefix, key_suffix, enabled,
                        created_at, updated_at, last_used_at
                 FROM access_api_keys
                 ORDER BY owner_username ASC, id DESC
@@ -565,7 +573,7 @@ def get_access_api_key(db_path: Path, key_id: int) -> dict[str, Any] | None:
     try:
         row = conn.execute(
             """
-            SELECT id, owner_username, name, key_prefix, key_suffix, enabled,
+            SELECT id, owner_username, name, key_plaintext, key_prefix, key_suffix, enabled,
                    created_at, updated_at, last_used_at
             FROM access_api_keys
             WHERE id = ?
@@ -674,7 +682,7 @@ def authenticate_access_api_key(db_path: Path, raw_key: str) -> dict[str, Any] |
             (now, now, row["id"]),
         )
         conn.commit()
-        key = _row_to_access_api_key(row)
+        key = _row_to_access_api_key(row, include_plaintext=False)
         key["user"] = {
             "username": row["owner_username"],
             "role": row["user_role"],
@@ -734,8 +742,12 @@ def _row_to_user(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def _row_to_access_api_key(row: sqlite3.Row) -> dict[str, Any]:
-    return {
+def _row_to_access_api_key(
+    row: sqlite3.Row,
+    *,
+    include_plaintext: bool = True,
+) -> dict[str, Any]:
+    key = {
         "id": int(row["id"]),
         "owner_username": row["owner_username"],
         "name": row["name"],
@@ -747,6 +759,9 @@ def _row_to_access_api_key(row: sqlite3.Row) -> dict[str, Any]:
         "updated_at": row["updated_at"],
         "last_used_at": row["last_used_at"],
     }
+    if include_plaintext:
+        key["key"] = row["key_plaintext"] if "key_plaintext" in row.keys() else None
+    return key
 
 
 def _normalize_username(value: Any) -> str:

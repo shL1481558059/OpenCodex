@@ -773,7 +773,7 @@ class TestUserAndAccessKeyStore(unittest.TestCase):
         self.assertEqual(user["role"], "superadmin")
         self.assertIsNone(authenticate_user(self.db_path, "root", "first"))
 
-    def test_access_api_key_is_hashed_and_returned_only_once(self):
+    def test_access_api_key_plaintext_is_stored_for_copying_and_hash_is_kept(self):
         ensure_superadmin(self.db_path, "root", "pw")
         create_user(self.db_path, "alice", "alice-pw")
 
@@ -784,12 +784,12 @@ class TestUserAndAccessKeyStore(unittest.TestCase):
         self.assertEqual(created["owner_username"], "alice")
         listed = list_access_api_keys(self.db_path, "alice")
         self.assertEqual(len(listed), 1)
-        self.assertNotIn("key", listed[0])
+        self.assertEqual(listed[0]["key"], raw_key)
         self.assertEqual(listed[0]["masked_key"], created["masked_key"])
 
         conn = sqlite3.connect(str(self.db_path))
         row = conn.execute(
-            "SELECT key_hash, key_prefix, key_suffix FROM access_api_keys WHERE id = ?",
+            "SELECT key_hash, key_prefix, key_suffix, key_plaintext FROM access_api_keys WHERE id = ?",
             (created["id"],),
         ).fetchone()
         conn.close()
@@ -798,12 +798,44 @@ class TestUserAndAccessKeyStore(unittest.TestCase):
         self.assertNotEqual(row[0], raw_key)
         self.assertEqual(row[1], raw_key[:12])
         self.assertEqual(row[2], raw_key[-6:])
-        self.assertNotIn(raw_key, json.dumps(listed))
+        self.assertEqual(row[3], raw_key)
 
         authenticated = authenticate_access_api_key(self.db_path, raw_key)
         self.assertIsNotNone(authenticated)
         self.assertEqual(authenticated["user"]["username"], "alice")
         self.assertIsNotNone(authenticated["last_used_at"])
+        self.assertNotIn("key", authenticated)
+
+    def test_access_api_key_legacy_rows_without_plaintext_are_listed_without_copy_value(self):
+        ensure_superadmin(self.db_path, "root", "pw")
+        create_user(self.db_path, "alice", "alice-pw")
+        now = time.time()
+        raw_key = "ocx_legacy-secret"
+        conn = sqlite3.connect(str(self.db_path))
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO access_api_keys (
+                    owner_username, name, key_hash, key_prefix, key_suffix,
+                    enabled, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                """,
+                (
+                    "alice",
+                    "Legacy",
+                    "0" * 64,
+                    raw_key[:12],
+                    raw_key[-6:],
+                    now,
+                    now,
+                ),
+            )
+        conn.close()
+
+        listed = list_access_api_keys(self.db_path, "alice")
+
+        self.assertEqual(len(listed), 1)
+        self.assertIsNone(listed[0]["key"])
 
     def test_disabled_or_deleted_access_api_key_is_rejected(self):
         ensure_superadmin(self.db_path, "root", "pw")
