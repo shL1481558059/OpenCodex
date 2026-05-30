@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 import atexit
 import json
@@ -802,7 +802,7 @@ def create_app(settings: Settings | None = None) -> Flask:
             log_payload["compat"] = compat_details
             log_payload["request_body"] = trace_payload
             log_payload["upstream_request_body"] = redact(upstream_request)
-            should_simulate_web_search = (
+            can_simulate_web_search = (
                 entry_protocol == "responses"
                 and channel["type"] in {"chat", "messages"}
                 and request_user is not None
@@ -811,75 +811,8 @@ def create_app(settings: Settings | None = None) -> Flask:
                 and read_web_search_config(settings.db_path).get("enabled") is True
             )
 
-            if should_simulate_web_search:
+            if can_simulate_web_search and not stream_requested:
                 web_search_details: dict[str, Any] = {}
-                if stream_requested:
-                    # ── streaming path: run the simulation incrementally ──
-                    # The generator yields web_search_call in_progress /
-                    # completed items *as* each search happens, then streams
-                    # the final model response from upstream so the client
-                    # sees a typewriter-style experience.
-                    def stream_web_search_response():
-                        nonlocal ttft_ms
-                        stream_error = None
-                        ttft_recorded = False
-                        try:
-                            model_for_sse = route.original_model or payload.get("model")
-                            response_id = f"resp_{uuid.uuid4().hex}"
-                            def emit_sse(event: str, p: dict[str, Any]) -> str:
-                                data = json.dumps({"type": event, **p}, ensure_ascii=False, separators=(",", ":"))
-                                return f"event: {event}\ndata: {data}\n\n"
-                            yield emit_sse(
-                                "response.created",
-                                {
-                                    "response": {
-                                        "id": response_id,
-                                        "object": "response",
-                                        "created_at": int(time.time()),
-                                        "status": "in_progress",
-                                        "model": model_for_sse,
-                                        "output": [],
-                                    },
-                                },
-                            )
-
-                            for line in _web_search_simulation_stream(
-                                channel=channel,
-                                upstream_request=upstream_request,
-                                payload=payload,
-                                original_model=route.original_model,
-                                default_timeout=settings.default_timeout,
-                                db_path=settings.db_path,
-                                model_for_sse=model_for_sse,
-                                cache_namespace=cache_namespace,
-                                reasoning_cache=reasoning_cache,
-                                web_search_details=web_search_details,
-                            ):
-                                if not ttft_recorded and _counts_for_ttft(line):
-                                    ttft_recorded = True
-                                    ttft_ms = int((time.time() - started) * 1000)
-                                yield line
-                        except Exception as exc:
-                            stream_error = str(exc)
-                            raise
-                        finally:
-                            log_payload["web_search"] = redact(web_search_details)
-                            write_db_record(
-                                record_status_code=200,
-                                record_duration_ms=int((time.time() - started) * 1000),
-                                record_ttft_ms=ttft_ms,
-                                response_body=None,
-                                response_protocol=channel["type"] if channel is not None else None,
-                                error=stream_error,
-                            )
-
-                    defer_db_write = True
-                    return Response(
-                        stream_with_context(stream_web_search_response()),
-                        mimetype="text/event-stream",
-                        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-                    )
-
                 # ── non-streaming path: block until complete ──
                 try:
                     intermediate_rounds, final_upstream_request, final_nonstream_response, details = _run_web_search_simulation(
@@ -924,7 +857,7 @@ def create_app(settings: Settings | None = None) -> Flask:
                 streamed_upstream_response = None
 
                 def stream_with_ttft():
-                    nonlocal ttft_recorded, streamed_upstream_response, ttft_ms
+                    nonlocal ttft_recorded, streamed_upstream_response, ttft_ms, web_search_details
                     stream_error = None
 
                     def remember_streamed_response(response: dict[str, Any]) -> None:
@@ -935,29 +868,100 @@ def create_app(settings: Settings | None = None) -> Flask:
                         if channel["type"] == "chat":
                             reasoning_cache.remember_chat_response(response, cache_namespace)
 
-                    try:
-                        event_iter = (
-                            messages_sse_to_responses_events(
+                    def record_ttft(line: str) -> None:
+                        nonlocal ttft_recorded, ttft_ms
+                        if not ttft_recorded and _counts_for_ttft(line):
+                            ttft_recorded = True
+                            ttft_ms = int((time.time() - ttft_start) * 1000)
+
+                    def first_stream_events() -> Iterable[str]:
+                        if channel["type"] == "messages":
+                            return messages_sse_to_responses_events(
                                 upstream_lines,
                                 route.original_model or payload.get("model"),
                                 remember_streamed_response,
                             )
-                            if channel["type"] == "messages"
-                            else chat_sse_to_responses_events(
-                                upstream_lines,
-                                route.original_model or payload.get("model"),
-                                remember_streamed_response,
-                            )
+                        return chat_sse_to_responses_events(
+                            upstream_lines,
+                            route.original_model or payload.get("model"),
+                            remember_streamed_response,
+                            skip_tool_names={"web_search"} if can_simulate_web_search else None,
                         )
+
+                    try:
+                        event_iter = first_stream_events()
+                        if can_simulate_web_search:
+                            pending_completed_line: str | None = None
+                            prefix_output_items: dict[int, dict[str, Any]] = {}
+                            next_output_index = 0
+                            sequence_number_offset = 0
+                            for line in event_iter:
+                                record_ttft(line)
+                                event_name, event_payload = _parse_sse_event(line)
+                                if event_name == "response.completed":
+                                    pending_completed_line = line
+                                    continue
+                                sequence_number_offset = max(
+                                    sequence_number_offset,
+                                    _next_sequence_number(event_payload),
+                                )
+                                next_output_index = max(
+                                    next_output_index,
+                                    _next_output_index(event_payload),
+                                )
+                                item_done = _output_item_done_payload(event_name, event_payload)
+                                if item_done is not None:
+                                    output_index, item = item_done
+                                    prefix_output_items[output_index] = item
+                                yield line
+
+                            tool_calls = (
+                                extract_tool_calls(streamed_upstream_response, channel["type"])
+                                if streamed_upstream_response is not None
+                                else []
+                            )
+                            if web_search_calls(tool_calls):
+                                web_search_details = {}
+                                model_for_sse = route.original_model or payload.get("model")
+                                prefix_items = [
+                                    prefix_output_items[index]
+                                    for index in sorted(prefix_output_items)
+                                ]
+                                for line in _web_search_simulation_stream(
+                                    channel=channel,
+                                    upstream_request=upstream_request,
+                                    payload=payload,
+                                    original_model=route.original_model,
+                                    default_timeout=settings.default_timeout,
+                                    db_path=settings.db_path,
+                                    model_for_sse=model_for_sse,
+                                    cache_namespace=cache_namespace,
+                                    reasoning_cache=reasoning_cache,
+                                    web_search_details=web_search_details,
+                                    initial_upstream_response=streamed_upstream_response,
+                                    initial_output_index=next_output_index,
+                                    on_response=remember_streamed_response,
+                                ):
+                                    record_ttft(line)
+                                    if line.startswith("event: response.completed\n"):
+                                        line = _prepend_completed_output_items(line, prefix_items)
+                                    line = _patch_sse_sequence_numbers(line, sequence_number_offset)
+                                    yield line
+                                return
+
+                            if pending_completed_line is not None:
+                                yield pending_completed_line
+                            return
+
                         for line in event_iter:
-                            if not ttft_recorded and _counts_for_ttft(line):
-                                ttft_recorded = True
-                                ttft_ms = int((time.time() - ttft_start) * 1000)
+                            record_ttft(line)
                             yield line
                     except Exception as exc:
                         stream_error = str(exc)
                         raise
                     finally:
+                        if web_search_details is not None:
+                            log_payload["web_search"] = redact(web_search_details)
                         write_db_record(
                             record_status_code=200,
                             record_duration_ms=int((time.time() - started) * 1000),
@@ -1437,6 +1441,177 @@ def _visible_params(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: redact(value) for key, value in payload.items() if key not in hidden}
 
 
+def _parse_sse_event(line: str) -> tuple[str | None, dict[str, Any] | None]:
+    event_name: str | None = None
+    data_lines: list[str] = []
+    for raw_line in line.splitlines():
+        if raw_line.startswith("event:"):
+            event_name = raw_line.split(":", 1)[1].strip()
+        elif raw_line.startswith("data:"):
+            data_lines.append(raw_line.split(":", 1)[1].lstrip())
+    if not data_lines:
+        return event_name, None
+    try:
+        payload = json.loads("\n".join(data_lines))
+    except json.JSONDecodeError:
+        return event_name, None
+    return event_name, payload if isinstance(payload, dict) else None
+
+
+def _next_sequence_number(payload: dict[str, Any] | None) -> int:
+    if not isinstance(payload, dict):
+        return 0
+    sequence_number = payload.get("sequence_number")
+    if isinstance(sequence_number, int):
+        return sequence_number + 1
+    return 0
+
+
+def _next_output_index(payload: dict[str, Any] | None) -> int:
+    max_index = _max_output_index(payload)
+    return max_index + 1 if max_index is not None else 0
+
+
+def _max_output_index(obj: Any) -> int | None:
+    if isinstance(obj, dict):
+        result: int | None = None
+        value = obj.get("output_index")
+        if isinstance(value, int):
+            result = value
+        for child in obj.values():
+            child_index = _max_output_index(child)
+            if child_index is not None:
+                result = child_index if result is None else max(result, child_index)
+        return result
+    if isinstance(obj, list):
+        result: int | None = None
+        for item in obj:
+            child_index = _max_output_index(item)
+            if child_index is not None:
+                result = child_index if result is None else max(result, child_index)
+        return result
+    return None
+
+
+def _output_item_done_payload(
+    event_name: str | None,
+    payload: dict[str, Any] | None,
+) -> tuple[int, dict[str, Any]] | None:
+    if event_name != "response.output_item.done" or not isinstance(payload, dict):
+        return None
+    output_index = payload.get("output_index")
+    item = payload.get("item")
+    if not isinstance(output_index, int) or not isinstance(item, dict):
+        return None
+    return output_index, item
+
+
+def _patch_sse_sequence_numbers(line: str, offset: int) -> str:
+    if offset <= 0:
+        return line
+    event_name, payload = _parse_sse_event(line)
+    if event_name is None or payload is None:
+        return line
+    sequence_number = payload.get("sequence_number")
+    if not isinstance(sequence_number, int):
+        return line
+    payload["sequence_number"] = sequence_number + offset
+    new_data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return f"event: {event_name}\ndata: {new_data}\n\n"
+
+
+def _prepend_completed_output_items(
+    line: str,
+    prefix_items: list[dict[str, Any]],
+) -> str:
+    if not prefix_items or not line.startswith("event: response.completed\n"):
+        return line
+    event_name, payload = _parse_sse_event(line)
+    if event_name != "response.completed" or payload is None:
+        return line
+    response = payload.get("response")
+    if not isinstance(response, dict):
+        return line
+    output = response.get("output")
+    response["output"] = [*prefix_items, *(output if isinstance(output, list) else [])]
+    payload["response"] = response
+    new_data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return f"event: response.completed\ndata: {new_data}\n\n"
+
+
+def _add_usage_totals(
+    totals: dict[str, int],
+    response: dict[str, Any],
+    protocol: str,
+) -> None:
+    usage = extract_usage(response, protocol)
+    totals["input_tokens"] += int(usage.get("input_tokens") or 0)
+    totals["cached_tokens"] += int(usage.get("cached_tokens") or 0)
+    totals["output_tokens"] += int(usage.get("output_tokens") or 0)
+
+
+def _usage_totals_for_protocol(
+    totals: dict[str, int],
+    protocol: str,
+) -> dict[str, Any]:
+    input_tokens = int(totals.get("input_tokens") or 0)
+    cached_tokens = int(totals.get("cached_tokens") or 0)
+    output_tokens = int(totals.get("output_tokens") or 0)
+    if protocol == "chat":
+        usage: dict[str, Any] = {
+            "prompt_tokens": input_tokens,
+            "completion_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        }
+        if cached_tokens:
+            usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
+        return usage
+    if protocol == "messages":
+        usage = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+        }
+        if cached_tokens:
+            usage["cache_read_input_tokens"] = cached_tokens
+        return usage
+    usage = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+    }
+    if cached_tokens:
+        usage["input_tokens_details"] = {"cached_tokens": cached_tokens}
+    return usage
+
+
+def _response_with_usage_totals(
+    response: dict[str, Any],
+    protocol: str,
+    totals: dict[str, int],
+) -> dict[str, Any]:
+    patched = deepcopy(response)
+    patched["usage"] = _usage_totals_for_protocol(totals, protocol)
+    return patched
+
+
+def _patch_completed_usage(
+    line: str,
+    totals: dict[str, int],
+) -> str:
+    if not line.startswith("event: response.completed\n"):
+        return line
+    event_name, payload = _parse_sse_event(line)
+    if event_name != "response.completed" or payload is None:
+        return line
+    response = payload.get("response")
+    if not isinstance(response, dict):
+        return line
+    response["usage"] = _usage_totals_for_protocol(totals, "responses")
+    payload["response"] = response
+    new_data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return f"event: response.completed\ndata: {new_data}\n\n"
+
+
 def _patch_sse_output_indices(line: str, offset: int) -> str:
     """Add *offset* to every output_index field in an SSE data payload."""
     if offset <= 0:
@@ -1652,6 +1827,9 @@ def _web_search_simulation_stream(
     cache_namespace: str,
     reasoning_cache: ReasoningCache | None = None,
     web_search_details: dict[str, Any] | None = None,
+    initial_upstream_response: dict[str, Any] | None = None,
+    initial_output_index: int = 0,
+    on_response: Callable[[dict[str, Any]], None] | None = None,
 ) -> Iterable[str]:
     """Generator: yields SSE events as web search simulation progresses.
 
@@ -1670,7 +1848,8 @@ def _web_search_simulation_stream(
     web_executed = 0
     max_iterations = max(web_limit + 3, 3)
     sequence_number = 0
-    next_output_index = 0
+    next_output_index = max(0, int(initial_output_index or 0))
+    usage_totals = {"input_tokens": 0, "cached_tokens": 0, "output_tokens": 0}
 
     def emit(event: str, payload_data: dict[str, Any]) -> str:
         nonlocal sequence_number
@@ -1685,13 +1864,17 @@ def _web_search_simulation_stream(
         return idx
 
     for iteration in range(max_iterations):
-        upstream_response = _web_search_post_upstream(
-            channel=channel,
-            request_payload=request_payload,
-            default_timeout=default_timeout,
-            web_results=web_results,
-            upstream_calls=upstream_calls,
-        )
+        if iteration == 0 and initial_upstream_response is not None:
+            upstream_response = initial_upstream_response
+        else:
+            upstream_response = _web_search_post_upstream(
+                channel=channel,
+                request_payload=request_payload,
+                default_timeout=default_timeout,
+                web_results=web_results,
+                upstream_calls=upstream_calls,
+            )
+        _add_usage_totals(usage_totals, upstream_response, protocol)
         tool_calls = extract_tool_calls(upstream_response, protocol)
         web_calls = web_search_calls(tool_calls)
         other_calls = non_web_search_calls(tool_calls)
@@ -1720,11 +1903,19 @@ def _web_search_simulation_stream(
                     response_payload, web_results
                 )
                 response_payload = add_source_annotations(response_payload, web_results)
+                if on_response is not None:
+                    on_response(_response_with_usage_totals(upstream_response, protocol, usage_totals))
                 for line in responses_sse_events(response_payload, skip_response_created=True):
+                    if line.startswith("event: response.completed\n"):
+                        line = _patch_completed_usage(line, usage_totals)
+                    line = _patch_sse_sequence_numbers(line, sequence_number)
                     yield line
                 return
 
             def remember(resp: dict[str, Any]) -> None:
+                _add_usage_totals(usage_totals, resp, protocol)
+                if on_response is not None:
+                    on_response(_response_with_usage_totals(resp, protocol, usage_totals))
                 if reasoning_cache is not None:
                     if protocol == "messages":
                         reasoning_cache.remember_messages_response(resp, cache_namespace)
@@ -1747,6 +1938,8 @@ def _web_search_simulation_stream(
                     line = _inject_web_search_into_completed_sse(
                         line, web_results, next_output_index,
                     )
+                    line = _patch_completed_usage(line, usage_totals)
+                line = _patch_sse_sequence_numbers(line, sequence_number)
                 yield line
             return
 
@@ -1835,11 +2028,19 @@ def _web_search_simulation_stream(
                     response_payload, web_results
                 )
                 response_payload = add_source_annotations(response_payload, web_results)
+                if on_response is not None:
+                    on_response(_response_with_usage_totals(upstream_response, protocol, usage_totals))
                 for line in responses_sse_events(response_payload, skip_response_created=True):
+                    if line.startswith("event: response.completed\n"):
+                        line = _patch_completed_usage(line, usage_totals)
+                    line = _patch_sse_sequence_numbers(line, sequence_number)
                     yield line
                 return
 
             def remember(resp: dict[str, Any]) -> None:
+                _add_usage_totals(usage_totals, resp, protocol)
+                if on_response is not None:
+                    on_response(_response_with_usage_totals(resp, protocol, usage_totals))
                 if reasoning_cache is not None:
                     if protocol == "messages":
                         reasoning_cache.remember_messages_response(resp, cache_namespace)
@@ -1862,6 +2063,8 @@ def _web_search_simulation_stream(
                     line = _inject_web_search_into_completed_sse(
                         line, web_results, next_output_index,
                     )
+                    line = _patch_completed_usage(line, usage_totals)
+                line = _patch_sse_sequence_numbers(line, sequence_number)
                 yield line
             return
 
@@ -1879,7 +2082,12 @@ def _web_search_simulation_stream(
             response_payload, web_results
         )
         response_payload = add_source_annotations(response_payload, web_results)
+    if on_response is not None:
+        on_response(_response_with_usage_totals(upstream_response, protocol, usage_totals))
     for line in responses_sse_events(response_payload, skip_response_created=True):
+        if line.startswith("event: response.completed\n"):
+            line = _patch_completed_usage(line, usage_totals)
+        line = _patch_sse_sequence_numbers(line, sequence_number)
         yield line
 
 
