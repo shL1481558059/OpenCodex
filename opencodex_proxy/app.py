@@ -1730,6 +1730,7 @@ def _counts_for_ttft(sse_line: str) -> bool:
             "response.output_text.delta",
             "response.reasoning_summary_text.delta",
             "response.function_call_arguments.delta",
+            "patch.semantic_preview",
             "response.output_item.done",
         )
     )

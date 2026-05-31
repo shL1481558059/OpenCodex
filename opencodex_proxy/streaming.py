@@ -6,6 +6,17 @@ import uuid
 from collections.abc import Callable
 from typing import Any, Iterable
 
+from .patch_semantics import (
+    ContentProgress,
+    FileFinished,
+    FileStarted,
+    PatchFinished,
+    PatchOp,
+    PatchSemanticEvent,
+    action_from_tool_name,
+    semantic_events_from_operation,
+    valid_preview_path,
+)
 from .protocols import (
     _is_apply_patch_tool_name,
     _normalize_annotations,
@@ -411,6 +422,101 @@ def chat_sse_to_responses_events(
         )
         return events
 
+    def ensure_patch_preview(index: int, call_id: Any) -> dict[str, Any]:
+        meta = tool_stream_meta.setdefault(index, {})
+        if "patch_preview_id" not in meta:
+            meta["patch_preview_id"] = f"patchprev_{uuid.uuid4().hex}"
+        if "patch_preview_source" not in meta:
+            meta["patch_preview_source"] = {
+                "type": "tool",
+                "id": str(call_id or ""),
+            }
+        return meta
+
+    def emit_patch_preview(
+        index: int,
+        call_id: Any,
+        semantic_event: PatchSemanticEvent,
+    ) -> str:
+        meta = ensure_patch_preview(index, call_id)
+        payload: dict[str, Any] = {
+            "preview_id": meta["patch_preview_id"],
+            "source": meta["patch_preview_source"],
+        }
+        if isinstance(semantic_event, FileStarted):
+            payload.update(
+                {
+                    "event": "file_started",
+                    "path": semantic_event.path,
+                    "op": semantic_event.op.type,
+                }
+            )
+        elif isinstance(semantic_event, ContentProgress):
+            payload.update(
+                {
+                    "event": "content_progress",
+                    "path": semantic_event.path,
+                    "chars": semantic_event.chars,
+                }
+            )
+        elif isinstance(semantic_event, FileFinished):
+            payload.update({"event": "file_finished", "path": semantic_event.path})
+        elif isinstance(semantic_event, PatchFinished):
+            payload.update({"event": "patch_finished"})
+        return emit("patch.semantic_preview", payload)
+
+    def patch_preview_events_for_tool_call(
+        index: int,
+        call_id: Any,
+        tool_name: str,
+        arguments: str,
+    ) -> list[str]:
+        normalized = tool_name.replace("-", "_")
+        meta = tool_stream_meta.setdefault(index, {})
+        if normalized == "apply_patch":
+            return []
+        if normalized == "apply_patch_batch":
+            return _batch_patch_preview_events(index, call_id, arguments, meta)
+        action = action_from_tool_name(normalized)
+        if action is None:
+            return []
+        path = _complete_json_string_field(arguments, "path")
+        path = valid_preview_path(path)
+        if path is None:
+            return []
+        meta["patch_preview_path"] = path
+        events: list[str] = []
+        if not meta.get("patch_preview_file_started"):
+            meta["patch_preview_file_started"] = True
+            events.append(
+                emit_patch_preview(index, call_id, FileStarted(path, PatchOp(action, path)))
+            )
+        if action in {"add", "replace"}:
+            chars = _partial_json_string_field_length(arguments, "content")
+            streamed_chars = int(meta.get("patch_preview_content_chars") or 0)
+            if chars is not None and chars > streamed_chars:
+                meta["patch_preview_content_chars"] = chars
+                events.append(
+                    emit_patch_preview(index, call_id, ContentProgress(path, chars))
+                )
+        return events
+
+    def _batch_patch_preview_events(
+        index: int,
+        call_id: Any,
+        arguments: str,
+        meta: dict[str, Any],
+    ) -> list[str]:
+        objects = _complete_operation_objects(arguments)
+        emitted = int(meta.get("patch_preview_batch_emitted") or 0)
+        events: list[str] = []
+        for operation in objects[emitted:]:
+            for semantic_event in semantic_events_from_operation(operation):
+                events.append(emit_patch_preview(index, call_id, semantic_event))
+        if len(objects) > emitted:
+            meta["patch_preview_batch_emitted"] = len(objects)
+        return events
+
     if not skip_response_created:
         yield emit(
             "response.created",
@@ -523,7 +629,21 @@ def chat_sse_to_responses_events(
                     if function.get("arguments"):
                         target["function"]["arguments"] += str(function["arguments"])
                 tool_name = target.get("function", {}).get("name")
-                if not target.get("id") or not tool_name or _is_apply_patch_tool_name(str(tool_name)):
+                if (
+                    target.get("id")
+                    and tool_name
+                    and _is_apply_patch_tool_name(str(tool_name))
+                ):
+                    arguments = str(target.get("function", {}).get("arguments") or "")
+                    for line in patch_preview_events_for_tool_call(
+                        index,
+                        target["id"],
+                        str(tool_name),
+                        arguments,
+                    ):
+                        yield line
+                    continue
+                if not target.get("id") or not tool_name:
                     continue
                 if skip_tool_names and str(tool_name) in skip_tool_names:
                     continue
@@ -688,6 +808,15 @@ def chat_sse_to_responses_events(
                     "arguments": item.get("arguments", ""),
                 },
             )
+        elif _is_apply_patch_tool_name(str(tool_name)) and meta.get("patch_preview_id"):
+            if not meta.get("patch_preview_file_finished") and meta.get("patch_preview_path"):
+                meta["patch_preview_file_finished"] = True
+                yield emit_patch_preview(
+                    index,
+                    tool_call["id"],
+                    FileFinished(str(meta["patch_preview_path"])),
+                )
+            yield emit_patch_preview(index, tool_call["id"], PatchFinished())
         yield emit(
             "response.output_item.done",
             {
@@ -761,6 +890,129 @@ def _parse_json_object(value: Any) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {"input": value}
     return parsed if isinstance(parsed, dict) else {"input": parsed}
+
+
+def _complete_json_string_field(source: str, key: str) -> str | None:
+    parsed = _json_string_field_state(source, key)
+    if parsed is None:
+        return None
+    value, complete = parsed
+    return value if complete else None
+
+
+def _partial_json_string_field_length(source: str, key: str) -> int | None:
+    parsed = _json_string_field_state(source, key)
+    if parsed is None:
+        return None
+    value, _complete = parsed
+    return len(value)
+
+
+def _json_string_field_state(source: str, key: str) -> tuple[str, bool] | None:
+    pattern = json.dumps(key, ensure_ascii=False)
+    index = source.find(pattern)
+    if index < 0:
+        return None
+    index += len(pattern)
+    while index < len(source) and source[index].isspace():
+        index += 1
+    if index >= len(source) or source[index] != ":":
+        return None
+    index += 1
+    while index < len(source) and source[index].isspace():
+        index += 1
+    if index >= len(source) or source[index] != '"':
+        return None
+    return _scan_json_string_value(source, index)
+
+
+def _scan_json_string_value(source: str, quote_index: int) -> tuple[str, bool]:
+    result: list[str] = []
+    index = quote_index + 1
+    while index < len(source):
+        char = source[index]
+        if char == '"':
+            return "".join(result), True
+        if char == "\\":
+            if index + 1 >= len(source):
+                return "".join(result), False
+            escape = source[index + 1]
+            if escape == "u":
+                digits = source[index + 2 : index + 6]
+                if len(digits) < 4 or any(c not in "0123456789abcdefABCDEF" for c in digits):
+                    return "".join(result), False
+                result.append(chr(int(digits, 16)))
+                index += 6
+                continue
+            result.append(
+                {
+                    '"': '"',
+                    "\\": "\\",
+                    "/": "/",
+                    "b": "\b",
+                    "f": "\f",
+                    "n": "\n",
+                    "r": "\r",
+                    "t": "\t",
+                }.get(escape, escape)
+            )
+            index += 2
+            continue
+        result.append(char)
+        index += 1
+    return "".join(result), False
+
+
+def _complete_operation_objects(source: str) -> list[dict[str, Any]]:
+    array_start = source.find(json.dumps("operations"))
+    if array_start < 0:
+        return []
+    bracket = source.find("[", array_start)
+    if bracket < 0:
+        return []
+    objects: list[dict[str, Any]] = []
+    index = bracket + 1
+    while index < len(source):
+        while index < len(source) and source[index] in " \t\r\n,":
+            index += 1
+        if index >= len(source) or source[index] != "{":
+            break
+        end = _json_object_end(source, index)
+        if end is None:
+            break
+        try:
+            value = json.loads(source[index:end])
+        except json.JSONDecodeError:
+            break
+        if isinstance(value, dict):
+            objects.append(value)
+        index = end
+    return objects
+
+
+def _json_object_end(source: str, start: int) -> int | None:
+    depth = 0
+    in_string = False
+    escape = False
+    for index in range(start, len(source)):
+        char = source[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return None
 
 
 def _json_dumps(value: Any) -> str:

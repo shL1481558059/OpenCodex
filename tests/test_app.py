@@ -2723,6 +2723,298 @@ class AppTests(unittest.TestCase):
         self.assertNotIn("\"type\":\"function_call\"", body)
 
     @patch("opencodex_proxy.app.stream_upstream")
+    def test_responses_stream_to_chat_emits_apply_patch_semantic_preview(
+        self, mock_stream
+    ):
+        arguments = json.dumps(
+            {
+                "path": "data.json",
+                "hunks": [
+                    {
+                        "lines": [
+                            {"op": "remove", "text": '  "old": true'},
+                            {"op": "add", "text": '  "old": false'},
+                        ]
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+        split_at = arguments.index('"hunks"')
+        chunk_1 = {
+            "id": "chatcmpl_tool",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "deepseek-v4-pro",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_patch_preview",
+                                "type": "function",
+                                "function": {
+                                    "name": "apply_patch_update_file",
+                                    "arguments": arguments[:split_at],
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        }
+        chunk_2 = {
+            "id": "chatcmpl_tool",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "deepseek-v4-pro",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {"arguments": arguments[split_at:]},
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        }
+        mock_stream.return_value = iter(
+            [
+                f"data: {json.dumps(chunk_1, ensure_ascii=False)}\n",
+                "\n",
+                f"data: {json.dumps(chunk_2, ensure_ascii=False)}\n",
+                "\n",
+                'data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","created":1,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}\n',
+                "\n",
+                "data: [DONE]\n",
+                "\n",
+            ]
+        )
+
+        response = self.client.post(
+            "/v1/responses",
+            json={"model": "deepseek-v4-pro", "input": "patch", "stream": True},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        events = self.parse_sse_events(response.get_data(as_text=True))
+        preview_events = [
+            data for event, data in events if event == "patch.semantic_preview"
+        ]
+        self.assertGreaterEqual(len(preview_events), 2)
+        self.assertEqual(preview_events[0]["event"], "file_started")
+        self.assertEqual(preview_events[0]["path"], "data.json")
+        self.assertEqual(preview_events[0]["op"], "update")
+        self.assertEqual(
+            preview_events[0]["source"],
+            {"type": "tool", "id": "call_patch_preview"},
+        )
+        self.assertTrue(preview_events[0]["preview_id"].startswith("patchprev_"))
+        self.assertEqual(preview_events[-1]["event"], "patch_finished")
+        self.assertEqual(
+            [data["sequence_number"] for _, data in events],
+            list(range(len(events))),
+        )
+
+    @patch("opencodex_proxy.app.stream_upstream")
+    def test_responses_stream_to_chat_apply_patch_content_preview_is_progress_only(
+        self, mock_stream
+    ):
+        arguments = json.dumps(
+            {"path": "large.txt", "content": "partial\nfinal"},
+            ensure_ascii=False,
+        )
+        split_at = arguments.index("partial") + len("partial")
+        chunk_1 = {
+            "id": "chatcmpl_tool",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "deepseek-v4-pro",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_patch_content_preview",
+                                "type": "function",
+                                "function": {
+                                    "name": "apply_patch_replace_file",
+                                    "arguments": arguments[:split_at],
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        }
+        chunk_2 = {
+            "id": "chatcmpl_tool",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "deepseek-v4-pro",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {"arguments": arguments[split_at:]},
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        }
+        mock_stream.return_value = iter(
+            [
+                f"data: {json.dumps(chunk_1, ensure_ascii=False)}\n",
+                "\n",
+                f"data: {json.dumps(chunk_2, ensure_ascii=False)}\n",
+                "\n",
+                'data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","created":1,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}\n',
+                "\n",
+                "data: [DONE]\n",
+                "\n",
+            ]
+        )
+
+        response = self.client.post(
+            "/v1/responses",
+            json={"model": "deepseek-v4-pro", "input": "patch", "stream": True},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        events = self.parse_sse_events(body)
+        preview_events = [
+            data for event, data in events if event == "patch.semantic_preview"
+        ]
+        progress_events = [
+            data for data in preview_events if data["event"] == "content_progress"
+        ]
+        self.assertTrue(progress_events)
+        self.assertGreaterEqual(progress_events[-1]["chars"], len("partial"))
+        self.assertNotIn(
+            "partial",
+            json.dumps(preview_events, ensure_ascii=False),
+        )
+        self.assertNotIn("response.custom_tool_call_input.delta", body)
+        self.assertIn("+partial\\n+final", body)
+
+    @patch("opencodex_proxy.app.stream_upstream")
+    def test_responses_stream_to_chat_apply_patch_batch_preview_waits_for_operation_boundary(
+        self, mock_stream
+    ):
+        arguments = json.dumps(
+            {
+                "operations": [
+                    {
+                        "type": "add_file",
+                        "path": "created.txt",
+                        "content": "hello",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+        split_at = arguments.index('"content"')
+        chunk_1 = {
+            "id": "chatcmpl_tool",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "deepseek-v4-pro",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_patch_batch_preview",
+                                "type": "function",
+                                "function": {
+                                    "name": "apply_patch_batch",
+                                    "arguments": arguments[:split_at],
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        }
+        chunk_2 = {
+            "id": "chatcmpl_tool",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "deepseek-v4-pro",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {"arguments": arguments[split_at:]},
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        }
+        mock_stream.return_value = iter(
+            [
+                f"data: {json.dumps(chunk_1, ensure_ascii=False)}\n",
+                "\n",
+                f"data: {json.dumps(chunk_2, ensure_ascii=False)}\n",
+                "\n",
+                'data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","created":1,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}\n',
+                "\n",
+                "data: [DONE]\n",
+                "\n",
+            ]
+        )
+
+        response = self.client.post(
+            "/v1/responses",
+            json={"model": "deepseek-v4-pro", "input": "patch", "stream": True},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        events = self.parse_sse_events(response.get_data(as_text=True))
+        preview_events = [
+            data for event, data in events if event == "patch.semantic_preview"
+        ]
+        self.assertEqual(
+            [data["event"] for data in preview_events],
+            [
+                "file_started",
+                "content_progress",
+                "file_finished",
+                "patch_finished",
+            ],
+        )
+        self.assertEqual(preview_events[0]["path"], "created.txt")
+        self.assertEqual(preview_events[0]["op"], "add")
+
+    @patch("opencodex_proxy.app.stream_upstream")
     def test_responses_stream_to_chat_maps_newline_apply_patch_proxy_to_exec_command(
         self, mock_stream
     ):
@@ -2816,6 +3108,7 @@ class AppTests(unittest.TestCase):
         self.assertIn("\"call_id\":\"call_patch_newline_proxy\"", body)
         self.assertIn("PYTHON_BIN=python3", body)
         self.assertIn("event: response.function_call_arguments.done", body)
+        self.assertNotIn("patch.semantic_preview", body)
         self.assertNotIn("\"type\":\"custom_tool_call\"", body)
 
     @patch("opencodex_proxy.app.stream_upstream")
