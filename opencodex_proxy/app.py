@@ -733,8 +733,6 @@ def create_app(settings: Settings | None = None) -> Flask:
             if not isinstance(payload, dict):
                 raise BadRequestError("request body must be a JSON object")
             stream_requested = payload.get("stream") is True
-            if stream_requested and entry_protocol != "responses":
-                raise BadRequestError("stream=true is only supported for /v1/responses")
             log_payload["model"] = payload.get("model")
             log_payload["params"] = _visible_params(payload)
             trace_payload = redact(payload)
@@ -751,15 +749,22 @@ def create_app(settings: Settings | None = None) -> Flask:
                     "upstream_model": route.upstream_model,
                 }
             )
+            same_protocol = entry_protocol == channel["type"]
+            if stream_requested and entry_protocol != "responses" and not same_protocol:
+                raise BadRequestError("stream=true is only supported for /v1/responses")
 
-            upstream_request = convert_request(
-                payload, entry_protocol, channel["type"], route.upstream_model
-            )
+            if same_protocol:
+                upstream_request = deepcopy(payload)
+                upstream_request["model"] = route.upstream_model
+            else:
+                upstream_request = convert_request(
+                    payload, entry_protocol, channel["type"], route.upstream_model
+                )
             upstream_request, compat_details = apply_compat(
                 upstream_request,
                 _compat_rules(channel.get("compat", {})),
             )
-            if channel["type"] == "chat":
+            if channel["type"] == "chat" and not same_protocol:
                 injected_reasoning = reasoning_cache.inject_chat_request(
                     upstream_request, cache_namespace
                 )
@@ -780,7 +785,7 @@ def create_app(settings: Settings | None = None) -> Flask:
                             f"fallback_reasoning_content:{tool_call_id}"
                             for tool_call_id in fallback_reasoning
                         )
-            if channel["type"] == "messages":
+            if channel["type"] == "messages" and not same_protocol:
                 injected_thinking = reasoning_cache.inject_messages_request(
                     upstream_request, cache_namespace
                 )
@@ -842,6 +847,47 @@ def create_app(settings: Settings | None = None) -> Flask:
                     channel["type"],
                 )
                 return jsonify(response_payload)
+
+            if same_protocol and stream_requested:
+                log_payload["upstream_request_body"] = redact(upstream_request)
+                log_payload["streaming"] = True
+                ttft_start = time.time()
+                upstream_lines = stream_upstream(
+                    channel,
+                    upstream_request,
+                    None,
+                    settings.default_timeout,
+                )
+                streamed_line_seen = False
+
+                def stream_passthrough():
+                    nonlocal streamed_line_seen, ttft_ms
+                    stream_error = None
+                    try:
+                        for line in upstream_lines:
+                            if not streamed_line_seen and line.strip():
+                                streamed_line_seen = True
+                                ttft_ms = int((time.time() - ttft_start) * 1000)
+                            yield line
+                    except Exception as exc:
+                        stream_error = str(exc)
+                        raise
+                    finally:
+                        write_db_record(
+                            record_status_code=200,
+                            record_duration_ms=int((time.time() - started) * 1000),
+                            record_ttft_ms=ttft_ms,
+                            response_body=None,
+                            response_protocol=None,
+                            error=stream_error,
+                        )
+
+                defer_db_write = True
+                return Response(
+                    stream_with_context(stream_passthrough()),
+                    mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
 
             if stream_requested and channel["type"] in {"messages", "chat"}:
                 upstream_request["stream"] = True
@@ -991,11 +1037,15 @@ def create_app(settings: Settings | None = None) -> Flask:
             if channel["type"] == "messages":
                 reasoning_cache.remember_messages_response(upstream_response, cache_namespace)
             log_payload["upstream_response_body"] = redact(upstream_response)
-            response_payload = convert_response(
-                upstream_response,
-                entry_protocol,
-                channel["type"],
-                route.original_model,
+            response_payload = (
+                deepcopy(upstream_response)
+                if same_protocol
+                else convert_response(
+                    upstream_response,
+                    entry_protocol,
+                    channel["type"],
+                    route.original_model,
+                )
             )
             if stream_requested:
                 def stream_synthesized_response():
