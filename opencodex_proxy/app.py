@@ -855,7 +855,6 @@ def create_app(settings: Settings | None = None) -> Flask:
                 upstream_lines = stream_upstream(
                     channel,
                     upstream_request,
-                    None,
                     settings.default_timeout,
                 )
                 streamed_line_seen = False

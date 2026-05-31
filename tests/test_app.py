@@ -2100,16 +2100,19 @@ class AppTests(unittest.TestCase):
                 ]
             }
         )
-        mock_stream.return_value = iter(
-            [
-                'data: {"id":"chatcmpl_1","choices":[{"delta":{"content":"po"}}]}\n',
-                "\n",
-                'data: {"id":"chatcmpl_1","choices":[{"delta":{"content":"ng"}}]}\n',
-                "\n",
-                "data: [DONE]\n",
-                "\n",
-            ]
-        )
+        stream_lines = [
+            'data: {"id":"chatcmpl_1","choices":[{"delta":{"content":"po"}}]}\n',
+            "\n",
+            'data: {"id":"chatcmpl_1","choices":[{"delta":{"content":"ng"}}]}\n',
+            "\n",
+            "data: [DONE]\n",
+            "\n",
+        ]
+
+        def stream_side_effect(channel, payload, default_timeout):
+            return iter(stream_lines)
+
+        mock_stream.side_effect = stream_side_effect
 
         payload = {
             "model": "public-model",
