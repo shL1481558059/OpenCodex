@@ -22,16 +22,9 @@ _BATCH_ACTIONS = {
 
 
 @dataclass(frozen=True)
-class PatchOp:
-    type: PatchOpType
-    path: str
-    meta: Optional[dict[str, Any]] = None
-
-
-@dataclass(frozen=True)
 class FileStarted:
     path: str
-    op: PatchOp
+    op: PatchOpType
 
 
 @dataclass(frozen=True)
@@ -45,12 +38,7 @@ class FileFinished:
     path: str
 
 
-@dataclass(frozen=True)
-class PatchFinished:
-    pass
-
-
-PatchSemanticEvent = Union[FileStarted, ContentProgress, FileFinished, PatchFinished]
+PatchSemanticEvent = Union[FileStarted, ContentProgress, FileFinished]
 
 
 def action_from_tool_name(name: str) -> Optional[PatchOpType]:
@@ -75,8 +63,7 @@ def semantic_events_from_operation(operation: dict[str, Any]) -> list[PatchSeman
     path = valid_preview_path(operation.get("path"))
     if action is None or path is None:
         return []
-    op = PatchOp(action, path)
-    events: list[PatchSemanticEvent] = [FileStarted(path, op)]
+    events: list[PatchSemanticEvent] = [FileStarted(path, action)]
     if action in {"add", "replace"}:
         content = operation.get("content")
         if isinstance(content, str):

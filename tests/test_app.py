@@ -2814,12 +2814,9 @@ class AppTests(unittest.TestCase):
         self.assertEqual(preview_events[0]["event"], "file_started")
         self.assertEqual(preview_events[0]["path"], "data.json")
         self.assertEqual(preview_events[0]["op"], "update")
-        self.assertEqual(
-            preview_events[0]["source"],
-            {"type": "tool", "id": "call_patch_preview"},
-        )
-        self.assertTrue(preview_events[0]["preview_id"].startswith("patchprev_"))
-        self.assertEqual(preview_events[-1]["event"], "patch_finished")
+        self.assertNotIn("source", preview_events[0])
+        self.assertNotIn("preview_id", preview_events[0])
+        self.assertEqual(preview_events[-1]["event"], "file_finished")
         self.assertEqual(
             [data["sequence_number"] for _, data in events],
             list(range(len(events))),
@@ -2907,14 +2904,79 @@ class AppTests(unittest.TestCase):
         progress_events = [
             data for data in preview_events if data["event"] == "content_progress"
         ]
-        self.assertTrue(progress_events)
-        self.assertGreaterEqual(progress_events[-1]["chars"], len("partial"))
+        self.assertEqual(len(progress_events), 1)
+        self.assertEqual(progress_events[0]["chars"], len("partial\nfinal"))
         self.assertNotIn(
             "partial",
             json.dumps(preview_events, ensure_ascii=False),
         )
         self.assertNotIn("response.custom_tool_call_input.delta", body)
         self.assertIn("+partial\\n+final", body)
+
+    @patch("opencodex_proxy.app.stream_upstream")
+    def test_responses_stream_to_chat_apply_patch_content_progress_is_throttled(
+        self, mock_stream
+    ):
+        content = "x" * 1100
+        arguments = json.dumps(
+            {"path": "large.txt", "content": content},
+            ensure_ascii=False,
+        )
+        chunks = [
+            arguments[:200],
+            arguments[200:700],
+            arguments[700:1050],
+            arguments[1050:],
+        ]
+        stream_chunks = []
+        for index, chunk in enumerate(chunks):
+            delta: dict[str, object] = {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "function": {"arguments": chunk},
+                    }
+                ]
+            }
+            if index == 0:
+                delta["role"] = "assistant"
+                delta["tool_calls"][0]["id"] = "call_patch_throttle"  # type: ignore[index]
+                delta["tool_calls"][0]["type"] = "function"  # type: ignore[index]
+                delta["tool_calls"][0]["function"]["name"] = (  # type: ignore[index]
+                    "apply_patch_replace_file"
+                )
+            stream_chunks.extend(
+                [
+                    f"data: {json.dumps({'id':'chatcmpl_tool','object':'chat.completion.chunk','created':1,'model':'deepseek-v4-pro','choices':[{'index':0,'delta':delta,'finish_reason':None}]}, ensure_ascii=False)}\n",
+                    "\n",
+                ]
+            )
+        stream_chunks.extend(
+            [
+                'data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","created":1,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}\n',
+                "\n",
+                "data: [DONE]\n",
+                "\n",
+            ]
+        )
+        mock_stream.return_value = iter(stream_chunks)
+
+        response = self.client.post(
+            "/v1/responses",
+            json={"model": "deepseek-v4-pro", "input": "patch", "stream": True},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        events = self.parse_sse_events(response.get_data(as_text=True))
+        progress = [
+            data["chars"]
+            for event, data in events
+            if event == "patch.semantic_preview" and data["event"] == "content_progress"
+        ]
+        self.assertEqual(len(progress), 2)
+        self.assertGreaterEqual(progress[0], 512)
+        self.assertLess(progress[0], len(content))
+        self.assertEqual(progress[-1], len(content))
 
     @patch("opencodex_proxy.app.stream_upstream")
     def test_responses_stream_to_chat_apply_patch_batch_preview_waits_for_operation_boundary(
@@ -3008,7 +3070,6 @@ class AppTests(unittest.TestCase):
                 "file_started",
                 "content_progress",
                 "file_finished",
-                "patch_finished",
             ],
         )
         self.assertEqual(preview_events[0]["path"], "created.txt")
