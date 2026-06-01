@@ -1025,11 +1025,11 @@ const WEB_SEARCH_PROVIDER_LABELS = {
   tavily: "Tavily"
 };
 
-const activeTab = ref("channels");
+const activeTab = ref("dashboard");
 const authenticated = ref(false);
 const loadingSession = ref(true);
 const currentUser = ref(null);
-const loginUsername = ref("admin");
+const loginUsername = ref("");
 const loginPassword = ref("");
 const loginLoading = ref(false);
 const configLoading = ref(false);
@@ -1227,6 +1227,7 @@ async function login() {
     });
     setAuthenticatedUser(data);
     loginPassword.value = "";
+    activeTab.value = "dashboard";
     await loadInitialData();
   } catch (error) {
     ElMessage.error(error.message);
@@ -1243,6 +1244,7 @@ async function logout() {
   accessKeys.value = [];
   users.value = [];
   assignWebSearchConfig(defaultWebSearchConfig());
+  activeTab.value = "dashboard";
 }
 
 function setAuthenticatedUser(data) {
@@ -1262,7 +1264,7 @@ async function loadInitialData() {
 
 function ensureAllowedActiveTab() {
   if (!isSuperadmin.value && ["users", "web-search"].includes(activeTab.value)) {
-    activeTab.value = "channels";
+    activeTab.value = "dashboard";
   }
 }
 

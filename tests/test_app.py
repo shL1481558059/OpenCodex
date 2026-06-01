@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -3644,40 +3645,104 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("no enabled channels", response.get_json()["error"]["message"])
 
-    def test_stats_api_default_window(self):
+    def test_stats_api_default_range(self):
         self.login_api()
         resp = self.client.get("/admin/api/stats")
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
-        self.assertEqual(data["window"], "1h")
+        self.assertEqual(data["range"], "1h")
+        self.assertNotIn("window", data)
         self.assertIn("currency_rate", data)
+        self.assertIn("summary", data)
         self.assertIsInstance(data["points"], list)
         self.assertIsInstance(data["model_distribution"], list)
 
-    def test_stats_api_explicit_window(self):
+    def test_stats_api_explicit_range(self):
         self.login_api()
-        for w in ["1h", "3h", "6h", "12h", "24h", "48h", "72h"]:
-            resp = self.client.get(f"/admin/api/stats?window={w}")
+        expected_granularity = {"1h": 1, "6h": 5, "24h": 15, "7d": 120, "30d": 720}
+        for range_key, granularity in expected_granularity.items():
+            resp = self.client.get(f"/admin/api/stats?range={range_key}")
             self.assertEqual(resp.status_code, 200)
             data = resp.get_json()
-            self.assertEqual(data["window"], w)
+            self.assertEqual(data["range"], range_key)
+            self.assertEqual(data["granularity_minutes"], granularity)
 
-    def test_stats_api_invalid_window_defaults_to_1h(self):
+    def test_stats_api_custom_range(self):
         self.login_api()
-        resp = self.client.get("/admin/api/stats?window=invalid")
+        resp = self.client.get("/admin/api/stats?range=custom&start=1700000000&end=1700003600")
+        self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
-        self.assertEqual(data["window"], "1h")
+        self.assertEqual(data["range"], "custom")
+        self.assertEqual(data["granularity_minutes"], 1)
+        self.assertEqual(data["start"], "2023-11-15T06:13:20")
+        self.assertEqual(data["end"], "2023-11-15T07:13:20")
+
+    def test_stats_api_summary(self):
+        now = 1_700_003_600
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            conn.executemany(
+                """
+                INSERT INTO request_logs (
+                    request_id, created_at, method, path, client_ip, request_headers,
+                    request_body, model, upstream_model, channel_id, is_stream,
+                    ttft_ms, duration_ms, status_code, response_body, input_tokens,
+                    cached_tokens, output_tokens, cost, owner_username, error
+                ) VALUES (?, ?, 'POST', '/v1/responses', '127.0.0.1', '{}',
+                    '{}', ?, ?, 'chat', 0, ?, 100, ?, '{}', ?, ?, ?, ?, ?, ?
+                )
+                """,
+                [
+                    ("req1", now - 60, "m1", "m1", 100, 200, 30, 10, 20, 7.25, "admin", None),
+                    ("req2", now - 120, "m1", "m1", 0, 200, 40, 20, 10, 14.5, "admin", ""),
+                    ("req3", now - 4000, "m2", "m2", 0, 500, 1, 1, 1, 10.0, "admin", "boom"),
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.login_api()
+        resp = self.client.get(
+            f"/admin/api/stats?range=custom&start={now - 3600}&end={now}"
+        )
+        self.assertEqual(resp.status_code, 200)
+        summary = resp.get_json()["summary"]
+        self.assertEqual(summary["request_count"], 2)
+        self.assertEqual(summary["success_count"], 2)
+        self.assertEqual(summary["recent_1h_request_count"], 2)
+        self.assertEqual(summary["input_tokens"], 70)
+        self.assertEqual(summary["cached_tokens"], 30)
+        self.assertEqual(summary["output_tokens"], 30)
+        self.assertEqual(summary["total_tokens"], 130)
+        self.assertEqual(summary["cost"], 21.75)
+        self.assertEqual(summary["recent_1h_cost"], 21.75)
+        self.assertEqual(summary["rpm"], 1)
+        self.assertEqual(summary["tpm"], 60)
+        self.assertEqual(resp.get_json()["model_distribution"], [{"model": "m1", "count": 2}])
+
+    def test_stats_api_invalid_range_defaults_to_1h(self):
+        self.login_api()
+        resp = self.client.get("/admin/api/stats?range=invalid")
+        data = resp.get_json()
+        self.assertEqual(data["range"], "1h")
+
+    def test_stats_api_ignores_legacy_window_param(self):
+        self.login_api()
+        resp = self.client.get("/admin/api/stats?window=6h")
+        data = resp.get_json()
+        self.assertEqual(data["range"], "1h")
 
     def test_stats_api_regular_user_scope(self):
         create_user(self.db_path, "user1", "pass1")
         self.login_api("user1", "pass1")
-        resp = self.client.get("/admin/api/stats")
+        resp = self.client.get("/admin/api/stats?range=1h")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("points", resp.get_json())
 
     def test_stats_api_empty_data(self):
         self.login_api()
-        resp = self.client.get("/admin/api/stats?window=1h")
+        resp = self.client.get("/admin/api/stats?range=1h")
         data = resp.get_json()
         self.assertIsInstance(data["points"], list)
         self.assertGreater(len(data["points"]), 0)
@@ -3690,6 +3755,8 @@ class AppTests(unittest.TestCase):
             self.assertIsNone(p["cache_hit_rate"])
             self.assertEqual(p["rpm"], 0)
         self.assertEqual(data["model_distribution"], [])
+        self.assertEqual(data["summary"]["request_count"], 0)
+        self.assertEqual(data["summary"]["total_tokens"], 0)
 
     def test_stats_api_requires_auth(self):
         resp = self.client.get("/admin/api/stats")

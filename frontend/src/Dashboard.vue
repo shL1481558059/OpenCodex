@@ -6,13 +6,67 @@
         <div class="text-muted">实时监控代理服务的消费、Token、延迟与请求趋势</div>
       </div>
       <div class="dashboard-controls">
-        <el-radio-group v-model="window" size="small" @change="handleWindowChange">
-          <el-radio-button v-for="w in windowOptions" :key="w" :label="w" :value="w" />
+        <el-radio-group v-model="range" size="small" @change="handleRangeChange">
+          <el-radio-button
+            v-for="item in rangeOptions"
+            :key="item.value"
+            :label="item.value"
+            :value="item.value"
+          >
+            {{ item.label }}
+          </el-radio-button>
         </el-radio-group>
-        <el-select v-model="refreshInterval" size="small" style="width: 110px" @change="handleRefreshChange">
-          <el-option v-for="opt in refreshOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
-        </el-select>
+        <el-date-picker
+          v-if="range === 'custom'"
+          v-model="customRange"
+          type="datetimerange"
+          size="small"
+          start-placeholder="开始时间"
+          end-placeholder="结束时间"
+          range-separator="至"
+          value-format="x"
+          :clearable="false"
+          @change="handleCustomRangeChange"
+        />
         <el-button size="small" :icon="Refresh" :loading="loading" @click="fetchStats">刷新</el-button>
+        <el-dropdown trigger="click" @command="setAutoRefreshSeconds">
+          <el-button size="small" :type="autoRefreshSeconds ? 'primary' : 'default'" :icon="Refresh">
+            {{ autoRefreshLabel }}
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu class="log-auto-refresh-menu">
+              <div class="log-auto-refresh-menu__title">启用自动刷新</div>
+              <el-dropdown-item :command="0">
+                <span class="log-auto-refresh-menu__item">
+                  <span>关闭</span>
+                  <el-icon v-if="autoRefreshSeconds === 0"><Check /></el-icon>
+                </span>
+              </el-dropdown-item>
+              <el-dropdown-item v-for="seconds in autoRefreshOptions" :key="seconds" :command="seconds">
+                <span class="log-auto-refresh-menu__item">
+                  <span>{{ seconds }} 秒</span>
+                  <el-icon v-if="autoRefreshSeconds === seconds"><Check /></el-icon>
+                </span>
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </div>
+    </div>
+
+    <div class="dashboard-summary-grid">
+      <div
+        v-for="card in summaryCards"
+        :key="card.key"
+        class="dashboard-summary-card"
+        :class="`dashboard-summary-card--${card.tone}`"
+      >
+        <div class="dashboard-summary-card__icon">
+          <el-icon><component :is="card.icon" /></el-icon>
+        </div>
+        <div class="dashboard-summary-card__title">{{ card.title }}</div>
+        <div class="dashboard-summary-card__value">{{ card.value }}</div>
+        <div class="dashboard-summary-card__meta">{{ card.meta }}</div>
       </div>
     </div>
 
@@ -76,7 +130,7 @@
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick, shallowRef } from "vue";
 import * as echarts from "echarts";
-import { Refresh } from "@element-plus/icons-vue";
+import { Box, Check, Coin, DataLine, Lightning, Refresh, Timer } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 
 const props = defineProps({
@@ -84,14 +138,15 @@ const props = defineProps({
   active: { type: Boolean, required: true }
 });
 
-const windowOptions = ["1h", "3h", "6h", "12h", "24h", "48h", "72h"];
-const refreshOptions = [
-  { label: "30s", value: 30 },
-  { label: "1min", value: 60 },
-  { label: "3min", value: 180 },
-  { label: "5min", value: 300 },
-  { label: "10min", value: 600 }
+const rangeOptions = [
+  { label: "1 小时", value: "1h" },
+  { label: "6 小时", value: "6h" },
+  { label: "24 小时", value: "24h" },
+  { label: "7 天", value: "7d" },
+  { label: "30 天", value: "30d" },
+  { label: "自定义", value: "custom" }
 ];
+const autoRefreshOptions = [5, 10, 30, 60];
 
 const costCurrencyOptions = [
   { label: "¥", value: "CNY" },
@@ -102,15 +157,20 @@ const tokenUnitOptions = [
   { label: "M", value: "M" }
 ];
 
-const window = ref("1h");
-const refreshInterval = ref(30);
+const range = ref("1h");
+const customRange = ref(defaultCustomRange());
+const autoRefreshSeconds = ref(0);
 const loading = ref(false);
 const costCurrency = ref("CNY");
 const tokenUnit = ref("K");
 
 const statsData = reactive({
-  window: "1h",
+  range: "1h",
+  start: "",
+  end: "",
+  granularity_minutes: 1,
   currency_rate: 7.25,
+  summary: defaultSummary(),
   points: [],
   model_distribution: []
 });
@@ -133,13 +193,66 @@ const modelChart = shallowRef(null);
 
 let refreshTimer = null;
 
+const autoRefreshLabel = computed(() =>
+  autoRefreshSeconds.value ? `${autoRefreshSeconds.value} 秒刷新` : "自动刷新"
+);
+const summaryCards = computed(() => {
+  const summary = statsData.summary || defaultSummary();
+  return [
+    {
+      key: "requests",
+      title: "总请求数",
+      value: formatInteger(summary.request_count),
+      meta: `成功: ${formatInteger(summary.success_count)}  近 1 小时: ${formatInteger(summary.recent_1h_request_count)}`,
+      icon: DataLine,
+      tone: "blue"
+    },
+    {
+      key: "tokens",
+      title: "总 TOKEN 数",
+      value: formatInteger(summary.total_tokens),
+      meta: `输入: ${formatInteger(summary.input_tokens)}  缓存: ${formatInteger(summary.cached_tokens)}  输出: ${formatInteger(summary.output_tokens)}`,
+      icon: Box,
+      tone: "cyan"
+    },
+    {
+      key: "cost",
+      title: "总计费",
+      value: formatDualCurrency(summary.cost),
+      meta: `近 1 小时: ${formatDualCurrency(summary.recent_1h_cost)}`,
+      icon: Coin,
+      tone: "green"
+    },
+    {
+      key: "rpm",
+      title: "RPM",
+      value: formatCompactNumber(summary.rpm),
+      meta: "每分钟请求数",
+      icon: Timer,
+      tone: "green"
+    },
+    {
+      key: "tpm",
+      title: "TPM",
+      value: formatCompactNumber(summary.tpm),
+      meta: "每分钟 Token 数",
+      icon: Lightning,
+      tone: "red"
+    }
+  ];
+});
+
 // --- Data fetching ---
 async function fetchStats() {
   loading.value = true;
   try {
-    const data = await props.api(`/admin/api/stats?window=${window.value}`);
-    statsData.window = data.window || window.value;
+    const data = await props.api(`/admin/api/stats?${buildStatsQuery()}`);
+    statsData.range = data.range || range.value;
+    statsData.start = data.start || "";
+    statsData.end = data.end || "";
+    statsData.granularity_minutes = data.granularity_minutes || 1;
     statsData.currency_rate = data.currency_rate || 7.25;
+    statsData.summary = { ...defaultSummary(), ...(data.summary || {}) };
     statsData.points = data.points || [];
     statsData.model_distribution = data.model_distribution || [];
     renderAllCharts();
@@ -153,10 +266,10 @@ async function fetchStats() {
 // --- Auto-refresh ---
 function startRefreshTimer() {
   stopRefreshTimer();
-  if (refreshInterval.value > 0) {
+  if (autoRefreshSeconds.value > 0) {
     refreshTimer = window.setInterval(() => {
       if (props.active) fetchStats();
-    }, refreshInterval.value * 1000);
+    }, autoRefreshSeconds.value * 1000);
   }
 }
 
@@ -167,13 +280,88 @@ function stopRefreshTimer() {
   }
 }
 
-function handleWindowChange() {
+function handleRangeChange() {
+  if (range.value === "custom" && !customRange.value) {
+    customRange.value = defaultCustomRange();
+  }
   fetchStats();
   startRefreshTimer();
 }
 
-function handleRefreshChange() {
+function handleCustomRangeChange() {
+  if (range.value === "custom") {
+    fetchStats();
+    startRefreshTimer();
+  }
+}
+
+function setAutoRefreshSeconds(seconds) {
+  const nextSeconds = Number(seconds || 0);
+  autoRefreshSeconds.value = autoRefreshOptions.includes(nextSeconds) ? nextSeconds : 0;
   startRefreshTimer();
+  if (autoRefreshSeconds.value > 0) {
+    fetchStats();
+  }
+}
+
+function buildStatsQuery() {
+  const params = new URLSearchParams({ range: range.value });
+  if (range.value === "custom" && Array.isArray(customRange.value) && customRange.value.length === 2) {
+    params.set("start", String(Math.floor(Number(customRange.value[0]) / 1000)));
+    params.set("end", String(Math.floor(Number(customRange.value[1]) / 1000)));
+  }
+  return params.toString();
+}
+
+function defaultCustomRange() {
+  const end = Date.now();
+  return [end - 60 * 60 * 1000, end];
+}
+
+function defaultSummary() {
+  return {
+    request_count: 0,
+    success_count: 0,
+    recent_1h_request_count: 0,
+    input_tokens: 0,
+    cached_tokens: 0,
+    output_tokens: 0,
+    total_tokens: 0,
+    recent_1h_tokens: 0,
+    cost: 0,
+    recent_1h_cost: 0,
+    rpm: 0,
+    tpm: 0
+  };
+}
+
+function formatInteger(value) {
+  return Math.round(Number(value || 0)).toLocaleString();
+}
+
+function formatCompactNumber(value) {
+  const number = Number(value || 0);
+  if (Number.isInteger(number)) {
+    return formatInteger(number);
+  }
+  return number.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+function formatDualCurrency(value) {
+  const cny = Number(value || 0);
+  const usd = cny / (statsData.currency_rate || 7.25);
+  return `¥${formatCurrencyNumber(cny)}/$${formatCurrencyNumber(usd)}`;
+}
+
+function formatCurrencyNumber(value) {
+  const number = Number(value || 0);
+  if (Math.abs(number) >= 100) {
+    return number.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  }
+  if (Math.abs(number) >= 1) {
+    return number.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  return number.toLocaleString(undefined, { minimumFractionDigits: 6, maximumFractionDigits: 6 });
 }
 
 // --- Chart init / resize ---
@@ -219,9 +407,8 @@ function disposeAllCharts() {
 // --- Chart rendering ---
 const timeLabels = computed(() => statsData.points.map(p => {
   const iso = p.time || "";
-  // Show HH:mm for short windows, MM-DD HH:mm for long
   const short = iso.length >= 16 ? iso.slice(11, 16) : iso;
-  if (["48h", "72h"].includes(statsData.window)) {
+  if (["7d", "30d", "custom"].includes(statsData.range)) {
     return iso.length >= 10 ? iso.slice(5, 16) : iso;
   }
   return short;
@@ -269,7 +456,7 @@ function renderCostChart() {
   const isCNY = costCurrency.value === "CNY";
   const data = statsData.points.map(p => {
     const raw = p.cost || 0;
-    return isCNY ? raw * rate : raw;
+    return isCNY ? raw : raw / rate;
   });
   const precision = data.some(v => v > 1) ? 2 : 6;
   costChart.value.setOption({
@@ -465,6 +652,91 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
 }
 
+.dashboard-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(180px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.dashboard-summary-card {
+  position: relative;
+  min-height: 124px;
+  box-sizing: border-box;
+  padding: 20px 18px 16px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgb(31 45 61 / 10%);
+  overflow: hidden;
+}
+
+.dashboard-summary-card__icon {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: grid;
+  place-items: center;
+  width: 50px;
+  height: 50px;
+  border-radius: 8px;
+  font-size: 24px;
+}
+
+.dashboard-summary-card__title {
+  padding-right: 56px;
+  color: var(--el-text-color-secondary);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.dashboard-summary-card__value {
+  margin-top: 28px;
+  color: #121826;
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.dashboard-summary-card__meta {
+  margin-top: 12px;
+  color: var(--el-text-color-secondary);
+  font-size: 14px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dashboard-summary-card--blue .dashboard-summary-card__icon {
+  background: #eef5ff;
+  color: #356fc7;
+}
+
+.dashboard-summary-card--cyan .dashboard-summary-card__icon {
+  background: #eef7fb;
+  color: #337ea3;
+}
+
+.dashboard-summary-card--green .dashboard-summary-card__icon {
+  background: #edf8f0;
+  color: #32865c;
+}
+
+.dashboard-summary-card--red .dashboard-summary-card__icon {
+  background: #fff0f0;
+  color: #d9504f;
+}
+
+.dashboard-summary-card--green .dashboard-summary-card__value {
+  color: #32865c;
+}
+
+.dashboard-summary-card--red .dashboard-summary-card__value {
+  color: #121826;
+}
+
 .dashboard-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -511,6 +783,15 @@ onBeforeUnmount(() => {
   .dashboard-grid {
     grid-template-columns: 1fr;
   }
+
+  .dashboard-summary-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (min-width: 901px) and (max-width: 1400px) {
+  .dashboard-summary-grid {
+    grid-template-columns: repeat(2, minmax(240px, 1fr));
+  }
 }
 </style>
-
