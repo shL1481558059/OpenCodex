@@ -689,7 +689,7 @@ onBeforeUnmount(() => {
 .dashboard-summary-card__value {
   margin-top: 28px;
   color: #121826;
-  font-size: 28px;
+  font-size: 18px;
   font-weight: 700;
   line-height: 1.1;
   white-space: nowrap;
