@@ -15,6 +15,7 @@ from opencodex_proxy.db import (
     list_access_api_keys,
     read_channels,
     read_logs,
+    read_stats,
     read_web_search_config,
     replace_web_search_config,
 )
@@ -3642,6 +3643,57 @@ class AppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("no enabled channels", response.get_json()["error"]["message"])
+
+    def test_stats_api_default_window(self):
+        self.login_api()
+        resp = self.client.get("/admin/api/stats")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data["window"], "1h")
+        self.assertIn("currency_rate", data)
+        self.assertIsInstance(data["points"], list)
+        self.assertIsInstance(data["model_distribution"], list)
+
+    def test_stats_api_explicit_window(self):
+        self.login_api()
+        for w in ["1h", "3h", "6h", "12h", "24h", "48h", "72h"]:
+            resp = self.client.get(f"/admin/api/stats?window={w}")
+            self.assertEqual(resp.status_code, 200)
+            data = resp.get_json()
+            self.assertEqual(data["window"], w)
+
+    def test_stats_api_invalid_window_defaults_to_1h(self):
+        self.login_api()
+        resp = self.client.get("/admin/api/stats?window=invalid")
+        data = resp.get_json()
+        self.assertEqual(data["window"], "1h")
+
+    def test_stats_api_regular_user_scope(self):
+        create_user(self.db_path, "user1", "pass1")
+        self.login_api("user1", "pass1")
+        resp = self.client.get("/admin/api/stats")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("points", resp.get_json())
+
+    def test_stats_api_empty_data(self):
+        self.login_api()
+        resp = self.client.get("/admin/api/stats?window=1h")
+        data = resp.get_json()
+        self.assertIsInstance(data["points"], list)
+        self.assertGreater(len(data["points"]), 0)
+        for p in data["points"]:
+            self.assertEqual(p["cost"], 0)
+            self.assertEqual(p["input_tokens"], 0)
+            self.assertEqual(p["cached_tokens"], 0)
+            self.assertEqual(p["output_tokens"], 0)
+            self.assertIsNone(p["avg_ttft_ms"])
+            self.assertIsNone(p["cache_hit_rate"])
+            self.assertEqual(p["rpm"], 0)
+        self.assertEqual(data["model_distribution"], [])
+
+    def test_stats_api_requires_auth(self):
+        resp = self.client.get("/admin/api/stats")
+        self.assertIn(resp.status_code, (401, 403))
 
 
 if __name__ == "__main__":

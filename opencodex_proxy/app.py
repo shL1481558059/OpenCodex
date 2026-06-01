@@ -57,6 +57,7 @@ from .db import (
     reset_user_password,
     set_access_api_key_enabled,
     set_user_enabled,
+    read_stats,
 )
 from .errors import BadRequestError, ProxyError
 from .logging_utils import configure_logging, log_event, redact
@@ -555,6 +556,13 @@ def create_app(settings: Settings | None = None) -> Flask:
         if log is None:
             return jsonify({"error": "log not found"}), 404
         return jsonify(log)
+
+    @app.get("/admin/api/stats")
+    def admin_stats():
+        user = require_user()
+        window = str(request.args.get("window", "1h")).strip()
+        owner_username = None if user["role"] == "superadmin" else user["username"]
+        return jsonify(read_stats(settings.db_path, window=window, owner_username=owner_username))
 
     @app.post("/admin/api/channels/discover-models")
     def admin_discover_models():

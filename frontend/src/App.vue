@@ -53,6 +53,10 @@
       <el-container class="app-body">
         <el-aside width="260px" class="app-aside">
           <el-menu class="side-menu" :default-active="activeTab" @select="activeTab = $event">
+            <el-menu-item index="dashboard">
+              <el-icon><DataLine /></el-icon>
+              <span>仪表盘</span>
+            </el-menu-item>
             <el-menu-item index="channels">
               <el-icon><Connection /></el-icon>
               <span>渠道配置</span>
@@ -78,6 +82,9 @@
 
         <el-main class="main-content">
           <div class="content-panel">
+            <section v-show="activeTab === 'dashboard'">
+              <Dashboard :api="api" :active="activeTab === 'dashboard'" />
+            </section>
             <section v-show="activeTab === 'channels'">
               <div class="toolbar">
                 <div>
@@ -1000,6 +1007,7 @@ import {
   Delete,
   Download,
   Edit,
+  DataLine,
   Key,
   Plus,
   Refresh,
@@ -1011,6 +1019,7 @@ import {
   User,
   View
 } from "@element-plus/icons-vue";
+import Dashboard from "./Dashboard.vue";
 
 const WEB_SEARCH_PROVIDER_LABELS = {
   tavily: "Tavily"

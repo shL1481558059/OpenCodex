@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 
 LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+USD_CNY_RATE = 7.25
 LOG_VIEW_LEVELS = {"BASIC", "DEBUG", "TRACE"}
 
 
