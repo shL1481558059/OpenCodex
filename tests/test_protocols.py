@@ -835,6 +835,89 @@ class ProtocolTests(unittest.TestCase):
             ),
         )
 
+    def test_chat_apply_patch_batch_operations_string_rebuilds_patch(self):
+        arguments = json.dumps(
+            {
+                "operations": json.dumps(
+                    [
+                        {"type": "add_file", "path": "a.txt", "content": "hello"},
+                    ]
+                )
+            }
+        )
+        payload = {
+            "id": "chatcmpl_patch_batch_string",
+            "model": "upstream",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_patch_batch_string",
+                                "type": "function",
+                                "function": {
+                                    "name": "apply_patch_batch",
+                                    "arguments": arguments,
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        }
+
+        result = convert_response(payload, "responses", "chat", "local")
+
+        self.assertEqual(
+            result["output"][0]["input"],
+            "\n".join(
+                [
+                    "*** Begin Patch",
+                    "*** Add File: a.txt",
+                    "+hello",
+                    "*** End Patch",
+                ]
+            ),
+        )
+
+    def test_chat_apply_patch_batch_invalid_operations_string_is_not_fake_patch(self):
+        for operations in ("not json", json.dumps({"not": "a list"})):
+            with self.subTest(operations=operations):
+                arguments = json.dumps({"operations": operations})
+                payload = {
+                    "id": "chatcmpl_patch_batch_bad_string",
+                    "model": "upstream",
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_patch_batch_bad_string",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "apply_patch_batch",
+                                            "arguments": arguments,
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                }
+
+                result = convert_response(payload, "responses", "chat", "local")
+
+                self.assertEqual(result["output"][0]["name"], "apply_patch")
+                self.assertFalse(
+                    result["output"][0]["input"].startswith("*** Begin Patch")
+                )
+
     def test_apply_patch_history_replays_eof_empty_add_and_special_paths(self):
         patch = "\n".join(
             [

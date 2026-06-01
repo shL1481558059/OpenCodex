@@ -10,8 +10,6 @@ from .patch_semantics import (
     ContentProgress,
     FileFinished,
     FileStarted,
-    PatchFinished,
-    PatchOp,
     PatchSemanticEvent,
     action_from_tool_name,
     semantic_events_from_operation,
@@ -22,6 +20,9 @@ from .protocols import (
     _normalize_annotations,
     _responses_apply_patch_item_from_tool_call,
 )
+
+
+PATCH_CONTENT_PROGRESS_STEP = 512
 
 
 def responses_sse_events(
@@ -422,33 +423,16 @@ def chat_sse_to_responses_events(
         )
         return events
 
-    def ensure_patch_preview(index: int, call_id: Any) -> dict[str, Any]:
-        meta = tool_stream_meta.setdefault(index, {})
-        if "patch_preview_id" not in meta:
-            meta["patch_preview_id"] = f"patchprev_{uuid.uuid4().hex}"
-        if "patch_preview_source" not in meta:
-            meta["patch_preview_source"] = {
-                "type": "tool",
-                "id": str(call_id or ""),
-            }
-        return meta
-
     def emit_patch_preview(
-        index: int,
-        call_id: Any,
         semantic_event: PatchSemanticEvent,
     ) -> str:
-        meta = ensure_patch_preview(index, call_id)
-        payload: dict[str, Any] = {
-            "preview_id": meta["patch_preview_id"],
-            "source": meta["patch_preview_source"],
-        }
+        payload: dict[str, Any] = {}
         if isinstance(semantic_event, FileStarted):
             payload.update(
                 {
                     "event": "file_started",
                     "path": semantic_event.path,
-                    "op": semantic_event.op.type,
+                    "op": semantic_event.op,
                 }
             )
         elif isinstance(semantic_event, ContentProgress):
@@ -461,8 +445,6 @@ def chat_sse_to_responses_events(
             )
         elif isinstance(semantic_event, FileFinished):
             payload.update({"event": "file_finished", "path": semantic_event.path})
-        elif isinstance(semantic_event, PatchFinished):
-            payload.update({"event": "patch_finished"})
         return emit("patch.semantic_preview", payload)
 
     def patch_preview_events_for_tool_call(
@@ -489,16 +471,37 @@ def chat_sse_to_responses_events(
         if not meta.get("patch_preview_file_started"):
             meta["patch_preview_file_started"] = True
             events.append(
-                emit_patch_preview(index, call_id, FileStarted(path, PatchOp(action, path)))
+                emit_patch_preview(FileStarted(path, action))
             )
         if action in {"add", "replace"}:
             chars = _partial_json_string_field_length(arguments, "content")
+            has_streamed_chars = "patch_preview_content_chars" in meta
             streamed_chars = int(meta.get("patch_preview_content_chars") or 0)
-            if chars is not None and chars > streamed_chars:
+            complete_content = _complete_json_string_field(arguments, "content")
+            final_progress_pending = (
+                complete_content is not None
+                and not meta.get("patch_preview_content_complete")
+            )
+            should_emit_progress = (
+                chars is not None
+                and (
+                    (
+                        chars > streamed_chars
+                        and chars - streamed_chars >= PATCH_CONTENT_PROGRESS_STEP
+                    )
+                    or (
+                        final_progress_pending
+                        and (chars > streamed_chars or not has_streamed_chars)
+                    )
+                )
+            )
+            if should_emit_progress:
                 meta["patch_preview_content_chars"] = chars
                 events.append(
-                    emit_patch_preview(index, call_id, ContentProgress(path, chars))
+                    emit_patch_preview(ContentProgress(path, chars))
                 )
+            if complete_content is not None:
+                meta["patch_preview_content_complete"] = True
         return events
 
     def _batch_patch_preview_events(
@@ -512,7 +515,7 @@ def chat_sse_to_responses_events(
         events: list[str] = []
         for operation in objects[emitted:]:
             for semantic_event in semantic_events_from_operation(operation):
-                events.append(emit_patch_preview(index, call_id, semantic_event))
+                events.append(emit_patch_preview(semantic_event))
         if len(objects) > emitted:
             meta["patch_preview_batch_emitted"] = len(objects)
         return events
@@ -808,15 +811,10 @@ def chat_sse_to_responses_events(
                     "arguments": item.get("arguments", ""),
                 },
             )
-        elif _is_apply_patch_tool_name(str(tool_name)) and meta.get("patch_preview_id"):
+        elif _is_apply_patch_tool_name(str(tool_name)) and meta.get("patch_preview_file_started"):
             if not meta.get("patch_preview_file_finished") and meta.get("patch_preview_path"):
                 meta["patch_preview_file_finished"] = True
-                yield emit_patch_preview(
-                    index,
-                    tool_call["id"],
-                    FileFinished(str(meta["patch_preview_path"])),
-                )
-            yield emit_patch_preview(index, tool_call["id"], PatchFinished())
+                yield emit_patch_preview(FileFinished(str(meta["patch_preview_path"])))
         yield emit(
             "response.output_item.done",
             {

@@ -1724,13 +1724,19 @@ def _add_offset(obj: Any, offset: int) -> None:
 
 
 def _counts_for_ttft(sse_line: str) -> bool:
+    if sse_line.startswith("event: patch.semantic_preview\n"):
+        event_name, payload = _parse_sse_event(sse_line)
+        return (
+            event_name == "patch.semantic_preview"
+            and isinstance(payload, dict)
+            and payload.get("event") == "file_started"
+        )
     return any(
         event_name in sse_line
         for event_name in (
             "response.output_text.delta",
             "response.reasoning_summary_text.delta",
             "response.function_call_arguments.delta",
-            "patch.semantic_preview",
             "response.output_item.done",
         )
     )

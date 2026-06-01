@@ -1486,8 +1486,8 @@ def _rebuild_apply_patch_grammar(name: str, arguments: Any) -> str | None:
         return None
     action = name.removeprefix("apply_patch_")
     if action == "batch":
-        operations = value.get("operations")
-        if not isinstance(operations, list):
+        operations = _apply_patch_batch_operations(value.get("operations"))
+        if operations is None:
             return None
     else:
         operation = dict(value)
@@ -1658,11 +1658,17 @@ def _apply_patch_proxy_operations(name: str, arguments: Any) -> list[dict[str, A
         return None
     action = normalized.removeprefix("apply_patch_")
     if action == "batch":
-        operations = value.get("operations")
-        return operations if isinstance(operations, list) else None
+        return _apply_patch_batch_operations(value.get("operations"))
     operation = dict(value)
     operation["type"] = action
     return [operation]
+
+
+def _apply_patch_batch_operations(value: Any) -> list[dict[str, Any]] | None:
+    value = _decode_json_value(value)
+    if not isinstance(value, list):
+        return None
+    return value
 
 
 def _apply_patch_operations_need_exec_fallback(operations: list[dict[str, Any]]) -> bool:
