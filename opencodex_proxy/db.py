@@ -1705,42 +1705,39 @@ def _append_where_condition(where_clause: str, condition: str) -> str:
         return f"{where_clause} AND {condition}"
     return f"WHERE {condition}"
 
-STATS_WINDOW_GRANULARITY: dict[str, int] = {
+STATS_RANGE_GRANULARITY: dict[str, int] = {
     "1h": 1,
-    "3h": 3,
     "6h": 5,
-    "12h": 10,
     "24h": 15,
-    "48h": 30,
-    "72h": 60,
+    "7d": 120,
+    "30d": 720,
 }
 
-STATS_WINDOW_HOURS: dict[str, int] = {
+STATS_RANGE_HOURS: dict[str, int] = {
     "1h": 1,
-    "3h": 3,
     "6h": 6,
-    "12h": 12,
     "24h": 24,
-    "48h": 48,
-    "72h": 72,
+    "7d": 24 * 7,
+    "30d": 24 * 30,
 }
 
 
 def read_stats(
     db_path: Path,
-    window: str = "1h",
+    range_key: str = "1h",
+    *,
+    start_ts: Any = None,
+    end_ts: Any = None,
     owner_username: str | None = None,
 ) -> dict[str, Any]:
     """Return aggregated stats for the dashboard."""
+    range_key, start_ts, end_ts, granularity_min = _resolve_stats_range(
+        range_key,
+        start_ts=start_ts,
+        end_ts=end_ts,
+    )
     if not db_path.exists():
-        return {"window": window, "currency_rate": USD_CNY_RATE, "points": [], "model_distribution": []}
-
-    window = window if window in STATS_WINDOW_GRANULARITY else "1h"
-    granularity_min = STATS_WINDOW_GRANULARITY[window]
-    window_hours = STATS_WINDOW_HOURS[window]
-
-    now = time.time()
-    start_ts = now - window_hours * 3600
+        return _empty_stats_response(range_key, start_ts, end_ts, granularity_min)
 
     owner_clause = ""
     owner_params: tuple[Any, ...] = ()
@@ -1750,7 +1747,7 @@ def read_stats(
 
     conn = sqlite3.connect(str(db_path))
     try:
-        bucket_count = (window_hours * 60) // granularity_min
+        bucket_count = max(1, int((end_ts - start_ts + granularity_min * 60 - 1) // (granularity_min * 60)))
         points: list[dict[str, Any]] = []
 
         for i in range(bucket_count):
@@ -1797,22 +1794,171 @@ def read_stats(
         model_sql = (
             "SELECT model, COUNT(*) AS cnt "
             "FROM request_logs "
-            "WHERE created_at >= ? " + owner_clause + " "
+            "WHERE created_at >= ? AND created_at < ? " + owner_clause + " "
             "GROUP BY model "
             "ORDER BY cnt DESC "
             "LIMIT 20"
         )
-        model_rows = conn.execute(model_sql, (start_ts, *owner_params)).fetchall()
+        model_rows = conn.execute(model_sql, (start_ts, end_ts, *owner_params)).fetchall()
         model_distribution = [{"model": r[0] or "unknown", "count": r[1]} for r in model_rows]
+        summary = _read_stats_summary(
+            conn,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            granularity_min=granularity_min,
+            owner_clause=owner_clause,
+            owner_params=owner_params,
+            points=points,
+        )
     finally:
         conn.close()
 
     return {
-        "window": window,
+        "range": range_key,
+        "start": _ts_to_iso(start_ts),
+        "end": _ts_to_iso(end_ts),
+        "granularity_minutes": granularity_min,
         "currency_rate": USD_CNY_RATE,
+        "summary": summary,
         "points": points,
         "model_distribution": model_distribution,
     }
+
+
+def _empty_stats_response(
+    range_key: str,
+    start_ts: float,
+    end_ts: float,
+    granularity_min: int,
+) -> dict[str, Any]:
+    return {
+        "range": range_key,
+        "start": _ts_to_iso(start_ts),
+        "end": _ts_to_iso(end_ts),
+        "granularity_minutes": granularity_min,
+        "currency_rate": USD_CNY_RATE,
+        "summary": _empty_stats_summary(),
+        "points": [],
+        "model_distribution": [],
+    }
+
+
+def _read_stats_summary(
+    conn: sqlite3.Connection,
+    *,
+    start_ts: float,
+    end_ts: float,
+    granularity_min: int,
+    owner_clause: str,
+    owner_params: tuple[Any, ...],
+    points: list[dict[str, Any]],
+) -> dict[str, Any]:
+    summary_sql = (
+        "SELECT "
+        "COUNT(*) AS request_count, "
+        "SUM(CASE WHEN status_code < 400 AND (error IS NULL OR error = '') THEN 1 ELSE 0 END) AS success_count, "
+        "SUM(input_tokens) AS input_tokens, "
+        "SUM(cached_tokens) AS cached_tokens, "
+        "SUM(output_tokens) AS output_tokens, "
+        "SUM(cost) AS cost "
+        "FROM request_logs "
+        "WHERE created_at >= ? AND created_at < ? " + owner_clause
+    )
+    row = conn.execute(summary_sql, (start_ts, end_ts, *owner_params)).fetchone()
+    recent_start_ts = max(start_ts, end_ts - 3600)
+    recent_row = conn.execute(
+        summary_sql,
+        (recent_start_ts, end_ts, *owner_params),
+    ).fetchone()
+    latest_point = points[-1] if points else {}
+    latest_tokens = (
+        int(latest_point.get("input_tokens") or 0)
+        + int(latest_point.get("cached_tokens") or 0)
+        + int(latest_point.get("output_tokens") or 0)
+    )
+    total_input = int(row[2] or 0)
+    total_cached = int(row[3] or 0)
+    total_output = int(row[4] or 0)
+    recent_input = int(recent_row[2] or 0)
+    recent_cached = int(recent_row[3] or 0)
+    recent_output = int(recent_row[4] or 0)
+    return {
+        "request_count": int(row[0] or 0),
+        "success_count": int(row[1] or 0),
+        "recent_1h_request_count": int(recent_row[0] or 0),
+        "input_tokens": total_input,
+        "cached_tokens": total_cached,
+        "output_tokens": total_output,
+        "total_tokens": total_input + total_cached + total_output,
+        "recent_1h_tokens": recent_input + recent_cached + recent_output,
+        "cost": round(row[5] or 0, 6),
+        "recent_1h_cost": round(recent_row[5] or 0, 6),
+        "rpm": float(latest_point.get("rpm") or 0),
+        "tpm": round(latest_tokens / granularity_min, 2) if latest_tokens else 0,
+    }
+
+
+def _empty_stats_summary() -> dict[str, Any]:
+    return {
+        "request_count": 0,
+        "success_count": 0,
+        "recent_1h_request_count": 0,
+        "input_tokens": 0,
+        "cached_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "recent_1h_tokens": 0,
+        "cost": 0,
+        "recent_1h_cost": 0,
+        "rpm": 0,
+        "tpm": 0,
+    }
+
+
+def _resolve_stats_range(
+    range_key: str,
+    *,
+    start_ts: Any = None,
+    end_ts: Any = None,
+) -> tuple[str, float, float, int]:
+    range_key = str(range_key or "1h").strip()
+    now = time.time()
+    if range_key == "custom":
+        parsed_end = _parse_timestamp(end_ts)
+        parsed_start = _parse_timestamp(start_ts)
+        end_value = parsed_end if parsed_end is not None else now
+        start_value = parsed_start if parsed_start is not None else end_value - 3600
+        if start_value >= end_value:
+            start_value = end_value - 3600
+        return "custom", start_value, end_value, _stats_granularity_for_seconds(end_value - start_value)
+
+    if range_key not in STATS_RANGE_HOURS:
+        range_key = "1h"
+    seconds = STATS_RANGE_HOURS[range_key] * 3600
+    return range_key, now - seconds, now, STATS_RANGE_GRANULARITY[range_key]
+
+
+def _stats_granularity_for_seconds(seconds: float) -> int:
+    minutes = max(1, seconds / 60)
+    target_points = 72
+    raw_granularity = max(1, int((minutes + target_points - 1) // target_points))
+    choices = (1, 3, 5, 10, 15, 30, 60, 120, 360, 720, 1440)
+    for choice in choices:
+        if raw_granularity <= choice:
+            return choice
+    return choices[-1]
+
+
+def _parse_timestamp(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed > 10_000_000_000:
+        parsed = parsed / 1000
+    return parsed if parsed > 0 else None
 
 
 def _ts_to_iso(ts: float) -> str:

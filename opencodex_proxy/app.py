@@ -560,9 +560,17 @@ def create_app(settings: Settings | None = None) -> Flask:
     @app.get("/admin/api/stats")
     def admin_stats():
         user = require_user()
-        window = str(request.args.get("window", "1h")).strip()
+        range_key = str(request.args.get("range") or "1h").strip()
         owner_username = None if user["role"] == "superadmin" else user["username"]
-        return jsonify(read_stats(settings.db_path, window=window, owner_username=owner_username))
+        return jsonify(
+            read_stats(
+                settings.db_path,
+                range_key=range_key,
+                start_ts=request.args.get("start"),
+                end_ts=request.args.get("end"),
+                owner_username=owner_username,
+            )
+        )
 
     @app.post("/admin/api/channels/discover-models")
     def admin_discover_models():
