@@ -14,6 +14,8 @@ from typing import Any
 
 from .defaults import DEFAULT_RETRY_COUNT
 
+from .settings import USD_CNY_RATE
+
 
 REQUEST_LOGS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS request_logs (
@@ -1702,3 +1704,118 @@ def _append_where_condition(where_clause: str, condition: str) -> str:
     if where_clause:
         return f"{where_clause} AND {condition}"
     return f"WHERE {condition}"
+
+STATS_WINDOW_GRANULARITY: dict[str, int] = {
+    "1h": 1,
+    "3h": 3,
+    "6h": 5,
+    "12h": 10,
+    "24h": 15,
+    "48h": 30,
+    "72h": 60,
+}
+
+STATS_WINDOW_HOURS: dict[str, int] = {
+    "1h": 1,
+    "3h": 3,
+    "6h": 6,
+    "12h": 12,
+    "24h": 24,
+    "48h": 48,
+    "72h": 72,
+}
+
+
+def read_stats(
+    db_path: Path,
+    window: str = "1h",
+    owner_username: str | None = None,
+) -> dict[str, Any]:
+    """Return aggregated stats for the dashboard."""
+    if not db_path.exists():
+        return {"window": window, "currency_rate": USD_CNY_RATE, "points": [], "model_distribution": []}
+
+    window = window if window in STATS_WINDOW_GRANULARITY else "1h"
+    granularity_min = STATS_WINDOW_GRANULARITY[window]
+    window_hours = STATS_WINDOW_HOURS[window]
+
+    now = time.time()
+    start_ts = now - window_hours * 3600
+
+    owner_clause = ""
+    owner_params: tuple[Any, ...] = ()
+    if owner_username:
+        owner_clause = "AND owner_username = ?"
+        owner_params = (owner_username,)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        bucket_count = (window_hours * 60) // granularity_min
+        points: list[dict[str, Any]] = []
+
+        for i in range(bucket_count):
+            bucket_end = start_ts + (i + 1) * granularity_min * 60
+            bucket_start = start_ts + i * granularity_min * 60
+
+            bucket_sql = (
+                "SELECT "
+                "SUM(cost) AS total_cost, "
+                "SUM(input_tokens) AS total_input, "
+                "SUM(cached_tokens) AS total_cached, "
+                "SUM(output_tokens) AS total_output, "
+                "AVG(CASE WHEN ttft_ms > 0 THEN ttft_ms END) AS avg_ttft, "
+                "COUNT(*) AS request_count "
+                "FROM request_logs "
+                "WHERE created_at >= ? AND created_at < ? " + owner_clause
+            )
+            row = conn.execute(bucket_sql, (bucket_start, bucket_end, *owner_params)).fetchone()
+
+            total_input = row[1] or 0
+            total_cached = row[2] or 0
+            total_output = row[3] or 0
+            request_count = row[5] or 0
+
+            cache_hit_rate = None
+            if (total_input + total_cached) > 0:
+                cache_hit_rate = round(total_cached / (total_input + total_cached), 4)
+
+            avg_ttft = row[4]
+            if avg_ttft is not None:
+                avg_ttft = round(avg_ttft, 1)
+
+            points.append({
+                "time": _ts_to_iso(bucket_end),
+                "cost": round(row[0] or 0, 6),
+                "input_tokens": total_input,
+                "cached_tokens": total_cached,
+                "output_tokens": total_output,
+                "avg_ttft_ms": avg_ttft,
+                "cache_hit_rate": cache_hit_rate,
+                "rpm": round(request_count / granularity_min, 2) if request_count else 0,
+            })
+
+        model_sql = (
+            "SELECT model, COUNT(*) AS cnt "
+            "FROM request_logs "
+            "WHERE created_at >= ? " + owner_clause + " "
+            "GROUP BY model "
+            "ORDER BY cnt DESC "
+            "LIMIT 20"
+        )
+        model_rows = conn.execute(model_sql, (start_ts, *owner_params)).fetchall()
+        model_distribution = [{"model": r[0] or "unknown", "count": r[1]} for r in model_rows]
+    finally:
+        conn.close()
+
+    return {
+        "window": window,
+        "currency_rate": USD_CNY_RATE,
+        "points": points,
+        "model_distribution": model_distribution,
+    }
+
+
+def _ts_to_iso(ts: float) -> str:
+    from datetime import datetime
+    dt = datetime.fromtimestamp(ts)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S")

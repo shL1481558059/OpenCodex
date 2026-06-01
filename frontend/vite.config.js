@@ -11,7 +11,8 @@ export default defineConfig({
       output: {
         manualChunks: {
           vue: ["vue"],
-          element: ["element-plus", "@element-plus/icons-vue"]
+          element: ["element-plus", "@element-plus/icons-vue"],
+          echarts: ["echarts"]
         }
       }
     }
@@ -22,3 +23,4 @@ export default defineConfig({
     }
   }
 });
+
