@@ -354,14 +354,10 @@ function formatDualCurrency(value) {
 }
 
 function formatCurrencyNumber(value) {
-  const number = Number(value || 0);
-  if (Math.abs(number) >= 100) {
-    return number.toLocaleString(undefined, { maximumFractionDigits: 0 });
-  }
-  if (Math.abs(number) >= 1) {
-    return number.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  }
-  return number.toLocaleString(undefined, { minimumFractionDigits: 6, maximumFractionDigits: 6 });
+  return Number(value || 0).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
 }
 
 // --- Chart init / resize ---
@@ -702,11 +698,10 @@ onBeforeUnmount(() => {
 .dashboard-summary-card__meta {
   margin-top: 12px;
   color: var(--el-text-color-secondary);
-  font-size: 14px;
-  line-height: 1.35;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .dashboard-summary-card--blue .dashboard-summary-card__icon {
