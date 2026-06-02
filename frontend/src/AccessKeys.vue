@@ -120,7 +120,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage } from "element-plus/es/components/message/index.mjs";
 import { CopyDocument, Delete, Plus, Refresh } from "@element-plus/icons-vue";
 const props = defineProps({
   api: { type: Function, required: true },

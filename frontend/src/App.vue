@@ -8,7 +8,12 @@
   <div v-else class="app-page">
     <el-container class="app-shell">
       <el-header class="app-header">
-        <strong>OpenCodex Proxy</strong>
+        <div class="header-brand">
+          <button class="mobile-menu-button" type="button" aria-label="打开菜单" title="打开菜单" @click="mobileMenuVisible = true">
+            <el-icon><Expand /></el-icon>
+          </button>
+          <strong>OpenCodex Proxy</strong>
+        </div>
         <div class="header-actions">
           <div v-if="currentUser" class="current-user">
             <span>{{ currentUser.username }}</span>
@@ -21,33 +26,26 @@
       </el-header>
 
       <el-container class="app-body">
-        <el-aside width="260px" class="app-aside">
-          <el-menu class="side-menu" :default-active="activeTab" @select="activeTab = $event">
-            <el-menu-item index="dashboard">
-              <el-icon><DataLine /></el-icon>
-              <span>仪表盘</span>
-            </el-menu-item>
-            <el-menu-item index="channels">
-              <el-icon><Connection /></el-icon>
-              <span>渠道配置</span>
-            </el-menu-item>
-            <el-menu-item index="api-keys">
-              <el-icon><Key /></el-icon>
-              <span>API Key 管理</span>
-            </el-menu-item>
-            <el-menu-item v-if="isSuperadmin" index="users">
-              <el-icon><User /></el-icon>
-              <span>用户管理</span>
-            </el-menu-item>
-            <el-menu-item v-if="isSuperadmin" index="web-search">
-              <el-icon><Search /></el-icon>
-              <span>Web Search 模拟</span>
-            </el-menu-item>
-            <el-menu-item index="logs">
-              <el-icon><Tickets /></el-icon>
-              <span>请求日志</span>
+        <el-aside :width="menuCollapsed ? '72px' : '260px'" class="app-aside" :class="{ 'app-aside--collapsed': menuCollapsed }">
+          <el-menu class="side-menu" :collapse="menuCollapsed" :default-active="activeTab" @select="handleMenuSelect">
+            <el-menu-item v-for="item in visibleMenuItems" :key="item.index" :index="item.index">
+              <el-icon><component :is="item.icon" /></el-icon>
+              <span>{{ item.label }}</span>
             </el-menu-item>
           </el-menu>
+          <button
+            class="menu-collapse-button"
+            type="button"
+            :aria-label="menuCollapsed ? '展开菜单' : '收起菜单'"
+            :title="menuCollapsed ? '展开菜单' : '收起菜单'"
+            @click="menuCollapsed = !menuCollapsed"
+          >
+            <el-icon>
+              <DArrowRight v-if="menuCollapsed" />
+              <DArrowLeft v-else />
+            </el-icon>
+            <span v-if="!menuCollapsed">收起</span>
+          </button>
         </el-aside>
 
         <el-main class="main-content">
@@ -76,38 +74,69 @@
         </el-main>
       </el-container>
     </el-container>
+
+    <el-drawer
+      v-model="mobileMenuVisible"
+      title="菜单"
+      direction="ltr"
+      size="280px"
+      custom-class="mobile-menu-drawer"
+    >
+      <el-menu class="mobile-drawer-menu" :default-active="activeTab" @select="handleMobileMenuSelect">
+        <el-menu-item v-for="item in visibleMenuItems" :key="item.index" :index="item.index">
+          <el-icon><component :is="item.icon" /></el-icon>
+          <span>{{ item.label }}</span>
+        </el-menu-item>
+      </el-menu>
+    </el-drawer>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, defineAsyncComponent } from "vue";
-import { ElMessage } from "element-plus";
 import {
   Connection,
+  DArrowLeft,
+  DArrowRight,
   DataLine,
+  Expand,
   Key,
   Search,
   SwitchButton,
   Tickets,
   User
 } from "@element-plus/icons-vue";
-import Dashboard from "./Dashboard.vue";
-import Login from "./Login.vue";
-import Channels from "./Channels.vue";
-import AccessKeys from "./AccessKeys.vue";
-import Users from "./Users.vue";
-import WebSearch from "./WebSearch.vue";
-import Logs from "./Logs.vue";
+const Dashboard = defineAsyncComponent(() => import("./Dashboard.vue"));
+const Login = defineAsyncComponent(() => import("./Login.vue"));
+const Channels = defineAsyncComponent(() => import("./Channels.vue"));
+const AccessKeys = defineAsyncComponent(() => import("./AccessKeys.vue"));
+const Users = defineAsyncComponent(() => import("./Users.vue"));
+const WebSearch = defineAsyncComponent(() => import("./WebSearch.vue"));
+const Logs = defineAsyncComponent(() => import("./Logs.vue"));
 
 const activeTab = ref("dashboard");
 const authenticated = ref(false);
 const loadingSession = ref(true);
 const currentUser = ref(null);
+const menuCollapsed = ref(false);
+const mobileMenuVisible = ref(false);
 
 // Users list shared with AccessKeys for owner_username dropdown
 const usersData = ref([]);
 
 const isSuperadmin = computed(() => currentUser.value?.role === "superadmin");
+const visibleMenuItems = computed(() =>
+  menuItems.filter((item) => !item.superadminOnly || isSuperadmin.value)
+);
+
+const menuItems = [
+  { index: "dashboard", label: "仪表盘", icon: DataLine },
+  { index: "channels", label: "渠道配置", icon: Connection },
+  { index: "api-keys", label: "API Key 管理", icon: Key },
+  { index: "users", label: "用户管理", icon: User, superadminOnly: true },
+  { index: "web-search", label: "Web Search 模拟", icon: Search, superadminOnly: true },
+  { index: "logs", label: "请求日志", icon: Tickets }
+];
 
 function onUsersLoaded(users) {
   usersData.value = users;
@@ -146,6 +175,15 @@ function handleLogin(data) {
   activeTab.value = "dashboard";
 }
 
+function handleMenuSelect(tab) {
+  activeTab.value = tab;
+}
+
+function handleMobileMenuSelect(tab) {
+  handleMenuSelect(tab);
+  mobileMenuVisible.value = false;
+}
+
 async function logout() {
   await api("/admin/api/logout", { method: "POST", body: "{}" });
   authenticated.value = false;
@@ -169,4 +207,3 @@ onMounted(async () => {
   await checkSession();
 });
 </script>
-

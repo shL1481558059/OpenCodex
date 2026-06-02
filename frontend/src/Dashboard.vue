@@ -129,9 +129,14 @@
 
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick, shallowRef } from "vue";
-import * as echarts from "echarts";
+import { LineChart, PieChart } from "echarts/charts";
+import { GridComponent, LegendComponent, TooltipComponent } from "echarts/components";
+import { init, use } from "echarts/core";
+import { CanvasRenderer } from "echarts/renderers";
 import { Box, Check, Coin, DataLine, Lightning, Refresh, Timer } from "@element-plus/icons-vue";
-import { ElMessage } from "element-plus";
+import { ElMessage } from "element-plus/es/components/message/index.mjs";
+
+use([LineChart, PieChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
 const props = defineProps({
   api: { type: Function, required: true },
@@ -363,7 +368,7 @@ function formatCurrencyNumber(value) {
 // --- Chart init / resize ---
 function initChart(domRef) {
   if (!domRef) return null;
-  const instance = echarts.init(domRef);
+  const instance = init(domRef);
   const ro = new ResizeObserver(() => instance.resize());
   ro.observe(domRef);
   instance._ro = ro;

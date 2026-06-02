@@ -181,7 +181,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage } from "element-plus/es/components/message/index.mjs";
 import { Delete, Edit, Plus, Refresh } from "@element-plus/icons-vue";
 
 const WEB_SEARCH_PROVIDER_LABELS = { tavily: "Tavily" };
