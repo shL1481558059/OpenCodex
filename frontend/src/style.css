@@ -148,6 +148,15 @@ body {
   overflow: hidden;
 }
 
+/* Component root inside section inherits flex layout */
+.content-panel > section > div {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 /* Dashboard and web-search sections scroll their content internally */
 .section-scroll {
   flex: 1;
@@ -463,6 +472,11 @@ body {
     overflow: visible;
   }
 
+  .content-panel > section > div {
+    flex: none;
+    overflow: visible;
+  }
+
   .section-scroll {
     flex: none;
     overflow: visible;
@@ -504,4 +518,3 @@ body {
     flex-direction: column;
   }
 }
-
