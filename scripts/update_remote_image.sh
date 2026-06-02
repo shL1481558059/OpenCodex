@@ -11,6 +11,7 @@ REMOTE_DEPLOY_DIR="${REMOTE_DEPLOY_DIR:-/www/wwwroot/opencodex-proxy}"
 IMAGE_NAME="${IMAGE_NAME:-shl148155/opencodexp:latest}"
 SERVICE_NAME="${SERVICE_NAME:-opencodex-proxy}"
 DOCKER_PLATFORM="${DOCKER_PLATFORM:-linux/amd64}"
+CONTAINER_TIMEZONE="${CONTAINER_TIMEZONE:-Asia/Shanghai}"
 
 SSH_TARGET="${REMOTE_USER}@${REMOTE_HOST}"
 SSH_OPTS=(
@@ -27,11 +28,23 @@ echo "Building and pushing $IMAGE_NAME for $DOCKER_PLATFORM from $ROOT_DIR"
 
 echo "Pulling and deploying $IMAGE_NAME on $SSH_TARGET"
 ssh "${SSH_OPTS[@]}" "$SSH_TARGET" \
-  "REMOTE_DEPLOY_DIR='$REMOTE_DEPLOY_DIR' IMAGE_NAME='$IMAGE_NAME' SERVICE_NAME='$SERVICE_NAME' bash -s" <<'REMOTE_SCRIPT'
+  "REMOTE_DEPLOY_DIR='$REMOTE_DEPLOY_DIR' IMAGE_NAME='$IMAGE_NAME' SERVICE_NAME='$SERVICE_NAME' CONTAINER_TIMEZONE='$CONTAINER_TIMEZONE' bash -s" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
 docker pull "$IMAGE_NAME"
 cd "$REMOTE_DEPLOY_DIR"
+
+if [ ! -f .env ]; then
+  echo "Remote .env not found under $REMOTE_DEPLOY_DIR; create it from .env.example before deploying." >&2
+  exit 1
+fi
+
+if grep -q '^TZ=' .env; then
+  sed -i "s|^TZ=.*|TZ=$CONTAINER_TIMEZONE|" .env
+else
+  printf '\nTZ=%s\n' "$CONTAINER_TIMEZONE" >> .env
+fi
+
 updated_compose_file=""
 for compose_file in docker-compose.yml docker-compose.yaml compose.yml compose.yaml; do
   if [ ! -f "$compose_file" ]; then
