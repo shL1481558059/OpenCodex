@@ -6,16 +6,7 @@
         <div class="text-muted">实时监控代理服务的消费、Token、延迟与请求趋势</div>
       </div>
       <div class="dashboard-controls">
-        <el-radio-group v-model="range" size="small" @change="handleRangeChange">
-          <el-radio-button
-            v-for="item in rangeOptions"
-            :key="item.value"
-            :label="item.value"
-            :value="item.value"
-          >
-            {{ item.label }}
-          </el-radio-button>
-        </el-radio-group>
+        <el-segmented v-model="range" :options="rangeOptions" size="small" @change="handleRangeChange" />
         <el-date-picker
           v-if="range === 'custom'"
           v-model="customRange"
@@ -406,14 +397,56 @@ function disposeAllCharts() {
 }
 
 // --- Chart rendering ---
+const DASHBOARD_TIME_ZONE = "Asia/Shanghai";
+const DASHBOARD_TIME_OFFSET = "+08:00";
+const TIME_ZONE_SUFFIX_RE = /(?:Z|[+-]\d{2}:?\d{2})$/i;
+const dashboardTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: DASHBOARD_TIME_ZONE,
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+  hourCycle: "h23"
+});
+
 const timeLabels = computed(() => statsData.points.map(p => {
-  const iso = p.time || "";
-  const short = iso.length >= 16 ? iso.slice(11, 16) : iso;
-  if (["7d", "30d", "custom"].includes(statsData.range)) {
-    return iso.length >= 10 ? iso.slice(5, 16) : iso;
-  }
-  return short;
+  return formatDashboardTimeLabel(p.time, statsData.range);
 }));
+
+function formatDashboardTimeLabel(value, rangeKey) {
+  const date = parseDashboardTime(value);
+  if (!date) return fallbackDashboardTimeLabel(value, rangeKey);
+
+  const parts = Object.fromEntries(
+    dashboardTimeFormatter.formatToParts(date).map(part => [part.type, part.value])
+  );
+  const clock = `${parts.hour}:${parts.minute}`;
+  if (["7d", "30d", "custom"].includes(rangeKey)) {
+    return `${parts.month}-${parts.day} ${clock}`;
+  }
+  return clock;
+}
+
+function parseDashboardTime(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+
+  const isoLike = raw.includes("T") ? raw : raw.replace(" ", "T");
+  const normalized = TIME_ZONE_SUFFIX_RE.test(isoLike)
+    ? isoLike
+    : `${isoLike}${DASHBOARD_TIME_OFFSET}`;
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function fallbackDashboardTimeLabel(value, rangeKey) {
+  const text = String(value || "").replace("T", " ");
+  if (["7d", "30d", "custom"].includes(rangeKey)) {
+    return text.length >= 16 ? text.slice(5, 16) : text;
+  }
+  return text.length >= 16 ? text.slice(11, 16) : text;
+}
 
 function baseLineSeries(data, opts = {}) {
   return {

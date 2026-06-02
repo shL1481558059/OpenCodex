@@ -114,6 +114,19 @@ body {
   width: 48px;
 }
 
+.app-aside--collapsed .side-menu .el-menu-item {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  padding: 0 !important;
+}
+
+.app-aside--collapsed .side-menu .el-menu-item .el-icon {
+  margin: 0;
+}
+
 .side-menu .el-menu-item {
   height: 48px;
   font-size: 15px;
