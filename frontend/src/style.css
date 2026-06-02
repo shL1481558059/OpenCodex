@@ -1,7 +1,7 @@
 html,
 body,
 #app {
-  min-height: 100vh;
+  height: 100vh;
   margin: 0;
 }
 
@@ -11,12 +11,12 @@ body {
 
 .app-page {
   box-sizing: border-box;
-  min-height: 100vh;
+  height: 100vh;
 }
 
 .app-shell {
   box-sizing: border-box;
-  min-height: 100vh;
+  height: 100vh;
   overflow: hidden;
   background: var(--el-bg-color);
 }
@@ -57,11 +57,13 @@ body {
 .app-body {
   flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 
 .app-aside {
   padding: 28px 20px;
   background: var(--el-bg-color);
+  overflow-y: auto;
 }
 
 .side-menu {
@@ -124,13 +126,53 @@ body {
 .main-content {
   padding: 32px;
   background: #e8edf5;
+  overflow: hidden;
 }
 
 .content-panel {
   box-sizing: border-box;
-  min-height: 100%;
+  height: 100%;
   padding: 24px;
   background: var(--el-bg-color);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Each section fills the panel and uses flex-column so tables can stretch */
+.content-panel > section {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Dashboard and web-search sections scroll their content internally */
+.section-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Table area: flex wrapper around table + pagination */
+.table-area {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* el-table fills remaining space; Element Plus adds internal scrollbar when constrained */
+.table-area > .el-table {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Pagination stays at bottom */
+.table-area > .pagination-bar {
+  flex-shrink: 0;
 }
 
 .log-filter-form {
@@ -361,10 +403,12 @@ body {
 
 @media (max-width: 900px) {
   .app-page {
+    height: auto;
     min-height: 100vh;
   }
 
   .app-shell {
+    height: auto;
     min-height: 100vh;
   }
 
@@ -385,11 +429,13 @@ body {
   .app-body {
     display: block;
     min-height: 0;
+    overflow: visible;
   }
 
   .app-aside {
     width: 100% !important;
     padding: 12px;
+    overflow-y: visible;
   }
 
   .side-menu.el-menu {
@@ -403,6 +449,32 @@ body {
 
   .main-content {
     padding: 16px;
+    overflow: visible;
+  }
+
+  .content-panel {
+    height: auto;
+    min-height: 100%;
+    overflow: visible;
+  }
+
+  .content-panel > section {
+    flex: none;
+    overflow: visible;
+  }
+
+  .section-scroll {
+    flex: none;
+    overflow: visible;
+  }
+
+  .table-area {
+    flex: none;
+    overflow: visible;
+  }
+
+  .table-area > .el-table {
+    flex: none;
   }
 
   .toolbar {
@@ -432,3 +504,4 @@ body {
     flex-direction: column;
   }
 }
+
