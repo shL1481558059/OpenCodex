@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="OpenCodex">
+  <rect width="64" height="64" rx="14" fill="#111827"/>
+  <path
+    d="M32 7 53 19.5v25L32 57 11 44.5v-25L32 7Z"
+    fill="#172033"
+    stroke="#38bdf8"
+    stroke-width="4"
+    stroke-linejoin="round"
+  />
+  <path
+    d="m28 23-8 9 8 9"
+    fill="none"
+    stroke="#f8fafc"
+    stroke-width="4.8"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="m36 23 8 9-8 9"
+    fill="none"
+    stroke="#f8fafc"
+    stroke-width="4.8"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="m34.5 20-5 24"
+    fill="none"
+    stroke="#22c55e"
+    stroke-width="4.2"
+    stroke-linecap="round"
+  />
+</svg>
