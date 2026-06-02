@@ -34,7 +34,7 @@
 
 <script setup>
 import { ref } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage } from "element-plus/es/components/message/index.mjs";
 
 const props = defineProps({
   api: { type: Function, required: true }
@@ -62,4 +62,3 @@ async function handleLogin() {
   }
 }
 </script>
-

@@ -196,7 +196,7 @@
 
 <script setup>
 import { ref, reactive, computed, onBeforeUnmount, onMounted, watch } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage } from "element-plus/es/components/message/index.mjs";
 import { Check, CopyDocument, Refresh, Search, Setting, View } from "@element-plus/icons-vue";
 
 const props = defineProps({

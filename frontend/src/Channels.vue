@@ -273,7 +273,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage } from "element-plus/es/components/message/index.mjs";
 import {
   Connection,
   Delete,

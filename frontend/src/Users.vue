@@ -123,7 +123,7 @@
 
 <script setup>
 import { ref, reactive, onMounted } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage } from "element-plus/es/components/message/index.mjs";
 import { Delete, Edit, Plus, Refresh } from "@element-plus/icons-vue";
 
 const props = defineProps({

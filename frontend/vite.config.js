@@ -7,12 +7,16 @@ export default defineConfig({
   build: {
     outDir: "../opencodex_proxy/static/admin",
     emptyOutDir: true,
+    chunkSizeWarningLimit: 550,
     rollupOptions: {
       output: {
         manualChunks(id) {
           if (id.includes("node_modules")) {
             if (id.includes("echarts")) return "echarts";
+            if (id.includes("@element-plus/icons-vue")) return "element-icons";
             if (id.includes("element-plus")) return "element";
+            if (id.includes("@popperjs")) return "popper";
+            if (id.includes("async-validator")) return "async-validator";
             if (id.includes("vue")) return "vue";
             return;
           }
@@ -41,4 +45,3 @@ export default defineConfig({
     }
   }
 });
-
