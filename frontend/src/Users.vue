@@ -198,8 +198,8 @@ function openResetPasswordDialog(row) {
 async function resetUserPassword() {
   resetPasswordSaving.value = true;
   try {
-    await props.api(`/admin/api/users/${resetPasswordDraft.username}/password`, {
-      method: "PUT",
+    await props.api(`/admin/api/users/${resetPasswordDraft.username}`, {
+      method: "PATCH",
       body: JSON.stringify({ password: resetPasswordDraft.password })
     });
     resetPasswordDialogVisible.value = false;

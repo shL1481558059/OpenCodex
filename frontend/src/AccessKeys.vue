@@ -19,7 +19,11 @@
         <el-statistic title="启用 Key" :value="enabledAccessKeyCount" />
       </el-col>
       <el-col :span="8">
-        <el-statistic title="最近使用" :value="lastAccessKeyUsedLabel" />
+        <el-statistic
+          title="最近使用"
+          :value="lastAccessKeyUsedTimestamp"
+          :formatter="formatLastAccessKeyUsed"
+        />
       </el-col>
     </el-row>
 
@@ -131,12 +135,12 @@ const accessKeyDraft = reactive({ owner_username: "", name: "" });
 const accessKeys = ref([]);
 
 const enabledAccessKeyCount = computed(() => accessKeys.value.filter((k) => k.enabled !== false).length);
-const lastAccessKeyUsedLabel = computed(() => {
+const lastAccessKeyUsedTimestamp = computed(() => {
   const timestamps = accessKeys.value
     .map((k) => Number(k.last_used_at || 0))
     .filter((v) => v > 0)
     .sort((a, b) => b - a);
-  return timestamps.length ? formatTime(timestamps[0]) : "-";
+  return timestamps[0] || 0;
 });
 
 const enabledUsers = computed(() => props.users.filter((u) => u.enabled !== false));
@@ -144,7 +148,7 @@ const enabledUsers = computed(() => props.users.filter((u) => u.enabled !== fals
 async function loadAccessKeys() {
   accessKeysLoading.value = true;
   try {
-    const data = await props.api("/admin/api/access-keys");
+    const data = await props.api("/admin/api/api-keys");
     accessKeys.value = Array.isArray(data.keys) ? data.keys : [];
   } catch (error) {
     ElMessage.error(error.message);
@@ -167,11 +171,11 @@ async function createAccessKey() {
     if (props.isSuperadmin && accessKeyDraft.owner_username) {
       payload.owner_username = accessKeyDraft.owner_username;
     }
-    const data = await props.api("/admin/api/access-keys", {
+    const data = await props.api("/admin/api/api-keys", {
       method: "POST",
       body: JSON.stringify(payload)
     });
-    createdAccessKey.value = data;
+    createdAccessKey.value = data.key || data;
     await loadAccessKeys();
   } catch (error) {
     ElMessage.error(error.message);
@@ -182,7 +186,7 @@ async function createAccessKey() {
 
 async function toggleAccessKey(row) {
   try {
-    await props.api(`/admin/api/access-keys/${row.id}`, {
+    await props.api(`/admin/api/api-keys/${row.id}`, {
       method: "PATCH",
       body: JSON.stringify({ enabled: row.enabled === false })
     });
@@ -194,7 +198,7 @@ async function toggleAccessKey(row) {
 
 async function deleteAccessKey(row) {
   try {
-    await props.api(`/admin/api/access-keys/${row.id}`, { method: "DELETE" });
+    await props.api(`/admin/api/api-keys/${row.id}`, { method: "DELETE" });
     await loadAccessKeys();
   } catch (error) {
     ElMessage.error(error.message);
@@ -221,6 +225,10 @@ async function copyText(text) {
 function formatTime(timestamp) {
   if (!timestamp) return "";
   return new Date(Number(timestamp) * 1000).toLocaleString();
+}
+
+function formatLastAccessKeyUsed(value) {
+  return value ? formatTime(value) : "-";
 }
 
 onMounted(() => loadAccessKeys());
