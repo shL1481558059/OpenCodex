@@ -93,12 +93,11 @@ import {
 } from "@element-plus/icons-vue";
 import Dashboard from "./Dashboard.vue";
 import Login from "./Login.vue";
-
-const Channels = defineAsyncComponent(() => import("./Channels.vue"));
-const AccessKeys = defineAsyncComponent(() => import("./AccessKeys.vue"));
-const Users = defineAsyncComponent(() => import("./Users.vue"));
-const WebSearch = defineAsyncComponent(() => import("./WebSearch.vue"));
-const Logs = defineAsyncComponent(() => import("./Logs.vue"));
+import Channels from "./Channels.vue";
+import AccessKeys from "./AccessKeys.vue";
+import Users from "./Users.vue";
+import WebSearch from "./WebSearch.vue";
+import Logs from "./Logs.vue";
 
 const activeTab = ref("dashboard");
 const authenticated = ref(false);
