@@ -58,19 +58,19 @@
               </div>
             </section>
             <section v-show="activeTab === 'channels'">
-              <Channels ref="channelsRef" :api="api" />
+              <Channels :api="api" />
             </section>
             <section v-show="activeTab === 'api-keys'">
-              <AccessKeys ref="accessKeysRef" :api="api" :is-superadmin="isSuperadmin" :users="usersRefData" />
+              <AccessKeys :api="api" :is-superadmin="isSuperadmin" :users="usersData" />
             </section>
             <section v-if="isSuperadmin" v-show="activeTab === 'users'">
-              <Users ref="usersRef" :api="api" :current-user="currentUser" />
+              <Users :api="api" :current-user="currentUser" @users-loaded="onUsersLoaded" />
             </section>
             <section v-if="isSuperadmin" v-show="activeTab === 'web-search'">
-              <WebSearch ref="webSearchRef" :api="api" />
+              <WebSearch :api="api" />
             </section>
             <section v-show="activeTab === 'logs'">
-              <Logs ref="logsRef" :api="api" :is-superadmin="isSuperadmin" :active="activeTab === 'logs'" />
+              <Logs :api="api" :is-superadmin="isSuperadmin" :active="activeTab === 'logs'" />
             </section>
           </div>
         </el-main>
@@ -80,7 +80,7 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick, onMounted, onBeforeUnmount, defineAsyncComponent } from "vue";
+import { ref, computed, onMounted, defineAsyncComponent } from "vue";
 import { ElMessage } from "element-plus";
 import {
   Connection,
@@ -105,17 +105,14 @@ const authenticated = ref(false);
 const loadingSession = ref(true);
 const currentUser = ref(null);
 
-// Refs to child components for calling exposed methods
-const channelsRef = ref(null);
-const accessKeysRef = ref(null);
-const usersRef = ref(null);
-const webSearchRef = ref(null);
-const logsRef = ref(null);
-
-// Shared data passed as props
-const usersRefData = computed(() => usersRef.value?.users || []);
+// Users list shared with AccessKeys for owner_username dropdown
+const usersData = ref([]);
 
 const isSuperadmin = computed(() => currentUser.value?.role === "superadmin");
+
+function onUsersLoaded(users) {
+  usersData.value = users;
+}
 
 // --- API helper ---
 
@@ -140,9 +137,6 @@ async function checkSession() {
   try {
     const data = await api("/admin/api/session");
     setAuthenticatedUser(data);
-    if (authenticated.value) {
-      await loadInitialData();
-    }
   } finally {
     loadingSession.value = false;
   }
@@ -151,8 +145,6 @@ async function checkSession() {
 function handleLogin(data) {
   setAuthenticatedUser(data);
   activeTab.value = "dashboard";
-  // nextTick so async components have mounted before we call their exposed methods
-  nextTick(() => loadInitialData());
 }
 
 async function logout() {
@@ -168,30 +160,6 @@ function setAuthenticatedUser(data) {
   ensureAllowedActiveTab();
 }
 
-// --- Init ---
-
-let initialDataLoaded = false;
-
-async function loadInitialData() {
-  if (initialDataLoaded) return;
-  initialDataLoaded = true;
-  ensureAllowedActiveTab();
-  // nextTick ensures async components are mounted
-  await nextTick();
-  const tasks = [
-    channelsRef.value?.loadConfig(),
-    accessKeysRef.value?.loadAccessKeys(),
-    logsRef.value?.loadLogs()
-  ];
-  if (isSuperadmin.value) {
-    tasks.push(
-      usersRef.value?.loadUsers(),
-      webSearchRef.value?.loadWebSearch()
-    );
-  }
-  await Promise.all(tasks.filter(Boolean));
-}
-
 function ensureAllowedActiveTab() {
   if (!isSuperadmin.value && ["users", "web-search"].includes(activeTab.value)) {
     activeTab.value = "dashboard";
@@ -200,13 +168,6 @@ function ensureAllowedActiveTab() {
 
 onMounted(async () => {
   await checkSession();
-});
-
-onBeforeUnmount(() => {
-  // stop log auto-refresh if logs component is mounted
-  if (logsRef.value) {
-    logsRef.value.setLogAutoRefreshSeconds?.(0);
-  }
 });
 </script>
 

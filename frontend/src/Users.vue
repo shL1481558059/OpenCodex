@@ -122,7 +122,7 @@
 </template>
 
 <script setup>
-import { ref, reactive } from "vue";
+import { ref, reactive, onMounted } from "vue";
 import { ElMessage } from "element-plus";
 import { Delete, Edit, Plus, Refresh } from "@element-plus/icons-vue";
 
@@ -130,6 +130,8 @@ const props = defineProps({
   api: { type: Function, required: true },
   currentUser: { type: Object, default: null }
 });
+
+const emit = defineEmits(["users-loaded"]);
 
 const usersLoading = ref(false);
 const userDialogVisible = ref(false);
@@ -145,6 +147,7 @@ async function loadUsers() {
   try {
     const data = await props.api("/admin/api/users");
     users.value = Array.isArray(data.users) ? data.users : [];
+    emit("users-loaded", users.value);
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
@@ -231,6 +234,5 @@ function formatTime(timestamp) {
   return new Date(Number(timestamp) * 1000).toLocaleString();
 }
 
-defineExpose({ loadUsers, users });
+onMounted(() => loadUsers());
 </script>
-
