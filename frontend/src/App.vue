@@ -52,24 +52,24 @@
 
         <el-main class="main-content">
           <div class="content-panel">
-            <section v-show="activeTab === 'dashboard'">
+            <section v-if="activeTab === 'dashboard'">
               <div class="section-scroll">
                 <Dashboard :api="api" :active="activeTab === 'dashboard'" />
               </div>
             </section>
-            <section v-show="activeTab === 'channels'">
-              <Channels :api="api" :active="activeTab === 'channels'" />
+            <section v-if="activeTab === 'channels'">
+              <Channels :api="api"  />
             </section>
-            <section v-show="activeTab === 'api-keys'">
-              <AccessKeys :api="api" :is-superadmin="isSuperadmin" :users="usersData" :active="activeTab === 'api-keys'" />
+            <section v-if="activeTab === 'api-keys'">
+              <AccessKeys :api="api" :is-superadmin="isSuperadmin" :users="usersData"  />
             </section>
-            <section v-if="isSuperadmin" v-show="activeTab === 'users'">
-              <Users :api="api" :current-user="currentUser" :active="activeTab === 'users'" @users-loaded="onUsersLoaded" />
+            <section v-if="isSuperadmin && activeTab === 'users'">
+              <Users :api="api" :current-user="currentUser"  @users-loaded="onUsersLoaded" />
             </section>
-            <section v-if="isSuperadmin" v-show="activeTab === 'web-search'">
-              <WebSearch :api="api" :active="activeTab === 'web-search'" />
+            <section v-if="isSuperadmin && activeTab === 'web-search'">
+              <WebSearch :api="api"  />
             </section>
-            <section v-show="activeTab === 'logs'">
+            <section v-if="activeTab === 'logs'">
               <Logs :api="api" :is-superadmin="isSuperadmin" :active="activeTab === 'logs'" />
             </section>
           </div>

@@ -272,7 +272,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch } from "vue";
+import { ref, reactive, computed, onMounted } from "vue";
 import { ElMessage } from "element-plus";
 import {
   Connection,
@@ -287,14 +287,11 @@ import {
 
 const props = defineProps({
   api: { type: Function, required: true },
-  active: { type: Boolean, required: true }
 });
 
-const loaded = ref(false);
+onMounted(() => loadConfig());
 
-watch(() => props.active, (now) => {
-  if (now && !loaded.value) loadConfig();
-}, { immediate: true });
+
 
 const configLoading = ref(false);
 const saveLoading = ref(false);
@@ -312,6 +309,8 @@ const compatTexts = reactive({
   default_params: "",
   unsupported_params: ""
 });
+
+onMounted(() => loadConfig());
 const testResult = ref(null);
 const channelTestVisible = ref(false);
 const testingChannel = ref(null);
@@ -330,6 +329,8 @@ const channelTestTitle = computed(() => {
   const name = testingChannel.value?.name || testingChannel.value?.id || "";
   return name ? `测试连接 - ${name}` : "测试连接";
 });
+
+onMounted(() => loadConfig());
 
 async function loadConfig() {
   configLoading.value = true;
