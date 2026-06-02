@@ -115,7 +115,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed } from "vue";
+import { ref, reactive, computed, onMounted } from "vue";
 import { ElMessage } from "element-plus";
 import { CopyDocument, Delete, Plus, Refresh } from "@element-plus/icons-vue";
 
@@ -224,6 +224,5 @@ function formatTime(timestamp) {
   return new Date(Number(timestamp) * 1000).toLocaleString();
 }
 
-defineExpose({ loadAccessKeys });
+onMounted(() => loadAccessKeys());
 </script>
-

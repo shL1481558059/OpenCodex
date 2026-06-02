@@ -176,7 +176,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed } from "vue";
+import { ref, reactive, computed, onMounted } from "vue";
 import { ElMessage } from "element-plus";
 import { Delete, Edit, Plus, Refresh } from "@element-plus/icons-vue";
 
@@ -466,6 +466,5 @@ function displayMs(value) {
   return value === null || value === undefined ? "-" : `${value} ms`;
 }
 
-defineExpose({ loadWebSearch });
+onMounted(() => loadWebSearch());
 </script>
-

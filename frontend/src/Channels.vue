@@ -272,7 +272,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed } from "vue";
+import { ref, reactive, computed, onMounted } from "vue";
 import { ElMessage } from "element-plus";
 import {
   Connection,
@@ -689,6 +689,5 @@ function isPlainObject(value) {
 }
 
 // Expose loadConfig so App can call it on init
-defineExpose({ loadConfig });
+onMounted(() => loadConfig());
 </script>
-
