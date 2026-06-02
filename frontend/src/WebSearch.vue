@@ -176,15 +176,22 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from "vue";
+import { ref, reactive, computed, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { Delete, Edit, Plus, Refresh } from "@element-plus/icons-vue";
 
 const WEB_SEARCH_PROVIDER_LABELS = { tavily: "Tavily" };
 
 const props = defineProps({
-  api: { type: Function, required: true }
+  api: { type: Function, required: true },
+  active: { type: Boolean, required: true }
 });
+
+const loaded = ref(false);
+
+watch(() => props.active, (now) => {
+  if (now && !loaded.value) loadWebSearch();
+}, { immediate: true });
 
 const webSearchLoading = ref(false);
 const webSearchSaving = ref(false);
@@ -466,5 +473,4 @@ function displayMs(value) {
   return value === null || value === undefined ? "-" : `${value} ms`;
 }
 
-onMounted(() => loadWebSearch());
 </script>

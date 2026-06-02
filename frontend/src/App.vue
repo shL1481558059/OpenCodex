@@ -58,16 +58,16 @@
               </div>
             </section>
             <section v-show="activeTab === 'channels'">
-              <Channels :api="api" />
+              <Channels :api="api" :active="activeTab === 'channels'" />
             </section>
             <section v-show="activeTab === 'api-keys'">
-              <AccessKeys :api="api" :is-superadmin="isSuperadmin" :users="usersData" />
+              <AccessKeys :api="api" :is-superadmin="isSuperadmin" :users="usersData" :active="activeTab === 'api-keys'" />
             </section>
             <section v-if="isSuperadmin" v-show="activeTab === 'users'">
-              <Users :api="api" :current-user="currentUser" @users-loaded="onUsersLoaded" />
+              <Users :api="api" :current-user="currentUser" :active="activeTab === 'users'" @users-loaded="onUsersLoaded" />
             </section>
             <section v-if="isSuperadmin" v-show="activeTab === 'web-search'">
-              <WebSearch :api="api" />
+              <WebSearch :api="api" :active="activeTab === 'web-search'" />
             </section>
             <section v-show="activeTab === 'logs'">
               <Logs :api="api" :is-superadmin="isSuperadmin" :active="activeTab === 'logs'" />

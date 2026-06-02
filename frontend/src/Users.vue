@@ -122,14 +122,21 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from "vue";
+import { ref, reactive, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { Delete, Edit, Plus, Refresh } from "@element-plus/icons-vue";
 
 const props = defineProps({
   api: { type: Function, required: true },
-  currentUser: { type: Object, default: null }
+  currentUser: { type: Object, default: null },
+  active: { type: Boolean, required: true }
 });
+
+const loaded = ref(false);
+
+watch(() => props.active, (now) => {
+  if (now && !loaded.value) loadUsers();
+}, { immediate: true });
 
 const emit = defineEmits(["users-loaded"]);
 
@@ -234,5 +241,4 @@ function formatTime(timestamp) {
   return new Date(Number(timestamp) * 1000).toLocaleString();
 }
 
-onMounted(() => loadUsers());
 </script>
