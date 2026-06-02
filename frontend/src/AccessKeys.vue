@@ -118,18 +118,11 @@
 import { ref, reactive, computed, onMounted } from "vue";
 import { ElMessage } from "element-plus";
 import { CopyDocument, Delete, Plus, Refresh } from "@element-plus/icons-vue";
-
-
 const props = defineProps({
   api: { type: Function, required: true },
   isSuperadmin: { type: Boolean, default: false },
   users: { type: Array, default: () => [] },
 });
-
-onMounted(() => loadAccessKeys());
-
-
-
 const accessKeysLoading = ref(false);
 const accessKeyDialogVisible = ref(false);
 const accessKeySaving = ref(false);
@@ -146,7 +139,6 @@ const lastAccessKeyUsedLabel = computed(() => {
   return timestamps.length ? formatTime(timestamps[0]) : "-";
 });
 
-onMounted(() => loadAccessKeys());
 const enabledUsers = computed(() => props.users.filter((u) => u.enabled !== false));
 
 async function loadAccessKeys() {
@@ -231,4 +223,5 @@ function formatTime(timestamp) {
   return new Date(Number(timestamp) * 1000).toLocaleString();
 }
 
+onMounted(() => loadAccessKeys());
 </script>

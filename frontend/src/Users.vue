@@ -130,11 +130,6 @@ const props = defineProps({
   api: { type: Function, required: true },
   currentUser: { type: Object, default: null },
 });
-
-onMounted(() => loadUsers());
-
-
-
 const emit = defineEmits(["users-loaded"]);
 
 const usersLoading = ref(false);
@@ -238,4 +233,5 @@ function formatTime(timestamp) {
   return new Date(Number(timestamp) * 1000).toLocaleString();
 }
 
+onMounted(() => loadUsers());
 </script>

@@ -283,16 +283,9 @@ import {
   Refresh,
   Upload
 } from "@element-plus/icons-vue";
-
-
 const props = defineProps({
   api: { type: Function, required: true },
 });
-
-onMounted(() => loadConfig());
-
-
-
 const configLoading = ref(false);
 const saveLoading = ref(false);
 const testLoading = ref(false);
@@ -310,7 +303,6 @@ const compatTexts = reactive({
   unsupported_params: ""
 });
 
-onMounted(() => loadConfig());
 const testResult = ref(null);
 const channelTestVisible = ref(false);
 const testingChannel = ref(null);
@@ -329,9 +321,6 @@ const channelTestTitle = computed(() => {
   const name = testingChannel.value?.name || testingChannel.value?.id || "";
   return name ? `测试连接 - ${name}` : "测试连接";
 });
-
-onMounted(() => loadConfig());
-
 async function loadConfig() {
   configLoading.value = true;
   try {
@@ -698,4 +687,5 @@ function isPlainObject(value) {
 }
 
 // Expose loadConfig so App can call it on init
+onMounted(() => loadConfig());
 </script>

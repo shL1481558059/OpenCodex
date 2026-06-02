@@ -185,11 +185,6 @@ const WEB_SEARCH_PROVIDER_LABELS = { tavily: "Tavily" };
 const props = defineProps({
   api: { type: Function, required: true },
 });
-
-onMounted(() => loadWebSearch());
-
-
-
 const webSearchLoading = ref(false);
 const webSearchSaving = ref(false);
 const webSearchTestingId = ref(null);
@@ -470,4 +465,5 @@ function displayMs(value) {
   return value === null || value === undefined ? "-" : `${value} ms`;
 }
 
+onMounted(() => loadWebSearch());
 </script>
