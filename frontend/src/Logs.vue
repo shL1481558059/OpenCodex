@@ -195,7 +195,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from "vue";
+import { ref, reactive, computed, onBeforeUnmount, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { Check, CopyDocument, Refresh, Search, Setting, View } from "@element-plus/icons-vue";
 
@@ -451,14 +451,19 @@ function formatJson(value) {
 
 // --- Visibility / auto-refresh ---
 
+const loaded = ref(false);
+
 watch(() => props.active, (now) => {
-  if (now) { loadLogs(); restartLogAutoRefreshTimer(); }
-  else { stopLogAutoRefreshTimer(); }
-});
+  if (now) {
+    if (!loaded.value) loadLogs();
+    loaded.value = true;
+    restartLogAutoRefreshTimer();
+  } else {
+    stopLogAutoRefreshTimer();
+  }
+}, { immediate: true });
 
 onBeforeUnmount(() => {
   stopLogAutoRefreshTimer();
 });
-
-onMounted(() => loadLogs());
 </script>

@@ -115,15 +115,23 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from "vue";
+import { ref, reactive, computed, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { CopyDocument, Delete, Plus, Refresh } from "@element-plus/icons-vue";
+
 
 const props = defineProps({
   api: { type: Function, required: true },
   isSuperadmin: { type: Boolean, default: false },
-  users: { type: Array, default: () => [] }
+  users: { type: Array, default: () => [] },
+  active: { type: Boolean, required: true }
 });
+
+const loaded = ref(false);
+
+watch(() => props.active, (now) => {
+  if (now && !loaded.value) loadAccessKeys();
+}, { immediate: true });
 
 const accessKeysLoading = ref(false);
 const accessKeyDialogVisible = ref(false);
@@ -224,5 +232,4 @@ function formatTime(timestamp) {
   return new Date(Number(timestamp) * 1000).toLocaleString();
 }
 
-onMounted(() => loadAccessKeys());
 </script>

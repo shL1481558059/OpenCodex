@@ -272,7 +272,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from "vue";
+import { ref, reactive, computed, watch } from "vue";
 import { ElMessage } from "element-plus";
 import {
   Connection,
@@ -284,9 +284,17 @@ import {
   Upload
 } from "@element-plus/icons-vue";
 
+
 const props = defineProps({
-  api: { type: Function, required: true }
+  api: { type: Function, required: true },
+  active: { type: Boolean, required: true }
 });
+
+const loaded = ref(false);
+
+watch(() => props.active, (now) => {
+  if (now && !loaded.value) loadConfig();
+}, { immediate: true });
 
 const configLoading = ref(false);
 const saveLoading = ref(false);
@@ -689,5 +697,4 @@ function isPlainObject(value) {
 }
 
 // Expose loadConfig so App can call it on init
-onMounted(() => loadConfig());
 </script>
