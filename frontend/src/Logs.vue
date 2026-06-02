@@ -195,7 +195,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onBeforeUnmount, watch } from "vue";
+import { ref, reactive, computed, onBeforeUnmount, onMounted, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { Check, CopyDocument, Refresh, Search, Setting, View } from "@element-plus/icons-vue";
 

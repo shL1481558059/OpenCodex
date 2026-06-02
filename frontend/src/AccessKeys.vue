@@ -115,7 +115,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch } from "vue";
+import { ref, reactive, computed, onMounted } from "vue";
 import { ElMessage } from "element-plus";
 import { CopyDocument, Delete, Plus, Refresh } from "@element-plus/icons-vue";
 
@@ -124,14 +124,11 @@ const props = defineProps({
   api: { type: Function, required: true },
   isSuperadmin: { type: Boolean, default: false },
   users: { type: Array, default: () => [] },
-  active: { type: Boolean, required: true }
 });
 
-const loaded = ref(false);
+onMounted(() => loadAccessKeys());
 
-watch(() => props.active, (now) => {
-  if (now && !loaded.value) loadAccessKeys();
-}, { immediate: true });
+
 
 const accessKeysLoading = ref(false);
 const accessKeyDialogVisible = ref(false);
@@ -148,6 +145,8 @@ const lastAccessKeyUsedLabel = computed(() => {
     .sort((a, b) => b - a);
   return timestamps.length ? formatTime(timestamps[0]) : "-";
 });
+
+onMounted(() => loadAccessKeys());
 const enabledUsers = computed(() => props.users.filter((u) => u.enabled !== false));
 
 async function loadAccessKeys() {
