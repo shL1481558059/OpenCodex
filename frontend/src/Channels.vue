@@ -166,7 +166,7 @@
         </el-button>
         <el-alert v-if="discoveredModels.length" style="margin-top: 12px" type="info" :closable="false">
           <el-checkbox-group v-model="selectedDiscoveredModels">
-            <el-checkbox v-for="model in discoveredModels" :key="model" :label="model" />
+            <el-checkbox v-for="model in discoveredModels" :key="model" :label="model" :value="model" />
           </el-checkbox-group>
           <el-button size="small" style="margin-top: 8px" @click="addSelectedModels">加入映射</el-button>
         </el-alert>
@@ -337,7 +337,7 @@ async function saveConfig(nextChannels) {
   saveLoading.value = true;
   try {
     await props.api("/admin/api/config", {
-      method: "PUT",
+      method: "POST",
       body: JSON.stringify({ channels: nextChannels })
     });
     config.channels = nextChannels;

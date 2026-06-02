@@ -17,7 +17,7 @@
             </div>
             <el-checkbox-group v-model="visibleLogColumnKeys" class="log-column-settings__list">
               <div v-for="(column, index) in orderedLogColumns" :key="column.key" class="log-column-settings__item">
-                <el-checkbox :label="column.key">{{ column.label }}</el-checkbox>
+                <el-checkbox :label="column.key" :value="column.key">{{ column.label }}</el-checkbox>
                 <div class="log-column-settings__actions">
                   <el-button size="small" text :disabled="index === 0" @click="moveLogColumn(index, -1)">上移</el-button>
                   <el-button size="small" text :disabled="index === orderedLogColumns.length - 1" @click="moveLogColumn(index, 1)">下移</el-button>
