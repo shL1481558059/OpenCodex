@@ -573,11 +573,15 @@ def create_app(settings: Settings | None = None) -> Flask:
         )
 
     @app.post("/admin/api/channels/discover-models")
+    @app.post("/admin/api/discover-models")
     def admin_discover_models():
         require_user()
         started = time.time()
         try:
-            channel = _draft_channel_from_request(settings.default_timeout)
+            body = request.get_json(silent=True)
+            if not isinstance(body, dict):
+                return jsonify({"error": "request body must be a JSON object"}), 400
+            channel = _draft_channel_from_body(body, settings.default_timeout)
             raw = list_upstream_models(
                 channel,
                 settings.default_timeout,
@@ -602,6 +606,7 @@ def create_app(settings: Settings | None = None) -> Flask:
         )
 
     @app.post("/admin/api/channels/test")
+    @app.post("/admin/api/test-channel")
     def admin_test_channel():
         require_user()
         started = time.time()
@@ -609,10 +614,7 @@ def create_app(settings: Settings | None = None) -> Flask:
             body = request.get_json(silent=True)
             if not isinstance(body, dict):
                 return jsonify({"error": "request body must be a JSON object"}), 400
-            payload = body.get("payload")
-            if not isinstance(payload, dict):
-                return jsonify({"error": "payload must be a JSON object"}), 400
-            channel = _draft_channel_from_request(settings.default_timeout)
+            channel, payload = _parse_test_channel_body(body, settings.default_timeout)
             original_model, upstream_model = _test_models(channel, payload.get("model"))
             upstream_request = convert_request(
                 payload,
@@ -1473,6 +1475,62 @@ def _draft_channel_from_request(default_timeout: int) -> dict[str, Any]:
     expanded_channel = expand_env(normalized)["channels"][0]
     validate_channel(expanded_channel, default_timeout)
     return expanded_channel
+
+_CHANNEL_KEYS = frozenset({
+    "id", "name", "type", "baseurl", "apikey", "auth_mode",
+    "headers", "timeout_seconds", "retry_count", "compat",
+    "models", "enabled",
+})
+
+
+def _draft_channel_from_body(body: dict[str, Any], default_timeout: int) -> dict[str, Any]:
+    channel = body.get("channel")
+    if isinstance(channel, dict):
+        pass
+    elif "baseurl" in body or "type" in body:
+        channel = {k: v for k, v in body.items() if k in _CHANNEL_KEYS}
+    else:
+        raise ConfigError("channel must be a JSON object")
+    normalized = normalize_config({"channels": [channel]})
+    expanded_channel = expand_env(normalized)["channels"][0]
+    validate_channel(expanded_channel, default_timeout)
+    return expanded_channel
+
+
+def _parse_test_channel_body(body: dict[str, Any], default_timeout: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    payload = body.get("payload")
+    if isinstance(payload, dict):
+        channel = _draft_channel_from_body(body, default_timeout)
+    elif "baseurl" in body or "type" in body:
+        channel = _draft_channel_from_body(body, default_timeout)
+        payload = _build_payload_from_flat(body, channel["type"])
+    else:
+        raise ConfigError("payload must be a JSON object or a flat channel+payload body is required")
+    return channel, payload
+
+
+def _build_payload_from_flat(body: dict[str, Any], channel_type: str) -> dict[str, Any]:
+    model = str(body.get("model") or "").strip()
+    input_text = str(body.get("input") or "ping").strip()
+    max_output_tokens = int(body.get("max_output_tokens") or 256)
+    if channel_type == "chat":
+        return {
+            "model": model,
+            "messages": [{"role": "user", "content": input_text}],
+            "max_tokens": max_output_tokens,
+        }
+    elif channel_type == "messages":
+        return {
+            "model": model,
+            "messages": [{"role": "user", "content": input_text}],
+            "max_tokens": max_output_tokens,
+        }
+    else:  # responses
+        return {
+            "model": model,
+            "input": input_text,
+            "max_output_tokens": max_output_tokens,
+        }
 
 
 def _extract_model_ids(payload: dict[str, Any]) -> list[str]:
