@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from opencodex_proxy.protocols import convert_request, convert_response
+from opencodex_proxy.streaming import chat_sse_to_responses_events
 
 
 class ProtocolTests(unittest.TestCase):
@@ -347,7 +348,7 @@ class ProtocolTests(unittest.TestCase):
             result = convert_request(payload, "responses", "chat", "upstream")
             self.assertEqual(result["tool_choice"], expected)
 
-    def test_responses_namespace_tools_are_flattened_and_deduped_for_chat(self):
+    def test_responses_namespace_tools_preserve_prefix_for_chat(self):
         payload = {
             "model": "local",
             "input": "run",
@@ -383,8 +384,235 @@ class ProtocolTests(unittest.TestCase):
 
         self.assertEqual(
             [tool["function"]["name"] for tool in result["tools"]],
-            ["lookup", "fetch"],
+            ["lookup", "mcp__lookup", "mcp__fetch"],
         )
+
+    def test_namespace_tools_roundtrip_responses_chat_responses(self):
+        """Namespace tools should survive Responses→Chat→Responses roundtrip."""
+        payload = {
+            "model": "local",
+            "input": "run",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "exec_command",
+                    "description": "shell",
+                    "parameters": {"type": "object"},
+                },
+                {
+                    "type": "namespace",
+                    "name": "mcp__node_repl",
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "js",
+                            "description": "Run JS",
+                            "parameters": {"type": "object"},
+                        },
+                        {
+                            "type": "function",
+                            "name": "js_reset",
+                            "description": "Reset",
+                            "parameters": {"type": "object"},
+                        },
+                    ],
+                },
+            ],
+        }
+
+        # Responses → Chat
+        chat_req = convert_request(payload, "responses", "chat", "upstream")
+        tool_names = [t["function"]["name"] for t in chat_req["tools"]]
+        self.assertIn("exec_command", tool_names)
+        self.assertIn("mcp__node_repl__js", tool_names)
+        self.assertIn("mcp__node_repl__js_reset", tool_names)
+        self.assertNotIn("js", tool_names)  # bare name must NOT appear
+
+        # Chat → Responses (roundtrip)
+        resp_req = convert_request(chat_req, "chat", "responses", "downstream")
+        ns_tools = [t for t in resp_req["tools"] if t.get("type") == "namespace"]
+        self.assertEqual(len(ns_tools), 1)
+        self.assertEqual(ns_tools[0]["name"], "mcp__node_repl")
+        inner_names = [t["name"] for t in ns_tools[0]["tools"]]
+        self.assertEqual(inner_names, ["js", "js_reset"])
+
+        # Top-level function tool should also survive roundtrip
+        fn_tools = [t for t in resp_req["tools"] if t.get("type") == "function"]
+        fn_names = [t["name"] for t in fn_tools]
+        self.assertIn("exec_command", fn_names)
+
+    def test_namespace_tool_with_leading_underscore_roundtrips(self):
+        payload = {
+            "model": "local",
+            "input": "run",
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "mcp__codex_apps__notion",
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "_fetch",
+                            "description": "Fetch Notion page",
+                            "parameters": {"type": "object"},
+                        },
+                    ],
+                },
+            ],
+        }
+
+        chat_req = convert_request(payload, "responses", "chat", "upstream")
+        tool_names = [t["function"]["name"] for t in chat_req["tools"]]
+        self.assertEqual(tool_names, ["mcp__codex_apps__notion___fetch"])
+
+        resp_req = convert_request(chat_req, "chat", "responses", "downstream")
+        ns_tools = [t for t in resp_req["tools"] if t.get("type") == "namespace"]
+        self.assertEqual(len(ns_tools), 1)
+        self.assertEqual(ns_tools[0]["name"], "mcp__codex_apps__notion")
+        self.assertEqual(ns_tools[0]["tools"][0]["name"], "_fetch")
+
+    def test_namespace_tool_call_roundtrip(self):
+        """Namespace tool calls should survive Chat->Canonical->Responses."""
+        chat_resp = {
+            "id": "chatcmpl_test",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "upstream",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "mcp__node_repl__js",
+                                    "arguments": '{"code": "1+1"}',
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {},
+        }
+
+        from opencodex_proxy.protocols import to_canonical_response, from_canonical_response
+        canonical = to_canonical_response(chat_resp, "chat", "upstream")
+        resp_out = from_canonical_response(canonical, "responses")
+
+        fc_items = [o for o in resp_out["output"] if o.get("type") == "function_call"]
+        self.assertEqual(len(fc_items), 1)
+        self.assertEqual(fc_items[0]["namespace"], "mcp__node_repl")
+        self.assertEqual(fc_items[0]["name"], "js")
+        self.assertEqual(fc_items[0]["call_id"], "call_1")
+
+    def test_namespace_tool_call_streaming_emits_namespace_field(self):
+        chunks = [
+            {
+                "id": "chatcmpl_test",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": "upstream",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "mcp__node_repl__js",
+                                        "arguments": '{"code":',
+                                    },
+                                }
+                            ]
+                        },
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl_test",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": "upstream",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {"arguments": '"1+1"}'},
+                                }
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+            },
+        ]
+        lines = []
+        for chunk in chunks:
+            lines.extend([f"data: {json.dumps(chunk)}\n", "\n"])
+        events = list(chat_sse_to_responses_events(lines, model="upstream"))
+        items = []
+        for line in events:
+            data_lines = [part for part in line.splitlines() if part.startswith("data: ")]
+            if not data_lines:
+                continue
+            payload = json.loads(data_lines[0][len("data: "):])
+            item = payload.get("item")
+            if isinstance(item, dict) and item.get("type") == "function_call":
+                items.append(item)
+
+        self.assertTrue(items)
+        self.assertTrue(all(item.get("namespace") == "mcp__node_repl" for item in items))
+        self.assertTrue(all(item.get("name") == "js" for item in items))
+
+    def test_responses_input_preserves_namespace_tool_call_names(self):
+        """When Codex client sends back a namespace tool call in input, the flattened
+        name should be preserved when converting to chat messages."""
+        payload = {
+            "model": "local",
+            "input": [
+                {"type": "message", "role": "user", "content": "run js"},
+                {
+                    "type": "function_call",
+                    "call_id": "call_ns1",
+                    "name": "mcp__node_repl__js",
+                    "arguments": '{"code": "1+1"}',
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_ns1",
+                    "output": "2",
+                },
+            ],
+            "tools": [],
+        }
+
+        result = convert_request(payload, "responses", "chat", "upstream")
+        messages = result["messages"]
+
+        tool_call_msgs = [
+            m for m in messages if m.get("role") == "assistant" and m.get("tool_calls")
+        ]
+        self.assertEqual(len(tool_call_msgs), 1)
+        self.assertEqual(
+            tool_call_msgs[0]["tool_calls"][0]["function"]["name"], "mcp__node_repl__js"
+        )
+
+        tool_msgs = [m for m in messages if m.get("role") == "tool"]
+        self.assertEqual(len(tool_msgs), 1)
+        self.assertEqual(tool_msgs[0]["tool_call_id"], "call_ns1")
+        self.assertEqual(tool_msgs[0]["content"], "2")
 
     def test_apply_patch_arguments_preserve_complex_json_objects(self):
         complex_arguments = (

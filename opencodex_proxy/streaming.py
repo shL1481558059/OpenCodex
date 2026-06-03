@@ -19,6 +19,7 @@ from .protocols import (
     _is_apply_patch_tool_name,
     _normalize_annotations,
     _responses_apply_patch_item_from_tool_call,
+    _responses_function_call_name_fields,
 )
 
 
@@ -668,8 +669,8 @@ def chat_sse_to_responses_events(
                                 "type": "function_call",
                                 "status": "in_progress",
                                 "call_id": target["id"],
-                                "name": tool_name,
                                 "arguments": "",
+                                **_responses_function_call_name_fields(tool_name),
                             },
                         },
                     )
@@ -797,8 +798,10 @@ def chat_sse_to_responses_events(
                         "type": "function_call",
                         "status": "in_progress",
                         "call_id": item.get("call_id"),
-                        "name": item.get("name"),
                         "arguments": "",
+                        **_responses_function_call_name_fields(
+                            item.get("name"), item.get("namespace")
+                        ),
                     },
                 },
             )
@@ -1033,8 +1036,8 @@ def _responses_tool_call_item(
         "type": "function_call",
         "status": "completed",
         "call_id": call_id,
-        "name": tool_name,
         "arguments": _json_dumps(arguments),
+        **_responses_function_call_name_fields(tool_name),
     }
 
 

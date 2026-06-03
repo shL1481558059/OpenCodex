@@ -497,6 +497,9 @@ def _responses_input_item_to_messages(item: Any) -> list[dict[str, Any]]:
     item_type = item.get("type")
     if item_type in RESPONSES_TOOL_CALL_TYPES:
         name = item.get("name") or item_type.replace("_call", "")
+        namespace = item.get("namespace")
+        if namespace:
+            name = f"{namespace}{_NS_SEP_FLAT}{name}"
         arguments = item.get("arguments")
         if arguments is None:
             arguments = item.get("input") or item.get("action") or {}
@@ -510,7 +513,7 @@ def _responses_input_item_to_messages(item: Any) -> list[dict[str, Any]]:
                         "id": item.get("call_id") or item.get("id") or f"call_{uuid.uuid4().hex}",
                         "type": "function",
                         "function": {
-                            "name": str(name),
+                            "name": _ns_name_to_chat(str(name)),
                             "arguments": _json_dumps(arguments),
                         },
                     }
@@ -610,8 +613,8 @@ def _messages_to_responses_input(messages: list[dict[str, Any]]) -> tuple[str, l
                     {
                         "type": "function_call",
                         "call_id": tool_call.get("id"),
-                        "name": function.get("name"),
                         "arguments": function.get("arguments", "{}"),
+                        **_responses_function_call_name_fields(function.get("name", "")),
                     }
                 )
     return "\n\n".join(instructions), input_items
@@ -639,6 +642,71 @@ def _responses_tools_to_canonical(tools: Any) -> list[dict[str, Any]]:
         result.extend(_responses_tool_to_canonical_items(tool))
     return _dedupe_canonical_tools(result)
 
+# Namespace tools are flattened as "namespace__tool" when converted to a
+# function-style protocol. This matches Codex tool routing names and is legal
+# for Chat API function names.
+_NS_SEP_FLAT = "__"
+_NS_SEP_LEGACY_DOT = "."
+
+
+def _ns_name_to_chat(name: str) -> str:
+    """Convert legacy namespace dot names to the flattened function name form."""
+    if _NS_SEP_LEGACY_DOT in name:
+        ns_part, bare = name.rsplit(_NS_SEP_LEGACY_DOT, 1)
+        return ns_part + _NS_SEP_FLAT + bare
+    return name
+
+
+def _ns_name_from_chat(name: str) -> str:
+    """Normalize function-style namespace names before returning to Responses clients."""
+    if _NS_SEP_LEGACY_DOT in name:
+        return _ns_name_to_chat(name)
+    return name
+
+
+def _split_flat_namespace_name(name: str) -> tuple[str, str] | None:
+    if _NS_SEP_FLAT not in name:
+        return None
+    split_at: int | None = None
+    start = 0
+    while True:
+        index = name.find(_NS_SEP_FLAT, start)
+        if index < 0:
+            break
+        ns_part = name[:index]
+        bare = name[index + len(_NS_SEP_FLAT):]
+        if ns_part and bare and not ns_part.endswith("_"):
+            split_at = index
+        start = index + 1
+    if split_at is None:
+        return None
+    return name[:split_at], name[split_at + len(_NS_SEP_FLAT):]
+
+
+def _namespace_call_parts(name: Any, namespace: Any = None) -> tuple[str | None, str]:
+    tool_name = str(name or "")
+    if namespace:
+        ns = str(namespace)
+        ns_prefix = ns + _NS_SEP_FLAT
+        if tool_name.startswith(ns_prefix):
+            return ns, tool_name[len(ns_prefix):]
+        return ns, tool_name
+    if _NS_SEP_LEGACY_DOT in tool_name:
+        ns_part, bare = tool_name.rsplit(_NS_SEP_LEGACY_DOT, 1)
+        return ns_part, bare
+    split = _split_flat_namespace_name(tool_name)
+    if split:
+        return split
+    return None, tool_name
+
+
+def _responses_function_call_name_fields(name: Any, namespace: Any = None) -> dict[str, str]:
+    ns, bare_name = _namespace_call_parts(name, namespace)
+    result = {"name": bare_name}
+    if ns:
+        result["namespace"] = ns
+    return result
+
 
 def _responses_tool_to_canonical_items(tool: Any) -> list[dict[str, Any]]:
     if not isinstance(tool, dict):
@@ -648,9 +716,14 @@ def _responses_tool_to_canonical_items(tool: Any) -> list[dict[str, Any]]:
         nested = tool.get("tools")
         if not isinstance(nested, list):
             return []
+        namespace_name = str(tool.get("name") or "")
         result: list[dict[str, Any]] = []
         for inner in nested:
-            result.extend(_responses_tool_to_canonical_items(inner))
+            for item in _responses_tool_to_canonical_items(inner):
+                bare_name = str(item.get("name") or "")
+                item["name"] = f"{namespace_name}{_NS_SEP_FLAT}{bare_name}" if namespace_name else bare_name
+                item["namespace"] = namespace_name
+                result.append(item)
         return result
     if tool_type == "function":
         return [
@@ -708,14 +781,23 @@ def _chat_tools_to_canonical(tools: Any) -> list[dict[str, Any]]:
         if not isinstance(tool, dict):
             continue
         function = tool.get("function", {}) if tool.get("type") == "function" else tool
-        result.append(
-            {
-                "name": function.get("name"),
-                "description": function.get("description", ""),
-                "parameters": function.get("parameters") or {},
-                "native_type": "function",
-            }
-        )
+        name = function.get("name")
+        entry: dict[str, Any] = {
+            "name": name,
+            "description": function.get("description", ""),
+            "parameters": function.get("parameters") or {},
+            "native_type": "function",
+        }
+        if isinstance(name, str):
+            if _NS_SEP_LEGACY_DOT in name:
+                flat_name = _ns_name_to_chat(name)
+                entry["name"] = flat_name
+                entry["namespace"] = name.rsplit(_NS_SEP_LEGACY_DOT, 1)[0]
+            else:
+                split = _split_flat_namespace_name(name)
+                if split:
+                    entry["namespace"] = split[0]
+        result.append(entry)
     return result
 
 
@@ -744,6 +826,10 @@ def _canonical_tools_to_responses(tools: list[dict[str, Any]]) -> list[dict[str,
             if raw:
                 result.append(raw)
                 continue
+        ns = tool.get("namespace")
+        if ns:
+            # Belongs to a namespace; will be grouped below
+            continue
         result.append(
             {
                 "type": "function",
@@ -752,6 +838,29 @@ def _canonical_tools_to_responses(tools: list[dict[str, Any]]) -> list[dict[str,
                 "parameters": tool.get("parameters") or {},
             }
         )
+    # Rebuild namespace groups from tools that carry a "namespace" field
+    ns_groups: dict[str, list[dict[str, Any]]] = {}
+    for tool in tools:
+        ns = tool.get("namespace")
+        if not ns:
+            continue
+        name = str(tool.get("name") or "")
+        ns_prefix = ns + _NS_SEP_FLAT
+        bare_name = name[len(ns_prefix):] if name.startswith(ns_prefix) else name
+        if _NS_SEP_LEGACY_DOT in bare_name:
+            bare_name = bare_name.rsplit(_NS_SEP_LEGACY_DOT, 1)[-1]
+        ns_groups.setdefault(ns, []).append({
+            "type": "function",
+            "name": bare_name,
+            "description": tool.get("description", ""),
+            "parameters": tool.get("parameters") or {},
+        })
+    for ns_name, inner_tools in ns_groups.items():
+        result.append({
+            "type": "namespace",
+            "name": ns_name,
+            "tools": inner_tools,
+        })
     return result
 
 
@@ -760,7 +869,7 @@ def _canonical_tools_to_chat(tools: list[dict[str, Any]]) -> list[dict[str, Any]
         {
             "type": "function",
             "function": {
-                "name": tool.get("name"),
+                "name": _ns_name_to_chat(tool.get("name", "")),
                 "description": tool.get("description", ""),
                 "parameters": tool.get("parameters") or {},
             },
@@ -981,12 +1090,16 @@ def _responses_response_to_canonical(
                 reasoning_parts.append(reasoning)
         elif item.get("type") in {"function_call", "custom_tool_call", "local_shell_call", "shell_call", "apply_patch_call"}:
             name = item.get("name") or item.get("type", "tool").replace("_call", "")
+            namespace = item.get("namespace")
+            if namespace:
+                name = f"{namespace}{_NS_SEP_FLAT}{name}"
             arguments = item.get("arguments") or item.get("input") or {}
             arguments = _normalize_apply_patch_arguments(item.get("type", ""), name, arguments)
             tool_calls.append(
                 {
                     "id": item.get("call_id") or item.get("id") or f"call_{uuid.uuid4().hex}",
                     "name": name,
+                    "namespace": namespace,
                     "arguments": _json_dumps(arguments),
                 }
             )
@@ -1012,10 +1125,15 @@ def _chat_response_to_canonical(
     tool_calls = []
     for tool_call in message.get("tool_calls", []) or []:
         function = tool_call.get("function", {})
+        tool_name = function.get("name")
+        namespace = None
+        if isinstance(tool_name, str):
+            namespace, _bare = _namespace_call_parts(tool_name)
         tool_calls.append(
             {
                 "id": tool_call.get("id") or f"call_{uuid.uuid4().hex}",
-                "name": function.get("name"),
+                "name": tool_name,
+                "namespace": namespace,
                 "arguments": function.get("arguments", "{}"),
             }
         )
@@ -1106,8 +1224,10 @@ def _canonical_to_responses_response(canonical: dict[str, Any]) -> dict[str, Any
                 "type": "function_call",
                 "status": "completed",
                 "call_id": tool_call.get("id"),
-                "name": tool_name,
                 "arguments": tool_call.get("arguments", "{}"),
+                **_responses_function_call_name_fields(
+                    tool_name, tool_call.get("namespace")
+                ),
             }
         )
     finish_reason = canonical.get("finish_reason") or "stop"
