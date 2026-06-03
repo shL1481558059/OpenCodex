@@ -481,6 +481,8 @@ function buildChannelTestPayload(channel) {
     timeout_seconds: Number(channel.timeout_seconds || 120),
     retry_count: Number(channel.retry_count ?? 3),
     compat: channel.compat || {},
+    models: channel.models || [],
+    enabled: channel.enabled !== false,
     model: "",
     input: "ping",
     max_output_tokens: 256
