@@ -25,8 +25,6 @@ CREATE TABLE IF NOT EXISTS request_logs (
     method TEXT,
     path TEXT,
     client_ip TEXT,
-    request_headers TEXT,
-    request_body TEXT,
     model TEXT,
     upstream_model TEXT,
     channel_id TEXT,
@@ -34,15 +32,36 @@ CREATE TABLE IF NOT EXISTS request_logs (
     ttft_ms INTEGER,
     duration_ms INTEGER,
     status_code INTEGER,
-    response_body TEXT,
     input_tokens INTEGER,
     cached_tokens INTEGER,
     output_tokens INTEGER,
     cost REAL,
-    web_search_json TEXT,
     owner_username TEXT NOT NULL DEFAULT 'admin',
     api_key_id INTEGER,
     error TEXT
+);
+"""
+
+REQUEST_LOGS_INDEXES_SCHEMA = """
+CREATE INDEX IF NOT EXISTS idx_request_logs_owner_id ON request_logs(owner_username, id);
+CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_request_logs_model ON request_logs(model);
+CREATE INDEX IF NOT EXISTS idx_request_logs_upstream_model ON request_logs(upstream_model);
+CREATE INDEX IF NOT EXISTS idx_request_logs_channel_id ON request_logs(channel_id);
+CREATE INDEX IF NOT EXISTS idx_request_logs_path ON request_logs(path);
+CREATE INDEX IF NOT EXISTS idx_request_logs_status_code ON request_logs(status_code);
+CREATE INDEX IF NOT EXISTS idx_request_logs_api_key_id ON request_logs(api_key_id);
+"""
+
+REQUEST_LOG_DETAILS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS request_log_details (
+    log_id INTEGER PRIMARY KEY,
+    request_headers TEXT,
+    request_body TEXT,
+    upstream_request_body TEXT,
+    upstream_response_body TEXT,
+    response_body TEXT,
+    web_search_json TEXT
 );
 """
 
@@ -126,9 +145,41 @@ TAVILY_KEY_USAGE_LIMIT = DEFAULT_WEB_SEARCH_KEY_USAGE_LIMIT
 PASSWORD_HASH_ITERATIONS = 200_000
 ACCESS_KEY_PREFIX = "ocx_"
 USER_ROLES = {"superadmin", "user"}
+REQUEST_LOG_DETAIL_COLUMNS = (
+    "request_headers",
+    "request_body",
+    "upstream_request_body",
+    "upstream_response_body",
+    "response_body",
+    "web_search_json",
+)
+REQUEST_LOG_METADATA_COLUMNS = (
+    "id",
+    "request_id",
+    "created_at",
+    "method",
+    "path",
+    "client_ip",
+    "model",
+    "upstream_model",
+    "channel_id",
+    "is_stream",
+    "ttft_ms",
+    "duration_ms",
+    "status_code",
+    "input_tokens",
+    "cached_tokens",
+    "output_tokens",
+    "cost",
+    "owner_username",
+    "api_key_id",
+    "error",
+)
 
 SCHEMA = (
     REQUEST_LOGS_SCHEMA
+    + "\n"
+    + REQUEST_LOG_DETAILS_SCHEMA
     + "\n"
     + CHANNELS_SCHEMA
     + "\n"
@@ -143,6 +194,7 @@ def init_db(db_path: Path, default_owner_username: str = "admin") -> None:
     conn = sqlite3.connect(str(db_path))
     conn.executescript(SCHEMA)
     _migrate_channels(conn, default_owner_username)
+    conn.executescript(REQUEST_LOGS_INDEXES_SCHEMA)
     conn.commit()
     conn.close()
 
@@ -153,12 +205,12 @@ def _migrate_channels(conn: sqlite3.Connection, default_owner_username: str = "a
         row[1]
         for row in conn.execute("PRAGMA table_info(request_logs)").fetchall()
     }
-    if "web_search_json" not in log_columns:
-        conn.execute("ALTER TABLE request_logs ADD COLUMN web_search_json TEXT")
     if "owner_username" not in log_columns:
         conn.execute("ALTER TABLE request_logs ADD COLUMN owner_username TEXT")
+        log_columns.add("owner_username")
     if "api_key_id" not in log_columns:
         conn.execute("ALTER TABLE request_logs ADD COLUMN api_key_id INTEGER")
+        log_columns.add("api_key_id")
     conn.execute(
         """
         UPDATE request_logs
@@ -167,6 +219,7 @@ def _migrate_channels(conn: sqlite3.Connection, default_owner_username: str = "a
         """,
         (default_owner_username,),
     )
+    _migrate_request_logs(conn, log_columns)
 
     columns = {
         row[1]
@@ -229,6 +282,96 @@ def _migrate_channels(conn: sqlite3.Connection, default_owner_username: str = "a
     }
     if "key_plaintext" not in access_key_columns:
         conn.execute("ALTER TABLE access_api_keys ADD COLUMN key_plaintext TEXT")
+
+
+def _migrate_request_logs(conn: sqlite3.Connection, log_columns: set[str]) -> None:
+    detail_columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(request_log_details)").fetchall()
+    }
+    for column in REQUEST_LOG_DETAIL_COLUMNS:
+        if column not in detail_columns:
+            conn.execute(f"ALTER TABLE request_log_details ADD COLUMN {column} TEXT")
+
+    legacy_detail_columns = set(REQUEST_LOG_DETAIL_COLUMNS) & log_columns
+    if legacy_detail_columns:
+        _copy_legacy_log_details(conn, log_columns, legacy_detail_columns)
+
+    if legacy_detail_columns:
+        _rebuild_request_logs_without_details(conn, log_columns)
+
+    conn.executescript(REQUEST_LOGS_SCHEMA)
+
+
+def _copy_legacy_log_details(
+    conn: sqlite3.Connection,
+    log_columns: set[str],
+    legacy_detail_columns: set[str],
+) -> None:
+    expressions = {
+        "request_headers": "request_headers" if "request_headers" in log_columns else "NULL",
+        "request_body": "request_body" if "request_body" in log_columns else "NULL",
+        "upstream_request_body": "upstream_request_body" if "upstream_request_body" in log_columns else "NULL",
+        "upstream_response_body": (
+            "upstream_response_body"
+            if "upstream_response_body" in log_columns
+            else "response_body" if "response_body" in log_columns else "NULL"
+        ),
+        "response_body": "response_body" if "response_body" in log_columns else "NULL",
+        "web_search_json": "web_search_json" if "web_search_json" in log_columns else "NULL",
+    }
+    presence_checks = [f"{column} IS NOT NULL" for column in sorted(legacy_detail_columns)]
+    conn.execute(
+        f"""
+        INSERT OR IGNORE INTO request_log_details (
+            log_id, request_headers, request_body, upstream_request_body,
+            upstream_response_body, response_body, web_search_json
+        )
+        SELECT
+            id,
+            {expressions["request_headers"]},
+            {expressions["request_body"]},
+            {expressions["upstream_request_body"]},
+            {expressions["upstream_response_body"]},
+            {expressions["response_body"]},
+            {expressions["web_search_json"]}
+        FROM request_logs
+        WHERE {" OR ".join(presence_checks)}
+        """
+    )
+
+
+def _rebuild_request_logs_without_details(
+    conn: sqlite3.Connection,
+    log_columns: set[str],
+) -> None:
+    conn.execute("ALTER TABLE request_logs RENAME TO request_logs_legacy")
+    conn.executescript(REQUEST_LOGS_SCHEMA)
+    select_columns = [
+        column if column in log_columns else _default_request_log_column_expr(column)
+        for column in REQUEST_LOG_METADATA_COLUMNS
+    ]
+    conn.execute(
+        f"""
+        INSERT INTO request_logs ({", ".join(REQUEST_LOG_METADATA_COLUMNS)})
+        SELECT {", ".join(select_columns)}
+        FROM request_logs_legacy
+        """
+    )
+    conn.execute("DROP TABLE request_logs_legacy")
+
+
+def _default_request_log_column_expr(column: str) -> str:
+    defaults = {
+        "owner_username": "'admin'",
+        "api_key_id": "NULL",
+        "is_stream": "0",
+        "input_tokens": "0",
+        "cached_tokens": "0",
+        "output_tokens": "0",
+        "cost": "0.0",
+    }
+    return defaults.get(column, "NULL")
 
 
 def _channel_primary_key(conn: sqlite3.Connection) -> list[str]:
@@ -875,29 +1018,58 @@ class AsyncDBWriter:
             try:
                 self._insert(conn, record)
             except Exception:
+                conn.rollback()
                 pass
         conn.close()
 
     def _insert(self, conn: sqlite3.Connection, record: dict[str, Any]) -> None:
-        sql = """
+        metadata_sql = """
         INSERT INTO request_logs (
             request_id, created_at, method, path, client_ip,
-            request_headers, request_body, model, upstream_model,
-            channel_id, is_stream, ttft_ms, duration_ms, status_code,
-            response_body, input_tokens, cached_tokens, output_tokens,
-            cost, web_search_json, owner_username, api_key_id, error
+            model, upstream_model, channel_id, is_stream, ttft_ms,
+            duration_ms, status_code, input_tokens, cached_tokens,
+            output_tokens, cost, owner_username, api_key_id, error
         ) VALUES (
             :request_id, :created_at, :method, :path, :client_ip,
-            :request_headers, :request_body, :model, :upstream_model,
-            :channel_id, :is_stream, :ttft_ms, :duration_ms, :status_code,
-            :response_body, :input_tokens, :cached_tokens, :output_tokens,
-            :cost, :web_search_json, :owner_username, :api_key_id, :error
+            :model, :upstream_model, :channel_id, :is_stream, :ttft_ms,
+            :duration_ms, :status_code, :input_tokens, :cached_tokens,
+            :output_tokens, :cost, :owner_username, :api_key_id, :error
         )
         """
-        record.setdefault("web_search_json", None)
+        detail_sql = """
+        INSERT INTO request_log_details (
+            log_id, request_headers, request_body, upstream_request_body,
+            upstream_response_body, response_body, web_search_json
+        ) VALUES (
+            :log_id, :request_headers, :request_body, :upstream_request_body,
+            :upstream_response_body, :response_body, :web_search_json
+        )
+        """
         record.setdefault("owner_username", self.default_owner_username)
         record.setdefault("api_key_id", None)
-        conn.execute(sql, record)
+        for key, value in {
+            "is_stream": 0,
+            "input_tokens": 0,
+            "cached_tokens": 0,
+            "output_tokens": 0,
+            "cost": 0.0,
+            "web_search_json": None,
+            "upstream_request_body": None,
+            "upstream_response_body": None,
+            "response_body": None,
+        }.items():
+            record.setdefault(key, value)
+        cursor = conn.execute(metadata_sql, record)
+        detail_record = {
+            "log_id": cursor.lastrowid,
+            "request_headers": record.get("request_headers"),
+            "request_body": record.get("request_body"),
+            "upstream_request_body": record.get("upstream_request_body"),
+            "upstream_response_body": record.get("upstream_response_body"),
+            "response_body": record.get("response_body"),
+            "web_search_json": record.get("web_search_json"),
+        }
+        conn.execute(detail_sql, detail_record)
         conn.commit()
 
 
@@ -1402,34 +1574,16 @@ TEXT_FILTER_FIELDS = {
 
 INTEGER_FILTER_FIELDS = {"status_code", "is_stream", "api_key_id"}
 REQUEST_STATUS_VALUES = {"success", "failed"}
-LOG_PREVIEW_LENGTH = 30
-REQUEST_LOG_COLUMNS = (
-    "id",
-    "request_id",
-    "created_at",
-    "method",
-    "path",
-    "client_ip",
-    "request_headers",
-    "request_body",
-    "model",
-    "upstream_model",
-    "channel_id",
-    "is_stream",
-    "ttft_ms",
-    "duration_ms",
-    "status_code",
-    "response_body",
-    "input_tokens",
-    "cached_tokens",
-    "output_tokens",
-    "cost",
-    "web_search_json",
-    "owner_username",
-    "api_key_id",
-    "error",
-)
-LOG_PREVIEW_FIELDS = {"request_headers", "request_body", "response_body", "web_search_json"}
+LOG_FILTER_FIELDS = {
+    "request_id": ("request_ids", "text"),
+    "model": ("models", "text"),
+    "upstream_model": ("upstream_models", "text"),
+    "channel_id": ("channel_ids", "text"),
+    "owner_username": ("owner_usernames", "text"),
+    "path": ("paths", "text"),
+    "status_code": ("status_codes", "int"),
+    "api_key_id": ("api_key_ids", "int"),
+}
 
 
 def read_logs(
@@ -1449,13 +1603,15 @@ def read_logs(
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    cursor = conn.execute(
-        f"SELECT * FROM request_logs {where_clause} ORDER BY id DESC LIMIT ?",
+    metadata_columns = _log_metadata_select_columns()
+    rows = conn.execute(
+        f"SELECT {metadata_columns} FROM request_logs {where_clause} ORDER BY id DESC LIMIT ?",
         (*params, parsed_limit),
-    )
-    rows = cursor.fetchall()
+    ).fetchall()
+    logs = [_row_to_log(row) for row in rows]
+    _attach_log_details(conn, logs)
     conn.close()
-    return [_row_to_log(row) for row in rows]
+    return logs
 
 
 def read_logs_page(
@@ -1478,9 +1634,9 @@ def read_logs_page(
         f"SELECT COUNT(*) FROM request_logs {where_clause}",
         params,
     ).fetchone()[0]
-    select_columns = _log_select_columns(preview_large_fields=True)
+    metadata_columns = _log_metadata_select_columns()
     rows = conn.execute(
-        f"SELECT {select_columns} FROM request_logs {where_clause} ORDER BY id DESC LIMIT ? OFFSET ?",
+        f"SELECT {metadata_columns} FROM request_logs {where_clause} ORDER BY id DESC LIMIT ? OFFSET ?",
         (*params, parsed_page_size, offset),
     ).fetchall()
     conn.close()
@@ -1504,16 +1660,21 @@ def read_log_by_id(
     except (TypeError, ValueError):
         return None
 
-    where_clause, params = _log_where_clause(filters or {})
+    where_clause, params = _log_where_clause(filters or {}, table_alias="l")
     if where_clause:
-        where_clause = f"{where_clause} AND id = ?"
+        where_clause = f"{where_clause} AND l.id = ?"
     else:
-        where_clause = "WHERE id = ?"
+        where_clause = "WHERE l.id = ?"
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     row = conn.execute(
-        f"SELECT * FROM request_logs {where_clause}",
+        f"""
+        SELECT {_log_metadata_select_columns("l")}, {_log_detail_select_columns("d")}
+        FROM request_logs l
+        LEFT JOIN request_log_details d ON d.log_id = l.id
+        {where_clause}
+        """,
         (*params, parsed_id),
     ).fetchone()
     conn.close()
@@ -1548,15 +1709,51 @@ def read_log_filter_options(
         conn.close()
 
 
-def _log_where_clause(filters: dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
+def read_log_filter_option(
+    db_path: Path,
+    field: str,
+    *,
+    query: Any = None,
+    filters: dict[str, Any] | None = None,
+) -> dict[str, list[Any]]:
+    if not db_path.exists():
+        return _empty_log_filter_options()
+    if field == "request_status":
+        return {"request_statuses": ["success", "failed"]}
+    option = LOG_FILTER_FIELDS.get(field)
+    if option is None:
+        return {}
+    option_key, option_type = option
+    where_clause, params = _log_where_clause(filters or {})
+    if option_type == "int":
+        conn = sqlite3.connect(str(db_path))
+        try:
+            values = _distinct_int_values(conn, field, where_clause, params, query=query)
+        finally:
+            conn.close()
+        return {option_key: values}
+    conn = sqlite3.connect(str(db_path))
+    try:
+        values = _distinct_text_values(conn, field, where_clause, params, query=query)
+        return {option_key: values}
+    finally:
+        conn.close()
+
+
+def _log_where_clause(
+    filters: dict[str, Any],
+    *,
+    table_alias: str | None = None,
+) -> tuple[str, tuple[Any, ...]]:
     conditions: list[str] = []
     params: list[Any] = []
+    prefix = f"{table_alias}." if table_alias else ""
 
     for field in TEXT_FILTER_FIELDS:
         value = filters.get(field)
         if value in (None, ""):
             continue
-        conditions.append(f"{field} LIKE ?")
+        conditions.append(f"{prefix}{field} LIKE ?")
         params.append(f"%{value}%")
 
     for field in INTEGER_FILTER_FIELDS:
@@ -1567,15 +1764,15 @@ def _log_where_clause(filters: dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
             int_value = int(value)
         except (TypeError, ValueError):
             continue
-        conditions.append(f"{field} = ?")
+        conditions.append(f"{prefix}{field} = ?")
         params.append(int_value)
 
     request_status = str(filters.get("request_status") or "").strip()
     if request_status in REQUEST_STATUS_VALUES:
         if request_status == "success":
-            conditions.append("status_code < 400 AND (error IS NULL OR error = '')")
+            conditions.append(f"{prefix}status_code < 400 AND ({prefix}error IS NULL OR {prefix}error = '')")
         else:
-            conditions.append("(status_code >= 400 OR (error IS NOT NULL AND error != ''))")
+            conditions.append(f"({prefix}status_code >= 400 OR ({prefix}error IS NOT NULL AND {prefix}error != ''))")
 
     for field, operator in (("created_from", ">="), ("created_to", "<=")):
         value = filters.get(field)
@@ -1585,25 +1782,43 @@ def _log_where_clause(filters: dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
             timestamp = float(value)
         except (TypeError, ValueError):
             continue
-        conditions.append(f"created_at {operator} ?")
+        conditions.append(f"{prefix}created_at {operator} ?")
         params.append(timestamp)
 
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     return where_clause, tuple(params)
 
 
-def _log_select_columns(preview_large_fields: bool = False) -> str:
-    columns: list[str] = []
-    for column in REQUEST_LOG_COLUMNS:
-        if preview_large_fields and column in LOG_PREVIEW_FIELDS:
-            columns.append(f"substr({column}, 1, {LOG_PREVIEW_LENGTH}) AS {column}")
-            columns.append(
-                f"CASE WHEN {column} IS NOT NULL AND length({column}) > {LOG_PREVIEW_LENGTH} "
-                f"THEN 1 ELSE 0 END AS {column}_truncated"
-            )
-        else:
-            columns.append(column)
-    return ", ".join(columns)
+def _log_metadata_select_columns(alias: str | None = None) -> str:
+    prefix = f"{alias}." if alias else ""
+    return ", ".join(f"{prefix}{column} AS {column}" for column in REQUEST_LOG_METADATA_COLUMNS)
+
+
+def _log_detail_select_columns(alias: str | None = None) -> str:
+    prefix = f"{alias}." if alias else ""
+    return ", ".join(f"{prefix}{column} AS {column}" for column in REQUEST_LOG_DETAIL_COLUMNS)
+
+
+def _attach_log_details(conn: sqlite3.Connection, logs: list[dict[str, Any]]) -> None:
+    if not logs:
+        return
+    ids = [int(log["id"]) for log in logs if log.get("id") is not None]
+    if not ids:
+        return
+    placeholders = ", ".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""
+        SELECT log_id, {_log_detail_select_columns()}
+        FROM request_log_details
+        WHERE log_id IN ({placeholders})
+        """,
+        ids,
+    ).fetchall()
+    details_by_id = {int(row["log_id"]): row for row in rows}
+    for log in logs:
+        detail = details_by_id.get(int(log["id"]))
+        for column in REQUEST_LOG_DETAIL_COLUMNS:
+            log[column] = detail[column] if detail is not None else None
 
 
 def _row_to_log(row: sqlite3.Row) -> dict[str, Any]:
@@ -1657,10 +1872,17 @@ def _distinct_text_values(
     field: str,
     where_clause: str = "",
     params: tuple[Any, ...] = (),
+    *,
+    query: Any = None,
 ) -> list[str]:
     scoped_where = _append_where_condition(
         where_clause, f"{field} IS NOT NULL AND {field} != ''"
     )
+    scoped_params = list(params)
+    query_text = str(query or "").strip()
+    if query_text:
+        scoped_where = _append_where_condition(scoped_where, f"{field} LIKE ?")
+        scoped_params.append(f"%{query_text}%")
     rows = conn.execute(
         f"""
         SELECT DISTINCT {field}
@@ -1669,7 +1891,7 @@ def _distinct_text_values(
         ORDER BY {field} ASC
         LIMIT 200
         """,
-        params,
+        tuple(scoped_params),
     ).fetchall()
     return [str(row[0]) for row in rows]
 
@@ -1679,8 +1901,18 @@ def _distinct_int_values(
     field: str,
     where_clause: str = "",
     params: tuple[Any, ...] = (),
+    *,
+    query: Any = None,
 ) -> list[int]:
     scoped_where = _append_where_condition(where_clause, f"{field} IS NOT NULL")
+    scoped_params = list(params)
+    query_text = str(query or "").strip()
+    if query_text:
+        try:
+            scoped_params.append(int(query_text))
+        except (TypeError, ValueError):
+            return []
+        scoped_where = _append_where_condition(scoped_where, f"{field} = ?")
     rows = conn.execute(
         f"""
         SELECT DISTINCT {field}
@@ -1689,7 +1921,7 @@ def _distinct_int_values(
         ORDER BY {field} ASC
         LIMIT 200
         """,
-        params,
+        tuple(scoped_params),
     ).fetchall()
     values: list[int] = []
     for row in rows:

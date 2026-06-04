@@ -20,6 +20,7 @@ from opencodex_proxy.db import (
     extract_usage,
     init_db,
     list_access_api_keys,
+    read_log_filter_option,
     read_log_filter_options,
     read_channels,
     read_log_by_id,
@@ -279,11 +280,13 @@ class TestAsyncDBWriter(unittest.TestCase):
         self.assertEqual(len(page["events"]), 2)
         self.assertIn(page["events"][0]["request_status"], {"success", "failed"})
 
-    def test_paginated_logs_truncate_large_fields_but_detail_keeps_full_values(self):
+    def test_paginated_logs_omit_large_fields_but_detail_keeps_full_values(self):
         writer = AsyncDBWriter(self.db_path)
         writer.start()
         long_headers = json.dumps({"authorization": "Bearer " + "x" * 80})
         long_request = json.dumps({"input": "a" * 80})
+        long_upstream_request = json.dumps({"messages": [{"content": "u" * 80}]})
+        long_upstream_response = json.dumps({"choices": [{"message": {"content": "v" * 80}}]})
         long_response = json.dumps({"output": "b" * 80})
         long_web_search = json.dumps({"calls": [{"query": "c" * 80}]})
         writer.write(
@@ -295,6 +298,7 @@ class TestAsyncDBWriter(unittest.TestCase):
                 "client_ip": "127.0.0.1",
                 "request_headers": long_headers,
                 "request_body": long_request,
+                "upstream_request_body": long_upstream_request,
                 "model": "gpt-4o",
                 "upstream_model": "gpt-4o",
                 "channel_id": "openai",
@@ -302,6 +306,7 @@ class TestAsyncDBWriter(unittest.TestCase):
                 "ttft_ms": None,
                 "duration_ms": 100,
                 "status_code": 200,
+                "upstream_response_body": long_upstream_response,
                 "response_body": long_response,
                 "input_tokens": 100,
                 "cached_tokens": 0,
@@ -319,19 +324,23 @@ class TestAsyncDBWriter(unittest.TestCase):
         page = read_logs_page(self.db_path, page=1, page_size=10)
         event = page["events"][0]
 
-        self.assertEqual(event["request_headers"], long_headers[:30])
-        self.assertEqual(event["request_body"], long_request[:30])
-        self.assertEqual(event["response_body"], long_response[:30])
-        self.assertEqual(event["web_search_json"], long_web_search[:30])
-        self.assertEqual(event["request_headers_truncated"], 1)
-        self.assertEqual(event["request_body_truncated"], 1)
-        self.assertEqual(event["response_body_truncated"], 1)
-        self.assertEqual(event["web_search_json_truncated"], 1)
+        for field in (
+            "request_headers",
+            "request_body",
+            "upstream_request_body",
+            "upstream_response_body",
+            "response_body",
+            "web_search_json",
+        ):
+            self.assertNotIn(field, event)
+            self.assertNotIn(f"{field}_truncated", event)
 
         detail = read_log_by_id(self.db_path, event["id"])
         self.assertIsNotNone(detail)
         self.assertEqual(detail["request_headers"], long_headers)
         self.assertEqual(detail["request_body"], long_request)
+        self.assertEqual(detail["upstream_request_body"], long_upstream_request)
+        self.assertEqual(detail["upstream_response_body"], long_upstream_response)
         self.assertEqual(detail["response_body"], long_response)
         self.assertEqual(detail["web_search_json"], long_web_search)
 
@@ -372,6 +381,12 @@ class TestAsyncDBWriter(unittest.TestCase):
 
         self.assertEqual(options["models"], ["claude-3-5-sonnet", "gpt-4o"])
         self.assertEqual(options["status_codes"], [200, 502])
+
+        single = read_log_filter_option(self.db_path, "model", query="gpt")
+        self.assertEqual(single["models"], ["gpt-4o"])
+
+        status_single = read_log_filter_option(self.db_path, "status_code", query="502")
+        self.assertEqual(status_single["status_codes"], [502])
 
     def test_filters_logs_by_common_fields(self):
         writer = AsyncDBWriter(self.db_path)
@@ -753,6 +768,10 @@ class TestChannelStore(unittest.TestCase):
             row[1]
             for row in conn.execute("PRAGMA table_info(request_logs)").fetchall()
         }
+        detail_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(request_log_details)").fetchall()
+        }
         channel_pk = [
             row[1]
             for row in sorted(
@@ -768,12 +787,18 @@ class TestChannelStore(unittest.TestCase):
         self.assertIn("owner_username", channel_columns)
         self.assertIn("owner_username", log_columns)
         self.assertIn("api_key_id", log_columns)
-        self.assertIn("web_search_json", log_columns)
+        for field in ("request_headers", "request_body", "response_body", "web_search_json"):
+            self.assertNotIn(field, log_columns)
+        self.assertIn("web_search_json", detail_columns)
         self.assertEqual(channel_pk, ["owner_username", "id"])
         self.assertEqual(channels[0]["owner_username"], "root")
         self.assertEqual(channels[0]["auth_mode"], "config")
         self.assertEqual(logs[0]["owner_username"], "root")
         self.assertIsNone(logs[0]["api_key_id"])
+        self.assertEqual(logs[0]["request_headers"], "{}")
+        self.assertEqual(logs[0]["request_body"], "{}")
+        self.assertEqual(logs[0]["upstream_response_body"], "{}")
+        self.assertEqual(logs[0]["response_body"], "{}")
 
     def test_init_db_migrates_web_search_usage_limit(self):
         conn = sqlite3.connect(str(self.db_path))
@@ -1229,7 +1254,8 @@ class TestWebSearchStore(unittest.TestCase):
                 "path": "/v1/responses",
                 "client_ip": "127.0.0.1",
                 "request_headers": "{}",
-                "request_body": "{}",
+                "request_body": json.dumps({"input": "raw"}),
+                "upstream_request_body": json.dumps({"messages": [{"role": "user", "content": "raw"}]}),
                 "model": "gpt-4o",
                 "upstream_model": "gpt-4o",
                 "channel_id": "openai",
@@ -1237,7 +1263,8 @@ class TestWebSearchStore(unittest.TestCase):
                 "ttft_ms": None,
                 "duration_ms": 100,
                 "status_code": 200,
-                "response_body": "{}",
+                "upstream_response_body": json.dumps({"choices": [{"message": {"content": "upstream"}}]}),
+                "response_body": json.dumps({"output": [{"content": [{"text": "final"}]}]}),
                 "input_tokens": 100,
                 "cached_tokens": 0,
                 "output_tokens": 50,
@@ -1251,6 +1278,16 @@ class TestWebSearchStore(unittest.TestCase):
         logs = read_logs(self.db_path)
 
         self.assertEqual(json.loads(logs[0]["web_search_json"])["calls"][0]["query"], "OpenAI")
+        self.assertEqual(json.loads(logs[0]["request_body"])["input"], "raw")
+        self.assertEqual(json.loads(logs[0]["upstream_request_body"])["messages"][0]["content"], "raw")
+        self.assertEqual(
+            json.loads(logs[0]["upstream_response_body"])["choices"][0]["message"]["content"],
+            "upstream",
+        )
+        self.assertEqual(
+            json.loads(logs[0]["response_body"])["output"][0]["content"][0]["text"],
+            "final",
+        )
 
 
 if __name__ == "__main__":

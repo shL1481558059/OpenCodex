@@ -47,7 +47,7 @@ from .db import (
     get_user,
     list_access_api_keys,
     list_users,
-    read_log_filter_options,
+    read_log_filter_option,
     read_log_by_id,
     read_logs_page,
     read_web_search_config,
@@ -533,18 +533,50 @@ def create_app(settings: Settings | None = None) -> Flask:
             )
             if request.args.get(key) not in (None, "")
         }
-        scope_filters: dict[str, Any] = {}
         if user["role"] != "superadmin":
             filters["owner_username"] = user["username"]
-            scope_filters["owner_username"] = user["username"]
         page = read_logs_page(
             settings.db_path,
             page=request.args.get("page", "1"),
             page_size=request.args.get("page_size", "50"),
             filters=filters,
         )
-        page["filter_options"] = read_log_filter_options(settings.db_path, scope_filters)
         return jsonify(page)
+
+    @app.get("/admin/api/log-filter-options")
+    def admin_log_filter_options():
+        user = require_user()
+        field = request.args.get("field", "")
+        filters: dict[str, Any] = {
+            key: request.args.get(key)
+            for key in (
+                "request_id",
+                "model",
+                "upstream_model",
+                "channel_id",
+                "owner_username",
+                "api_key_id",
+                "path",
+                "status_code",
+                "is_stream",
+                "client_ip",
+                "error",
+                "request_status",
+                "created_from",
+                "created_to",
+            )
+            if key != field and request.args.get(key) not in (None, "")
+        }
+        if user["role"] != "superadmin":
+            filters["owner_username"] = user["username"]
+        return jsonify(
+            read_log_filter_option(
+                settings.db_path,
+                field,
+                query=request.args.get("q", ""),
+                filters=filters,
+            )
+        )
 
     @app.get("/admin/api/logs/<int:log_id>")
     def admin_log_detail(log_id: int):
@@ -677,9 +709,10 @@ def create_app(settings: Settings | None = None) -> Flask:
         defer_db_write = False
         payload: dict[str, Any] | None = None
         trace_payload: Any = None
+        response_payload: Any | None = None
         route = None
         channel: dict[str, Any] | None = None
-        upstream_response: dict[str, Any] | None = None
+        upstream_response: Any | None = None
         web_search_details: dict[str, Any] | None = None
         access_key: dict[str, Any] | None = None
         request_user: dict[str, Any] | None = None
@@ -696,7 +729,8 @@ def create_app(settings: Settings | None = None) -> Flask:
             record_status_code: int,
             record_duration_ms: int,
             record_ttft_ms: int | None,
-            response_body: dict[str, Any] | None,
+            upstream_response_body: Any | None,
+            response_body: Any | None,
             response_protocol: str | None,
             error: str | None,
         ) -> None:
@@ -710,6 +744,12 @@ def create_app(settings: Settings | None = None) -> Flask:
                 "request_body": json.dumps(trace_payload, ensure_ascii=False)
                 if trace_payload is not None
                 else None,
+                "upstream_request_body": json.dumps(
+                    redact(log_payload.get("upstream_request_body")),
+                    ensure_ascii=False,
+                )
+                if log_payload.get("upstream_request_body") is not None
+                else None,
                 "model": payload.get("model") if isinstance(payload, dict) else None,
                 "upstream_model": route.upstream_model if route is not None else None,
                 "channel_id": channel.get("id") if channel is not None else None,
@@ -717,6 +757,9 @@ def create_app(settings: Settings | None = None) -> Flask:
                 "ttft_ms": record_ttft_ms,
                 "duration_ms": record_duration_ms,
                 "status_code": record_status_code,
+                "upstream_response_body": json.dumps(redact(upstream_response_body), ensure_ascii=False)
+                if upstream_response_body is not None
+                else None,
                 "response_body": None,
                 "input_tokens": 0,
                 "cached_tokens": 0,
@@ -730,11 +773,12 @@ def create_app(settings: Settings | None = None) -> Flask:
                 "error": error,
             }
 
-            if response_body is not None:
+            if isinstance(upstream_response_body, dict):
                 if response_protocol is not None:
-                    usage = extract_usage(response_body, response_protocol)
+                    usage = extract_usage(upstream_response_body, response_protocol)
                     db_record.update(usage)
-                    db_record["cost"] = _calculate_record_cost(db_record, usage, response_body)
+                    db_record["cost"] = _calculate_record_cost(db_record, usage, upstream_response_body)
+            if response_body is not None:
                 db_record["response_body"] = json.dumps(redact(response_body), ensure_ascii=False)
 
             db_writer.write(db_record)
@@ -852,7 +896,9 @@ def create_app(settings: Settings | None = None) -> Flask:
                     log_payload["web_search"] = redact(web_search_details)
                     raise exc.proxy_error from exc
                 log_payload["web_search"] = redact(web_search_details)
+                log_payload["upstream_request_body"] = redact(final_upstream_request)
                 log_payload["upstream_response_body"] = redact(final_nonstream_response) if final_nonstream_response is not None else None
+                upstream_response = final_nonstream_response
                 if final_nonstream_response is not None:
                     if channel["type"] == "chat":
                         reasoning_cache.remember_chat_response(final_nonstream_response, cache_namespace)
@@ -894,6 +940,7 @@ def create_app(settings: Settings | None = None) -> Flask:
                             record_status_code=200,
                             record_duration_ms=int((time.time() - started) * 1000),
                             record_ttft_ms=ttft_ms,
+                            upstream_response_body=None,
                             response_body=None,
                             response_protocol=None,
                             error=stream_error,
@@ -1025,11 +1072,22 @@ def create_app(settings: Settings | None = None) -> Flask:
                     finally:
                         if web_search_details is not None:
                             log_payload["web_search"] = redact(web_search_details)
+                        converted_streamed_response = (
+                            convert_response(
+                                streamed_upstream_response,
+                                entry_protocol,
+                                channel["type"],
+                                route.original_model,
+                            )
+                            if streamed_upstream_response is not None
+                            else None
+                        )
                         write_db_record(
                             record_status_code=200,
                             record_duration_ms=int((time.time() - started) * 1000),
                             record_ttft_ms=ttft_ms,
-                            response_body=streamed_upstream_response,
+                            upstream_response_body=streamed_upstream_response,
+                            response_body=converted_streamed_response,
                             response_protocol=channel["type"],
                             error=stream_error,
                         )
@@ -1083,7 +1141,8 @@ def create_app(settings: Settings | None = None) -> Flask:
                             record_status_code=200,
                             record_duration_ms=int((time.time() - started) * 1000),
                             record_ttft_ms=ttft_ms,
-                            response_body=upstream_response,
+                            upstream_response_body=upstream_response,
+                            response_body=response_payload,
                             response_protocol=channel["type"] if channel is not None else None,
                             error=stream_error,
                         )
@@ -1098,19 +1157,23 @@ def create_app(settings: Settings | None = None) -> Flask:
         except ProxyError as exc:
             status_code = exc.status_code
             body = exc.to_response()
+            response_payload = body
             log_payload["error"] = str(exc)
             if hasattr(exc, "body"):
-                log_payload["upstream_error"] = redact(getattr(exc, "body"))
+                upstream_response = getattr(exc, "body")
+                log_payload["upstream_error"] = redact(upstream_response)
             return jsonify(body), status_code
         except ConfigError as exc:
             status_code = 400
+            response_payload = {"error": {"message": str(exc), "type": "config_error"}}
             log_payload["error"] = str(exc)
-            return jsonify({"error": {"message": str(exc), "type": "config_error"}}), 400
+            return jsonify(response_payload), 400
         except Exception as exc:  # pragma: no cover - defensive logging
             status_code = 500
+            response_payload = {"error": {"message": "internal server error"}}
             log_payload["error"] = str(exc)
             logger.exception("unhandled proxy error", extra={"extra": log_payload})
-            return jsonify({"error": {"message": "internal server error"}}), 500
+            return jsonify(response_payload), 500
         finally:
             duration_ms = int((time.time() - started) * 1000)
             log_payload["status_code"] = status_code
@@ -1123,7 +1186,8 @@ def create_app(settings: Settings | None = None) -> Flask:
                     record_status_code=status_code,
                     record_duration_ms=duration_ms,
                     record_ttft_ms=ttft_ms,
-                    response_body=upstream_response,
+                    upstream_response_body=upstream_response,
+                    response_body=response_payload,
                     response_protocol=channel["type"] if channel is not None else None,
                     error=log_payload.get("error"),
                 )
