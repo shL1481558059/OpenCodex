@@ -2369,8 +2369,10 @@ class AppTests(unittest.TestCase):
         self.assertGreaterEqual(log["duration_ms"], log["ttft_ms"])
         self.assertEqual(log["input_tokens"], 3)
         self.assertEqual(log["output_tokens"], 2)
+        upstream_response_body = json.loads(log["upstream_response_body"])
+        self.assertEqual(upstream_response_body["content"][0]["text"], "pong")
         response_body = json.loads(log["response_body"])
-        self.assertEqual(response_body["content"][0]["text"], "pong")
+        self.assertEqual(response_body["output"][0]["content"][0]["text"], "pong")
 
     @patch("opencodex_proxy.app.stream_upstream")
     def test_responses_stream_to_chat_streams_upstream_text(self, mock_stream):
@@ -3225,9 +3227,14 @@ class AppTests(unittest.TestCase):
         self.assertGreaterEqual(log["duration_ms"], log["ttft_ms"])
         self.assertEqual(log["input_tokens"], 3)
         self.assertEqual(log["output_tokens"], 2)
+        upstream_response_body = json.loads(log["upstream_response_body"])
+        self.assertEqual(
+            upstream_response_body["choices"][0]["message"]["content"],
+            "pong",
+        )
         response_body = json.loads(log["response_body"])
         self.assertEqual(
-            response_body["choices"][0]["message"]["content"],
+            response_body["output"][0]["content"][0]["text"],
             "pong",
         )
 
@@ -3299,16 +3306,26 @@ class AppTests(unittest.TestCase):
         self.assertEqual(payload["page"], 1)
         self.assertEqual(payload["page_size"], 10)
         self.assertEqual(payload["total"], 1)
-        self.assertIn("filter_options", payload)
+        self.assertNotIn("filter_options", payload)
         events = payload["events"]
         self.assertTrue(events)
         self.assertIn("status_code", events[0])
         self.assertEqual(events[0]["request_status"], "success")
         self.assertEqual(events[0]["cached_tokens"], 20)
         self.assertGreater(events[0]["cost"], 0)
-        self.assertLessEqual(len(events[0]["request_headers"]), 30)
-        self.assertLessEqual(len(events[0]["request_body"]), 30)
-        self.assertLessEqual(len(events[0]["response_body"]), 30)
+        for field in (
+            "request_headers",
+            "request_body",
+            "upstream_request_body",
+            "upstream_response_body",
+            "response_body",
+            "web_search_json",
+        ):
+            self.assertNotIn(field, events[0])
+
+        options_response = self.client.get("/admin/api/log-filter-options?field=model&q=m")
+        self.assertEqual(options_response.status_code, 200)
+        self.assertEqual(options_response.get_json()["models"], ["m"])
 
         detail_response = self.client.get(f"/admin/api/logs/{events[0]['id']}")
         self.assertEqual(detail_response.status_code, 200)
@@ -3317,6 +3334,8 @@ class AppTests(unittest.TestCase):
         self.assertNotEqual(request_headers["Authorization"], self.auth_headers["Authorization"])
         self.assertIn("...", request_headers["Authorization"])
         self.assertIn("ping", detail["request_body"])
+        self.assertIn("ping", detail["upstream_request_body"])
+        self.assertIn("pong", detail["upstream_response_body"])
         self.assertIn("pong", detail["response_body"])
 
     @patch("opencodex_proxy.app.post_upstream")
@@ -3514,7 +3533,10 @@ class AppTests(unittest.TestCase):
         self.assertEqual(payload["total"], 1)
         self.assertEqual(payload["events"][0]["owner_username"], "alice")
         self.assertEqual(payload["events"][0]["model"], "alice-model")
-        self.assertEqual(payload["filter_options"]["owner_usernames"], ["alice"])
+
+        options_response = self.client.get("/admin/api/log-filter-options?field=owner_username")
+        self.assertEqual(options_response.status_code, 200)
+        self.assertEqual(options_response.get_json()["owner_usernames"], ["alice"])
 
         self.login_api()
         response = self.client.get("/admin/api/logs?page=1&page_size=10&owner_username=alice")
@@ -3522,6 +3544,10 @@ class AppTests(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload["total"], 1)
         self.assertEqual(payload["events"][0]["owner_username"], "alice")
+
+        options_response = self.client.get("/admin/api/log-filter-options?field=owner_username&q=alice")
+        self.assertEqual(options_response.status_code, 200)
+        self.assertEqual(options_response.get_json()["owner_usernames"], ["alice"])
 
         response = self.client.get("/admin/api/logs?page=1&page_size=10")
         self.assertEqual(response.get_json()["total"], 2)
@@ -3684,12 +3710,12 @@ class AppTests(unittest.TestCase):
             conn.executemany(
                 """
                 INSERT INTO request_logs (
-                    request_id, created_at, method, path, client_ip, request_headers,
-                    request_body, model, upstream_model, channel_id, is_stream,
-                    ttft_ms, duration_ms, status_code, response_body, input_tokens,
+                    request_id, created_at, method, path, client_ip,
+                    model, upstream_model, channel_id, is_stream,
+                    ttft_ms, duration_ms, status_code, input_tokens,
                     cached_tokens, output_tokens, cost, owner_username, error
-                ) VALUES (?, ?, 'POST', '/v1/responses', '127.0.0.1', '{}',
-                    '{}', ?, ?, 'chat', 0, ?, 100, ?, '{}', ?, ?, ?, ?, ?, ?
+                ) VALUES (?, ?, 'POST', '/v1/responses', '127.0.0.1',
+                    ?, ?, 'chat', 0, ?, 100, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 [

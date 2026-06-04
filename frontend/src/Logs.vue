@@ -54,18 +54,18 @@
 
     <el-form class="log-filter-form" inline>
       <el-form-item label="请求 ID">
-        <el-autocomplete v-model="logFilters.request_id" :fetch-suggestions="requestIdSuggestions" clearable @select="loadLogs(1)" @clear="loadLogs(1)" />
+        <el-autocomplete v-model="logFilters.request_id" :fetch-suggestions="requestIdSuggestions" clearable @focus="loadFilterOptions('request_id')" @select="loadLogs(1)" @clear="loadLogs(1)" />
       </el-form-item>
       <el-form-item label="模型">
-        <el-autocomplete v-model="logFilters.model" :fetch-suggestions="modelSuggestions" clearable @select="loadLogs(1)" @clear="loadLogs(1)" />
+        <el-autocomplete v-model="logFilters.model" :fetch-suggestions="modelSuggestions" clearable @focus="loadFilterOptions('model')" @select="loadLogs(1)" @clear="loadLogs(1)" />
       </el-form-item>
       <el-form-item label="渠道">
-        <el-select v-model="logFilters.channel_id" clearable filterable @change="loadLogs(1)">
+        <el-select v-model="logFilters.channel_id" clearable filterable remote :remote-method="(query) => loadFilterOptions('channel_id', query)" :loading="filterOptionsLoading.channel_id" @visible-change="(visible) => handleFilterVisible('channel_id', visible)" @change="loadLogs(1)">
           <el-option v-for="item in filterOptions.channel_ids" :key="item" :label="item" :value="item" />
         </el-select>
       </el-form-item>
       <el-form-item label="路径">
-        <el-select v-model="logFilters.path" clearable filterable @change="loadLogs(1)">
+        <el-select v-model="logFilters.path" clearable filterable remote :remote-method="(query) => loadFilterOptions('path', query)" :loading="filterOptionsLoading.path" @visible-change="(visible) => handleFilterVisible('path', visible)" @change="loadLogs(1)">
           <el-option v-for="item in filterOptions.paths" :key="item" :label="item" :value="item" />
         </el-select>
       </el-form-item>
@@ -75,17 +75,17 @@
         </el-select>
       </el-form-item>
       <el-form-item label="状态码">
-        <el-select v-model="logFilters.status_code" clearable filterable @change="loadLogs(1)">
+        <el-select v-model="logFilters.status_code" clearable filterable remote :remote-method="(query) => loadFilterOptions('status_code', query)" :loading="filterOptionsLoading.status_code" @visible-change="(visible) => handleFilterVisible('status_code', visible)" @change="loadLogs(1)">
           <el-option v-for="item in filterOptions.status_codes" :key="item" :label="item" :value="String(item)" />
         </el-select>
       </el-form-item>
       <el-form-item v-if="isSuperadmin" label="用户">
-        <el-select v-model="logFilters.owner_username" clearable filterable @change="loadLogs(1)">
+        <el-select v-model="logFilters.owner_username" clearable filterable remote :remote-method="(query) => loadFilterOptions('owner_username', query)" :loading="filterOptionsLoading.owner_username" @visible-change="(visible) => handleFilterVisible('owner_username', visible)" @change="loadLogs(1)">
           <el-option v-for="item in filterOptions.owner_usernames" :key="item" :label="item" :value="item" />
         </el-select>
       </el-form-item>
       <el-form-item label="Key ID">
-        <el-select v-model="logFilters.api_key_id" clearable filterable @change="loadLogs(1)">
+        <el-select v-model="logFilters.api_key_id" clearable filterable remote :remote-method="(query) => loadFilterOptions('api_key_id', query)" :loading="filterOptionsLoading.api_key_id" @visible-change="(visible) => handleFilterVisible('api_key_id', visible)" @change="loadLogs(1)">
           <el-option v-for="item in filterOptions.api_key_ids" :key="item" :label="item" :value="String(item)" />
         </el-select>
       </el-form-item>
@@ -154,38 +154,17 @@
             <el-descriptions-item label="状态码">{{ selectedLog.status_code }}</el-descriptions-item>
             <el-descriptions-item label="成本">{{ formatCost(selectedLog.cost) }}</el-descriptions-item>
           </el-descriptions>
+          <el-alert v-if="selectedLog?.error" class="log-detail-error" title="错误" type="error" :closable="false">
+            <pre class="json-view">{{ selectedLog.error }}</pre>
+          </el-alert>
           <el-tabs style="margin-top: 16px">
-            <el-tab-pane label="请求头">
+            <el-tab-pane v-for="section in logDetailSections" :key="section.key" :label="section.label">
               <div class="json-view-frame">
-                <el-tooltip content="复制请求头">
-                  <el-button class="json-copy-button" :icon="CopyDocument" circle size="small" @click="copyLogDetailContent('请求头', selectedLog?.request_headers)" />
+                <el-tooltip :content="`复制${section.label}`">
+                  <el-button class="json-copy-button" :icon="CopyDocument" circle size="small" @click="copyLogDetailContent(section.label, selectedLog?.[section.key])" />
                 </el-tooltip>
-                <pre class="json-view json-view--with-action">{{ formatStoredJson(selectedLog?.request_headers) }}</pre>
+                <pre class="json-view json-view--with-action">{{ formatStoredJson(selectedLog?.[section.key]) }}</pre>
               </div>
-            </el-tab-pane>
-            <el-tab-pane label="请求 Body">
-              <div class="json-view-frame">
-                <el-tooltip content="复制请求 Body">
-                  <el-button class="json-copy-button" :icon="CopyDocument" circle size="small" @click="copyLogDetailContent('请求 Body', selectedLog?.request_body)" />
-                </el-tooltip>
-                <pre class="json-view json-view--with-action">{{ formatStoredJson(selectedLog?.request_body) }}</pre>
-              </div>
-            </el-tab-pane>
-            <el-tab-pane label="响应">
-              <div class="detail-grid">
-                <el-alert v-if="selectedLog?.error" title="错误" type="error" :closable="false">
-                  <pre class="json-view">{{ selectedLog.error }}</pre>
-                </el-alert>
-                <div class="json-view-frame">
-                  <el-tooltip content="复制响应">
-                    <el-button class="json-copy-button" :icon="CopyDocument" circle size="small" @click="copyLogDetailContent('响应', selectedLog?.response_body)" />
-                  </el-tooltip>
-                  <pre class="json-view json-view--with-action">{{ formatStoredJson(selectedLog?.response_body) }}</pre>
-                </div>
-              </div>
-            </el-tab-pane>
-            <el-tab-pane label="Web Search">
-              <pre class="json-view">{{ formatStoredJson(selectedLog?.web_search_json) }}</pre>
             </el-tab-pane>
           </el-tabs>
         </template>
@@ -226,6 +205,25 @@ const filterOptions = reactive({
   request_statuses: ["success", "failed"]
 });
 
+const filterOptionFieldMap = {
+  request_id: "request_ids",
+  model: "models",
+  channel_id: "channel_ids",
+  owner_username: "owner_usernames",
+  api_key_id: "api_key_ids",
+  path: "paths",
+  status_code: "status_codes"
+};
+const filterOptionsLoading = reactive({
+  request_id: false,
+  model: false,
+  channel_id: false,
+  owner_username: false,
+  api_key_id: false,
+  path: false,
+  status_code: false
+});
+
 const logFilters = reactive({
   request_id: "",
   model: "",
@@ -242,6 +240,14 @@ const logDetailVisible = ref(false);
 const logDetailLoading = ref(false);
 const logDetailError = ref("");
 let logDetailRequestToken = 0;
+const logDetailSections = [
+  { key: "request_headers", label: "请求头" },
+  { key: "request_body", label: "原始请求" },
+  { key: "upstream_request_body", label: "转换后请求" },
+  { key: "upstream_response_body", label: "转换前响应" },
+  { key: "response_body", label: "转换后响应" },
+  { key: "web_search_json", label: "Web Search" }
+];
 
 const logColumnDefinitions = [
   { key: "created_at", prop: "created_at", label: "时间", width: 180 },
@@ -255,9 +261,7 @@ const logColumnDefinitions = [
   { key: "duration_ms", prop: "duration_ms", label: "耗时", width: 95 },
   { key: "ttft_ms", prop: "ttft_ms", label: "TTFT", width: 95 },
   { key: "tokens", label: "Token", width: 190 },
-  { key: "cost", prop: "cost", label: "成本", width: 110 },
-  { key: "request_body", prop: "request_body", label: "请求 Body", minWidth: 220, showOverflowTooltip: true },
-  { key: "response_body", prop: "response_body", label: "响应", minWidth: 220, showOverflowTooltip: true }
+  { key: "cost", prop: "cost", label: "成本", width: 110 }
 ];
 const defaultLogColumnKeys = logColumnDefinitions.map((c) => c.key);
 const logColumnMap = Object.fromEntries(logColumnDefinitions.map((c) => [c.key, c]));
@@ -285,7 +289,6 @@ async function loadLogs(page = logPage.value) {
     const data = await props.api(`/admin/api/logs?${params.toString()}`);
     logs.value = data.events || [];
     logTotal.value = data.total || 0;
-    Object.assign(filterOptions, data.filter_options || {});
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
@@ -316,6 +319,10 @@ async function refreshLogsFromAutoRefresh() {
 }
 
 function handleLogPageSizeChange() { logPage.value = 1; loadLogs(1); }
+
+function handleFilterVisible(field, visible) {
+  if (visible) loadFilterOptions(field);
+}
 
 function resetLogFilters() {
   Object.assign(logFilters, { request_id: "", model: "", channel_id: "", owner_username: "", api_key_id: "", status_code: "", path: "", request_status: "" });
@@ -388,19 +395,37 @@ function fallbackCopyLogDetailText(text) {
   if (!copied) throw new Error("浏览器拒绝了复制操作");
 }
 
-function requestIdSuggestions(query, callback) {
-  callback(buildSuggestions(filterOptions.request_ids, query));
+async function loadFilterOptions(field, query = "") {
+  const optionKey = filterOptionFieldMap[field];
+  if (!optionKey) return [];
+  filterOptionsLoading[field] = true;
+  try {
+    const params = new URLSearchParams({ field });
+    const queryText = String(query || "").trim();
+    if (queryText) params.set("q", queryText);
+    for (const [key, value] of Object.entries(logFilters)) {
+      if (value !== "" && value !== null && value !== undefined) params.set(key, value);
+    }
+    const data = await props.api(`/admin/api/log-filter-options?${params.toString()}`);
+    if (Array.isArray(data[optionKey])) filterOptions[optionKey] = data[optionKey];
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    filterOptionsLoading[field] = false;
+  }
+  return filterOptions[optionKey] || [];
 }
 
-function modelSuggestions(query, callback) {
-  callback(buildSuggestions(filterOptions.models, query));
+async function requestIdSuggestions(query, callback) {
+  callback(buildSuggestions(await loadFilterOptions("request_id", query)));
 }
 
-function buildSuggestions(values, query) {
-  const lowered = String(query || "").toLowerCase();
-  return (values || [])
-    .filter((v) => String(v).toLowerCase().includes(lowered))
-    .map((v) => ({ value: String(v) }));
+async function modelSuggestions(query, callback) {
+  callback(buildSuggestions(await loadFilterOptions("model", query)));
+}
+
+function buildSuggestions(values) {
+  return (values || []).map((v) => ({ value: String(v) }));
 }
 
 // --- Formatting helpers ---
@@ -412,8 +437,6 @@ function formatLogCell(row, column) {
     case "ttft_ms": return displayMs(row.ttft_ms);
     case "tokens": return `${row.input_tokens || 0} / ${row.cached_tokens || 0} / ${row.output_tokens || 0}`;
     case "cost": return formatCost(row.cost);
-    case "request_body": return previewJson(row.request_body);
-    case "response_body": return previewJson(row.response_body || row.error);
     default: return row[column.prop] ?? "";
   }
 }
@@ -422,11 +445,6 @@ function formatStoredJson(value) {
   if (value === null || value === undefined || value === "") return "";
   if (typeof value === "string") { try { return formatJson(JSON.parse(value)); } catch { return value; } }
   return formatJson(value);
-}
-
-function previewJson(value) {
-  const text = formatStoredJson(value).replace(/\s+/g, " ").trim();
-  return text.length > 120 ? `${text.slice(0, 120)}...` : text;
 }
 
 function formatCost(value) {
