@@ -144,7 +144,8 @@ public sealed partial class WebSearchSimulator
             requestPayload,
             initialConverted.UpstreamResponse,
             ProtocolConverter.Chat,
-            webResults);
+            webResults,
+            forceFinalAnswer: webResults.Any(result => result.Status != "completed"));
         finalRequest["stream"] = true;
 
         var finalConverted = new ConvertedStreamResult();

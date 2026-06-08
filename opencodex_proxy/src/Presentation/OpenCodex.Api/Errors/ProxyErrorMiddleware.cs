@@ -55,8 +55,9 @@ public sealed class ProxyErrorMiddleware
 
             _logger.LogError(
                 exception,
-                "Unhandled exception while processing request {TraceId}",
-                context.TraceIdentifier);
+                "Unhandled exception while processing {Method} {Path}",
+                context.Request.Method,
+                context.Request.Path);
 
             context.Response.Clear();
             context.Response.StatusCode = StatusCodes.Status500InternalServerError;

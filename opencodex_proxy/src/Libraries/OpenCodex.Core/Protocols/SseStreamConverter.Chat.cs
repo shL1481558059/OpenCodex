@@ -248,6 +248,11 @@ public static partial class SseStreamConverter
                         continue;
                     }
 
+                    if (ProtocolConverter.IsApplyPatchToolName(aggregate.Name))
+                    {
+                        continue;
+                    }
+
                     if (SkipToolNames?.Contains(aggregate.Name) is true)
                     {
                         continue;
@@ -398,7 +403,15 @@ public static partial class SseStreamConverter
                 : EnsureToolStreamState(index);
             var itemId = state.ItemId ?? $"fc_{Guid.NewGuid():N}";
             var outputIndex = state.OutputIndex ?? AllocateOutputIndex();
-            if (!state.ItemAdded)
+            var functionItem = ProtocolConverter.ResponsesToolCallItemFromToolCall(
+                aggregate.Id,
+                aggregate.Name,
+                aggregate.Arguments,
+                itemId: itemId);
+            var functionItemType = functionItem.TryGetValue("type", out var itemType)
+                ? itemType?.ToString()
+                : null;
+            if (!state.ItemAdded && functionItemType == "function_call")
             {
                 yield return Emit(
                     "response.output_item.added",
@@ -411,30 +424,32 @@ public static partial class SseStreamConverter
                             ["type"] = "function_call",
                             ["status"] = "in_progress",
                             ["call_id"] = aggregate.Id,
-                            ["name"] = aggregate.Name,
+                            ["name"] = functionItem.TryGetValue("name", out var itemName)
+                                ? itemName
+                                : aggregate.Name,
+                            ["namespace"] = functionItem.TryGetValue("namespace", out var itemNamespace)
+                                ? itemNamespace
+                                : null,
                             ["arguments"] = string.Empty
                         }
                     });
             }
 
-            var functionItem = new Dictionary<string, object?>
-            {
-                ["id"] = itemId,
-                ["type"] = "function_call",
-                ["status"] = "completed",
-                ["call_id"] = aggregate.Id,
-                ["name"] = aggregate.Name,
-                ["arguments"] = aggregate.Arguments
-            };
             outputByIndex[outputIndex] = functionItem;
-            yield return Emit(
-                "response.function_call_arguments.done",
-                new Dictionary<string, object?>
-                {
-                    ["item_id"] = itemId,
-                    ["output_index"] = outputIndex,
-                    ["arguments"] = aggregate.Arguments
-                });
+            if (functionItemType == "function_call")
+            {
+                yield return Emit(
+                    "response.function_call_arguments.done",
+                    new Dictionary<string, object?>
+                    {
+                        ["item_id"] = itemId,
+                        ["output_index"] = outputIndex,
+                        ["arguments"] = functionItem.TryGetValue("arguments", out var itemArguments)
+                            ? itemArguments
+                            : aggregate.Arguments
+                    });
+            }
+
             yield return Emit(
                 "response.output_item.done",
                 new Dictionary<string, object?>

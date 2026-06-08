@@ -146,7 +146,8 @@ public sealed partial class WebSearchSimulator
                 requestPayload,
                 upstreamResponse,
                 protocol,
-                currentResults);
+                currentResults,
+                forceFinalAnswer: currentRequiresFinalAnswer);
             if (currentRequiresFinalAnswer)
             {
                 upstreamResponse = await PostUpstream(

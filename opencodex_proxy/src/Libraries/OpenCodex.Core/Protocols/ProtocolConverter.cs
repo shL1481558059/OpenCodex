@@ -36,6 +36,17 @@ public static partial class ProtocolConverter
     private const string NamespaceSeparator = "__";
     private const string LegacyNamespaceSeparator = ".";
     private const string MissingToolOutputMessage = "[tool output missing - no function_call_output was provided for this call_id]";
+    private const string PlanModeTagInstruction = """
+                                                  You are currently in Codex Plan Mode.
+
+                                                  If you present an official plan, your entire final answer must be wrapped exactly like this:
+
+                                                  <proposed_plan>
+                                                  ...markdown plan...
+                                                  </proposed_plan>
+
+                                                  The opening and closing tags must each be on their own line. Do not translate the tags. The client will not recognize the plan without these tags.
+                                                  """;
 
     public static bool SupportsStreamingConversion(string sourceProtocol, string targetProtocol)
     {

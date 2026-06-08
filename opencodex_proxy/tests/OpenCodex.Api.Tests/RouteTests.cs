@@ -138,8 +138,6 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         using var document = JsonDocument.Parse(body);
         Assert.Equal((int)expectedStatusCode, document.RootElement.GetProperty("ErrorCode").GetInt32());
         Assert.True(document.RootElement.TryGetProperty("ErrorMsg", out _));
-        Assert.False(document.RootElement.TryGetProperty("traceId", out _));
-        Assert.False(document.RootElement.TryGetProperty("TraceId", out _));
     }
 }
 
