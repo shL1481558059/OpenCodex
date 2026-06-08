@@ -30,6 +30,7 @@ public static partial class ProtocolConverter
     {
         var messages = new List<object?>();
         var instructions = GetValue(payload, "instructions");
+        var hasPlanModeTag = ResponsesPayloadHasPlanModeTag(payload);
         if (IsTruthy(instructions))
         {
             messages.Add(Obj(("role", "system"), ("content", StringifyContent(instructions))));
@@ -54,6 +55,11 @@ public static partial class ProtocolConverter
 
         messages = NormalizeChatToolHistory(messages);
         messages = MergeSystemMessages(messages);
+        if (hasPlanModeTag)
+        {
+            messages = AppendSystemInstruction(messages, PlanModeTagInstruction);
+        }
+
         return Obj(
             ("model", GetValue(payload, "model")),
             ("messages", messages),
@@ -277,6 +283,40 @@ public static partial class ProtocolConverter
         }
 
         return result;
+    }
+
+    private static List<object?> AppendSystemInstruction(List<object?> messages, string instruction)
+    {
+        if (string.IsNullOrEmpty(instruction))
+        {
+            return messages;
+        }
+
+        if (messages.Count > 0 && TryAsObject(messages[0], out var firstMessage) && GetString(firstMessage, "role") == "system")
+        {
+            var result = messages.Select(DeepCopy).ToList();
+            var firstResult = AsObject(result[0]);
+            var content = StringifyContent(GetValue(firstResult, "content") ?? string.Empty);
+            firstResult["content"] = string.IsNullOrEmpty(content)
+                ? instruction
+                : $"{content}\n\n{instruction}";
+            result[0] = firstResult;
+            return result;
+        }
+
+        return [Obj(("role", "system"), ("content", instruction)), .. messages];
+    }
+
+    private static bool ResponsesPayloadHasPlanModeTag(Dictionary<string, object?> payload)
+    {
+        var developerInputs = ListValue(payload, "input")
+            .Where(item => TryAsObject(item, out var inputItem) && GetString(inputItem, "role") == "developer")
+            .Select(DeepCopy)
+            .ToList();
+        var planModeSource = Obj(
+            ("instructions", GetValue(payload, "instructions") ?? string.Empty),
+            ("input", developerInputs));
+        return StringifyContent(planModeSource).Contains("<proposed_plan>", StringComparison.Ordinal);
     }
 
 }

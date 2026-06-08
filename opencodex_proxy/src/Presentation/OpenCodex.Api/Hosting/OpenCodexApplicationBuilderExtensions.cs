@@ -15,7 +15,6 @@ public static class OpenCodexApplicationBuilderExtensions
             app.UseSwaggerUI();
         }
 
-        app.UseMiddleware<RequestTraceMiddleware>();
         app.UseMiddleware<ProxyErrorMiddleware>();
         app.UseSession();
         app.MapControllers();

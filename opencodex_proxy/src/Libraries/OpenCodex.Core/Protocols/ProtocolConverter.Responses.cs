@@ -208,14 +208,11 @@ public static partial class ProtocolConverter
                 continue;
             }
 
-            var functionCall = Obj(
-                ("id", NewId("fc")),
-                ("type", "function_call"),
-                ("status", "completed"),
-                ("call_id", GetValue(toolCall, "id")),
-                ("arguments", GetValue(toolCall, "arguments") ?? "{}"));
-            MergeInto(functionCall, ResponsesFunctionCallNameFields(GetValue(toolCall, "name"), GetValue(toolCall, "namespace")));
-            output.Add(functionCall);
+            output.Add(ResponsesToolCallItemFromToolCall(
+                GetValue(toolCall, "id"),
+                GetValue(toolCall, "name"),
+                GetValue(toolCall, "arguments") ?? "{}",
+                GetValue(toolCall, "namespace")));
         }
 
         var finishReason = GetString(canonical, "finish_reason") ?? "stop";

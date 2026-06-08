@@ -9,9 +9,16 @@ internal static class WebSearchContinuationRequest
         Dictionary<string, object?> upstreamRequest,
         Dictionary<string, object?> upstreamResponse,
         string protocol,
-        IReadOnlyList<WebSearchToolResult> results)
+        IReadOnlyList<WebSearchToolResult> results,
+        bool forceFinalAnswer = false)
     {
         var request = DeepCopyObject(upstreamRequest);
+        RelaxToolChoice(request);
+        if (forceFinalAnswer)
+        {
+            RemoveWebSearchTool(request);
+        }
+
         if (protocol == ProtocolConverter.Chat)
         {
             var messages = ListValue(request, "messages");
@@ -74,5 +81,46 @@ internal static class WebSearchContinuationRequest
         }
 
         return request;
+    }
+
+    private static void RelaxToolChoice(Dictionary<string, object?> request)
+    {
+        request.Remove("tool_choice");
+    }
+
+    private static void RemoveWebSearchTool(Dictionary<string, object?> request)
+    {
+        var tools = ListValue(request, "tools");
+        if (tools.Count == 0)
+        {
+            return;
+        }
+
+        var filtered = tools
+            .Where(tool => !IsWebSearchTool(tool))
+            .ToList();
+        if (filtered.Count == 0)
+        {
+            request.Remove("tools");
+            return;
+        }
+
+        request["tools"] = filtered;
+    }
+
+    private static bool IsWebSearchTool(object? value)
+    {
+        if (!TryAsObject(value, out var tool))
+        {
+            return false;
+        }
+
+        if (StringValue(tool, "name") == WebSearchRequestPolicy.ToolName)
+        {
+            return true;
+        }
+
+        var function = ObjectValue(tool, "function");
+        return StringValue(function, "name") == WebSearchRequestPolicy.ToolName;
     }
 }
