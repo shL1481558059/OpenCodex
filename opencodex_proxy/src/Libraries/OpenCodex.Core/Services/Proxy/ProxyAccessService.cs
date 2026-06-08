@@ -3,7 +3,6 @@ using OpenCodex.Data;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Errors;
 using OpenCodex.Core.Persistence;
-using OpenCodex.Core.Services.Ef;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.Services.Proxy;
@@ -54,7 +53,6 @@ public sealed class ProxyAccessService : IProxyAccessService
         }
 
         var settings = _settingsProvider.GetSettings();
-        EfServiceSupport.InitializeDatabase(settings.DbPath, settings.AdminUsername);
         using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
         using var transaction = context.Database.BeginTransaction();
         var hash = OpenCodexSecurity.HashAccessApiKey(rawKey);
@@ -67,7 +65,7 @@ public sealed class ProxyAccessService : IProxyAccessService
             return null;
         }
 
-        var now = EfServiceSupport.UnixTimeSeconds();
+        var now = UnixTimeSeconds();
         key.LastUsedAt = now;
         key.UpdatedAt = now;
         context.SaveChanges();
@@ -85,5 +83,10 @@ public sealed class ProxyAccessService : IProxyAccessService
             now,
             now,
             new AccessApiKeyUserDto(key.OwnerUsername, key.Owner.Role, key.Owner.Enabled));
+    }
+
+    private static double UnixTimeSeconds()
+    {
+        return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
     }
 }

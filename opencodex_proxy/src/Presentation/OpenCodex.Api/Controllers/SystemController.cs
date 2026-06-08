@@ -8,7 +8,7 @@ public sealed class SystemController : ApiControllerBase
     [HttpGet("/")]
     public IActionResult Root()
     {
-        return ApiResponse(ApiResult.Success(new
+        return ApiResponse(ApiOpResult<object>.Succeed(new
         {
             service = "OpenCodex API",
             status = "ok"
@@ -18,7 +18,7 @@ public sealed class SystemController : ApiControllerBase
     [HttpGet("/health")]
     public IActionResult Health()
     {
-        return ApiResponse(ApiResult.Success(new
+        return ApiResponse(ApiOpResult<object>.Succeed(new
         {
             status = "ok"
         }));

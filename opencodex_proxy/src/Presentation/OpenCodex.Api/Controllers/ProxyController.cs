@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using OpenCodex.Api.Infrastructure;
 using OpenCodex.Core.Protocols;
+using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.Services.Proxy;
 
 namespace OpenCodex.Api.Controllers;

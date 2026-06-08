@@ -2,6 +2,7 @@ using System.Diagnostics;
 using OpenCodex.Core.Errors;
 using OpenCodex.Core.Protocols;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.Services.Proxy;
 
 namespace OpenCodex.Core.Services.Proxy;

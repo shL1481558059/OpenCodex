@@ -2,11 +2,12 @@ using Microsoft.OpenApi;
 using OpenCodex.Api.Configuration;
 using OpenCodex.Api.Infrastructure;
 using OpenCodex.Core.ExternalIntegrations;
-using OpenCodex.Core.Services.Admin;
+using OpenCodex.Core.Services;
+using OpenCodex.Core.Services.Mapping;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.Core.Services.WebSearch;
 using OpenCodex.CoreBase.Abstractions;
-using OpenCodex.CoreBase.Services.Admin;
+using OpenCodex.CoreBase.Services;
 using OpenCodex.CoreBase.Services.Proxy;
 using OpenCodex.CoreBase.Services.WebSearch;
 
@@ -16,6 +17,7 @@ public static class OpenCodexServiceCollectionExtensions
 {
     public static IServiceCollection AddOpenCodexApi(this IServiceCollection services)
     {
+        OpenCodexMappingConfig.Register();
         services.AddControllers();
         services.AddEndpointsApiExplorer();
         services.AddSwaggerGen(options =>
@@ -40,14 +42,15 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddHttpClient<IWebSearchClient, TavilyWebSearchClient>();
         services.AddScoped<IOpenCodexRuntimeSettingsProvider, OpenCodexRuntimeSettingsProvider>();
         services.AddScoped<IRequestBodyReader, RequestBodyReader>();
-        services.AddScoped<IAdminAuthService, AdminAuthService>();
-        services.AddScoped<IAdminChannelDiagnosticsService, AdminChannelDiagnosticsService>();
-        services.AddScoped<IAdminSessionService, AdminSessionService>();
-        services.AddScoped<IAdminConfigService, AdminConfigService>();
-        services.AddScoped<IAdminUserService, AdminUserService>();
-        services.AddScoped<IAdminApiKeyService, AdminApiKeyService>();
-        services.AddScoped<IAdminObservabilityService, AdminObservabilityService>();
-        services.AddScoped<IAdminWebSearchService, AdminWebSearchService>();
+        services.AddScoped<IWorkContext, WebWorkContext>();
+        services.AddScoped<IAuthService, AuthService>();
+        services.AddScoped<IChannelDiagnosticsService, ChannelDiagnosticsService>();
+        services.AddScoped<ISessionService, SessionService>();
+        services.AddScoped<IConfigService, ConfigService>();
+        services.AddScoped<IUserService, UserService>();
+        services.AddScoped<IApiKeyService, ApiKeyService>();
+        services.AddScoped<IObservabilityService, ObservabilityService>();
+        services.AddScoped<IWebSearchService, WebSearchService>();
         services.AddScoped<IProxyAccessService, ProxyAccessService>();
         services.AddScoped<IProxyEndpointService, ProxyEndpointService>();
         services.AddScoped<IProxyLogService, ProxyLogService>();
@@ -63,6 +66,7 @@ public static class OpenCodexServiceCollectionExtensions
     private static IServiceCollection AddOpenCodexSession(this IServiceCollection services)
     {
         services.AddDistributedMemoryCache();
+        services.AddHttpContextAccessor();
         services.AddSession(options =>
         {
             options.Cookie.HttpOnly = true;
