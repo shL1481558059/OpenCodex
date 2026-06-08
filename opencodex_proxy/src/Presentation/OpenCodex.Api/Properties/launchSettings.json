@@ -1,0 +1,15 @@
+{
+  "profiles": {
+    "OpenCodex.Api": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "launchUrl": "swagger",
+      "applicationUrl": "https://localhost:8443",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "OPENCODEX_ADMIN_USERNAME": "admin",
+        "OPENCODEX_ADMIN_PASSWORD": "change-me"
+      }
+    }
+  }
+}
