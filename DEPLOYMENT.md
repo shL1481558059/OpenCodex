@@ -9,17 +9,14 @@ Windhub 的 `mimo-v2.5-pro` 在本项目中统一走 `/v1/messages` 上游。
 ## 本地准备
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
 cp .env.example .env
 mkdir -p logs
+DOTNET_ROOT="$HOME/.dotnet" PATH="$HOME/.dotnet:$PATH" dotnet restore opencodex_proxy/OpenCodex.sln
 ```
 
 编辑 `.env`：
 
 ```env
-OPENCODEX_HOST=0.0.0.0
-OPENCODEX_PORT=8000
 OPENCODEX_ADMIN_USERNAME=admin
 OPENCODEX_ADMIN_PASSWORD=change-me
 OPENCODEX_DB_PATH=logs/opencodex.db
@@ -33,25 +30,19 @@ OPENCODEX_SECRET_KEY=change-me-session-secret
 启动：
 
 ```bash
-.venv/bin/python -m opencodex_proxy
+DOTNET_ROOT="$HOME/.dotnet" PATH="$HOME/.dotnet:$PATH" dotnet run --project opencodex_proxy/src/Presentation/OpenCodex.Api
 ```
 
-管理后台：
+使用 `OPENCODEX_ADMIN_USERNAME` 和 `OPENCODEX_ADMIN_PASSWORD` 调用 `/admin/api/login` 登录。首次登录后建议先完成两件事：
 
-```text
-http://127.0.0.1:8000/admin
-```
-
-使用 `OPENCODEX_ADMIN_USERNAME` 和 `OPENCODEX_ADMIN_PASSWORD` 登录。首次登录后建议先完成两件事：
-
-1. 在“渠道配置”中新增自己的上游渠道。渠道里的 `apikey` 是 Windhub、OpenAI 或其他上游服务的 Key。
-2. 在“API Key 管理”中创建访问 API Key。这个 Key 是客户端调用 OpenCodex Proxy 的 Bearer Key，明文只显示一次。
+1. 调用 `/admin/api/config` 新增自己的上游渠道。渠道里的 `apikey` 是 Windhub、OpenAI 或其他上游服务的 Key。
+2. 调用 `/admin/api/api-keys` 创建访问 API Key。这个 Key 是客户端调用 OpenCodex Proxy 的 Bearer Key，明文只显示一次。
 
 普通用户只能由超级管理员创建。普通用户只能看到自己的渠道、自己的访问 API Key 和自己的请求日志；超级管理员能看到全部。Web Search 模拟只允许超级管理员配置和使用。
 
 ## Windhub MiMo 配置
 
-在管理台新增 `windhub-mimo-messages` 渠道，并将它放在渠道列表首位。
+通过管理接口新增 `windhub-mimo-messages` 渠道，并将它放在渠道列表首位。
 
 核心配置：
 
@@ -68,6 +59,8 @@ http://127.0.0.1:8000/admin
 也可以把上游 Key 写成 `${WINDHUB_UPSTREAM_API_KEY}`，再在运行服务的环境中提供该变量。它只用于渠道上游鉴权，不是客户端调用代理的访问 API Key。
 
 ## x86/amd64 Docker 镜像
+
+`Dockerfile` 只发布 .NET 10 API，最终镜像通过 `dotnet OpenCodex.Api.dll` 运行。
 
 本地构建并推送 linux/amd64 镜像：
 
@@ -89,7 +82,6 @@ mkdir -p logs
 docker run --rm \
   --platform linux/amd64 \
   --name opencodex-proxy \
-  -p 8000:8000 \
   --env-file .env \
   -v "$PWD/logs:/app/logs" \
   shl148155/opencodexp:latest
@@ -116,14 +108,14 @@ sandbox_mode = "workspace-write"
 
 [model_providers.opencodex-local]
 name = "OpenCodex Local Proxy"
-base_url = "http://127.0.0.1:8000/v1"
+base_url = "<OpenCodex Proxy 地址>/v1"
 env_key = "OPENCODEX_ACCESS_API_KEY"
 wire_api = "responses"
 requires_openai_auth = false
 EOF
 ```
 
-把管理台创建出来的访问 API Key 放入客户端环境变量，然后运行测试：
+把管理接口创建出来的访问 API Key 放入客户端环境变量，然后运行测试：
 
 ```bash
 CODEX_HOME=/tmp/opencodex-codex-home \

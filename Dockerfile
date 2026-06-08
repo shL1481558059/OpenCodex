@@ -1,30 +1,28 @@
-FROM --platform=$BUILDPLATFORM node:24-slim AS frontend-build
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS dotnet-build
+
+WORKDIR /src
+
+COPY opencodex_proxy/global.json ./
+COPY opencodex_proxy/src/Libraries/OpenCodex.Domain/OpenCodex.Domain.csproj ./src/Libraries/OpenCodex.Domain/
+COPY opencodex_proxy/src/Libraries/OpenCodex.Core/OpenCodex.Core.csproj ./src/Libraries/OpenCodex.Core/
+COPY opencodex_proxy/src/Libraries/OpenCodex.Data/OpenCodex.Data.csproj ./src/Libraries/OpenCodex.Data/
+COPY opencodex_proxy/src/Libraries/OpenCodex.CoreBase/OpenCodex.CoreBase.csproj ./src/Libraries/OpenCodex.CoreBase/
+COPY opencodex_proxy/src/Presentation/OpenCodex.Api/OpenCodex.Api.csproj ./src/Presentation/OpenCodex.Api/
+RUN dotnet restore ./src/Presentation/OpenCodex.Api/OpenCodex.Api.csproj
+
+COPY opencodex_proxy/src ./src
+RUN dotnet publish ./src/Presentation/OpenCodex.Api/OpenCodex.Api.csproj \
+    --configuration Release \
+    --no-restore \
+    --output /app/publish
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
 
 WORKDIR /app
 
-COPY package.json ./
-COPY frontend/package.json ./frontend/package.json
-COPY frontend/package-lock.json ./frontend/package-lock.json
-RUN npm ci --prefix frontend
+ENV ASPNETCORE_ENVIRONMENT=Production
 
-COPY frontend ./frontend
-ENV NODE_OPTIONS="--max-old-space-size=1024"
-RUN npm run build
-
-FROM python:3.12-slim
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY opencodex_proxy ./opencodex_proxy
-COPY --from=frontend-build /app/opencodex_proxy/static/admin ./opencodex_proxy/static/admin
+COPY --from=dotnet-build /app/publish ./
 COPY .env.example ./.env.example
 
-EXPOSE 8000
-
-CMD ["python", "-m", "opencodex_proxy"]
+ENTRYPOINT ["dotnet", "OpenCodex.Api.dll"]
