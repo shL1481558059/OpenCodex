@@ -214,7 +214,7 @@ const webSearchTotalUsage = computed(() =>
 async function loadWebSearch() {
   webSearchLoading.value = true;
   try {
-    const data = await props.api("/admin/api/web-search");
+    const data = await props.api("/web-search");
     assignWebSearchConfig(data);
   } catch (error) {
     ElMessage.error(error.message);
@@ -227,11 +227,11 @@ async function persistWebSearchConfig(successMessage = "Web Search 模拟配置�
   webSearchSaving.value = true;
   try {
     const payload = buildWebSearchPayload();
-    await props.api("/admin/api/web-search", {
+    await props.api("/web-search", {
       method: "POST",
       body: JSON.stringify(payload)
     });
-    const data = await props.api("/admin/api/web-search");
+    const data = await props.api("/web-search");
     assignWebSearchConfig(data);
     ElMessage.success(successMessage);
   } catch (error) {
@@ -275,7 +275,7 @@ async function testWebSearchKey(row) {
   webSearchTestingId.value = row.id;
   webSearchTestResult.value = null;
   try {
-    const result = await props.api("/admin/api/web-search/test-key", {
+    const result = await props.api("/web-search/test-key", {
       method: "POST",
       body: JSON.stringify({ id: row.id })
     });

@@ -1,11 +1,39 @@
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 
+const backend = process.env.VITE_BACKEND_ORIGIN || "https://localhost:8443";
+const adminProxyRoutes = [
+  "/session",
+  "/login",
+  "/logout",
+  "/users",
+  "/api-keys",
+  "/config",
+  "/logs",
+  "/log-filter-options",
+  "/stats",
+  "/web-search",
+  "/channels",
+  "/discover-models",
+  "/test-channel"
+];
+const proxy = Object.fromEntries(
+  adminProxyRoutes.map((route) => [
+    `/admin${route}`,
+    {
+      target: backend,
+      changeOrigin: true,
+      secure: false,
+      rewrite: (path) => path.replace(/^\/admin(?=\/)/, "")
+    }
+  ])
+);
+
 export default defineConfig({
   base: "/admin/",
   plugins: [vue()],
   build: {
-    outDir: "../opencodex_proxy/static/admin",
+    outDir: "dist/admin",
     emptyOutDir: true,
     chunkSizeWarningLimit: 550,
     rollupOptions: {
@@ -40,8 +68,6 @@ export default defineConfig({
     }
   },
   server: {
-    proxy: {
-      "/admin/api": "http://127.0.0.1:8000"
-    }
+    proxy
   }
 });

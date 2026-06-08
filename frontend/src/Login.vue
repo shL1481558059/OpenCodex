@@ -49,9 +49,10 @@ const loading = ref(false);
 async function handleLogin() {
   loading.value = true;
   try {
-    const data = await props.api("/admin/api/login", {
+    const data = await props.api("/login", {
       method: "POST",
-      body: JSON.stringify({ username: username.value, password: password.value })
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ username: username.value, password: password.value })
     });
     password.value = "";
     emit("login", data);

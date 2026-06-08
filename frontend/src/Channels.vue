@@ -324,7 +324,7 @@ const channelTestTitle = computed(() => {
 async function loadConfig() {
   configLoading.value = true;
   try {
-    const data = await props.api("/admin/api/config");
+    const data = await props.api("/config");
     config.channels = Array.isArray(data.channels) ? data.channels : [];
   } catch (error) {
     ElMessage.error(error.message);
@@ -336,7 +336,7 @@ async function loadConfig() {
 async function saveConfig(nextChannels) {
   saveLoading.value = true;
   try {
-    await props.api("/admin/api/config", {
+    await props.api("/config", {
       method: "POST",
       body: JSON.stringify({ channels: nextChannels })
     });
@@ -424,7 +424,7 @@ async function discoverModels() {
     const channel = testingChannel.value || buildChannelFromDraft();
     const payload = buildChannelTestPayload(channel);
     payload.max_output_tokens = 1;
-    const data = await props.api("/admin/api/test-channel", {
+    const data = await props.api("/test-channel", {
       method: "POST",
       body: JSON.stringify(payload)
     });
@@ -447,7 +447,7 @@ async function testChannel() {
     payload.model = channelTestForm.model || normalizeModels(channel.models)[0]?.model || "";
     payload.input = channelTestForm.prompt || "ping";
     payload.max_output_tokens = 256;
-    const result = await props.api("/admin/api/test-channel", {
+    const result = await props.api("/test-channel", {
       method: "POST",
       body: JSON.stringify(payload)
     });

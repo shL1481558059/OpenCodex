@@ -148,7 +148,7 @@ const enabledUsers = computed(() => props.users.filter((u) => u.enabled !== fals
 async function loadAccessKeys() {
   accessKeysLoading.value = true;
   try {
-    const data = await props.api("/admin/api/api-keys");
+    const data = await props.api("/api-keys");
     accessKeys.value = Array.isArray(data.keys) ? data.keys : [];
   } catch (error) {
     ElMessage.error(error.message);
@@ -171,7 +171,7 @@ async function createAccessKey() {
     if (props.isSuperadmin && accessKeyDraft.owner_username) {
       payload.owner_username = accessKeyDraft.owner_username;
     }
-    const data = await props.api("/admin/api/api-keys", {
+    const data = await props.api("/api-keys", {
       method: "POST",
       body: JSON.stringify(payload)
     });
@@ -186,7 +186,7 @@ async function createAccessKey() {
 
 async function toggleAccessKey(row) {
   try {
-    await props.api(`/admin/api/api-keys/${row.id}`, {
+    await props.api(`/api-keys/${row.id}`, {
       method: "PATCH",
       body: JSON.stringify({ enabled: row.enabled === false })
     });
@@ -198,7 +198,7 @@ async function toggleAccessKey(row) {
 
 async function deleteAccessKey(row) {
   try {
-    await props.api(`/admin/api/api-keys/${row.id}`, { method: "DELETE" });
+    await props.api(`/api-keys/${row.id}`, { method: "DELETE" });
     await loadAccessKeys();
   } catch (error) {
     ElMessage.error(error.message);
