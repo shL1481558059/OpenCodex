@@ -6,46 +6,16 @@ namespace OpenCodex.Api.Controllers;
 [ApiController]
 public abstract class ApiControllerBase : ControllerBase
 {
-    protected string TraceId()
+    protected IActionResult ApiResponse(ApiOpResult result, int? successStatusCode = null)
     {
-        return HttpContext.TraceIdentifier;
-    }
-
-    protected IActionResult ApiResponse(ApiResult result, int? successStatusCode = null)
-    {
-        var response = WithTraceId(result);
-        if (response.Succeeded)
+        if (result.Succeeded)
         {
             return successStatusCode is null
-                ? Ok(response)
-                : StatusCode(successStatusCode.Value, response);
+                ? Ok(result)
+                : StatusCode(successStatusCode.Value, result);
         }
 
-        return StatusCode(HttpStatusCode(response.Code), response);
+        return StatusCode(result.Code, result);
     }
 
-    private ApiResult WithTraceId(ApiResult result)
-    {
-        if (!string.IsNullOrWhiteSpace(result.TraceId))
-        {
-            return result;
-        }
-
-        return result.WithTraceId(TraceId());
-    }
-
-    private static int HttpStatusCode(int code)
-    {
-        return code / 1000 switch
-        {
-            401 => StatusCodes.Status401Unauthorized,
-            403 => StatusCodes.Status403Forbidden,
-            404 => StatusCodes.Status404NotFound,
-            502 => StatusCodes.Status502BadGateway,
-            504 => StatusCodes.Status504GatewayTimeout,
-            _ => code >= 500000
-                ? StatusCodes.Status500InternalServerError
-                : StatusCodes.Status400BadRequest
-        };
-    }
 }

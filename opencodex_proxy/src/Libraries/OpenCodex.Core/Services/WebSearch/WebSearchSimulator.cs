@@ -1,10 +1,11 @@
+using Mapster;
 using Microsoft.EntityFrameworkCore;
 using OpenCodex.Data;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Errors;
 using OpenCodex.Core.Protocols;
-using OpenCodex.Core.Services.Ef;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Domain.WebSearch;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.Services.WebSearch;
 
@@ -64,7 +65,6 @@ public sealed partial class WebSearchSimulator : IWebSearchSimulator
     private bool WebSearchEnabled()
     {
         var settings = _settingsProvider.GetSettings();
-        EfServiceSupport.InitializeDatabase(settings.DbPath, settings.AdminUsername);
         using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
         return context.WebSearchSettings
             .AsNoTracking()
@@ -75,7 +75,6 @@ public sealed partial class WebSearchSimulator : IWebSearchSimulator
     private TavilyKeyDto? ReserveTavilyKey()
     {
         var settings = _settingsProvider.GetSettings();
-        EfServiceSupport.InitializeDatabase(settings.DbPath, settings.AdminUsername);
         using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
         using var transaction = context.Database.BeginTransaction();
         var reserved = context.TavilyKeys
@@ -90,9 +89,14 @@ public sealed partial class WebSearchSimulator : IWebSearchSimulator
         }
 
         reserved.UsageCount += 1;
-        reserved.UpdatedAt = EfServiceSupport.UnixTimeSeconds();
+        reserved.UpdatedAt = UnixTimeSeconds();
         context.SaveChanges();
         transaction.Commit();
-        return EfServiceSupport.ToTavilyKeyDto(reserved);
+        return reserved.Adapt<TavilyKeyDto>();
+    }
+
+    private static double UnixTimeSeconds()
+    {
+        return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
     }
 }

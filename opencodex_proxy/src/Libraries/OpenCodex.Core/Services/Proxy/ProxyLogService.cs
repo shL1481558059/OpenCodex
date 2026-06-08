@@ -1,10 +1,12 @@
+using System.Collections;
+using System.Globalization;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using OpenCodex.Data;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Persistence;
-using OpenCodex.Core.Services.Ef;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.Services.Proxy;
 
@@ -72,12 +74,12 @@ public sealed class ProxyLogService : IProxyLogService
                 context.Method,
                 context.Path,
                 context.ClientIp,
-                JsonDumps(context.RequestHeaders),
-                JsonDumps(context.Payload),
-                JsonDumps(context.UpstreamRequest),
-                JsonDumps(context.UpstreamResponse),
-                JsonDumps(context.ResponsePayload ?? context.ErrorResponse),
-                context.WebSearchDetails is null ? null : JsonDumps(context.WebSearchDetails),
+                JsonSerializer.Serialize(context.RequestHeaders, JsonOptions),
+                JsonSerializer.Serialize(context.Payload, JsonOptions),
+                JsonSerializer.Serialize(context.UpstreamRequest, JsonOptions),
+                JsonSerializer.Serialize(context.UpstreamResponse, JsonOptions),
+                JsonSerializer.Serialize(context.ResponsePayload ?? context.ErrorResponse, JsonOptions),
+                context.WebSearchDetails is null ? null : JsonSerializer.Serialize(context.WebSearchDetails, JsonOptions),
                 context.RequestModel,
                 context.UpstreamModel,
                 context.ChannelId,
@@ -98,15 +100,10 @@ public sealed class ProxyLogService : IProxyLogService
                 context.Error));
     }
 
-    private static string JsonDumps(object? value)
-    {
-        return JsonSerializer.Serialize(value, JsonOptions);
-    }
-
     private static UsageDto ExtractUsage(IReadOnlyDictionary<string, object?> response, string protocol)
     {
-        var usage = EfServiceSupport.GetOptionalValue(response, "usage");
-        if (!EfServiceSupport.TryAsObject(usage, out var usageObject))
+        var usage = JsonDictionaryValue.Get(response, "usage");
+        if (!TryAsObject(usage, out var usageObject))
         {
             usageObject = [];
         }
@@ -114,18 +111,18 @@ public sealed class ProxyLogService : IProxyLogService
         return protocol switch
         {
             "responses" => new UsageDto(
-                EfServiceSupport.ToInt(EfServiceSupport.GetOptionalValue(usageObject, "input_tokens")),
-                EfServiceSupport.CachedTokensFromNestedDetails(usageObject, "input_tokens_details"),
-                EfServiceSupport.ToInt(EfServiceSupport.GetOptionalValue(usageObject, "output_tokens"))),
+                ToInt(JsonDictionaryValue.Get(usageObject, "input_tokens")),
+                CachedTokensFromNestedDetails(usageObject, "input_tokens_details"),
+                ToInt(JsonDictionaryValue.Get(usageObject, "output_tokens"))),
             "messages" => new UsageDto(
-                EfServiceSupport.ToInt(EfServiceSupport.GetOptionalValue(usageObject, "input_tokens")),
-                EfServiceSupport.ToInt(EfServiceSupport.GetOptionalValue(usageObject, "cache_creation_input_tokens"))
-                    + EfServiceSupport.ToInt(EfServiceSupport.GetOptionalValue(usageObject, "cache_read_input_tokens")),
-                EfServiceSupport.ToInt(EfServiceSupport.GetOptionalValue(usageObject, "output_tokens"))),
+                ToInt(JsonDictionaryValue.Get(usageObject, "input_tokens")),
+                ToInt(JsonDictionaryValue.Get(usageObject, "cache_creation_input_tokens"))
+                    + ToInt(JsonDictionaryValue.Get(usageObject, "cache_read_input_tokens")),
+                ToInt(JsonDictionaryValue.Get(usageObject, "output_tokens"))),
             "chat" => new UsageDto(
-                EfServiceSupport.ToInt(EfServiceSupport.GetOptionalValue(usageObject, "prompt_tokens")),
-                EfServiceSupport.ChatCachedTokens(usageObject),
-                EfServiceSupport.ToInt(EfServiceSupport.GetOptionalValue(usageObject, "completion_tokens"))),
+                ToInt(JsonDictionaryValue.Get(usageObject, "prompt_tokens")),
+                ChatCachedTokens(usageObject),
+                ToInt(JsonDictionaryValue.Get(usageObject, "completion_tokens"))),
             _ => new UsageDto(0, 0, 0)
         };
     }
@@ -134,13 +131,12 @@ public sealed class ProxyLogService : IProxyLogService
         OpenCodexRuntimeSettings settings,
         RequestLogWriteDto record)
     {
-        var defaultOwnerUsername = EfServiceSupport.NormalizeUsername(settings.AdminUsername);
+        var defaultOwnerUsername = NormalizeUsername(settings.AdminUsername);
         if (defaultOwnerUsername.Length == 0)
         {
             defaultOwnerUsername = "admin";
         }
 
-        EfServiceSupport.InitializeDatabase(settings.DbPath, defaultOwnerUsername);
         using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
         using var transaction = context.Database.BeginTransaction();
         var log = new RequestLog
@@ -178,5 +174,104 @@ public sealed class ProxyLogService : IProxyLogService
         context.SaveChanges();
         transaction.Commit();
         return log.Id;
+    }
+
+    private static int CachedTokensFromNestedDetails(
+        IReadOnlyDictionary<string, object?> usage,
+        string detailsKey)
+    {
+        return TryAsObject(JsonDictionaryValue.Get(usage, detailsKey), out var details)
+            ? ToInt(JsonDictionaryValue.Get(details, "cached_tokens"))
+            : 0;
+    }
+
+    private static int ChatCachedTokens(IReadOnlyDictionary<string, object?> usage)
+    {
+        if (TryAsObject(JsonDictionaryValue.Get(usage, "prompt_tokens_details"), out var promptDetails)
+            && promptDetails.Count > 0)
+        {
+            return ToInt(JsonDictionaryValue.Get(promptDetails, "cached_tokens"));
+        }
+
+        return TryAsObject(JsonDictionaryValue.Get(usage, "input_tokens_details"), out var inputDetails)
+            ? ToInt(JsonDictionaryValue.Get(inputDetails, "cached_tokens"))
+            : 0;
+    }
+
+    private static bool TryAsObject(object? value, out Dictionary<string, object?> dictionary)
+    {
+        if (value is Dictionary<string, object?> typedDictionary)
+        {
+            dictionary = typedDictionary;
+            return true;
+        }
+
+        if (value is IReadOnlyDictionary<string, object?> readOnlyDictionary)
+        {
+            dictionary = readOnlyDictionary.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value,
+                StringComparer.Ordinal);
+            return true;
+        }
+
+        if (value is IDictionary<string, object?> genericDictionary)
+        {
+            dictionary = genericDictionary.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value,
+                StringComparer.Ordinal);
+            return true;
+        }
+
+        if (value is IDictionary nonGenericDictionary)
+        {
+            dictionary = new Dictionary<string, object?>(StringComparer.Ordinal);
+            foreach (DictionaryEntry entry in nonGenericDictionary)
+            {
+                if (entry.Key is string key)
+                {
+                    dictionary[key] = entry.Value;
+                }
+            }
+
+            return true;
+        }
+
+        dictionary = [];
+        return false;
+    }
+
+    private static int ToInt(object? value)
+    {
+        if (value is null)
+        {
+            return 0;
+        }
+
+        try
+        {
+            return value is JsonElement element
+                ? element.ValueKind switch
+                {
+                    JsonValueKind.Number when element.TryGetInt32(out var parsed) => parsed,
+                    JsonValueKind.String when int.TryParse(
+                        element.GetString(),
+                        NumberStyles.Integer,
+                        CultureInfo.InvariantCulture,
+                        out var parsed) => parsed,
+                    _ => 0
+                }
+                : Convert.ToInt32(value, CultureInfo.InvariantCulture);
+        }
+        catch (Exception exception) when (exception is FormatException or InvalidCastException or OverflowException)
+        {
+            return 0;
+        }
+    }
+
+    private static string NormalizeUsername(string? value)
+    {
+        return (value ?? string.Empty).Trim();
     }
 }

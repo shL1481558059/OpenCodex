@@ -1,0 +1,30 @@
+using OpenCodex.CoreBase.DTOs.ChannelDiagnostics;
+using OpenCodex.CoreBase.Results;
+
+namespace OpenCodex.CoreBase.Services;
+
+/// <summary>
+/// 定义后台通道诊断服务。
+/// </summary>
+public interface IChannelDiagnosticsService
+{
+    /// <summary>
+    /// 发现指定通道可用的模型列表。
+    /// </summary>
+    /// <param name="body">诊断请求内容。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>发现模型结果。</returns>
+    Task<ApiOpResult<DiscoverModelsResponse>> DiscoverModelsAsync(
+        IReadOnlyDictionary<string, object?> body,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// 测试指定通道的请求连通性。
+    /// </summary>
+    /// <param name="body">诊断请求内容。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>通道测试结果。</returns>
+    Task<ApiOpResult<TestChannelResponse>> TestChannelAsync(
+        IReadOnlyDictionary<string, object?> body,
+        CancellationToken cancellationToken);
+}

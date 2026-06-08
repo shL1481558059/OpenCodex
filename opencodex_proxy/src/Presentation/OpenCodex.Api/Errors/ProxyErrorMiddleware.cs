@@ -38,10 +38,9 @@ public sealed class ProxyErrorMiddleware
 
             var response = IsProxyCompatibilityEndpoint(context)
                 ? exception.ToResponse()
-                : ApiResult.Fail(
-                    ErrorCode(exception.StatusCode),
-                    exception.Message,
-                    traceId: context.TraceIdentifier);
+                : ApiOpResult.Fail(
+                    exception.StatusCode,
+                    exception.Message);
 
             await context.Response.WriteAsync(
                 JsonSerializer.Serialize(response, JsonOptions),
@@ -63,10 +62,9 @@ public sealed class ProxyErrorMiddleware
             context.Response.StatusCode = StatusCodes.Status500InternalServerError;
             context.Response.ContentType = "application/json";
 
-            var response = ApiResult.Fail(
-                500000,
-                "An unexpected error occurred.",
-                traceId: context.TraceIdentifier);
+            var response = ApiOpResult.Fail(
+                StatusCodes.Status500InternalServerError,
+                "An unexpected error occurred.");
 
             await context.Response.WriteAsync(
                 JsonSerializer.Serialize(response, JsonOptions),
@@ -79,8 +77,4 @@ public sealed class ProxyErrorMiddleware
         return context.Request.Path.StartsWithSegments("/v1", StringComparison.Ordinal);
     }
 
-    private static int ErrorCode(int statusCode)
-    {
-        return statusCode * 1000;
-    }
 }

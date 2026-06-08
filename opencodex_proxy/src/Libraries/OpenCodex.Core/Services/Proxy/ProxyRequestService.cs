@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.Services.Proxy;
 

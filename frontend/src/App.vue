@@ -154,11 +154,13 @@ async function api(url, options = {}) {
   const contentType = response.headers.get("content-type") || "";
   const data = contentType.includes("application/json") ? await response.json() : await response.text();
   if (!response.ok) {
-    const message = typeof data === "string" ? data : data.message || data.error?.message || data.error || response.statusText;
+    const message = typeof data === "string"
+      ? data
+      : data.ErrorMsg || data.error?.message || data.error || response.statusText;
     throw new Error(message);
   }
-  if (data && typeof data === "object" && typeof data.succeeded === "boolean" && "code" in data && "message" in data) {
-    return "data" in data ? data.data : data;
+  if (data && typeof data === "object" && typeof data.succeeded === "boolean" && "ErrorCode" in data && "ErrorMsg" in data) {
+    return "Data" in data ? data.Data : data;
   }
   return data;
 }

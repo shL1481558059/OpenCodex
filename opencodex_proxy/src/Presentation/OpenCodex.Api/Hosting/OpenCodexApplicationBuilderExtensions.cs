@@ -7,6 +7,8 @@ public static class OpenCodexApplicationBuilderExtensions
 {
     public static WebApplication UseOpenCodexApi(this WebApplication app)
     {
+        OpenCodexDatabaseInitializer.Initialize(app);
+
         if (app.Environment.IsDevelopment())
         {
             app.UseSwagger();

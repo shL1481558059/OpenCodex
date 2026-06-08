@@ -12,5 +12,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\Libraries\OpenCodex.Core\OpenCodex.Core.csproj" />
     <ProjectReference Include="..\..\Libraries\OpenCodex.CoreBase\OpenCodex.CoreBase.csproj" />
+    <ProjectReference Include="..\..\Libraries\OpenCodex.Data\OpenCodex.Data.csproj" />
   </ItemGroup>
 </Project>

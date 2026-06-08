@@ -1,5 +1,6 @@
 using OpenCodex.Core.Protocols;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Domain.WebSearch;
 using OpenCodex.CoreBase.Services.WebSearch;
 using static OpenCodex.CoreBase.Abstractions.WebSearchPayload;
 
