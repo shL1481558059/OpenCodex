@@ -242,7 +242,7 @@ const summaryCards = computed(() => {
 async function fetchStats() {
   loading.value = true;
   try {
-    const data = await props.api(`/admin/api/stats?${buildStatsQuery()}`);
+    const data = await props.api(`/stats?${buildStatsQuery()}`);
     statsData.range = data.range || range.value;
     statsData.start = data.start || "";
     statsData.end = data.end || "";

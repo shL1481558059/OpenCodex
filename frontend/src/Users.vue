@@ -144,7 +144,7 @@ const users = ref([]);
 async function loadUsers() {
   usersLoading.value = true;
   try {
-    const data = await props.api("/admin/api/users");
+    const data = await props.api("/users");
     users.value = Array.isArray(data.users) ? data.users : [];
     emit("users-loaded", users.value);
   } catch (error) {
@@ -164,7 +164,7 @@ function openUserDialog() {
 async function createUser() {
   userSaving.value = true;
   try {
-    await props.api("/admin/api/users", {
+    await props.api("/users", {
       method: "POST",
       body: JSON.stringify(userDraft)
     });
@@ -179,7 +179,7 @@ async function createUser() {
 
 async function toggleUser(row) {
   try {
-    await props.api(`/admin/api/users/${row.username}`, {
+    await props.api(`/users/${row.username}`, {
       method: "PATCH",
       body: JSON.stringify({ enabled: row.enabled === false })
     });
@@ -198,7 +198,7 @@ function openResetPasswordDialog(row) {
 async function resetUserPassword() {
   resetPasswordSaving.value = true;
   try {
-    await props.api(`/admin/api/users/${resetPasswordDraft.username}`, {
+    await props.api(`/users/${resetPasswordDraft.username}`, {
       method: "PATCH",
       body: JSON.stringify({ password: resetPasswordDraft.password })
     });
@@ -221,7 +221,7 @@ function isCurrentUser(row) {
 
 async function deleteUser(row) {
   try {
-    await props.api(`/admin/api/users/${row.username}`, { method: "DELETE" });
+    await props.api(`/users/${row.username}`, { method: "DELETE" });
     await loadUsers();
   } catch (error) {
     ElMessage.error(error.message);

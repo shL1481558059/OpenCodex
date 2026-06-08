@@ -286,7 +286,7 @@ async function loadLogs(page = logPage.value) {
     for (const [key, value] of Object.entries(logFilters)) {
       if (value !== "" && value !== null && value !== undefined) params.set(key, value);
     }
-    const data = await props.api(`/admin/api/logs?${params.toString()}`);
+    const data = await props.api(`/logs?${params.toString()}`);
     logs.value = data.events || [];
     logTotal.value = data.total || 0;
   } catch (error) {
@@ -351,7 +351,7 @@ async function openLogDetail(row) {
   logDetailLoading.value = true;
   try {
     if (row?.id === null || row?.id === undefined) throw new Error("日志缺少详情 ID");
-    const detail = await props.api(`/admin/api/logs/${row.id}`);
+    const detail = await props.api(`/logs/${row.id}`);
     if (token === logDetailRequestToken) selectedLog.value = detail;
   } catch (error) {
     if (token === logDetailRequestToken) { logDetailError.value = error.message; ElMessage.error(error.message); }
@@ -406,7 +406,7 @@ async function loadFilterOptions(field, query = "") {
     for (const [key, value] of Object.entries(logFilters)) {
       if (value !== "" && value !== null && value !== undefined) params.set(key, value);
     }
-    const data = await props.api(`/admin/api/log-filter-options?${params.toString()}`);
+    const data = await props.api(`/log-filter-options?${params.toString()}`);
     if (Array.isArray(data[optionKey])) filterOptions[optionKey] = data[optionKey];
   } catch (error) {
     ElMessage.error(error.message);

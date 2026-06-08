@@ -144,16 +144,21 @@ function onUsersLoaded(users) {
 
 // --- API helper ---
 
+const devApiPrefix = import.meta.env.DEV ? import.meta.env.BASE_URL.replace(/\/$/, "") : "";
+
 async function api(url, options = {}) {
-  const response = await fetch(url, {
+  const response = await fetch(`${devApiPrefix}${url}`, {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options
   });
   const contentType = response.headers.get("content-type") || "";
   const data = contentType.includes("application/json") ? await response.json() : await response.text();
   if (!response.ok) {
-    const message = typeof data === "string" ? data : data.error?.message || data.error || response.statusText;
+    const message = typeof data === "string" ? data : data.message || data.error?.message || data.error || response.statusText;
     throw new Error(message);
+  }
+  if (data && typeof data === "object" && typeof data.succeeded === "boolean" && "code" in data && "message" in data) {
+    return "data" in data ? data.data : data;
   }
   return data;
 }
@@ -163,7 +168,7 @@ async function api(url, options = {}) {
 async function checkSession() {
   loadingSession.value = true;
   try {
-    const data = await api("/admin/api/session");
+    const data = await api("/session");
     setAuthenticatedUser(data);
   } finally {
     loadingSession.value = false;
@@ -185,7 +190,7 @@ function handleMobileMenuSelect(tab) {
 }
 
 async function logout() {
-  await api("/admin/api/logout", { method: "POST", body: "{}" });
+  await api("/logout", { method: "POST", body: "{}" });
   authenticated.value = false;
   currentUser.value = null;
   activeTab.value = "dashboard";
