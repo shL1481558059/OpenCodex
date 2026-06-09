@@ -20,6 +20,8 @@ public sealed class OpenCodexDbContext : DbContext
 
     public DbSet<TavilyKey> TavilyKeys => Set<TavilyKey>();
 
+    public DbSet<ModelPricing> ModelPricings => Set<ModelPricing>();
+
     public DbSet<RequestLog> RequestLogs => Set<RequestLog>();
 
     public DbSet<RequestLogDetail> RequestLogDetails => Set<RequestLogDetail>();
@@ -30,6 +32,7 @@ public sealed class OpenCodexDbContext : DbContext
         ConfigureChannels(modelBuilder);
         ConfigureAccessApiKeys(modelBuilder);
         ConfigureWebSearch(modelBuilder);
+        ConfigureModelPricings(modelBuilder);
         ConfigureRequestLogs(modelBuilder);
     }
 
@@ -96,6 +99,22 @@ public sealed class OpenCodexDbContext : DbContext
         keys.Property(key => key.Provider).IsRequired();
         keys.Property(key => key.ApiKey).IsRequired();
         keys.HasIndex(key => key.Position);
+    }
+
+    private static void ConfigureModelPricings(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<ModelPricing>();
+        entity.ToTable("ModelPricings");
+        entity.HasKey(pricing => pricing.Id);
+        entity.Property(pricing => pricing.ModelId).IsRequired();
+        entity.Property(pricing => pricing.Vendor).IsRequired();
+        entity.Property(pricing => pricing.Name).IsRequired();
+        entity.Property(pricing => pricing.MatchPattern).IsRequired();
+        entity.Property(pricing => pricing.Source).IsRequired();
+        entity.HasIndex(pricing => pricing.ModelId).IsUnique();
+        entity.HasIndex(pricing => pricing.Vendor);
+        entity.HasIndex(pricing => pricing.Enabled);
+        entity.HasIndex(pricing => pricing.MatchPattern);
     }
 
     private static void ConfigureRequestLogs(ModelBuilder modelBuilder)

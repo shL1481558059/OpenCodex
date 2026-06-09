@@ -286,6 +286,24 @@ body {
   flex-shrink: 0;
 }
 
+.pagination-wrap {
+  display: flex;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  padding-top: 12px;
+}
+
+.input-with-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.input-with-action .el-button {
+  flex: 0 0 auto;
+}
+
 .log-filter-form {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));

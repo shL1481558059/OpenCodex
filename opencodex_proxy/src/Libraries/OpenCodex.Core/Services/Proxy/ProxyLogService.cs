@@ -4,10 +4,10 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using OpenCodex.Data;
 using OpenCodex.Core.Domain;
-using OpenCodex.Core.Persistence;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs;
+using OpenCodex.CoreBase.Services;
 using OpenCodex.CoreBase.Services.Proxy;
 
 namespace OpenCodex.Core.Services.Proxy;
@@ -20,10 +20,14 @@ public sealed class ProxyLogService : IProxyLogService
     };
 
     private readonly IOpenCodexRuntimeSettingsProvider _settingsProvider;
+    private readonly IModelPricingService _pricing;
 
-    public ProxyLogService(IOpenCodexRuntimeSettingsProvider settingsProvider)
+    public ProxyLogService(
+        IOpenCodexRuntimeSettingsProvider settingsProvider,
+        IModelPricingService pricing)
     {
         _settingsProvider = settingsProvider;
+        _pricing = pricing;
     }
 
     public long WriteLog(ProxyLogContext context, ProxyRequestMetadata request)
@@ -90,7 +94,7 @@ public sealed class ProxyLogService : IProxyLogService
                 usage.InputTokens,
                 usage.CachedTokens,
                 usage.OutputTokens,
-                OpenCodexPricing.CalculateCost(
+                _pricing.CalculateCost(
                     responseModel,
                     usage.InputTokens,
                     usage.CachedTokens,

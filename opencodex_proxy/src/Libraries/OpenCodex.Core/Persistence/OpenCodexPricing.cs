@@ -1,130 +1,111 @@
+using Microsoft.EntityFrameworkCore;
+using OpenCodex.Core.Domain;
+using OpenCodex.Data;
+
 namespace OpenCodex.Core.Persistence;
 
 public static class OpenCodexPricing
 {
-    private sealed class PricingTier
+    public static void EnsureSchema(OpenCodexDbContext context)
     {
-        public PricingTier(
-            int minInputTokens,
-            int? maxInputTokens,
-            double input,
-            double cachedInput,
-            double output)
-        {
-            MinInputTokens = minInputTokens;
-            MaxInputTokens = maxInputTokens;
-            Input = input;
-            CachedInput = cachedInput;
-            Output = output;
-        }
-
-        public int MinInputTokens { get; }
-
-        public int? MaxInputTokens { get; }
-
-        public double Input { get; }
-
-        public double CachedInput { get; }
-
-        public double Output { get; }
+        context.Database.ExecuteSqlRaw(
+            """
+            CREATE TABLE IF NOT EXISTS "ModelPricings" (
+                "Id" INTEGER NOT NULL CONSTRAINT "PK_ModelPricings" PRIMARY KEY AUTOINCREMENT,
+                "ModelId" TEXT NOT NULL,
+                "Vendor" TEXT NOT NULL,
+                "Name" TEXT NOT NULL,
+                "MatchPattern" TEXT NOT NULL,
+                "InputPrice" REAL NOT NULL,
+                "CachedInputPrice" REAL NULL,
+                "OutputPrice" REAL NOT NULL,
+                "Enabled" INTEGER NOT NULL DEFAULT 1,
+                "Source" TEXT NOT NULL DEFAULT '',
+                "CreatedAt" REAL NOT NULL DEFAULT 0,
+                "UpdatedAt" REAL NOT NULL DEFAULT 0
+            );
+            """);
+        context.Database.ExecuteSqlRaw(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ModelPricings_ModelId" ON "ModelPricings" ("ModelId");""");
+        context.Database.ExecuteSqlRaw(
+            """CREATE INDEX IF NOT EXISTS "IX_ModelPricings_Vendor" ON "ModelPricings" ("Vendor");""");
+        context.Database.ExecuteSqlRaw(
+            """CREATE INDEX IF NOT EXISTS "IX_ModelPricings_Enabled" ON "ModelPricings" ("Enabled");""");
+        context.Database.ExecuteSqlRaw(
+            """CREATE INDEX IF NOT EXISTS "IX_ModelPricings_MatchPattern" ON "ModelPricings" ("MatchPattern");""");
     }
-
-    private sealed class PricingEntry
-    {
-        public PricingEntry(
-            string key,
-            double? input,
-            double? cachedInput,
-            double? output,
-            IReadOnlyList<PricingTier>? tiers = null)
-        {
-            Key = key;
-            Input = input;
-            CachedInput = cachedInput;
-            Output = output;
-            Tiers = tiers;
-        }
-
-        public string Key { get; }
-
-        public double? Input { get; }
-
-        public double? CachedInput { get; }
-
-        public double? Output { get; }
-
-        public IReadOnlyList<PricingTier>? Tiers { get; }
-    }
-
-    private static readonly IReadOnlyList<PricingEntry> PricingEntries =
-    [
-        new("deepseek-v4-flash", 1, 0.02, 2),
-        new("deepseek-v4-pro", 3, 0.025, 6),
-        new(
-            "glm-5.1",
-            null,
-            null,
-            null,
-            [
-                new PricingTier(0, 32000, 6, 1.3, 24),
-                new PricingTier(32000, null, 8, 2, 28)
-            ]),
-        new("gpt-5.4", 18.25, 1.82, 109.5),
-        new("gpt-5.4-mini", 5.47, 0.55, 32.85),
-        new("gpt-5.5", 36.5, 3.65, 219.0)
-    ];
 
     public static double CalculateCost(
+        IReadOnlyList<ModelPricing> prices,
         string model,
         int inputTokens,
         int cachedTokens,
         int outputTokens)
     {
-        var modelLower = (model ?? string.Empty).ToLowerInvariant();
-        PricingEntry? matched = null;
-        var bestLength = 0;
-        foreach (var entry in PricingEntries)
-        {
-            if (modelLower.Contains(entry.Key, StringComparison.Ordinal)
-                && entry.Key.Length > bestLength)
-            {
-                matched = entry;
-                bestLength = entry.Key.Length;
-            }
-        }
-
+        var matched = Match(prices, model);
         if (matched is null)
         {
             return 0.0;
         }
 
-        double inputPrice;
-        double cachedPrice;
-        double outputPrice;
-        if (matched.Tiers is not null)
-        {
-            var totalInput = inputTokens + cachedTokens;
-            var tier = matched.Tiers.FirstOrDefault(item =>
-                totalInput >= item.MinInputTokens
-                && (item.MaxInputTokens is null || totalInput < item.MaxInputTokens));
-            tier ??= matched.Tiers.LastOrDefault();
-            if (tier is null)
-            {
-                return 0.0;
-            }
-
-            inputPrice = tier.Input;
-            cachedPrice = tier.CachedInput;
-            outputPrice = tier.Output;
-        }
-        else
-        {
-            inputPrice = matched.Input ?? 0.0;
-            cachedPrice = matched.CachedInput ?? 0.0;
-            outputPrice = matched.Output ?? 0.0;
-        }
-
         var nonCached = Math.Max(0, inputTokens - cachedTokens);
-        return (nonCached * inputPrice + cachedTokens * cachedPrice + outputTokens * outputPrice) / 1_000_000.0;
+        var cachedPrice = matched.CachedInputPrice ?? matched.InputPrice;
+        return (nonCached * matched.InputPrice + cachedTokens * cachedPrice + outputTokens * matched.OutputPrice)
+            / 1_000_000.0;
+    }
+
+    private static ModelPricing? Match(
+        IReadOnlyList<ModelPricing> prices,
+        string model)
+    {
+        var modelLower = (model ?? string.Empty).Trim().ToLowerInvariant();
+        if (modelLower.Length == 0)
+        {
+            return null;
+        }
+
+        ModelPricing? exact = null;
+        var exactLength = 0;
+        ModelPricing? contained = null;
+        var containedLength = 0;
+        foreach (var price in prices)
+        {
+            foreach (var key in MatchKeys(price))
+            {
+                var keyLower = key.ToLowerInvariant();
+                if (modelLower == keyLower && keyLower.Length > exactLength)
+                {
+                    exact = price;
+                    exactLength = keyLower.Length;
+                    continue;
+                }
+
+                if (modelLower.Contains(keyLower, StringComparison.Ordinal)
+                    && keyLower.Length > containedLength)
+                {
+                    contained = price;
+                    containedLength = keyLower.Length;
+                }
+            }
+        }
+
+        return exact ?? contained;
+    }
+
+    private static IEnumerable<string> MatchKeys(ModelPricing price)
+    {
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        Add(keys, price.ModelId);
+        Add(keys, price.MatchPattern);
+        return keys;
+    }
+
+    private static void Add(HashSet<string> keys, string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        if (normalized.Length > 0)
+        {
+            keys.Add(normalized);
+        }
     }
 }

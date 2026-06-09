@@ -15,4 +15,8 @@
     <ProjectReference Include="..\OpenCodex.CoreBase\OpenCodex.CoreBase.csproj" />
     <ProjectReference Include="..\OpenCodex.Domain\OpenCodex.Domain.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Persistence\Seeds\llm-prices-current-v1.json" LogicalName="OpenCodex.Core.Persistence.Seeds.llm-prices-current-v1.json" />
+  </ItemGroup>
 </Project>

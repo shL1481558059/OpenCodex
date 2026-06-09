@@ -423,8 +423,7 @@ async function discoverModels() {
   try {
     const channel = testingChannel.value || buildChannelFromDraft();
     const payload = buildChannelTestPayload(channel);
-    payload.max_output_tokens = 1;
-    const data = await props.api("/test-channel", {
+    const data = await props.api("/discover-models", {
       method: "POST",
       body: JSON.stringify(payload)
     });

@@ -62,6 +62,22 @@ public static class OpenCodexMappingConfig
                 source.UsageLimit,
                 source.UsageLimit));
 
+        TypeAdapterConfig<ModelPricing, ModelPricingDto>
+            .NewConfig()
+            .MapWith(source => new ModelPricingDto(
+                source.Id,
+                source.ModelId,
+                source.Vendor,
+                source.Name,
+                source.MatchPattern,
+                source.InputPrice,
+                source.CachedInputPrice,
+                source.OutputPrice,
+                source.Enabled,
+                source.Source,
+                source.CreatedAt,
+                source.UpdatedAt));
+
         TypeAdapterConfig<RequestLog, RequestLogDto>
             .NewConfig()
             .MapWith(source => new RequestLogDto(
