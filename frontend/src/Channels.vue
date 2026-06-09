@@ -49,10 +49,17 @@
           <template #default="{ row }">{{ normalizeModels(row.models).length }}</template>
         </el-table-column>
         <el-table-column label="状态" width="100">
-          <template #default="{ row }">
-            <el-tag :type="row.enabled === false ? 'warning' : 'success'">
-              {{ row.enabled === false ? "停用" : "启用" }}
-            </el-tag>
+          <template #default="{ row, $index }">
+            <el-switch
+              :model-value="row.enabled !== false"
+              :loading="isChannelToggleSaving(row, $index)"
+              :disabled="configLoading"
+              :width="56"
+              inline-prompt
+              active-text="启用"
+              inactive-text="停用"
+              @change="toggleChannelEnabled(row, $index, $event)"
+            />
           </template>
         </el-table-column>
         <el-table-column label="操作" width="260" align="center">
@@ -310,6 +317,7 @@ const channelTestForm = reactive({ model: "", prompt: "ping" });
 const discoveredModels = ref([]);
 const selectedDiscoveredModels = ref([]);
 const config = reactive({ channels: [] });
+const channelToggleSavingKeys = reactive(new Set());
 
 const channels = computed(() => config.channels || []);
 const enabledChannelCount = computed(() => channels.value.filter((c) => c.enabled !== false).length);
@@ -336,17 +344,21 @@ async function loadConfig() {
 async function saveConfig(nextChannels) {
   saveLoading.value = true;
   try {
-    await props.api("/config", {
-      method: "POST",
-      body: JSON.stringify({ channels: nextChannels })
-    });
-    config.channels = nextChannels;
+    await persistChannels(nextChannels);
     ElMessage.success("渠道配置已保存并生效");
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
     saveLoading.value = false;
   }
+}
+
+async function persistChannels(nextChannels) {
+  await props.api("/config", {
+    method: "POST",
+    body: JSON.stringify({ channels: nextChannels })
+  });
+  config.channels = nextChannels;
 }
 
 function openChannelDrawer(channel = null, index = -1) {
@@ -385,6 +397,39 @@ async function deleteChannel(index) {
   const nextChannels = channels.value.slice();
   nextChannels.splice(index, 1);
   await saveConfig(nextChannels);
+}
+
+async function toggleChannelEnabled(channel, index, enabled) {
+  const key = channelToggleKey(channel, index);
+  if (channelToggleSavingKeys.has(key)) {
+    return;
+  }
+
+  channelToggleSavingKeys.add(key);
+  const nextEnabled = enabled === true;
+  const previousChannels = channels.value;
+  const nextChannels = previousChannels.map((item, itemIndex) =>
+    itemIndex === index ? { ...item, enabled: nextEnabled } : item
+  );
+
+  config.channels = nextChannels;
+  try {
+    await persistChannels(nextChannels);
+    ElMessage.success(nextEnabled ? "渠道已启用" : "渠道已停用");
+  } catch (error) {
+    config.channels = previousChannels;
+    ElMessage.error(error.message);
+  } finally {
+    channelToggleSavingKeys.delete(key);
+  }
+}
+
+function isChannelToggleSaving(channel, index) {
+  return channelToggleSavingKeys.has(channelToggleKey(channel, index));
+}
+
+function channelToggleKey(channel, index) {
+  return channel?.id || `index:${index}`;
 }
 
 async function importConfig(file) {
