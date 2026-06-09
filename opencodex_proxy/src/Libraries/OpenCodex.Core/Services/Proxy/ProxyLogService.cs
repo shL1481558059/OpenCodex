@@ -2,8 +2,10 @@ using System.Collections;
 using System.Globalization;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using OpenCodex.Data;
 using OpenCodex.Core.Domain;
+using OpenCodex.Core.Persistence;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs;
@@ -54,7 +56,10 @@ public sealed class ProxyLogService : IProxyLogService
             request.Method,
             request.Path,
             request.ClientIp,
-            request.Headers));
+            request.Headers,
+            context.RequestType,
+            context.ParentRequestLogId,
+            context.OcrDetails));
     }
 
     public long WriteLog(ProxyRequestLogContext context)
@@ -87,6 +92,8 @@ public sealed class ProxyLogService : IProxyLogService
                 context.RequestModel,
                 context.UpstreamModel,
                 context.ChannelId,
+                context.RequestType,
+                context.ParentRequestLogId,
                 context.IsStream,
                 context.TtftMs,
                 context.DurationMs,
@@ -101,7 +108,8 @@ public sealed class ProxyLogService : IProxyLogService
                     usage.OutputTokens),
                 context.OwnerUsername,
                 context.ApiKeyId,
-                context.Error));
+                context.Error,
+                context.OcrDetails is null ? null : JsonSerializer.Serialize(context.OcrDetails, JsonOptions)));
     }
 
     private static UsageDto ExtractUsage(IReadOnlyDictionary<string, object?> response, string protocol)
@@ -142,6 +150,7 @@ public sealed class ProxyLogService : IProxyLogService
         }
 
         using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
+        OpenCodexRequestLogs.EnsureSchema(context);
         using var transaction = context.Database.BeginTransaction();
         var log = new RequestLog
         {
@@ -153,6 +162,8 @@ public sealed class ProxyLogService : IProxyLogService
             Model = record.Model,
             UpstreamModel = record.UpstreamModel,
             ChannelId = record.ChannelId,
+            RequestType = record.RequestType,
+            ParentRequestLogId = record.ParentRequestLogId,
             IsStream = record.IsStream,
             TtftMs = record.TtftMs,
             DurationMs = record.DurationMs,
@@ -171,13 +182,78 @@ public sealed class ProxyLogService : IProxyLogService
                 UpstreamRequestBody = record.UpstreamRequestBody,
                 UpstreamResponseBody = record.UpstreamResponseBody,
                 ResponseBody = record.ResponseBody,
-                WebSearchJson = record.WebSearchJson
+                WebSearchJson = record.WebSearchJson,
+                OcrJson = record.OcrJson
             }
         };
         context.RequestLogs.Add(log);
         context.SaveChanges();
+        if (record.RequestType == ProxyRequestTypes.Main)
+        {
+            var childLogs = context.RequestLogs
+                .Include(item => item.Detail)
+                .Where(item => item.RequestType == ProxyRequestTypes.Ocr
+                    && item.RequestId == record.RequestId
+                    && item.ParentRequestLogId == null)
+                .ToList();
+            foreach (var child in childLogs)
+            {
+                child.ParentRequestLogId = log.Id;
+                if (child.Detail is not null)
+                {
+                    child.Detail.OcrJson = UpdateOcrJsonParentRequestLogId(child.Detail.OcrJson, log.Id);
+                }
+            }
+
+            if (childLogs.Count > 0)
+            {
+                context.SaveChanges();
+            }
+        }
+
         transaction.Commit();
         return log.Id;
+    }
+
+    private static string? UpdateOcrJsonParentRequestLogId(string? ocrJson, long parentRequestLogId)
+    {
+        if (string.IsNullOrWhiteSpace(ocrJson))
+        {
+            return ocrJson;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(ocrJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return ocrJson;
+            }
+
+            var dictionary = new Dictionary<string, object?>(StringComparer.Ordinal);
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                dictionary[property.Name] = property.Value.ValueKind switch
+                {
+                    JsonValueKind.Object => JsonSerializer.Deserialize<Dictionary<string, object?>>(property.Value.GetRawText()),
+                    JsonValueKind.Array => JsonSerializer.Deserialize<List<object?>>(property.Value.GetRawText()),
+                    JsonValueKind.String => property.Value.GetString(),
+                    JsonValueKind.Number when property.Value.TryGetInt64(out var longValue) => longValue,
+                    JsonValueKind.Number => property.Value.GetDouble(),
+                    JsonValueKind.True => true,
+                    JsonValueKind.False => false,
+                    JsonValueKind.Null => null,
+                    _ => property.Value.GetRawText()
+                };
+            }
+
+            dictionary["parent_request_log_id"] = parentRequestLogId;
+            return JsonSerializer.Serialize(dictionary, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return ocrJson;
+        }
     }
 
     private static int CachedTokensFromNestedDetails(

@@ -126,10 +126,17 @@ public sealed class OpenCodexDbContext : DbContext
         logs.HasIndex(log => log.Model);
         logs.HasIndex(log => log.UpstreamModel);
         logs.HasIndex(log => log.ChannelId);
+        logs.HasIndex(log => log.RequestType);
+        logs.HasIndex(log => log.ParentRequestLogId);
         logs.HasIndex(log => log.Path);
         logs.HasIndex(log => log.StatusCode);
         logs.HasIndex(log => log.ApiKeyId);
         logs.HasIndex(log => new { log.OwnerUsername, log.Id });
+        logs
+            .HasOne(log => log.ParentRequestLog)
+            .WithMany(parent => parent.ChildRequestLogs)
+            .HasForeignKey(log => log.ParentRequestLogId)
+            .OnDelete(DeleteBehavior.Restrict);
 
         var details = modelBuilder.Entity<RequestLogDetail>();
         details.ToTable("RequestLogDetails");

@@ -73,8 +73,22 @@ public static class OpenCodexSettingsLoader
             LogViewLevel = logViewLevel,
             DefaultTimeout = ParsePositiveInt(values, "OPENCODEX_DEFAULT_TIMEOUT", 120),
             SecretKey = GetValue(values, "OPENCODEX_SECRET_KEY") ?? "change-me-session-secret",
-            AdminUsername = adminUsername
+            AdminUsername = adminUsername,
+            OcrCacheDir = GetValue(values, "OPENCODEX_OCR_CACHE_DIR") ?? "ocr-cache",
+            LocalOcrModel = ResolveLocalOcrModel(values)
         };
+    }
+
+    private static string ResolveLocalOcrModel(IReadOnlyDictionary<string, string?> values)
+    {
+        var configured = GetValue(values, "OPENCODEX_LOCAL_OCR_MODEL");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return configured.Trim();
+        }
+
+        var legacy = GetValue(values, "OPENCODEX_TESSERACT_LANG");
+        return MapLegacyTesseractLang(legacy);
     }
 
     private static Dictionary<string, string?> LoadDotEnvFile(string path)
@@ -119,6 +133,17 @@ public static class OpenCodexSettingsLoader
     private static string? GetValue(IReadOnlyDictionary<string, string?> values, string name)
     {
         return values.TryGetValue(name, out var value) ? value : null;
+    }
+
+    private static string MapLegacyTesseractLang(string? legacyValue)
+    {
+        var normalized = (legacyValue ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized.Contains("eng", StringComparison.Ordinal) && !normalized.Contains("chi", StringComparison.Ordinal))
+        {
+            return "EnglishV5";
+        }
+
+        return "ChineseV5";
     }
 
     private static int ParsePositiveInt(

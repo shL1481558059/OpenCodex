@@ -98,7 +98,7 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
                     context.RequestId,
                     context.OwnerUsername,
                     context.ApiKeyId,
-                    context.Payload,
+                    context.OriginalPayload,
                     upstreamRequest,
                     upstreamResponse,
                     responsePayload,

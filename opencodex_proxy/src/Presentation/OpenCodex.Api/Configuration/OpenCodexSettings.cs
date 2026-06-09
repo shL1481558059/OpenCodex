@@ -17,6 +17,10 @@ public sealed class OpenCodexSettings
     public required string SecretKey { get; init; }
 
     public required string AdminUsername { get; init; }
+
+    public required string OcrCacheDir { get; init; }
+
+    public required string LocalOcrModel { get; init; }
 }
 
 public sealed class OpenCodexSettingsException : Exception

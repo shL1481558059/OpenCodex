@@ -90,6 +90,8 @@ public static class OpenCodexMappingConfig
                 source.Model,
                 source.UpstreamModel,
                 source.ChannelId,
+                source.RequestType,
+                source.ParentRequestLogId,
                 source.IsStream,
                 source.TtftMs,
                 source.DurationMs,
@@ -107,6 +109,7 @@ public static class OpenCodexMappingConfig
                 source.Detail == null ? null : source.Detail.UpstreamResponseBody,
                 source.Detail == null ? null : source.Detail.ResponseBody,
                 source.Detail == null ? null : source.Detail.WebSearchJson,
+                source.Detail == null ? null : source.Detail.OcrJson,
                 RequestStatus(source.StatusCode, source.Error)));
 
         TypeAdapterConfig<RequestLog, RequestLogEventDto>
@@ -121,6 +124,8 @@ public static class OpenCodexMappingConfig
                 source.Model,
                 source.UpstreamModel,
                 source.ChannelId,
+                source.RequestType,
+                source.ParentRequestLogId,
                 source.IsStream,
                 source.TtftMs,
                 source.DurationMs,

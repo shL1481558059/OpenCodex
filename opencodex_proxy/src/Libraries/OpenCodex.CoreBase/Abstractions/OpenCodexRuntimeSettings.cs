@@ -12,16 +12,22 @@ public sealed class OpenCodexRuntimeSettings
     /// <param name="adminUsername">配置的管理员用户名。</param>
     /// <param name="adminPassword">配置的管理员密码。</param>
     /// <param name="defaultTimeout">默认上游请求超时时间，单位为秒。</param>
+    /// <param name="ocrCacheDir">OCR 缓存目录。</param>
+    /// <param name="localOcrModel">本地 OCR 模型名称。</param>
     public OpenCodexRuntimeSettings(
         string dbPath,
         string adminUsername,
         string adminPassword,
-        int defaultTimeout)
+        int defaultTimeout,
+        string? ocrCacheDir = null,
+        string? localOcrModel = null)
     {
         DbPath = dbPath;
         AdminUsername = adminUsername;
         AdminPassword = adminPassword;
         DefaultTimeout = defaultTimeout;
+        OcrCacheDir = string.IsNullOrWhiteSpace(ocrCacheDir) ? "ocr-cache" : ocrCacheDir.Trim();
+        LocalOcrModel = string.IsNullOrWhiteSpace(localOcrModel) ? "ChineseV5" : localOcrModel.Trim();
     }
 
     /// <summary>
@@ -43,4 +49,14 @@ public sealed class OpenCodexRuntimeSettings
     /// 获取默认上游请求超时时间，单位为秒。
     /// </summary>
     public int DefaultTimeout { get; }
+
+    /// <summary>
+    /// 获取 OCR 缓存目录。
+    /// </summary>
+    public string OcrCacheDir { get; }
+
+    /// <summary>
+    /// 获取本地 OCR 模型名称。
+    /// </summary>
+    public string LocalOcrModel { get; }
 }

@@ -17,6 +17,8 @@ namespace OpenCodex.CoreBase.DTOs;
 /// <param name="model">请求的模型（如果可用）。</param>
 /// <param name="upstreamModel">上游模型（如果可用）。</param>
 /// <param name="channelId">选中的通道标识符（如果可用）。</param>
+/// <param name="requestType">请求日志类型。</param>
+/// <param name="parentRequestLogId">父请求日志标识符（如果可用）。</param>
 /// <param name="isStream">指示请求是否使用流式响应的值。</param>
 /// <param name="ttftMs">首 token 时间，单位为毫秒（如果可用）。</param>
 /// <param name="durationMs">总请求耗时，单位为毫秒。</param>
@@ -43,6 +45,8 @@ public sealed class RequestLogWriteDto(
     string? model,
     string? upstreamModel,
     string? channelId,
+    string requestType,
+    long? parentRequestLogId,
     bool isStream,
     int? ttftMs,
     int durationMs,
@@ -53,7 +57,8 @@ public sealed class RequestLogWriteDto(
     double cost,
     string ownerUsername,
     long? apiKeyId,
-    string? error)
+    string? error,
+    string? ocrJson)
 {
     /// <summary>
     /// 获取唯一请求标识符。
@@ -126,6 +131,16 @@ public sealed class RequestLogWriteDto(
     public string? ChannelId { get; } = channelId;
 
     /// <summary>
+    /// 获取请求日志类型。
+    /// </summary>
+    public string RequestType { get; } = requestType;
+
+    /// <summary>
+    /// 获取父请求日志标识符（如果可用）。
+    /// </summary>
+    public long? ParentRequestLogId { get; } = parentRequestLogId;
+
+    /// <summary>
     /// 获取指示请求是否使用流式响应的值。
     /// </summary>
     public bool IsStream { get; } = isStream;
@@ -179,6 +194,11 @@ public sealed class RequestLogWriteDto(
     /// 获取错误消息（如果可用）。
     /// </summary>
     public string? Error { get; } = error;
+
+    /// <summary>
+    /// 获取序列化后的 OCR 详情（如果可用）。
+    /// </summary>
+    public string? OcrJson { get; } = ocrJson;
 }
 
 /// <summary>
@@ -193,6 +213,8 @@ public sealed class RequestLogWriteDto(
 /// <param name="model">请求的模型（如果可用）。</param>
 /// <param name="upstreamModel">上游模型（如果可用）。</param>
 /// <param name="channelId">选中的通道标识符（如果可用）。</param>
+/// <param name="requestType">请求日志类型。</param>
+/// <param name="parentRequestLogId">父请求日志标识符（如果可用）。</param>
 /// <param name="isStream">指示请求是否使用流式响应的值。</param>
 /// <param name="ttftMs">首 token 时间，单位为毫秒（如果可用）。</param>
 /// <param name="durationMs">总请求耗时，单位为毫秒（如果可用）。</param>
@@ -210,6 +232,7 @@ public sealed class RequestLogWriteDto(
 /// <param name="upstreamResponseBody">序列化后的上游响应体（如果可用）。</param>
 /// <param name="responseBody">序列化后的下游响应体（如果可用）。</param>
 /// <param name="webSearchJson">序列化后的 Web 搜索详情（如果可用）。</param>
+/// <param name="ocrJson">序列化后的 OCR 详情（如果可用）。</param>
 /// <param name="requestStatus">标准化后的请求状态。</param>
 public sealed class RequestLogDto(
     long id,
@@ -221,6 +244,8 @@ public sealed class RequestLogDto(
     string? model,
     string? upstreamModel,
     string? channelId,
+    string requestType,
+    long? parentRequestLogId,
     bool isStream,
     int? ttftMs,
     int? durationMs,
@@ -238,6 +263,7 @@ public sealed class RequestLogDto(
     string? upstreamResponseBody,
     string? responseBody,
     string? webSearchJson,
+    string? ocrJson,
     string requestStatus)
 {
     /// <summary>
@@ -284,6 +310,16 @@ public sealed class RequestLogDto(
     /// 获取选中的通道标识符（如果可用）。
     /// </summary>
     public string? ChannelId { get; } = channelId;
+
+    /// <summary>
+    /// 获取请求日志类型。
+    /// </summary>
+    public string RequestType { get; } = requestType;
+
+    /// <summary>
+    /// 获取父请求日志标识符（如果可用）。
+    /// </summary>
+    public long? ParentRequestLogId { get; } = parentRequestLogId;
 
     /// <summary>
     /// 获取指示请求是否使用流式响应的值。
@@ -371,6 +407,11 @@ public sealed class RequestLogDto(
     public string? WebSearchJson { get; } = webSearchJson;
 
     /// <summary>
+    /// 获取序列化后的 OCR 详情（如果可用）。
+    /// </summary>
+    public string? OcrJson { get; } = ocrJson;
+
+    /// <summary>
     /// 获取标准化后的请求状态。
     /// </summary>
     public string RequestStatus { get; } = requestStatus;
@@ -388,6 +429,8 @@ public sealed class RequestLogDto(
 /// <param name="model">请求的模型（如果可用）。</param>
 /// <param name="upstreamModel">上游模型（如果可用）。</param>
 /// <param name="channelId">选中的通道标识符（如果可用）。</param>
+/// <param name="requestType">请求日志类型。</param>
+/// <param name="parentRequestLogId">父请求日志标识符（如果可用）。</param>
 /// <param name="isStream">指示请求是否使用流式响应的值。</param>
 /// <param name="ttftMs">首 token 时间，单位为毫秒（如果可用）。</param>
 /// <param name="durationMs">总请求耗时，单位为毫秒（如果可用）。</param>
@@ -410,6 +453,8 @@ public sealed class RequestLogEventDto(
     string? model,
     string? upstreamModel,
     string? channelId,
+    string requestType,
+    long? parentRequestLogId,
     bool isStream,
     int? ttftMs,
     int? durationMs,
@@ -467,6 +512,16 @@ public sealed class RequestLogEventDto(
     /// 获取选中的通道标识符（如果可用）。
     /// </summary>
     public string? ChannelId { get; } = channelId;
+
+    /// <summary>
+    /// 获取请求日志类型。
+    /// </summary>
+    public string RequestType { get; } = requestType;
+
+    /// <summary>
+    /// 获取父请求日志标识符（如果可用）。
+    /// </summary>
+    public long? ParentRequestLogId { get; } = parentRequestLogId;
 
     /// <summary>
     /// 获取指示请求是否使用流式响应的值。

@@ -148,7 +148,7 @@ public static partial class ProtocolConverter
                 ("function", Obj(
                     ("name", NamespaceNameToChat(Convert.ToString(GetValue(tool, "name")) ?? string.Empty)),
                     ("description", GetValue(tool, "description") ?? string.Empty),
-                    ("parameters", GetValue(tool, "parameters") ?? new Dictionary<string, object?>())))));
+                    ("parameters", SanitizeToolSchema(GetValue(tool, "parameters") ?? new Dictionary<string, object?>()))))));
         }
 
         return result;
@@ -167,7 +167,7 @@ public static partial class ProtocolConverter
             result.Add(Obj(
                 ("name", GetValue(tool, "name")),
                 ("description", GetValue(tool, "description") ?? string.Empty),
-                ("input_schema", GetValue(tool, "parameters") ?? new Dictionary<string, object?>())));
+                ("input_schema", SanitizeToolSchema(GetValue(tool, "parameters") ?? new Dictionary<string, object?>()))));
         }
 
         return result;

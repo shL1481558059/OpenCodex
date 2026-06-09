@@ -23,6 +23,16 @@ public static partial class ProtocolConverter
                 {
                     result.Add(Obj(("type", "text"), ("text", GetValue(block, "text") ?? string.Empty)));
                 }
+                else if (GetString(block, "type") == "input_image")
+                {
+                    var imageUrl = Obj(("url", GetValue(block, "image_url") ?? string.Empty));
+                    if (GetValue(block, "detail") is not null)
+                    {
+                        imageUrl["detail"] = GetValue(block, "detail");
+                    }
+
+                    result.Add(Obj(("type", "image_url"), ("image_url", imageUrl)));
+                }
                 else
                 {
                     result.Add(DeepCopy(block));

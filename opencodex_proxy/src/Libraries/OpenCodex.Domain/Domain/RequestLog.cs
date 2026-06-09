@@ -18,6 +18,10 @@ public sealed class RequestLog : BaseEntity<long>
 
     public string? ChannelId { get; set; }
 
+    public string RequestType { get; set; } = "main";
+
+    public long? ParentRequestLogId { get; set; }
+
     public bool IsStream { get; set; }
 
     public int? TtftMs { get; set; }
@@ -41,4 +45,8 @@ public sealed class RequestLog : BaseEntity<long>
     public string? Error { get; set; }
 
     public RequestLogDetail? Detail { get; set; }
+
+    public RequestLog? ParentRequestLog { get; set; }
+
+    public ICollection<RequestLog> ChildRequestLogs { get; set; } = new List<RequestLog>();
 }

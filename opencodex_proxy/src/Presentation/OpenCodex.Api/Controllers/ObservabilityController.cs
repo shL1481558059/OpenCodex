@@ -25,6 +25,7 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         string? owner_username,
         string? api_key_id,
         string? path,
+        string? request_type,
         string? status_code,
         string? is_stream,
         string? client_ip,
@@ -44,6 +45,7 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
             owner_username,
             api_key_id,
             path,
+            request_type,
             status_code,
             is_stream,
             client_ip,
@@ -69,6 +71,7 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         string? owner_username = null,
         string? api_key_id = null,
         string? path = null,
+        string? request_type = null,
         string? status_code = null,
         string? is_stream = null,
         string? client_ip = null,
@@ -86,6 +89,7 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
             owner_username,
             api_key_id,
             path,
+            request_type,
             status_code,
             is_stream,
             client_ip,
@@ -131,6 +135,7 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         string? ownerUsername,
         string? apiKeyId,
         string? path,
+        string? requestType,
         string? statusCode,
         string? isStream,
         string? clientIp,
@@ -148,6 +153,7 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         AddFilter(filters, "owner_username", ownerUsername, excludedKey);
         AddFilter(filters, "api_key_id", apiKeyId, excludedKey);
         AddFilter(filters, "path", path, excludedKey);
+        AddFilter(filters, "request_type", requestType, excludedKey);
         AddFilter(filters, "status_code", statusCode, excludedKey);
         AddFilter(filters, "is_stream", isStream, excludedKey);
         AddFilter(filters, "client_ip", clientIp, excludedKey);

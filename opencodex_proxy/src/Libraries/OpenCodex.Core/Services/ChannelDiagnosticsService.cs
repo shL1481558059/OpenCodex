@@ -1,11 +1,15 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using OpenCodex.Core.Config;
 using OpenCodex.Core.Errors;
 using OpenCodex.Core.Protocols;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Domain;
+using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs.ChannelDiagnostics;
 using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
+using OpenCodex.CoreBase.Services.Proxy;
 
 namespace OpenCodex.Core.Services;
 
@@ -14,15 +18,18 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
     private readonly IOpenCodexRuntimeSettingsProvider _settingsProvider;
     private readonly IUpstreamClient _upstreamClient;
     private readonly IUpstreamModelClient _upstreamModelClient;
+    private readonly IProxyLogService _logs;
 
     public ChannelDiagnosticsService(
         IOpenCodexRuntimeSettingsProvider settingsProvider,
         IUpstreamClient upstreamClient,
-        IUpstreamModelClient upstreamModelClient)
+        IUpstreamModelClient upstreamModelClient,
+        IProxyLogService logs)
     {
         _settingsProvider = settingsProvider;
         _upstreamClient = upstreamClient;
         _upstreamModelClient = upstreamModelClient;
+        _logs = logs;
     }
 
     public async Task<ApiOpResult<DiscoverModelsResponse>> DiscoverModelsAsync(
@@ -55,30 +62,49 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
 
     public async Task<ApiOpResult<TestChannelResponse>> TestChannelAsync(
         IReadOnlyDictionary<string, object?> body,
+        SessionUser user,
+        ProxyRequestMetadata requestMetadata,
         CancellationToken cancellationToken)
     {
         var started = Stopwatch.GetTimestamp();
+        Dictionary<string, object?>? channel = null;
+        Dictionary<string, object?>? payload = null;
+        Dictionary<string, object?>? compatibleRequest = null;
+        Dictionary<string, object?>? upstreamResponse = null;
+        Dictionary<string, object?>? responsePayload = null;
+        object? errorResponse = null;
+        string? originalModel = null;
+        string? upstreamModel = null;
+        string? channelType = null;
+        string? channelId = null;
+        var statusCode = 200;
+        string? error = null;
+
         try
         {
-            var (channel, payload) = ParseTestChannelBody(body);
-            var (originalModel, upstreamModel) = TestModels(channel, JsonDictionaryValue.Get(payload, "model"));
+            (channel, payload) = ParseTestChannelBody(body);
+            channelType = JsonDictionaryValue.String(channel, "type");
+            channelId = JsonDictionaryValue.String(channel, "id");
+            (originalModel, upstreamModel) = TestModels(channel, JsonDictionaryValue.Get(payload, "model"));
             var upstreamRequest = ProtocolConverter.ConvertRequest(
                 payload,
-                JsonDictionaryValue.String(channel, "type"),
-                JsonDictionaryValue.String(channel, "type"),
+                channelType,
+                channelType,
                 upstreamModel);
-            var (compatibleRequest, compatDetails) = ApplyCompat(
+            var compatResult = ApplyCompat(
                 upstreamRequest,
                 JsonDictionaryValue.Object(channel, "compat", CloneObject));
-            var upstreamResponse = await _upstreamClient.PostJsonAsync(
+            compatibleRequest = compatResult.Payload;
+            var compatDetails = compatResult.Details;
+            upstreamResponse = await _upstreamClient.PostJsonAsync(
                 channel,
                 compatibleRequest,
                 DefaultTimeout(),
                 cancellationToken);
-            var responsePayload = ProtocolConverter.ConvertResponse(
+            responsePayload = ProtocolConverter.ConvertResponse(
                 upstreamResponse,
-                JsonDictionaryValue.String(channel, "type"),
-                JsonDictionaryValue.String(channel, "type"),
+                channelType,
+                channelType,
                 originalModel);
 
             return ApiOpResult<TestChannelResponse>.Succeed(TestChannelResponse.From(
@@ -90,13 +116,38 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
         }
         catch (ConfigException exception)
         {
+            statusCode = 400;
+            error = exception.Message;
+            errorResponse = BuildErrorResponse(error, "config_error");
             return ApiOpResult<TestChannelResponse>.Fail(400, exception.Message);
         }
         catch (ProxyException exception)
         {
+            statusCode = exception.StatusCode;
+            error = exception.Message;
+            errorResponse = exception.ToResponse();
             return ApiOpResult<TestChannelResponse>.Fail(
                 exception.StatusCode,
                 exception.Message);
+        }
+        finally
+        {
+            WriteTestChannelLog(
+                body,
+                user,
+                requestMetadata,
+                started,
+                payload,
+                compatibleRequest,
+                upstreamResponse,
+                responsePayload,
+                errorResponse,
+                originalModel,
+                upstreamModel,
+                channelId,
+                channelType,
+                statusCode,
+                error);
         }
     }
 
@@ -153,5 +204,122 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
         return (int)Math.Round(
             Stopwatch.GetElapsedTime(started).TotalMilliseconds,
             MidpointRounding.AwayFromZero);
+    }
+
+    private static readonly HashSet<string> SensitiveLogKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "authorization",
+        "api-key",
+        "api_key",
+        "apikey",
+        "x-api-key",
+        "cookie",
+        "set-cookie",
+        "password"
+    };
+
+    private void WriteTestChannelLog(
+        IReadOnlyDictionary<string, object?> originalBody,
+        SessionUser user,
+        ProxyRequestMetadata requestMetadata,
+        long started,
+        Dictionary<string, object?>? payload,
+        Dictionary<string, object?>? compatibleRequest,
+        Dictionary<string, object?>? upstreamResponse,
+        Dictionary<string, object?>? responsePayload,
+        object? errorResponse,
+        string? originalModel,
+        string? upstreamModel,
+        string? channelId,
+        string? channelType,
+        int statusCode,
+        string? error)
+    {
+        _logs.WriteLog(
+            new ProxyLogContext(
+                RandomNumberGenerator.GetHexString(12).ToLowerInvariant(),
+                user.Username,
+                ApiKeyId: null,
+                Payload: RedactObject(originalBody),
+                UpstreamRequest: RedactObject(compatibleRequest),
+                UpstreamResponse: RedactObject(upstreamResponse),
+                ResponsePayload: RedactObject(responsePayload),
+                ErrorResponse: errorResponse,
+                RequestModel: originalModel,
+                UpstreamModel: upstreamModel,
+                ChannelId: channelId,
+                ChannelType: channelType,
+                IsStream: false,
+                TtftMs: null,
+                StatusCode: statusCode,
+                DurationMs: ElapsedMilliseconds(started),
+                Error: error,
+                WebSearchDetails: null),
+            RedactRequestMetadata(requestMetadata));
+    }
+
+    private static object BuildErrorResponse(string message, string errorType)
+    {
+        return new
+        {
+            error = new Dictionary<string, object?>
+            {
+                ["message"] = message,
+                ["type"] = errorType
+            }
+        };
+    }
+
+    private static ProxyRequestMetadata RedactRequestMetadata(ProxyRequestMetadata requestMetadata)
+    {
+        return new ProxyRequestMetadata(
+            requestMetadata.Method,
+            requestMetadata.Path,
+            requestMetadata.ClientIp,
+            requestMetadata.Headers.ToDictionary(
+                pair => pair.Key,
+                pair => IsSensitiveLogKey(pair.Key) ? RedactText(pair.Value) : pair.Value,
+                StringComparer.Ordinal));
+    }
+
+    private static Dictionary<string, object?>? RedactObject(
+        IReadOnlyDictionary<string, object?>? source)
+    {
+        if (source is null)
+        {
+            return null;
+        }
+
+        return source.ToDictionary(
+            pair => pair.Key,
+            pair => IsSensitiveLogKey(pair.Key)
+                ? RedactValue(pair.Value)
+                : RedactNestedValue(pair.Value),
+            StringComparer.Ordinal);
+    }
+
+    private static object? RedactNestedValue(object? value)
+    {
+        return value switch
+        {
+            IReadOnlyDictionary<string, object?> dictionary => RedactObject(dictionary),
+            IReadOnlyList<object?> list => list.Select(RedactNestedValue).ToList(),
+            _ => value
+        };
+    }
+
+    private static object? RedactValue(object? value)
+    {
+        return value is null ? null : RedactText(Convert.ToString(value) ?? string.Empty);
+    }
+
+    private static string RedactText(string value)
+    {
+        return value.Length == 0 ? string.Empty : "...";
+    }
+
+    private static bool IsSensitiveLogKey(string key)
+    {
+        return SensitiveLogKeys.Contains(key);
     }
 }

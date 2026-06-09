@@ -12,6 +12,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
     private readonly IProxyLogService _logs;
     private readonly IProxyRequestService _requests;
     private readonly IProxyRouteService _routes;
+    private readonly IProxyImageFallbackService _imageFallback;
     private readonly IProxyNonStreamService _nonStreams;
     private readonly IProxyStreamService _streams;
 
@@ -19,12 +20,14 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         IProxyLogService logs,
         IProxyRequestService requests,
         IProxyRouteService routes,
+        IProxyImageFallbackService imageFallback,
         IProxyNonStreamService nonStreams,
         IProxyStreamService streams)
     {
         _logs = logs;
         _requests = requests;
         _routes = routes;
+        _imageFallback = imageFallback;
         _nonStreams = nonStreams;
         _streams = streams;
     }
@@ -38,6 +41,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         var defaultTimeout = requestState.DefaultTimeout;
         long? apiKeyId = null;
         Dictionary<string, object?>? payload = null;
+        Dictionary<string, object?>? effectivePayload = null;
         Dictionary<string, object?>? upstreamRequest = null;
         string? requestModel = null;
         string? upstreamModel = null;
@@ -64,14 +68,32 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             }
 
             requestModel = JsonDictionaryValue.String(payload, "model");
+            effectivePayload = payload;
             var requestContainsImages = ProxyImageRequestDetector.ContainsImageInput(payload, context.EntryProtocol);
             var route = _routes.ChooseRoute(ownerUsername, requestModel, requestContainsImages);
             channelType = JsonDictionaryValue.String(route.Channel, "type");
             channelId = JsonDictionaryValue.String(route.Channel, "id");
             upstreamModel = route.UpstreamModel;
 
+            if (requestContainsImages
+                && !route.SupportsImage
+                && route.MatchedModelMapping)
+            {
+                var fallback = await _imageFallback.RewriteAsync(new ProxyImageFallbackContext(
+                    requestId,
+                    ownerUsername,
+                    apiKeyId,
+                    payload,
+                    context.EntryProtocol,
+                    requestModel,
+                    defaultTimeout,
+                    requestMetadata,
+                    context.CancellationToken));
+                effectivePayload = fallback.Payload;
+            }
+
             upstreamRequest = ProtocolConverter.ConvertRequest(
-                payload,
+                effectivePayload,
                 context.EntryProtocol,
                 channelType,
                 route.UpstreamModel);
@@ -91,6 +113,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         ownerUsername,
                         apiKeyId,
                         payload,
+                        effectivePayload,
                         upstreamRequest,
                         context.EntryProtocol,
                         route,
@@ -109,13 +132,14 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             logInFinally = false;
             var result = await _nonStreams.SendAsync(
                 new ProxyNonStreamContext(
-                    started,
-                    requestId,
-                    ownerUsername,
-                    apiKeyId,
-                    payload,
-                    upstreamRequest,
-                    context.EntryProtocol,
+                        started,
+                        requestId,
+                        ownerUsername,
+                        apiKeyId,
+                        payload,
+                        effectivePayload,
+                        upstreamRequest,
+                        context.EntryProtocol,
                     route,
                     channelType,
                     channelId,
