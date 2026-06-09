@@ -1,3 +1,13 @@
+FROM node:22-bookworm-slim AS frontend-build
+
+WORKDIR /src/frontend
+
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+COPY frontend ./
+RUN npm run build
+
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS dotnet-build
 
 WORKDIR /src
@@ -23,6 +33,7 @@ WORKDIR /app
 ENV ASPNETCORE_ENVIRONMENT=Production
 
 COPY --from=dotnet-build /app/publish ./
+COPY --from=frontend-build /src/frontend/dist/admin ./wwwroot/admin
 COPY .env.example ./.env.example
 
 ENTRYPOINT ["dotnet", "OpenCodex.Api.dll"]
