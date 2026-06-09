@@ -193,6 +193,12 @@ public sealed class ModelMappingRequest
     public string UpstreamModel { get; set; } = string.Empty;
 
     /// <summary>
+    /// 获取或设置指示模型是否支持图片输入的值。
+    /// </summary>
+    [JsonPropertyName("supports_image")]
+    public bool SupportsImage { get; set; }
+
+    /// <summary>
     /// 将模型映射请求转换为可持久化的字典结构。
     /// </summary>
     /// <returns>模型映射字典。</returns>
@@ -201,7 +207,8 @@ public sealed class ModelMappingRequest
         return new Dictionary<string, object?>(StringComparer.Ordinal)
         {
             ["model"] = Model,
-            ["upstream_model"] = UpstreamModel
+            ["upstream_model"] = UpstreamModel,
+            ["supports_image"] = SupportsImage
         };
     }
 }

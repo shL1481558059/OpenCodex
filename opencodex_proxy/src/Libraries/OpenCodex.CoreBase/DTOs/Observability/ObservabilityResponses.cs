@@ -52,14 +52,45 @@ public sealed class LogsPageResponse
     /// </summary>
     /// <param name="page">日志分页数据。</param>
     /// <returns>请求日志分页响应。</returns>
-    public static LogsPageResponse From(RequestLogPageDto page)
+    public static LogsPageResponse From(
+        RequestLogPageDto page,
+        IReadOnlyDictionary<long, string>? apiKeyNames = null)
     {
         return new LogsPageResponse(
-            page.Events.Select(LogEventResponse.From).ToList(),
+            page.Events.Select(log => LogEventResponse.From(log, apiKeyNames)).ToList(),
             page.Total,
             page.Page,
             page.PageSize);
     }
+}
+
+/// <summary>
+/// 表示请求日志筛选中的访问密钥选项。
+/// </summary>
+public sealed class LogApiKeyFilterOption
+{
+    /// <summary>
+    /// 初始化 <see cref="LogApiKeyFilterOption"/> 类的新实例。
+    /// </summary>
+    /// <param name="id">访问密钥标识。</param>
+    /// <param name="name">访问密钥显示名称。</param>
+    public LogApiKeyFilterOption(long id, string? name)
+    {
+        Id = id;
+        Name = name;
+    }
+
+    /// <summary>
+    /// 获取访问密钥标识。
+    /// </summary>
+    [JsonPropertyName("id")]
+    public long Id { get; }
+
+    /// <summary>
+    /// 获取访问密钥显示名称。
+    /// </summary>
+    [JsonPropertyName("name")]
+    public string? Name { get; }
 }
 
 /// <summary>
@@ -89,6 +120,7 @@ public sealed class LogEventResponse
     /// <param name="cost">请求成本。</param>
     /// <param name="ownerUsername">所属用户名。</param>
     /// <param name="apiKeyId">访问密钥标识。</param>
+    /// <param name="apiKeyName">访问密钥显示名称。</param>
     /// <param name="error">错误消息。</param>
     /// <param name="requestStatus">请求状态。</param>
     public LogEventResponse(
@@ -111,6 +143,7 @@ public sealed class LogEventResponse
         double cost,
         string? ownerUsername,
         long? apiKeyId,
+        string? apiKeyName,
         string? error,
         string requestStatus)
     {
@@ -133,6 +166,7 @@ public sealed class LogEventResponse
         Cost = cost;
         OwnerUsername = ownerUsername;
         ApiKeyId = apiKeyId;
+        ApiKeyName = apiKeyName;
         Error = error;
         RequestStatus = requestStatus;
     }
@@ -252,6 +286,12 @@ public sealed class LogEventResponse
     public long? ApiKeyId { get; }
 
     /// <summary>
+    /// 获取访问密钥显示名称。
+    /// </summary>
+    [JsonPropertyName("api_key_name")]
+    public string? ApiKeyName { get; }
+
+    /// <summary>
     /// 获取错误消息。
     /// </summary>
     [JsonPropertyName("error")]
@@ -268,7 +308,9 @@ public sealed class LogEventResponse
     /// </summary>
     /// <param name="log">日志事件数据。</param>
     /// <returns>请求日志列表事件响应。</returns>
-    public static LogEventResponse From(RequestLogEventDto log)
+    public static LogEventResponse From(
+        RequestLogEventDto log,
+        IReadOnlyDictionary<long, string>? apiKeyNames = null)
     {
         return new LogEventResponse(
             log.Id,
@@ -290,8 +332,18 @@ public sealed class LogEventResponse
             log.Cost,
             log.OwnerUsername,
             log.ApiKeyId,
+            ReadApiKeyName(log.ApiKeyId, apiKeyNames),
             log.Error,
             log.RequestStatus);
+    }
+
+    private static string? ReadApiKeyName(
+        long? apiKeyId,
+        IReadOnlyDictionary<long, string>? apiKeyNames)
+    {
+        return apiKeyId.HasValue && apiKeyNames?.TryGetValue(apiKeyId.Value, out var name) == true
+            ? name
+            : null;
     }
 }
 
@@ -322,6 +374,7 @@ public sealed class LogDetailResponse
     /// <param name="cost">请求成本。</param>
     /// <param name="ownerUsername">所属用户名。</param>
     /// <param name="apiKeyId">访问密钥标识。</param>
+    /// <param name="apiKeyName">访问密钥显示名称。</param>
     /// <param name="error">错误消息。</param>
     /// <param name="requestStatus">请求状态。</param>
     /// <param name="requestHeaders">请求头内容。</param>
@@ -350,6 +403,7 @@ public sealed class LogDetailResponse
         double cost,
         string? ownerUsername,
         long? apiKeyId,
+        string? apiKeyName,
         string? error,
         string requestStatus,
         string? requestHeaders,
@@ -378,6 +432,7 @@ public sealed class LogDetailResponse
         Cost = cost;
         OwnerUsername = ownerUsername;
         ApiKeyId = apiKeyId;
+        ApiKeyName = apiKeyName;
         Error = error;
         RequestStatus = requestStatus;
         RequestHeaders = requestHeaders;
@@ -503,6 +558,12 @@ public sealed class LogDetailResponse
     public long? ApiKeyId { get; }
 
     /// <summary>
+    /// 获取访问密钥显示名称。
+    /// </summary>
+    [JsonPropertyName("api_key_name")]
+    public string? ApiKeyName { get; }
+
+    /// <summary>
     /// 获取错误消息。
     /// </summary>
     [JsonPropertyName("error")]
@@ -555,7 +616,9 @@ public sealed class LogDetailResponse
     /// </summary>
     /// <param name="log">请求日志详情数据。</param>
     /// <returns>请求日志详情响应。</returns>
-    public static LogDetailResponse From(RequestLogDto log)
+    public static LogDetailResponse From(
+        RequestLogDto log,
+        IReadOnlyDictionary<long, string>? apiKeyNames = null)
     {
         var logEvent = LogEventResponse.From(new RequestLogEventDto(
             log.Id,
@@ -578,7 +641,7 @@ public sealed class LogDetailResponse
             log.OwnerUsername,
             log.ApiKeyId,
             log.Error,
-            log.RequestStatus));
+            log.RequestStatus), apiKeyNames);
 
         return new LogDetailResponse(
             logEvent.Id,
@@ -600,6 +663,7 @@ public sealed class LogDetailResponse
             logEvent.Cost,
             logEvent.OwnerUsername,
             logEvent.ApiKeyId,
+            logEvent.ApiKeyName,
             logEvent.Error,
             logEvent.RequestStatus,
             log.RequestHeaders,

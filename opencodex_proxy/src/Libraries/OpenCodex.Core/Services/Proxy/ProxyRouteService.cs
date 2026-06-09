@@ -20,7 +20,10 @@ public sealed class ProxyRouteService : IProxyRouteService
         _settingsProvider = settingsProvider;
     }
 
-    public ProxyRouteDto ChooseRoute(string ownerUsername, string? model)
+    public ProxyRouteDto ChooseRoute(
+        string ownerUsername,
+        string? model,
+        bool requestContainsImages = false)
     {
         var enabledChannels = ListEnabledChannelConfigs(ownerUsername);
 
@@ -74,16 +77,21 @@ public sealed class ProxyRouteService : IProxyRouteService
                     if (mapping.TryGetValue("model", out var value)
                         && ConfigValue.PythonString(value) == normalizedModel)
                     {
-                        var upstreamModel = mapping.TryGetValue("upstream_model", out var upstreamValue)
-                            ? ConfigValue.PythonString(upstreamValue)
-                            : string.Empty;
-
-                        if (upstreamModel.Length == 0)
+                        var matchedRoute = ToCandidate(channel, mapping, normalizedModel);
+                        if (!requestContainsImages || matchedRoute.SupportsImage)
                         {
-                            upstreamModel = normalizedModel;
+                            return matchedRoute.ToRoute(normalizedModel);
                         }
 
-                        return new ProxyRouteDto(channel, normalizedModel, upstreamModel);
+                        var fallbackRoute = FindImageRouteInChannel(channel)
+                            ?? FindImageRoute(enabledChannels);
+                        if (fallbackRoute is null)
+                        {
+                            throw new RoutingException(
+                                $"model {normalizedModel} does not support image input and no enabled image-capable model is configured");
+                        }
+
+                        return fallbackRoute.ToRoute(normalizedModel);
                     }
                 }
             }
@@ -96,7 +104,14 @@ public sealed class ProxyRouteService : IProxyRouteService
 
     public IReadOnlyList<string> ListModels(string ownerUsername)
     {
-        var models = new List<string>();
+        return ListModelCapabilities(ownerUsername)
+            .Select(model => model.Model)
+            .ToList();
+    }
+
+    public IReadOnlyList<ProxyModelCapabilityDto> ListModelCapabilities(string ownerUsername)
+    {
+        var capabilities = new List<ProxyModelCapabilityDto>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var channel in ListEnabledChannelConfigs(ownerUsername))
         {
@@ -118,12 +133,84 @@ public sealed class ProxyRouteService : IProxyRouteService
                     : string.Empty;
                 if (model.Length > 0 && seen.Add(model))
                 {
-                    models.Add(model);
+                    capabilities.Add(new ProxyModelCapabilityDto(
+                        model,
+                        MappingSupportsImage(mapping)));
                 }
             }
         }
 
-        return models;
+        return capabilities;
+    }
+
+    private static ModelRouteCandidate? FindImageRouteInChannel(
+        Dictionary<string, object?> channel)
+    {
+        if (!channel.TryGetValue("models", out var modelsValue)
+            || !ConfigValue.TryAsList(modelsValue, out var models))
+        {
+            return null;
+        }
+
+        foreach (var mappingValue in models)
+        {
+            if (!ConfigValue.TryAsObject(mappingValue, out var mapping)
+                || !MappingSupportsImage(mapping))
+            {
+                continue;
+            }
+
+            return ToCandidate(channel, mapping, string.Empty);
+        }
+
+        return null;
+    }
+
+    private static ModelRouteCandidate? FindImageRoute(
+        IReadOnlyList<Dictionary<string, object?>> channels)
+    {
+        foreach (var channel in channels)
+        {
+            var route = FindImageRouteInChannel(channel);
+            if (route is not null)
+            {
+                return route;
+            }
+        }
+
+        return null;
+    }
+
+    private static ModelRouteCandidate ToCandidate(
+        Dictionary<string, object?> channel,
+        IReadOnlyDictionary<string, object?> mapping,
+        string fallbackModel)
+    {
+        var model = mapping.TryGetValue("model", out var modelValue)
+            ? ConfigValue.PythonString(modelValue).Trim()
+            : string.Empty;
+        if (model.Length == 0)
+        {
+            model = fallbackModel;
+        }
+
+        var upstreamModel = mapping.TryGetValue("upstream_model", out var upstreamValue)
+            ? ConfigValue.PythonString(upstreamValue).Trim()
+            : string.Empty;
+        if (upstreamModel.Length == 0)
+        {
+            upstreamModel = model;
+        }
+
+        return new ModelRouteCandidate(
+            channel,
+            upstreamModel,
+            MappingSupportsImage(mapping));
+    }
+
+    private static bool MappingSupportsImage(IReadOnlyDictionary<string, object?> mapping)
+    {
+        return mapping.TryGetValue("supports_image", out var value) && value is true;
     }
 
     private List<Dictionary<string, object?>> ListEnabledChannelConfigs(string ownerUsername)
@@ -206,5 +293,29 @@ public sealed class ProxyRouteService : IProxyRouteService
             ["models"] = channel.Models,
             ["enabled"] = channel.Enabled
         };
+    }
+
+    private sealed class ModelRouteCandidate
+    {
+        public ModelRouteCandidate(
+            Dictionary<string, object?> channel,
+            string upstreamModel,
+            bool supportsImage)
+        {
+            Channel = channel;
+            UpstreamModel = upstreamModel;
+            SupportsImage = supportsImage;
+        }
+
+        public Dictionary<string, object?> Channel { get; }
+
+        public string UpstreamModel { get; }
+
+        public bool SupportsImage { get; }
+
+        public ProxyRouteDto ToRoute(string originalModel)
+        {
+            return new ProxyRouteDto(Channel, originalModel, UpstreamModel);
+        }
     }
 }

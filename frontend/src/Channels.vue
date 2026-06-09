@@ -159,13 +159,18 @@
               <el-input v-model="row.upstream_model" />
             </template>
           </el-table-column>
+          <el-table-column label="支持图片" width="110" align="center">
+            <template #default="{ row }">
+              <el-switch v-model="row.supports_image" />
+            </template>
+          </el-table-column>
           <el-table-column width="90">
             <template #default="{ $index }">
               <el-button type="danger" :icon="Delete" circle @click="channelDraft.models.splice($index, 1)" />
             </template>
           </el-table-column>
         </el-table>
-        <el-button style="margin-top: 8px" :icon="Plus" @click="channelDraft.models.push({ model: '', upstream_model: '' })">
+        <el-button style="margin-top: 8px" :icon="Plus" @click="channelDraft.models.push({ model: '', upstream_model: '', supports_image: false })">
           添加模型
         </el-button>
         <el-button style="margin-top: 8px; margin-left: 8px" :loading="discoverLoading" @click="discoverModels">
@@ -506,7 +511,7 @@ async function testChannel() {
 function addSelectedModels() {
   for (const model of selectedDiscoveredModels.value) {
     if (!channelDraft.models.some((m) => m.model === model)) {
-      channelDraft.models.push({ model, upstream_model: model });
+      channelDraft.models.push({ model, upstream_model: model, supports_image: false });
     }
   }
   discoveredModels.value = [];
@@ -623,7 +628,11 @@ function normalizeModels(models) {
   return models
     .map((item) => {
       const model = String(item?.model || "").trim();
-      return { model, upstream_model: String(item?.upstream_model || model).trim() || model };
+      return {
+        model,
+        upstream_model: String(item?.upstream_model || model).trim() || model,
+        supports_image: item?.supports_image === true
+      };
     })
     .filter((item) => item.model);
 }

@@ -52,7 +52,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                         enabled = true,
                         models = new[]
                         {
-                            new { model = "public-model", upstream_model = "upstream-model" }
+                            new { model = "public-model", upstream_model = "upstream-model", supports_image = true }
                         }
                     },
                     new
@@ -111,6 +111,11 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Assert.True(catalogItem.GetProperty("supports_search_tool").GetBoolean());
         Assert.Equal("freeform", catalogItem.GetProperty("apply_patch_tool_type").GetString());
         Assert.True(catalogItem.TryGetProperty("experimental_supported_tools", out _));
+        Assert.Equal(["text", "image"], catalogItem.GetProperty("input_modalities")
+            .EnumerateArray()
+            .Select(item => item.GetString() ?? string.Empty)
+            .ToArray());
+        Assert.True(catalogItem.GetProperty("supports_image_detail_original").GetBoolean());
 
         var rootRequest = new HttpRequestMessage(HttpMethod.Get, "/models?client_version=0.137.0");
         rootRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
@@ -123,6 +128,83 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             .EnumerateArray()
             .Select(item => item.GetProperty("slug").GetString() ?? string.Empty)
             .ToArray());
+    }
+
+    [Fact]
+    public async Task ConfigEndpoint_PreservesSupportsImageAndModelsEndpointReportsPerModelCapability()
+    {
+        var cookie = await LoginAndReadSessionCookie();
+        var config = await SendJsonWithCookie(
+            HttpMethod.Post,
+            "/config",
+            cookie,
+            new
+            {
+                channels = new[]
+                {
+                    new
+                    {
+                        id = "chat",
+                        name = "Chat",
+                        type = "chat",
+                        baseurl = "https://example.test/v1",
+                        apikey = "secret",
+                        auth_mode = "config",
+                        timeout_seconds = 30,
+                        retry_count = 0,
+                        enabled = true,
+                        models = new[]
+                        {
+                            new { model = "text-model", upstream_model = "text-upstream", supports_image = false },
+                            new { model = "vision-model", upstream_model = "vision-upstream", supports_image = true }
+                        }
+                    }
+                }
+            });
+        Assert.Equal(HttpStatusCode.OK, config.StatusCode);
+
+        var readConfig = await SendWithCookie(HttpMethod.Get, "/config", cookie);
+        Assert.Equal(HttpStatusCode.OK, readConfig.StatusCode);
+        using (var configDocument = await JsonDocument.ParseAsync(await readConfig.Content.ReadAsStreamAsync()))
+        {
+            var models = configDocument.RootElement
+                .GetProperty("Data")
+                .GetProperty("channels")[0]
+                .GetProperty("models")
+                .EnumerateArray()
+                .ToArray();
+            Assert.False(models[0].GetProperty("supports_image").GetBoolean());
+            Assert.True(models[1].GetProperty("supports_image").GetBoolean());
+        }
+
+        var createdKey = await SendJsonWithCookie(
+            HttpMethod.Post,
+            "/api-keys",
+            cookie,
+            new { owner_username = "admin", name = "cli-vision" });
+        Assert.Equal(HttpStatusCode.Created, createdKey.StatusCode);
+        var apiKey = await ReadStringProperty(createdKey, "Data", "key", "key");
+
+        var request = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+        var response = await _client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var modelsDocument = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        var catalog = modelsDocument.RootElement.GetProperty("models").EnumerateArray().ToArray();
+        var textModel = catalog.Single(item => item.GetProperty("slug").GetString() == "text-model");
+        var visionModel = catalog.Single(item => item.GetProperty("slug").GetString() == "vision-model");
+
+        Assert.Equal(["text"], textModel.GetProperty("input_modalities")
+            .EnumerateArray()
+            .Select(item => item.GetString() ?? string.Empty)
+            .ToArray());
+        Assert.False(textModel.GetProperty("supports_image_detail_original").GetBoolean());
+        Assert.Equal(["text", "image"], visionModel.GetProperty("input_modalities")
+            .EnumerateArray()
+            .Select(item => item.GetString() ?? string.Empty)
+            .ToArray());
+        Assert.True(visionModel.GetProperty("supports_image_detail_original").GetBoolean());
     }
 
     [Fact]
@@ -550,6 +632,16 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         {
             Content = JsonContent.Create(body)
         };
+        request.Headers.Add("Cookie", cookie);
+        return _client.SendAsync(request);
+    }
+
+    private Task<HttpResponseMessage> SendWithCookie(
+        HttpMethod method,
+        string requestUri,
+        string cookie)
+    {
+        var request = new HttpRequestMessage(method, requestUri);
         request.Headers.Add("Cookie", cookie);
         return _client.SendAsync(request);
     }

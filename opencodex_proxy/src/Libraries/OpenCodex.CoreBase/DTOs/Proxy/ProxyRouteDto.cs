@@ -26,3 +26,23 @@ public sealed class ProxyRouteDto(
     /// </summary>
     public string UpstreamModel { get; } = upstreamModel;
 }
+
+/// <summary>
+/// 表示代理对外暴露的模型及其输入能力。
+/// </summary>
+/// <param name="model">对外模型名称。</param>
+/// <param name="supportsImage">指示模型是否支持图片输入的值。</param>
+public sealed class ProxyModelCapabilityDto(
+    string model,
+    bool supportsImage)
+{
+    /// <summary>
+    /// 获取对外模型名称。
+    /// </summary>
+    public string Model { get; } = model;
+
+    /// <summary>
+    /// 获取指示模型是否支持图片输入的值。
+    /// </summary>
+    public bool SupportsImage { get; } = supportsImage;
+}

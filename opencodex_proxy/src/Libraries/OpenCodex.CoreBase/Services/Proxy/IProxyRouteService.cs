@@ -12,8 +12,9 @@ public interface IProxyRouteService
     /// </summary>
     /// <param name="ownerUsername">访问密钥所属用户名。</param>
     /// <param name="model">请求模型名称。</param>
+    /// <param name="requestContainsImages">指示请求是否包含图片输入。</param>
     /// <returns>代理路由结果。</returns>
-    ProxyRouteDto ChooseRoute(string ownerUsername, string? model);
+    ProxyRouteDto ChooseRoute(string ownerUsername, string? model, bool requestContainsImages = false);
 
     /// <summary>
     /// 列出指定用户可通过代理访问的对外模型名称。
@@ -21,4 +22,11 @@ public interface IProxyRouteService
     /// <param name="ownerUsername">访问密钥所属用户名。</param>
     /// <returns>可访问的模型名称列表。</returns>
     IReadOnlyList<string> ListModels(string ownerUsername);
+
+    /// <summary>
+    /// 列出指定用户可通过代理访问的对外模型及其输入能力。
+    /// </summary>
+    /// <param name="ownerUsername">访问密钥所属用户名。</param>
+    /// <returns>可访问的模型能力列表。</returns>
+    IReadOnlyList<ProxyModelCapabilityDto> ListModelCapabilities(string ownerUsername);
 }
