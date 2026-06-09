@@ -26,6 +26,9 @@ public sealed class ProxyLogContext
     /// <param name="DurationMs">总请求耗时，单位为毫秒。</param>
     /// <param name="Error">错误消息（如果可用）。</param>
     /// <param name="WebSearchDetails">联网搜索诊断详情（如果可用）。</param>
+    /// <param name="RequestType">请求日志类型。</param>
+    /// <param name="ParentRequestLogId">父请求日志标识符（如果可用）。</param>
+    /// <param name="OcrDetails">OCR 专用详情（如果可用）。</param>
     public ProxyLogContext(
         string RequestId,
         string OwnerUsername,
@@ -44,7 +47,10 @@ public sealed class ProxyLogContext
         int StatusCode,
         int DurationMs,
         string? Error,
-        Dictionary<string, object?>? WebSearchDetails)
+        Dictionary<string, object?>? WebSearchDetails,
+        string RequestType = ProxyRequestTypes.Main,
+        long? ParentRequestLogId = null,
+        Dictionary<string, object?>? OcrDetails = null)
     {
         this.RequestId = RequestId;
         this.OwnerUsername = OwnerUsername;
@@ -64,6 +70,9 @@ public sealed class ProxyLogContext
         this.DurationMs = DurationMs;
         this.Error = Error;
         this.WebSearchDetails = WebSearchDetails;
+        this.RequestType = RequestType;
+        this.ParentRequestLogId = ParentRequestLogId;
+        this.OcrDetails = OcrDetails;
     }
 
     /// <summary>
@@ -155,4 +164,19 @@ public sealed class ProxyLogContext
     /// 获取联网搜索诊断详情（如果可用）。
     /// </summary>
     public Dictionary<string, object?>? WebSearchDetails { get; }
+
+    /// <summary>
+    /// 获取请求日志类型。
+    /// </summary>
+    public string RequestType { get; }
+
+    /// <summary>
+    /// 获取父请求日志标识符（如果可用）。
+    /// </summary>
+    public long? ParentRequestLogId { get; }
+
+    /// <summary>
+    /// 获取 OCR 专用详情（如果可用）。
+    /// </summary>
+    public Dictionary<string, object?>? OcrDetails { get; }
 }

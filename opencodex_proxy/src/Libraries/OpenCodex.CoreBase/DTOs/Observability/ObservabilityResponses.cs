@@ -110,6 +110,8 @@ public sealed class LogEventResponse
     /// <param name="model">请求模型。</param>
     /// <param name="upstreamModel">上游模型。</param>
     /// <param name="channelId">通道标识。</param>
+    /// <param name="requestType">请求日志类型。</param>
+    /// <param name="parentRequestLogId">父请求日志标识。</param>
     /// <param name="isStream">是否为流式请求的数值标记。</param>
     /// <param name="ttftMs">首字耗时毫秒数。</param>
     /// <param name="durationMs">总耗时毫秒数。</param>
@@ -133,6 +135,8 @@ public sealed class LogEventResponse
         string? model,
         string? upstreamModel,
         string? channelId,
+        string requestType,
+        long? parentRequestLogId,
         int isStream,
         int? ttftMs,
         int? durationMs,
@@ -156,6 +160,8 @@ public sealed class LogEventResponse
         Model = model;
         UpstreamModel = upstreamModel;
         ChannelId = channelId;
+        RequestType = requestType;
+        ParentRequestLogId = parentRequestLogId;
         IsStream = isStream;
         TtftMs = ttftMs;
         DurationMs = durationMs;
@@ -224,6 +230,18 @@ public sealed class LogEventResponse
     /// </summary>
     [JsonPropertyName("channel_id")]
     public string? ChannelId { get; }
+
+    /// <summary>
+    /// 获取请求日志类型。
+    /// </summary>
+    [JsonPropertyName("request_type")]
+    public string RequestType { get; }
+
+    /// <summary>
+    /// 获取父请求日志标识。
+    /// </summary>
+    [JsonPropertyName("parent_request_log_id")]
+    public long? ParentRequestLogId { get; }
 
     /// <summary>
     /// 获取是否为流式请求的数值标记。
@@ -322,6 +340,8 @@ public sealed class LogEventResponse
             log.Model,
             log.UpstreamModel,
             log.ChannelId,
+            log.RequestType,
+            log.ParentRequestLogId,
             log.IsStream ? 1 : 0,
             log.TtftMs,
             log.DurationMs,
@@ -364,6 +384,8 @@ public sealed class LogDetailResponse
     /// <param name="model">请求模型。</param>
     /// <param name="upstreamModel">上游模型。</param>
     /// <param name="channelId">通道标识。</param>
+    /// <param name="requestType">请求日志类型。</param>
+    /// <param name="parentRequestLogId">父请求日志标识。</param>
     /// <param name="isStream">是否为流式请求的数值标记。</param>
     /// <param name="ttftMs">首字耗时毫秒数。</param>
     /// <param name="durationMs">总耗时毫秒数。</param>
@@ -383,6 +405,7 @@ public sealed class LogDetailResponse
     /// <param name="upstreamResponseBody">上游响应体内容。</param>
     /// <param name="responseBody">响应体内容。</param>
     /// <param name="webSearchJson">联网搜索记录内容。</param>
+    /// <param name="ocrJson">OCR 记录内容。</param>
     public LogDetailResponse(
         long id,
         string? requestId,
@@ -393,6 +416,8 @@ public sealed class LogDetailResponse
         string? model,
         string? upstreamModel,
         string? channelId,
+        string requestType,
+        long? parentRequestLogId,
         int isStream,
         int? ttftMs,
         int? durationMs,
@@ -411,7 +436,8 @@ public sealed class LogDetailResponse
         string? upstreamRequestBody,
         string? upstreamResponseBody,
         string? responseBody,
-        string? webSearchJson)
+        string? webSearchJson,
+        string? ocrJson)
     {
         Id = id;
         RequestId = requestId;
@@ -422,6 +448,8 @@ public sealed class LogDetailResponse
         Model = model;
         UpstreamModel = upstreamModel;
         ChannelId = channelId;
+        RequestType = requestType;
+        ParentRequestLogId = parentRequestLogId;
         IsStream = isStream;
         TtftMs = ttftMs;
         DurationMs = durationMs;
@@ -441,6 +469,7 @@ public sealed class LogDetailResponse
         UpstreamResponseBody = upstreamResponseBody;
         ResponseBody = responseBody;
         WebSearchJson = webSearchJson;
+        OcrJson = ocrJson;
     }
 
     /// <summary>
@@ -496,6 +525,18 @@ public sealed class LogDetailResponse
     /// </summary>
     [JsonPropertyName("channel_id")]
     public string? ChannelId { get; }
+
+    /// <summary>
+    /// 获取请求日志类型。
+    /// </summary>
+    [JsonPropertyName("request_type")]
+    public string RequestType { get; }
+
+    /// <summary>
+    /// 获取父请求日志标识。
+    /// </summary>
+    [JsonPropertyName("parent_request_log_id")]
+    public long? ParentRequestLogId { get; }
 
     /// <summary>
     /// 获取是否为流式请求的数值标记。
@@ -612,6 +653,12 @@ public sealed class LogDetailResponse
     public string? WebSearchJson { get; }
 
     /// <summary>
+    /// 获取 OCR 记录内容。
+    /// </summary>
+    [JsonPropertyName("ocr_json")]
+    public string? OcrJson { get; }
+
+    /// <summary>
     /// 根据请求日志详情数据创建响应对象。
     /// </summary>
     /// <param name="log">请求日志详情数据。</param>
@@ -630,6 +677,8 @@ public sealed class LogDetailResponse
             log.Model,
             log.UpstreamModel,
             log.ChannelId,
+            log.RequestType,
+            log.ParentRequestLogId,
             log.IsStream,
             log.TtftMs,
             log.DurationMs,
@@ -653,6 +702,8 @@ public sealed class LogDetailResponse
             logEvent.Model,
             logEvent.UpstreamModel,
             logEvent.ChannelId,
+            logEvent.RequestType,
+            logEvent.ParentRequestLogId,
             logEvent.IsStream,
             logEvent.TtftMs,
             logEvent.DurationMs,
@@ -671,7 +722,8 @@ public sealed class LogDetailResponse
             log.UpstreamRequestBody,
             log.UpstreamResponseBody,
             log.ResponseBody,
-            log.WebSearchJson);
+            log.WebSearchJson,
+            log.OcrJson);
     }
 }
 

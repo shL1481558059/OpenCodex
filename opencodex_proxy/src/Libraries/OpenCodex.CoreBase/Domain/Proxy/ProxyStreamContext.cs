@@ -15,7 +15,8 @@ public sealed class ProxyStreamContext
     /// <param name="requestId">唯一请求标识符。</param>
     /// <param name="ownerUsername">拥有该请求的用户名。</param>
     /// <param name="apiKeyId">请求使用的访问密钥标识符（如果可用）。</param>
-    /// <param name="payload">标准化后的传入请求载荷。</param>
+    /// <param name="originalPayload">标准化后的原始传入请求载荷。</param>
+    /// <param name="payload">实际参与后续代理流程的请求载荷。</param>
     /// <param name="upstreamRequest">要发送到上游的请求载荷。</param>
     /// <param name="entryProtocol">传入请求使用的协议形态。</param>
     /// <param name="route">已解析的代理路由。</param>
@@ -33,6 +34,7 @@ public sealed class ProxyStreamContext
         string requestId,
         string ownerUsername,
         long? apiKeyId,
+        Dictionary<string, object?> originalPayload,
         Dictionary<string, object?> payload,
         Dictionary<string, object?> upstreamRequest,
         string entryProtocol,
@@ -51,6 +53,7 @@ public sealed class ProxyStreamContext
         RequestId = requestId;
         OwnerUsername = ownerUsername;
         ApiKeyId = apiKeyId;
+        OriginalPayload = originalPayload;
         Payload = payload;
         UpstreamRequest = upstreamRequest;
         EntryProtocol = entryProtocol;
@@ -87,7 +90,12 @@ public sealed class ProxyStreamContext
     public long? ApiKeyId { get; }
 
     /// <summary>
-    /// 获取标准化后的传入请求载荷。
+    /// 获取标准化后的原始传入请求载荷。
+    /// </summary>
+    public Dictionary<string, object?> OriginalPayload { get; }
+
+    /// <summary>
+    /// 获取实际参与后续代理流程的请求载荷。
     /// </summary>
     public Dictionary<string, object?> Payload { get; }
 

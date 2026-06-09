@@ -1,4 +1,6 @@
 using OpenCodex.CoreBase.DTOs.ChannelDiagnostics;
+using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.Results;
 
 namespace OpenCodex.CoreBase.Services;
@@ -22,9 +24,13 @@ public interface IChannelDiagnosticsService
     /// 测试指定通道的请求连通性。
     /// </summary>
     /// <param name="body">诊断请求内容。</param>
+    /// <param name="user">发起诊断的后台用户。</param>
+    /// <param name="requestMetadata">传入请求元数据。</param>
     /// <param name="cancellationToken">取消令牌。</param>
     /// <returns>通道测试结果。</returns>
     Task<ApiOpResult<TestChannelResponse>> TestChannelAsync(
         IReadOnlyDictionary<string, object?> body,
+        SessionUser user,
+        ProxyRequestMetadata requestMetadata,
         CancellationToken cancellationToken);
 }

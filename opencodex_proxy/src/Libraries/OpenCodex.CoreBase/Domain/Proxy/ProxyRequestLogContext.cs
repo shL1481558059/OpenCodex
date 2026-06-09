@@ -30,6 +30,9 @@ public sealed class ProxyRequestLogContext
     /// <param name="path">传入请求路径。</param>
     /// <param name="clientIp">客户端网络地址（如果可用）。</param>
     /// <param name="requestHeaders">标准化后的传入请求头。</param>
+    /// <param name="requestType">请求日志类型。</param>
+    /// <param name="parentRequestLogId">父请求日志标识符（如果可用）。</param>
+    /// <param name="ocrDetails">OCR 专用详情（如果可用）。</param>
     public ProxyRequestLogContext(
         string requestId,
         string ownerUsername,
@@ -52,7 +55,10 @@ public sealed class ProxyRequestLogContext
         string method,
         string path,
         string? clientIp,
-        IReadOnlyDictionary<string, string> requestHeaders)
+        IReadOnlyDictionary<string, string> requestHeaders,
+        string requestType = ProxyRequestTypes.Main,
+        long? parentRequestLogId = null,
+        Dictionary<string, object?>? ocrDetails = null)
     {
         RequestId = requestId;
         OwnerUsername = ownerUsername;
@@ -76,6 +82,9 @@ public sealed class ProxyRequestLogContext
         Path = path;
         ClientIp = clientIp;
         RequestHeaders = requestHeaders;
+        RequestType = requestType;
+        ParentRequestLogId = parentRequestLogId;
+        OcrDetails = ocrDetails;
     }
 
     /// <summary>
@@ -187,4 +196,19 @@ public sealed class ProxyRequestLogContext
     /// 获取标准化后的传入请求头。
     /// </summary>
     public IReadOnlyDictionary<string, string> RequestHeaders { get; }
+
+    /// <summary>
+    /// 获取请求日志类型。
+    /// </summary>
+    public string RequestType { get; }
+
+    /// <summary>
+    /// 获取父请求日志标识符（如果可用）。
+    /// </summary>
+    public long? ParentRequestLogId { get; }
+
+    /// <summary>
+    /// 获取 OCR 专用详情（如果可用）。
+    /// </summary>
+    public Dictionary<string, object?>? OcrDetails { get; }
 }

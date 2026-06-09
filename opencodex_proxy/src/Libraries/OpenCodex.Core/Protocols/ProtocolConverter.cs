@@ -67,6 +67,7 @@ public static partial class ProtocolConverter
         converted["model"] = upstreamModel;
         if (sourceProtocol == targetProtocol)
         {
+            SanitizeRequestToolSchemas(converted, targetProtocol);
             return converted;
         }
 

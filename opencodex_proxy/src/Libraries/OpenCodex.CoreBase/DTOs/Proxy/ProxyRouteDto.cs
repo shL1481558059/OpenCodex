@@ -6,10 +6,14 @@ namespace OpenCodex.CoreBase.DTOs.Proxy;
 /// <param name="channel">选中的通道配置。</param>
 /// <param name="originalModel">原始请求模型名称。</param>
 /// <param name="upstreamModel">映射后的上游模型名称。</param>
+/// <param name="supportsImage">指示当前路由模型是否原生支持图片输入的值。</param>
+/// <param name="matchedModelMapping">指示当前路由是否命中了显式模型映射。</param>
 public sealed class ProxyRouteDto(
     Dictionary<string, object?> channel,
     string originalModel,
-    string upstreamModel)
+    string upstreamModel,
+    bool supportsImage,
+    bool matchedModelMapping)
 {
     /// <summary>
     /// 获取选中的通道配置。
@@ -25,6 +29,16 @@ public sealed class ProxyRouteDto(
     /// 获取映射后的上游模型名称。
     /// </summary>
     public string UpstreamModel { get; } = upstreamModel;
+
+    /// <summary>
+    /// 获取指示当前路由模型是否原生支持图片输入的值。
+    /// </summary>
+    public bool SupportsImage { get; } = supportsImage;
+
+    /// <summary>
+    /// 获取指示当前路由是否命中了显式模型映射的值。
+    /// </summary>
+    public bool MatchedModelMapping { get; } = matchedModelMapping;
 }
 
 /// <summary>

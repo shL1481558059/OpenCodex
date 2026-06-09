@@ -17,6 +17,14 @@ public interface IProxyRouteService
     ProxyRouteDto ChooseRoute(string ownerUsername, string? model, bool requestContainsImages = false);
 
     /// <summary>
+    /// 为指定用户和模型选择 OCR 视觉来源通道。
+    /// </summary>
+    /// <param name="ownerUsername">访问密钥所属用户名。</param>
+    /// <param name="model">请求模型名称。</param>
+    /// <returns>OCR 视觉来源路由；未找到时返回 null。</returns>
+    ProxyRouteDto? ChooseOcrRoute(string ownerUsername, string? model);
+
+    /// <summary>
     /// 列出指定用户可通过代理访问的对外模型名称。
     /// </summary>
     /// <param name="ownerUsername">访问密钥所属用户名。</param>

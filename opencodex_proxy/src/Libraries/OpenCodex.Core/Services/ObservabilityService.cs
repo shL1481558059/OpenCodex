@@ -3,7 +3,9 @@ using Mapster;
 using Microsoft.EntityFrameworkCore;
 using OpenCodex.Data;
 using OpenCodex.Core.Domain;
+using OpenCodex.Core.Persistence;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.Observability;
 using OpenCodex.CoreBase.Results;
@@ -28,6 +30,7 @@ public sealed class ObservabilityService : IObservabilityService
             ["channel_id"] = ("channel_ids", "text"),
             ["owner_username"] = ("owner_usernames", "text"),
             ["path"] = ("paths", "text"),
+            ["request_type"] = ("request_types", "text"),
             ["status_code"] = ("status_codes", "int"),
             ["api_key_id"] = ("api_key_ids", "int")
         };
@@ -145,6 +148,7 @@ public sealed class ObservabilityService : IObservabilityService
         var parsedPage = ParseLogPage(page);
         var offset = (parsedPage - 1) * parsedPageSize;
         using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
+        OpenCodexRequestLogs.EnsureSchema(context);
         var query = ApplyLogFilters(context.RequestLogs.AsNoTracking(), filters ?? new Dictionary<string, object?>());
         var total = query.Count();
         var events = query
@@ -174,6 +178,7 @@ public sealed class ObservabilityService : IObservabilityService
         }
 
         using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
+        OpenCodexRequestLogs.EnsureSchema(context);
         var query = ApplyLogFilters(context.RequestLogs.AsNoTracking(), filters ?? new Dictionary<string, object?>());
         var log = query
             .Include(item => item.Detail)
@@ -200,12 +205,21 @@ public sealed class ObservabilityService : IObservabilityService
             };
         }
 
+        if (field == "request_type")
+        {
+            return new Dictionary<string, object>(StringComparer.Ordinal)
+            {
+                ["request_types"] = new List<string> { ProxyRequestTypes.Main, ProxyRequestTypes.Ocr }
+            };
+        }
+
         if (!LogFilterFields.TryGetValue(field, out var option))
         {
             return new Dictionary<string, object>(StringComparer.Ordinal);
         }
 
         using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
+        OpenCodexRequestLogs.EnsureSchema(context);
         var logs = ApplyLogFilters(context.RequestLogs.AsNoTracking(), filters ?? new Dictionary<string, object?>());
         var values = field == "api_key_id"
             ? (object)DistinctApiKeyOptions(context, logs, query)
@@ -232,6 +246,7 @@ public sealed class ObservabilityService : IObservabilityService
         }
 
         using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
+        OpenCodexRequestLogs.EnsureSchema(context);
         var query = context.RequestLogs
             .AsNoTracking()
             .Where(log => log.CreatedAt >= resolved.StartTs && log.CreatedAt < resolved.EndTs);
@@ -325,6 +340,7 @@ public sealed class ObservabilityService : IObservabilityService
             "channel_id" when text.Length > 0 => query.Where(log => log.ChannelId != null && log.ChannelId.Contains(text)),
             "owner_username" when text.Length > 0 => query.Where(log => log.OwnerUsername.Contains(text)),
             "path" when text.Length > 0 => query.Where(log => log.Path != null && log.Path.Contains(text)),
+            "request_type" when text.Length > 0 => query.Where(log => log.RequestType == text),
             "client_ip" when text.Length > 0 => query.Where(log => log.ClientIp != null && log.ClientIp.Contains(text)),
             "error" when text.Length > 0 => query.Where(log => log.Error != null && log.Error.Contains(text)),
             "status_code" => ApplyStatusCodeFilter(query, value),
@@ -395,6 +411,7 @@ public sealed class ObservabilityService : IObservabilityService
             ["channel_ids"] = new List<string>(),
             ["owner_usernames"] = new List<string>(),
             ["paths"] = new List<string>(),
+            ["request_types"] = new List<string> { ProxyRequestTypes.Main, ProxyRequestTypes.Ocr },
             ["status_codes"] = new List<long>(),
             ["api_key_ids"] = new List<LogApiKeyFilterOption>(),
             ["request_statuses"] = new List<string> { "success", "failed" }
@@ -449,6 +466,7 @@ public sealed class ObservabilityService : IObservabilityService
             "channel_id" => query.Select(log => log.ChannelId),
             "owner_username" => query.Select(log => log.OwnerUsername),
             "path" => query.Select(log => log.Path),
+            "request_type" => query.Select(log => log.RequestType),
             _ => Enumerable.Empty<string?>().AsQueryable()
         };
 

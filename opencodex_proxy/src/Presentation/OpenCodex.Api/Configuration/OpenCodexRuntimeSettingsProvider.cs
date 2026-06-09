@@ -17,7 +17,9 @@ public sealed class OpenCodexRuntimeSettingsProvider : IOpenCodexRuntimeSettings
             ConfigValue("OpenCodex:DbPath", "OPENCODEX_DB_PATH") ?? "logs/opencodex.db",
             AdminUsername(),
             (ConfigValue("OpenCodex:AdminPassword", "OPENCODEX_ADMIN_PASSWORD") ?? string.Empty).Trim(),
-            PositiveInt("OpenCodex:DefaultTimeout", "OPENCODEX_DEFAULT_TIMEOUT", 120));
+            PositiveInt("OpenCodex:DefaultTimeout", "OPENCODEX_DEFAULT_TIMEOUT", 120),
+            ConfigValue("OpenCodex:OcrCacheDir", "OPENCODEX_OCR_CACHE_DIR") ?? "ocr-cache",
+            LocalOcrModel());
     }
 
     private string AdminUsername()
@@ -32,6 +34,21 @@ public sealed class OpenCodexRuntimeSettingsProvider : IOpenCodexRuntimeSettings
         return int.TryParse(value, out var parsedValue) && parsedValue > 0
             ? parsedValue
             : defaultValue;
+    }
+
+    private string LocalOcrModel()
+    {
+        var configured = ConfigValue("OpenCodex:LocalOcrModel", "OPENCODEX_LOCAL_OCR_MODEL");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return configured.Trim();
+        }
+
+        var legacy = ConfigValue("OpenCodex:TesseractLang", "OPENCODEX_TESSERACT_LANG");
+        var normalized = (legacy ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized.Contains("eng", StringComparison.Ordinal) && !normalized.Contains("chi", StringComparison.Ordinal)
+            ? "EnglishV5"
+            : "ChineseV5";
     }
 
     private string? ConfigValue(string primaryKey, string fallbackKey)

@@ -40,7 +40,7 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddHttpClient<IUpstreamClient, HttpUpstreamClient>();
         services.AddHttpClient<IUpstreamModelClient, HttpUpstreamClient>();
         services.AddHttpClient<IWebSearchClient, TavilyWebSearchClient>();
-        services.AddScoped<IOpenCodexRuntimeSettingsProvider, OpenCodexRuntimeSettingsProvider>();
+        services.AddSingleton<IOpenCodexRuntimeSettingsProvider, OpenCodexRuntimeSettingsProvider>();
         services.AddScoped<IRequestBodyReader, RequestBodyReader>();
         services.AddScoped<IWorkContext, WebWorkContext>();
         services.AddScoped<IAuthService, AuthService>();
@@ -54,7 +54,11 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<IWebSearchService, WebSearchService>();
         services.AddScoped<IProxyAccessService, ProxyAccessService>();
         services.AddScoped<IProxyEndpointService, ProxyEndpointService>();
+        services.AddScoped<IProxyImageFallbackService, ProxyImageFallbackService>();
+        services.AddScoped<IProxyImagePayloadRewriter, ProxyImagePayloadRewriter>();
         services.AddScoped<IProxyLogService, ProxyLogService>();
+        services.AddSingleton<ILocalImageOcrService, LocalPaddleImageOcrService>();
+        services.AddScoped<IProxyOcrService, ProxyOcrService>();
         services.AddScoped<IProxyRequestService, ProxyRequestService>();
         services.AddScoped<IProxyRouteService, ProxyRouteService>();
         services.AddScoped<IProxyNonStreamService, ProxyNonStreamService>();

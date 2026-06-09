@@ -50,7 +50,7 @@ public sealed class ProxyVisionRoutingTests
     }
 
     [Fact]
-    public void ChooseRoute_ImageInput_UsesSameChannelVisionModelFirst()
+    public void ChooseRoute_ImageInput_KeepsOriginalTextModel()
     {
         var service = CreateRouteService(
             ChannelEntity(
@@ -70,12 +70,40 @@ public sealed class ProxyVisionRoutingTests
         var route = service.ChooseRoute("admin", "text-model", requestContainsImages: true);
 
         Assert.Equal("text-model", route.OriginalModel);
-        Assert.Equal("same-vision-upstream", route.UpstreamModel);
+        Assert.Equal("text-upstream", route.UpstreamModel);
         Assert.Equal("primary", route.Channel["id"]);
+        Assert.False(route.SupportsImage);
     }
 
     [Fact]
-    public void ChooseRoute_ImageInput_FallsBackToLaterChannelVisionModel()
+    public void ChooseOcrRoute_ImageInput_UsesSameChannelVisionModelFirst()
+    {
+        var service = CreateRouteService(
+            ChannelEntity(
+                "admin",
+                "primary",
+                0,
+                [
+                    ModelConfig("text-model", "text-upstream", false),
+                    ModelConfig("same-vision", "same-vision-upstream", true)
+                ]),
+            ChannelEntity(
+                "admin",
+                "secondary",
+                1,
+                [ModelConfig("other-vision", "other-vision-upstream", true)]));
+
+        var route = service.ChooseOcrRoute("admin", "text-model");
+
+        Assert.NotNull(route);
+        Assert.Equal("same-vision", route!.OriginalModel);
+        Assert.Equal("same-vision-upstream", route.UpstreamModel);
+        Assert.Equal("primary", route.Channel["id"]);
+        Assert.True(route.SupportsImage);
+    }
+
+    [Fact]
+    public void ChooseOcrRoute_ImageInput_FallsBackToLaterChannelVisionModel()
     {
         var service = CreateRouteService(
             ChannelEntity(
@@ -89,11 +117,13 @@ public sealed class ProxyVisionRoutingTests
                 1,
                 [ModelConfig("other-vision", "other-vision-upstream", true)]));
 
-        var route = service.ChooseRoute("admin", "text-model", requestContainsImages: true);
+        var route = service.ChooseOcrRoute("admin", "text-model");
 
-        Assert.Equal("text-model", route.OriginalModel);
+        Assert.NotNull(route);
+        Assert.Equal("other-vision", route!.OriginalModel);
         Assert.Equal("other-vision-upstream", route.UpstreamModel);
         Assert.Equal("secondary", route.Channel["id"]);
+        Assert.True(route.SupportsImage);
     }
 
     [Fact]
@@ -117,7 +147,7 @@ public sealed class ProxyVisionRoutingTests
     }
 
     [Fact]
-    public void ChooseRoute_ImageInput_ThrowsWhenNoVisionModelExists()
+    public void ChooseOcrRoute_ImageInput_ReturnsNullWhenNoVisionModelExists()
     {
         var service = CreateRouteService(
             ChannelEntity(
@@ -126,9 +156,7 @@ public sealed class ProxyVisionRoutingTests
                 0,
                 [ModelConfig("text-model", "text-upstream", false)]));
 
-        var exception = Assert.Throws<OpenCodex.Core.Errors.RoutingException>(
-            () => service.ChooseRoute("admin", "text-model", requestContainsImages: true));
-        Assert.Contains("does not support image input", exception.Message);
+        Assert.Null(service.ChooseOcrRoute("admin", "text-model"));
     }
 
     [Theory]

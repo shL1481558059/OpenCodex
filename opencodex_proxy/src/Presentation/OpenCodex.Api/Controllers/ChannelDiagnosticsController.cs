@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using OpenCodex.Api.Infrastructure;
 using OpenCodex.CoreBase.DTOs.ChannelDiagnostics;
 using OpenCodex.CoreBase.Services;
 
@@ -31,9 +32,13 @@ public sealed class ChannelDiagnosticsController : AuthenticatedApiControllerBas
     [HttpPost("/test-channel")]
     public async Task<IActionResult> TestChannel(ChannelDiagnosticsRequest request)
     {
-        RequireUser();
+        var user = RequireUser();
         var result = await _channelDiagnostics.TestChannelAsync(
             request.ToDictionary(),
+            user,
+            ProxyRequestMetadataFactory.FromHttpRequest(
+                Request,
+                HttpContext.Connection.RemoteIpAddress?.ToString()),
             HttpContext.RequestAborted);
         return Api(result);
     }

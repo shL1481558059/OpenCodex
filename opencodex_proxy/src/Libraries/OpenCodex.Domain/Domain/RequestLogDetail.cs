@@ -16,6 +16,8 @@ public sealed class RequestLogDetail : BaseEntity
 
     public string? WebSearchJson { get; set; }
 
+    public string? OcrJson { get; set; }
+
     public RequestLog? RequestLog { get; set; }
 
     public override object? GetId()

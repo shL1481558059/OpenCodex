@@ -74,6 +74,11 @@
           <el-option v-for="item in filterOptions.request_statuses" :key="item" :label="item === 'success' ? '成功' : '失败'" :value="item" />
         </el-select>
       </el-form-item>
+      <el-form-item label="请求类型">
+        <el-select v-model="logFilters.request_type" clearable @change="loadLogs(1)">
+          <el-option v-for="item in filterOptions.request_types" :key="item" :label="formatRequestType(item)" :value="item" />
+        </el-select>
+      </el-form-item>
       <el-form-item label="状态码">
         <el-select v-model="logFilters.status_code" clearable filterable remote :remote-method="(query) => loadFilterOptions('status_code', query)" :loading="filterOptionsLoading.status_code" @visible-change="(visible) => handleFilterVisible('status_code', visible)" @change="loadLogs(1)">
           <el-option v-for="item in filterOptions.status_codes" :key="item" :label="item" :value="String(item)" />
@@ -115,6 +120,9 @@
             <el-tag v-if="column.key === 'request_status'" :type="row.request_status === 'success' ? 'success' : 'danger'">
               {{ row.request_status === "success" ? "成功" : "失败" }}
             </el-tag>
+            <el-tag v-else-if="column.key === 'request_type'" :type="row.request_type === 'ocr' ? 'warning' : 'info'">
+              {{ formatRequestType(row.request_type) }}
+            </el-tag>
             <span v-else>{{ formatLogCell(row, column) }}</span>
           </template>
         </el-table-column>
@@ -149,11 +157,43 @@
             <el-descriptions-item label="请求状态">
               {{ selectedLog.request_status === "success" ? "成功" : "失败" }}
             </el-descriptions-item>
+            <el-descriptions-item label="请求类型">
+              <el-tag :type="selectedLog.request_type === 'ocr' ? 'warning' : 'info'">
+                {{ formatRequestType(selectedLog.request_type) }}
+              </el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="父日志 ID">
+              <template v-if="selectedLog.parent_request_log_id">
+                <el-button link type="primary" @click="openLogDetailById(selectedLog.parent_request_log_id)">
+                  #{{ selectedLog.parent_request_log_id }}
+                </el-button>
+              </template>
+              <span v-else>-</span>
+            </el-descriptions-item>
             <el-descriptions-item label="模型">{{ selectedLog.model }}</el-descriptions-item>
             <el-descriptions-item label="上游模型">{{ selectedLog.upstream_model }}</el-descriptions-item>
             <el-descriptions-item label="状态码">{{ selectedLog.status_code }}</el-descriptions-item>
             <el-descriptions-item label="成本">{{ formatCost(selectedLog.cost) }}</el-descriptions-item>
           </el-descriptions>
+          <div class="log-detail-actions">
+            <el-button
+              v-if="selectedLog.request_type === 'main' && selectedLog.request_id"
+              size="small"
+              type="primary"
+              plain
+              @click="openRelatedLogs(selectedLog.request_id, 'ocr')"
+            >
+              查看同请求 OCR 子日志
+            </el-button>
+            <el-button
+              v-if="selectedLog.request_type === 'ocr' && selectedLog.request_id"
+              size="small"
+              plain
+              @click="openRelatedLogs(selectedLog.request_id, 'main')"
+            >
+              查看主请求日志
+            </el-button>
+          </div>
           <el-alert v-if="selectedLog?.error" class="log-detail-error" title="错误" type="error" :closable="false">
             <pre class="json-view">{{ selectedLog.error }}</pre>
           </el-alert>
@@ -163,7 +203,9 @@
                 <el-tooltip :content="`复制${section.label}`">
                   <el-button class="json-copy-button" :icon="CopyDocument" circle size="small" @click="copyLogDetailContent(section.label, selectedLog?.[section.key])" />
                 </el-tooltip>
-                <pre class="json-view json-view--with-action">{{ formatStoredJson(selectedLog?.[section.key]) }}</pre>
+                <div class="json-view json-view--with-action json-view--pretty">
+                  <VueJsonPretty :data="parseStoredJson(selectedLog?.[section.key])" :deep="1" show-icon show-length />
+                </div>
               </div>
             </el-tab-pane>
           </el-tabs>
@@ -177,6 +219,8 @@
 import { ref, reactive, computed, onBeforeUnmount, onMounted, watch } from "vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
 import { Check, CopyDocument, Refresh, Search, Setting, View } from "@element-plus/icons-vue";
+import VueJsonPretty from "vue-json-pretty";
+import "vue-json-pretty/lib/styles.css";
 
 const props = defineProps({
   api: { type: Function, required: true },
@@ -202,7 +246,8 @@ const filterOptions = reactive({
   api_key_ids: [],
   paths: [],
   status_codes: [],
-  request_statuses: ["success", "failed"]
+  request_statuses: ["success", "failed"],
+  request_types: ["main", "ocr"]
 });
 
 const filterOptionFieldMap = {
@@ -232,7 +277,8 @@ const logFilters = reactive({
   api_key_id: "",
   status_code: "",
   path: "",
-  request_status: ""
+  request_status: "",
+  request_type: ""
 });
 
 const selectedLog = ref(null);
@@ -246,6 +292,7 @@ const logDetailSections = [
   { key: "upstream_request_body", label: "转换后请求" },
   { key: "upstream_response_body", label: "转换前响应" },
   { key: "response_body", label: "转换后响应" },
+  { key: "ocr_json", label: "OCR 元数据" },
   { key: "web_search_json", label: "Web Search" }
 ];
 
@@ -253,6 +300,7 @@ const logColumnDefinitions = [
   { key: "created_at", prop: "created_at", label: "时间", width: 180 },
   { key: "request_id", prop: "request_id", label: "请求", width: 130, showOverflowTooltip: true },
   { key: "request_status", prop: "request_status", label: "状态", width: 90 },
+  { key: "request_type", prop: "request_type", label: "类型", width: 100 },
   { key: "owner_username", prop: "owner_username", label: "用户", width: 120, showOverflowTooltip: true },
   { key: "api_key_id", prop: "api_key_id", label: "Key 名称", width: 140, showOverflowTooltip: true },
   { key: "model", prop: "model", label: "模型", minWidth: 160, showOverflowTooltip: true },
@@ -325,7 +373,7 @@ function handleFilterVisible(field, visible) {
 }
 
 function resetLogFilters() {
-  Object.assign(logFilters, { request_id: "", model: "", channel_id: "", owner_username: "", api_key_id: "", status_code: "", path: "", request_status: "" });
+  Object.assign(logFilters, { request_id: "", model: "", channel_id: "", owner_username: "", api_key_id: "", status_code: "", path: "", request_status: "", request_type: "" });
   loadLogs(1);
 }
 
@@ -358,6 +406,17 @@ async function openLogDetail(row) {
   } finally {
     if (token === logDetailRequestToken) logDetailLoading.value = false;
   }
+}
+
+function openLogDetailById(logId) {
+  openLogDetail({ id: logId });
+}
+
+function openRelatedLogs(requestId, requestType) {
+  logFilters.request_id = requestId || "";
+  logFilters.request_type = requestType || "";
+  logDetailVisible.value = false;
+  loadLogs(1);
 }
 
 function resetLogDetail() {
@@ -456,6 +515,10 @@ function formatLogCell(row, column) {
   }
 }
 
+function formatRequestType(value) {
+  return value === "ocr" ? "OCR" : value === "main" ? "主请求" : value || "";
+}
+
 function formatApiKeyName(row) {
   const name = String(row.api_key_name || "").trim();
   if (name) return name;
@@ -466,6 +529,12 @@ function formatStoredJson(value) {
   if (value === null || value === undefined || value === "") return "";
   if (typeof value === "string") { try { return formatJson(JSON.parse(value)); } catch { return value; } }
   return formatJson(value);
+}
+
+function parseStoredJson(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "string") { try { return JSON.parse(value); } catch { return value; } }
+  return value;
 }
 
 function formatCost(value) {
@@ -506,3 +575,12 @@ onBeforeUnmount(() => {
   stopLogAutoRefreshTimer();
 });
 </script>
+
+<style scoped>
+.log-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+</style>

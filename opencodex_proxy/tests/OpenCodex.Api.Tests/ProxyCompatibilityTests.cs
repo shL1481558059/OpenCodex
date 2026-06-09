@@ -327,6 +327,179 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
+    public void ConvertRequest_ResponsesInputImage_ConvertsToChatImageUrlContent()
+    {
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["role"] = "user",
+                        ["content"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "input_text",
+                                ["text"] = "看看这张图"
+                            },
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "input_image",
+                                ["image_url"] = "data:image/png;base64,AAAA",
+                                ["detail"] = "high"
+                            }
+                        }
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Chat,
+            "upstream");
+
+        var messages = Assert.IsType<List<object?>>(request["messages"]);
+        var user = Assert.IsType<Dictionary<string, object?>>(messages[^1]);
+        Assert.Equal("user", user["role"]);
+
+        var content = Assert.IsType<List<object?>>(user["content"]);
+        var textPart = Assert.IsType<Dictionary<string, object?>>(content[0]);
+        Assert.Equal("text", textPart["type"]);
+        Assert.Equal("看看这张图", textPart["text"]);
+
+        var imagePart = Assert.IsType<Dictionary<string, object?>>(content[1]);
+        Assert.Equal("image_url", imagePart["type"]);
+
+        var imageUrl = Assert.IsType<Dictionary<string, object?>>(imagePart["image_url"]);
+        Assert.Equal("data:image/png;base64,AAAA", imageUrl["url"]);
+        Assert.Equal("high", imageUrl["detail"]);
+
+        var serialized = JsonSerializer.Serialize(content);
+        Assert.DoesNotContain("input_image", serialized);
+    }
+
+    [Fact]
+    public void ConvertRequest_ResponsesToolSchemaWithEmptyStringEnum_SanitizesForChat()
+    {
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = "ping",
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "function",
+                        ["name"] = "format_text",
+                        ["description"] = "Format text.",
+                        ["parameters"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object?>
+                            {
+                                ["formatting"] = new Dictionary<string, object?>
+                                {
+                                    ["type"] = "object",
+                                    ["properties"] = new Dictionary<string, object?>
+                                    {
+                                        ["link"] = new Dictionary<string, object?>
+                                        {
+                                            ["anyOf"] = new List<object?>
+                                            {
+                                                new Dictionary<string, object?>
+                                                {
+                                                    ["type"] = "string",
+                                                    ["enum"] = new List<object?> { string.Empty }
+                                                },
+                                                new Dictionary<string, object?>
+                                                {
+                                                    ["type"] = "string"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Chat,
+            "upstream");
+
+        var serialized = JsonSerializer.Serialize(request["tools"]);
+        Assert.DoesNotContain("\"enum\":[\"\"]", serialized);
+        Assert.Contains("\"link\":{\"type\":\"string\"}", serialized);
+    }
+
+    [Fact]
+    public void ConvertRequest_ChatToolSchemaWithEmptyStringEnum_SanitizesForChat()
+    {
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["messages"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["role"] = "user",
+                        ["content"] = "ping"
+                    }
+                },
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "function",
+                        ["function"] = new Dictionary<string, object?>
+                        {
+                            ["name"] = "format_text",
+                            ["parameters"] = EmptyStringEnumParameters()
+                        }
+                    }
+                }
+            },
+            ProtocolConverter.Chat,
+            ProtocolConverter.Chat,
+            "upstream");
+
+        var serialized = JsonSerializer.Serialize(request["tools"]);
+        Assert.DoesNotContain("\"enum\":[\"\"]", serialized);
+        Assert.Contains("\"link\":{\"type\":\"string\"}", serialized);
+    }
+
+    [Fact]
+    public void ConvertRequest_ResponsesToolSchemaWithEmptyStringEnum_SanitizesForMessages()
+    {
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = "ping",
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "function",
+                        ["name"] = "format_text",
+                        ["parameters"] = EmptyStringEnumParameters()
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Messages,
+            "upstream");
+
+        var serialized = JsonSerializer.Serialize(request["tools"]);
+        Assert.DoesNotContain("\"enum\":[\"\"]", serialized);
+        Assert.Contains("\"link\":{\"type\":\"string\"}", serialized);
+    }
+
+    [Fact]
     public void ConvertResponse_ChatApplyPatchProxy_RebuildsExecCommand()
     {
         var response = ProtocolConverter.ConvertResponse(
@@ -713,6 +886,39 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                         ["content"] = text
                     },
                     ["finish_reason"] = "stop"
+                }
+            }
+        };
+    }
+
+    private static Dictionary<string, object?> EmptyStringEnumParameters()
+    {
+        return new Dictionary<string, object?>
+        {
+            ["type"] = "object",
+            ["properties"] = new Dictionary<string, object?>
+            {
+                ["formatting"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "object",
+                    ["properties"] = new Dictionary<string, object?>
+                    {
+                        ["link"] = new Dictionary<string, object?>
+                        {
+                            ["anyOf"] = new List<object?>
+                            {
+                                new Dictionary<string, object?>
+                                {
+                                    ["type"] = "string",
+                                    ["enum"] = new List<object?> { string.Empty }
+                                },
+                                new Dictionary<string, object?>
+                                {
+                                    ["type"] = "string"
+                                }
+                            }
+                        }
+                    }
                 }
             }
         };
