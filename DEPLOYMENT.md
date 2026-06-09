@@ -1,16 +1,11 @@
 # OpenCodex Proxy 部署文档
 
-## 结论
-
-Windhub 的 `mimo-v2.5-pro` 在本项目中统一走 `/v1/messages` 上游。
-
-原因：本地实测 Windhub `/v1/messages` 可以完成工具调用续轮；`/v1/chat/completions` 文本请求可用，但工具结果续轮会触发 `reasoning_content` 兼容错误或偶发 500。
-
 ## 本地准备
 
 ```bash
 cp .env.example .env
 mkdir -p logs
+dotnet dev-certs https --trust
 DOTNET_ROOT="$HOME/.dotnet" PATH="$HOME/.dotnet:$PATH" dotnet restore opencodex_proxy/OpenCodex.sln
 ```
 
@@ -25,40 +20,66 @@ OPENCODEX_LOG_LEVEL=INFO
 OPENCODEX_LOG_VIEW_LEVEL=BASIC
 OPENCODEX_DEFAULT_TIMEOUT=120
 OPENCODEX_SECRET_KEY=change-me-session-secret
+TZ=Asia/Shanghai
 ```
 
 启动：
 
 ```bash
-DOTNET_ROOT="$HOME/.dotnet" PATH="$HOME/.dotnet:$PATH" dotnet run --project opencodex_proxy/src/Presentation/OpenCodex.Api
+DOTNET_ROOT="$HOME/.dotnet" PATH="$HOME/.dotnet:$PATH" dotnet run --launch-profile OpenCodex.Api --project opencodex_proxy/src/Presentation/OpenCodex.Api/OpenCodex.Api.csproj
 ```
 
-使用 `OPENCODEX_ADMIN_USERNAME` 和 `OPENCODEX_ADMIN_PASSWORD` 调用 `/admin/api/login` 登录。首次登录后建议先完成两件事：
+本地后端监听 `https://localhost:8443`。管理台前端启动：
 
-1. 调用 `/admin/api/config` 新增自己的上游渠道。渠道里的 `apikey` 是 Windhub、OpenAI 或其他上游服务的 Key。
-2. 调用 `/admin/api/api-keys` 创建访问 API Key。这个 Key 是客户端调用 OpenCodex Proxy 的 Bearer Key，明文只显示一次。
+```bash
+npm --prefix frontend install
+npm --prefix frontend run dev -- --host 127.0.0.1 --port 5173
+```
+
+访问 `http://127.0.0.1:5173/admin/`。前端开发服务器会把 `/admin/login`、`/admin/config` 等请求转发到后端真实接口 `/login`、`/config` 等。直接调用后端 API 时不要加 `/admin` 或 `/admin/api` 前缀。
+
+使用 `OPENCODEX_ADMIN_USERNAME` 和 `OPENCODEX_ADMIN_PASSWORD` 调用 `/login` 登录。首次登录后建议先完成两件事：
+
+1. 调用 `/config` 新增自己的上游渠道。渠道里的 `apikey` 是 Windhub、OpenAI 或其他上游服务的 Key。
+2. 调用 `/api-keys` 创建访问 API Key。这个 Key 是客户端调用 OpenCodex Proxy 的 Bearer Key，明文只显示一次。
 
 普通用户只能由超级管理员创建。普通用户只能看到自己的渠道、自己的访问 API Key 和自己的请求日志；超级管理员能看到全部。Web Search 模拟只允许超级管理员配置和使用。
 
-## Windhub MiMo 配置
-
-通过管理接口新增 `windhub-mimo-messages` 渠道，并将它放在渠道列表首位。
-
-核心配置：
-
-```json
-{
-  "id": "windhub-mimo-messages",
-  "type": "messages",
-  "baseurl": "https://windhub.cc",
-  "apikey": "sk-your-windhub-upstream-key",
-  "auth_mode": "config"
-}
-```
-
 也可以把上游 Key 写成 `${WINDHUB_UPSTREAM_API_KEY}`，再在运行服务的环境中提供该变量。它只用于渠道上游鉴权，不是客户端调用代理的访问 API Key。
 
-## x86/amd64 Docker 镜像
+生产环境必须把 `OPENCODEX_SECRET_KEY` 改成足够随机的值，不要使用示例默认值。
+
+## 快速更新远程镜像
+
+推荐使用本地脚本更新服务器上的容器镜像：
+
+```bash
+./scripts/update_remote_image.sh
+```
+
+脚本默认会执行以下流程：
+
+1. 在本地使用 `docker buildx build --platform linux/amd64` 构建并推送镜像。
+2. 通过 SSH 登录远程服务器。
+3. 在远程部署目录中拉取新镜像。
+4. 更新 `docker-compose.yml` / `docker-compose.yaml` / `compose.yml` / `compose.yaml` 中目标服务的 `image` 字段。
+5. 执行 `docker compose up -d --no-build --force-recreate` 重建目标容器。
+
+常用环境变量覆盖：
+
+```bash
+REMOTE_USER=admin \
+REMOTE_HOST=ssh.shldev.me \
+SSH_KEY=/path/to/key.pem \
+REMOTE_DEPLOY_DIR=/www/wwwroot/opencodex-proxy \
+IMAGE_NAME=shl148155/opencodexp:latest \
+SERVICE_NAME=opencodex-proxy \
+./scripts/update_remote_image.sh
+```
+
+远程部署目录下必须已经存在 `.env` 和 compose 文件；脚本不会创建新的 compose 配置。
+
+## 手动 x86/amd64 Docker 镜像
 
 `Dockerfile` 只发布 .NET 10 API，最终镜像通过 `dotnet OpenCodex.Api.dll` 运行。
 

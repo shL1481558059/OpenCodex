@@ -18,7 +18,8 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
     {
         _client = factory.CreateClient(new WebApplicationFactoryClientOptions
         {
-            AllowAutoRedirect = false
+            AllowAutoRedirect = false,
+            HandleCookies = false
         });
     }
 
@@ -38,6 +39,7 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         Assert.Contains("/session", routes);
         Assert.Contains("/login", routes);
         Assert.Contains("/config", routes);
+        Assert.Contains("/pricing", routes);
         Assert.Contains("/logs", routes);
     }
 
@@ -54,6 +56,9 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
 
         var logs = await SendWithCookie(HttpMethod.Get, "/logs?page=1&page_size=5", cookie);
         Assert.Equal(HttpStatusCode.OK, logs.StatusCode);
+
+        var pricing = await SendWithCookie(HttpMethod.Get, "/pricing", cookie);
+        Assert.Equal(HttpStatusCode.OK, pricing.StatusCode);
     }
 
     [Fact]
@@ -97,14 +102,94 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         await AssertResponseCode(log, HttpStatusCode.NotFound);
     }
 
+    [Fact]
+    public async Task PricingDefaultsAreSeededAndSuperadminCanMaintain()
+    {
+        var cookie = await LoginAndReadSessionCookie();
+        var list = await SendWithCookie(HttpMethod.Get, "/pricing", cookie);
+        Assert.Equal(HttpStatusCode.OK, list.StatusCode);
+        using (var document = await JsonDocument.ParseAsync(await list.Content.ReadAsStreamAsync()))
+        {
+            Assert.True(document.RootElement.GetProperty("Data").GetProperty("prices").GetArrayLength() > 0);
+        }
+
+        var modelId = $"test-model-{Guid.NewGuid():N}";
+        var created = await SendJsonWithCookie(
+            HttpMethod.Post,
+            "/pricing",
+            cookie,
+            new
+            {
+                model_id = modelId,
+                vendor = "test",
+                name = "Test Model",
+                input_price = 1.5,
+                cached_input_price = 0.5,
+                output_price = 3,
+                enabled = true
+            });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        var priceId = await ReadLongProperty(created, "Data", "price", "id");
+        var updated = await SendJsonWithCookie(
+            HttpMethod.Patch,
+            $"/pricing/{priceId}",
+            cookie,
+            new
+            {
+                cached_input_price = (double?)null,
+                enabled = false
+            });
+        Assert.Equal(HttpStatusCode.OK, updated.StatusCode);
+        using (var document = await JsonDocument.ParseAsync(await updated.Content.ReadAsStreamAsync()))
+        {
+            var price = document.RootElement.GetProperty("Data").GetProperty("price");
+            Assert.False(price.GetProperty("enabled").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, price.GetProperty("cached_input_price").ValueKind);
+        }
+
+        var deleted = await SendWithCookie(HttpMethod.Delete, $"/pricing/{priceId}", cookie);
+        Assert.Equal(HttpStatusCode.OK, deleted.StatusCode);
+    }
+
+    [Fact]
+    public async Task PricingRoutesRequireSuperadmin()
+    {
+        var adminCookie = await LoginAndReadSessionCookie();
+        var username = $"pricing-user-{Guid.NewGuid():N}";
+        var password = "user-password";
+        var createdUser = await SendJsonWithCookie(
+            HttpMethod.Post,
+            "/users",
+            adminCookie,
+            new
+            {
+                username,
+                password,
+                enabled = true
+            });
+        Assert.Equal(HttpStatusCode.Created, createdUser.StatusCode);
+
+        var userCookie = await LoginAndReadSessionCookie(username, password);
+        var pricing = await SendWithCookie(HttpMethod.Get, "/pricing", userCookie);
+        await AssertResponseCode(pricing, HttpStatusCode.Forbidden);
+    }
+
     private async Task<string> LoginAndReadSessionCookie()
+    {
+        return await LoginAndReadSessionCookie("admin", OpenCodexApiFactory.AdminPassword);
+    }
+
+    private async Task<string> LoginAndReadSessionCookie(
+        string username,
+        string password)
     {
         var response = await _client.PostAsync(
             "/login",
             new FormUrlEncodedContent(new Dictionary<string, string>
             {
-                ["username"] = "admin",
-                ["password"] = OpenCodexApiFactory.AdminPassword
+                ["username"] = username,
+                ["password"] = password
             }));
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -116,6 +201,23 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
 
         Assert.False(string.IsNullOrEmpty(cookie));
         return cookie;
+    }
+
+    private Task<HttpResponseMessage> SendJsonWithCookie(
+        HttpMethod method,
+        string requestUri,
+        string cookie,
+        object body)
+    {
+        var request = new HttpRequestMessage(method, requestUri)
+        {
+            Content = new StringContent(
+                JsonSerializer.Serialize(body),
+                System.Text.Encoding.UTF8,
+                "application/json")
+        };
+        request.Headers.Add("Cookie", cookie);
+        return _client.SendAsync(request);
     }
 
     private Task<HttpResponseMessage> SendWithCookie(
@@ -138,6 +240,20 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         using var document = JsonDocument.Parse(body);
         Assert.Equal((int)expectedStatusCode, document.RootElement.GetProperty("ErrorCode").GetInt32());
         Assert.True(document.RootElement.TryGetProperty("ErrorMsg", out _));
+    }
+
+    private static async Task<long> ReadLongProperty(
+        HttpResponseMessage response,
+        params string[] path)
+    {
+        using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        var element = document.RootElement;
+        foreach (var segment in path)
+        {
+            element = element.GetProperty(segment);
+        }
+
+        return element.GetInt64();
     }
 }
 

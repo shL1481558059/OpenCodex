@@ -67,6 +67,9 @@
             <section v-if="isSuperadmin && activeTab === 'web-search'">
               <WebSearch :api="api"  />
             </section>
+            <section v-if="isSuperadmin && activeTab === 'pricing'">
+              <Pricing :api="api" />
+            </section>
             <section v-if="activeTab === 'logs'">
               <Logs :api="api" :is-superadmin="isSuperadmin" :active="activeTab === 'logs'" />
             </section>
@@ -101,6 +104,7 @@ import {
   DataLine,
   Expand,
   Key,
+  Money,
   Search,
   SwitchButton,
   Tickets,
@@ -112,6 +116,7 @@ const Channels = defineAsyncComponent(() => import("./Channels.vue"));
 const AccessKeys = defineAsyncComponent(() => import("./AccessKeys.vue"));
 const Users = defineAsyncComponent(() => import("./Users.vue"));
 const WebSearch = defineAsyncComponent(() => import("./WebSearch.vue"));
+const Pricing = defineAsyncComponent(() => import("./Pricing.vue"));
 const Logs = defineAsyncComponent(() => import("./Logs.vue"));
 
 const activeTab = ref("dashboard");
@@ -135,6 +140,7 @@ const menuItems = [
   { index: "api-keys", label: "API Key 管理", icon: Key },
   { index: "users", label: "用户管理", icon: User, superadminOnly: true },
   { index: "web-search", label: "Web Search 模拟", icon: Search, superadminOnly: true },
+  { index: "pricing", label: "定价管理", icon: Money, superadminOnly: true },
   { index: "logs", label: "请求日志", icon: Tickets }
 ];
 
@@ -205,7 +211,7 @@ function setAuthenticatedUser(data) {
 }
 
 function ensureAllowedActiveTab() {
-  if (!isSuperadmin.value && ["users", "web-search"].includes(activeTab.value)) {
+  if (!isSuperadmin.value && ["users", "web-search", "pricing"].includes(activeTab.value)) {
     activeTab.value = "dashboard";
   }
 }

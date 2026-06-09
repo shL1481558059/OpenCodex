@@ -49,6 +49,7 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<IConfigService, ConfigService>();
         services.AddScoped<IUserService, UserService>();
         services.AddScoped<IApiKeyService, ApiKeyService>();
+        services.AddScoped<IModelPricingService, ModelPricingService>();
         services.AddScoped<IObservabilityService, ObservabilityService>();
         services.AddScoped<IWebSearchService, WebSearchService>();
         services.AddScoped<IProxyAccessService, ProxyAccessService>();
