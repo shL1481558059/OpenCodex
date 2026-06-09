@@ -145,7 +145,7 @@ public sealed partial class HttpUpstreamClient : IUpstreamClient, IUpstreamModel
 
                 if (response.IsSuccessStatusCode)
                 {
-                    return await ReadJsonObject(response, channel, cancellationToken);
+                    return await ReadJsonModelList(response, channel, cancellationToken);
                 }
 
                 if (attempt >= retryCount || !RetryableStatuses.Contains(response.StatusCode))

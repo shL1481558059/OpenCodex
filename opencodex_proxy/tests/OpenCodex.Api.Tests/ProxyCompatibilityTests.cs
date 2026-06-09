@@ -1,10 +1,12 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using OpenCodex.Core.Domain;
+using OpenCodex.Core.ExternalIntegrations;
 using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.WebSearch;
 using OpenCodex.CoreBase.Abstractions;
@@ -120,6 +122,36 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             .GetProperty("models")
             .EnumerateArray()
             .Select(item => item.GetProperty("slug").GetString() ?? string.Empty)
+            .ToArray());
+    }
+
+    [Fact]
+    public async Task ListModelsAsync_NormalizesArrayRootResponses()
+    {
+        var handler = new StaticJsonHandler(
+            """
+            [
+              { "id": "model-a" },
+              { "id": "model-b" }
+            ]
+            """);
+        var upstream = new HttpUpstreamClient(new HttpClient(handler));
+
+        var result = await upstream.ListModelsAsync(
+            new Dictionary<string, object?>
+            {
+                ["type"] = "chat",
+                ["baseurl"] = "https://example.test/v1",
+                ["auth_mode"] = "none",
+                ["retry_count"] = 0
+            },
+            30,
+            CancellationToken.None);
+
+        Assert.Equal("https://example.test/v1/models", handler.RequestUri?.ToString());
+        var data = Assert.IsType<List<object?>>(result["data"]);
+        Assert.Equal(["model-a", "model-b"], data
+            .Select(item => Assert.IsType<Dictionary<string, object?>>(item)["id"]?.ToString() ?? string.Empty)
             .ToArray());
     }
 
@@ -632,6 +664,29 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         {
             await Task.CompletedTask;
             yield break;
+        }
+    }
+
+    private sealed class StaticJsonHandler : HttpMessageHandler
+    {
+        private readonly string _json;
+
+        public StaticJsonHandler(string json)
+        {
+            _json = json;
+        }
+
+        public Uri? RequestUri { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RequestUri = request.RequestUri;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(_json, Encoding.UTF8, "application/json")
+            });
         }
     }
 
