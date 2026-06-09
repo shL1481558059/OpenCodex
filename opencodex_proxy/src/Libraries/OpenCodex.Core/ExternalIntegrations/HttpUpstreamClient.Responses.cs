@@ -40,6 +40,43 @@ public sealed partial class HttpUpstreamClient
             channelId: JsonDictionaryValue.String(channel, "id"));
     }
 
+    private static async Task<Dictionary<string, object?>> ReadJsonModelList(
+        HttpResponseMessage response,
+        IReadOnlyDictionary<string, object?> channel,
+        CancellationToken cancellationToken)
+    {
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (body.Length == 0)
+        {
+            return [];
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            var value = FromJsonElement(document.RootElement);
+            return value switch
+            {
+                Dictionary<string, object?> dictionary => dictionary,
+                List<object?> list => new Dictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["data"] = list
+                },
+                _ => throw new UpstreamException(
+                    "upstream returned invalid JSON",
+                    ProxyHttpStatus.BadGateway,
+                    channelId: JsonDictionaryValue.String(channel, "id"))
+            };
+        }
+        catch (JsonException)
+        {
+            throw new UpstreamException(
+                "upstream returned invalid JSON",
+                ProxyHttpStatus.BadGateway,
+                channelId: JsonDictionaryValue.String(channel, "id"));
+        }
+    }
+
     private static async Task ThrowHttpError(
         HttpResponseMessage response,
         IReadOnlyDictionary<string, object?> channel,
