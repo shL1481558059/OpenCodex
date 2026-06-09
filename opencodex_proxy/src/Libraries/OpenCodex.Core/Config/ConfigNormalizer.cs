@@ -48,6 +48,10 @@ public static class ConfigNormalizer
 
                 mapping["model"] = model;
                 mapping["upstream_model"] = upstreamModel;
+                if (!mapping.ContainsKey("supports_image"))
+                {
+                    mapping["supports_image"] = false;
+                }
             }
         }
 

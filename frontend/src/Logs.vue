@@ -84,9 +84,9 @@
           <el-option v-for="item in filterOptions.owner_usernames" :key="item" :label="item" :value="item" />
         </el-select>
       </el-form-item>
-      <el-form-item label="Key ID">
+      <el-form-item label="Key 名称">
         <el-select v-model="logFilters.api_key_id" clearable filterable remote :remote-method="(query) => loadFilterOptions('api_key_id', query)" :loading="filterOptionsLoading.api_key_id" @visible-change="(visible) => handleFilterVisible('api_key_id', visible)" @change="loadLogs(1)">
-          <el-option v-for="item in filterOptions.api_key_ids" :key="item" :label="item" :value="String(item)" />
+          <el-option v-for="item in filterOptions.api_key_ids" :key="apiKeyOptionValue(item)" :label="apiKeyOptionLabel(item)" :value="apiKeyOptionValue(item)" />
         </el-select>
       </el-form-item>
       <el-form-item class="log-filter-actions">
@@ -254,7 +254,7 @@ const logColumnDefinitions = [
   { key: "request_id", prop: "request_id", label: "请求", width: 130, showOverflowTooltip: true },
   { key: "request_status", prop: "request_status", label: "状态", width: 90 },
   { key: "owner_username", prop: "owner_username", label: "用户", width: 120, showOverflowTooltip: true },
-  { key: "api_key_id", prop: "api_key_id", label: "Key ID", width: 90 },
+  { key: "api_key_id", prop: "api_key_id", label: "Key 名称", width: 140, showOverflowTooltip: true },
   { key: "model", prop: "model", label: "模型", minWidth: 160, showOverflowTooltip: true },
   { key: "channel_id", prop: "channel_id", label: "渠道", minWidth: 130, showOverflowTooltip: true },
   { key: "status_code", prop: "status_code", label: "状态码", width: 90 },
@@ -428,17 +428,38 @@ function buildSuggestions(values) {
   return (values || []).map((v) => ({ value: String(v) }));
 }
 
+function apiKeyOptionValue(item) {
+  if (item && typeof item === "object" && item.id !== null && item.id !== undefined) return String(item.id);
+  return String(item ?? "");
+}
+
+function apiKeyOptionLabel(item) {
+  if (item && typeof item === "object") {
+    const name = String(item.name || "").trim();
+    return name || `#${apiKeyOptionValue(item)}`;
+  }
+  const value = apiKeyOptionValue(item);
+  return value ? `#${value}` : "";
+}
+
 // --- Formatting helpers ---
 
 function formatLogCell(row, column) {
   switch (column.key) {
     case "created_at": return formatTime(row.created_at);
+    case "api_key_id": return formatApiKeyName(row);
     case "duration_ms": return displayMs(row.duration_ms);
     case "ttft_ms": return displayMs(row.ttft_ms);
     case "tokens": return `${row.input_tokens || 0} / ${row.cached_tokens || 0} / ${row.output_tokens || 0}`;
     case "cost": return formatCost(row.cost);
     default: return row[column.prop] ?? "";
   }
+}
+
+function formatApiKeyName(row) {
+  const name = String(row.api_key_name || "").trim();
+  if (name) return name;
+  return row.api_key_id === null || row.api_key_id === undefined ? "" : `#${row.api_key_id}`;
 }
 
 function formatStoredJson(value) {

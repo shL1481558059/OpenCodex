@@ -64,7 +64,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             }
 
             requestModel = JsonDictionaryValue.String(payload, "model");
-            var route = _routes.ChooseRoute(ownerUsername, requestModel);
+            var requestContainsImages = ProxyImageRequestDetector.ContainsImageInput(payload, context.EntryProtocol);
+            var route = _routes.ChooseRoute(ownerUsername, requestModel, requestContainsImages);
             channelType = JsonDictionaryValue.String(route.Channel, "type");
             channelId = JsonDictionaryValue.String(route.Channel, "id");
             upstreamModel = route.UpstreamModel;

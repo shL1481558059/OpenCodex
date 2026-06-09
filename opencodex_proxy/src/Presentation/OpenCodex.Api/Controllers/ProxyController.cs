@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using OpenCodex.Api.Infrastructure;
 using OpenCodex.Core.Protocols;
 using OpenCodex.CoreBase.Domain.Proxy;
+using OpenCodex.CoreBase.DTOs.Proxy;
 using OpenCodex.CoreBase.Services.Proxy;
 
 namespace OpenCodex.Api.Controllers;
@@ -30,17 +31,17 @@ public sealed class ProxyController : ApiControllerBase
     public IActionResult Models()
     {
         var accessKey = _requests.AuthenticateAccessKey(AuthorizationHeader());
-        var modelIds = _routes.ListModels(accessKey.OwnerUsername);
-        var openAiModels = modelIds
+        var models = _routes.ListModelCapabilities(accessKey.OwnerUsername);
+        var openAiModels = models
             .Select(model => (object?)new Dictionary<string, object?>
             {
-                ["id"] = model,
+                ["id"] = model.Model,
                 ["object"] = "model",
                 ["created"] = 0,
                 ["owned_by"] = "opencodex"
             })
             .ToList();
-        var codexModels = modelIds
+        var codexModels = models
             .Select(model => (object?)CodexModelCatalogItem(model))
             .ToList();
 
@@ -103,13 +104,16 @@ public sealed class ProxyController : ApiControllerBase
             : null;
     }
 
-    private static Dictionary<string, object?> CodexModelCatalogItem(string model)
+    private static Dictionary<string, object?> CodexModelCatalogItem(ProxyModelCapabilityDto model)
     {
+        var inputModalities = model.SupportsImage
+            ? new List<object?> { "text", "image" }
+            : new List<object?> { "text" };
         return new Dictionary<string, object?>
         {
-            ["slug"] = model,
-            ["display_name"] = model,
-            ["description"] = $"OpenCodex routed model {model}.",
+            ["slug"] = model.Model,
+            ["display_name"] = model.Model,
+            ["description"] = $"OpenCodex routed model {model.Model}.",
             ["default_reasoning_level"] = "medium",
             ["supported_reasoning_levels"] = new List<object?>
             {
@@ -140,8 +144,8 @@ public sealed class ProxyController : ApiControllerBase
             ["default_verbosity"] = "medium",
             ["apply_patch_tool_type"] = "freeform",
             ["web_search_tool_type"] = "text",
-            ["input_modalities"] = new List<object?> { "text" },
-            ["supports_image_detail_original"] = false,
+            ["input_modalities"] = inputModalities,
+            ["supports_image_detail_original"] = model.SupportsImage,
             ["truncation_policy"] = new Dictionary<string, object?>
             {
                 ["mode"] = "tokens",

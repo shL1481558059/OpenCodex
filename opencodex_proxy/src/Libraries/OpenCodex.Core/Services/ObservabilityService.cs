@@ -69,11 +69,15 @@ public sealed class ObservabilityService : IObservabilityService
         IReadOnlyDictionary<string, object?> filters)
     {
         var (currentUsername, isSuperadmin) = CurrentScope();
-        return ApiOpResult<LogsPageResponse>.Succeed(LogsPageResponse.From(ReadLogsPage(
-            _settingsProvider.GetSettings(),
+        var settings = _settingsProvider.GetSettings();
+        var logsPage = ReadLogsPage(
+            settings,
             page,
             pageSize,
-            ScopedFilters(filters, currentUsername, isSuperadmin))));
+            ScopedFilters(filters, currentUsername, isSuperadmin));
+        return ApiOpResult<LogsPageResponse>.Succeed(LogsPageResponse.From(
+            logsPage,
+            ReadApiKeyNames(settings, logsPage.Events.Select(log => log.ApiKeyId))));
     }
 
     public ApiOpResult<IReadOnlyDictionary<string, object>> ReadLogFilterOption(
@@ -97,10 +101,13 @@ public sealed class ObservabilityService : IObservabilityService
             new Dictionary<string, object?>(StringComparer.Ordinal),
             currentUsername,
             isSuperadmin);
-        var log = ReadLogById(_settingsProvider.GetSettings(), logId, filters);
+        var settings = _settingsProvider.GetSettings();
+        var log = ReadLogById(settings, logId, filters);
         return log is null
             ? ApiOpResult<LogDetailResponse>.Fail(404, "log not found")
-            : ApiOpResult<LogDetailResponse>.Succeed(LogDetailResponse.From(log));
+            : ApiOpResult<LogDetailResponse>.Succeed(LogDetailResponse.From(
+                log,
+                ReadApiKeyNames(settings, new[] { log.ApiKeyId })));
     }
 
     public ApiOpResult<StatsResponse> ReadStats(
@@ -200,7 +207,9 @@ public sealed class ObservabilityService : IObservabilityService
 
         using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
         var logs = ApplyLogFilters(context.RequestLogs.AsNoTracking(), filters ?? new Dictionary<string, object?>());
-        var values = option.OptionType == "int"
+        var values = field == "api_key_id"
+            ? (object)DistinctApiKeyOptions(context, logs, query)
+            : option.OptionType == "int"
             ? (object)DistinctIntValues(logs, field, query)
             : DistinctTextValues(logs, field, query);
         return new Dictionary<string, object>(StringComparer.Ordinal)
@@ -387,9 +396,44 @@ public sealed class ObservabilityService : IObservabilityService
             ["owner_usernames"] = new List<string>(),
             ["paths"] = new List<string>(),
             ["status_codes"] = new List<long>(),
-            ["api_key_ids"] = new List<long>(),
+            ["api_key_ids"] = new List<LogApiKeyFilterOption>(),
             ["request_statuses"] = new List<string> { "success", "failed" }
         };
+    }
+
+    private static Dictionary<long, string> ReadApiKeyNames(
+        OpenCodexRuntimeSettings settings,
+        IEnumerable<long?> apiKeyIds)
+    {
+        if (!File.Exists(settings.DbPath))
+        {
+            return [];
+        }
+
+        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
+        return ReadApiKeyNames(context, apiKeyIds);
+    }
+
+    private static Dictionary<long, string> ReadApiKeyNames(
+        OpenCodexDbContext context,
+        IEnumerable<long?> apiKeyIds)
+    {
+        var ids = apiKeyIds
+            .Where(value => value.HasValue)
+            .Select(value => value!.Value)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+        {
+            return [];
+        }
+
+        return context.AccessApiKeys
+            .AsNoTracking()
+            .Where(key => ids.Contains(key.Id))
+            .Select(key => new { key.Id, key.Name })
+            .AsEnumerable()
+            .ToDictionary(key => key.Id, key => key.Name);
     }
 
     private static List<string> DistinctTextValues(
@@ -454,6 +498,41 @@ public sealed class ObservabilityService : IObservabilityService
             .Take(200)
             .AsEnumerable()
             .Select(value => value!.Value)
+            .ToList();
+    }
+
+    private static List<LogApiKeyFilterOption> DistinctApiKeyOptions(
+        OpenCodexDbContext context,
+        IQueryable<RequestLog> query,
+        object? search = null)
+    {
+        var queryText = (search?.ToString() ?? string.Empty).Trim();
+        var values = query
+            .Select(log => log.ApiKeyId)
+            .Where(value => value.HasValue);
+        if (queryText.Length > 0)
+        {
+            var matchingNameIds = context.AccessApiKeys
+                .AsNoTracking()
+                .Where(key => key.Name.Contains(queryText))
+                .Select(key => (long?)key.Id);
+            values = TryConvertInt64(queryText, out var parsed)
+                ? values.Where(value => value == parsed || matchingNameIds.Contains(value))
+                : values.Where(value => matchingNameIds.Contains(value));
+        }
+
+        var ids = values
+            .Distinct()
+            .OrderBy(value => value)
+            .Take(200)
+            .AsEnumerable()
+            .Select(value => value!.Value)
+            .ToList();
+        var names = ReadApiKeyNames(context, ids.Select(id => (long?)id));
+        return ids
+            .Select(id => new LogApiKeyFilterOption(
+                id,
+                names.TryGetValue(id, out var name) ? name : null))
             .ToList();
     }
 
