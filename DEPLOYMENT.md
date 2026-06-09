@@ -59,25 +59,28 @@ npm --prefix frontend run dev -- --host 127.0.0.1 --port 5173
 
 脚本默认会执行以下流程：
 
-1. 在本地使用 `docker buildx build --platform linux/amd64` 构建并推送镜像。
+1. 在本地使用 `docker buildx build --platform linux/amd64 --push` 构建 x86/amd64 镜像并推送到镜像仓库。管理台前端会在 Docker 构建阶段打包进镜像。
 2. 通过 SSH 登录远程服务器。
-3. 在远程部署目录中拉取新镜像。
-4. 更新 `docker-compose.yml` / `docker-compose.yaml` / `compose.yml` / `compose.yaml` 中目标服务的 `image` 字段。
-5. 执行 `docker compose up -d --no-build --force-recreate` 重建目标容器。
+3. 在远程部署目录中拉取已推送的新镜像；远程服务器不构建镜像。
+4. 备份并重写远程 `docker-compose.yml`，把服务统一为 `ocxp`。
+5. 移除旧容器 `opencodex-proxy` / `opencodex-proxy-8002`。
+6. 执行 `docker compose up -d --no-build --force-recreate --remove-orphans` 重建目标容器。
 
 常用环境变量覆盖：
 
 ```bash
 REMOTE_USER=admin \
 REMOTE_HOST=ssh.shldev.me \
-SSH_KEY=/path/to/key.pem \
-REMOTE_DEPLOY_DIR=/www/wwwroot/opencodex-proxy \
-IMAGE_NAME=shl148155/opencodexp:latest \
-SERVICE_NAME=opencodex-proxy \
+SSH_KEY=/path/to/private-key.pem \
+REMOTE_DEPLOY_DIR=/www/wwwroot/ocxp \
+IMAGE_NAME=shl148155/opencodexp:ocxp \
+SERVICE_NAME=ocxp \
 ./scripts/update_remote_image.sh
 ```
 
-远程部署目录下必须已经存在 `.env` 和 compose 文件；脚本不会创建新的 compose 配置。
+不要把真实 SSH 私钥路径、私钥内容或生产 `.env` 写入仓库文档。未设置 `SSH_KEY` 时，脚本会使用本机 SSH agent 或 SSH config。
+
+远程部署目录固定为 `/www/wwwroot/ocxp`。该目录下必须已经存在 `.env`，运行数据继续挂载到 `/www/wwwroot/ocxp/logs`。管理台静态文件随 Docker 镜像进入容器，不再同步到宿主机目录。脚本会备份并重写 `/www/wwwroot/ocxp/docker-compose.yml`，移除旧容器 `opencodex-proxy` / `opencodex-proxy-8002`，并启动新容器 `ocxp`。
 
 ## 手动 x86/amd64 Docker 镜像
 
@@ -102,10 +105,10 @@ mkdir -p logs
 
 docker run --rm \
   --platform linux/amd64 \
-  --name opencodex-proxy \
+  --name ocxp \
   --env-file .env \
   -v "$PWD/logs:/app/logs" \
-  shl148155/opencodexp:latest
+  shl148155/opencodexp:ocxp
 ```
 
 如果 `.env` 里使用容器路径，请保持：

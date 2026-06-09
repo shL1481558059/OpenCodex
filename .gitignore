@@ -5,6 +5,8 @@ logs/
 .playwright-cli/
 .DS_Store
 AGENTS.md
+.idea/
+*.DotSettings.user
 
 node_modules/
 frontend/node_modules/

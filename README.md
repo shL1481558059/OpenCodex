@@ -78,16 +78,16 @@ Authorization: Bearer ocx_...
 ## Docker
 
 ```bash
-docker buildx build --platform linux/amd64 -t shl148155/opencodexp:latest --push .
-docker pull shl148155/opencodexp:latest
+docker buildx build --platform linux/amd64 -t shl148155/opencodexp:ocxp --push .
+docker pull shl148155/opencodexp:ocxp
 docker run --rm \
   --platform linux/amd64 \
   --env-file .env \
   -v "$PWD/logs:/app/logs" \
-  shl148155/opencodexp:latest
+  shl148155/opencodexp:ocxp
 ```
 
-完整部署步骤见 [DEPLOYMENT.md](/Users/w/shL/work/shl/OpenCodex/DEPLOYMENT.md)。
+完整部署步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)。
 
 ## Codex CLI
 
