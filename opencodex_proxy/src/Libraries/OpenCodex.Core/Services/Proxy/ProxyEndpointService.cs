@@ -43,6 +43,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         Dictionary<string, object?>? payload = null;
         Dictionary<string, object?>? effectivePayload = null;
         Dictionary<string, object?>? upstreamRequest = null;
+        Dictionary<string, object?>? upstreamResponse = null;
         string? requestModel = null;
         string? upstreamModel = null;
         string? channelId = null;
@@ -160,6 +161,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             statusCode = exception.StatusCode;
             error = exception.Message;
             errorResponse = exception.ToResponse();
+            upstreamResponse = UpstreamErrorBody(exception);
             return new ProxyEndpointResult(statusCode, errorResponse, IsEmpty: false);
         }
         finally
@@ -173,7 +175,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         apiKeyId,
                         payload,
                         upstreamRequest,
-                        UpstreamResponse: null,
+                        UpstreamResponse: upstreamResponse,
                         ResponsePayload: null,
                         errorResponse,
                         requestModel,
@@ -196,5 +198,18 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         return (int)Math.Round(
             Stopwatch.GetElapsedTime(started).TotalMilliseconds,
             MidpointRounding.AwayFromZero);
+    }
+
+    private static Dictionary<string, object?>? UpstreamErrorBody(ProxyException exception)
+    {
+        if (exception is UpstreamException { Body: not null } upstream)
+        {
+            return new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["error"] = upstream.Body
+            };
+        }
+
+        return null;
     }
 }
