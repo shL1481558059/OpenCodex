@@ -1,4 +1,5 @@
 using System.Text.Json;
+using OpenCodex.CoreBase.Abstractions;
 
 namespace OpenCodex.Core.Protocols;
 
@@ -283,6 +284,51 @@ public static partial class SseStreamConverter
                     ["output_index"] = 0,
                     ["item"] = messageItem
                 });
+        }
+
+        // Convert tool_use blocks to function_call items in the Responses output format.
+        var toolOutputIndex = 1;
+        foreach (var block in contentBlocks.Values)
+        {
+            if (!TryAsObject(block, out var blockObj))
+            {
+                continue;
+            }
+
+            if (StringValue(blockObj, "type", string.Empty) != "tool_use")
+            {
+                continue;
+            }
+
+            var itemId = $"fc_{Guid.NewGuid():N}";
+            var callId = GetValue(blockObj, "id") ?? $"call_{Guid.NewGuid():N}";
+            var name = GetValue(blockObj, "name");
+            var arguments = WebSearchPayload.JsonDumps(GetValue(blockObj, "input") ?? new Dictionary<string, object?>());
+            var functionItem = ProtocolConverter.ResponsesToolCallItemFromToolCall(
+                callId,
+                name,
+                arguments,
+                itemId: itemId);
+
+            yield return Emit(
+                "response.function_call_arguments.done",
+                new Dictionary<string, object?>
+                {
+                    ["item_id"] = itemId,
+                    ["output_index"] = toolOutputIndex,
+                    ["arguments"] = functionItem.TryGetValue("arguments", out var itemArguments)
+                        ? itemArguments
+                        : arguments
+                });
+            yield return Emit(
+                "response.output_item.done",
+                new Dictionary<string, object?>
+                {
+                    ["output_index"] = toolOutputIndex,
+                    ["item"] = functionItem
+                });
+            output.Add(functionItem);
+            toolOutputIndex++;
         }
 
         yield return Emit(

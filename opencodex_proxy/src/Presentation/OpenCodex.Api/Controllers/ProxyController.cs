@@ -36,14 +36,14 @@ public sealed class ProxyController : ApiControllerBase
             .Select(model => (object?)new Dictionary<string, object?>
             {
                 ["id"] = model.Model,
-                ["object"] = "model",
-                ["created"] = 0,
-                ["owned_by"] = "opencodex"
+                ["display_name"] =  model.Model,
+                ["created_at"] = "2024-01-01T00:00:00Z",
+                ["type"] = "model"
             })
             .ToList();
-        var codexModels = models
-            .Select(model => (object?)CodexModelCatalogItem(model))
-            .ToList();
+        // var codexModels = models
+        //     .Select(model => (object?)CodexModelCatalogItem(model))
+        //     .ToList();
 
         return StatusCode(
             StatusCodes.Status200OK,
@@ -51,7 +51,7 @@ public sealed class ProxyController : ApiControllerBase
             {
                 ["object"] = "list",
                 ["data"] = openAiModels,
-                ["models"] = codexModels
+                //["models"] = codexModels
             });
     }
 
@@ -106,30 +106,32 @@ public sealed class ProxyController : ApiControllerBase
 
     private static Dictionary<string, object?> CodexModelCatalogItem(ProxyModelCapabilityDto model)
     {
+        // 针对 GPT-5.5 扩展了潜在的多模态输入支持
         var inputModalities = model.SupportsImage
-            ? new List<object?> { "text", "image" }
+            ? new List<object?> { "text", "image", "audio", "video" }
             : new List<object?> { "text" };
+
         return new Dictionary<string, object?>
         {
             ["slug"] = model.Model,
             ["display_name"] = model.Model,
-            ["description"] = $"OpenCodex routed model {model.Model}.",
-            ["default_reasoning_level"] = "medium",
+            ["description"] = $"GPT-5.5 architecture routed model: {model.Model}.",
+            ["default_reasoning_level"] = "fast", // 将默认推理级别调整为 fast（如果需要保持平衡可改回 medium）
             ["supported_reasoning_levels"] = new List<object?>
             {
-                ReasoningLevel("low", "Fast responses with lighter reasoning"),
+                ReasoningLevel("low", "Quick responses with lighter reasoning"),
                 ReasoningLevel("medium", "Balances speed and reasoning depth for everyday tasks"),
                 ReasoningLevel("high", "Greater reasoning depth for complex problems"),
-                ReasoningLevel("xhigh", "Extra high reasoning depth for complex problems")
+                ReasoningLevel("xhigh", "Extra high reasoning depth for extremely complex logic")
             },
             ["shell_type"] = "shell_command",
             ["visibility"] = "list",
-            ["minimal_client_version"] = "0.0.1",
+            ["minimal_client_version"] = "1.0.0", // 提升客户端版本要求
             ["supported_in_api"] = true,
             ["availability_nux"] = null,
             ["upgrade"] = null,
             ["priority"] = 100,
-            ["base_instructions"] = "You are Codex, a coding agent. Help the user by inspecting the workspace, making focused changes, and reporting results clearly.",
+            ["base_instructions"] = "You are an advanced GPT-5.5 coding agent. Help the user by inspecting the workspace, making focused changes, and reporting results clearly and efficiently.",
             ["model_messages"] = new Dictionary<string, object?>
             {
                 ["instructions_template"] = "{{ personality }}",
@@ -140,7 +142,7 @@ public sealed class ProxyController : ApiControllerBase
                     ["personality_pragmatic"] = string.Empty
                 }
             },
-            ["support_verbosity"] = false,
+            ["support_verbosity"] = true, // 升级为支持冗长控制
             ["default_verbosity"] = "medium",
             ["apply_patch_tool_type"] = "freeform",
             ["web_search_tool_type"] = "text",
@@ -149,20 +151,20 @@ public sealed class ProxyController : ApiControllerBase
             ["truncation_policy"] = new Dictionary<string, object?>
             {
                 ["mode"] = "tokens",
-                ["limit"] = 10000
+                ["limit"] = 256000 // 对应 GPT-5.5 的更大上下文截断限制
             },
             ["supports_parallel_tool_calls"] = true,
-            ["context_window"] = 128000,
-            ["max_context_window"] = 128000,
+            ["context_window"] = 256000, // 提升上下文窗口至 256k
+            ["max_context_window"] = 256000,
             ["auto_compact_token_limit"] = null,
-            ["reasoning_summary_format"] = "none",
-            ["default_reasoning_summary"] = "none",
-            ["supports_reasoning_summaries"] = false,
-            ["additional_speed_tiers"] = new List<object?>(),
-            ["service_tiers"] = new List<object?>(),
-            ["available_in_plans"] = new List<object?>(),
-            ["prefer_websockets"] = false,
-            ["experimental_supported_tools"] = new List<object?>(),
+            ["reasoning_summary_format"] = "text", // 启用推理摘要格式
+            ["default_reasoning_summary"] = "short",
+            ["supports_reasoning_summaries"] = true, // GPT-5.5 原生支持推理过程摘要
+            ["additional_speed_tiers"] = new List<object?> { "fast" }, // 在速度层级中显式声明支持 fast
+            ["service_tiers"] = new List<object?> { "standard", "pro" },
+            ["available_in_plans"] = new List<object?> { "free","plus", "team", "enterprise" },
+            ["prefer_websockets"] = true, // 偏向 WebSockets 以实现低延迟输出
+            ["experimental_supported_tools"] = new List<object?> { "code_interpreter", "web_browser" },
             ["supports_search_tool"] = true
         };
     }

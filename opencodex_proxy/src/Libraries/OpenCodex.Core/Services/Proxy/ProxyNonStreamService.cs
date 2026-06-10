@@ -89,6 +89,7 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
             statusCode = exception.StatusCode;
             error = exception.Message;
             errorResponse = exception.ToResponse();
+            upstreamResponse = UpstreamErrorBody(exception);
             return new ProxyNonStreamResult(statusCode, errorResponse);
         }
         finally
@@ -122,5 +123,18 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
         return (int)Math.Round(
             Stopwatch.GetElapsedTime(started).TotalMilliseconds,
             MidpointRounding.AwayFromZero);
+    }
+
+    private static Dictionary<string, object?>? UpstreamErrorBody(ProxyException exception)
+    {
+        if (exception is UpstreamException { Body: not null } upstream)
+        {
+            return new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["error"] = upstream.Body
+            };
+        }
+
+        return null;
     }
 }

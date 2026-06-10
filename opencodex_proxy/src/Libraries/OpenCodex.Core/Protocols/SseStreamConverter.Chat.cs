@@ -44,6 +44,10 @@ public static partial class SseStreamConverter
         object? completionCreated = null;
         var finishReason = "stop";
         var textStarted = false;
+        var reasoningParts = new List<string>();
+        var reasoningStarted = false;
+        var reasoningOutputIndex = (int?)null;
+        var reasoningItemId = $"rs_{Guid.NewGuid():N}";
         var messageOutputIndex = (int?)null;
         var nextOutputIndex = InitialOutputIndex;
         var sequenceNumber = InitialSequenceNumber;
@@ -121,6 +125,46 @@ public static partial class SseStreamConverter
             return state;
         }
 
+        List<string> EnsureReasoningStarted()
+        {
+            if (reasoningStarted)
+            {
+                return [];
+            }
+
+            reasoningStarted = true;
+            reasoningOutputIndex = AllocateOutputIndex();
+            return
+            [
+                Emit(
+                    "response.output_item.added",
+                    new Dictionary<string, object?>
+                    {
+                        ["output_index"] = reasoningOutputIndex,
+                        ["item"] = new Dictionary<string, object?>
+                        {
+                            ["id"] = reasoningItemId,
+                            ["type"] = "reasoning",
+                            ["status"] = "in_progress",
+                            ["summary"] = new List<object?>()
+                        }
+                    }),
+                Emit(
+                    "response.reasoning_summary_part.added",
+                    new Dictionary<string, object?>
+                    {
+                        ["item_id"] = reasoningItemId,
+                        ["output_index"] = reasoningOutputIndex,
+                        ["summary_index"] = 0,
+                        ["part"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "summary_text",
+                            ["text"] = string.Empty
+                        }
+                    })
+            ];
+        }
+
         if (!SkipResponseCreated)
         {
             yield return Emit(
@@ -194,6 +238,26 @@ public static partial class SseStreamConverter
                             ["output_index"] = messageOutputIndex,
                             ["content_index"] = 0,
                             ["delta"] = text
+                        });
+                }
+
+                var reasoningText = StringValue(delta, "reasoning_content", string.Empty);
+                if (reasoningText.Length > 0)
+                {
+                    foreach (var line in EnsureReasoningStarted())
+                    {
+                        yield return line;
+                    }
+
+                    reasoningParts.Add(reasoningText);
+                    yield return Emit(
+                        "response.reasoning_summary_text.delta",
+                        new Dictionary<string, object?>
+                        {
+                            ["item_id"] = reasoningItemId,
+                            ["output_index"] = reasoningOutputIndex,
+                            ["summary_index"] = 0,
+                            ["delta"] = reasoningText
                         });
                 }
 
@@ -299,6 +363,7 @@ public static partial class SseStreamConverter
         }
 
         var combinedText = string.Concat(textParts);
+        var combinedReasoning = string.Concat(reasoningParts);
         var reconstructedToolCalls = new List<object?>();
         foreach (var (index, aggregate) in toolCalls.ToList())
         {
@@ -324,6 +389,7 @@ public static partial class SseStreamConverter
             ["role"] = "assistant",
             ["content"] = combinedText,
             ["tool_calls"] = reconstructedToolCalls
+            ,["reasoning_content"] = combinedReasoning
         };
         result.UpstreamResponse = new Dictionary<string, object?>
         {
@@ -342,6 +408,55 @@ public static partial class SseStreamConverter
             },
             ["usage"] = usage
         };
+
+        if (combinedReasoning.Length > 0)
+        {
+            var reasoningItem = new Dictionary<string, object?>
+            {
+                ["id"] = reasoningItemId,
+                ["type"] = "reasoning",
+                ["status"] = "completed",
+                ["summary"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "summary_text",
+                        ["text"] = combinedReasoning
+                    }
+                },
+                ["encrypted_content"] = combinedReasoning
+            };
+            yield return Emit(
+                "response.reasoning_summary_text.done",
+                new Dictionary<string, object?>
+                {
+                    ["item_id"] = reasoningItemId,
+                    ["output_index"] = reasoningOutputIndex,
+                    ["summary_index"] = 0,
+                    ["text"] = combinedReasoning
+                });
+            yield return Emit(
+                "response.reasoning_summary_part.done",
+                new Dictionary<string, object?>
+                {
+                    ["item_id"] = reasoningItemId,
+                    ["output_index"] = reasoningOutputIndex,
+                    ["summary_index"] = 0,
+                    ["part"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "summary_text",
+                        ["text"] = combinedReasoning
+                    }
+                });
+            outputByIndex[reasoningOutputIndex ?? AllocateOutputIndex()] = reasoningItem;
+            yield return Emit(
+                "response.output_item.done",
+                new Dictionary<string, object?>
+                {
+                    ["output_index"] = reasoningOutputIndex,
+                    ["item"] = reasoningItem
+                });
+        }
 
         if (combinedText.Length > 0)
         {

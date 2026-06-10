@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Text.Json;
+using System.Runtime.CompilerServices;
 using OpenCodex.Core.Protocols;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
@@ -74,11 +76,13 @@ public sealed class ProxyStreamService : IProxyStreamService
                     upstreamRequest,
                     context.DefaultTimeout,
                     context.CancellationToken);
+                var capture = new PassThroughCapture();
                 ttftMs = await context.StreamWriter.WriteLinesAsync(
-                    streamLines,
+                    CaptureStreamUsage(streamLines, capture, context.CancellationToken),
                     static line => line.Trim().Length > 0,
                     () => ElapsedMilliseconds(ttftStarted),
                     context.CancellationToken);
+                upstreamResponse = capture.UpstreamResponse;
             }
             else
             {
@@ -159,5 +163,99 @@ public sealed class ProxyStreamService : IProxyStreamService
         return (int)Math.Round(
             Stopwatch.GetElapsedTime(started).TotalMilliseconds,
             MidpointRounding.AwayFromZero);
+    }
+    internal sealed class PassThroughCapture
+    {
+        public Dictionary<string, object?>? UpstreamResponse { get; set; }
+    }
+
+    internal static async IAsyncEnumerable<string> CaptureStreamUsage(
+        IAsyncEnumerable<string> lines,
+        PassThroughCapture capture,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        object? model = null;
+        object? usage = null;
+        await foreach (var line in lines.WithCancellation(cancellationToken))
+        {
+            yield return line;
+            if (!line.StartsWith("data:", StringComparison.Ordinal))
+            {
+                continue;
+            }
+            var json = line["data:".Length..].TrimStart();
+            if (json.Length == 0 || json == "[DONE]")
+            {
+                continue;
+            }
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+                model ??= TryExtractString(root, "model");
+                usage ??= TryExtractObject(root, "usage");
+                if (root.TryGetProperty("response", out var responseEl)
+                    && responseEl.ValueKind == JsonValueKind.Object)
+                {
+                    model ??= TryExtractString(responseEl, "model");
+                    usage ??= TryExtractObject(responseEl, "usage");
+                }
+                if (root.TryGetProperty("message", out var messageEl)
+                    && messageEl.ValueKind == JsonValueKind.Object)
+                {
+                    model ??= TryExtractString(messageEl, "model");
+                    usage ??= TryExtractObject(messageEl, "usage");
+                }
+            }
+            catch (JsonException)
+            {
+            }
+        }
+        capture.UpstreamResponse = model is null && usage is null
+            ? null
+            : new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["model"] = model,
+                ["usage"] = usage ?? new Dictionary<string, object?>()
+            };
+    }
+    internal static string? TryExtractString(JsonElement element, string property)
+    {
+        return element.TryGetProperty(property, out var value)
+            && value.ValueKind == JsonValueKind.String
+            && value.GetString() is { Length: > 0 } str
+            ? str
+            : null;
+    }
+    internal static object? TryExtractObject(JsonElement element, string property)
+    {
+        if (!element.TryGetProperty(property, out var value)
+            || value.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+        return FromJsonElement(value);
+    }
+    internal static object? FromJsonElement(JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.Object => element.EnumerateObject().ToDictionary(
+                p => p.Name,
+                p => FromJsonElement(p.Value),
+                StringComparer.Ordinal),
+            JsonValueKind.Array => element.EnumerateArray().Select(FromJsonElement).ToList(),
+            JsonValueKind.String => element.GetString(),
+            JsonValueKind.Number => element.TryGetInt64(out var l)
+                ? (l is >= int.MinValue and <= int.MaxValue ? (int)l : l)
+                : element.GetDouble(),
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => null
+        };
     }
 }

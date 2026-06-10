@@ -189,6 +189,7 @@ public sealed class ProxyOcrService : IProxyOcrService
         }
         catch (ProxyException exception)
         {
+            upstreamResponse = UpstreamErrorBody(exception);
             var wrapped = new UpstreamException(
                 $"OCR failed: {exception.Message}",
                 ProxyHttpStatus.BadGateway,
@@ -279,7 +280,7 @@ public sealed class ProxyOcrService : IProxyOcrService
                 ? new UpstreamException(
                     $"vision OCR failed: {proxyException.Message}",
                     ProxyHttpStatus.BadGateway,
-                    proxyException.ToResponse(),
+                    (proxyException as UpstreamException)?.Body ?? proxyException.ToResponse(),
                     ChannelId(context.VisionRoute!.Channel))
                 : new UpstreamException(
                     $"vision OCR failed: {exception.Message}",
@@ -590,6 +591,19 @@ public sealed class ProxyOcrService : IProxyOcrService
         return (int)Math.Round(
             Stopwatch.GetElapsedTime(started).TotalMilliseconds,
             MidpointRounding.AwayFromZero);
+    }
+
+    private static Dictionary<string, object?>? UpstreamErrorBody(ProxyException exception)
+    {
+        if (exception is UpstreamException { Body: not null } upstream)
+        {
+            return new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["error"] = upstream.Body
+            };
+        }
+
+        return null;
     }
 
     private static string? ChannelId(IReadOnlyDictionary<string, object?>? channel)
