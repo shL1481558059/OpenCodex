@@ -26,6 +26,7 @@ public static class OpenCodexConfig
     {
         "rename_params",
         "drop_params",
+        "drop_tool_types",
         "force_params",
         "default_params",
         "unsupported_params",

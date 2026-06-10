@@ -186,7 +186,7 @@ public static class ConfigValidator
             }
         }
 
-        foreach (var field in new[] { "drop_params", "unsupported_params" })
+        foreach (var field in new[] { "drop_params", "drop_tool_types", "unsupported_params" })
         {
             var value = GetValue(compat, field, new List<object?>());
             if (!ConfigValue.TryAsList(value, out _))

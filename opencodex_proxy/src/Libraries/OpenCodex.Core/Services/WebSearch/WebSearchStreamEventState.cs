@@ -24,6 +24,12 @@ internal sealed class WebSearchStreamEventState
             CalculateNextOutputIndex(events));
     }
 
+    public void ObserveEvents(IReadOnlyList<string> events)
+    {
+        _sequenceNumber = Math.Max(_sequenceNumber, NextSequenceNumber(events));
+        _nextOutputIndex = Math.Max(_nextOutputIndex, CalculateNextOutputIndex(events));
+    }
+
     public string EmitWebSearchAdded(
         string itemId,
         string query,
