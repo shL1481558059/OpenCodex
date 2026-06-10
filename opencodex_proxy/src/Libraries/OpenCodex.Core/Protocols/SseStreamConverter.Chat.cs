@@ -181,6 +181,20 @@ public static partial class SseStreamConverter
                         ["output"] = new List<object?>()
                     }
                 });
+            yield return Emit(
+                "response.in_progress",
+                new Dictionary<string, object?>
+                {
+                    ["response"] = new Dictionary<string, object?>
+                    {
+                        ["id"] = responseId,
+                        ["object"] = "response",
+                        ["created_at"] = createdAt,
+                        ["status"] = "in_progress",
+                        ["model"] = responseModel,
+                        ["output"] = new List<object?>()
+                    }
+                });
         }
 
         await foreach (var sseEvent in ParseEvents(upstreamLines, cancellationToken))
@@ -588,6 +602,12 @@ public static partial class SseStreamConverter
                     ["output"] = outputByIndex.Values.Cast<object?>().ToList(),
                     ["usage"] = ChatUsageToResponsesUsage(usage),
                     ["end_turn"] = true
+                    ,["incomplete_details"] = finishReason == "length"
+                        ? new Dictionary<string, object?> { ["reason"] = "max_output_tokens" }
+                        : null
+                    ,["parallel_tool_calls"] = true,
+                    ["error"] = null,
+                    ["truncation"] = "disabled"
                 }
             });
     }
