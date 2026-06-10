@@ -201,6 +201,11 @@
             </el-form-item>
           </el-col>
           <el-col :span="12">
+            <el-form-item label="drop_tool_types">
+              <el-input v-model="compatTexts.drop_tool_types" type="textarea" :rows="4" placeholder="image_generation&#10;image_generation_call" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
             <el-form-item label="force_params">
               <el-input v-model="compatTexts.force_params" type="textarea" :rows="4" placeholder='name={"type":"text"}' />
             </el-form-item>
@@ -310,6 +315,7 @@ const compatDraft = reactive({ fallback_thinking_on_tool_use: false });
 const compatTexts = reactive({
   rename_params: "",
   drop_params: "",
+  drop_tool_types: "",
   force_params: "",
   default_params: "",
   unsupported_params: ""
@@ -576,6 +582,7 @@ function assignCompat(compat) {
   Object.assign(compatTexts, {
     rename_params: formatAssignmentMap(compat.rename_params || {}),
     drop_params: formatStringList(compat.drop_params || []),
+    drop_tool_types: formatStringList(compat.drop_tool_types || []),
     force_params: formatAssignmentMap(compat.force_params || {}),
     default_params: formatAssignmentMap(compat.default_params || {}),
     unsupported_params: formatStringList(compat.unsupported_params || [])
@@ -607,6 +614,7 @@ function buildCompat() {
   const compat = {
     rename_params: parseAssignmentMap(compatTexts.rename_params, false),
     drop_params: parseStringList(compatTexts.drop_params),
+    drop_tool_types: parseStringList(compatTexts.drop_tool_types),
     force_params: parseAssignmentMap(compatTexts.force_params, true),
     default_params: parseAssignmentMap(compatTexts.default_params, true),
     unsupported_params: parseStringList(compatTexts.unsupported_params)

@@ -92,6 +92,10 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 effectivePayload = fallback.Payload;
             }
 
+            effectivePayload = ChannelCompatRequestRewriter.Apply(
+                effectivePayload,
+                JsonDictionaryValue.Object(route.Channel, "compat", WebSearchPayload.DeepCopyObject)).Payload;
+
             upstreamRequest = ProtocolConverter.ConvertRequest(
                 effectivePayload,
                 context.EntryProtocol,

@@ -1,4 +1,5 @@
 using OpenCodex.Core.Errors;
+using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Abstractions;
 
 namespace OpenCodex.Core.Services;
@@ -52,6 +53,10 @@ public sealed partial class ChannelDiagnosticsService
             result[key] = CloneJsonValue(value);
             details.Add($"force:{key}");
         }
+
+        var rewriteResult = ChannelCompatRequestRewriter.Apply(result, compat);
+        result = rewriteResult.Payload;
+        details.AddRange(rewriteResult.Details);
 
         var unsupported = JsonDictionaryValue.List(compat, "unsupported_params")
             .Select(item => item?.ToString() ?? string.Empty)
