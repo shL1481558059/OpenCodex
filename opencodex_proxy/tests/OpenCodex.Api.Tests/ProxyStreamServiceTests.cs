@@ -1,10 +1,74 @@
+using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.Proxy;
+using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Domain.Proxy;
+using OpenCodex.CoreBase.Domain.WebSearch;
+using OpenCodex.CoreBase.DTOs.Proxy;
+using OpenCodex.CoreBase.Services.Proxy;
+using OpenCodex.CoreBase.Services.WebSearch;
 using Xunit;
 
 namespace OpenCodex.Api.Tests;
 
 public sealed class ProxyStreamServiceTests
 {
+    [Fact]
+    public async Task StreamAsync_MessagesWebSearchSimulation_UsesSimulatorBranch()
+    {
+        var upstream = new ThrowingUpstreamClient();
+        var logs = new StubProxyLogService();
+        var webSearch = new StubWebSearchSimulator(
+            canSimulate: true,
+            streamLines:
+            [
+                "event: response.created\ndata: {\"type\":\"response.created\"}\n\n",
+                "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"
+            ]);
+        var service = new ProxyStreamService(upstream, logs, webSearch);
+        var writer = new CapturingProxyStreamWriter();
+        var channel = new Dictionary<string, object?>
+        {
+            ["id"] = "messages",
+            ["type"] = ProtocolConverter.Messages
+        };
+        var route = new ProxyRouteDto(
+            channel,
+            "public-model",
+            "upstream-model",
+            supportsImage: false,
+            matchedModelMapping: true);
+        var context = new ProxyStreamContext(
+            startedTimestamp: 0,
+            requestId: "req_1",
+            ownerUsername: "admin",
+            apiKeyId: 1,
+            originalPayload: new Dictionary<string, object?>(),
+            payload: new Dictionary<string, object?>
+            {
+                ["tools"] = new List<object?> { new Dictionary<string, object?> { ["type"] = "web_search" } }
+            },
+            upstreamRequest: new Dictionary<string, object?>(),
+            entryProtocol: ProtocolConverter.Responses,
+            route: route,
+            channelType: ProtocolConverter.Messages,
+            channelId: "messages",
+            ownerRole: "superadmin",
+            upstreamModel: "upstream-model",
+            requestModel: "public-model",
+            defaultTimeout: 120,
+            requestMetadata: new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
+            streamWriter: writer,
+            cancellationToken: CancellationToken.None);
+
+        await service.StreamAsync(context);
+
+        Assert.True(webSearch.StreamCalled);
+        Assert.True(writer.Prepared);
+        Assert.Equal(2, writer.Lines.Count);
+        Assert.Contains("response.created", writer.Lines[0], StringComparison.Ordinal);
+        Assert.Contains("response.completed", writer.Lines[1], StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task CaptureStreamUsage_ForwardsAllLines()
     {
@@ -203,6 +267,122 @@ public sealed class ProxyStreamServiceTests
         {
             yield return line;
             await Task.Yield();
+        }
+    }
+
+    private sealed class CapturingProxyStreamWriter : IProxyStreamWriter
+    {
+        public bool Prepared { get; private set; }
+
+        public List<string> Lines { get; } = [];
+
+        public void PrepareSse()
+        {
+            Prepared = true;
+        }
+
+        public async Task<StreamWriteMetrics> WriteLinesAsync(
+            IAsyncEnumerable<string> lines,
+            Func<string, bool> countsForTtft,
+            Func<int> elapsedMilliseconds,
+            CancellationToken cancellationToken = default)
+        {
+            await foreach (var line in lines.WithCancellation(cancellationToken))
+            {
+                Lines.Add(line);
+            }
+
+            return new StreamWriteMetrics(ttftMs: 1);
+        }
+    }
+
+    private sealed class ThrowingUpstreamClient : IUpstreamClient
+    {
+        public Task<Dictionary<string, object?>> PostJsonAsync(
+            IReadOnlyDictionary<string, object?> channel,
+            IReadOnlyDictionary<string, object?> payload,
+            int defaultTimeout,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException("should not use direct upstream post in simulator branch");
+        }
+
+        public async IAsyncEnumerable<string> StreamJsonAsync(
+            IReadOnlyDictionary<string, object?> channel,
+            IReadOnlyDictionary<string, object?> payload,
+            int defaultTimeout,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await Task.Yield();
+            throw new NotSupportedException("should not use direct upstream stream in simulator branch");
+#pragma warning disable CS0162
+            yield break;
+#pragma warning restore CS0162
+        }
+    }
+
+    private sealed class StubWebSearchSimulator : IWebSearchSimulator
+    {
+        private readonly bool _canSimulate;
+        private readonly IReadOnlyList<string> _streamLines;
+
+        public StubWebSearchSimulator(bool canSimulate, IReadOnlyList<string> streamLines)
+        {
+            _canSimulate = canSimulate;
+            _streamLines = streamLines;
+        }
+
+        public bool StreamCalled { get; private set; }
+
+        public bool CanSimulate(
+            string entryProtocol,
+            string channelType,
+            string ownerRole,
+            IReadOnlyDictionary<string, object?> payload)
+        {
+            return _canSimulate;
+        }
+
+        public Task<WebSearchSimulationResult> RunAsync(
+            IReadOnlyDictionary<string, object?> channel,
+            Dictionary<string, object?> upstreamRequest,
+            Dictionary<string, object?> payload,
+            string? originalModel,
+            int defaultTimeout,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException("non-stream path is not used in this test");
+        }
+
+        public async IAsyncEnumerable<string> RunChatStreamAsync(
+            IReadOnlyDictionary<string, object?> channel,
+            Dictionary<string, object?> upstreamRequest,
+            Dictionary<string, object?> payload,
+            string? originalModel,
+            int defaultTimeout,
+            WebSearchStreamResult result,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            StreamCalled = true;
+            result.ResponsePayload = new Dictionary<string, object?>();
+            foreach (var line in _streamLines)
+            {
+                yield return line;
+                await Task.Yield();
+            }
+        }
+    }
+
+    private sealed class StubProxyLogService : IProxyLogService
+    {
+        public long WriteLog(ProxyLogContext context, ProxyRequestMetadata request)
+        {
+            return 0;
+        }
+
+        public long WriteLog(ProxyRequestLogContext context)
+        {
+            return 0;
         }
     }
 }

@@ -15,20 +15,17 @@ public static partial class ProtocolConverter
         }
 
         var itemType = GetString(inputItem, "type");
-        if (itemType is not null && ResponsesToolCallTypes.Contains(itemType))
+        if (IsResponsesToolCallLike(inputItem))
         {
-            var name = GetString(inputItem, "name") ?? itemType.Replace("_call", string.Empty, StringComparison.Ordinal);
+            var name = ResponsesToolCallName(inputItem);
             var namespaceName = GetString(inputItem, "namespace");
             if (!string.IsNullOrEmpty(namespaceName))
             {
                 name = $"{namespaceName}{NamespaceSeparator}{name}";
             }
 
-            var arguments = GetValue(inputItem, "arguments")
-                ?? GetValue(inputItem, "input")
-                ?? GetValue(inputItem, "action")
-                ?? new Dictionary<string, object?>();
-            arguments = NormalizeApplyPatchArguments(itemType, name, arguments);
+            var arguments = ResponsesToolCallArguments(inputItem);
+            arguments = NormalizeApplyPatchArguments(itemType ?? string.Empty, name, arguments);
             return
             [
                 Obj(
@@ -44,7 +41,7 @@ public static partial class ProtocolConverter
             ];
         }
 
-        if (itemType is not null && ResponsesToolOutputTypes.Contains(itemType))
+        if (IsResponsesToolOutputLike(inputItem))
         {
             var callId = GetValue(inputItem, "call_id") ?? GetValue(inputItem, "tool_call_id") ?? GetValue(inputItem, "tool_use_id");
             if (callId is null)

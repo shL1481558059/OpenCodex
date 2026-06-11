@@ -21,6 +21,10 @@ public static class ConfigNormalizer
             }
 
             channels[channelIndex] = channel;
+            if (!channel.ContainsKey("priority"))
+            {
+                channel["priority"] = channelIndex;
+            }
 
             if (!channel.TryGetValue("models", out var modelsValue)
                 || !ConfigValue.TryAsList(modelsValue, out var models))

@@ -19,7 +19,9 @@ OPENCODEX_LOG_PATH=logs/opencodex.log
 OPENCODEX_LOG_LEVEL=INFO
 OPENCODEX_LOG_VIEW_LEVEL=BASIC
 OPENCODEX_DEFAULT_TIMEOUT=120
+OPENCODEX_ADMIN_COOKIE_DAYS=30
 OPENCODEX_SECRET_KEY=change-me-session-secret
+OPENCODEX_DATA_PROTECTION_KEYS_PATH=logs/opencodex.keys
 TZ=Asia/Shanghai
 ```
 
@@ -36,7 +38,7 @@ npm --prefix frontend install
 npm --prefix frontend run dev -- --host 127.0.0.1 --port 5173
 ```
 
-访问 `http://127.0.0.1:5173/admin/`。前端开发服务器会把 `/admin/login`、`/admin/config` 等请求转发到后端真实接口 `/login`、`/config` 等。直接调用后端 API 时不要加 `/admin` 或 `/admin/api` 前缀。
+访问 `http://127.0.0.1:5173/admin/`。前端开发服务器会把 `/admin/login`、`/admin/config` 等请求转发到后端真实接口 `/login`、`/config` 等。直接调用后端 API 时不要加 `/admin` 或 `/admin/api` 前缀。开发时不要在 `127.0.0.1:5173` 和 `https://localhost:8443` 之间来回切换，这两个站点不会共享登录 Cookie。
 
 使用 `OPENCODEX_ADMIN_USERNAME` 和 `OPENCODEX_ADMIN_PASSWORD` 调用 `/login` 登录。首次登录后建议先完成两件事：
 
@@ -47,7 +49,9 @@ npm --prefix frontend run dev -- --host 127.0.0.1 --port 5173
 
 也可以把上游 Key 写成 `${WINDHUB_UPSTREAM_API_KEY}`，再在运行服务的环境中提供该变量。它只用于渠道上游鉴权，不是客户端调用代理的访问 API Key。
 
-生产环境必须把 `OPENCODEX_SECRET_KEY` 改成足够随机的值，不要使用示例默认值。
+管理台登录态使用持久化认证 Cookie，默认有效期 30 天并开启滑动续期；可通过 `OPENCODEX_ADMIN_COOKIE_DAYS` 调整。
+
+生产环境必须把 `OPENCODEX_SECRET_KEY` 改成足够随机的值，不要使用示例默认值。`OPENCODEX_DATA_PROTECTION_KEYS_PATH` 必须指向持久化目录，否则容器重建后已有登录态会失效。
 
 ## 快速更新远程镜像
 

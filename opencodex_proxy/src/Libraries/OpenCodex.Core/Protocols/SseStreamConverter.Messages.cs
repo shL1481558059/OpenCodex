@@ -11,6 +11,30 @@ public static partial class SseStreamConverter
         ConvertedStreamResult result,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        await foreach (var line in MessagesToResponsesEvents(
+            upstreamLines,
+            model,
+            result,
+            SkipToolNames: null,
+            SkipResponseCreated: false,
+            InitialSequenceNumber: 0,
+            InitialOutputIndex: 0,
+            cancellationToken))
+        {
+            yield return line;
+        }
+    }
+
+    public static async IAsyncEnumerable<string> MessagesToResponsesEvents(
+        IAsyncEnumerable<string> upstreamLines,
+        string? model,
+        ConvertedStreamResult result,
+        IReadOnlySet<string>? SkipToolNames,
+        bool SkipResponseCreated,
+        int InitialSequenceNumber,
+        int InitialOutputIndex,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
         var responseId = $"resp_{Guid.NewGuid():N}";
         var messageItemId = $"msg_{Guid.NewGuid():N}";
         var createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -21,9 +45,10 @@ public static partial class SseStreamConverter
         var stopReason = "stop";
         var usage = new Dictionary<string, object?>(StringComparer.Ordinal);
         var textStarted = false;
-        var sequenceNumber = 0;
+        var messageOutputIndex = (int?)null;
+        var sequenceNumber = InitialSequenceNumber;
         var toolStates = new Dictionary<int, ToolStreamState>();
-        var nextOutputIndex = 1;
+        var nextOutputIndex = InitialOutputIndex;
 
         string Emit(string eventName, Dictionary<string, object?> payload)
         {
@@ -35,6 +60,11 @@ public static partial class SseStreamConverter
             return $"event: {eventName}\ndata: {JsonSerializer.Serialize(enriched, JsonOptions)}\n\n";
         }
 
+        int AllocateOutputIndex()
+        {
+            return nextOutputIndex++;
+        }
+
         ToolStreamState EnsureToolState(int index)
         {
             if (!toolStates.TryGetValue(index, out var state))
@@ -43,7 +73,7 @@ public static partial class SseStreamConverter
                 toolStates[index] = state;
             }
 
-            state.OutputIndex ??= nextOutputIndex++;
+            state.OutputIndex ??= AllocateOutputIndex();
             state.ItemId ??= $"fc_{Guid.NewGuid():N}";
             return state;
         }
@@ -56,13 +86,14 @@ public static partial class SseStreamConverter
             }
 
             textStarted = true;
+            messageOutputIndex = AllocateOutputIndex();
             return
             [
                 Emit(
                     "response.output_item.added",
                     new Dictionary<string, object?>
                     {
-                        ["output_index"] = 0,
+                        ["output_index"] = messageOutputIndex,
                         ["item"] = new Dictionary<string, object?>
                         {
                             ["id"] = messageItemId,
@@ -77,7 +108,7 @@ public static partial class SseStreamConverter
                     new Dictionary<string, object?>
                     {
                         ["item_id"] = messageItemId,
-                        ["output_index"] = 0,
+                        ["output_index"] = messageOutputIndex,
                         ["content_index"] = 0,
                         ["part"] = new Dictionary<string, object?>
                         {
@@ -88,34 +119,37 @@ public static partial class SseStreamConverter
             ];
         }
 
-        yield return Emit(
-            "response.created",
-            new Dictionary<string, object?>
-            {
-                ["response"] = new Dictionary<string, object?>
+        if (!SkipResponseCreated)
+        {
+            yield return Emit(
+                "response.created",
+                new Dictionary<string, object?>
                 {
-                    ["id"] = responseId,
-                    ["object"] = "response",
-                    ["created_at"] = createdAt,
-                    ["status"] = "in_progress",
-                    ["model"] = responseModel,
-                    ["output"] = new List<object?>()
-                }
-            });
-        yield return Emit(
-            "response.in_progress",
-            new Dictionary<string, object?>
-            {
-                ["response"] = new Dictionary<string, object?>
+                    ["response"] = new Dictionary<string, object?>
+                    {
+                        ["id"] = responseId,
+                        ["object"] = "response",
+                        ["created_at"] = createdAt,
+                        ["status"] = "in_progress",
+                        ["model"] = responseModel,
+                        ["output"] = new List<object?>()
+                    }
+                });
+            yield return Emit(
+                "response.in_progress",
+                new Dictionary<string, object?>
                 {
-                    ["id"] = responseId,
-                    ["object"] = "response",
-                    ["created_at"] = createdAt,
-                    ["status"] = "in_progress",
-                    ["model"] = responseModel,
-                    ["output"] = new List<object?>()
-                }
-            });
+                    ["response"] = new Dictionary<string, object?>
+                    {
+                        ["id"] = responseId,
+                        ["object"] = "response",
+                        ["created_at"] = createdAt,
+                        ["status"] = "in_progress",
+                        ["model"] = responseModel,
+                        ["output"] = new List<object?>()
+                    }
+                });
+        }
 
         await foreach (var sseEvent in ParseEvents(upstreamLines, cancellationToken))
         {
@@ -157,6 +191,12 @@ public static partial class SseStreamConverter
                     }
                     else if (blockType == "tool_use")
                     {
+                        var toolName = StringValue(block, "name", string.Empty);
+                        if (SkipToolNames?.Contains(toolName) is true)
+                        {
+                            continue;
+                        }
+
                         var state = EnsureToolState(index);
                         if (!state.ItemAdded)
                         {
@@ -222,7 +262,7 @@ public static partial class SseStreamConverter
                         new Dictionary<string, object?>
                         {
                             ["item_id"] = messageItemId,
-                            ["output_index"] = 0,
+                            ["output_index"] = messageOutputIndex,
                             ["content_index"] = 0,
                             ["delta"] = text
                         });
@@ -241,6 +281,11 @@ public static partial class SseStreamConverter
                     // Stream the delta as a function_call_arguments.delta event.
                     if (partialJson.Length > 0)
                     {
+                        if (SkipToolNames?.Contains(StringValue(block, "name", string.Empty)) is true)
+                        {
+                            continue;
+                        }
+
                         var state = EnsureToolState(index);
                         yield return Emit(
                             "response.function_call_arguments.delta",
@@ -314,6 +359,11 @@ public static partial class SseStreamConverter
         var combinedText = string.Concat(textParts);
         if (combinedText.Length > 0)
         {
+            foreach (var line in EnsureMessageStarted())
+            {
+                yield return line;
+            }
+
             var outputText = new Dictionary<string, object?>
             {
                 ["type"] = "output_text",
@@ -333,7 +383,7 @@ public static partial class SseStreamConverter
                 new Dictionary<string, object?>
                 {
                     ["item_id"] = messageItemId,
-                    ["output_index"] = 0,
+                    ["output_index"] = messageOutputIndex,
                     ["content_index"] = 0,
                     ["text"] = combinedText
                 });
@@ -342,7 +392,7 @@ public static partial class SseStreamConverter
                 new Dictionary<string, object?>
                 {
                     ["item_id"] = messageItemId,
-                    ["output_index"] = 0,
+                    ["output_index"] = messageOutputIndex,
                     ["content_index"] = 0,
                     ["part"] = outputText
                 });
@@ -350,7 +400,7 @@ public static partial class SseStreamConverter
                 "response.output_item.done",
                 new Dictionary<string, object?>
                 {
-                    ["output_index"] = 0,
+                    ["output_index"] = messageOutputIndex,
                     ["item"] = messageItem
                 });
         }
@@ -363,13 +413,19 @@ public static partial class SseStreamConverter
                 continue;
             }
 
+            var callId = GetValue(block, "id") ?? $"call_{Guid.NewGuid():N}";
+            var name = GetValue(block, "name");
+            var toolName = name?.ToString() ?? string.Empty;
+            if (SkipToolNames?.Contains(toolName) is true)
+            {
+                continue;
+            }
+
             var state = toolStates.TryGetValue(index, out var existingState)
                 ? existingState
                 : EnsureToolState(index);
             var itemId = state.ItemId ?? $"fc_{Guid.NewGuid():N}";
-            var outputIndex = state.OutputIndex ?? nextOutputIndex++;
-            var callId = GetValue(block, "id") ?? $"call_{Guid.NewGuid():N}";
-            var name = GetValue(block, "name");
+            var outputIndex = state.OutputIndex ?? AllocateOutputIndex();
             var arguments = WebSearchPayload.JsonDumps(GetValue(block, "input") ?? new Dictionary<string, object?>());
             var functionItem = ProtocolConverter.ResponsesToolCallItemFromToolCall(
                 callId,

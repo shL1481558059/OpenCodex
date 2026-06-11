@@ -72,11 +72,27 @@ public static class OpenCodexSettingsLoader
             LogLevel = logLevel,
             LogViewLevel = logViewLevel,
             DefaultTimeout = ParsePositiveInt(values, "OPENCODEX_DEFAULT_TIMEOUT", 120),
+            AdminCookieDays = ParsePositiveInt(values, "OPENCODEX_ADMIN_COOKIE_DAYS", 30),
             SecretKey = GetValue(values, "OPENCODEX_SECRET_KEY") ?? "change-me-session-secret",
+            DataProtectionKeysPath = ResolveDataProtectionKeysPath(values),
             AdminUsername = adminUsername,
             OcrCacheDir = GetValue(values, "OPENCODEX_OCR_CACHE_DIR") ?? "ocr-cache",
             LocalOcrModel = ResolveLocalOcrModel(values)
         };
+    }
+
+    private static string ResolveDataProtectionKeysPath(IReadOnlyDictionary<string, string?> values)
+    {
+        var configured = GetValue(values, "OPENCODEX_DATA_PROTECTION_KEYS_PATH");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return configured.Trim();
+        }
+
+        var dbPath = GetValue(values, "OPENCODEX_DB_PATH") ?? "logs/opencodex.db";
+        var absoluteDbPath = Path.GetFullPath(dbPath);
+        var directory = Path.GetDirectoryName(absoluteDbPath) ?? AppContext.BaseDirectory;
+        return Path.Combine(directory, $"{Path.GetFileNameWithoutExtension(absoluteDbPath)}.keys");
     }
 
     private static string ResolveLocalOcrModel(IReadOnlyDictionary<string, string?> values)

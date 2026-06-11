@@ -59,7 +59,8 @@ public sealed class ProxyLogService : IProxyLogService
             request.Headers,
             context.RequestType,
             context.ParentRequestLogId,
-            context.OcrDetails));
+            context.OcrDetails,
+            context.StreamWriteMetrics));
     }
 
     public long WriteLog(ProxyRequestLogContext context)
@@ -109,7 +110,10 @@ public sealed class ProxyLogService : IProxyLogService
                 context.OwnerUsername,
                 context.ApiKeyId,
                 context.Error,
-                context.OcrDetails is null ? null : JsonSerializer.Serialize(context.OcrDetails, JsonOptions)));
+                context.OcrDetails is null ? null : JsonSerializer.Serialize(context.OcrDetails, JsonOptions),
+                context.StreamWriteMetrics is { HasValues: true }
+                    ? JsonSerializer.Serialize(context.StreamWriteMetrics, JsonOptions)
+                    : null));
     }
 
     private static UsageDto ExtractUsage(IReadOnlyDictionary<string, object?> response, string protocol)
@@ -183,7 +187,8 @@ public sealed class ProxyLogService : IProxyLogService
                 UpstreamResponseBody = record.UpstreamResponseBody,
                 ResponseBody = record.ResponseBody,
                 WebSearchJson = record.WebSearchJson,
-                OcrJson = record.OcrJson
+                OcrJson = record.OcrJson,
+                StreamTimingsJson = record.StreamTimingsJson
             }
         };
         context.RequestLogs.Add(log);

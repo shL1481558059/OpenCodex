@@ -1,7 +1,7 @@
 namespace OpenCodex.CoreBase.Domain;
 
 /// <summary>
-/// 表示存储在会话中的管理员用户身份。
+/// 表示当前已认证的管理员用户身份。
 /// </summary>
 public sealed class SessionUser
 {

@@ -33,15 +33,15 @@ public sealed class WebWorkContext : IWorkContext
 
     public SessionUser RequireUser()
     {
-        return RefreshSessionUser(_session.RequireUser);
+        return Require(_session.RequireUser);
     }
 
     public SessionUser RequireSuperadmin()
     {
-        return RefreshSessionUser(_session.RequireSuperadmin);
+        return Require(_session.RequireSuperadmin);
     }
 
-    private SessionUser RefreshSessionUser(
+    private SessionUser Require(
         Func<SessionUser?, SessionUser> require)
     {
         var context = _httpContextAccessor.HttpContext
@@ -51,13 +51,11 @@ public sealed class WebWorkContext : IWorkContext
 
         try
         {
-            var user = require(SessionState.CurrentUser(context));
-            SessionState.SetUser(context, user);
-            return user;
+            return require(SessionState.CurrentUser(context));
         }
         catch (BadRequestException exception) when (exception.StatusCode == StatusCodes.Status401Unauthorized)
         {
-            SessionState.ClearUser(context);
+            SessionState.ClearUserAsync(context).GetAwaiter().GetResult();
             throw;
         }
     }

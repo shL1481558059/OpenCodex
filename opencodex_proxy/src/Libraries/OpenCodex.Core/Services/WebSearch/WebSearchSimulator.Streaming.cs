@@ -17,6 +17,7 @@ public sealed partial class WebSearchSimulator
         WebSearchStreamResult result,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        var protocol = StringValue(channel, "type");
         var requestPayload = DeepCopyObject(upstreamRequest);
         requestPayload["stream"] = true;
         var webResults = new List<WebSearchToolResult>();
@@ -34,15 +35,26 @@ public sealed partial class WebSearchSimulator
             var converted = new ConvertedStreamResult();
             var lines = _upstream.StreamJsonAsync(channel, requestPayload, defaultTimeout, cancellationToken);
             var events = new List<string>();
-            await foreach (var line in SseStreamConverter.ChatToResponsesEvents(
-                lines,
-                originalModel,
-                converted,
-                new HashSet<string>([WebSearchToolName], StringComparer.Ordinal),
-                SkipResponseCreated: streamState is not null,
-                InitialSequenceNumber: streamState?.SequenceNumber ?? 0,
-                InitialOutputIndex: streamState?.NextOutputIndex ?? 0,
-                cancellationToken).WithCancellation(cancellationToken))
+            var convertedLines = protocol == ProtocolConverter.Messages
+                ? SseStreamConverter.MessagesToResponsesEvents(
+                    lines,
+                    originalModel,
+                    converted,
+                    new HashSet<string>([WebSearchToolName], StringComparer.Ordinal),
+                    SkipResponseCreated: streamState is not null,
+                    InitialSequenceNumber: streamState?.SequenceNumber ?? 0,
+                    InitialOutputIndex: streamState?.NextOutputIndex ?? 0,
+                    cancellationToken)
+                : SseStreamConverter.ChatToResponsesEvents(
+                    lines,
+                    originalModel,
+                    converted,
+                    new HashSet<string>([WebSearchToolName], StringComparer.Ordinal),
+                    SkipResponseCreated: streamState is not null,
+                    InitialSequenceNumber: streamState?.SequenceNumber ?? 0,
+                    InitialOutputIndex: streamState?.NextOutputIndex ?? 0,
+                    cancellationToken);
+            await foreach (var line in convertedLines.WithCancellation(cancellationToken))
             {
                 events.Add(line);
             }
@@ -57,7 +69,7 @@ public sealed partial class WebSearchSimulator
                 yield break;
             }
 
-            var toolCalls = WebSearchToolCallParser.ExtractChatToolCalls(converted.UpstreamResponse);
+            var toolCalls = WebSearchToolCallParser.ExtractToolCalls(converted.UpstreamResponse, protocol);
             var webCalls = toolCalls
                 .Where(call => string.Equals(call.Name, WebSearchToolName, StringComparison.Ordinal))
                 .ToList();
@@ -151,7 +163,7 @@ public sealed partial class WebSearchSimulator
             requestPayload = WebSearchContinuationRequest.AppendToolResults(
                 requestPayload,
                 converted.UpstreamResponse,
-                ProtocolConverter.Chat,
+                protocol,
                 currentResults,
                 forceFinalAnswer: forceFinalAnswer || currentResults.Any(result => result.Status != "completed"));
             requestPayload["stream"] = true;
@@ -164,15 +176,26 @@ public sealed partial class WebSearchSimulator
             converted = new ConvertedStreamResult();
             lines = _upstream.StreamJsonAsync(channel, requestPayload, defaultTimeout, cancellationToken);
             events = [];
-            await foreach (var line in SseStreamConverter.ChatToResponsesEvents(
-                lines,
-                originalModel,
-                converted,
-                new HashSet<string>([WebSearchToolName], StringComparer.Ordinal),
-                SkipResponseCreated: true,
-                InitialSequenceNumber: streamState.SequenceNumber,
-                InitialOutputIndex: streamState.NextOutputIndex,
-                cancellationToken).WithCancellation(cancellationToken))
+            convertedLines = protocol == ProtocolConverter.Messages
+                ? SseStreamConverter.MessagesToResponsesEvents(
+                    lines,
+                    originalModel,
+                    converted,
+                    new HashSet<string>([WebSearchToolName], StringComparer.Ordinal),
+                    SkipResponseCreated: true,
+                    InitialSequenceNumber: streamState.SequenceNumber,
+                    InitialOutputIndex: streamState.NextOutputIndex,
+                    cancellationToken)
+                : SseStreamConverter.ChatToResponsesEvents(
+                    lines,
+                    originalModel,
+                    converted,
+                    new HashSet<string>([WebSearchToolName], StringComparer.Ordinal),
+                    SkipResponseCreated: true,
+                    InitialSequenceNumber: streamState.SequenceNumber,
+                    InitialOutputIndex: streamState.NextOutputIndex,
+                    cancellationToken);
+            await foreach (var line in convertedLines.WithCancellation(cancellationToken))
             {
                 events.Add(line);
             }
@@ -187,7 +210,7 @@ public sealed partial class WebSearchSimulator
                 yield break;
             }
 
-            toolCalls = WebSearchToolCallParser.ExtractChatToolCalls(converted.UpstreamResponse);
+            toolCalls = WebSearchToolCallParser.ExtractToolCalls(converted.UpstreamResponse, protocol);
             upstreamCalls.Add(new Dictionary<string, object?>
             {
                 ["iteration"] = iteration + 2,
@@ -232,7 +255,7 @@ public sealed partial class WebSearchSimulator
             var responsePayload = ProtocolConverter.ConvertResponse(
                 finalUpstreamResponse,
                 ProtocolConverter.Responses,
-                ProtocolConverter.Chat,
+                protocol,
                 originalModel);
             responsePayload = WebSearchResponsePayload.PrependWebSearchItems(
                 responsePayload,

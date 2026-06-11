@@ -91,7 +91,7 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
             detail.ResponseBody);
         Assert.DoesNotContain(SecretApiKey, persistedDetail, StringComparison.Ordinal);
         Assert.DoesNotContain(SecretHeaderValue, persistedDetail, StringComparison.Ordinal);
-        Assert.DoesNotContain(".AspNetCore.Session", persistedDetail, StringComparison.Ordinal);
+        Assert.DoesNotContain("opencodex_admin_auth", persistedDetail, StringComparison.Ordinal);
         Assert.Contains("\"X-Normal\":\"visible\"", detail.RequestBody, StringComparison.Ordinal);
     }
 
@@ -116,7 +116,7 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
 
         var cookie = cookies
             .Select(value => value.Split(';', 2)[0])
-            .FirstOrDefault(value => value.StartsWith(".AspNetCore.Session=", StringComparison.Ordinal));
+            .FirstOrDefault(value => value.StartsWith("opencodex_admin_auth=", StringComparison.Ordinal));
 
         Assert.False(string.IsNullOrEmpty(cookie));
         return cookie;

@@ -28,7 +28,8 @@ public static class OpenCodexApplicationBuilderExtensions
             await next();
         });
         app.UseStaticFiles();
-        app.UseSession();
+        app.UseAuthentication();
+        app.UseAuthorization();
         app.MapControllers();
         app.MapMethods(
             "/admin/api/{**path}",

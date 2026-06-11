@@ -58,7 +58,8 @@ public sealed class RequestLogWriteDto(
     string ownerUsername,
     long? apiKeyId,
     string? error,
-    string? ocrJson)
+    string? ocrJson,
+    string? streamTimingsJson)
 {
     /// <summary>
     /// 获取唯一请求标识符。
@@ -199,6 +200,11 @@ public sealed class RequestLogWriteDto(
     /// 获取序列化后的 OCR 详情（如果可用）。
     /// </summary>
     public string? OcrJson { get; } = ocrJson;
+
+    /// <summary>
+    /// 获取序列化后的流式写出时序诊断（如果可用）。
+    /// </summary>
+    public string? StreamTimingsJson { get; } = streamTimingsJson;
 }
 
 /// <summary>
@@ -233,6 +239,7 @@ public sealed class RequestLogWriteDto(
 /// <param name="responseBody">序列化后的下游响应体（如果可用）。</param>
 /// <param name="webSearchJson">序列化后的 Web 搜索详情（如果可用）。</param>
 /// <param name="ocrJson">序列化后的 OCR 详情（如果可用）。</param>
+/// <param name="streamTimingsJson">序列化后的流式写出时序诊断（如果可用）。</param>
 /// <param name="requestStatus">标准化后的请求状态。</param>
 public sealed class RequestLogDto(
     long id,
@@ -264,6 +271,7 @@ public sealed class RequestLogDto(
     string? responseBody,
     string? webSearchJson,
     string? ocrJson,
+    string? streamTimingsJson,
     string requestStatus)
 {
     /// <summary>
@@ -410,6 +418,11 @@ public sealed class RequestLogDto(
     /// 获取序列化后的 OCR 详情（如果可用）。
     /// </summary>
     public string? OcrJson { get; } = ocrJson;
+
+    /// <summary>
+    /// 获取序列化后的流式写出时序诊断（如果可用）。
+    /// </summary>
+    public string? StreamTimingsJson { get; } = streamTimingsJson;
 
     /// <summary>
     /// 获取标准化后的请求状态。

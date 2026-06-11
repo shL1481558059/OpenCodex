@@ -1,4 +1,7 @@
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
+using OpenCodex.Core.Errors;
 using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.DTOs.Auth;
 using OpenCodex.CoreBase.Results;
@@ -9,40 +12,63 @@ namespace OpenCodex.Api.Controllers;
 public sealed class AuthController : ApiControllerBase
 {
     private readonly IAuthService _authService;
+    private readonly ISessionService _sessionService;
+    private readonly IOptionsMonitor<CookieAuthenticationOptions> _cookieOptions;
 
-    public AuthController(IAuthService authService)
+    public AuthController(
+        IAuthService authService,
+        ISessionService sessionService,
+        IOptionsMonitor<CookieAuthenticationOptions> cookieOptions)
     {
         _authService = authService;
+        _sessionService = sessionService;
+        _cookieOptions = cookieOptions;
     }
 
     [HttpGet("/session")]
-    public IActionResult Session()
+    public async Task<IActionResult> Session()
     {
         var user = SessionState.CurrentUser(HttpContext);
+        if (user is null)
+        {
+            return ApiResponse(ApiOpResult<SessionResponse>.Succeed(SessionResponse.LoggedOut()));
+        }
+
+        try
+        {
+            user = _sessionService.RequireUser(user);
+        }
+        catch (BadRequestException exception) when (exception.StatusCode == StatusCodes.Status401Unauthorized)
+        {
+            await SessionState.ClearUserAsync(HttpContext);
+            return ApiResponse(ApiOpResult<SessionResponse>.Succeed(SessionResponse.LoggedOut()));
+        }
+
         return ApiResponse(ApiOpResult<SessionResponse>.Succeed(BuildSessionResponse(user)));
     }
 
     [HttpPost("/login")]
-    public IActionResult Login([FromForm] LoginRequest request)
+    public async Task<IActionResult> Login([FromForm] LoginRequest request)
     {
         var result = _authService.Login(request.Username, request.Password);
         if (result.Succeeded && result.Payload?.User is not null)
         {
-            SessionState.SetUser(
+            await SessionState.SetUserAsync(
                 HttpContext,
                 new SessionUser(
                     result.Payload.User.Username,
                     result.Payload.User.Role,
-                    result.Payload.User.Enabled));
+                    result.Payload.User.Enabled),
+                _cookieOptions.Get(SessionState.AuthenticationScheme).ExpireTimeSpan);
         }
 
         return ApiResponse(result);
     }
 
     [HttpPost("/logout")]
-    public IActionResult Logout()
+    public async Task<IActionResult> Logout()
     {
-        SessionState.ClearUser(HttpContext);
+        await SessionState.ClearUserAsync(HttpContext);
         return ApiResponse(ApiOpResult<SessionResponse>.Succeed(SessionResponse.LoggedOut()));
     }
 

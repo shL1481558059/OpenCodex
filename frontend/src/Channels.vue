@@ -48,6 +48,10 @@
         <el-table-column label="模型映射" width="110">
           <template #default="{ row }">{{ normalizeModels(row.models).length }}</template>
         </el-table-column>
+        <el-table-column prop="priority" label="优先级" width="90" />
+        <el-table-column label="容量状态" width="140">
+          <template #default="{ row }">{{ formatCapacityStatus(row) }}</template>
+        </el-table-column>
         <el-table-column label="状态" width="100">
           <template #default="{ row, $index }">
             <el-switch
@@ -148,6 +152,29 @@
                 v-model="channelDraft.retry_count"
                 :min="0"
                 :step="1"
+                step-strictly
+                class="full-width"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="优先级">
+              <el-input-number
+                v-model="channelDraft.priority"
+                :min="0"
+                :step="1"
+                step-strictly
+                class="full-width"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="容量（留空不限）">
+              <el-input-number
+                v-model="channelDraft.capacity"
+                :min="1"
+                :step="1"
+                :value-on-clear="null"
                 step-strictly
                 class="full-width"
               />
@@ -392,9 +419,10 @@ async function persistChannels(nextChannels) {
 
 function openChannelDrawer(channel = null, index = -1) {
   editingIndex.value = index;
-  assignChannelDraft(channel || defaultChannel());
-  headersText.value = formatJson(channel?.headers || {});
-  assignCompat(channel?.compat || {});
+  const draftSource = channel || defaultChannel(nextChannelPriority());
+  assignChannelDraft(draftSource);
+  headersText.value = formatJson(draftSource.headers || {});
+  assignCompat(draftSource.compat || {});
   channelDrawerVisible.value = true;
 }
 
@@ -483,7 +511,11 @@ async function importConfig(file) {
 }
 
 function exportConfig() {
-  const text = JSON.stringify({ channels: channels.value }, null, 2);
+  const text = JSON.stringify(
+    { channels: channels.value.map(exportChannel) },
+    null,
+    2
+  );
   const blob = new Blob([text], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -560,6 +592,8 @@ function buildChannelTestPayload(channel) {
     headers: channel.headers || {},
     timeout_seconds: Number(channel.timeout_seconds || 120),
     retry_count: Number(channel.retry_count ?? 3),
+    priority: Number(channel.priority ?? 0),
+    capacity: normalizeCapacityValue(channel.capacity),
     compat: channel.compat || {},
     models: channel.models || [],
     enabled: channel.enabled !== false,
@@ -575,7 +609,7 @@ function channelTestModelSuggestions(query, callback) {
 
 // --- Channel helpers ---
 
-function defaultChannel() {
+function defaultChannel(priority = 0) {
   return {
     id: "",
     name: "",
@@ -586,6 +620,8 @@ function defaultChannel() {
     headers: {},
     timeout_seconds: 120,
     retry_count: 3,
+    priority,
+    capacity: null,
     compat: {},
     models: [],
     enabled: true
@@ -593,8 +629,10 @@ function defaultChannel() {
 }
 
 function assignChannelDraft(channel) {
-  Object.assign(channelDraft, defaultChannel(), channel, {
+  Object.assign(channelDraft, defaultChannel(normalizePriorityValue(channel.priority)), channel, {
     headers: channel.headers || {},
+    priority: normalizePriorityValue(channel.priority),
+    capacity: normalizeCapacityValue(channel.capacity),
     compat: channel.compat || {},
     models: normalizeModels(channel.models)
   });
@@ -619,6 +657,14 @@ function buildChannelFromDraft() {
   if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
     throw new Error("请求头必须是 JSON 对象");
   }
+  const priority = normalizePriorityValue(channelDraft.priority);
+  const capacity = normalizeCapacityValue(channelDraft.capacity);
+  if (!Number.isInteger(priority) || priority < 0) {
+    throw new Error("优先级必须是大于等于 0 的整数");
+  }
+  if (capacity !== null && (!Number.isInteger(capacity) || capacity <= 0)) {
+    throw new Error("容量必须是正整数，或留空表示不限");
+  }
   return {
     id: channelDraft.id.trim(),
     name: channelDraft.name.trim(),
@@ -629,6 +675,8 @@ function buildChannelFromDraft() {
     headers,
     timeout_seconds: Number(channelDraft.timeout_seconds || 120),
     retry_count: Number(channelDraft.retry_count ?? 3),
+    priority,
+    capacity,
     enabled: channelDraft.enabled === true,
     models: normalizeModels(channelDraft.models).filter((item) => item.model),
     compat: buildCompat()
@@ -766,8 +814,55 @@ function displayMs(value) {
   return value === null || value === undefined ? "-" : `${value} ms`;
 }
 
+function formatCapacityStatus(channel) {
+  const activeRequests = Number(channel?.active_requests ?? 0);
+  const capacity = normalizeCapacityValue(channel?.capacity);
+  return `${activeRequests} / ${capacity === null ? "不限" : capacity}`;
+}
+
 function formatJson(value) {
   return JSON.stringify(value, null, 2);
+}
+
+function nextChannelPriority() {
+  return channels.value.reduce((maxPriority, channel) => {
+    const priority = normalizePriorityValue(channel?.priority);
+    return Math.max(maxPriority, priority);
+  }, -1) + 1;
+}
+
+function normalizePriorityValue(value) {
+  const priority = Number(value ?? 0);
+  return Number.isInteger(priority) && priority >= 0 ? priority : 0;
+}
+
+function normalizeCapacityValue(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  const capacity = Number(value);
+  return Number.isInteger(capacity) && capacity > 0 ? capacity : null;
+}
+
+function exportChannel(channel) {
+  return {
+    owner_username: channel.owner_username,
+    id: channel.id,
+    name: channel.name,
+    type: channel.type,
+    baseurl: channel.baseurl,
+    apikey: channel.apikey,
+    auth_mode: channel.auth_mode,
+    headers: channel.headers || {},
+    timeout_seconds: Number(channel.timeout_seconds || 120),
+    retry_count: Number(channel.retry_count ?? 3),
+    priority: normalizePriorityValue(channel.priority),
+    capacity: normalizeCapacityValue(channel.capacity),
+    compat: channel.compat || {},
+    models: normalizeModels(channel.models),
+    enabled: channel.enabled !== false
+  };
 }
 
 function isPlainObject(value) {

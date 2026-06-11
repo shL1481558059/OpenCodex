@@ -1,3 +1,5 @@
+using OpenCodex.CoreBase.Abstractions;
+
 namespace OpenCodex.CoreBase.Domain.Proxy;
 
 /// <summary>
@@ -33,6 +35,7 @@ public sealed class ProxyRequestLogContext
     /// <param name="requestType">请求日志类型。</param>
     /// <param name="parentRequestLogId">父请求日志标识符（如果可用）。</param>
     /// <param name="ocrDetails">OCR 专用详情（如果可用）。</param>
+    /// <param name="streamWriteMetrics">流式写出时序诊断（如果可用）。</param>
     public ProxyRequestLogContext(
         string requestId,
         string ownerUsername,
@@ -58,7 +61,8 @@ public sealed class ProxyRequestLogContext
         IReadOnlyDictionary<string, string> requestHeaders,
         string requestType = ProxyRequestTypes.Main,
         long? parentRequestLogId = null,
-        Dictionary<string, object?>? ocrDetails = null)
+        Dictionary<string, object?>? ocrDetails = null,
+        StreamWriteMetrics? streamWriteMetrics = null)
     {
         RequestId = requestId;
         OwnerUsername = ownerUsername;
@@ -85,6 +89,7 @@ public sealed class ProxyRequestLogContext
         RequestType = requestType;
         ParentRequestLogId = parentRequestLogId;
         OcrDetails = ocrDetails;
+        StreamWriteMetrics = streamWriteMetrics;
     }
 
     /// <summary>
@@ -211,4 +216,9 @@ public sealed class ProxyRequestLogContext
     /// 获取 OCR 专用详情（如果可用）。
     /// </summary>
     public Dictionary<string, object?>? OcrDetails { get; }
+
+    /// <summary>
+    /// 获取流式写出时序诊断（如果可用）。
+    /// </summary>
+    public StreamWriteMetrics? StreamWriteMetrics { get; }
 }

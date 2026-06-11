@@ -95,6 +95,18 @@ public sealed class ChannelRequest
     public int? RetryCount { get; set; }
 
     /// <summary>
+    /// 获取或设置渠道优先级；值越小优先级越高。
+    /// </summary>
+    [JsonPropertyName("priority")]
+    public int? Priority { get; set; }
+
+    /// <summary>
+    /// 获取或设置渠道允许的主请求并发上限；为空表示不限。
+    /// </summary>
+    [JsonPropertyName("capacity")]
+    public int? Capacity { get; set; }
+
+    /// <summary>
     /// 获取或设置通道兼容性选项。
     /// </summary>
     [JsonPropertyName("compat")]
@@ -147,6 +159,16 @@ public sealed class ChannelRequest
         if (RetryCount.HasValue)
         {
             channel["retry_count"] = RetryCount.Value;
+        }
+
+        if (Priority.HasValue)
+        {
+            channel["priority"] = Priority.Value;
+        }
+
+        if (Capacity.HasValue)
+        {
+            channel["capacity"] = Capacity.Value;
         }
 
         if (Enabled.HasValue)

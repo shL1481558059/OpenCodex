@@ -3,6 +3,7 @@ using OpenCodex.Core.Errors;
 using OpenCodex.Core.Protocols;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
+using OpenCodex.CoreBase.DTOs.Proxy;
 using OpenCodex.CoreBase.Services.Proxy;
 
 namespace OpenCodex.Core.Services.Proxy;
@@ -12,6 +13,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
     private readonly IProxyLogService _logs;
     private readonly IProxyRequestService _requests;
     private readonly IProxyRouteService _routes;
+    private readonly IChannelCapacityService _channelCapacity;
     private readonly IProxyImageFallbackService _imageFallback;
     private readonly IProxyNonStreamService _nonStreams;
     private readonly IProxyStreamService _streams;
@@ -20,6 +22,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         IProxyLogService logs,
         IProxyRequestService requests,
         IProxyRouteService routes,
+        IChannelCapacityService channelCapacity,
         IProxyImageFallbackService imageFallback,
         IProxyNonStreamService nonStreams,
         IProxyStreamService streams)
@@ -27,6 +30,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         _logs = logs;
         _requests = requests;
         _routes = routes;
+        _channelCapacity = channelCapacity;
         _imageFallback = imageFallback;
         _nonStreams = nonStreams;
         _streams = streams;
@@ -54,6 +58,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         object? errorResponse = null;
         var logInFinally = true;
         var requestMetadata = context.RequestMetadata;
+        IChannelCapacityLease? capacityLease = null;
 
         try
         {
@@ -71,7 +76,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             requestModel = JsonDictionaryValue.String(payload, "model");
             effectivePayload = payload;
             var requestContainsImages = ProxyImageRequestDetector.ContainsImageInput(payload, context.EntryProtocol);
-            var route = _routes.ChooseRoute(ownerUsername, requestModel, requestContainsImages);
+            var (route, lease) = AcquireRoute(ownerUsername, requestModel, requestContainsImages);
+            capacityLease = lease;
             channelType = JsonDictionaryValue.String(route.Channel, "type");
             channelId = JsonDictionaryValue.String(route.Channel, "id");
             upstreamModel = route.UpstreamModel;
@@ -190,7 +196,64 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         WebSearchDetails: null),
                     requestMetadata);
             }
+
+            capacityLease?.Dispose();
         }
+    }
+
+    private (ProxyRouteDto Route, IChannelCapacityLease Lease) AcquireRoute(
+        string ownerUsername,
+        string? requestModel,
+        bool requestContainsImages)
+    {
+        var candidates = _routes.ListRouteCandidates(ownerUsername, requestModel, requestContainsImages);
+        var orderedCandidates = candidates
+            .Select((candidate, index) => new
+            {
+                Candidate = candidate,
+                Priority = PriorityValue(candidate.Channel),
+                ActiveRequests = _channelCapacity.GetActiveRequests(
+                    ownerUsername,
+                    JsonDictionaryValue.String(candidate.Channel, "id")),
+                Order = index
+            })
+            .OrderBy(item => item.Priority)
+            .ThenBy(item => item.ActiveRequests)
+            .ThenBy(item => item.Order);
+
+        foreach (var item in orderedCandidates)
+        {
+            var lease = _channelCapacity.TryAcquire(ownerUsername, item.Candidate.Channel);
+            if (lease is not null)
+            {
+                return (item.Candidate, lease);
+            }
+        }
+
+        var modelLabel = string.IsNullOrWhiteSpace(requestModel)
+            ? "requested route"
+            : $"model {requestModel!.Trim()}";
+        throw new RoutingException(
+            $"all enabled channels for {modelLabel} are at capacity",
+            ProxyHttpStatus.TooManyRequests);
+    }
+
+    private static int PriorityValue(IReadOnlyDictionary<string, object?> channel)
+    {
+        if (!channel.TryGetValue("priority", out var value)
+            || value is null)
+        {
+            return 0;
+        }
+
+        return value switch
+        {
+            int priority => priority,
+            long priority => (int)priority,
+            short priority => priority,
+            byte priority => priority,
+            _ => 0
+        };
     }
 
     private static int ElapsedMilliseconds(long started)

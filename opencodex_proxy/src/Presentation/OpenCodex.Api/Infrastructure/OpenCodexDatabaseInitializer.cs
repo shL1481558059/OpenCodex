@@ -22,6 +22,7 @@ public static class OpenCodexDatabaseInitializer
 
         using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
         context.Database.EnsureCreated();
+        OpenCodexChannels.EnsureSchema(context);
         OpenCodexPricing.EnsureSchema(context);
         OpenCodexRequestLogs.EnsureSchema(context);
         SeedDefaultModelPricing(context);

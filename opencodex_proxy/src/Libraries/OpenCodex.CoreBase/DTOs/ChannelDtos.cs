@@ -5,6 +5,7 @@ namespace OpenCodex.CoreBase.DTOs;
 /// </summary>
 /// <param name="ownerUsername">拥有该通道的用户名。</param>
 /// <param name="id">通道标识符。</param>
+/// <param name="position">渠道保存顺序位置。</param>
 /// <param name="name">通道显示名称。</param>
 /// <param name="type">上游提供方类型。</param>
 /// <param name="baseUrl">上游基础 URL。</param>
@@ -13,12 +14,15 @@ namespace OpenCodex.CoreBase.DTOs;
 /// <param name="headers">应用到上游请求的附加请求头。</param>
 /// <param name="timeoutSeconds">上游请求超时时间，单位为秒。</param>
 /// <param name="retryCount">重试次数。</param>
+/// <param name="priority">渠道优先级；值越小优先级越高。</param>
+/// <param name="capacity">渠道允许的主请求并发上限；为空表示不限。</param>
 /// <param name="compat">通道兼容性选项。</param>
 /// <param name="models">通道配置的模型。</param>
 /// <param name="enabled">指示通道是否启用的值。</param>
 public sealed class ChannelDto(
     string ownerUsername,
     string id,
+    int position,
     string name,
     string type,
     string baseUrl,
@@ -27,6 +31,8 @@ public sealed class ChannelDto(
     IReadOnlyDictionary<string, object?> headers,
     int timeoutSeconds,
     int retryCount,
+    int priority,
+    int? capacity,
     IReadOnlyDictionary<string, object?> compat,
     IReadOnlyList<object?> models,
     bool enabled)
@@ -40,6 +46,11 @@ public sealed class ChannelDto(
     /// 获取通道标识符。
     /// </summary>
     public string Id { get; } = id;
+
+    /// <summary>
+    /// 获取通道显示名称。
+    /// </summary>
+    public int Position { get; } = position;
 
     /// <summary>
     /// 获取通道显示名称。
@@ -80,6 +91,16 @@ public sealed class ChannelDto(
     /// 获取重试次数。
     /// </summary>
     public int RetryCount { get; } = retryCount;
+
+    /// <summary>
+    /// 获取渠道优先级；值越小优先级越高。
+    /// </summary>
+    public int Priority { get; } = priority;
+
+    /// <summary>
+    /// 获取渠道允许的主请求并发上限；为空表示不限。
+    /// </summary>
+    public int? Capacity { get; } = capacity;
 
     /// <summary>
     /// 获取通道兼容性选项。

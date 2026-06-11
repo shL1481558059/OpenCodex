@@ -1,17 +1,26 @@
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authentication;
 using OpenCodex.CoreBase.Domain;
 
 namespace OpenCodex.Api.Controllers;
 
 internal static class SessionState
 {
-    private const string UsernameKey = "opencodex_admin_username";
-    private const string RoleKey = "opencodex_admin_role";
-    private const string EnabledKey = "opencodex_admin_enabled";
+    public const string AuthenticationScheme = "OpenCodexAdmin";
+    public const string CookieName = "opencodex_admin_auth";
+
+    private const string EnabledClaimType = "opencodex_admin_enabled";
 
     public static SessionUser? CurrentUser(HttpContext context)
     {
-        var username = context.Session.GetString(UsernameKey);
-        var role = context.Session.GetString(RoleKey);
+        var principal = context.User;
+        if (principal?.Identity?.IsAuthenticated != true)
+        {
+            return null;
+        }
+
+        var username = principal.FindFirstValue(ClaimTypes.Name);
+        var role = principal.FindFirstValue(ClaimTypes.Role);
         if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(role))
         {
             return null;
@@ -20,19 +29,44 @@ internal static class SessionState
         return new SessionUser(
             username.Trim(),
             role.Trim(),
-            context.Session.GetString(EnabledKey) != "false");
+            !string.Equals(principal.FindFirstValue(EnabledClaimType), "false", StringComparison.OrdinalIgnoreCase));
     }
 
-    public static void SetUser(HttpContext context, SessionUser user)
+    public static Task SetUserAsync(
+        HttpContext context,
+        SessionUser user,
+        TimeSpan persistentLifetime)
     {
-        context.Session.SetString(UsernameKey, user.Username);
-        context.Session.SetString(RoleKey, user.Role);
-        context.Session.SetString(EnabledKey, user.Enabled ? "true" : "false");
+        var claims = new[]
+        {
+            new Claim(ClaimTypes.Name, user.Username),
+            new Claim(ClaimTypes.Role, user.Role),
+            new Claim(EnabledClaimType, user.Enabled ? "true" : "false")
+        };
+        var identity = new ClaimsIdentity(
+            claims,
+            AuthenticationScheme,
+            ClaimTypes.Name,
+            ClaimTypes.Role);
+        var principal = new ClaimsPrincipal(identity);
+        var now = DateTimeOffset.UtcNow;
+        context.User = principal;
+        return context.SignInAsync(
+            AuthenticationScheme,
+            principal,
+            new AuthenticationProperties
+            {
+                IsPersistent = true,
+                AllowRefresh = true,
+                IssuedUtc = now,
+                ExpiresUtc = now.Add(persistentLifetime)
+            });
     }
 
-    public static void ClearUser(HttpContext context)
+    public static Task ClearUserAsync(HttpContext context)
     {
-        context.Session.Clear();
+        context.User = new ClaimsPrincipal(new ClaimsIdentity());
+        return context.SignOutAsync(AuthenticationScheme);
     }
 
     public static bool IsSuperadmin(SessionUser user)

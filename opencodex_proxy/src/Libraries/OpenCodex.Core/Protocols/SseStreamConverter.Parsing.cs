@@ -72,12 +72,43 @@ public static partial class SseStreamConverter
     {
         var inputTokens = ToInt(GetValue(usage, "prompt_tokens"));
         var outputTokens = ToInt(GetValue(usage, "completion_tokens"));
-        return new Dictionary<string, object?>
+        var responseUsage = new Dictionary<string, object?>
         {
             ["input_tokens"] = inputTokens,
             ["output_tokens"] = outputTokens,
             ["total_tokens"] = inputTokens + outputTokens
         };
+
+        if (TryAsObject(GetValue(usage, "prompt_tokens_details"), out var promptDetails)
+            && promptDetails.Count > 0)
+        {
+            responseUsage["input_tokens_details"] = new Dictionary<string, object?>
+            {
+                ["cached_tokens"] = ToInt(GetValue(promptDetails, "cached_tokens"))
+            };
+        }
+        else if (TryAsObject(GetValue(usage, "input_tokens_details"), out var inputDetails)
+                 && inputDetails.Count > 0)
+        {
+            responseUsage["input_tokens_details"] = inputDetails;
+        }
+
+        if (TryAsObject(GetValue(usage, "completion_tokens_details"), out var completionDetails)
+            && completionDetails.Count > 0)
+        {
+            var outputDetails = new Dictionary<string, object?>(StringComparer.Ordinal);
+            if (GetValue(completionDetails, "reasoning_tokens") is not null)
+            {
+                outputDetails["reasoning_tokens"] = ToInt(GetValue(completionDetails, "reasoning_tokens"));
+            }
+
+            if (outputDetails.Count > 0)
+            {
+                responseUsage["output_tokens_details"] = outputDetails;
+            }
+        }
+
+        return responseUsage;
     }
 
     private static Dictionary<string, object?> MessagesUsageToResponsesUsage(

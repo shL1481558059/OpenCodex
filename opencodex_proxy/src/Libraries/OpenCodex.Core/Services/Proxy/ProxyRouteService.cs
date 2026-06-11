@@ -2,8 +2,8 @@ using Mapster;
 using Microsoft.EntityFrameworkCore;
 using OpenCodex.Data;
 using OpenCodex.Core.Config;
-using OpenCodex.Core.Domain;
 using OpenCodex.Core.Errors;
+using OpenCodex.Core.Persistence;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.Proxy;
@@ -25,73 +25,43 @@ public sealed class ProxyRouteService : IProxyRouteService
         string? model,
         bool requestContainsImages = false)
     {
-        var enabledChannels = ListEnabledChannelConfigs(ownerUsername);
+        return ListRouteCandidates(ownerUsername, model, requestContainsImages)[0];
+    }
 
+    public IReadOnlyList<ProxyRouteDto> ListRouteCandidates(
+        string ownerUsername,
+        string? model,
+        bool requestContainsImages = false)
+    {
+        var enabledChannels = ListEnabledChannelConfigs(ownerUsername);
         if (enabledChannels.Count == 0)
         {
             throw new RoutingException("no enabled channels configured");
         }
 
         var normalizedModel = (model ?? string.Empty).Trim();
-        var hasModelMappings = false;
-        foreach (var channel in enabledChannels)
+        if (HasAnyModelMappings(enabledChannels))
         {
-            if (!channel.TryGetValue("models", out var modelsValue)
-                || !ConfigValue.TryAsList(modelsValue, out var models))
+            var candidates = ListMatchedRouteCandidates(enabledChannels, normalizedModel);
+            if (candidates.Count == 0)
             {
-                continue;
+                throw new RoutingException($"no enabled channel configured for model: {normalizedModel}");
             }
 
-            foreach (var mappingValue in models)
-            {
-                if (ConfigValue.TryAsObject(mappingValue, out _))
-                {
-                    hasModelMappings = true;
-                    break;
-                }
-            }
-
-            if (hasModelMappings)
-            {
-                break;
-            }
+            return candidates
+                .Select(candidate => candidate.ToRoute())
+                .ToList();
         }
 
-        if (hasModelMappings)
-        {
-            foreach (var channel in enabledChannels)
-            {
-                if (!channel.TryGetValue("models", out var modelsValue)
-                    || !ConfigValue.TryAsList(modelsValue, out var models))
-                {
-                    continue;
-                }
-
-                foreach (var mappingValue in models)
-                {
-                    if (!ConfigValue.TryAsObject(mappingValue, out var mapping))
-                    {
-                        continue;
-                    }
-
-                    if (mapping.TryGetValue("model", out var value)
-                        && ConfigValue.PythonString(value) == normalizedModel)
-                    {
-                        var matchedRoute = ToCandidate(channel, mapping, normalizedModel);
-                        return matchedRoute.ToRoute();
-                    }
-                }
-            }
-
-            throw new RoutingException($"no enabled channel configured for model: {normalizedModel}");
-        }
-
-        return new ProxyRouteDto(
-            enabledChannels[0],
-            normalizedModel,
-            normalizedModel,
-            supportsImage: false,
-            matchedModelMapping: false);
+        return
+        [
+            new ProxyRouteDto(
+                enabledChannels[0],
+                normalizedModel,
+                normalizedModel,
+                supportsImage: false,
+                matchedModelMapping: false)
+        ];
     }
 
     public IReadOnlyList<string> ListModels(string ownerUsername)
@@ -110,46 +80,31 @@ public sealed class ProxyRouteService : IProxyRouteService
         }
 
         var normalizedModel = (model ?? string.Empty).Trim();
-        if (normalizedModel.Length > 0)
+        if (normalizedModel.Length == 0)
         {
-            foreach (var channel in enabledChannels)
-            {
-                if (!channel.TryGetValue("models", out var modelsValue)
-                    || !ConfigValue.TryAsList(modelsValue, out var models))
-                {
-                    continue;
-                }
-
-                foreach (var mappingValue in models)
-                {
-                    if (!ConfigValue.TryAsObject(mappingValue, out var mapping))
-                    {
-                        continue;
-                    }
-
-                    if (mapping.TryGetValue("model", out var value)
-                        && ConfigValue.PythonString(value).Trim() == normalizedModel)
-                    {
-                        var sameChannelRoute = FindImageRouteInChannel(channel);
-                        if (sameChannelRoute is not null)
-                        {
-                            return sameChannelRoute.ToRoute();
-                        }
-
-                        return FindImageRoute(enabledChannels, channel)
-                            ?.ToRoute();
-                    }
-                }
-            }
+            return null;
         }
 
-        return null;
+        var candidates = ListMatchedRouteCandidates(enabledChannels, normalizedModel);
+        if (candidates.Count == 0)
+        {
+            return null;
+        }
+
+        var primaryChannel = candidates[0].Channel;
+        var sameChannelRoute = FindImageRouteInChannel(primaryChannel);
+        if (sameChannelRoute is not null)
+        {
+            return sameChannelRoute.ToRoute();
+        }
+
+        return FindImageRoute(enabledChannels, primaryChannel)
+            ?.ToRoute();
     }
 
     public IReadOnlyList<ProxyModelCapabilityDto> ListModelCapabilities(string ownerUsername)
     {
-        var capabilities = new List<ProxyModelCapabilityDto>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var bestCandidates = new Dictionary<string, ModelRouteCandidate>(StringComparer.Ordinal);
         foreach (var channel in ListEnabledChannelConfigs(ownerUsername))
         {
             if (!channel.TryGetValue("models", out var modelsValue)
@@ -165,19 +120,81 @@ public sealed class ProxyRouteService : IProxyRouteService
                     continue;
                 }
 
-                var model = mapping.TryGetValue("model", out var value)
-                    ? ConfigValue.PythonString(value).Trim()
-                    : string.Empty;
-                if (model.Length > 0 && seen.Add(model))
+                var candidate = ToCandidate(channel, mapping, string.Empty);
+                if (candidate.Model.Length == 0)
                 {
-                    capabilities.Add(new ProxyModelCapabilityDto(
-                        model,
-                        MappingSupportsImage(mapping)));
+                    continue;
+                }
+
+                if (!bestCandidates.TryGetValue(candidate.Model, out var current)
+                    || candidate.CompareTo(current) < 0)
+                {
+                    bestCandidates[candidate.Model] = candidate;
                 }
             }
         }
 
-        return capabilities;
+        return bestCandidates.Values
+            .OrderBy(candidate => candidate)
+            .ThenBy(candidate => candidate.Model, StringComparer.Ordinal)
+            .Select(candidate => new ProxyModelCapabilityDto(
+                candidate.Model,
+                candidate.SupportsImage))
+            .ToList();
+    }
+
+    private static bool HasAnyModelMappings(IReadOnlyList<Dictionary<string, object?>> channels)
+    {
+        foreach (var channel in channels)
+        {
+            if (!channel.TryGetValue("models", out var modelsValue)
+                || !ConfigValue.TryAsList(modelsValue, out var models))
+            {
+                continue;
+            }
+
+            foreach (var mappingValue in models)
+            {
+                if (ConfigValue.TryAsObject(mappingValue, out _))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static List<ModelRouteCandidate> ListMatchedRouteCandidates(
+        IReadOnlyList<Dictionary<string, object?>> channels,
+        string normalizedModel)
+    {
+        var candidates = new List<ModelRouteCandidate>();
+        foreach (var channel in channels)
+        {
+            if (!channel.TryGetValue("models", out var modelsValue)
+                || !ConfigValue.TryAsList(modelsValue, out var models))
+            {
+                continue;
+            }
+
+            foreach (var mappingValue in models)
+            {
+                if (!ConfigValue.TryAsObject(mappingValue, out var mapping))
+                {
+                    continue;
+                }
+
+                if (mapping.TryGetValue("model", out var value)
+                    && ConfigValue.PythonString(value).Trim() == normalizedModel)
+                {
+                    candidates.Add(ToCandidate(channel, mapping, normalizedModel));
+                }
+            }
+        }
+
+        candidates.Sort(static (left, right) => left.CompareTo(right));
+        return candidates;
     }
 
     private static ModelRouteCandidate? FindImageRouteInChannel(
@@ -189,6 +206,7 @@ public sealed class ProxyRouteService : IProxyRouteService
             return null;
         }
 
+        ModelRouteCandidate? best = null;
         foreach (var mappingValue in models)
         {
             if (!ConfigValue.TryAsObject(mappingValue, out var mapping)
@@ -197,16 +215,21 @@ public sealed class ProxyRouteService : IProxyRouteService
                 continue;
             }
 
-            return ToCandidate(channel, mapping, string.Empty);
+            var candidate = ToCandidate(channel, mapping, string.Empty);
+            if (best is null || candidate.CompareTo(best) < 0)
+            {
+                best = candidate;
+            }
         }
 
-        return null;
+        return best;
     }
 
     private static ModelRouteCandidate? FindImageRoute(
         IReadOnlyList<Dictionary<string, object?>> channels,
         Dictionary<string, object?>? skipChannel = null)
     {
+        ModelRouteCandidate? best = null;
         foreach (var channel in channels)
         {
             if (skipChannel is not null && ReferenceEquals(channel, skipChannel))
@@ -215,13 +238,18 @@ public sealed class ProxyRouteService : IProxyRouteService
             }
 
             var route = FindImageRouteInChannel(channel);
-            if (route is not null)
+            if (route is null)
             {
-                return route;
+                continue;
+            }
+
+            if (best is null || route.CompareTo(best) < 0)
+            {
+                best = route;
             }
         }
 
-        return null;
+        return best;
     }
 
     private static ModelRouteCandidate ToCandidate(
@@ -249,12 +277,28 @@ public sealed class ProxyRouteService : IProxyRouteService
             channel,
             model,
             upstreamModel,
-            MappingSupportsImage(mapping));
+            MappingSupportsImage(mapping),
+            PriorityValue(channel),
+            PositionValue(channel));
     }
 
     private static bool MappingSupportsImage(IReadOnlyDictionary<string, object?> mapping)
     {
         return mapping.TryGetValue("supports_image", out var value) && value is true;
+    }
+
+    private static int PriorityValue(IReadOnlyDictionary<string, object?> channel)
+    {
+        return channel.TryGetValue("priority", out var value) && value is int priority
+            ? priority
+            : 0;
+    }
+
+    private static int PositionValue(IReadOnlyDictionary<string, object?> channel)
+    {
+        return channel.TryGetValue("position", out var value) && value is int position
+            ? position
+            : 0;
     }
 
     private List<Dictionary<string, object?>> ListEnabledChannelConfigs(string ownerUsername)
@@ -286,6 +330,7 @@ public sealed class ProxyRouteService : IProxyRouteService
             : ownerUsername.Trim();
         var settings = _settingsProvider.GetSettings();
         using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
+        OpenCodexChannels.EnsureSchema(context);
         var query = context.Channels.AsNoTracking();
         if (normalizedOwnerUsername.Length > 0)
         {
@@ -333,24 +378,31 @@ public sealed class ProxyRouteService : IProxyRouteService
             ["headers"] = channel.Headers,
             ["timeout_seconds"] = channel.TimeoutSeconds,
             ["retry_count"] = channel.RetryCount,
+            ["priority"] = channel.Priority,
+            ["capacity"] = channel.Capacity,
+            ["position"] = channel.Position,
             ["compat"] = channel.Compat,
             ["models"] = channel.Models,
             ["enabled"] = channel.Enabled
         };
     }
 
-    private sealed class ModelRouteCandidate
+    private sealed class ModelRouteCandidate : IComparable<ModelRouteCandidate>
     {
         public ModelRouteCandidate(
             Dictionary<string, object?> channel,
             string model,
             string upstreamModel,
-            bool supportsImage)
+            bool supportsImage,
+            int priority,
+            int position)
         {
             Channel = channel;
             Model = model;
             UpstreamModel = upstreamModel;
             SupportsImage = supportsImage;
+            Priority = priority;
+            Position = position;
         }
 
         public Dictionary<string, object?> Channel { get; }
@@ -360,6 +412,35 @@ public sealed class ProxyRouteService : IProxyRouteService
         public string UpstreamModel { get; }
 
         public bool SupportsImage { get; }
+
+        public int Priority { get; }
+
+        public int Position { get; }
+
+        public int CompareTo(ModelRouteCandidate? other)
+        {
+            if (other is null)
+            {
+                return -1;
+            }
+
+            var priorityComparison = Priority.CompareTo(other.Priority);
+            if (priorityComparison != 0)
+            {
+                return priorityComparison;
+            }
+
+            var positionComparison = Position.CompareTo(other.Position);
+            if (positionComparison != 0)
+            {
+                return positionComparison;
+            }
+
+            return string.Compare(
+                ConfigValue.PythonString(Channel["id"]),
+                ConfigValue.PythonString(other.Channel["id"]),
+                StringComparison.Ordinal);
+        }
 
         public ProxyRouteDto ToRoute()
         {

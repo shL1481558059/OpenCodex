@@ -64,6 +64,7 @@ public sealed class OpenCodexDbContext : DbContext
         entity.Property(channel => channel.CompatJson).IsRequired();
         entity.Property(channel => channel.ModelsJson).IsRequired();
         entity.HasIndex(channel => new { channel.OwnerUsername, channel.Position });
+        entity.HasIndex(channel => new { channel.OwnerUsername, channel.Priority, channel.Position, channel.Id });
         entity.Ignore(channel => channel.Owner);
     }
 

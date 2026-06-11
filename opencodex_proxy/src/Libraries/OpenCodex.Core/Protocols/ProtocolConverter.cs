@@ -48,6 +48,78 @@ public static partial class ProtocolConverter
                                                   The opening and closing tags must each be on their own line. Do not translate the tags. The client will not recognize the plan without these tags.
                                                   """;
 
+    private static bool IsResponsesToolCallLike(Dictionary<string, object?> item)
+    {
+        var type = GetString(item, "type");
+        if (string.IsNullOrEmpty(type) || type == "web_search_call")
+        {
+            return false;
+        }
+
+        if (ResponsesToolCallTypes.Contains(type))
+        {
+            return true;
+        }
+
+        if (!type.EndsWith("_call", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var hasCallIdentity = HasNonNullValue(item, "call_id") || HasNonNullValue(item, "id");
+        var hasInvocationShape = HasNonNullValue(item, "name")
+            || HasNonNullValue(item, "arguments")
+            || HasNonNullValue(item, "input")
+            || HasNonNullValue(item, "action");
+        return hasCallIdentity && hasInvocationShape;
+    }
+
+    private static bool IsResponsesToolOutputLike(Dictionary<string, object?> item)
+    {
+        var type = GetString(item, "type");
+        if (string.IsNullOrEmpty(type))
+        {
+            return false;
+        }
+
+        if (ResponsesToolOutputTypes.Contains(type))
+        {
+            return true;
+        }
+
+        if (!type.EndsWith("_call_output", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var hasCallIdentity = HasNonNullValue(item, "call_id")
+            || HasNonNullValue(item, "tool_call_id")
+            || HasNonNullValue(item, "tool_use_id");
+        var hasOutput = HasNonNullValue(item, "output") || HasNonNullValue(item, "content");
+        return hasCallIdentity && hasOutput;
+    }
+
+    private static string ResponsesToolCallName(Dictionary<string, object?> item)
+    {
+        var type = GetString(item, "type") ?? string.Empty;
+        if (HasNonNullValue(item, "name"))
+        {
+            return GetString(item, "name") ?? string.Empty;
+        }
+
+        return type.EndsWith("_call", StringComparison.Ordinal)
+            ? type[..^"_call".Length]
+            : type;
+    }
+
+    private static object? ResponsesToolCallArguments(Dictionary<string, object?> item)
+    {
+        return GetValue(item, "arguments")
+            ?? GetValue(item, "input")
+            ?? GetValue(item, "action")
+            ?? new Dictionary<string, object?>();
+    }
+
     public static bool SupportsStreamingConversion(string sourceProtocol, string targetProtocol)
     {
         return sourceProtocol == targetProtocol

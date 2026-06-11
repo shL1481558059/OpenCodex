@@ -70,14 +70,12 @@ public static partial class ProtocolConverter
                     reasoningParts.Add(reasoning);
                 }
             }
-            else if (type is not null && ResponsesToolCallTypes.Contains(type))
+            else if (IsResponsesToolCallLike(item))
             {
-                var name = GetString(item, "name") ?? type.Replace("_call", string.Empty, StringComparison.Ordinal);
-                var arguments = GetValue(item, "arguments") ?? GetValue(item, "input") ?? new Dictionary<string, object?>();
                 toolCalls.Add(Obj(
                     ("id", GetValue(item, "call_id") ?? GetValue(item, "id") ?? NewId("call")),
-                    ("name", name),
-                    ("arguments", JsonDumps(arguments))));
+                    ("name", ResponsesToolCallName(item)),
+                    ("arguments", JsonDumps(ResponsesToolCallArguments(item)))));
             }
         }
 
