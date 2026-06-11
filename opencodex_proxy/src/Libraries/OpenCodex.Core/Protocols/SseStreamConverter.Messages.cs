@@ -40,12 +40,16 @@ public static partial class SseStreamConverter
         var createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var responseModel = model;
         var textParts = new List<string>();
+        var reasoningParts = new List<string>();
         var contentBlocks = new SortedDictionary<int, Dictionary<string, object?>>();
         var inputJsonParts = new Dictionary<int, List<string>>();
         var stopReason = "stop";
         var usage = new Dictionary<string, object?>(StringComparer.Ordinal);
         var textStarted = false;
         var messageOutputIndex = (int?)null;
+        var reasoningStarted = false;
+        var reasoningOutputIndex = (int?)null;
+        var reasoningItemId = $"rs_{Guid.NewGuid():N}";
         var sequenceNumber = InitialSequenceNumber;
         var toolStates = new Dictionary<int, ToolStreamState>();
         var nextOutputIndex = InitialOutputIndex;
@@ -76,6 +80,46 @@ public static partial class SseStreamConverter
             state.OutputIndex ??= AllocateOutputIndex();
             state.ItemId ??= $"fc_{Guid.NewGuid():N}";
             return state;
+        }
+
+        List<string> EnsureReasoningStarted()
+        {
+            if (reasoningStarted)
+            {
+                return [];
+            }
+
+            reasoningStarted = true;
+            reasoningOutputIndex = AllocateOutputIndex();
+            return
+            [
+                Emit(
+                    "response.output_item.added",
+                    new Dictionary<string, object?>
+                    {
+                        ["output_index"] = reasoningOutputIndex,
+                        ["item"] = new Dictionary<string, object?>
+                        {
+                            ["id"] = reasoningItemId,
+                            ["type"] = "reasoning",
+                            ["status"] = "in_progress",
+                            ["summary"] = new List<object?>()
+                        }
+                    }),
+                Emit(
+                    "response.reasoning_summary_part.added",
+                    new Dictionary<string, object?>
+                    {
+                        ["item_id"] = reasoningItemId,
+                        ["output_index"] = reasoningOutputIndex,
+                        ["summary_index"] = 0,
+                        ["part"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "summary_text",
+                            ["text"] = string.Empty
+                        }
+                    })
+            ];
         }
 
         List<string> EnsureMessageStarted()
@@ -189,6 +233,28 @@ public static partial class SseStreamConverter
                             textParts.Add(initialText);
                         }
                     }
+                    else if (blockType == "thinking")
+                    {
+                        var initialThinking = StringValue(block, "thinking", string.Empty);
+                        if (initialThinking.Length > 0)
+                        {
+                            foreach (var emitted in EnsureReasoningStarted())
+                            {
+                                yield return emitted;
+                            }
+
+                            reasoningParts.Add(initialThinking);
+                            yield return Emit(
+                                "response.reasoning_summary_text.delta",
+                                new Dictionary<string, object?>
+                                {
+                                    ["item_id"] = reasoningItemId,
+                                    ["output_index"] = reasoningOutputIndex,
+                                    ["summary_index"] = 0,
+                                    ["delta"] = initialThinking
+                                });
+                        }
+                    }
                     else if (blockType == "tool_use")
                     {
                         var toolName = StringValue(block, "name", string.Empty);
@@ -242,7 +308,39 @@ public static partial class SseStreamConverter
                 }
 
                 var deltaType = StringValue(delta, "type", string.Empty);
-                if (deltaType == "text_delta")
+                var blockType = StringValue(block, "type", string.Empty);
+                if (deltaType == "thinking_delta"
+                    || (blockType == "thinking" && deltaType == "text_delta"))
+                {
+                    var thinking = StringValue(delta, "thinking", string.Empty);
+                    if (thinking.Length == 0)
+                    {
+                        thinking = StringValue(delta, "text", string.Empty);
+                    }
+
+                    if (thinking.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    foreach (var line in EnsureReasoningStarted())
+                    {
+                        yield return line;
+                    }
+
+                    reasoningParts.Add(thinking);
+                    block["thinking"] = $"{StringValue(block, "thinking", string.Empty)}{thinking}";
+                    yield return Emit(
+                        "response.reasoning_summary_text.delta",
+                        new Dictionary<string, object?>
+                        {
+                            ["item_id"] = reasoningItemId,
+                            ["output_index"] = reasoningOutputIndex,
+                            ["summary_index"] = 0,
+                            ["delta"] = thinking
+                        });
+                }
+                else if (deltaType == "text_delta")
                 {
                     var text = StringValue(delta, "text", string.Empty);
                     if (text.Length == 0)
@@ -356,7 +454,57 @@ public static partial class SseStreamConverter
         };
 
         var output = new List<object?>();
+        var combinedReasoning = string.Concat(reasoningParts);
         var combinedText = string.Concat(textParts);
+        if (combinedReasoning.Length > 0)
+        {
+            var reasoningItem = new Dictionary<string, object?>
+            {
+                ["id"] = reasoningItemId,
+                ["type"] = "reasoning",
+                ["status"] = "completed",
+                ["summary"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "summary_text",
+                        ["text"] = combinedReasoning
+                    }
+                },
+                ["encrypted_content"] = combinedReasoning
+            };
+            output.Add(reasoningItem);
+            yield return Emit(
+                "response.reasoning_summary_text.done",
+                new Dictionary<string, object?>
+                {
+                    ["item_id"] = reasoningItemId,
+                    ["output_index"] = reasoningOutputIndex,
+                    ["summary_index"] = 0,
+                    ["text"] = combinedReasoning
+                });
+            yield return Emit(
+                "response.reasoning_summary_part.done",
+                new Dictionary<string, object?>
+                {
+                    ["item_id"] = reasoningItemId,
+                    ["output_index"] = reasoningOutputIndex,
+                    ["summary_index"] = 0,
+                    ["part"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "summary_text",
+                        ["text"] = combinedReasoning
+                    }
+                });
+            yield return Emit(
+                "response.output_item.done",
+                new Dictionary<string, object?>
+                {
+                    ["output_index"] = reasoningOutputIndex,
+                    ["item"] = reasoningItem
+                });
+        }
+
         if (combinedText.Length > 0)
         {
             foreach (var line in EnsureMessageStarted())
