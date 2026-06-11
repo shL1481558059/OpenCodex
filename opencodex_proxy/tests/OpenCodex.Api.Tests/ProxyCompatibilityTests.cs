@@ -340,6 +340,33 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             .ToArray());
     }
 
+    [Theory]
+    [InlineData("responses", "Codex Desktop/0.138.0-alpha.7 (Mac OS 13.7.8; arm64) unknown (Codex Desktop; 26.608.12217)")]
+    [InlineData("chat", "Codex Desktop/0.138.0-alpha.7 (Mac OS 13.7.8; arm64) unknown (Codex Desktop; 26.608.12217)")]
+    [InlineData("messages", "claude-cli/2.1.145 (external, claude-vscode)")]
+    public async Task PostJsonAsync_UsesChannelSpecificUserAgent(string channelType, string expectedUserAgent)
+    {
+        var handler = new StaticJsonHandler("""{ "data": [] }""");
+        var upstream = new HttpUpstreamClient(new HttpClient(handler));
+
+        _ = await upstream.PostJsonAsync(
+            new Dictionary<string, object?>
+            {
+                ["type"] = channelType,
+                ["baseurl"] = "https://example.test/v1",
+                ["auth_mode"] = "none",
+                ["retry_count"] = 0
+            },
+            new Dictionary<string, object?>
+            {
+                ["model"] = "test-model"
+            },
+            30,
+            CancellationToken.None);
+
+        Assert.Equal(expectedUserAgent, handler.UserAgent);
+    }
+
     [Fact]
     public void ConvertRequest_ResponsesPlanModeTagInDeveloperInput_AppendsPlanInstruction()
     {
@@ -3060,11 +3087,16 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
 
         public Uri? RequestUri { get; private set; }
 
+        public string? UserAgent { get; private set; }
+
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
             RequestUri = request.RequestUri;
+            UserAgent = request.Headers.TryGetValues("User-Agent", out var values)
+                ? string.Join(" ", values)
+                : null;
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(_json, Encoding.UTF8, "application/json")

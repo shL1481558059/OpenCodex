@@ -8,6 +8,11 @@ namespace OpenCodex.Core.ExternalIntegrations;
 
 public sealed partial class HttpUpstreamClient
 {
+    private const string CodexDesktopUserAgent =
+        "Codex Desktop/0.138.0-alpha.7 (Mac OS 13.7.8; arm64) unknown (Codex Desktop; 26.608.12217)";
+
+    private const string ClaudeCliUserAgent = "claude-cli/2.1.145 (external, claude-vscode)";
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
@@ -65,6 +70,9 @@ public sealed partial class HttpUpstreamClient
             }
         }
 
+        var channelType = JsonDictionaryValue.String(channel, "type");
+        headers["user-agent"] = UserAgentForChannelType(channelType);
+
         var authMode = JsonDictionaryValue.String(channel, "auth_mode");
         if (authMode.Length == 0)
         {
@@ -73,7 +81,7 @@ public sealed partial class HttpUpstreamClient
 
         var apiKey = JsonDictionaryValue.String(channel, "apikey");
         var authValue = authMode == "config" && apiKey.Length > 0 ? $"Bearer {apiKey}" : null;
-        if (JsonDictionaryValue.String(channel, "type") == "messages")
+        if (channelType == "messages")
         {
             if (!string.IsNullOrEmpty(authValue) && authValue.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
             {
@@ -95,6 +103,16 @@ public sealed partial class HttpUpstreamClient
         }
 
         return headers;
+    }
+
+    private static string UserAgentForChannelType(string channelType)
+    {
+        return channelType switch
+        {
+            "messages" => ClaudeCliUserAgent,
+            "responses" or "chat" => CodexDesktopUserAgent,
+            _ => "OpenCodex-Proxy/0.1"
+        };
     }
 
     private static string JoinUrl(string baseUrl, string endpoint)
