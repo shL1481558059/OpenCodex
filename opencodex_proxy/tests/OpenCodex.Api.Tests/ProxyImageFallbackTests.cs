@@ -445,7 +445,7 @@ public sealed class ProxyImageFallbackTests
         Assert.True(response.Headers.TryGetValues("Set-Cookie", out var cookies));
         var cookie = cookies
             .Select(value => value.Split(';', 2)[0])
-            .FirstOrDefault(value => value.StartsWith(".AspNetCore.Session=", StringComparison.Ordinal));
+            .FirstOrDefault(value => value.StartsWith("opencodex_admin_auth=", StringComparison.Ordinal));
         Assert.False(string.IsNullOrEmpty(cookie));
         return cookie!;
     }

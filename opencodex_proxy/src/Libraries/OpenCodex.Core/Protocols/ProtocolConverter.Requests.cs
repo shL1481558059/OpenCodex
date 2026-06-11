@@ -203,6 +203,7 @@ public static partial class ProtocolConverter
     {
         var result = Obj(("model", GetValue(canonical, "model")), ("messages", new List<object?>()));
         MergeInto(result, ObjectValue(canonical, "params"));
+        DropResponsesOnlyParamsForMessages(result);
 
         var systemParts = new List<string>();
         var outputMessages = ListValue(result, "messages");
@@ -225,9 +226,23 @@ public static partial class ProtocolConverter
                 continue;
             }
 
+            if (role == "tool")
+            {
+                outputMessages.Add(Obj(
+                    ("role", "user"),
+                    ("content", new List<object?>
+                    {
+                        Obj(
+                            ("type", "tool_result"),
+                            ("tool_use_id", GetValue(message, "tool_call_id")),
+                            ("content", StringifyContent(GetValue(message, "content") ?? string.Empty)))
+                    })));
+                continue;
+            }
+
             outputMessages.Add(Obj(
                 ("role", role),
-                ("content", ChatContentToAnthropicContent(GetValue(message, "content") ?? string.Empty))));
+                ("content", CanonicalMessageToAnthropicContent(message))));
         }
 
         if (systemParts.Count > 0)
@@ -253,6 +268,46 @@ public static partial class ProtocolConverter
         }
 
         return result;
+    }
+
+    private static List<object?> CanonicalMessageToAnthropicContent(Dictionary<string, object?> message)
+    {
+        var content = ChatContentToAnthropicContent(GetValue(message, "content") ?? string.Empty);
+        foreach (var toolCallItem in ListValue(message, "tool_calls"))
+        {
+            if (!TryAsObject(toolCallItem, out var toolCall))
+            {
+                continue;
+            }
+
+            var function = ObjectValue(toolCall, "function");
+            content.Add(Obj(
+                ("type", "tool_use"),
+                ("id", GetValue(toolCall, "id")),
+                ("name", GetValue(function, "name") ?? GetValue(toolCall, "name")),
+                ("input", ParseJsonObject(GetValue(function, "arguments") ?? GetValue(toolCall, "arguments") ?? "{}"))));
+        }
+
+        return content;
+    }
+
+    private static void DropResponsesOnlyParamsForMessages(Dictionary<string, object?> payload)
+    {
+        foreach (var key in new[]
+                 {
+                     "include",
+                     "reasoning",
+                     "text",
+                     "service_tier",
+                     "previous_response_id",
+                     "client_metadata",
+                     "parallel_tool_calls",
+                     "prompt_cache_key",
+                     "store"
+                 })
+        {
+            payload.Remove(key);
+        }
     }
 
     private static Dictionary<string, object?> CopyCommonRequestParams(Dictionary<string, object?> payload, string protocol)

@@ -41,13 +41,19 @@ OPENCODEX_LOG_PATH=logs/opencodex.log
 OPENCODEX_LOG_LEVEL=INFO
 OPENCODEX_LOG_VIEW_LEVEL=BASIC
 OPENCODEX_DEFAULT_TIMEOUT=120
+OPENCODEX_ADMIN_COOKIE_DAYS=30
 OPENCODEX_SECRET_KEY=change-me-session-secret
+OPENCODEX_DATA_PROTECTION_KEYS_PATH=logs/opencodex.keys
 TZ=Asia/Shanghai
 ```
 
 `OPENCODEX_ADMIN_USERNAME` 和 `OPENCODEX_ADMIN_PASSWORD` 是环境变量超级管理员。超级管理员不能通过管理接口降级或删除，密码以环境变量为准；普通用户只能由超级管理员创建、停用和重置密码。
 
-`OPENCODEX_SECRET_KEY` 用于会话相关安全配置，生产环境不要使用示例默认值。
+管理台登录态现在是持久化认证 Cookie，默认有效期 30 天，并开启滑动续期。`OPENCODEX_ADMIN_COOKIE_DAYS` 可调整有效期。
+
+`OPENCODEX_SECRET_KEY` 用于登录 Cookie 的隔离配置；`OPENCODEX_DATA_PROTECTION_KEYS_PATH` 用于持久化认证密钥。生产环境不要使用示例默认值，并确保密钥目录挂载到持久化存储，否则容器重建后仍会要求重新登录。
+
+开发时不要混用 `http://127.0.0.1:5173/admin/` 和 `https://localhost:8443/admin/`。这两个入口属于不同站点，浏览器不会共享登录 Cookie，看起来就像“总是掉登录”。
 
 ## 用户与访问 API Key
 

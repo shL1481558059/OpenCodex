@@ -1,5 +1,10 @@
+using System.Security.Cryptography;
+using System.Text;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.OpenApi;
 using OpenCodex.Api.Configuration;
+using OpenCodex.Api.Controllers;
 using OpenCodex.Api.Infrastructure;
 using OpenCodex.Core.ExternalIntegrations;
 using OpenCodex.Core.Services;
@@ -15,7 +20,9 @@ namespace OpenCodex.Api.Hosting;
 
 public static class OpenCodexServiceCollectionExtensions
 {
-    public static IServiceCollection AddOpenCodexApi(this IServiceCollection services)
+    public static IServiceCollection AddOpenCodexApi(
+        this IServiceCollection services,
+        IConfiguration configuration)
     {
         OpenCodexMappingConfig.Register();
         services.AddControllers();
@@ -30,7 +37,7 @@ public static class OpenCodexServiceCollectionExtensions
             });
         });
         services.AddOpenCodexServices();
-        services.AddOpenCodexSession();
+        services.AddOpenCodexAuthentication(configuration);
 
         return services;
     }
@@ -57,6 +64,7 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<IProxyImageFallbackService, ProxyImageFallbackService>();
         services.AddScoped<IProxyImagePayloadRewriter, ProxyImagePayloadRewriter>();
         services.AddScoped<IProxyLogService, ProxyLogService>();
+        services.AddSingleton<IChannelCapacityService, ChannelCapacityService>();
         services.AddSingleton<ILocalImageOcrService, LocalPaddleImageOcrService>();
         services.AddScoped<IProxyOcrService, ProxyOcrService>();
         services.AddScoped<IProxyRequestService, ProxyRequestService>();
@@ -68,16 +76,89 @@ public static class OpenCodexServiceCollectionExtensions
         return services;
     }
 
-    private static IServiceCollection AddOpenCodexSession(this IServiceCollection services)
+    private static IServiceCollection AddOpenCodexAuthentication(
+        this IServiceCollection services,
+        IConfiguration configuration)
     {
-        services.AddDistributedMemoryCache();
         services.AddHttpContextAccessor();
-        services.AddSession(options =>
-        {
-            options.Cookie.HttpOnly = true;
-            options.Cookie.SameSite = SameSiteMode.Lax;
-        });
+        services.AddDataProtection()
+            .PersistKeysToFileSystem(new DirectoryInfo(ResolveDataProtectionKeysPath(configuration)))
+            .SetApplicationName(BuildDataProtectionApplicationName(configuration));
+        services.AddAuthentication(SessionState.AuthenticationScheme)
+            .AddCookie(SessionState.AuthenticationScheme, options =>
+            {
+                options.Cookie.Name = SessionState.CookieName;
+                options.Cookie.HttpOnly = true;
+                options.Cookie.SameSite = SameSiteMode.Lax;
+                options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+                options.Cookie.IsEssential = true;
+                options.ExpireTimeSpan = TimeSpan.FromDays(ReadAdminCookieDays(configuration));
+                options.SlidingExpiration = true;
+                options.Events = new CookieAuthenticationEvents
+                {
+                    OnRedirectToLogin = context =>
+                    {
+                        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                        return Task.CompletedTask;
+                    },
+                    OnRedirectToAccessDenied = context =>
+                    {
+                        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                        return Task.CompletedTask;
+                    }
+                };
+            });
+        services.AddAuthorization();
 
         return services;
+    }
+
+    private static int ReadAdminCookieDays(IConfiguration configuration)
+    {
+        var rawValue = ConfigValue(configuration, "OpenCodex:AdminCookieDays", "OPENCODEX_ADMIN_COOKIE_DAYS");
+        return int.TryParse(rawValue, out var days) && days > 0
+            ? days
+            : 30;
+    }
+
+    private static string ResolveDataProtectionKeysPath(IConfiguration configuration)
+    {
+        var configured = ConfigValue(
+            configuration,
+            "OpenCodex:DataProtectionKeysPath",
+            "OPENCODEX_DATA_PROTECTION_KEYS_PATH");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            var absoluteConfigured = Path.GetFullPath(configured.Trim());
+            Directory.CreateDirectory(absoluteConfigured);
+            return absoluteConfigured;
+        }
+
+        var dbPath = ConfigValue(configuration, "OpenCodex:DbPath", "OPENCODEX_DB_PATH") ?? "logs/opencodex.db";
+        var absoluteDbPath = Path.GetFullPath(dbPath);
+        var directory = Path.GetDirectoryName(absoluteDbPath) ?? AppContext.BaseDirectory;
+        var keysPath = Path.Combine(directory, $"{Path.GetFileNameWithoutExtension(absoluteDbPath)}.keys");
+        Directory.CreateDirectory(keysPath);
+        return keysPath;
+    }
+
+    private static string BuildDataProtectionApplicationName(IConfiguration configuration)
+    {
+        var secret = (ConfigValue(configuration, "OpenCodex:SecretKey", "OPENCODEX_SECRET_KEY") ?? "change-me-session-secret").Trim();
+        if (secret.Length == 0)
+        {
+            secret = "change-me-session-secret";
+        }
+
+        var digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(secret))).ToLowerInvariant();
+        return $"OpenCodex.Admin.{digest[..16]}";
+    }
+
+    private static string? ConfigValue(
+        IConfiguration configuration,
+        string primaryKey,
+        string fallbackKey)
+    {
+        return configuration[primaryKey] ?? configuration[fallbackKey];
     }
 }

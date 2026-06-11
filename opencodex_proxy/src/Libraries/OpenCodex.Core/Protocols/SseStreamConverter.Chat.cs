@@ -39,6 +39,7 @@ public static partial class SseStreamConverter
         var createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var responseModel = model;
         var textParts = new List<string>();
+        var refusalParts = new List<string>();
         var usage = new Dictionary<string, object?>(StringComparer.Ordinal);
         var completionId = string.Empty;
         object? completionCreated = null;
@@ -251,7 +252,30 @@ public static partial class SseStreamConverter
                             ["item_id"] = messageItemId,
                             ["output_index"] = messageOutputIndex,
                             ["content_index"] = 0,
-                            ["delta"] = text
+                            ["delta"] = text,
+                            ["logprobs"] = new List<object?>()
+                        });
+                }
+
+                var refusal = StringValue(delta, "refusal", string.Empty);
+                if (refusal.Length > 0)
+                {
+                    foreach (var line in EnsureMessageStarted())
+                    {
+                        yield return line;
+                    }
+
+                    textParts.Add(refusal);
+                    refusalParts.Add(refusal);
+                    yield return Emit(
+                        "response.output_text.delta",
+                        new Dictionary<string, object?>
+                        {
+                            ["item_id"] = messageItemId,
+                            ["output_index"] = messageOutputIndex,
+                            ["content_index"] = 0,
+                            ["delta"] = refusal,
+                            ["logprobs"] = new List<object?>()
                         });
                 }
 
@@ -404,6 +428,7 @@ public static partial class SseStreamConverter
             ["content"] = combinedText,
             ["tool_calls"] = reconstructedToolCalls
             ,["reasoning_content"] = combinedReasoning
+            ,["refusal"] = string.Concat(refusalParts)
         };
         result.UpstreamResponse = new Dictionary<string, object?>
         {
@@ -477,7 +502,8 @@ public static partial class SseStreamConverter
             var outputText = new Dictionary<string, object?>
             {
                 ["type"] = "output_text",
-                ["text"] = combinedText
+                ["text"] = combinedText,
+                ["annotations"] = new List<object?>()
             };
             var messageItem = new Dictionary<string, object?>
             {
@@ -494,7 +520,8 @@ public static partial class SseStreamConverter
                     ["item_id"] = messageItemId,
                     ["output_index"] = messageOutputIndex,
                     ["content_index"] = 0,
-                    ["text"] = combinedText
+                    ["text"] = combinedText,
+                    ["logprobs"] = new List<object?>()
                 });
             yield return Emit(
                 "response.content_part.done",

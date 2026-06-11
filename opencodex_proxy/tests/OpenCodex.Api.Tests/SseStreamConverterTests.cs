@@ -53,6 +53,7 @@ public sealed class SseStreamConverterTests
 
     private static string ChatChunk(
         string? content = null,
+        string? refusal = null,
         string? reasoningContent = null,
         object? toolCalls = null,
         string? finishReason = null,
@@ -63,6 +64,7 @@ public sealed class SseStreamConverterTests
     {
         var delta = new Dictionary<string, object?>();
         if (content is not null) delta["content"] = content;
+        if (refusal is not null) delta["refusal"] = refusal;
         if (reasoningContent is not null) delta["reasoning_content"] = reasoningContent;
         if (toolCalls is not null) delta["tool_calls"] = toolCalls;
 
@@ -130,6 +132,133 @@ public sealed class SseStreamConverterTests
     private static IEnumerable<Dictionary<string, object?>> AllByType(
         List<Dictionary<string, object?>> events, string type) =>
         events.Where(e => e.TryGetValue("type", out var t) && t?.ToString() == type);
+
+    private static string[] MessagesMultiToolSseBlocks(
+        IReadOnlyList<GeneratedSseToolCall> tools,
+        string? assistantPreamble = null)
+    {
+        var blocks = new List<string>
+        {
+            SseBlock(JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["type"] = "message_start",
+                ["message"] = new Dictionary<string, object?>
+                {
+                    ["id"] = "msg_chain",
+                    ["model"] = "claude-3",
+                    ["usage"] = new Dictionary<string, object?>
+                    {
+                        ["input_tokens"] = 5,
+                        ["output_tokens"] = 0
+                    }
+                }
+            }), "message_start")
+        };
+
+        var contentIndex = 0;
+        if (!string.IsNullOrEmpty(assistantPreamble))
+        {
+            blocks.Add(SseBlock(
+                JsonSerializer.Serialize(new Dictionary<string, object?>
+                {
+                    ["type"] = "content_block_start",
+                    ["index"] = contentIndex,
+                    ["content_block"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "text",
+                        ["text"] = string.Empty
+                    }
+                }),
+                "content_block_start"));
+            blocks.Add(SseBlock(
+                JsonSerializer.Serialize(new Dictionary<string, object?>
+                {
+                    ["type"] = "content_block_delta",
+                    ["index"] = contentIndex,
+                    ["delta"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "text_delta",
+                        ["text"] = assistantPreamble
+                    }
+                }),
+                "content_block_delta"));
+            contentIndex++;
+        }
+
+        foreach (var tool in tools)
+        {
+            blocks.Add(SseBlock(
+                JsonSerializer.Serialize(new Dictionary<string, object?>
+                {
+                    ["type"] = "content_block_start",
+                    ["index"] = contentIndex,
+                    ["content_block"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "tool_use",
+                        ["id"] = tool.CallId,
+                        ["name"] = tool.UpstreamName,
+                        ["input"] = new Dictionary<string, object?>()
+                    }
+                }),
+                "content_block_start"));
+
+            foreach (var partialJson in SplitJsonForSse(JsonSerializer.Serialize(tool.Input)))
+            {
+                blocks.Add(SseBlock(
+                    JsonSerializer.Serialize(new Dictionary<string, object?>
+                    {
+                        ["type"] = "content_block_delta",
+                        ["index"] = contentIndex,
+                        ["delta"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "input_json_delta",
+                            ["partial_json"] = partialJson
+                        }
+                    }),
+                    "content_block_delta"));
+            }
+
+            contentIndex++;
+        }
+
+        blocks.Add(SseBlock(
+            JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["type"] = "message_delta",
+                ["delta"] = new Dictionary<string, object?>
+                {
+                    ["stop_reason"] = "tool_use"
+                },
+                ["usage"] = new Dictionary<string, object?>
+                {
+                    ["output_tokens"] = Math.Max(1, tools.Count + (string.IsNullOrEmpty(assistantPreamble) ? 0 : 1))
+                }
+            }),
+            "message_delta"));
+        blocks.Add(SseBlock(JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["type"] = "message_stop"
+        }), "message_stop"));
+        return blocks.ToArray();
+    }
+
+    private static IReadOnlyList<string> SplitJsonForSse(string json)
+    {
+        if (json.Length < 4)
+        {
+            return [json];
+        }
+
+        var midpoint = json.Length / 2;
+        return [json[..midpoint], json[midpoint..]];
+    }
+
+    private sealed record GeneratedSseToolCall(
+        string CallId,
+        string UpstreamName,
+        Dictionary<string, object?> Input,
+        string ExpectedName,
+        string? ExpectedNamespace);
 
     // ── Chat → Responses: response.in_progress ───────────────
 
@@ -277,6 +406,107 @@ public sealed class SseStreamConverterTests
         Assert.Equal("Thinking step 1.", message!["reasoning_content"]?.ToString());
     }
 
+    [Fact]
+    public async Task RefusalDelta_EmitsOutputTextAndPersistsRefusal()
+    {
+        var lines = SseLines(
+            SseBlock(ChatChunk(refusal: "I can't help with that.")),
+            SseBlock(ChatChunk(finishReason: "stop",
+                usage: new Dictionary<string, object?> { ["prompt_tokens"] = 2, ["completion_tokens"] = 3 })),
+            SseBlock("[DONE]"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.ChatToResponsesEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var delta = ByType(parsed, "response.output_text.delta");
+        Assert.NotNull(delta);
+        Assert.Equal("I can't help with that.", delta!["delta"]?.ToString());
+
+        var completed = ByType(parsed, "response.completed");
+        Assert.NotNull(completed);
+        var output = ((Dictionary<string, object?>)completed!["response"]!)["output"] as List<object?>;
+        Assert.NotNull(output);
+        var messageItem = Assert.IsType<Dictionary<string, object?>>(output![0]);
+        var contentParts = Assert.IsType<List<object?>>(messageItem["content"]);
+        var outputText = Assert.IsType<Dictionary<string, object?>>(contentParts[0]);
+        Assert.Equal("I can't help with that.", outputText["text"]?.ToString());
+
+        var choices = Assert.IsType<List<object?>>(result.UpstreamResponse!["choices"]);
+        var message = Assert.IsType<Dictionary<string, object?>>(Assert.IsType<Dictionary<string, object?>>(choices[0])["message"]);
+        Assert.Equal("I can't help with that.", message["refusal"]?.ToString());
+    }
+
+    [Fact]
+    public async Task ChatUsageDetails_AreMappedToResponsesUsageDetails()
+    {
+        var lines = SseLines(
+            SseBlock(ChatChunk(content: "done")),
+            SseBlock(ChatChunk(
+                finishReason: "stop",
+                usage: new Dictionary<string, object?>
+                {
+                    ["prompt_tokens"] = 11,
+                    ["completion_tokens"] = 7,
+                    ["prompt_tokens_details"] = new Dictionary<string, object?>
+                    {
+                        ["cached_tokens"] = 5
+                    },
+                    ["completion_tokens_details"] = new Dictionary<string, object?>
+                    {
+                        ["reasoning_tokens"] = 3
+                    }
+                })),
+            SseBlock("[DONE]"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.ChatToResponsesEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        var completed = ByType(ParseEvents(events), "response.completed");
+        Assert.NotNull(completed);
+        var response = Assert.IsType<Dictionary<string, object?>>(completed!["response"]);
+        var usage = Assert.IsType<Dictionary<string, object?>>(response["usage"]);
+        Assert.Equal(11, Convert.ToInt32(usage["input_tokens"]));
+        Assert.Equal(7, Convert.ToInt32(usage["output_tokens"]));
+        Assert.Equal(18, Convert.ToInt32(usage["total_tokens"]));
+
+        var inputDetails = Assert.IsType<Dictionary<string, object?>>(usage["input_tokens_details"]);
+        Assert.Equal(5, Convert.ToInt32(inputDetails["cached_tokens"]));
+
+        var outputDetails = Assert.IsType<Dictionary<string, object?>>(usage["output_tokens_details"]);
+        Assert.Equal(3, Convert.ToInt32(outputDetails["reasoning_tokens"]));
+    }
+
+    [Fact]
+    public async Task OutputTextEvents_IncludeCompatibilityFields()
+    {
+        var lines = SseLines(
+            SseBlock(ChatChunk(content: "Hello")),
+            SseBlock(ChatChunk(finishReason: "stop",
+                usage: new Dictionary<string, object?> { ["prompt_tokens"] = 1, ["completion_tokens"] = 1 })),
+            SseBlock("[DONE]"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.ChatToResponsesEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var delta = ByType(parsed, "response.output_text.delta");
+        Assert.NotNull(delta);
+        Assert.IsType<List<object?>>(delta!["logprobs"]);
+
+        var done = ByType(parsed, "response.output_text.done");
+        Assert.NotNull(done);
+        Assert.IsType<List<object?>>(done!["logprobs"]);
+
+        var contentDone = ByType(parsed, "response.content_part.done");
+        Assert.NotNull(contentDone);
+        var part = Assert.IsType<Dictionary<string, object?>>(contentDone!["part"]);
+        Assert.IsType<List<object?>>(part["annotations"]);
+    }
+
     // ── Messages → Responses: response.in_progress ────────────
 
     [Fact]
@@ -382,6 +612,246 @@ public sealed class SseStreamConverterTests
         Assert.Equal("toolu_1", fc!["call_id"]?.ToString());
         Assert.Equal("web_search", fc["name"]?.ToString());
         Assert.NotNull(fc["arguments"]);
+    }
+
+    [Fact]
+    public async Task ToolUse_NamespaceTool_RestoresNamespaceInOutput()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"message_start","message":{"id":"msg_1","model":"claude-3","usage":{"input_tokens":5,"output_tokens":0}}}""", "message_start"),
+            SseBlock("""{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_mcp","name":"mcp__computer_use__click","input":{}}}""", "content_block_start"),
+            SseBlock("""{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"x\":12,\"y\":34}"}}""", "content_block_delta"),
+            SseBlock("""{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":15}}""", "message_delta"),
+            SseBlock("""{"type":"message_stop"}""", "message_stop"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.MessagesToResponsesEvents(lines, "claude-3", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var completed = ByType(parsed, "response.completed");
+        Assert.NotNull(completed);
+        var output = ((Dictionary<string, object?>)completed!["response"]!)["output"] as List<object?>;
+        Assert.NotNull(output);
+
+        var fc = output!.FirstOrDefault(i => i is Dictionary<string, object?> d && d.TryGetValue("type", out var t) && "function_call".Equals(t)) as Dictionary<string, object?>;
+        Assert.NotNull(fc);
+        Assert.Equal("toolu_mcp", fc!["call_id"]?.ToString());
+        Assert.Equal("click", fc["name"]?.ToString());
+        Assert.Equal("mcp__computer_use", fc["namespace"]?.ToString());
+
+        var arguments = JsonSerializer.Deserialize<Dictionary<string, int>>(Assert.IsType<string>(fc["arguments"]));
+        Assert.NotNull(arguments);
+        Assert.Equal(12, arguments["x"]);
+        Assert.Equal(34, arguments["y"]);
+    }
+
+    [Fact]
+    public async Task ToolUse_DeepNamespaceTool_RestoresFullNamespaceInOutput()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"message_start","message":{"id":"msg_1","model":"claude-3","usage":{"input_tokens":5,"output_tokens":0}}}""", "message_start"),
+            SseBlock("""{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_mcp","name":"mcp__computer_use__mouse__click","input":{}}}""", "content_block_start"),
+            SseBlock("""{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"x\":12,\"y\":34}"}}""", "content_block_delta"),
+            SseBlock("""{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":15}}""", "message_delta"),
+            SseBlock("""{"type":"message_stop"}""", "message_stop"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.MessagesToResponsesEvents(lines, "claude-3", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var completed = ByType(parsed, "response.completed");
+        Assert.NotNull(completed);
+        var output = ((Dictionary<string, object?>)completed!["response"]!)["output"] as List<object?>;
+        Assert.NotNull(output);
+
+        var fc = output!.FirstOrDefault(i => i is Dictionary<string, object?> d && d.TryGetValue("type", out var t) && "function_call".Equals(t)) as Dictionary<string, object?>;
+        Assert.NotNull(fc);
+        Assert.Equal("toolu_mcp", fc!["call_id"]?.ToString());
+        Assert.Equal("click", fc["name"]?.ToString());
+        Assert.Equal("mcp__computer_use__mouse", fc["namespace"]?.ToString());
+    }
+
+    [Fact]
+    public async Task ToolUse_GeneratedMultiToolChains_PreserveOrderNamespaceAndCompletionEvents()
+    {
+        var cases = new[]
+        {
+            new
+            {
+                Name = "two-deep-namespace-tools",
+                AssistantPreamble = (string?)null,
+                Tools = new[]
+                {
+                    new GeneratedSseToolCall(
+                        "toolu_click",
+                        "mcp__computer_use__mouse__click",
+                        new Dictionary<string, object?>
+                        {
+                            ["x"] = 12,
+                            ["y"] = 34
+                        },
+                        "click",
+                        "mcp__computer_use__mouse"),
+                    new GeneratedSseToolCall(
+                        "toolu_drag",
+                        "mcp__computer_use__mouse__drag",
+                        new Dictionary<string, object?>
+                        {
+                            ["from_x"] = 1,
+                            ["from_y"] = 2,
+                            ["to_x"] = 3,
+                            ["to_y"] = 4
+                        },
+                        "drag",
+                        "mcp__computer_use__mouse")
+                }
+            },
+            new
+            {
+                Name = "text-plus-apply-patch-and-keyboard-tools",
+                AssistantPreamble = (string?)"I will perform multiple actions.",
+                Tools = new[]
+                {
+                    new GeneratedSseToolCall(
+                        "toolu_patch",
+                        "apply_patch_update_file",
+                        new Dictionary<string, object?>
+                        {
+                            ["path"] = "notes.txt",
+                            ["hunks"] = new List<object?>
+                            {
+                                new Dictionary<string, object?>
+                                {
+                                    ["lines"] = new List<object?>
+                                    {
+                                        new Dictionary<string, object?> { ["op"] = "remove", ["text"] = "old" },
+                                        new Dictionary<string, object?> { ["op"] = "add", ["text"] = "new" }
+                                    }
+                                }
+                            }
+                        },
+                        "exec_command",
+                        null),
+                    new GeneratedSseToolCall(
+                        "toolu_press",
+                        "mcp__computer_use__keyboard__press_key",
+                        new Dictionary<string, object?>
+                        {
+                            ["key"] = "Return"
+                        },
+                        "press_key",
+                        "mcp__computer_use__keyboard"),
+                    new GeneratedSseToolCall(
+                        "toolu_type",
+                        "mcp__computer_use__keyboard__type_text",
+                        new Dictionary<string, object?>
+                        {
+                            ["text"] = "done"
+                        },
+                        "type_text",
+                        "mcp__computer_use__keyboard")
+                }
+            }
+        };
+
+        foreach (var testCase in cases)
+        {
+            var lines = SseLines(MessagesMultiToolSseBlocks(testCase.Tools, testCase.AssistantPreamble));
+            var result = new ConvertedStreamResult();
+            var events = await CollectAsync(
+                SseStreamConverter.MessagesToResponsesEvents(lines, "claude-3", result, CancellationToken.None));
+
+            var parsed = ParseEvents(events);
+            var functionCallAdded = parsed
+                .Where(e => e.TryGetValue("type", out var type)
+                    && type?.ToString() == "response.output_item.added"
+                    && e.TryGetValue("item", out var itemValue)
+                    && itemValue is Dictionary<string, object?> item
+                    && (string?)item["type"] == "function_call")
+                .ToList();
+            Assert.Equal(testCase.Tools.Length, functionCallAdded.Count);
+
+            var functionCallDone = parsed
+                .Where(e => e.TryGetValue("type", out var type)
+                    && type?.ToString() == "response.output_item.done"
+                    && e.TryGetValue("item", out var itemValue)
+                    && itemValue is Dictionary<string, object?> item
+                    && (string?)item["type"] == "function_call")
+                .ToList();
+            Assert.Equal(testCase.Tools.Length, functionCallDone.Count);
+
+            var argumentsDone = AllByType(parsed, "response.function_call_arguments.done").ToList();
+            Assert.Equal(testCase.Tools.Length, argumentsDone.Count);
+
+            var addedCallIds = functionCallAdded
+                .Select(entry => Assert.IsType<Dictionary<string, object?>>(entry["item"])["call_id"]?.ToString())
+                .ToArray();
+            Assert.Equal(testCase.Tools.Select(tool => tool.CallId).ToArray(), addedCallIds);
+
+            var completed = ByType(parsed, "response.completed");
+            Assert.NotNull(completed);
+            var output = Assert.IsType<List<object?>>(Assert.IsType<Dictionary<string, object?>>(completed!["response"])["output"]);
+            var functionCalls = output
+                .Select(item => item as Dictionary<string, object?>)
+                .Where(entry => (string?)entry?["type"] == "function_call")
+                .ToList();
+            Assert.Equal(testCase.Tools.Length, functionCalls.Count);
+
+            if (!string.IsNullOrEmpty(testCase.AssistantPreamble))
+            {
+                Assert.Contains(output, item =>
+                    item is Dictionary<string, object?> entry && (string?)entry["type"] == "message");
+            }
+
+            for (var index = 0; index < testCase.Tools.Length; index++)
+            {
+                var expected = testCase.Tools[index];
+                var actual = Assert.IsType<Dictionary<string, object?>>(functionCalls[index]);
+                Assert.Equal(expected.CallId, actual["call_id"]);
+                Assert.Equal(expected.ExpectedName, actual["name"]);
+                if (expected.ExpectedNamespace is null)
+                {
+                    Assert.False(actual.ContainsKey("namespace") && actual["namespace"] is not null);
+                }
+                else
+                {
+                    Assert.Equal(expected.ExpectedNamespace, actual["namespace"]);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ToolUse_ApplyPatchTool_UsesExecCommandInOutput()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"message_start","message":{"id":"msg_1","model":"claude-3","usage":{"input_tokens":5,"output_tokens":0}}}""", "message_start"),
+            SseBlock("""{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_patch","name":"apply_patch_update_file","input":{}}}""", "content_block_start"),
+            SseBlock("""{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"data.json\",\"hunks\":[{\"lines\":[{\"op\":\"remove\",\"text\":\"old\"},{\"op\":\"add\",\"text\":\"new\"}]}]}"}}""", "content_block_delta"),
+            SseBlock("""{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":15}}""", "message_delta"),
+            SseBlock("""{"type":"message_stop"}""", "message_stop"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.MessagesToResponsesEvents(lines, "claude-3", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var completed = ByType(parsed, "response.completed");
+        Assert.NotNull(completed);
+        var output = ((Dictionary<string, object?>)completed!["response"]!)["output"] as List<object?>;
+        Assert.NotNull(output);
+
+        var fc = output!.FirstOrDefault(i => i is Dictionary<string, object?> d && d.TryGetValue("type", out var t) && "function_call".Equals(t)) as Dictionary<string, object?>;
+        Assert.NotNull(fc);
+        Assert.Equal("toolu_patch", fc!["call_id"]?.ToString());
+        Assert.Equal("exec_command", fc["name"]?.ToString());
+
+        var arguments = JsonSerializer.Deserialize<Dictionary<string, string>>(Assert.IsType<string>(fc["arguments"]));
+        Assert.NotNull(arguments);
+        Assert.Contains("apply_patch <<'OPENCODEX_PATCH'", arguments["cmd"]);
+        Assert.Contains("*** Update File: data.json", arguments["cmd"]);
     }
     // ── response.completed P2 fields ──────────────────────────
 

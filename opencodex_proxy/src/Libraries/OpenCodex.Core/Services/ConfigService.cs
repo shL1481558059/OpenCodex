@@ -6,11 +6,13 @@ using Microsoft.EntityFrameworkCore;
 using OpenCodex.Data;
 using OpenCodex.Core.Config;
 using OpenCodex.Core.Domain;
+using OpenCodex.Core.Persistence;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.Config;
 using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
+using OpenCodex.CoreBase.Services.Proxy;
 
 namespace OpenCodex.Core.Services;
 
@@ -21,21 +23,26 @@ public sealed class ConfigService : IConfigService
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
+    private readonly IChannelCapacityService _channelCapacity;
     private readonly IOpenCodexRuntimeSettingsProvider _settingsProvider;
     private readonly IWorkContext _workContext;
 
     public ConfigService(
         IOpenCodexRuntimeSettingsProvider settingsProvider,
+        IChannelCapacityService channelCapacity,
         IWorkContext workContext)
     {
         _settingsProvider = settingsProvider;
+        _channelCapacity = channelCapacity;
         _workContext = workContext;
     }
 
     public ApiOpResult<ConfigResponse> ReadConfig()
     {
         var (currentUsername, isSuperadmin) = CurrentScope();
-        return ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(ReadChannels(currentUsername, isSuperadmin)));
+        return ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
+            ReadChannels(currentUsername, isSuperadmin),
+            ResolveActiveRequests));
     }
 
     public ApiOpResult<ConfigResponse> SaveConfig(
@@ -44,7 +51,9 @@ public sealed class ConfigService : IConfigService
         var (currentUsername, isSuperadmin) = CurrentScope();
         var saved = SaveChannels(body, currentUsername, isSuperadmin);
         return saved.Succeeded
-            ? ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(ReadChannels(currentUsername, isSuperadmin)))
+            ? ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
+                ReadChannels(currentUsername, isSuperadmin),
+                ResolveActiveRequests))
             : ApiOpResult<ConfigResponse>.Fail(saved.Code, saved.Description);
     }
 
@@ -128,6 +137,11 @@ public sealed class ConfigService : IConfigService
         return ApiOpResult<ConfigExportResponse>.Succeed(ConfigExportResponse.From(ReadChannels(currentUsername, isSuperadmin)));
     }
 
+    private int ResolveActiveRequests(ChannelDto channel)
+    {
+        return _channelCapacity.GetActiveRequests(channel.OwnerUsername, channel.Id);
+    }
+
     private (string Username, bool IsSuperadmin) CurrentScope()
     {
         var currentUser = _workContext.RequireUser();
@@ -182,6 +196,7 @@ public sealed class ConfigService : IConfigService
             : ownerUsername.Trim();
         var settings = _settingsProvider.GetSettings();
         using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
+        OpenCodexChannels.EnsureSchema(context);
         var query = context.Channels.AsNoTracking();
         if (normalizedOwnerUsername.Length > 0)
         {
@@ -242,6 +257,8 @@ public sealed class ConfigService : IConfigService
             ["headers"] = channel.Headers,
             ["timeout_seconds"] = channel.TimeoutSeconds,
             ["retry_count"] = channel.RetryCount,
+            ["priority"] = channel.Priority,
+            ["capacity"] = channel.Capacity,
             ["compat"] = channel.Compat,
             ["models"] = channel.Models,
             ["enabled"] = channel.Enabled
@@ -298,6 +315,7 @@ public sealed class ConfigService : IConfigService
         var normalizedOwner = ownerUsername is null ? null : NormalizeUsername(ownerUsername);
 
         using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
+        OpenCodexChannels.EnsureSchema(context);
         using var transaction = context.Database.BeginTransaction();
         var existingCreated = context.Channels
             .AsNoTracking()
@@ -344,6 +362,8 @@ public sealed class ConfigService : IConfigService
                     JsonDictionaryValue.Get(channel, "timeout_seconds"),
                     settings.DefaultTimeout),
                 RetryCount = RetryCountValue(channel),
+                Priority = PriorityValue(channel, position),
+                Capacity = CapacityValue(channel),
                 CompatJson = JsonSerializer.Serialize(
                     JsonDictionaryValue.Get(channel, "compat") ?? new Dictionary<string, object?>(),
                     JsonOptions),
@@ -385,6 +405,23 @@ public sealed class ConfigService : IConfigService
         return Convert.ToInt32(
             channel.TryGetValue("retry_count", out var value) ? value : OpenCodexConfig.DefaultRetryCount,
             CultureInfo.InvariantCulture);
+    }
+
+    private static int PriorityValue(IReadOnlyDictionary<string, object?> channel, int fallbackPriority)
+    {
+        return Convert.ToInt32(
+            channel.TryGetValue("priority", out var value) ? value : fallbackPriority,
+            CultureInfo.InvariantCulture);
+    }
+
+    private static int? CapacityValue(IReadOnlyDictionary<string, object?> channel)
+    {
+        if (!channel.TryGetValue("capacity", out var value) || value is null)
+        {
+            return null;
+        }
+
+        return Convert.ToInt32(value, CultureInfo.InvariantCulture);
     }
 
     private static bool IsPythonFalsy(object? value)

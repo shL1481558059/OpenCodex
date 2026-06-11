@@ -5,7 +5,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder
     .AddOpenCodexConfiguration();
 
-builder.Services.AddOpenCodexApi();
+builder.Services.AddOpenCodexApi(builder.Configuration);
 
 var app = builder.Build();
 

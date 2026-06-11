@@ -406,6 +406,7 @@ public sealed class LogDetailResponse
     /// <param name="responseBody">响应体内容。</param>
     /// <param name="webSearchJson">联网搜索记录内容。</param>
     /// <param name="ocrJson">OCR 记录内容。</param>
+    /// <param name="streamTimingsJson">流式写出时序诊断内容。</param>
     public LogDetailResponse(
         long id,
         string? requestId,
@@ -437,7 +438,8 @@ public sealed class LogDetailResponse
         string? upstreamResponseBody,
         string? responseBody,
         string? webSearchJson,
-        string? ocrJson)
+        string? ocrJson,
+        string? streamTimingsJson)
     {
         Id = id;
         RequestId = requestId;
@@ -470,6 +472,7 @@ public sealed class LogDetailResponse
         ResponseBody = responseBody;
         WebSearchJson = webSearchJson;
         OcrJson = ocrJson;
+        StreamTimingsJson = streamTimingsJson;
     }
 
     /// <summary>
@@ -659,6 +662,12 @@ public sealed class LogDetailResponse
     public string? OcrJson { get; }
 
     /// <summary>
+    /// 获取流式写出时序诊断内容。
+    /// </summary>
+    [JsonPropertyName("stream_timings_json")]
+    public string? StreamTimingsJson { get; }
+
+    /// <summary>
     /// 根据请求日志详情数据创建响应对象。
     /// </summary>
     /// <param name="log">请求日志详情数据。</param>
@@ -723,7 +732,8 @@ public sealed class LogDetailResponse
             log.UpstreamResponseBody,
             log.ResponseBody,
             log.WebSearchJson,
-            log.OcrJson);
+            log.OcrJson,
+            log.StreamTimingsJson);
     }
 }
 

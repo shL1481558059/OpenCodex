@@ -84,6 +84,26 @@ public static class ConfigValidator
             throw new ConfigException($"channel {channelId} retry_count must be a non-negative integer");
         }
 
+        var priority = GetValue(channel, "priority", 0);
+        if (priority is not int priorityValue || priorityValue < 0)
+        {
+            throw new ConfigException($"channel {channelId} priority must be a non-negative integer");
+        }
+
+        if (!channel.ContainsKey("priority"))
+        {
+            channel["priority"] = 0;
+        }
+
+        if (channel.TryGetValue("capacity", out var capacityValue)
+            && capacityValue is not null)
+        {
+            if (capacityValue is not int capacity || capacity <= 0)
+            {
+                throw new ConfigException($"channel {channelId} capacity must be a positive integer or null");
+            }
+        }
+
         var headers = GetValue(channel, "headers", new Dictionary<string, object?>());
         if (!ConfigValue.TryAsObject(headers, out _))
         {

@@ -251,8 +251,16 @@ public static partial class ProtocolConverter
 
         name = name.Replace("-", "_", StringComparison.Ordinal);
 
+        var providedSchema = GetValue(tool, "parameters")
+            ?? GetValue(tool, "input_schema")
+            ?? GetValue(tool, "schema");
+
         Dictionary<string, object?> parameters;
-        if (toolType is "local_shell" or "shell")
+        if (TryAsObject(providedSchema, out var explicitSchema) && explicitSchema.Count > 0)
+        {
+            parameters = explicitSchema;
+        }
+        else if (toolType is "local_shell" or "shell")
         {
             parameters = Obj(
                 ("type", "object"),
@@ -276,7 +284,7 @@ public static partial class ProtocolConverter
         return Obj(
             ("name", name),
             ("description", GetValue(tool, "description") ?? $"Wrapped Responses tool: {toolType}"),
-            ("parameters", GetValue(tool, "parameters") ?? parameters),
+            ("parameters", parameters),
             ("native_type", toolType),
             ("raw", DeepCopy(tool)));
     }

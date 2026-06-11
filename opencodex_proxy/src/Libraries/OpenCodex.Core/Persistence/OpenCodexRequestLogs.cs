@@ -10,6 +10,7 @@ public static class OpenCodexRequestLogs
         AddColumnIfMissing(context, "RequestLogs", "RequestType", """ALTER TABLE "RequestLogs" ADD COLUMN "RequestType" TEXT NOT NULL DEFAULT 'main';""");
         AddColumnIfMissing(context, "RequestLogs", "ParentRequestLogId", """ALTER TABLE "RequestLogs" ADD COLUMN "ParentRequestLogId" INTEGER NULL;""");
         AddColumnIfMissing(context, "RequestLogDetails", "OcrJson", """ALTER TABLE "RequestLogDetails" ADD COLUMN "OcrJson" TEXT NULL;""");
+        AddColumnIfMissing(context, "RequestLogDetails", "StreamTimingsJson", """ALTER TABLE "RequestLogDetails" ADD COLUMN "StreamTimingsJson" TEXT NULL;""");
 
         context.Database.ExecuteSqlRaw(
             """CREATE INDEX IF NOT EXISTS "IX_RequestLogs_RequestType" ON "RequestLogs" ("RequestType");""");

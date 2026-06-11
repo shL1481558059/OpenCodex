@@ -28,10 +28,15 @@ public sealed class ConfigResponse
     /// 根据通道 DTO 列表创建配置响应。
     /// </summary>
     /// <param name="channels">通道 DTO 列表。</param>
+    /// <param name="activeRequestsResolver">解析渠道当前并发数的回调。</param>
     /// <returns>配置响应。</returns>
-    public static ConfigResponse From(IReadOnlyList<ChannelDto> channels)
+    public static ConfigResponse From(
+        IReadOnlyList<ChannelDto> channels,
+        Func<ChannelDto, int>? activeRequestsResolver = null)
     {
-        return new ConfigResponse(channels.Select(ChannelResponse.From).ToList());
+        return new ConfigResponse(channels.Select(channel => ChannelResponse.From(
+            channel,
+            activeRequestsResolver?.Invoke(channel) ?? 0)).ToList());
     }
 }
 
@@ -53,6 +58,9 @@ public sealed class ChannelResponse
     /// <param name="headers">应用到上游请求的附加请求头。</param>
     /// <param name="timeoutSeconds">上游请求超时时间，单位为秒。</param>
     /// <param name="retryCount">重试次数。</param>
+    /// <param name="priority">渠道优先级；值越小优先级越高。</param>
+    /// <param name="capacity">渠道允许的主请求并发上限；为空表示不限。</param>
+    /// <param name="activeRequests">渠道当前主请求并发占用数。</param>
     /// <param name="compat">通道兼容性选项。</param>
     /// <param name="models">通道配置的模型。</param>
     /// <param name="enabled">指示通道是否启用的值。</param>
@@ -67,6 +75,9 @@ public sealed class ChannelResponse
         IReadOnlyDictionary<string, object?> headers,
         int timeoutSeconds,
         int retryCount,
+        int priority,
+        int? capacity,
+        int activeRequests,
         IReadOnlyDictionary<string, object?> compat,
         IReadOnlyList<object?> models,
         bool enabled)
@@ -81,6 +92,9 @@ public sealed class ChannelResponse
         Headers = headers;
         TimeoutSeconds = timeoutSeconds;
         RetryCount = retryCount;
+        Priority = priority;
+        Capacity = capacity;
+        ActiveRequests = activeRequests;
         Compat = compat;
         Models = models;
         Enabled = enabled;
@@ -147,6 +161,24 @@ public sealed class ChannelResponse
     public int RetryCount { get; }
 
     /// <summary>
+    /// 获取渠道优先级；值越小优先级越高。
+    /// </summary>
+    [JsonPropertyName("priority")]
+    public int Priority { get; }
+
+    /// <summary>
+    /// 获取渠道允许的主请求并发上限；为空表示不限。
+    /// </summary>
+    [JsonPropertyName("capacity")]
+    public int? Capacity { get; }
+
+    /// <summary>
+    /// 获取渠道当前主请求并发占用数。
+    /// </summary>
+    [JsonPropertyName("active_requests")]
+    public int ActiveRequests { get; }
+
+    /// <summary>
     /// 获取通道兼容性选项。
     /// </summary>
     [JsonPropertyName("compat")]
@@ -168,8 +200,9 @@ public sealed class ChannelResponse
     /// 根据通道 DTO 创建通道响应。
     /// </summary>
     /// <param name="channel">通道 DTO。</param>
+    /// <param name="activeRequests">渠道当前主请求并发占用数。</param>
     /// <returns>通道响应。</returns>
-    public static ChannelResponse From(ChannelDto channel)
+    public static ChannelResponse From(ChannelDto channel, int activeRequests)
     {
         return new ChannelResponse(
             channel.OwnerUsername,
@@ -182,6 +215,9 @@ public sealed class ChannelResponse
             channel.Headers,
             channel.TimeoutSeconds,
             channel.RetryCount,
+            channel.Priority,
+            channel.Capacity,
+            activeRequests,
             channel.Compat,
             channel.Models,
             channel.Enabled);
@@ -307,7 +343,27 @@ public sealed class ConfigExportResponse
     public static ConfigExportResponse From(IReadOnlyList<ChannelDto> channels)
     {
         var payload = JsonSerializer.Serialize(
-            ConfigResponse.From(channels),
+            new Dictionary<string, object?>
+            {
+                ["channels"] = channels.Select(channel => new Dictionary<string, object?>
+                {
+                    ["owner_username"] = channel.OwnerUsername,
+                    ["id"] = channel.Id,
+                    ["name"] = channel.Name,
+                    ["type"] = channel.Type,
+                    ["baseurl"] = channel.BaseUrl,
+                    ["apikey"] = channel.ApiKey,
+                    ["auth_mode"] = channel.AuthMode,
+                    ["headers"] = channel.Headers,
+                    ["timeout_seconds"] = channel.TimeoutSeconds,
+                    ["retry_count"] = channel.RetryCount,
+                    ["priority"] = channel.Priority,
+                    ["capacity"] = channel.Capacity,
+                    ["compat"] = channel.Compat,
+                    ["models"] = channel.Models,
+                    ["enabled"] = channel.Enabled
+                }).ToList()
+            },
             ExportJsonOptions) + "\n";
         return new ConfigExportResponse(
             payload,

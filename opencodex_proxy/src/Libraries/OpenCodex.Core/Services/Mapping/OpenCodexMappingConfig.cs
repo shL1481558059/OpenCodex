@@ -23,6 +23,7 @@ public static class OpenCodexMappingConfig
             .MapWith(source => new ChannelDto(
                 source.OwnerUsername,
                 source.Id,
+                source.Position,
                 source.Name,
                 source.Type,
                 source.BaseUrl,
@@ -31,6 +32,8 @@ public static class OpenCodexMappingConfig
                 DeserializeObject(source.HeadersJson),
                 source.TimeoutSeconds,
                 source.RetryCount,
+                source.Priority,
+                source.Capacity,
                 DeserializeObject(source.CompatJson),
                 DeserializeList(source.ModelsJson),
                 source.Enabled));
@@ -110,6 +113,7 @@ public static class OpenCodexMappingConfig
                 source.Detail == null ? null : source.Detail.ResponseBody,
                 source.Detail == null ? null : source.Detail.WebSearchJson,
                 source.Detail == null ? null : source.Detail.OcrJson,
+                source.Detail == null ? null : source.Detail.StreamTimingsJson,
                 RequestStatus(source.StatusCode, source.Error)));
 
         TypeAdapterConfig<RequestLog, RequestLogEventDto>

@@ -17,6 +17,8 @@ public sealed partial class ChannelDiagnosticsService
         "headers",
         "timeout_seconds",
         "retry_count",
+        "priority",
+        "capacity",
         "compat",
         "models",
         "enabled"

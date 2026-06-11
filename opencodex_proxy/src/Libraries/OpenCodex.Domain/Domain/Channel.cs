@@ -8,6 +8,8 @@ public sealed class Channel : BaseEntity
 
     public int Position { get; set; }
 
+    public int Priority { get; set; }
+
     public string Name { get; set; } = string.Empty;
 
     public string Type { get; set; } = string.Empty;
@@ -23,6 +25,8 @@ public sealed class Channel : BaseEntity
     public int TimeoutSeconds { get; set; }
 
     public int RetryCount { get; set; }
+
+    public int? Capacity { get; set; }
 
     public string CompatJson { get; set; } = "{}";
 

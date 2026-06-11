@@ -226,26 +226,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             .Select(item => item.GetProperty("id").GetString() ?? string.Empty)
             .ToArray();
         Assert.Equal(["public-model"], ids);
-        var catalogIds = document.RootElement
-            .GetProperty("models")
-            .EnumerateArray()
-            .Select(item => item.GetProperty("slug").GetString() ?? string.Empty)
-            .ToArray();
-        Assert.Equal(["public-model"], catalogIds);
-        var catalogItem = document.RootElement.GetProperty("models")[0];
-        Assert.Equal("public-model", catalogItem.GetProperty("display_name").GetString());
-        Assert.Equal("medium", catalogItem.GetProperty("default_reasoning_level").GetString());
-        Assert.True(catalogItem.TryGetProperty("supported_reasoning_levels", out _));
-        Assert.False(string.IsNullOrWhiteSpace(catalogItem.GetProperty("base_instructions").GetString()));
-        Assert.True(catalogItem.TryGetProperty("model_messages", out _));
-        Assert.True(catalogItem.GetProperty("supports_search_tool").GetBoolean());
-        Assert.Equal("freeform", catalogItem.GetProperty("apply_patch_tool_type").GetString());
-        Assert.True(catalogItem.TryGetProperty("experimental_supported_tools", out _));
-        Assert.Equal(["text", "image"], catalogItem.GetProperty("input_modalities")
-            .EnumerateArray()
-            .Select(item => item.GetString() ?? string.Empty)
-            .ToArray());
-        Assert.True(catalogItem.GetProperty("supports_image_detail_original").GetBoolean());
+        Assert.False(document.RootElement.TryGetProperty("models", out _));
 
         var rootRequest = new HttpRequestMessage(HttpMethod.Get, "/models?client_version=0.137.0");
         rootRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
@@ -254,10 +235,11 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Assert.Equal(HttpStatusCode.OK, rootResponse.StatusCode);
         using var rootDocument = await JsonDocument.ParseAsync(await rootResponse.Content.ReadAsStreamAsync());
         Assert.Equal(["public-model"], rootDocument.RootElement
-            .GetProperty("models")
+            .GetProperty("data")
             .EnumerateArray()
-            .Select(item => item.GetProperty("slug").GetString() ?? string.Empty)
+            .Select(item => item.GetProperty("id").GetString() ?? string.Empty)
             .ToArray());
+        Assert.False(rootDocument.RootElement.TryGetProperty("models", out _));
     }
 
     [Fact]
@@ -321,20 +303,11 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         using var modelsDocument = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
-        var catalog = modelsDocument.RootElement.GetProperty("models").EnumerateArray().ToArray();
-        var textModel = catalog.Single(item => item.GetProperty("slug").GetString() == "text-model");
-        var visionModel = catalog.Single(item => item.GetProperty("slug").GetString() == "vision-model");
-
-        Assert.Equal(["text"], textModel.GetProperty("input_modalities")
+        Assert.Equal(["text-model", "vision-model"], modelsDocument.RootElement.GetProperty("data")
             .EnumerateArray()
-            .Select(item => item.GetString() ?? string.Empty)
+            .Select(item => item.GetProperty("id").GetString() ?? string.Empty)
             .ToArray());
-        Assert.False(textModel.GetProperty("supports_image_detail_original").GetBoolean());
-        Assert.Equal(["text", "image"], visionModel.GetProperty("input_modalities")
-            .EnumerateArray()
-            .Select(item => item.GetString() ?? string.Empty)
-            .ToArray());
-        Assert.True(visionModel.GetProperty("supports_image_detail_original").GetBoolean());
+        Assert.False(modelsDocument.RootElement.TryGetProperty("models", out _));
     }
 
     [Fact]
@@ -627,6 +600,750 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         var serialized = JsonSerializer.Serialize(request["tools"]);
         Assert.DoesNotContain("\"enum\":[\"\"]", serialized);
         Assert.Contains("\"link\":{\"type\":\"string\"}", serialized);
+    }
+
+    [Fact]
+    public void ConvertRequest_ResponsesToMessages_DropsResponsesOnlyParams()
+    {
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["instructions"] = "system prompt",
+                ["input"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["role"] = "user",
+                        ["content"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "input_text",
+                                ["text"] = "hello"
+                            }
+                        }
+                    }
+                },
+                ["include"] = new List<object?> { "reasoning.encrypted_content" },
+                ["reasoning"] = new Dictionary<string, object?> { ["effort"] = "xhigh" },
+                ["text"] = new Dictionary<string, object?> { ["verbosity"] = "low" },
+                ["service_tier"] = "priority",
+                ["previous_response_id"] = "resp_123",
+                ["client_metadata"] = new Dictionary<string, object?> { ["thread_id"] = "thread_123" },
+                ["parallel_tool_calls"] = true,
+                ["prompt_cache_key"] = "cache-key",
+                ["store"] = true,
+                ["stream"] = true,
+                ["temperature"] = 0.2,
+                ["max_output_tokens"] = 128
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Messages,
+            "upstream");
+
+        Assert.Equal("upstream", request["model"]);
+        Assert.Equal("system prompt", request["system"]);
+        Assert.True(request.ContainsKey("messages"));
+        Assert.True(request.ContainsKey("stream"));
+        Assert.True(request.ContainsKey("temperature"));
+        Assert.Equal(128, request["max_tokens"]);
+
+        Assert.False(request.ContainsKey("include"));
+        Assert.False(request.ContainsKey("reasoning"));
+        Assert.False(request.ContainsKey("text"));
+        Assert.False(request.ContainsKey("service_tier"));
+        Assert.False(request.ContainsKey("previous_response_id"));
+        Assert.False(request.ContainsKey("client_metadata"));
+        Assert.False(request.ContainsKey("parallel_tool_calls"));
+        Assert.False(request.ContainsKey("prompt_cache_key"));
+        Assert.False(request.ContainsKey("store"));
+    }
+
+    [Fact]
+    public void ConvertRequest_ResponsesApplyPatchCustomTool_ExpandsForMessages()
+    {
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = "patch this",
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "custom",
+                        ["name"] = "apply_patch",
+                        ["description"] = "Apply a patch."
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Messages,
+            "upstream");
+
+        var tools = Assert.IsType<List<object?>>(request["tools"])
+            .Select(item => Assert.IsType<Dictionary<string, object?>>(item))
+            .ToArray();
+        Assert.Equal(
+            [
+                "apply_patch_add_file",
+                "apply_patch_delete_file",
+                "apply_patch_update_file",
+                "apply_patch_replace_file",
+                "apply_patch_batch"
+            ],
+            tools.Select(tool => tool["name"]?.ToString() ?? string.Empty).ToArray());
+        Assert.All(tools, tool =>
+        {
+            Assert.True(tool.ContainsKey("input_schema"));
+            Assert.False(tool.ContainsKey("parameters"));
+        });
+    }
+
+    [Fact]
+    public void ConvertRequest_ResponsesWebSearchTool_ConvertsForMessages()
+    {
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = "search this",
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "web_search",
+                        ["description"] = "Search the web."
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Messages,
+            "upstream");
+
+        var tool = Assert.IsType<Dictionary<string, object?>>(
+            Assert.Single(Assert.IsType<List<object?>>(request["tools"])));
+        Assert.Equal("web_search", tool["name"]);
+        Assert.Equal("Search the web.", tool["description"]);
+        var inputSchema = Assert.IsType<Dictionary<string, object?>>(tool["input_schema"]);
+        var properties = Assert.IsType<Dictionary<string, object?>>(inputSchema["properties"]);
+        var query = Assert.IsType<Dictionary<string, object?>>(properties["query"]);
+        Assert.Equal("string", query["type"]);
+    }
+
+    [Fact]
+    public void ConvertRequest_ResponsesNamespaceTool_FlattensForMessages()
+    {
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = "use tool",
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "namespace",
+                        ["name"] = "mcp__computer_use",
+                        ["tools"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "function",
+                                ["name"] = "click",
+                                ["parameters"] = new Dictionary<string, object?>
+                                {
+                                    ["type"] = "object",
+                                    ["properties"] = new Dictionary<string, object?>()
+                                }
+                            },
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "function",
+                                ["name"] = "type_text",
+                                ["parameters"] = new Dictionary<string, object?>
+                                {
+                                    ["type"] = "object",
+                                    ["properties"] = new Dictionary<string, object?>()
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Messages,
+            "upstream");
+
+        var tools = Assert.IsType<List<object?>>(request["tools"])
+            .Select(item => Assert.IsType<Dictionary<string, object?>>(item))
+            .ToArray();
+        Assert.Equal(
+            ["mcp__computer_use__click", "mcp__computer_use__type_text"],
+            tools.Select(tool => tool["name"]?.ToString() ?? string.Empty).ToArray());
+    }
+
+    [Fact]
+    public void ConvertRequest_ResponsesDeepNamespaceTool_FlattensRecursivelyForMessages()
+    {
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = "use tool",
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "namespace",
+                        ["name"] = "mcp__computer_use",
+                        ["tools"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "namespace",
+                                ["name"] = "mouse",
+                                ["tools"] = new List<object?>
+                                {
+                                    new Dictionary<string, object?>
+                                    {
+                                        ["type"] = "function",
+                                        ["name"] = "click",
+                                        ["parameters"] = new Dictionary<string, object?>
+                                        {
+                                            ["type"] = "object",
+                                            ["properties"] = new Dictionary<string, object?>()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Messages,
+            "upstream");
+
+        var tools = Assert.IsType<List<object?>>(request["tools"])
+            .Select(item => Assert.IsType<Dictionary<string, object?>>(item))
+            .ToArray();
+        var tool = Assert.Single(tools);
+        Assert.Equal("mcp__computer_use__mouse__click", tool["name"]);
+    }
+
+    [Fact]
+    public void ConvertRequest_ResponsesFutureNativeToolWithInputSchema_PreservesSchemaForMessages()
+    {
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = "browse this",
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "browser_action",
+                        ["name"] = "open_tab",
+                        ["description"] = "Open a browser tab.",
+                        ["input_schema"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object?>
+                            {
+                                ["url"] = new Dictionary<string, object?>
+                                {
+                                    ["type"] = "string"
+                                }
+                            },
+                            ["required"] = new List<object?> { "url" }
+                        }
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Messages,
+            "upstream");
+
+        var tool = Assert.IsType<Dictionary<string, object?>>(
+            Assert.Single(Assert.IsType<List<object?>>(request["tools"])));
+        Assert.Equal("open_tab", tool["name"]);
+        var inputSchema = Assert.IsType<Dictionary<string, object?>>(tool["input_schema"]);
+        var properties = Assert.IsType<Dictionary<string, object?>>(inputSchema["properties"]);
+        Assert.True(properties.ContainsKey("url"));
+        var required = Assert.IsType<List<object?>>(inputSchema["required"]);
+        Assert.Contains("url", required);
+    }
+
+    [Fact]
+    public void ConvertResponse_MessagesNamespaceToolUse_RestoresNamespaceInResponses()
+    {
+        var response = ProtocolConverter.ConvertResponse(
+            MessagesToolUseResponse(
+                "toolu_click",
+                "mcp__computer_use__click",
+                new Dictionary<string, object?>
+                {
+                    ["x"] = 12,
+                    ["y"] = 34
+                }),
+            ProtocolConverter.Responses,
+            ProtocolConverter.Messages,
+            "local");
+
+        var output = Assert.IsType<List<object?>>(response["output"]);
+        var item = output
+            .Select(entry => entry as Dictionary<string, object?>)
+            .FirstOrDefault(entry => (string?)entry?["type"] == "function_call");
+        Assert.NotNull(item);
+        Assert.Equal("click", item!["name"]);
+        Assert.Equal("mcp__computer_use", item["namespace"]);
+        Assert.Equal("toolu_click", item["call_id"]);
+
+        var arguments = JsonSerializer.Deserialize<Dictionary<string, int>>(Assert.IsType<string>(item["arguments"]));
+        Assert.NotNull(arguments);
+        Assert.Equal(12, arguments["x"]);
+        Assert.Equal(34, arguments["y"]);
+    }
+
+    [Fact]
+    public void ConvertResponse_MessagesDeepNamespaceToolUse_RestoresFullNamespaceInResponses()
+    {
+        var response = ProtocolConverter.ConvertResponse(
+            MessagesToolUseResponse(
+                "toolu_click",
+                "mcp__computer_use__mouse__click",
+                new Dictionary<string, object?>
+                {
+                    ["x"] = 12,
+                    ["y"] = 34
+                }),
+            ProtocolConverter.Responses,
+            ProtocolConverter.Messages,
+            "local");
+
+        var output = Assert.IsType<List<object?>>(response["output"]);
+        var item = output
+            .Select(entry => entry as Dictionary<string, object?>)
+            .FirstOrDefault(entry => (string?)entry?["type"] == "function_call");
+        Assert.NotNull(item);
+        Assert.Equal("click", item!["name"]);
+        Assert.Equal("mcp__computer_use__mouse", item["namespace"]);
+    }
+
+    [Fact]
+    public void ConvertResponse_ResponsesFutureNativeToolCall_ConvertsToMessagesToolUse()
+    {
+        var response = ProtocolConverter.ConvertResponse(
+            new Dictionary<string, object?>
+            {
+                ["id"] = "resp_future_tool",
+                ["model"] = "upstream-model",
+                ["output"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "browser_action_call",
+                        ["call_id"] = "call_browser",
+                        ["name"] = "open_tab",
+                        ["arguments"] = new Dictionary<string, object?>
+                        {
+                            ["url"] = "https://example.com"
+                        }
+                    }
+                },
+                ["usage"] = new Dictionary<string, object?>
+                {
+                    ["input_tokens"] = 1,
+                    ["output_tokens"] = 1
+                }
+            },
+            ProtocolConverter.Messages,
+            ProtocolConverter.Responses,
+            "local-model");
+
+        var content = Assert.IsType<List<object?>>(response["content"]);
+        var toolUse = Assert.IsType<Dictionary<string, object?>>(Assert.Single(content));
+        Assert.Equal("tool_use", toolUse["type"]);
+        Assert.Equal("call_browser", toolUse["id"]);
+        Assert.Equal("open_tab", toolUse["name"]);
+        var input = Assert.IsType<Dictionary<string, object?>>(toolUse["input"]);
+        Assert.Equal("https://example.com", input["url"]);
+    }
+
+    [Fact]
+    public void ConvertRequest_ResponsesFutureNativeToolInputItems_ConvertToMessagesToolCallAndResult()
+    {
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "message",
+                        ["role"] = "user",
+                        ["content"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "input_text",
+                                ["text"] = "open this page"
+                            }
+                        }
+                    },
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "browser_action_call",
+                        ["call_id"] = "call_browser",
+                        ["name"] = "open_tab",
+                        ["input"] = new Dictionary<string, object?>
+                        {
+                            ["url"] = "https://example.com"
+                        }
+                    },
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "browser_action_call_output",
+                        ["call_id"] = "call_browser",
+                        ["output"] = "opened"
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Messages,
+            "upstream");
+
+        var messages = Assert.IsType<List<object?>>(request["messages"]);
+        Assert.Equal(3, messages.Count);
+
+        var assistant = Assert.IsType<Dictionary<string, object?>>(messages[1]);
+        Assert.Equal("assistant", assistant["role"]);
+        var assistantContent = Assert.IsType<List<object?>>(assistant["content"]);
+        var toolUse = Assert.IsType<Dictionary<string, object?>>(Assert.Single(assistantContent));
+        Assert.Equal("tool_use", toolUse["type"]);
+        Assert.Equal("call_browser", toolUse["id"]);
+        Assert.Equal("open_tab", toolUse["name"]);
+        var toolUseInput = Assert.IsType<Dictionary<string, object?>>(toolUse["input"]);
+        Assert.Equal("https://example.com", toolUseInput["url"]);
+
+        var toolMessage = Assert.IsType<Dictionary<string, object?>>(messages[2]);
+        Assert.Equal("user", toolMessage["role"]);
+        var toolResultContent = Assert.IsType<List<object?>>(toolMessage["content"]);
+        var toolResult = Assert.IsType<Dictionary<string, object?>>(Assert.Single(toolResultContent));
+        Assert.Equal("tool_result", toolResult["type"]);
+        Assert.Equal("call_browser", toolResult["tool_use_id"]);
+        Assert.Equal("opened", toolResult["content"]);
+    }
+
+    [Fact]
+    public void ConvertResponse_MessagesApplyPatchToolUse_UsesExecCommand()
+    {
+        var response = ProtocolConverter.ConvertResponse(
+            MessagesToolUseResponse(
+                "toolu_patch",
+                "apply_patch_update_file",
+                new Dictionary<string, object?>
+                {
+                    ["path"] = "data.json",
+                    ["hunks"] = new List<object?>
+                    {
+                        new Dictionary<string, object?>
+                        {
+                            ["lines"] = new List<object?>
+                            {
+                                new Dictionary<string, object?> { ["op"] = "remove", ["text"] = "old" },
+                                new Dictionary<string, object?> { ["op"] = "add", ["text"] = "new" }
+                            }
+                        }
+                    }
+                }),
+            ProtocolConverter.Responses,
+            ProtocolConverter.Messages,
+            "local");
+
+        var output = Assert.IsType<List<object?>>(response["output"]);
+        var item = output
+            .Select(entry => entry as Dictionary<string, object?>)
+            .FirstOrDefault(entry => (string?)entry?["type"] == "function_call");
+        Assert.NotNull(item);
+        Assert.Equal("exec_command", item!["name"]);
+        Assert.Equal("toolu_patch", item["call_id"]);
+
+        var arguments = JsonSerializer.Deserialize<Dictionary<string, string>>(Assert.IsType<string>(item["arguments"]));
+        Assert.NotNull(arguments);
+        Assert.Contains("apply_patch <<'OPENCODEX_PATCH'", arguments["cmd"]);
+        Assert.Contains("*** Update File: data.json", arguments["cmd"]);
+    }
+
+    [Fact]
+    public async Task WebSearchContinuation_MessagesUpstream_RemovesRequiredToolChoiceBeforeFinalAnswer()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-web-search-tests", $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        await using (var db = OpenCodexDbContextFactory.Create(dbPath))
+        {
+            await db.Database.EnsureCreatedAsync();
+            db.WebSearchSettings.Add(new WebSearchSettings
+            {
+                Id = 1,
+                Enabled = true,
+                KeyUsageLimit = 5,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            db.TavilyKeys.Add(new TavilyKey
+            {
+                Position = 0,
+                Provider = "tavily",
+                ApiKey = "test-key",
+                Enabled = true,
+                UsageCount = 0,
+                UsageLimit = 5,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var upstream = new RecordingUpstreamClient(
+            MessagesToolUseResponse(
+                "call_web",
+                "web_search",
+                new Dictionary<string, object?>
+                {
+                    ["query"] = "OpenAI"
+                }),
+            MessagesTextResponse("final answer"));
+        var simulator = new WebSearchSimulator(
+            upstream,
+            new SuccessfulWebSearchClient(),
+            new FixedSettingsProvider(dbPath));
+        var result = await simulator.RunAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = "messages",
+                ["type"] = ProtocolConverter.Messages
+            },
+            new Dictionary<string, object?>
+            {
+                ["model"] = "upstream",
+                ["messages"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["role"] = "user",
+                        ["content"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "text",
+                                ["text"] = "search"
+                            }
+                        }
+                    }
+                },
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["name"] = "web_search",
+                        ["description"] = "Search the web.",
+                        ["input_schema"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object?>()
+                        }
+                    }
+                },
+                ["tool_choice"] = "required"
+            },
+            new Dictionary<string, object?>
+            {
+                ["tools"] = new List<object?> { new Dictionary<string, object?> { ["type"] = "web_search" } },
+                ["max_tool_calls"] = 2
+            },
+            "public-model",
+            120,
+            CancellationToken.None);
+
+        Assert.Equal(2, upstream.Requests.Count);
+        Assert.False(upstream.Requests[1].ContainsKey("tool_choice"));
+
+        var secondMessages = Assert.IsType<List<object?>>(upstream.Requests[1]["messages"]);
+        Assert.Equal(3, secondMessages.Count);
+        var assistantMessage = Assert.IsType<Dictionary<string, object?>>(secondMessages[1]);
+        Assert.Equal("assistant", assistantMessage["role"]);
+        var assistantContent = Assert.IsType<List<object?>>(assistantMessage["content"]);
+        var toolUse = Assert.IsType<Dictionary<string, object?>>(Assert.Single(assistantContent));
+        Assert.Equal("tool_use", toolUse["type"]);
+        Assert.Equal("call_web", toolUse["id"]);
+
+        var toolResultMessage = Assert.IsType<Dictionary<string, object?>>(secondMessages[2]);
+        Assert.Equal("user", toolResultMessage["role"]);
+        var toolResultContent = Assert.IsType<List<object?>>(toolResultMessage["content"]);
+        var toolResult = Assert.IsType<Dictionary<string, object?>>(Assert.Single(toolResultContent));
+        Assert.Equal("tool_result", toolResult["type"]);
+        Assert.Equal("call_web", toolResult["tool_use_id"]);
+
+        var output = Assert.IsType<List<object?>>(result.ResponsePayload["output"]);
+        Assert.Contains(output, item =>
+            item is Dictionary<string, object?> entry && (string?)entry["type"] == "web_search_call");
+        Assert.Contains(output, item =>
+            item is Dictionary<string, object?> entry && (string?)entry["type"] == "message");
+        Assert.DoesNotContain(output, item =>
+            item is Dictionary<string, object?> entry && (string?)entry["type"] == "function_call");
+    }
+
+    [Fact]
+    public async Task WebSearchContinuation_MessagesUpstream_PreservesNamespaceToolAfterSearch()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-web-search-tests", $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        await using (var db = OpenCodexDbContextFactory.Create(dbPath))
+        {
+            await db.Database.EnsureCreatedAsync();
+            db.WebSearchSettings.Add(new WebSearchSettings
+            {
+                Id = 1,
+                Enabled = true,
+                KeyUsageLimit = 5,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            db.TavilyKeys.Add(new TavilyKey
+            {
+                Position = 0,
+                Provider = "tavily",
+                ApiKey = "test-key",
+                Enabled = true,
+                UsageCount = 0,
+                UsageLimit = 5,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var upstream = new RecordingUpstreamClient(
+            MessagesToolUseResponse(
+                "call_web",
+                "web_search",
+                new Dictionary<string, object?>
+                {
+                    ["query"] = "OpenAI"
+                }),
+            MessagesToolUseResponse(
+                "toolu_click",
+                "mcp__computer_use__click",
+                new Dictionary<string, object?>
+                {
+                    ["x"] = 12,
+                    ["y"] = 34
+                }));
+        var simulator = new WebSearchSimulator(
+            upstream,
+            new SuccessfulWebSearchClient(),
+            new FixedSettingsProvider(dbPath));
+        var result = await simulator.RunAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = "messages",
+                ["type"] = ProtocolConverter.Messages
+            },
+            new Dictionary<string, object?>
+            {
+                ["model"] = "upstream",
+                ["messages"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["role"] = "user",
+                        ["content"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "text",
+                                ["text"] = "search then click"
+                            }
+                        }
+                    }
+                },
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["name"] = "web_search",
+                        ["description"] = "Search the web.",
+                        ["input_schema"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object?>()
+                        }
+                    },
+                    new Dictionary<string, object?>
+                    {
+                        ["name"] = "mcp__computer_use__click",
+                        ["description"] = "Click.",
+                        ["input_schema"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object?>()
+                        }
+                    }
+                },
+                ["tool_choice"] = "required"
+            },
+            new Dictionary<string, object?>
+            {
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?> { ["type"] = "web_search" },
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "namespace",
+                        ["name"] = "mcp__computer_use",
+                        ["tools"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "function",
+                                ["name"] = "click",
+                                ["parameters"] = new Dictionary<string, object?>
+                                {
+                                    ["type"] = "object",
+                                    ["properties"] = new Dictionary<string, object?>()
+                                }
+                            }
+                        }
+                    }
+                },
+                ["max_tool_calls"] = 2
+            },
+            "public-model",
+            120,
+            CancellationToken.None);
+
+        Assert.Equal(2, upstream.Requests.Count);
+        var secondMessages = Assert.IsType<List<object?>>(upstream.Requests[1]["messages"]);
+        Assert.Equal(3, secondMessages.Count);
+
+        var output = Assert.IsType<List<object?>>(result.ResponsePayload["output"]);
+        Assert.Contains(output, item =>
+            item is Dictionary<string, object?> entry && (string?)entry["type"] == "web_search_call");
+        var functionCall = output
+            .Select(item => item as Dictionary<string, object?>)
+            .FirstOrDefault(entry => (string?)entry?["type"] == "function_call");
+        Assert.NotNull(functionCall);
+        Assert.Equal("click", functionCall!["name"]);
+        Assert.Equal("mcp__computer_use", functionCall["namespace"]);
+        Assert.DoesNotContain(output, item =>
+            item is Dictionary<string, object?> entry
+            && (string?)entry["type"] == "function_call"
+            && (string?)entry["name"] == "web_search");
     }
 
     [Fact]
@@ -1013,6 +1730,532 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Assert.Equal(2, calls.Count);
     }
 
+    [Fact]
+    public async Task WebSearchStream_MessagesUpstream_ExecutesWebSearchBeforeFinalAnswer()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-web-search-tests", $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        await using (var db = OpenCodexDbContextFactory.Create(dbPath))
+        {
+            await db.Database.EnsureCreatedAsync();
+            db.WebSearchSettings.Add(new WebSearchSettings
+            {
+                Id = 1,
+                Enabled = true,
+                KeyUsageLimit = 5,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            db.TavilyKeys.Add(new TavilyKey
+            {
+                Position = 0,
+                Provider = "tavily",
+                ApiKey = "test-key",
+                Enabled = true,
+                UsageCount = 0,
+                UsageLimit = 5,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var upstream = new RecordingStreamUpstreamClient(
+            MessagesToolStreamResponse(
+                "call_web",
+                "web_search",
+                new Dictionary<string, object?>
+                {
+                    ["query"] = "OpenAI"
+                }),
+            MessagesTextStreamResponse("final answer"));
+        var simulator = new WebSearchSimulator(
+            upstream,
+            new SuccessfulWebSearchClient(),
+            new FixedSettingsProvider(dbPath));
+        var streamResult = new WebSearchStreamResult();
+        var events = new List<string>();
+        await foreach (var line in simulator.RunChatStreamAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = "messages",
+                ["type"] = ProtocolConverter.Messages
+            },
+            new Dictionary<string, object?>
+            {
+                ["model"] = "upstream",
+                ["messages"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["role"] = "user",
+                        ["content"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "text",
+                                ["text"] = "search"
+                            }
+                        }
+                    }
+                },
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["name"] = "web_search",
+                        ["description"] = "Search the web.",
+                        ["input_schema"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object?>()
+                        }
+                    }
+                },
+                ["tool_choice"] = "required"
+            },
+            new Dictionary<string, object?>
+            {
+                ["tools"] = new List<object?> { new Dictionary<string, object?> { ["type"] = "web_search" } },
+                ["max_tool_calls"] = 2
+            },
+            "public-model",
+            120,
+            streamResult,
+            CancellationToken.None))
+        {
+            events.Add(line);
+        }
+
+        Assert.Equal(2, upstream.Requests.Count);
+        Assert.False(upstream.Requests[1].ContainsKey("tool_choice"));
+
+        var secondMessages = Assert.IsType<List<object?>>(upstream.Requests[1]["messages"]);
+        Assert.Equal(3, secondMessages.Count);
+        var assistantMessage = Assert.IsType<Dictionary<string, object?>>(secondMessages[1]);
+        Assert.Equal("assistant", assistantMessage["role"]);
+        var assistantContent = Assert.IsType<List<object?>>(assistantMessage["content"]);
+        var toolUse = Assert.IsType<Dictionary<string, object?>>(Assert.Single(assistantContent));
+        Assert.Equal("tool_use", toolUse["type"]);
+        Assert.Equal("call_web", toolUse["id"]);
+
+        var toolResultMessage = Assert.IsType<Dictionary<string, object?>>(secondMessages[2]);
+        Assert.Equal("user", toolResultMessage["role"]);
+        var toolResultContent = Assert.IsType<List<object?>>(toolResultMessage["content"]);
+        var toolResult = Assert.IsType<Dictionary<string, object?>>(Assert.Single(toolResultContent));
+        Assert.Equal("tool_result", toolResult["type"]);
+        Assert.Equal("call_web", toolResult["tool_use_id"]);
+
+        var body = string.Concat(events);
+        Assert.Contains("\"type\":\"web_search_call\"", body, StringComparison.Ordinal);
+        Assert.Contains("OpenAI", body, StringComparison.Ordinal);
+        Assert.Contains("final answer", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"type\":\"function_call\"", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"name\":\"web_search\"", body, StringComparison.Ordinal);
+
+        Assert.NotNull(streamResult.ResponsePayload);
+        var output = Assert.IsType<List<object?>>(streamResult.ResponsePayload!["output"]);
+        Assert.Contains(output, item =>
+            item is Dictionary<string, object?> entry && (string?)entry["type"] == "web_search_call");
+        Assert.Contains(output, item =>
+            item is Dictionary<string, object?> entry && (string?)entry["type"] == "message");
+        Assert.DoesNotContain(output, item =>
+            item is Dictionary<string, object?> entry && (string?)entry["type"] == "function_call");
+    }
+
+    [Fact]
+    public async Task WebSearchStream_MessagesUpstream_PreservesDeepNamespaceToolAfterSearch()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-web-search-tests", $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        await using (var db = OpenCodexDbContextFactory.Create(dbPath))
+        {
+            await db.Database.EnsureCreatedAsync();
+            db.WebSearchSettings.Add(new WebSearchSettings
+            {
+                Id = 1,
+                Enabled = true,
+                KeyUsageLimit = 5,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            db.TavilyKeys.Add(new TavilyKey
+            {
+                Position = 0,
+                Provider = "tavily",
+                ApiKey = "test-key",
+                Enabled = true,
+                UsageCount = 0,
+                UsageLimit = 5,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var upstream = new RecordingStreamUpstreamClient(
+            MessagesToolStreamResponse(
+                "call_web",
+                "web_search",
+                new Dictionary<string, object?>
+                {
+                    ["query"] = "OpenAI"
+                }),
+            MessagesToolStreamResponse(
+                "toolu_click",
+                "mcp__computer_use__mouse__click",
+                new Dictionary<string, object?>
+                {
+                    ["x"] = 12,
+                    ["y"] = 34
+                }));
+        var simulator = new WebSearchSimulator(
+            upstream,
+            new SuccessfulWebSearchClient(),
+            new FixedSettingsProvider(dbPath));
+        var streamResult = new WebSearchStreamResult();
+        var events = new List<string>();
+        await foreach (var line in simulator.RunChatStreamAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = "messages",
+                ["type"] = ProtocolConverter.Messages
+            },
+            new Dictionary<string, object?>
+            {
+                ["model"] = "upstream",
+                ["messages"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["role"] = "user",
+                        ["content"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "text",
+                                ["text"] = "search then click"
+                            }
+                        }
+                    }
+                },
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["name"] = "web_search",
+                        ["description"] = "Search the web.",
+                        ["input_schema"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object?>()
+                        }
+                    },
+                    new Dictionary<string, object?>
+                    {
+                        ["name"] = "mcp__computer_use__mouse__click",
+                        ["description"] = "Click.",
+                        ["input_schema"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object?>()
+                        }
+                    }
+                },
+                ["tool_choice"] = "required"
+            },
+            new Dictionary<string, object?>
+            {
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?> { ["type"] = "web_search" },
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "namespace",
+                        ["name"] = "mcp__computer_use",
+                        ["tools"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "namespace",
+                                ["name"] = "mouse",
+                                ["tools"] = new List<object?>
+                                {
+                                    new Dictionary<string, object?>
+                                    {
+                                        ["type"] = "function",
+                                        ["name"] = "click",
+                                        ["parameters"] = new Dictionary<string, object?>
+                                        {
+                                            ["type"] = "object",
+                                            ["properties"] = new Dictionary<string, object?>()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                ["max_tool_calls"] = 2
+            },
+            "public-model",
+            120,
+            streamResult,
+            CancellationToken.None))
+        {
+            events.Add(line);
+        }
+
+        Assert.Equal(2, upstream.Requests.Count);
+        Assert.False(upstream.Requests[1].ContainsKey("tool_choice"));
+
+        var secondMessages = Assert.IsType<List<object?>>(upstream.Requests[1]["messages"]);
+        Assert.Equal(3, secondMessages.Count);
+
+        var body = string.Concat(events);
+        Assert.Contains("\"type\":\"web_search_call\"", body, StringComparison.Ordinal);
+        Assert.Contains("\"type\":\"function_call\"", body, StringComparison.Ordinal);
+        Assert.Contains("\"namespace\":\"mcp__computer_use__mouse\"", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"name\":\"web_search\"", body, StringComparison.Ordinal);
+
+        Assert.NotNull(streamResult.ResponsePayload);
+        var output = Assert.IsType<List<object?>>(streamResult.ResponsePayload!["output"]);
+        Assert.Contains(output, item =>
+            item is Dictionary<string, object?> entry && (string?)entry["type"] == "web_search_call");
+        var functionCall = output
+            .Select(item => item as Dictionary<string, object?>)
+            .FirstOrDefault(entry => (string?)entry?["type"] == "function_call");
+        Assert.NotNull(functionCall);
+        Assert.Equal("click", functionCall!["name"]);
+        Assert.Equal("mcp__computer_use__mouse", functionCall["namespace"]);
+        Assert.DoesNotContain(output, item =>
+            item is Dictionary<string, object?> entry
+            && (string?)entry["type"] == "function_call"
+            && (string?)entry["name"] == "web_search");
+    }
+
+    [Fact]
+    public async Task WebSearchStream_MessagesUpstream_GeneratedLongChainsPreserveMultipleNonWebTools()
+    {
+        var cases = new[]
+        {
+            new GeneratedMessagesLongChainCase(
+                "double-web-then-two-mouse-tools",
+                "search then do two mouse actions",
+                null,
+                ["OpenAI first", "OpenAI second"],
+                [
+                    new GeneratedMessagesToolCall(
+                        "toolu_click",
+                        "mcp__computer_use__mouse__click",
+                        new Dictionary<string, object?>
+                        {
+                            ["x"] = 12,
+                            ["y"] = 34
+                        },
+                        "click",
+                        "mcp__computer_use__mouse"),
+                    new GeneratedMessagesToolCall(
+                        "toolu_drag",
+                        "mcp__computer_use__mouse__drag",
+                        new Dictionary<string, object?>
+                        {
+                            ["from_x"] = 1,
+                            ["from_y"] = 2,
+                            ["to_x"] = 3,
+                            ["to_y"] = 4
+                        },
+                        "drag",
+                        "mcp__computer_use__mouse")
+                ]),
+            new GeneratedMessagesLongChainCase(
+                "single-web-then-text-and-mixed-tools",
+                "search then patch and type",
+                "I found enough context to continue.",
+                ["apply patch guidance"],
+                [
+                    new GeneratedMessagesToolCall(
+                        "toolu_patch",
+                        "apply_patch_update_file",
+                        new Dictionary<string, object?>
+                        {
+                            ["path"] = "notes.txt",
+                            ["hunks"] = new List<object?>
+                            {
+                                new Dictionary<string, object?>
+                                {
+                                    ["lines"] = new List<object?>
+                                    {
+                                        new Dictionary<string, object?> { ["op"] = "remove", ["text"] = "old" },
+                                        new Dictionary<string, object?> { ["op"] = "add", ["text"] = "new" }
+                                    }
+                                }
+                            }
+                        },
+                        "exec_command",
+                        null),
+                    new GeneratedMessagesToolCall(
+                        "toolu_press",
+                        "mcp__computer_use__keyboard__press_key",
+                        new Dictionary<string, object?>
+                        {
+                            ["key"] = "Return"
+                        },
+                        "press_key",
+                        "mcp__computer_use__keyboard"),
+                    new GeneratedMessagesToolCall(
+                        "toolu_type",
+                        "mcp__computer_use__keyboard__type_text",
+                        new Dictionary<string, object?>
+                        {
+                            ["text"] = "done"
+                        },
+                        "type_text",
+                        "mcp__computer_use__keyboard")
+                ])
+        };
+
+        foreach (var testCase in cases)
+        {
+            var dbPath = await CreateWebSearchTestDbPathAsync();
+            var upstreamResponses = testCase.WebQueries
+                .Select((query, index) => MessagesToolStreamResponse(
+                    $"call_web_{index + 1}",
+                    "web_search",
+                    new Dictionary<string, object?>
+                    {
+                        ["query"] = query
+                    }))
+                .ToList();
+            upstreamResponses.Add(MessagesMultiToolStreamResponse(testCase.FinalToolCalls, testCase.AssistantPreamble));
+
+            var upstream = new RecordingStreamUpstreamClient(upstreamResponses.ToArray());
+            var simulator = new WebSearchSimulator(
+                upstream,
+                new SuccessfulWebSearchClient(),
+                new FixedSettingsProvider(dbPath));
+            var streamResult = new WebSearchStreamResult();
+            var events = new List<string>();
+            await foreach (var line in simulator.RunChatStreamAsync(
+                new Dictionary<string, object?>
+                {
+                    ["id"] = "messages",
+                    ["type"] = ProtocolConverter.Messages
+                },
+                new Dictionary<string, object?>
+                {
+                    ["model"] = "upstream",
+                    ["messages"] = new List<object?>
+                    {
+                        new Dictionary<string, object?>
+                        {
+                            ["role"] = "user",
+                            ["content"] = new List<object?>
+                            {
+                                new Dictionary<string, object?>
+                                {
+                                    ["type"] = "text",
+                                    ["text"] = testCase.Prompt
+                                }
+                            }
+                        }
+                    },
+                    ["tools"] = new List<object?>(
+                        [
+                            BuildMessagesToolDefinition("web_search", "Search the web."),
+                            .. testCase.FinalToolCalls.Select(tool => (object?)BuildMessagesToolDefinition(
+                                tool.UpstreamName,
+                                $"Tool {tool.UpstreamName}."))
+                        ]),
+                    ["tool_choice"] = "required"
+                },
+                new Dictionary<string, object?>
+                {
+                    ["tools"] = new List<object?> { new Dictionary<string, object?> { ["type"] = "web_search" } },
+                    ["max_tool_calls"] = testCase.WebQueries.Count + testCase.FinalToolCalls.Count
+                },
+                "public-model",
+                120,
+                streamResult,
+                CancellationToken.None))
+            {
+                events.Add(line);
+            }
+
+            Assert.Equal(testCase.WebQueries.Count + 1, upstream.Requests.Count);
+
+            var finalUpstreamRequest = Assert.IsType<Dictionary<string, object?>>(streamResult.FinalUpstreamRequest);
+            var finalUpstreamMessages = Assert.IsType<List<object?>>(finalUpstreamRequest["messages"]);
+            Assert.Equal(1 + (testCase.WebQueries.Count * 2), finalUpstreamMessages.Count);
+            var finalUpstreamTools = Assert.IsType<List<object?>>(finalUpstreamRequest["tools"]);
+            Assert.Equal(1 + testCase.FinalToolCalls.Count, finalUpstreamTools.Count);
+
+            for (var index = 0; index < testCase.WebQueries.Count; index++)
+            {
+                var assistantMessage = Assert.IsType<Dictionary<string, object?>>(finalUpstreamMessages[1 + (index * 2)]);
+                Assert.Equal("assistant", assistantMessage["role"]);
+                var assistantContent = Assert.IsType<List<object?>>(assistantMessage["content"]);
+                var toolUse = Assert.IsType<Dictionary<string, object?>>(Assert.Single(assistantContent));
+                Assert.Equal("tool_use", toolUse["type"]);
+                Assert.Equal($"call_web_{index + 1}", toolUse["id"]);
+                Assert.Equal("web_search", toolUse["name"]);
+                var toolUseInput = Assert.IsType<Dictionary<string, object?>>(toolUse["input"]);
+                Assert.Equal(testCase.WebQueries[index], toolUseInput["query"]);
+
+                var toolResultMessage = Assert.IsType<Dictionary<string, object?>>(finalUpstreamMessages[2 + (index * 2)]);
+                Assert.Equal("user", toolResultMessage["role"]);
+                var toolResultContent = Assert.IsType<List<object?>>(toolResultMessage["content"]);
+                var toolResult = Assert.IsType<Dictionary<string, object?>>(Assert.Single(toolResultContent));
+                Assert.Equal("tool_result", toolResult["type"]);
+                Assert.Equal($"call_web_{index + 1}", toolResult["tool_use_id"]);
+            }
+
+            Assert.NotNull(streamResult.ResponsePayload);
+            var output = Assert.IsType<List<object?>>(streamResult.ResponsePayload!["output"]);
+            Assert.Equal(testCase.WebQueries.Count, output.Count(item =>
+                item is Dictionary<string, object?> entry && (string?)entry["type"] == "web_search_call"));
+            Assert.DoesNotContain(output, item =>
+                item is Dictionary<string, object?> entry
+                && (string?)entry["type"] == "function_call"
+                && (string?)entry["name"] == "web_search");
+
+            if (!string.IsNullOrEmpty(testCase.AssistantPreamble))
+            {
+                Assert.Contains(output, item =>
+                    item is Dictionary<string, object?> entry && (string?)entry["type"] == "message");
+            }
+
+            var functionCalls = output
+                .Select(item => item as Dictionary<string, object?>)
+                .Where(entry => (string?)entry?["type"] == "function_call")
+                .ToList();
+            Assert.Equal(testCase.FinalToolCalls.Count, functionCalls.Count);
+            for (var index = 0; index < testCase.FinalToolCalls.Count; index++)
+            {
+                var expected = testCase.FinalToolCalls[index];
+                var actual = Assert.IsType<Dictionary<string, object?>>(functionCalls[index]);
+                Assert.Equal(expected.CallId, actual["call_id"]);
+                Assert.Equal(expected.ExpectedName, actual["name"]);
+                if (expected.ExpectedNamespace is null)
+                {
+                    Assert.False(actual.ContainsKey("namespace") && actual["namespace"] is not null);
+                }
+                else
+                {
+                    Assert.Equal(expected.ExpectedNamespace, actual["namespace"]);
+                }
+            }
+
+            Assert.NotNull(streamResult.Details);
+            var details = Assert.IsType<Dictionary<string, object?>>(streamResult.Details);
+            var calls = Assert.IsType<List<object?>>(details["calls"]);
+            Assert.Equal(testCase.WebQueries.Count, calls.Count);
+
+            var body = string.Concat(events);
+            Assert.DoesNotContain("\"name\":\"web_search\"", body, StringComparison.Ordinal);
+        }
+    }
+
     private async Task<string> LoginAndReadSessionCookie()
     {
         return await LoginAndReadSessionCookie(_client);
@@ -1032,7 +2275,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Assert.True(response.Headers.TryGetValues("Set-Cookie", out var cookies));
         var cookie = cookies
             .Select(value => value.Split(';', 2)[0])
-            .FirstOrDefault(value => value.StartsWith(".AspNetCore.Session=", StringComparison.Ordinal));
+            .FirstOrDefault(value => value.StartsWith("opencodex_admin_auth=", StringComparison.Ordinal));
         Assert.False(string.IsNullOrEmpty(cookie));
         return cookie;
     }
@@ -1173,6 +2416,61 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         };
     }
 
+    private static Dictionary<string, object?> MessagesToolUseResponse(
+        string callId,
+        string name,
+        Dictionary<string, object?> input)
+    {
+        return new Dictionary<string, object?>
+        {
+            ["id"] = "msg_tool",
+            ["type"] = "message",
+            ["role"] = "assistant",
+            ["model"] = "upstream",
+            ["content"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "tool_use",
+                    ["id"] = callId,
+                    ["name"] = name,
+                    ["input"] = input
+                }
+            },
+            ["stop_reason"] = "tool_use",
+            ["usage"] = new Dictionary<string, object?>
+            {
+                ["input_tokens"] = 1,
+                ["output_tokens"] = 1
+            }
+        };
+    }
+
+    private static Dictionary<string, object?> MessagesTextResponse(string text)
+    {
+        return new Dictionary<string, object?>
+        {
+            ["id"] = "msg_text",
+            ["type"] = "message",
+            ["role"] = "assistant",
+            ["model"] = "upstream",
+            ["content"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "text",
+                    ["text"] = text
+                }
+            },
+            ["stop_reason"] = "end_turn",
+            ["usage"] = new Dictionary<string, object?>
+            {
+                ["input_tokens"] = 1,
+                ["output_tokens"] = 1
+            }
+        };
+    }
+
     private static Dictionary<string, object?> EmptyStringEnumParameters()
     {
         return new Dictionary<string, object?>
@@ -1213,6 +2511,49 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             yield return line;
             await Task.Yield();
         }
+    }
+
+    private static async Task<string> CreateWebSearchTestDbPathAsync()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-web-search-tests", $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        await using var db = OpenCodexDbContextFactory.Create(dbPath);
+        await db.Database.EnsureCreatedAsync();
+        db.WebSearchSettings.Add(new WebSearchSettings
+        {
+            Id = 1,
+            Enabled = true,
+            KeyUsageLimit = 5,
+            CreatedAt = 1,
+            UpdatedAt = 1
+        });
+        db.TavilyKeys.Add(new TavilyKey
+        {
+            Position = 0,
+            Provider = "tavily",
+            ApiKey = "test-key",
+            Enabled = true,
+            UsageCount = 0,
+            UsageLimit = 5,
+            CreatedAt = 1,
+            UpdatedAt = 1
+        });
+        await db.SaveChangesAsync();
+        return dbPath;
+    }
+
+    private static Dictionary<string, object?> BuildMessagesToolDefinition(string name, string description)
+    {
+        return new Dictionary<string, object?>
+        {
+            ["name"] = name,
+            ["description"] = description,
+            ["input_schema"] = new Dictionary<string, object?>
+            {
+                ["type"] = "object",
+                ["properties"] = new Dictionary<string, object?>()
+            }
+        };
     }
 
     private static IReadOnlyList<string> ChatToolStreamResponse(
@@ -1313,6 +2654,222 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         return ToSseLines(chunk, done);
     }
 
+    private static IReadOnlyList<string> MessagesToolStreamResponse(
+        string callId,
+        string name,
+        Dictionary<string, object?> input)
+    {
+        return ToSseEventLines(
+            ("message_start", new Dictionary<string, object?>
+            {
+                ["type"] = "message_start",
+                ["message"] = new Dictionary<string, object?>
+                {
+                    ["id"] = "msg_tool",
+                    ["type"] = "message",
+                    ["role"] = "assistant",
+                    ["model"] = "upstream",
+                    ["usage"] = new Dictionary<string, object?>
+                    {
+                        ["input_tokens"] = 1,
+                        ["output_tokens"] = 0
+                    }
+                }
+            }),
+            ("content_block_start", new Dictionary<string, object?>
+            {
+                ["type"] = "content_block_start",
+                ["index"] = 0,
+                ["content_block"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "tool_use",
+                    ["id"] = callId,
+                    ["name"] = name,
+                    ["input"] = new Dictionary<string, object?>()
+                }
+            }),
+            ("content_block_delta", new Dictionary<string, object?>
+            {
+                ["type"] = "content_block_delta",
+                ["index"] = 0,
+                ["delta"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "input_json_delta",
+                    ["partial_json"] = JsonSerializer.Serialize(input)
+                }
+            }),
+            ("message_delta", new Dictionary<string, object?>
+            {
+                ["type"] = "message_delta",
+                ["delta"] = new Dictionary<string, object?>
+                {
+                    ["stop_reason"] = "tool_use"
+                },
+                ["usage"] = new Dictionary<string, object?>
+                {
+                    ["output_tokens"] = 1
+                }
+            }),
+            ("message_stop", new Dictionary<string, object?>
+            {
+                ["type"] = "message_stop"
+            }));
+    }
+
+    private static IReadOnlyList<string> MessagesMultiToolStreamResponse(
+        IReadOnlyList<GeneratedMessagesToolCall> tools,
+        string? assistantPreamble)
+    {
+        var events = new List<(string EventName, Dictionary<string, object?> Payload)>
+        {
+            ("message_start", new Dictionary<string, object?>
+            {
+                ["type"] = "message_start",
+                ["message"] = new Dictionary<string, object?>
+                {
+                    ["id"] = "msg_tool_chain",
+                    ["type"] = "message",
+                    ["role"] = "assistant",
+                    ["model"] = "upstream",
+                    ["usage"] = new Dictionary<string, object?>
+                    {
+                        ["input_tokens"] = 1,
+                        ["output_tokens"] = 0
+                    }
+                }
+            })
+        };
+
+        var contentIndex = 0;
+        if (!string.IsNullOrEmpty(assistantPreamble))
+        {
+            events.Add(("content_block_start", new Dictionary<string, object?>
+            {
+                ["type"] = "content_block_start",
+                ["index"] = contentIndex,
+                ["content_block"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "text",
+                    ["text"] = string.Empty
+                }
+            }));
+            events.Add(("content_block_delta", new Dictionary<string, object?>
+            {
+                ["type"] = "content_block_delta",
+                ["index"] = contentIndex,
+                ["delta"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "text_delta",
+                    ["text"] = assistantPreamble
+                }
+            }));
+            contentIndex++;
+        }
+
+        foreach (var tool in tools)
+        {
+            events.Add(("content_block_start", new Dictionary<string, object?>
+            {
+                ["type"] = "content_block_start",
+                ["index"] = contentIndex,
+                ["content_block"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "tool_use",
+                    ["id"] = tool.CallId,
+                    ["name"] = tool.UpstreamName,
+                    ["input"] = new Dictionary<string, object?>()
+                }
+            }));
+            events.Add(("content_block_delta", new Dictionary<string, object?>
+            {
+                ["type"] = "content_block_delta",
+                ["index"] = contentIndex,
+                ["delta"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "input_json_delta",
+                    ["partial_json"] = JsonSerializer.Serialize(tool.Input)
+                }
+            }));
+            contentIndex++;
+        }
+
+        events.Add(("message_delta", new Dictionary<string, object?>
+        {
+            ["type"] = "message_delta",
+            ["delta"] = new Dictionary<string, object?>
+            {
+                ["stop_reason"] = "tool_use"
+            },
+            ["usage"] = new Dictionary<string, object?>
+            {
+                ["output_tokens"] = Math.Max(1, tools.Count + (string.IsNullOrEmpty(assistantPreamble) ? 0 : 1))
+            }
+        }));
+        events.Add(("message_stop", new Dictionary<string, object?>
+        {
+            ["type"] = "message_stop"
+        }));
+
+        return ToSseEventLines(events.ToArray());
+    }
+
+    private static IReadOnlyList<string> MessagesTextStreamResponse(string text)
+    {
+        return ToSseEventLines(
+            ("message_start", new Dictionary<string, object?>
+            {
+                ["type"] = "message_start",
+                ["message"] = new Dictionary<string, object?>
+                {
+                    ["id"] = "msg_text",
+                    ["type"] = "message",
+                    ["role"] = "assistant",
+                    ["model"] = "upstream",
+                    ["usage"] = new Dictionary<string, object?>
+                    {
+                        ["input_tokens"] = 1,
+                        ["output_tokens"] = 0
+                    }
+                }
+            }),
+            ("content_block_start", new Dictionary<string, object?>
+            {
+                ["type"] = "content_block_start",
+                ["index"] = 0,
+                ["content_block"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "text",
+                    ["text"] = string.Empty
+                }
+            }),
+            ("content_block_delta", new Dictionary<string, object?>
+            {
+                ["type"] = "content_block_delta",
+                ["index"] = 0,
+                ["delta"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "text_delta",
+                    ["text"] = text
+                }
+            }),
+            ("message_delta", new Dictionary<string, object?>
+            {
+                ["type"] = "message_delta",
+                ["delta"] = new Dictionary<string, object?>
+                {
+                    ["stop_reason"] = "end_turn"
+                },
+                ["usage"] = new Dictionary<string, object?>
+                {
+                    ["output_tokens"] = 1
+                }
+            }),
+            ("message_stop", new Dictionary<string, object?>
+            {
+                ["type"] = "message_stop"
+            }));
+    }
+
     private static IReadOnlyList<string> ToSseLines(params Dictionary<string, object?>[] chunks)
     {
         var lines = new List<string>();
@@ -1324,6 +2881,20 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
 
         lines.Add("data: [DONE]\n");
         lines.Add("\n");
+        return lines;
+    }
+
+    private static IReadOnlyList<string> ToSseEventLines(
+        params (string EventName, Dictionary<string, object?> Payload)[] events)
+    {
+        var lines = new List<string>();
+        foreach (var (eventName, payload) in events)
+        {
+            lines.Add($"event: {eventName}\n");
+            lines.Add($"data: {JsonSerializer.Serialize(payload)}\n");
+            lines.Add("\n");
+        }
+
         return lines;
     }
 
@@ -1357,6 +2928,20 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
 
         return ids;
     }
+
+    private sealed record GeneratedMessagesLongChainCase(
+        string Name,
+        string Prompt,
+        string? AssistantPreamble,
+        IReadOnlyList<string> WebQueries,
+        IReadOnlyList<GeneratedMessagesToolCall> FinalToolCalls);
+
+    private sealed record GeneratedMessagesToolCall(
+        string CallId,
+        string UpstreamName,
+        Dictionary<string, object?> Input,
+        string ExpectedName,
+        string? ExpectedNamespace);
 
     private sealed class ProxyCompatibilityApiFactory : WebApplicationFactory<Program>
     {

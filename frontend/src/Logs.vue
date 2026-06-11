@@ -53,6 +53,24 @@
     </div>
 
     <el-form class="log-filter-form" inline>
+      <el-form-item label="开始时间">
+        <el-date-picker
+          v-model="logFilters.created_from"
+          type="datetime"
+          value-format="x"
+          clearable
+          @change="loadLogs(1)"
+        />
+      </el-form-item>
+      <el-form-item label="结束时间">
+        <el-date-picker
+          v-model="logFilters.created_to"
+          type="datetime"
+          value-format="x"
+          clearable
+          @change="loadLogs(1)"
+        />
+      </el-form-item>
       <el-form-item label="请求 ID">
         <el-autocomplete v-model="logFilters.request_id" :fetch-suggestions="requestIdSuggestions" clearable @focus="loadFilterOptions('request_id')" @select="loadLogs(1)" @clear="loadLogs(1)" />
       </el-form-item>
@@ -120,9 +138,37 @@
             <el-tag v-if="column.key === 'request_status'" :type="row.request_status === 'success' ? 'success' : 'danger'">
               {{ row.request_status === "success" ? "成功" : "失败" }}
             </el-tag>
-            <el-tag v-else-if="column.key === 'request_type'" :type="row.request_type === 'ocr' ? 'warning' : 'info'">
-              {{ formatRequestType(row.request_type) }}
-            </el-tag>
+            <div v-else-if="column.key === 'model'" class="log-cell-stack">
+              <div class="log-cell-stack__line">
+                <span class="log-cell-stack__label">入站:</span>
+                <span class="log-cell-stack__value">{{ row.model || "-" }}</span>
+              </div>
+              <div class="log-cell-stack__line">
+                <span class="log-cell-stack__label">上游:</span>
+                <span class="log-cell-stack__value">{{ row.upstream_model || "-" }}</span>
+              </div>
+            </div>
+            <div v-else-if="column.key === 'latency'" class="log-cell-stack">
+              <div class="log-cell-stack__line">
+                <span class="log-cell-stack__label">耗时:</span>
+                <span class="log-cell-stack__value">{{ formatLatencyValue(row.duration_ms) }}</span>
+              </div>
+              <div class="log-cell-stack__line">
+                <span class="log-cell-stack__label">TTFT:</span>
+                <span class="log-cell-stack__value">{{ formatLatencyValue(row.ttft_ms) }}</span>
+              </div>
+            </div>
+            <div v-else-if="column.key === 'tokens'" class="token-cell">
+              <el-tag
+                class="token-cell__pill"
+                size="small"
+                round
+                :type="row.is_stream ? 'success' : 'info'"
+              >
+                {{ row.is_stream ? "流" : "非流" }}
+              </el-tag>
+              <span>{{ formatTokenSummary(row) }}</span>
+            </div>
             <span v-else>{{ formatLogCell(row, column) }}</span>
           </template>
         </el-table-column>
@@ -172,6 +218,7 @@
             </el-descriptions-item>
             <el-descriptions-item label="模型">{{ selectedLog.model }}</el-descriptions-item>
             <el-descriptions-item label="上游模型">{{ selectedLog.upstream_model }}</el-descriptions-item>
+            <el-descriptions-item label="渠道">{{ selectedLog.channel_id || "-" }}</el-descriptions-item>
             <el-descriptions-item label="状态码">{{ selectedLog.status_code }}</el-descriptions-item>
             <el-descriptions-item label="成本">{{ formatCost(selectedLog.cost) }}</el-descriptions-item>
           </el-descriptions>
@@ -269,7 +316,20 @@ const filterOptionsLoading = reactive({
   status_code: false
 });
 
+function buildDefaultLogTimeRange() {
+  const now = Date.now();
+  const threeHours = 3 * 60 * 60 * 1000;
+  return {
+    created_from: String(now - threeHours),
+    created_to: String(now + threeHours)
+  };
+}
+
+const defaultLogTimeRange = buildDefaultLogTimeRange();
+
 const logFilters = reactive({
+  created_from: defaultLogTimeRange.created_from,
+  created_to: defaultLogTimeRange.created_to,
   request_id: "",
   model: "",
   channel_id: "",
@@ -300,20 +360,20 @@ const logColumnDefinitions = [
   { key: "created_at", prop: "created_at", label: "时间", width: 180 },
   { key: "request_id", prop: "request_id", label: "请求", width: 130, showOverflowTooltip: true },
   { key: "request_status", prop: "request_status", label: "状态", width: 90 },
-  { key: "request_type", prop: "request_type", label: "类型", width: 100 },
   { key: "owner_username", prop: "owner_username", label: "用户", width: 120, showOverflowTooltip: true },
   { key: "api_key_id", prop: "api_key_id", label: "Key 名称", width: 140, showOverflowTooltip: true },
-  { key: "model", prop: "model", label: "模型", minWidth: 160, showOverflowTooltip: true },
+  { key: "model", prop: "model", label: "模型", minWidth: 190 },
   { key: "channel_id", prop: "channel_id", label: "渠道", minWidth: 130, showOverflowTooltip: true },
   { key: "status_code", prop: "status_code", label: "状态码", width: 90 },
-  { key: "duration_ms", prop: "duration_ms", label: "耗时", width: 95 },
-  { key: "ttft_ms", prop: "ttft_ms", label: "TTFT", width: 95 },
-  { key: "tokens", label: "Token", width: 190 },
+  { key: "latency", label: "耗时 / TTFT", width: 150 },
+  { key: "tokens", label: "Token", width: 210 },
   { key: "cost", prop: "cost", label: "成本", width: 110 }
 ];
-const defaultLogColumnKeys = logColumnDefinitions.map((c) => c.key);
+const defaultLogColumnKeys = logColumnDefinitions
+  .map((c) => c.key)
+  .filter((key) => key !== "request_id");
 const logColumnMap = Object.fromEntries(logColumnDefinitions.map((c) => [c.key, c]));
-const logColumnOrder = ref(defaultLogColumnKeys.slice());
+const logColumnOrder = ref(logColumnDefinitions.map((c) => c.key));
 const visibleLogColumnKeys = ref(defaultLogColumnKeys.slice());
 
 const orderedLogColumns = computed(() =>
@@ -332,7 +392,8 @@ async function loadLogs(page = logPage.value) {
   try {
     const params = new URLSearchParams({ page: String(logPage.value), page_size: String(logPageSize.value) });
     for (const [key, value] of Object.entries(logFilters)) {
-      if (value !== "" && value !== null && value !== undefined) params.set(key, value);
+      const normalized = normalizeLogFilterValue(key, value);
+      if (normalized !== null) params.set(key, normalized);
     }
     const data = await props.api(`/logs?${params.toString()}`);
     logs.value = data.events || [];
@@ -373,7 +434,18 @@ function handleFilterVisible(field, visible) {
 }
 
 function resetLogFilters() {
-  Object.assign(logFilters, { request_id: "", model: "", channel_id: "", owner_username: "", api_key_id: "", status_code: "", path: "", request_status: "", request_type: "" });
+  Object.assign(logFilters, {
+    ...buildDefaultLogTimeRange(),
+    request_id: "",
+    model: "",
+    channel_id: "",
+    owner_username: "",
+    api_key_id: "",
+    status_code: "",
+    path: "",
+    request_status: "",
+    request_type: ""
+  });
   loadLogs(1);
 }
 
@@ -463,7 +535,8 @@ async function loadFilterOptions(field, query = "") {
     const queryText = String(query || "").trim();
     if (queryText) params.set("q", queryText);
     for (const [key, value] of Object.entries(logFilters)) {
-      if (value !== "" && value !== null && value !== undefined) params.set(key, value);
+      const normalized = normalizeLogFilterValue(key, value);
+      if (normalized !== null) params.set(key, normalized);
     }
     const data = await props.api(`/log-filter-options?${params.toString()}`);
     if (Array.isArray(data[optionKey])) filterOptions[optionKey] = data[optionKey];
@@ -507,9 +580,6 @@ function formatLogCell(row, column) {
   switch (column.key) {
     case "created_at": return formatTime(row.created_at);
     case "api_key_id": return formatApiKeyName(row);
-    case "duration_ms": return displayMs(row.duration_ms);
-    case "ttft_ms": return displayMs(row.ttft_ms);
-    case "tokens": return `${row.input_tokens || 0} / ${row.cached_tokens || 0} / ${row.output_tokens || 0}`;
     case "cost": return formatCost(row.cost);
     default: return row[column.prop] ?? "";
   }
@@ -549,8 +619,28 @@ function formatTime(timestamp) {
   return new Date(Number(timestamp) * 1000).toLocaleString();
 }
 
-function displayMs(value) {
-  return value === null || value === undefined ? "-" : `${value} ms`;
+function formatLatencyValue(value) {
+  if (value === null || value === undefined) return "-";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  return number < 1000 ? `${Math.round(number)} ms` : `${(number / 1000).toFixed(number >= 10000 ? 1 : 2)} s`;
+}
+
+function formatTokenSummary(row) {
+  return `入 ${row.input_tokens || 0} / 缓 ${row.cached_tokens || 0} / 出 ${row.output_tokens || 0}`;
+}
+
+function normalizeLogFilterValue(key, value) {
+  if (value === "" || value === null || value === undefined) {
+    return null;
+  }
+
+  if (key === "created_from" || key === "created_to") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? String(parsed / 1000) : null;
+  }
+
+  return String(value);
 }
 
 function formatJson(value) {
@@ -577,6 +667,41 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.log-cell-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.35;
+}
+
+.log-cell-stack__line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.log-cell-stack__label {
+  color: var(--el-text-color-secondary);
+  flex: 0 0 auto;
+}
+
+.log-cell-stack__value {
+  min-width: 0;
+  word-break: break-all;
+}
+
+.token-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.token-cell__pill {
+  flex: 0 0 auto;
+}
+
 .log-detail-actions {
   display: flex;
   flex-wrap: wrap;

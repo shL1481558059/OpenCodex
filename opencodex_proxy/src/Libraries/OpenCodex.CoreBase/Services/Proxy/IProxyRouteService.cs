@@ -17,6 +17,18 @@ public interface IProxyRouteService
     ProxyRouteDto ChooseRoute(string ownerUsername, string? model, bool requestContainsImages = false);
 
     /// <summary>
+    /// 为指定用户和模型列出按优先顺序排列的代理通道候选。
+    /// </summary>
+    /// <param name="ownerUsername">访问密钥所属用户名。</param>
+    /// <param name="model">请求模型名称。</param>
+    /// <param name="requestContainsImages">指示请求是否包含图片输入。</param>
+    /// <returns>按优先级排序后的代理路由候选。</returns>
+    IReadOnlyList<ProxyRouteDto> ListRouteCandidates(
+        string ownerUsername,
+        string? model,
+        bool requestContainsImages = false);
+
+    /// <summary>
     /// 为指定用户和模型选择 OCR 视觉来源通道。
     /// </summary>
     /// <param name="ownerUsername">访问密钥所属用户名。</param>

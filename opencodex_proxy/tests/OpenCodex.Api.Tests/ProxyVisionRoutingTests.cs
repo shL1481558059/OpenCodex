@@ -76,6 +76,52 @@ public sealed class ProxyVisionRoutingTests
     }
 
     [Fact]
+    public void ChooseRoute_ModelMappings_PrefersLowerPriority()
+    {
+        var service = CreateRouteService(
+            ChannelEntity(
+                "admin",
+                "later-position-better-priority",
+                1,
+                [ModelConfig("shared-model", "shared-upstream-b")],
+                priority: 0),
+            ChannelEntity(
+                "admin",
+                "earlier-position-worse-priority",
+                0,
+                [ModelConfig("shared-model", "shared-upstream-a")],
+                priority: 3));
+
+        var route = service.ChooseRoute("admin", "shared-model");
+
+        Assert.Equal("later-position-better-priority", route.Channel["id"]);
+        Assert.Equal("shared-upstream-b", route.UpstreamModel);
+    }
+
+    [Fact]
+    public void ChooseRoute_ModelMappings_SamePriorityFallsBackToPosition()
+    {
+        var service = CreateRouteService(
+            ChannelEntity(
+                "admin",
+                "position-1",
+                1,
+                [ModelConfig("shared-model", "shared-upstream-b")],
+                priority: 2),
+            ChannelEntity(
+                "admin",
+                "position-0",
+                0,
+                [ModelConfig("shared-model", "shared-upstream-a")],
+                priority: 2));
+
+        var route = service.ChooseRoute("admin", "shared-model");
+
+        Assert.Equal("position-0", route.Channel["id"]);
+        Assert.Equal("shared-upstream-a", route.UpstreamModel);
+    }
+
+    [Fact]
     public void ChooseOcrRoute_ImageInput_UsesSameChannelVisionModelFirst()
     {
         var service = CreateRouteService(
@@ -261,13 +307,17 @@ public sealed class ProxyVisionRoutingTests
         string ownerUsername,
         string id,
         int position,
-        IReadOnlyList<object?> models)
+        IReadOnlyList<object?> models,
+        int? priority = null,
+        int? capacity = null)
     {
         return new Channel
         {
             OwnerUsername = ownerUsername,
             Id = id,
             Position = position,
+            Priority = priority ?? position,
+            Capacity = capacity,
             Name = id,
             Type = ProtocolConverter.Chat,
             BaseUrl = "https://example.test/v1",

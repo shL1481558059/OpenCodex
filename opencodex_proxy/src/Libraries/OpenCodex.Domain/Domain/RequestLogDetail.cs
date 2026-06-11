@@ -18,6 +18,8 @@ public sealed class RequestLogDetail : BaseEntity
 
     public string? OcrJson { get; set; }
 
+    public string? StreamTimingsJson { get; set; }
+
     public RequestLog? RequestLog { get; set; }
 
     public override object? GetId()

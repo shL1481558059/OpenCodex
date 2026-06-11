@@ -14,7 +14,11 @@ public sealed class OpenCodexSettings
 
     public required int DefaultTimeout { get; init; }
 
+    public required int AdminCookieDays { get; init; }
+
     public required string SecretKey { get; init; }
+
+    public required string DataProtectionKeysPath { get; init; }
 
     public required string AdminUsername { get; init; }
 

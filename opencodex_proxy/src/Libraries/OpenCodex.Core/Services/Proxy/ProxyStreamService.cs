@@ -32,6 +32,7 @@ public sealed class ProxyStreamService : IProxyStreamService
         context.StreamWriter.PrepareSse();
 
         var ttftStarted = Stopwatch.GetTimestamp();
+        StreamWriteMetrics? streamWriteMetrics = null;
         var ttftMs = (int?)null;
         var error = (string?)null;
         Dictionary<string, object?>? webSearchDetails = null;
@@ -45,8 +46,7 @@ public sealed class ProxyStreamService : IProxyStreamService
                 context.EntryProtocol,
                 context.ChannelType,
                 context.OwnerRole,
-                context.Payload)
-                && context.ChannelType == ProtocolConverter.Chat)
+                context.Payload))
             {
                 var streamResult = new WebSearchStreamResult();
                 var visibleModel = VisibleModel(context);
@@ -58,11 +58,12 @@ public sealed class ProxyStreamService : IProxyStreamService
                     context.DefaultTimeout,
                     streamResult,
                     context.CancellationToken);
-                ttftMs = await context.StreamWriter.WriteLinesAsync(
+                streamWriteMetrics = await context.StreamWriter.WriteLinesAsync(
                     streamLines,
                     SseStreamConverter.CountsForTtft,
                     () => ElapsedMilliseconds(ttftStarted),
                     context.CancellationToken);
+                ttftMs = streamWriteMetrics.TtftMs;
 
                 upstreamRequest = streamResult.FinalUpstreamRequest ?? upstreamRequest;
                 upstreamResponse = streamResult.FinalUpstreamResponse;
@@ -77,11 +78,12 @@ public sealed class ProxyStreamService : IProxyStreamService
                     context.DefaultTimeout,
                     context.CancellationToken);
                 var capture = new PassThroughCapture();
-                ttftMs = await context.StreamWriter.WriteLinesAsync(
+                streamWriteMetrics = await context.StreamWriter.WriteLinesAsync(
                     CaptureStreamUsage(streamLines, capture, context.CancellationToken),
                     static line => line.Trim().Length > 0,
                     () => ElapsedMilliseconds(ttftStarted),
                     context.CancellationToken);
+                ttftMs = streamWriteMetrics.TtftMs;
                 upstreamResponse = capture.UpstreamResponse;
             }
             else
@@ -104,11 +106,12 @@ public sealed class ProxyStreamService : IProxyStreamService
                         visibleModel,
                         converted,
                         context.CancellationToken);
-                ttftMs = await context.StreamWriter.WriteLinesAsync(
+                streamWriteMetrics = await context.StreamWriter.WriteLinesAsync(
                     convertedLines,
                     SseStreamConverter.CountsForTtft,
                     () => ElapsedMilliseconds(ttftStarted),
                     context.CancellationToken);
+                ttftMs = streamWriteMetrics.TtftMs;
 
                 upstreamResponse = converted.UpstreamResponse;
                 responsePayload = upstreamResponse is null
@@ -146,7 +149,8 @@ public sealed class ProxyStreamService : IProxyStreamService
                     StatusCode: 200,
                     DurationMs: ElapsedMilliseconds(context.StartedTimestamp),
                     error,
-                    webSearchDetails),
+                    webSearchDetails,
+                    StreamWriteMetrics: streamWriteMetrics),
                 context.RequestMetadata);
         }
     }
