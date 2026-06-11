@@ -39,6 +39,8 @@ public sealed class ProxyStreamService : IProxyStreamService
         Dictionary<string, object?>? upstreamResponse = null;
         Dictionary<string, object?>? responsePayload = null;
         var upstreamRequest = context.UpstreamRequest;
+        var isConversion = context.EntryProtocol != context.ChannelType;
+        Console.Error.WriteLine($"[OCXP-DEBUG] [{context.RequestId}] StreamAsync start: entry={context.EntryProtocol}, channel={context.ChannelType}, isConversion={isConversion}, model={VisibleModel(context)}, upstream={context.UpstreamModel}");
 
         try
         {
@@ -72,6 +74,7 @@ public sealed class ProxyStreamService : IProxyStreamService
             }
             else if (context.EntryProtocol == context.ChannelType)
             {
+                Console.Error.WriteLine($"[OCXP-DEBUG] [{context.RequestId}] StreamAsync: PASSTHROUGH path (entry==channel)");
                 var streamLines = _upstream.StreamJsonAsync(
                     context.Route.Channel,
                     upstreamRequest,
@@ -83,11 +86,13 @@ public sealed class ProxyStreamService : IProxyStreamService
                     static line => line.Trim().Length > 0,
                     () => ElapsedMilliseconds(ttftStarted),
                     context.CancellationToken);
+                Console.Error.WriteLine($"[OCXP-DEBUG] [{context.RequestId}] StreamAsync: PASSTHROUGH done. ttft={streamWriteMetrics.TtftMs}ms, first_sse={streamWriteMetrics.FirstSseEventMs}ms, completed={streamWriteMetrics.CompletedEventMs}ms");
                 ttftMs = streamWriteMetrics.TtftMs;
                 upstreamResponse = capture.UpstreamResponse;
             }
             else
             {
+                Console.Error.WriteLine($"[OCXP-DEBUG] [{context.RequestId}] StreamAsync: CONVERSION path, creating IAsyncEnumerables...");
                 var converted = new ConvertedStreamResult();
                 var visibleModel = VisibleModel(context);
                 var streamLines = _upstream.StreamJsonAsync(
@@ -95,22 +100,34 @@ public sealed class ProxyStreamService : IProxyStreamService
                     upstreamRequest,
                     context.DefaultTimeout,
                     context.CancellationToken);
+                // 方案A: 直接调用内部重载，消除外层 await foreach 包装
                 var convertedLines = context.ChannelType == ProtocolConverter.Chat
                     ? SseStreamConverter.ChatToResponsesEvents(
                         streamLines,
                         visibleModel,
                         converted,
+                        SkipToolNames: null,
+                        SkipResponseCreated: false,
+                        InitialSequenceNumber: 0,
+                        InitialOutputIndex: 0,
                         context.CancellationToken)
                     : SseStreamConverter.MessagesToResponsesEvents(
                         streamLines,
                         visibleModel,
                         converted,
+                        SkipToolNames: null,
+                        SkipResponseCreated: false,
+                        InitialSequenceNumber: 0,
+                        InitialOutputIndex: 0,
                         context.CancellationToken);
+                Console.Error.WriteLine($"[OCXP-DEBUG] [{context.RequestId}] StreamAsync: CONVERSION enumerables created, starting WriteLinesAsync loop...");
+                var writeLoopStart = Stopwatch.GetTimestamp();
                 streamWriteMetrics = await context.StreamWriter.WriteLinesAsync(
                     convertedLines,
                     SseStreamConverter.CountsForTtft,
                     () => ElapsedMilliseconds(ttftStarted),
                     context.CancellationToken);
+                Console.Error.WriteLine($"[OCXP-DEBUG] [{context.RequestId}] StreamAsync: CONVERSION done. ttft={streamWriteMetrics.TtftMs}ms, first_sse={streamWriteMetrics.FirstSseEventMs}ms, first_output_text={streamWriteMetrics.FirstOutputTextDeltaMs}ms, first_reasoning={streamWriteMetrics.FirstReasoningSummaryTextDeltaMs}ms, completed={streamWriteMetrics.CompletedEventMs}ms");
                 ttftMs = streamWriteMetrics.TtftMs;
 
                 upstreamResponse = converted.UpstreamResponse;

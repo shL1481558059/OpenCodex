@@ -168,6 +168,7 @@ public static partial class SseStreamConverter
 
         if (!SkipResponseCreated)
         {
+            Console.Error.WriteLine($"[OCXP-DEBUG] ChatToResponsesEvents: yielding response.created (before upstream read)");
             yield return Emit(
                 "response.created",
                 new Dictionary<string, object?>
@@ -196,6 +197,7 @@ public static partial class SseStreamConverter
                         ["output"] = new List<object?>()
                     }
                 });
+            Console.Error.WriteLine($"[OCXP-DEBUG] ChatToResponsesEvents: yielded response.in_progress, now entering ParseEvents loop (will start upstream read)...");
         }
 
         await foreach (var sseEvent in ParseEvents(upstreamLines, cancellationToken))
