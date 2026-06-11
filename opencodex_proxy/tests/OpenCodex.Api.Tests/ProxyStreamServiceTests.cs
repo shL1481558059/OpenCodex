@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Abstractions;
@@ -12,6 +13,82 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class ProxyStreamServiceTests
 {
+    [Fact]
+    public async Task StreamAsync_ConvertedMessages_StreamsReasoningAndUsesItForTtft()
+    {
+        var upstream = new SequencedUpstreamClient(
+        [
+            ("event: message_start", 0),
+            ("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-3\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}", 0),
+            ("", 0),
+            ("event: content_block_start", 0),
+            ("data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}", 0),
+            ("", 0),
+            ("event: content_block_delta", 0),
+            ("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"I should inspect the logs first.\"}}", 0),
+            ("", 80),
+            ("event: content_block_start", 0),
+            ("data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"exec_command\",\"input\":{}}}", 0),
+            ("", 0),
+            ("event: content_block_delta", 0),
+            ("data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"cmd\\\":\\\"pwd\\\"}\"}}", 0),
+            ("", 0),
+            ("event: content_block_stop", 0),
+            ("data: {\"type\":\"content_block_stop\",\"index\":1}", 0),
+            ("", 0),
+            ("event: message_delta", 0),
+            ("data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":30}}", 0),
+            ("", 0),
+            ("event: message_stop", 0),
+            ("data: {\"type\":\"message_stop\"}", 0),
+            ("", 0)
+        ]);
+        var logs = new StubProxyLogService();
+        var service = new ProxyStreamService(upstream, logs, new StubWebSearchSimulator(false, []));
+        var writer = new CapturingProxyStreamWriter();
+        var channel = new Dictionary<string, object?>
+        {
+            ["id"] = "messages",
+            ["type"] = ProtocolConverter.Messages
+        };
+        var route = new ProxyRouteDto(
+            channel,
+            "public-model",
+            "upstream-model",
+            supportsImage: false,
+            matchedModelMapping: true);
+        var started = Stopwatch.GetTimestamp();
+        var context = new ProxyStreamContext(
+            started,
+            requestId: "req_reasoning",
+            ownerUsername: "admin",
+            apiKeyId: 1,
+            originalPayload: new Dictionary<string, object?>(),
+            payload: new Dictionary<string, object?>(),
+            upstreamRequest: new Dictionary<string, object?>(),
+            entryProtocol: ProtocolConverter.Responses,
+            route: route,
+            channelType: ProtocolConverter.Messages,
+            channelId: "messages",
+            ownerRole: "superadmin",
+            upstreamModel: "upstream-model",
+            requestModel: "public-model",
+            defaultTimeout: 120,
+            requestMetadata: new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
+            streamWriter: writer,
+            cancellationToken: CancellationToken.None);
+
+        await service.StreamAsync(context);
+
+        Assert.Contains(writer.Lines, line => line.Contains("response.reasoning_summary_text.delta", StringComparison.Ordinal));
+        Assert.Contains(writer.Lines, line => line.Contains("response.function_call_arguments.delta", StringComparison.Ordinal));
+        Assert.NotNull(logs.LastContext);
+        Assert.True(logs.LastContext!.DurationMs >= 50);
+        Assert.True(
+            logs.LastContext.TtftMs <= logs.LastContext.DurationMs - 40,
+            $"expected TTFT to use early reasoning delta, got ttft={logs.LastContext.TtftMs}, duration={logs.LastContext.DurationMs}");
+    }
+
     [Fact]
     public async Task StreamAsync_MessagesWebSearchSimulation_UsesSimulatorBranch()
     {
@@ -287,12 +364,22 @@ public sealed class ProxyStreamServiceTests
             Func<int> elapsedMilliseconds,
             CancellationToken cancellationToken = default)
         {
+            var metrics = new StreamWriteMetrics();
             await foreach (var line in lines.WithCancellation(cancellationToken))
             {
                 Lines.Add(line);
+                if (metrics.FirstSseEventMs is null && !string.IsNullOrWhiteSpace(line))
+                {
+                    metrics.FirstSseEventMs = elapsedMilliseconds();
+                }
+
+                if (metrics.TtftMs is null && countsForTtft(line))
+                {
+                    metrics.TtftMs = elapsedMilliseconds();
+                }
             }
 
-            return new StreamWriteMetrics(ttftMs: 1);
+            return metrics;
         }
     }
 
@@ -318,6 +405,45 @@ public sealed class ProxyStreamServiceTests
 #pragma warning disable CS0162
             yield break;
 #pragma warning restore CS0162
+        }
+    }
+
+    private sealed class SequencedUpstreamClient : IUpstreamClient
+    {
+        private readonly IReadOnlyList<(string Line, int DelayAfterMs)> _lines;
+
+        public SequencedUpstreamClient(IReadOnlyList<(string Line, int DelayAfterMs)> lines)
+        {
+            _lines = lines;
+        }
+
+        public Task<Dictionary<string, object?>> PostJsonAsync(
+            IReadOnlyDictionary<string, object?> channel,
+            IReadOnlyDictionary<string, object?> payload,
+            int defaultTimeout,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException("non-stream path is not used in this test");
+        }
+
+        public async IAsyncEnumerable<string> StreamJsonAsync(
+            IReadOnlyDictionary<string, object?> channel,
+            IReadOnlyDictionary<string, object?> payload,
+            int defaultTimeout,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            foreach (var (line, delayAfterMs) in _lines)
+            {
+                yield return line;
+                if (delayAfterMs > 0)
+                {
+                    await Task.Delay(delayAfterMs, cancellationToken);
+                }
+                else
+                {
+                    await Task.Yield();
+                }
+            }
         }
     }
 
@@ -375,8 +501,11 @@ public sealed class ProxyStreamServiceTests
 
     private sealed class StubProxyLogService : IProxyLogService
     {
+        public ProxyLogContext? LastContext { get; private set; }
+
         public long WriteLog(ProxyLogContext context, ProxyRequestMetadata request)
         {
+            LastContext = context;
             return 0;
         }
 
