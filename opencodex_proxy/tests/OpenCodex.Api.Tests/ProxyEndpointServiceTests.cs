@@ -66,6 +66,69 @@ public sealed class ProxyEndpointServiceTests
     }
 
     [Fact]
+    public async Task ProxyAsync_StickyKeyRoutesToPreviouslyRememberedChannel()
+    {
+        var capacity = new ChannelCapacityService();
+        var affinity = new ChannelAffinityService();
+        var first = CreateChannel("first", priority: 1);
+        var second = CreateChannel("second", priority: 1);
+        // 预置亲和映射：该 sticky key 此前命中 "second"。
+        affinity.Remember("admin", "cache-key-1", "second");
+
+        var nonStreams = new StubProxyNonStreamService(_ =>
+            Task.FromResult(new ProxyNonStreamResult(200, new { ok = true })));
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService(
+            [
+                CreateRoute(first, "shared-model", "upstream-first"),
+                CreateRoute(second, "shared-model", "upstream-second")
+            ]),
+            affinity: affinity,
+            nonStreams: nonStreams);
+
+        var result = await service.ProxyAsync(
+            CreateChatContext(CreateChatPayload("shared-model", "cache-key-1")));
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.NotNull(nonStreams.LastContext);
+        Assert.Equal("second", nonStreams.LastContext!.ChannelId);
+    }
+
+    [Fact]
+    public async Task ProxyAsync_StickyPreferredChannelAtCapacity_FallsBackToOtherChannel()
+    {
+        var capacity = new ChannelCapacityService();
+        var affinity = new ChannelAffinityService();
+        var preferred = CreateChannel("preferred", priority: 1, capacity: 1);
+        var fallback = CreateChannel("fallback", priority: 1);
+        // 偏好渠道已被占满，软粘应回退到其他渠道而非报 429。
+        using var preferredLease = capacity.TryAcquire("admin", preferred);
+        affinity.Remember("admin", "cache-key-2", "preferred");
+
+        var nonStreams = new StubProxyNonStreamService(_ =>
+            Task.FromResult(new ProxyNonStreamResult(200, new { ok = true })));
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService(
+            [
+                CreateRoute(preferred, "shared-model", "upstream-preferred"),
+                CreateRoute(fallback, "shared-model", "upstream-fallback")
+            ]),
+            affinity: affinity,
+            nonStreams: nonStreams);
+
+        var result = await service.ProxyAsync(
+            CreateChatContext(CreateChatPayload("shared-model", "cache-key-2")));
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.NotNull(nonStreams.LastContext);
+        Assert.Equal("fallback", nonStreams.LastContext!.ChannelId);
+        // 回退后亲和映射应更新为实际命中的渠道。
+        Assert.Equal("fallback", affinity.GetPreferredChannelId("admin", "cache-key-2"));
+    }
+
+    [Fact]
     public async Task ProxyAsync_NonStreamSuccess_ReleasesCapacity()
     {
         var capacity = new ChannelCapacityService();
@@ -142,6 +205,7 @@ public sealed class ProxyEndpointServiceTests
     private static ProxyEndpointService CreateService(
         IChannelCapacityService capacity,
         IProxyRouteService routes,
+        IChannelAffinityService? affinity = null,
         IProxyNonStreamService? nonStreams = null,
         IProxyStreamService? streams = null)
     {
@@ -150,6 +214,7 @@ public sealed class ProxyEndpointServiceTests
             new StubProxyRequestService(),
             routes,
             capacity,
+            affinity ?? new ChannelAffinityService(),
             new StubProxyImageFallbackService(),
             nonStreams ?? new StubProxyNonStreamService(_ =>
                 Task.FromResult(new ProxyNonStreamResult(200, new { ok = true }))),
@@ -186,6 +251,13 @@ public sealed class ProxyEndpointServiceTests
                 }
             }
         };
+    }
+
+    private static Dictionary<string, object?> CreateChatPayload(string model, string promptCacheKey)
+    {
+        var payload = CreateChatPayload(model);
+        payload["prompt_cache_key"] = promptCacheKey;
+        return payload;
     }
 
     private static Dictionary<string, object?> CreateChannel(

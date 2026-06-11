@@ -57,7 +57,6 @@
         <el-date-picker
           v-model="logFilters.created_from"
           type="datetime"
-          value-format="x"
           clearable
           @change="loadLogs(1)"
         />
@@ -66,7 +65,6 @@
         <el-date-picker
           v-model="logFilters.created_to"
           type="datetime"
-          value-format="x"
           clearable
           @change="loadLogs(1)"
         />
@@ -320,8 +318,8 @@ function buildDefaultLogTimeRange() {
   const now = Date.now();
   const threeHours = 3 * 60 * 60 * 1000;
   return {
-    created_from: String(now - threeHours),
-    created_to: String(now + threeHours)
+    created_from: new Date(now - threeHours),
+    created_to: new Date(now + threeHours)
   };
 }
 
