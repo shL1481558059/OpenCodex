@@ -14,6 +14,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
     private readonly IProxyRequestService _requests;
     private readonly IProxyRouteService _routes;
     private readonly IChannelCapacityService _channelCapacity;
+    private readonly IChannelAffinityService _channelAffinity;
     private readonly IProxyImageFallbackService _imageFallback;
     private readonly IProxyNonStreamService _nonStreams;
     private readonly IProxyStreamService _streams;
@@ -23,6 +24,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         IProxyRequestService requests,
         IProxyRouteService routes,
         IChannelCapacityService channelCapacity,
+        IChannelAffinityService channelAffinity,
         IProxyImageFallbackService imageFallback,
         IProxyNonStreamService nonStreams,
         IProxyStreamService streams)
@@ -31,6 +33,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         _requests = requests;
         _routes = routes;
         _channelCapacity = channelCapacity;
+        _channelAffinity = channelAffinity;
         _imageFallback = imageFallback;
         _nonStreams = nonStreams;
         _streams = streams;
@@ -76,7 +79,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             requestModel = JsonDictionaryValue.String(payload, "model");
             effectivePayload = payload;
             var requestContainsImages = ProxyImageRequestDetector.ContainsImageInput(payload, context.EntryProtocol);
-            var (route, lease) = AcquireRoute(ownerUsername, requestModel, requestContainsImages);
+            var stickyKey = JsonDictionaryValue.String(payload, "prompt_cache_key");
+            var (route, lease) = AcquireRoute(ownerUsername, requestModel, requestContainsImages, stickyKey);
             capacityLease = lease;
             channelType = JsonDictionaryValue.String(route.Channel, "type");
             channelId = JsonDictionaryValue.String(route.Channel, "id");
@@ -204,9 +208,13 @@ public sealed class ProxyEndpointService : IProxyEndpointService
     private (ProxyRouteDto Route, IChannelCapacityLease Lease) AcquireRoute(
         string ownerUsername,
         string? requestModel,
-        bool requestContainsImages)
+        bool requestContainsImages,
+        string? stickyKey)
     {
         var candidates = _routes.ListRouteCandidates(ownerUsername, requestModel, requestContainsImages);
+        var preferredChannelId = string.IsNullOrEmpty(stickyKey)
+            ? null
+            : _channelAffinity.GetPreferredChannelId(ownerUsername, stickyKey);
         var orderedCandidates = candidates
             .Select((candidate, index) => new
             {
@@ -215,9 +223,15 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 ActiveRequests = _channelCapacity.GetActiveRequests(
                     ownerUsername,
                     JsonDictionaryValue.String(candidate.Channel, "id")),
-                Order = index
+                Order = index,
+                IsPreferred = preferredChannelId is not null
+                    && string.Equals(
+                        JsonDictionaryValue.String(candidate.Channel, "id"),
+                        preferredChannelId,
+                        StringComparison.Ordinal)
             })
-            .OrderBy(item => item.Priority)
+            .OrderByDescending(item => item.IsPreferred)
+            .ThenBy(item => item.Priority)
             .ThenBy(item => item.ActiveRequests)
             .ThenBy(item => item.Order);
 
@@ -226,6 +240,14 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             var lease = _channelCapacity.TryAcquire(ownerUsername, item.Candidate.Channel);
             if (lease is not null)
             {
+                if (!string.IsNullOrEmpty(stickyKey))
+                {
+                    _channelAffinity.Remember(
+                        ownerUsername,
+                        stickyKey,
+                        JsonDictionaryValue.String(item.Candidate.Channel, "id"));
+                }
+
                 return (item.Candidate, lease);
             }
         }

@@ -45,9 +45,6 @@
           </template>
         </el-table-column>
         <el-table-column prop="baseurl" label="Base URL" min-width="220" show-overflow-tooltip />
-        <el-table-column label="模型映射" width="110">
-          <template #default="{ row }">{{ normalizeModels(row.models).length }}</template>
-        </el-table-column>
         <el-table-column prop="priority" label="优先级" width="90" />
         <el-table-column label="容量状态" width="140">
           <template #default="{ row }">{{ formatCapacityStatus(row) }}</template>
