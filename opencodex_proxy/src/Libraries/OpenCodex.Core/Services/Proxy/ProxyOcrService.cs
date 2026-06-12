@@ -14,10 +14,6 @@ namespace OpenCodex.Core.Services.Proxy;
 public sealed class ProxyOcrService : IProxyOcrService
 {
     private const string VisionPath = "/internal/ocr/vision";
-    private const string LocalOcrPath = "/internal/ocr/paddleocr";
-    private const string LocalOcrModel = "__ocr_paddleocr__";
-    private const string LocalChannelId = "__local__";
-    private const string LocalDescription = "本地 PaddleOCR 兜底未生成图片描述，仅提取了可见文字";
     private const string VisionPrompt = """
                                       Extract text and describe the visible contents of this image.
                                       Return only strict JSON in the exact shape {"text":"...","description":"..."}.
@@ -35,18 +31,15 @@ public sealed class ProxyOcrService : IProxyOcrService
 
     private readonly IUpstreamClient _upstream;
     private readonly IProxyLogService _logs;
-    private readonly ILocalImageOcrService _localOcr;
     private readonly IOpenCodexRuntimeSettingsProvider _settingsProvider;
 
     public ProxyOcrService(
         IUpstreamClient upstream,
         IProxyLogService logs,
-        ILocalImageOcrService localOcr,
         IOpenCodexRuntimeSettingsProvider settingsProvider)
     {
         _upstream = upstream;
         _logs = logs;
-        _localOcr = localOcr;
         _settingsProvider = settingsProvider;
     }
 
@@ -56,11 +49,11 @@ public sealed class ProxyOcrService : IProxyOcrService
         var settings = _settingsProvider.GetSettings();
         var cacheKey = CacheKey(context.Image);
         var sourceKind = context.Image.SourceKind;
-        var engine = context.VisionRoute is null ? ProxyOcrEngines.PaddleOcr : ProxyOcrEngines.Vision;
-        var requestPath = engine == ProxyOcrEngines.Vision ? VisionPath : LocalOcrPath;
-        var requestModel = engine == ProxyOcrEngines.Vision ? context.VisionRoute?.OriginalModel : LocalOcrModel;
-        var upstreamModel = engine == ProxyOcrEngines.Vision ? context.VisionRoute?.UpstreamModel : LocalOcrModel;
-        var channelId = engine == ProxyOcrEngines.Vision ? ChannelId(context.VisionRoute?.Channel) : LocalChannelId;
+        var engine = ProxyOcrEngines.Vision;
+        var requestPath = VisionPath;
+        var requestModel = context.VisionRoute?.OriginalModel;
+        var upstreamModel = context.VisionRoute?.UpstreamModel;
+        var channelId = ChannelId(context.VisionRoute?.Channel);
         var channelType = engine == ProxyOcrEngines.Vision ? ChannelType(context.VisionRoute?.Channel) : string.Empty;
         Dictionary<string, object?>? requestPayload = null;
         Dictionary<string, object?>? upstreamRequest = null;
@@ -78,10 +71,10 @@ public sealed class ProxyOcrService : IProxyOcrService
             {
                 cacheHit = true;
                 engine = cached.Engine;
-                requestPath = engine == ProxyOcrEngines.Vision ? VisionPath : LocalOcrPath;
-                requestModel = engine == ProxyOcrEngines.Vision ? cached.Model : LocalOcrModel;
-                upstreamModel = engine == ProxyOcrEngines.Vision ? cached.UpstreamModel : LocalOcrModel;
-                channelId = engine == ProxyOcrEngines.Vision ? cached.ChannelId : LocalChannelId;
+                requestPath = VisionPath;
+                requestModel = cached.Model;
+                upstreamModel = cached.UpstreamModel;
+                channelId = cached.ChannelId;
                 channelType = engine == ProxyOcrEngines.Vision ? cached.ChannelType ?? string.Empty : string.Empty;
                 requestPayload = CreateOcrRequestPayload(context.Image, requestModel);
                 upstreamRequest = engine == ProxyOcrEngines.Vision
@@ -145,40 +138,8 @@ public sealed class ProxyOcrService : IProxyOcrService
                     cacheHit: false);
             }
 
-            engine = ProxyOcrEngines.PaddleOcr;
-            requestPath = LocalOcrPath;
-            requestModel = LocalOcrModel;
-            upstreamModel = LocalOcrModel;
-            channelId = LocalChannelId;
-            channelType = string.Empty;
-            requestPayload = CreateOcrRequestPayload(context.Image, LocalOcrModel);
-            upstreamRequest = requestPayload;
-            if (context.Image.SourceKind == ProxyImageSourceKinds.Url)
-            {
-                throw new BadRequestException("unsupported image source: remote URL images require a configured vision OCR model");
-            }
-
-            var localResult = await RecognizeWithLocalOcrAsync(context.Image, context.CancellationToken);
-            responsePayload = ResultPayload(localResult.Text, localResult.Description);
-            TryWriteCache(settings, cacheKey, new ProxyOcrCacheEntry
-            {
-                Engine = ProxyOcrEngines.PaddleOcr,
-                SourceKind = sourceKind,
-                Text = localResult.Text,
-                Description = localResult.Description,
-                CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                Model = LocalOcrModel,
-                UpstreamModel = LocalOcrModel,
-                ChannelId = LocalChannelId,
-                ChannelType = string.Empty
-            });
-            return new ProxyOcrResult(
-                context.Image.ImageNumber,
-                localResult.Text,
-                localResult.Description,
-                ProxyOcrEngines.PaddleOcr,
-                sourceKind,
-                cacheHit: false);
+            // 本地 OCR 已移除，必须配置 vision 模型
+            throw new BadRequestException("OCR requires a configured vision model. Local OCR has been removed.");
         }
         catch (BadRequestException exception)
         {
@@ -288,21 +249,6 @@ public sealed class ProxyOcrService : IProxyOcrService
                     body: null,
                     ChannelId(context.VisionRoute!.Channel));
         }
-    }
-
-    private async Task<LocalOcrExecutionResult> RecognizeWithLocalOcrAsync(
-        ProxyImageInput image,
-        CancellationToken cancellationToken)
-    {
-        if (image.ImageBytes is null || image.ImageBytes.Length == 0)
-        {
-            throw new BadRequestException("unsupported image source: local OCR requires embedded image bytes");
-        }
-
-        var text = await _localOcr.RecognizeTextAsync(image.ImageBytes, cancellationToken);
-        return new LocalOcrExecutionResult(
-            NormalizeLineEndings(text),
-            LocalDescription);
     }
 
     private static Dictionary<string, object?> CreateOcrRequestPayload(
@@ -718,19 +664,6 @@ public sealed class ProxyOcrService : IProxyOcrService
         public Dictionary<string, object?> UpstreamResponse { get; }
 
         public int DurationMs { get; }
-    }
-
-    private sealed class LocalOcrExecutionResult
-    {
-        public LocalOcrExecutionResult(string text, string description)
-        {
-            Text = text;
-            Description = description;
-        }
-
-        public string Text { get; }
-
-        public string Description { get; }
     }
 
     private sealed class VisionResponseJson

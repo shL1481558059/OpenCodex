@@ -88,7 +88,6 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<IProxyLogService, ProxyLogService>();
         services.AddSingleton<IChannelCapacityService, ChannelCapacityService>();
         services.AddSingleton<IChannelAffinityService, ChannelAffinityService>();
-        services.AddSingleton<ILocalImageOcrService, LocalPaddleImageOcrService>();
         services.AddScoped<IProxyOcrService, ProxyOcrService>();
         services.AddScoped<IProxyRequestService, ProxyRequestService>();
         services.AddScoped<IProxyRouteService, ProxyRouteService>();
