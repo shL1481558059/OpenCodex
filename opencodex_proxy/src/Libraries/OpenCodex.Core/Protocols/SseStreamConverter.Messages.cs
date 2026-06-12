@@ -163,6 +163,9 @@ public static partial class SseStreamConverter
             ];
         }
 
+        // 提前启动上游HTTP请求，避免延迟
+        var enumerator = ParseEvents(upstreamLines, cancellationToken).GetAsyncEnumerator(cancellationToken);
+
         if (!SkipResponseCreated)
         {
             Console.Error.WriteLine($"[OCXP-DEBUG] MessagesToResponsesEvents: yielding response.created (before upstream read)");
@@ -197,8 +200,9 @@ public static partial class SseStreamConverter
             Console.Error.WriteLine($"[OCXP-DEBUG] MessagesToResponsesEvents: yielded response.in_progress, now entering ParseEvents loop (will start upstream read)...");
         }
 
-        await foreach (var sseEvent in ParseEvents(upstreamLines, cancellationToken))
+        while (await enumerator.MoveNextAsync())
         {
+            var sseEvent = enumerator.Current;
             if (!TryAsObject(sseEvent.Data, out var payload))
             {
                 continue;
