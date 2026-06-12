@@ -1,17 +1,44 @@
+# Python
 .venv
+__pycache__
+
+# 环境和配置
 .env
 config.json
+
+# 日志
 logs
+
+# 版本控制
 .git
-.playwright-cli
+.gitignore
+.idea
+.vscode
 .DS_Store
-node_modules
+
+# 前端构建产物
 frontend/node_modules
 frontend/dist
-**/bin
-**/obj
-TestResults
-*.trx
+
+# .NET 构建产物
+opencodex_proxy/**/bin/
+opencodex_proxy/**/obj/
+opencodex_proxy/tests/
+
+# 测试相关
+**/TestResults/
+**/*.trx
+
+# 压缩包
 *.tar
 *.tar.gz
 *.zip
+
+# 文档
+AGENTS.md
+*.md
+docs/
+
+# 其他
+.playwright-cli
+
