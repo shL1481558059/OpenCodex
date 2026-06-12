@@ -63,21 +63,21 @@
             />
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="240" align="center">
+        <el-table-column label="操作" width="180" align="center">
           <template #default="{ row, $index }">
-            <div class="inline-actions channel-table-actions">
-              <el-button size="small" :icon="Edit" @click="openChannelDrawer(row, $index)">
+            <div class="channel-action-buttons">
+              <el-button size="small" :icon="Edit" class="action-btn" @click="openChannelDrawer(row, $index)">
                 编辑
               </el-button>
               <el-popconfirm title="删除这个渠道？" @confirm="deleteChannel($index)">
                 <template #reference>
-                  <el-button size="small" type="danger" :icon="Delete">
+                  <el-button size="small" type="danger" :icon="Delete" class="action-btn">
                     删除
                   </el-button>
                 </template>
               </el-popconfirm>
               <el-dropdown trigger="click">
-                <el-button size="small" :icon="MoreFilled">
+                <el-button size="small" :icon="MoreFilled" class="action-btn">
                   更多
                 </el-button>
                 <template #dropdown>
