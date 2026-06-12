@@ -631,3 +631,18 @@ body {
     flex-direction: column;
   }
 }
+
+/* 渠道列表操作按钮样式 */
+.channel-action-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: nowrap;
+  min-width: 220px;
+}
+
+.channel-action-buttons .action-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
