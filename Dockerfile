@@ -18,7 +18,7 @@ COPY opencodex_proxy/src/Libraries/OpenCodex.Core/OpenCodex.Core.csproj ./src/Li
 COPY opencodex_proxy/src/Libraries/OpenCodex.Data/OpenCodex.Data.csproj ./src/Libraries/OpenCodex.Data/
 COPY opencodex_proxy/src/Libraries/OpenCodex.CoreBase/OpenCodex.CoreBase.csproj ./src/Libraries/OpenCodex.CoreBase/
 COPY opencodex_proxy/src/Presentation/OpenCodex.Api/OpenCodex.Api.csproj ./src/Presentation/OpenCodex.Api/
-RUN dotnet restore ./src/Presentation/OpenCodex.Api/OpenCodex.Api.csproj
+RUN dotnet restore ./src/Presentation/OpenCodex.Api/OpenCodex.Api.csproj --runtime linux-x64
 
 COPY opencodex_proxy/src ./src
 RUN dotnet publish ./src/Presentation/OpenCodex.Api/OpenCodex.Api.csproj \
