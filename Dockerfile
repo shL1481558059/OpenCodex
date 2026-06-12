@@ -23,6 +23,8 @@ RUN dotnet restore ./src/Presentation/OpenCodex.Api/OpenCodex.Api.csproj
 COPY opencodex_proxy/src ./src
 RUN dotnet publish ./src/Presentation/OpenCodex.Api/OpenCodex.Api.csproj \
     --configuration Release \
+    --runtime linux-x64 \
+    --self-contained false \
     --no-restore \
     --output /app/publish
 
