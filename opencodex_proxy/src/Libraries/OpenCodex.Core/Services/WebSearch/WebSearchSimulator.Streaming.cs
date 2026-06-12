@@ -54,28 +54,18 @@ public sealed partial class WebSearchSimulator
                     InitialSequenceNumber: streamState?.SequenceNumber ?? 0,
                     InitialOutputIndex: streamState?.NextOutputIndex ?? 0,
                     cancellationToken);
-            // 第一轮迭代: 在缓存全部事件前, 立刻 yield response.created + response.in_progress
-            // (这些事件不含业务内容, 先发给客户端让它可以开始渲染)
-            var bufferedCount = 0;
             await foreach (var line in convertedLines.WithCancellation(cancellationToken))
             {
-                events.Add(line);
-                if (streamState is null && bufferedCount < 2)
+                // 边接收边输出（但跳过completed事件，因为可能还有web_search要执行）
+                if (!line.StartsWith("event: response.completed\n", StringComparison.Ordinal))
                 {
-                    bufferedCount++;
-                    Console.Error.WriteLine($"[OCXP-DEBUG] WebSearchSimulator: yielding early event #{bufferedCount} (before full buffer)");
                     yield return line;
                 }
+                events.Add(line);
             }
 
             if (converted.UpstreamResponse is null)
             {
-                // 异常情况: 已经 yield 了开头的事件, 这里补上剩余的
-                for (var i = bufferedCount; i < events.Count; i++)
-                {
-                    yield return events[i];
-                }
-
                 yield break;
             }
 
@@ -108,12 +98,6 @@ public sealed partial class WebSearchSimulator
             completedRequest = requestPayload;
             streamState ??= WebSearchStreamEventState.FromEvents(eventPrefix);
             streamState.ObserveEvents(eventPrefix);
-
-            // 跳过已 yield 的前 bufferedCount 个事件, 避免重复发送
-            for (var i = bufferedCount; i < eventPrefix.Count; i++)
-            {
-                yield return eventPrefix[i];
-            }
 
             if (webCalls.Count == 0 || otherCalls.Count > 0)
             {
@@ -208,16 +192,16 @@ public sealed partial class WebSearchSimulator
                     cancellationToken);
             await foreach (var line in convertedLines.WithCancellation(cancellationToken))
             {
+                // 边接收边输出（但跳过completed事件）
+                if (!line.StartsWith("event: response.completed\n", StringComparison.Ordinal))
+                {
+                    yield return line;
+                }
                 events.Add(line);
             }
 
             if (converted.UpstreamResponse is null)
             {
-                foreach (var line in events)
-                {
-                    yield return line;
-                }
-
                 yield break;
             }
 
@@ -242,11 +226,6 @@ public sealed partial class WebSearchSimulator
             completedConverted = converted;
             completedRequest = requestPayload;
             streamState.ObserveEvents(eventPrefix);
-
-            foreach (var line in eventPrefix)
-            {
-                yield return line;
-            }
 
             break;
         }
