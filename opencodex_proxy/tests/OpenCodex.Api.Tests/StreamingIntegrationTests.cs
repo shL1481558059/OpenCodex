@@ -101,36 +101,23 @@ public sealed class StreamingIntegrationTests
     private static List<Dictionary<string, object?>> ParseEvents(List<string> sseLines)
     {
         var events = new List<Dictionary<string, object?>>();
-        string? currentEvent = null;
-        var currentData = new StringBuilder();
-
         foreach (var line in sseLines)
         {
-            if (line.StartsWith("event: ", StringComparison.Ordinal))
+            if (line.Contains("data:", StringComparison.Ordinal))
             {
-                currentEvent = line["event: ".Length..].Trim();
-            }
-            else if (line.StartsWith("data: ", StringComparison.Ordinal))
-            {
-                currentData.Append(line["data: ".Length..]);
-            }
-            else if (string.IsNullOrWhiteSpace(line) && currentData.Length > 0)
-            {
-                var json = currentData.ToString();
-                using var doc = JsonDocument.Parse(json);
-                var dict = ElementToDict(doc.RootElement);
-                if (dict is not null)
-                {
-                    dict["_event_type"] = currentEvent;
-                    events.Add(dict);
-                }
-
-                currentEvent = null;
-                currentData.Clear();
+                events.Add(ParseJsonEvent(line));
             }
         }
 
         return events;
+    }
+
+    private static Dictionary<string, object?> ParseJsonEvent(string sseLine)
+    {
+        var idx = sseLine.IndexOf("data: ", StringComparison.Ordinal);
+        var json = sseLine[(idx + "data: ".Length)..].TrimEnd('\n');
+        using var doc = JsonDocument.Parse(json);
+        return ElementToDict(doc.RootElement)!;
     }
 
     private static Dictionary<string, object?>? ElementToDict(JsonElement e)
@@ -160,7 +147,7 @@ public sealed class StreamingIntegrationTests
     private static Dictionary<string, object?>? FindEvent(List<Dictionary<string, object?>> events, string eventType)
     {
         return events.FirstOrDefault(e =>
-            e.TryGetValue("_event_type", out var t) && eventType.Equals(t?.ToString()));
+            e.TryGetValue("type", out var t) && eventType.Equals(t?.ToString()));
     }
 
     private static async Task<(List<string> events, TimeSpan ttft, List<long> timestamps)> CollectWithTimestamps(
@@ -216,9 +203,9 @@ public sealed class StreamingIntegrationTests
         var parsed = ParseEvents(events);
 
         // Assert - 事件序列
-        Assert.Equal("response.created", FindEvent(parsed, "response.created")?["_event_type"]);
-        Assert.Equal("response.output_item.added", FindEvent(parsed, "response.output_item.added")?["_event_type"]);
-        Assert.Equal("response.content_part.added", FindEvent(parsed, "response.content_part.added")?["_event_type"]);
+        Assert.Equal("response.created", FindEvent(parsed, "response.created")?["type"]);
+        Assert.Equal("response.output_item.added", FindEvent(parsed, "response.output_item.added")?["type"]);
+        Assert.Equal("response.content_part.added", FindEvent(parsed, "response.content_part.added")?["type"]);
         Assert.NotNull(FindEvent(parsed, "response.text.delta"));
         Assert.NotNull(FindEvent(parsed, "response.text.done"));
         Assert.NotNull(FindEvent(parsed, "response.output_item.done"));
@@ -238,7 +225,7 @@ public sealed class StreamingIntegrationTests
 
         // Assert - 内容完整性
         var textDeltas = parsed
-            .Where(e => "response.text.delta".Equals(e["_event_type"]))
+            .Where(e => "response.text.delta".Equals(e["type"]))
             .Select(e => ((Dictionary<string, object?>)e["delta"]!)["text"]?.ToString() ?? "")
             .ToList();
         Assert.Equal("Hello world!", string.Join("", textDeltas));
@@ -274,7 +261,7 @@ public sealed class StreamingIntegrationTests
 
         // Assert - 内容完整性
         var textDeltas = parsed
-            .Where(e => "response.text.delta".Equals(e["_event_type"]))
+            .Where(e => "response.text.delta".Equals(e["type"]))
             .Select(e => ((Dictionary<string, object?>)e["delta"]!)["text"]?.ToString() ?? "")
             .ToList();
         Assert.Equal("Hello Claude", string.Join("", textDeltas));
@@ -323,7 +310,7 @@ public sealed class StreamingIntegrationTests
 
         // Assert - 内容正确识别
         var textDeltas = parsed
-            .Where(e => "response.text.delta".Equals(e["_event_type"]))
+            .Where(e => "response.text.delta".Equals(e["type"]))
             .Select(e => ((Dictionary<string, object?>)e["delta"]!)["text"]?.ToString() ?? "")
             .ToList();
         Assert.Contains("猫", string.Join("", textDeltas));
@@ -561,7 +548,7 @@ public sealed class StreamingIntegrationTests
 
         // Assert - 每种事件类型只出现预期次数
         var eventCounts = parsed
-            .GroupBy(e => e["_event_type"]?.ToString() ?? "")
+            .GroupBy(e => e["type"]?.ToString() ?? "")
             .ToDictionary(g => g.Key, g => g.Count());
 
         Assert.Equal(1, eventCounts["response.created"]);
@@ -573,7 +560,7 @@ public sealed class StreamingIntegrationTests
         Assert.Equal(1, eventCounts["response.done"]);
 
         // Assert - 事件顺序正确
-        var eventTypes = parsed.Select(e => e["_event_type"]?.ToString()).ToList();
+        var eventTypes = parsed.Select(e => e["type"]?.ToString()).ToList();
         Assert.Equal("response.created", eventTypes[0]);
         Assert.Equal("response.done", eventTypes[^1]);
         Assert.True(eventTypes.IndexOf("response.output_item.added") < eventTypes.IndexOf("response.text.delta"));
