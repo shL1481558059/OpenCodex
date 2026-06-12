@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using System.Runtime.CompilerServices;
+using OpenCodex.Core.Errors;
 using OpenCodex.Core.Protocols;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
@@ -35,9 +36,11 @@ public sealed class ProxyStreamService : IProxyStreamService
         StreamWriteMetrics? streamWriteMetrics = null;
         var ttftMs = (int?)null;
         var error = (string?)null;
+        object? errorResponse = null;
         Dictionary<string, object?>? webSearchDetails = null;
         Dictionary<string, object?>? upstreamResponse = null;
         Dictionary<string, object?>? responsePayload = null;
+        var statusCode = ProxyHttpStatus.Ok;
         var upstreamRequest = context.UpstreamRequest;
         var isConversion = context.EntryProtocol != context.ChannelType;
         Console.Error.WriteLine($"[OCXP-DEBUG] [{context.RequestId}] StreamAsync start: entry={context.EntryProtocol}, channel={context.ChannelType}, isConversion={isConversion}, model={VisibleModel(context)}, upstream={context.UpstreamModel}");
@@ -143,6 +146,12 @@ public sealed class ProxyStreamService : IProxyStreamService
         catch (Exception exception)
         {
             error = exception.Message;
+            if (exception is ProxyException proxyException)
+            {
+                statusCode = proxyException.StatusCode;
+                errorResponse = proxyException.ToResponse();
+                upstreamResponse = UpstreamErrorBody(proxyException) ?? upstreamResponse;
+            }
             throw;
         }
         finally
@@ -156,14 +165,14 @@ public sealed class ProxyStreamService : IProxyStreamService
                     upstreamRequest,
                     upstreamResponse,
                     responsePayload,
-                    ErrorResponse: null,
+                    errorResponse,
                     context.RequestModel,
                     context.UpstreamModel,
                     context.ChannelId,
                     context.ChannelType,
                     IsStream: true,
                     TtftMs: ttftMs,
-                    StatusCode: 200,
+                    StatusCode: statusCode,
                     DurationMs: ElapsedMilliseconds(context.StartedTimestamp),
                     error,
                     webSearchDetails,
@@ -185,6 +194,20 @@ public sealed class ProxyStreamService : IProxyStreamService
             Stopwatch.GetElapsedTime(started).TotalMilliseconds,
             MidpointRounding.AwayFromZero);
     }
+
+    private static Dictionary<string, object?>? UpstreamErrorBody(ProxyException exception)
+    {
+        if (exception is UpstreamException { Body: not null } upstream)
+        {
+            return new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["error"] = upstream.Body
+            };
+        }
+
+        return null;
+    }
+
     internal sealed class PassThroughCapture
     {
         public Dictionary<string, object?>? UpstreamResponse { get; set; }

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using OpenCodex.Core.Errors;
 using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Abstractions;
@@ -144,6 +145,67 @@ public sealed class ProxyStreamServiceTests
         Assert.Equal(2, writer.Lines.Count);
         Assert.Contains("response.created", writer.Lines[0], StringComparison.Ordinal);
         Assert.Contains("response.completed", writer.Lines[1], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task StreamAsync_UpstreamFailure_LogsRealStatusCodeAndUpstreamBody()
+    {
+        var upstream = new FailingUpstreamClient(new UpstreamException(
+            "upstream returned HTTP 429",
+            ProxyHttpStatus.TooManyRequests,
+            body: new Dictionary<string, object?>
+            {
+                ["error"] = new Dictionary<string, object?>
+                {
+                    ["message"] = "rate limit exceeded",
+                    ["type"] = "rate_limit"
+                }
+            },
+            channelId: "responses"));
+        var logs = new StubProxyLogService();
+        var service = new ProxyStreamService(upstream, logs, new StubWebSearchSimulator(false, []));
+        var writer = new CapturingProxyStreamWriter();
+        var channel = new Dictionary<string, object?>
+        {
+            ["id"] = "responses",
+            ["type"] = ProtocolConverter.Responses
+        };
+        var route = new ProxyRouteDto(
+            channel,
+            "public-model",
+            "upstream-model",
+            supportsImage: false,
+            matchedModelMapping: true);
+        var context = new ProxyStreamContext(
+            startedTimestamp: Stopwatch.GetTimestamp(),
+            requestId: "req_stream_fail",
+            ownerUsername: "admin",
+            apiKeyId: 1,
+            originalPayload: new Dictionary<string, object?>(),
+            payload: new Dictionary<string, object?>(),
+            upstreamRequest: new Dictionary<string, object?>(),
+            entryProtocol: ProtocolConverter.Responses,
+            route: route,
+            channelType: ProtocolConverter.Responses,
+            channelId: "responses",
+            ownerRole: "superadmin",
+            upstreamModel: "upstream-model",
+            requestModel: "public-model",
+            defaultTimeout: 120,
+            requestMetadata: new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
+            streamWriter: writer,
+            cancellationToken: CancellationToken.None);
+
+        var exception = await Assert.ThrowsAsync<UpstreamException>(() => service.StreamAsync(context));
+
+        Assert.Equal(429, exception.StatusCode);
+        Assert.NotNull(logs.LastContext);
+        Assert.Equal(429, logs.LastContext!.StatusCode);
+        Assert.Equal("upstream returned HTTP 429", logs.LastContext.Error);
+        Assert.NotNull(logs.LastContext.UpstreamResponse);
+        var upstreamError = Assert.IsType<Dictionary<string, object?>>(logs.LastContext.UpstreamResponse!["error"]);
+        var upstreamDetail = Assert.IsType<Dictionary<string, object?>>(upstreamError["error"]);
+        Assert.Equal("rate limit exceeded", upstreamDetail["message"]);
     }
 
     [Fact]
@@ -402,6 +464,38 @@ public sealed class ProxyStreamServiceTests
         {
             await Task.Yield();
             throw new NotSupportedException("should not use direct upstream stream in simulator branch");
+#pragma warning disable CS0162
+            yield break;
+#pragma warning restore CS0162
+        }
+    }
+
+    private sealed class FailingUpstreamClient : IUpstreamClient
+    {
+        private readonly Exception _exception;
+
+        public FailingUpstreamClient(Exception exception)
+        {
+            _exception = exception;
+        }
+
+        public Task<Dictionary<string, object?>> PostJsonAsync(
+            IReadOnlyDictionary<string, object?> channel,
+            IReadOnlyDictionary<string, object?> payload,
+            int defaultTimeout,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException("non-stream path is not used in this test");
+        }
+
+        public async IAsyncEnumerable<string> StreamJsonAsync(
+            IReadOnlyDictionary<string, object?> channel,
+            IReadOnlyDictionary<string, object?> payload,
+            int defaultTimeout,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await Task.Yield();
+            throw _exception;
 #pragma warning disable CS0162
             yield break;
 #pragma warning restore CS0162
