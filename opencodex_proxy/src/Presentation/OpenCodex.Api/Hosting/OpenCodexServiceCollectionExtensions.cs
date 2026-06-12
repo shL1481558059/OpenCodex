@@ -44,9 +44,31 @@ public static class OpenCodexServiceCollectionExtensions
 
     private static IServiceCollection AddOpenCodexServices(this IServiceCollection services)
     {
-        services.AddHttpClient<IUpstreamClient, HttpUpstreamClient>();
-        services.AddHttpClient<IUpstreamModelClient, HttpUpstreamClient>();
-        services.AddHttpClient<IWebSearchClient, TavilyWebSearchClient>();
+        services.AddHttpClient<IUpstreamClient, HttpUpstreamClient>()
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                PooledConnectionLifetime = TimeSpan.FromMinutes(15),
+                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(5),
+                MaxConnectionsPerServer = 100,
+                EnableMultipleHttp2Connections = true
+            });
+        
+        services.AddHttpClient<IUpstreamModelClient, HttpUpstreamClient>()
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                PooledConnectionLifetime = TimeSpan.FromMinutes(15),
+                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(5),
+                MaxConnectionsPerServer = 100,
+                EnableMultipleHttp2Connections = true
+            });
+        
+        services.AddHttpClient<IWebSearchClient, TavilyWebSearchClient>()
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
+                MaxConnectionsPerServer = 50
+            });
         services.AddSingleton<IOpenCodexRuntimeSettingsProvider, OpenCodexRuntimeSettingsProvider>();
         services.AddScoped<IRequestBodyReader, RequestBodyReader>();
         services.AddScoped<IWorkContext, WebWorkContext>();
