@@ -63,7 +63,7 @@
             />
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="180" align="center">
+        <el-table-column label="操作" width="240" min-width="240" align="center">
           <template #default="{ row, $index }">
             <div class="channel-action-buttons">
               <el-button size="small" :icon="Edit" class="action-btn" @click="openChannelDrawer(row, $index)">
