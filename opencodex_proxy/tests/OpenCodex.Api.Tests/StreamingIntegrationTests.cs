@@ -1,0 +1,585 @@
+using System.Diagnostics;
+using System.Text;
+using System.Text.Json;
+using OpenCodex.Core.Protocols;
+using OpenCodex.Core.Services.WebSearch;
+using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Domain.WebSearch;
+using Xunit;
+
+namespace OpenCodex.Api.Tests;
+
+/// <summary>
+/// 端到端集成测试：验证协议转换、WebSearch、ApplyPatch、Vision的完整流程
+/// 重点关注流式输出的正确性和性能
+/// </summary>
+public sealed class StreamingIntegrationTests
+{
+    private static readonly JsonSerializerOptions JsonOpts = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
+    };
+
+    #region Test Helpers
+
+    private static async IAsyncEnumerable<string> SseLines(params string[] sseBlocks)
+    {
+        foreach (var block in sseBlocks)
+        {
+            foreach (var line in block.Split('\n'))
+            {
+                yield return line;
+            }
+        }
+
+        await Task.CompletedTask;
+    }
+
+    private static string SseBlock(string data, string? eventName = null)
+    {
+        var sb = new StringBuilder();
+        if (eventName is not null)
+        {
+            sb.Append("event: ").Append(eventName).Append('\n');
+        }
+
+        sb.Append("data: ").Append(data).Append('\n');
+        sb.Append('\n');
+        return sb.ToString();
+    }
+
+    private static string ChatChunk(
+        string? content = null,
+        object? toolCalls = null,
+        string? finishReason = null,
+        string id = "chatcmpl-1",
+        string model = "gpt-5")
+    {
+        var delta = new Dictionary<string, object?>();
+        if (content is not null) delta["content"] = content;
+        if (toolCalls is not null) delta["tool_calls"] = toolCalls;
+
+        var choice = new Dictionary<string, object?>
+        {
+            ["index"] = 0,
+            ["delta"] = delta,
+            ["finish_reason"] = finishReason
+        };
+
+        var payload = new Dictionary<string, object?>
+        {
+            ["id"] = id,
+            ["object"] = "chat.completion.chunk",
+            ["created"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            ["model"] = model,
+            ["choices"] = new List<object?> { choice }
+        };
+
+        return JsonSerializer.Serialize(payload, JsonOpts);
+    }
+
+    private static string MessagesBlock(string type, object content, string? eventName = null)
+    {
+        var data = JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["type"] = type,
+            [GetContentKey(type)] = content
+        }, JsonOpts);
+
+        return SseBlock(data, eventName ?? type);
+    }
+
+    private static string GetContentKey(string type) => type switch
+    {
+        "message_start" => "message",
+        "content_block_start" => "content_block",
+        "content_block_delta" => "delta",
+        "message_delta" => "delta",
+        _ => "data"
+    };
+
+    private static List<Dictionary<string, object?>> ParseEvents(List<string> sseLines)
+    {
+        var events = new List<Dictionary<string, object?>>();
+        string? currentEvent = null;
+        var currentData = new StringBuilder();
+
+        foreach (var line in sseLines)
+        {
+            if (line.StartsWith("event: ", StringComparison.Ordinal))
+            {
+                currentEvent = line["event: ".Length..].Trim();
+            }
+            else if (line.StartsWith("data: ", StringComparison.Ordinal))
+            {
+                currentData.Append(line["data: ".Length..]);
+            }
+            else if (string.IsNullOrWhiteSpace(line) && currentData.Length > 0)
+            {
+                var json = currentData.ToString();
+                using var doc = JsonDocument.Parse(json);
+                var dict = ElementToDict(doc.RootElement);
+                if (dict is not null)
+                {
+                    dict["_event_type"] = currentEvent;
+                    events.Add(dict);
+                }
+
+                currentEvent = null;
+                currentData.Clear();
+            }
+        }
+
+        return events;
+    }
+
+    private static Dictionary<string, object?>? ElementToDict(JsonElement e)
+    {
+        if (e.ValueKind != JsonValueKind.Object) return null;
+        var dict = new Dictionary<string, object?>();
+        foreach (var prop in e.EnumerateObject())
+        {
+            dict[prop.Name] = ElementToObject(prop.Value);
+        }
+
+        return dict;
+    }
+
+    private static object? ElementToObject(JsonElement e) => e.ValueKind switch
+    {
+        JsonValueKind.Object => ElementToDict(e),
+        JsonValueKind.Array => e.EnumerateArray().Select(ElementToObject).ToList(),
+        JsonValueKind.String => e.GetString(),
+        JsonValueKind.Number => e.TryGetInt64(out var l) ? l : e.GetDouble(),
+        JsonValueKind.True => true,
+        JsonValueKind.False => false,
+        JsonValueKind.Null => null,
+        _ => null
+    };
+
+    private static Dictionary<string, object?>? FindEvent(List<Dictionary<string, object?>> events, string eventType)
+    {
+        return events.FirstOrDefault(e =>
+            e.TryGetValue("_event_type", out var t) && eventType.Equals(t?.ToString()));
+    }
+
+    private static async Task<(List<string> events, TimeSpan ttft, List<long> timestamps)> CollectWithTimestamps(
+        IAsyncEnumerable<string> enumerable)
+    {
+        var events = new List<string>();
+        var timestamps = new List<long>();
+        var startTime = Stopwatch.GetTimestamp();
+        var firstContentTime = (long?)null;
+
+        await foreach (var line in enumerable)
+        {
+            var now = Stopwatch.GetTimestamp();
+            timestamps.Add(now);
+            events.Add(line);
+
+            // 记录第一个内容事件的时间（非metadata事件）
+            if (firstContentTime is null &&
+                (line.Contains("response.text.delta") || line.Contains("response.function_call_arguments.delta")))
+            {
+                firstContentTime = now;
+            }
+        }
+
+        var ttft = firstContentTime.HasValue
+            ? Stopwatch.GetElapsedTime(startTime, firstContentTime.Value)
+            : TimeSpan.Zero;
+
+        return (events, ttft, timestamps);
+    }
+
+    #endregion
+
+    #region Chat → Responses 基础转换
+
+    [Fact]
+    public async Task ChatToResponses_SimpleText_StreamsImmediatelyWithCorrectSequence()
+    {
+        // Arrange
+        var lines = SseLines(
+            SseBlock(ChatChunk(content: "Hello")),
+            SseBlock(ChatChunk(content: " world")),
+            SseBlock(ChatChunk(content: "!")),
+            SseBlock(ChatChunk(finishReason: "stop")),
+            SseBlock("[DONE]"));
+
+        var result = new ConvertedStreamResult();
+
+        // Act
+        var (events, ttft, timestamps) = await CollectWithTimestamps(
+            SseStreamConverter.ChatToResponsesEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+
+        // Assert - 事件序列
+        Assert.Equal("response.created", FindEvent(parsed, "response.created")?["_event_type"]);
+        Assert.Equal("response.output_item.added", FindEvent(parsed, "response.output_item.added")?["_event_type"]);
+        Assert.Equal("response.content_part.added", FindEvent(parsed, "response.content_part.added")?["_event_type"]);
+        Assert.NotNull(FindEvent(parsed, "response.text.delta"));
+        Assert.NotNull(FindEvent(parsed, "response.text.done"));
+        Assert.NotNull(FindEvent(parsed, "response.output_item.done"));
+        Assert.NotNull(FindEvent(parsed, "response.done"));
+
+        // Assert - 流式特性：TTFT应该很短（< 100ms）
+        Assert.True(ttft < TimeSpan.FromMilliseconds(100),
+            $"TTFT too high: {ttft.TotalMilliseconds}ms");
+
+        // Assert - 事件之间的间隔应该很小（不是批量输出）
+        for (int i = 1; i < Math.Min(5, timestamps.Count); i++)
+        {
+            var interval = Stopwatch.GetElapsedTime(timestamps[i - 1], timestamps[i]);
+            Assert.True(interval < TimeSpan.FromMilliseconds(50),
+                $"Event #{i} interval too high: {interval.TotalMilliseconds}ms");
+        }
+
+        // Assert - 内容完整性
+        var textDeltas = parsed
+            .Where(e => "response.text.delta".Equals(e["_event_type"]))
+            .Select(e => ((Dictionary<string, object?>)e["delta"]!)["text"]?.ToString() ?? "")
+            .ToList();
+        Assert.Equal("Hello world!", string.Join("", textDeltas));
+    }
+
+    #endregion
+
+    #region Messages → Responses 基础转换
+
+    [Fact]
+    public async Task MessagesToResponses_SimpleText_StreamsCorrectly()
+    {
+        // Arrange
+        var lines = SseLines(
+            MessagesBlock("message_start", new { id = "msg_1", model = "claude-3", usage = new { input_tokens = 5, output_tokens = 0 } }),
+            MessagesBlock("content_block_start", new { type = "text", text = "" }, "content_block_start"),
+            MessagesBlock("content_block_delta", new { type = "text_delta", text = "Hello" }, "content_block_delta"),
+            MessagesBlock("content_block_delta", new { type = "text_delta", text = " Claude" }, "content_block_delta"),
+            MessagesBlock("content_block_stop", new { }, "content_block_stop"),
+            MessagesBlock("message_delta", new { stop_reason = "end_turn", usage = new { output_tokens = 10 } }, "message_delta"),
+            MessagesBlock("message_stop", new { }, "message_stop"));
+
+        var result = new ConvertedStreamResult();
+
+        // Act
+        var (events, ttft, _) = await CollectWithTimestamps(
+            SseStreamConverter.MessagesToResponsesEvents(lines, "claude-3", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+
+        // Assert - 流式特性
+        Assert.True(ttft < TimeSpan.FromMilliseconds(100));
+
+        // Assert - 内容完整性
+        var textDeltas = parsed
+            .Where(e => "response.text.delta".Equals(e["_event_type"]))
+            .Select(e => ((Dictionary<string, object?>)e["delta"]!)["text"]?.ToString() ?? "")
+            .ToList();
+        Assert.Equal("Hello Claude", string.Join("", textDeltas));
+    }
+
+    #endregion
+
+    #region Vision 图像识别
+
+    [Fact]
+    public async Task MessagesToResponses_WithVision_PreservesImageContent()
+    {
+        // Arrange - 模拟带图像的消息
+        var lines = SseLines(
+            MessagesBlock("message_start", new
+            {
+                id = "msg_vision",
+                model = "claude-3-opus",
+                usage = new { input_tokens = 1500, output_tokens = 0 } // 图像会占用更多tokens
+            }),
+            MessagesBlock("content_block_start", new { type = "text", text = "" }, "content_block_start"),
+            MessagesBlock("content_block_delta", new { type = "text_delta", text = "我看到图片中有" }, "content_block_delta"),
+            MessagesBlock("content_block_delta", new { type = "text_delta", text = "一只猫" }, "content_block_delta"),
+            MessagesBlock("content_block_stop", new { }, "content_block_stop"),
+            MessagesBlock("message_delta", new { stop_reason = "end_turn", usage = new { output_tokens = 20 } }, "message_delta"),
+            MessagesBlock("message_stop", new { }, "message_stop"));
+
+        var result = new ConvertedStreamResult();
+
+        // Act
+        var events = new List<string>();
+        await foreach (var line in SseStreamConverter.MessagesToResponsesEvents(lines, "claude-3-opus", result, CancellationToken.None))
+        {
+            events.Add(line);
+        }
+
+        var parsed = ParseEvents(events);
+
+        // Assert - Vision相关的usage应该正确
+        var completed = FindEvent(parsed, "response.done");
+        Assert.NotNull(completed);
+        var response = completed!["response"] as Dictionary<string, object?>;
+        var usage = response!["usage"] as Dictionary<string, object?>;
+        Assert.NotNull(usage);
+        Assert.Equal(1500L, usage!["input_tokens"]);
+
+        // Assert - 内容正确识别
+        var textDeltas = parsed
+            .Where(e => "response.text.delta".Equals(e["_event_type"]))
+            .Select(e => ((Dictionary<string, object?>)e["delta"]!)["text"]?.ToString() ?? "")
+            .ToList();
+        Assert.Contains("猫", string.Join("", textDeltas));
+    }
+
+    #endregion
+
+    #region ApplyPatch 工具转换
+
+    [Fact]
+    public async Task ApplyPatch_UpdateFile_ConvertsToExecCommand()
+    {
+        // Arrange - 模拟apply_patch_update_file tool_use
+        var lines = SseLines(
+            MessagesBlock("message_start", new { id = "msg_patch", model = "claude-3", usage = new { input_tokens = 100, output_tokens = 0 } }),
+            MessagesBlock("content_block_start", new
+            {
+                type = "tool_use",
+                id = "toolu_patch_001",
+                name = "apply_patch_update_file",
+                input = new { }
+            }, "content_block_start"),
+            MessagesBlock("content_block_delta", new
+            {
+                type = "input_json_delta",
+                partial_json = "{\"path\":\"src/Example.cs\",\"hunks\":[{\"lines\":[{\"op\":\"context\",\"text\":\"public class Example\"},{\"op\":\"remove\",\"text\":\"    // TODO\"},{\"op\":\"add\",\"text\":\"    // DONE\"}]}]}"
+            }, "content_block_delta"),
+            MessagesBlock("content_block_stop", new { }, "content_block_stop"),
+            MessagesBlock("message_delta", new { stop_reason = "tool_use", usage = new { output_tokens = 50 } }, "message_delta"),
+            MessagesBlock("message_stop", new { }, "message_stop"));
+
+        var result = new ConvertedStreamResult();
+
+        // Act
+        var events = new List<string>();
+        await foreach (var line in SseStreamConverter.MessagesToResponsesEvents(lines, "claude-3", result, CancellationToken.None))
+        {
+            events.Add(line);
+        }
+
+        var parsed = ParseEvents(events);
+
+        // Assert - 转换成exec_command
+        var completed = FindEvent(parsed, "response.done");
+        Assert.NotNull(completed);
+        var response = completed!["response"] as Dictionary<string, object?>;
+        var output = response!["output"] as List<object?>;
+        Assert.NotNull(output);
+
+        var functionCall = output!
+            .OfType<Dictionary<string, object?>>()
+            .FirstOrDefault(fc => "function_call".Equals(fc["type"]));
+        Assert.NotNull(functionCall);
+        Assert.Equal("toolu_patch_001", functionCall!["call_id"]?.ToString());
+        Assert.Equal("exec_command", functionCall["name"]?.ToString());
+
+        // Assert - 命令格式正确
+        var arguments = JsonSerializer.Deserialize<Dictionary<string, string>>(
+            Assert.IsType<string>(functionCall["arguments"]));
+        Assert.NotNull(arguments);
+        var cmd = arguments!["cmd"];
+        Assert.Contains("apply_patch <<'OPENCODEX_PATCH'", cmd);
+        Assert.Contains("*** Begin Patch", cmd);
+        Assert.Contains("*** Update File: src/Example.cs", cmd);
+        Assert.Contains("@@", cmd);
+        Assert.Contains(" public class Example", cmd);
+        Assert.Contains("-    // TODO", cmd);
+        Assert.Contains("+    // DONE", cmd);
+        Assert.Contains("*** End Patch", cmd);
+        Assert.Contains("OPENCODEX_PATCH", cmd);
+    }
+
+    [Fact]
+    public async Task ApplyPatch_AddFile_ConvertsCorrectly()
+    {
+        // Arrange
+        var lines = SseLines(
+            MessagesBlock("message_start", new { id = "msg_add", model = "claude-3", usage = new { input_tokens = 50, output_tokens = 0 } }),
+            MessagesBlock("content_block_start", new
+            {
+                type = "tool_use",
+                id = "toolu_add_001",
+                name = "apply_patch_add_file",
+                input = new { }
+            }, "content_block_start"),
+            MessagesBlock("content_block_delta", new
+            {
+                type = "input_json_delta",
+                partial_json = "{\"path\":\"new_file.txt\",\"content\":\"Hello\\nWorld\"}"
+            }, "content_block_delta"),
+            MessagesBlock("content_block_stop", new { }, "content_block_stop"),
+            MessagesBlock("message_delta", new { stop_reason = "tool_use", usage = new { output_tokens = 30 } }, "message_delta"),
+            MessagesBlock("message_stop", new { }, "message_stop"));
+
+        var result = new ConvertedStreamResult();
+
+        // Act
+        var events = new List<string>();
+        await foreach (var line in SseStreamConverter.MessagesToResponsesEvents(lines, "claude-3", result, CancellationToken.None))
+        {
+            events.Add(line);
+        }
+
+        var parsed = ParseEvents(events);
+        var completed = FindEvent(parsed, "response.done");
+        var response = (completed!["response"] as Dictionary<string, object?>)!;
+        var output = (response["output"] as List<object?>)!;
+        var functionCall = output.OfType<Dictionary<string, object?>>()
+            .First(fc => "function_call".Equals(fc["type"]));
+        var arguments = JsonSerializer.Deserialize<Dictionary<string, string>>(
+            Assert.IsType<string>(functionCall["arguments"]));
+
+        // Assert
+        var cmd = arguments!["cmd"];
+        Assert.Contains("*** Add File: new_file.txt", cmd);
+        Assert.Contains("+Hello", cmd);
+        Assert.Contains("+World", cmd);
+    }
+
+    [Fact]
+    public async Task ApplyPatch_Batch_ConvertsMultipleOperations()
+    {
+        // Arrange
+        var lines = SseLines(
+            MessagesBlock("message_start", new { id = "msg_batch", model = "claude-3", usage = new { input_tokens = 100, output_tokens = 0 } }),
+            MessagesBlock("content_block_start", new
+            {
+                type = "tool_use",
+                id = "toolu_batch_001",
+                name = "apply_patch_batch",
+                input = new { }
+            }, "content_block_start"),
+            MessagesBlock("content_block_delta", new
+            {
+                type = "input_json_delta",
+                partial_json = "{\"operations\":[{\"type\":\"add_file\",\"path\":\"a.txt\",\"content\":\"A\"},{\"type\":\"delete_file\",\"path\":\"b.txt\"}]}"
+            }, "content_block_delta"),
+            MessagesBlock("content_block_stop", new { }, "content_block_stop"),
+            MessagesBlock("message_delta", new { stop_reason = "tool_use", usage = new { output_tokens = 40 } }, "message_delta"),
+            MessagesBlock("message_stop", new { }, "message_stop"));
+
+        var result = new ConvertedStreamResult();
+
+        // Act
+        var events = new List<string>();
+        await foreach (var line in SseStreamConverter.MessagesToResponsesEvents(lines, "claude-3", result, CancellationToken.None))
+        {
+            events.Add(line);
+        }
+
+        var parsed = ParseEvents(events);
+        var completed = FindEvent(parsed, "response.done");
+        var response = (completed!["response"] as Dictionary<string, object?>)!;
+        var output = (response["output"] as List<object?>)!;
+        var functionCall = output.OfType<Dictionary<string, object?>>()
+            .First(fc => "function_call".Equals(fc["type"]));
+        var arguments = JsonSerializer.Deserialize<Dictionary<string, string>>(
+            Assert.IsType<string>(functionCall["arguments"]));
+
+        // Assert - 包含多个操作
+        var cmd = arguments!["cmd"];
+        Assert.Contains("*** Add File: a.txt", cmd);
+        Assert.Contains("+A", cmd);
+        Assert.Contains("*** Delete File: b.txt", cmd);
+    }
+
+    #endregion
+
+    #region 流式性能验证
+
+    [Fact]
+    public async Task StreamingPerformance_NoBuffering_EventsYieldedImmediately()
+    {
+        // Arrange - 创建带延迟的异步流，模拟网络延迟
+        async IAsyncEnumerable<string> DelayedLines()
+        {
+            yield return SseBlock(ChatChunk(content: "First"));
+            await Task.Delay(10); // 模拟网络延迟
+            yield return SseBlock(ChatChunk(content: " Second"));
+            await Task.Delay(10);
+            yield return SseBlock(ChatChunk(content: " Third"));
+            await Task.Delay(10);
+            yield return SseBlock(ChatChunk(finishReason: "stop"));
+            yield return SseBlock("[DONE]");
+        }
+
+        var result = new ConvertedStreamResult();
+
+        // Act
+        var receivedTimes = new List<long>();
+        var startTime = Stopwatch.GetTimestamp();
+
+        await foreach (var line in SseStreamConverter.ChatToResponsesEvents(
+                           DelayedLines(), "gpt-5", result, CancellationToken.None))
+        {
+            receivedTimes.Add(Stopwatch.GetTimestamp());
+        }
+
+        // Assert - 事件应该逐个到达，不是批量
+        // 第一个内容事件应该在30ms内到达（不等待全部完成）
+        var firstContentIndex = receivedTimes.Take(10)
+            .Select((t, i) => (t, i))
+            .FirstOrDefault(x => Stopwatch.GetElapsedTime(startTime, x.t).TotalMilliseconds > 0).i;
+
+        var firstContentTime = Stopwatch.GetElapsedTime(startTime, receivedTimes[firstContentIndex]);
+        Assert.True(firstContentTime < TimeSpan.FromMilliseconds(30),
+            $"First content event took {firstContentTime.TotalMilliseconds}ms, expected < 30ms");
+    }
+
+    #endregion
+
+    #region 事件完整性验证
+
+    [Fact]
+    public async Task EventCompleteness_NoMissingOrDuplicateEvents()
+    {
+        // Arrange
+        var lines = SseLines(
+            SseBlock(ChatChunk(content: "A")),
+            SseBlock(ChatChunk(content: "B")),
+            SseBlock(ChatChunk(content: "C")),
+            SseBlock(ChatChunk(finishReason: "stop")),
+            SseBlock("[DONE]"));
+
+        var result = new ConvertedStreamResult();
+
+        // Act
+        var events = new List<string>();
+        await foreach (var line in SseStreamConverter.ChatToResponsesEvents(lines, "gpt-5", result, CancellationToken.None))
+        {
+            events.Add(line);
+        }
+
+        var parsed = ParseEvents(events);
+
+        // Assert - 每种事件类型只出现预期次数
+        var eventCounts = parsed
+            .GroupBy(e => e["_event_type"]?.ToString() ?? "")
+            .ToDictionary(g => g.Key, g => g.Count());
+
+        Assert.Equal(1, eventCounts["response.created"]);
+        Assert.Equal(1, eventCounts["response.output_item.added"]);
+        Assert.Equal(1, eventCounts["response.content_part.added"]);
+        Assert.Equal(3, eventCounts["response.text.delta"]); // A, B, C
+        Assert.Equal(1, eventCounts["response.text.done"]);
+        Assert.Equal(1, eventCounts["response.output_item.done"]);
+        Assert.Equal(1, eventCounts["response.done"]);
+
+        // Assert - 事件顺序正确
+        var eventTypes = parsed.Select(e => e["_event_type"]?.ToString()).ToList();
+        Assert.Equal("response.created", eventTypes[0]);
+        Assert.Equal("response.done", eventTypes[^1]);
+        Assert.True(eventTypes.IndexOf("response.output_item.added") < eventTypes.IndexOf("response.text.delta"));
+        Assert.True(eventTypes.LastIndexOf("response.text.delta") < eventTypes.IndexOf("response.text.done"));
+    }
+
+    #endregion
+}
+
