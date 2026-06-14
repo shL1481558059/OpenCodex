@@ -117,6 +117,11 @@ public sealed partial class HttpUpstreamClient
 
     private static string JoinUrl(string baseUrl, string endpoint)
     {
+        if (baseUrl.EndsWith("/", StringComparison.Ordinal))
+        {
+            return $"{baseUrl}{endpoint.TrimStart('/')}";
+        }
+
         var trimmed = baseUrl.TrimEnd('/');
         return trimmed.EndsWith("/v1", StringComparison.Ordinal)
             ? $"{trimmed}{endpoint}"
