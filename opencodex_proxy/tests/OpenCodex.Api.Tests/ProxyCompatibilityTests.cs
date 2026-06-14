@@ -341,6 +341,35 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Theory]
+    [InlineData("https://example.test", "https://example.test/v1/chat/completions")]
+    [InlineData("https://example.test/v1", "https://example.test/v1/chat/completions")]
+    [InlineData("https://ark.cn-beijing.volces.com/api/coding/v3/", "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions")]
+    public async Task PostJsonAsync_TrailingSlashTreatsBaseUrlAsCompleteApiRoot(
+        string baseUrl,
+        string expectedUri)
+    {
+        var handler = new StaticJsonHandler("""{ "id": "ok" }""");
+        var upstream = new HttpUpstreamClient(new HttpClient(handler));
+
+        _ = await upstream.PostJsonAsync(
+            new Dictionary<string, object?>
+            {
+                ["type"] = "chat",
+                ["baseurl"] = baseUrl,
+                ["auth_mode"] = "none",
+                ["retry_count"] = 0
+            },
+            new Dictionary<string, object?>
+            {
+                ["model"] = "test-model"
+            },
+            30,
+            CancellationToken.None);
+
+        Assert.Equal(expectedUri, handler.RequestUri?.ToString());
+    }
+
+    [Theory]
     [InlineData("responses", "Codex Desktop/0.138.0-alpha.7 (Mac OS 13.7.8; arm64) unknown (Codex Desktop; 26.608.12217)")]
     [InlineData("chat", "Codex Desktop/0.138.0-alpha.7 (Mac OS 13.7.8; arm64) unknown (Codex Desktop; 26.608.12217)")]
     [InlineData("messages", "claude-cli/2.1.145 (external, claude-vscode)")]
