@@ -10,6 +10,11 @@ namespace OpenCodex.Core.Services.Proxy;
 
 public sealed class ProxyEndpointService : IProxyEndpointService
 {
+    private const string DefaultResponsesUserAgent =
+        "Codex Desktop/0.140.0-alpha.2 (Mac OS 13.7.8; arm64) unknown (Codex Desktop; 26.609.71450)";
+    private const string DefaultResponsesOriginator = "Codex Desktop";
+    private const string DefaultResponsesBetaFeatures = "terminal_resize_reflow,remote_compaction_v2";
+
     private static readonly string[] ResponsesPassthroughHeaders =
     [
         "User-Agent",
@@ -274,7 +279,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             ProxyHttpStatus.TooManyRequests);
     }
 
-    private static ProxyRouteDto ApplyResponsesPassthroughHeaders(
+    internal static ProxyRouteDto ApplyResponsesPassthroughHeaders(
         ProxyRouteDto route,
         string entryProtocol,
         string channelType,
@@ -286,15 +291,11 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         }
 
         var passthroughHeaders = ResponsesPassthroughHeaders
-            .Select(headerName => TryGetHeader(requestMetadata.Headers, headerName, out var value)
+            .Select(headerName => TryGetResponsesHeader(requestMetadata.Headers, headerName, out var value)
                 ? (Name: headerName, Value: value)
                 : (Name: (string?)null, Value: (string?)null))
             .Where(item => !string.IsNullOrEmpty(item.Name) && !string.IsNullOrEmpty(item.Value))
             .ToList();
-        if (passthroughHeaders.Count == 0)
-        {
-            return route;
-        }
 
         var channel = WebSearchPayload.DeepCopyObject(route.Channel);
         var headers = WebSearchPayload.TryAsObject(JsonDictionaryValue.Get(channel, "headers"), out var existingHeaders)
@@ -315,6 +316,78 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             route.UpstreamModel,
             route.SupportsImage,
             route.MatchedModelMapping);
+    }
+
+    private static bool TryGetResponsesHeader(
+        IReadOnlyDictionary<string, string> headers,
+        string headerName,
+        out string value)
+    {
+        if (TryGetHeader(headers, headerName, out var requestValue))
+        {
+            if (string.Equals(headerName, "User-Agent", StringComparison.OrdinalIgnoreCase)
+                && !requestValue.Contains("Codex Desktop", StringComparison.OrdinalIgnoreCase))
+            {
+                value = DefaultResponsesUserAgent;
+                return true;
+            }
+
+            value = requestValue;
+            return true;
+        }
+
+        value = DefaultResponsesHeaderValue(headerName);
+        return value.Length > 0;
+    }
+
+    private static string DefaultResponsesHeaderValue(string headerName)
+    {
+        if (string.Equals(headerName, "User-Agent", StringComparison.OrdinalIgnoreCase))
+        {
+            return DefaultResponsesUserAgent;
+        }
+
+        if (string.Equals(headerName, "originator", StringComparison.OrdinalIgnoreCase))
+        {
+            return DefaultResponsesOriginator;
+        }
+
+        if (string.Equals(headerName, "x-oai-attestation", StringComparison.OrdinalIgnoreCase))
+        {
+            return "test-attestation";
+        }
+
+        if (string.Equals(headerName, "x-codex-turn-metadata", StringComparison.OrdinalIgnoreCase))
+        {
+            return """{"session_id":"test-session","thread_id":"test-thread","thread_source":"user","turn_id":"test-turn","request_kind":"turn","window_id":"test-window"}""";
+        }
+
+        if (string.Equals(headerName, "x-codex-window-id", StringComparison.OrdinalIgnoreCase))
+        {
+            return "test-window";
+        }
+
+        if (string.Equals(headerName, "x-client-request-id", StringComparison.OrdinalIgnoreCase))
+        {
+            return "test-request";
+        }
+
+        if (string.Equals(headerName, "session-id", StringComparison.OrdinalIgnoreCase))
+        {
+            return "test-session";
+        }
+
+        if (string.Equals(headerName, "thread-id", StringComparison.OrdinalIgnoreCase))
+        {
+            return "test-thread";
+        }
+
+        if (string.Equals(headerName, "x-codex-beta-features", StringComparison.OrdinalIgnoreCase))
+        {
+            return DefaultResponsesBetaFeatures;
+        }
+
+        return string.Empty;
     }
 
     private static bool TryGetHeader(

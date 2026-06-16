@@ -1,11 +1,15 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
+using System.Text.Encodings.Web;
+using System.Text.Json;
 using OpenCodex.Core.Config;
 using OpenCodex.Core.Errors;
 using OpenCodex.Core.Protocols;
+using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.Domain.Proxy;
+using OpenCodex.CoreBase.DTOs.Proxy;
 using OpenCodex.CoreBase.DTOs.ChannelDiagnostics;
 using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
@@ -15,6 +19,11 @@ namespace OpenCodex.Core.Services;
 
 public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsService
 {
+    private static readonly JsonSerializerOptions StreamJsonOptions = new()
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
+
     private readonly IOpenCodexRuntimeSettingsProvider _settingsProvider;
     private readonly IUpstreamClient _upstreamClient;
     private readonly IUpstreamModelClient _upstreamModelClient;
@@ -82,36 +91,34 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
 
         try
         {
-            (channel, payload) = ParseTestChannelBody(body);
-            channelType = JsonDictionaryValue.String(channel, "type");
+            var prepared = PrepareTestChannel(body, requestMetadata);
+            channel = prepared.Channel;
+            payload = prepared.Payload;
+            compatibleRequest = prepared.CompatibleRequest;
+            originalModel = prepared.OriginalModel;
+            upstreamModel = prepared.UpstreamModel;
+            channelType = prepared.ChannelType;
             channelId = JsonDictionaryValue.String(channel, "id");
-            (originalModel, upstreamModel) = TestModels(channel, JsonDictionaryValue.Get(payload, "model"));
-            var upstreamRequest = ProtocolConverter.ConvertRequest(
-                payload,
-                channelType,
-                channelType,
-                upstreamModel);
-            var compatResult = ApplyCompat(
-                upstreamRequest,
-                JsonDictionaryValue.Object(channel, "compat", CloneObject));
-            compatibleRequest = compatResult.Payload;
-            var compatDetails = compatResult.Details;
-            upstreamResponse = await _upstreamClient.PostJsonAsync(
+
+            var streamResult = await CollectStreamTestAsync(
                 channel,
                 compatibleRequest,
                 DefaultTimeout(),
                 cancellationToken);
-            responsePayload = ProtocolConverter.ConvertResponse(
-                upstreamResponse,
-                channelType,
-                channelType,
-                originalModel);
+            upstreamResponse = streamResult.UpstreamResponse;
+            responsePayload = upstreamResponse is null
+                ? null
+                : ProtocolConverter.ConvertResponse(
+                    upstreamResponse,
+                    channelType,
+                    channelType,
+                    originalModel);
 
             return ApiOpResult<TestChannelResponse>.Succeed(TestChannelResponse.From(
                 originalModel,
                 upstreamModel,
-                compatDetails,
-                responsePayload,
+                prepared.CompatDetails,
+                responsePayload ?? new Dictionary<string, object?>(),
                 ElapsedMilliseconds(started)));
         }
         catch (ConfigException exception)
@@ -147,7 +154,340 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
                 channelId,
                 channelType,
                 statusCode,
-                error);
+                error,
+                isStream: true);
+        }
+    }
+
+    public async Task StreamTestChannelAsync(
+        IReadOnlyDictionary<string, object?> body,
+        SessionUser user,
+        ProxyRequestMetadata requestMetadata,
+        IProxyStreamWriter writer,
+        CancellationToken cancellationToken)
+    {
+        var started = Stopwatch.GetTimestamp();
+        Dictionary<string, object?>? channel = null;
+        Dictionary<string, object?>? payload = null;
+        Dictionary<string, object?>? compatibleRequest = null;
+        Dictionary<string, object?>? upstreamResponse = null;
+        object? errorResponse = null;
+        string? originalModel = null;
+        string? upstreamModel = null;
+        string? channelType = null;
+        string? channelId = null;
+        var statusCode = 200;
+        string? error = null;
+        StreamWriteMetrics? metrics = null;
+
+        writer.PrepareSse();
+        try
+        {
+            var prepared = PrepareTestChannel(body, requestMetadata);
+            channel = prepared.Channel;
+            payload = prepared.Payload;
+            compatibleRequest = prepared.CompatibleRequest;
+            originalModel = prepared.OriginalModel;
+            upstreamModel = prepared.UpstreamModel;
+            channelType = prepared.ChannelType;
+            channelId = JsonDictionaryValue.String(channel, "id");
+
+            var capture = new ChannelTestStreamCapture();
+            metrics = await writer.WriteLinesAsync(
+                CaptureTestStreamAsync(
+                    _upstreamClient.StreamJsonAsync(
+                        channel,
+                        compatibleRequest,
+                        DefaultTimeout(),
+                        cancellationToken),
+                    capture,
+                    cancellationToken),
+                static line => line.Trim().Length > 0,
+                () => ElapsedMilliseconds(started),
+                cancellationToken);
+            upstreamResponse = capture.UpstreamResponse;
+        }
+        catch (ConfigException exception)
+        {
+            statusCode = 400;
+            error = exception.Message;
+            errorResponse = BuildErrorResponse(error, "config_error");
+            await WriteSseEventAsync(
+                "channel_test.error",
+                errorResponse,
+                cancellationToken);
+        }
+        catch (ProxyException exception)
+        {
+            statusCode = exception.StatusCode;
+            error = exception.Message;
+            errorResponse = exception.ToResponse();
+            if (exception is UpstreamException { Body: not null } upstream)
+            {
+                upstreamResponse = new Dictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["error"] = upstream.Body
+                };
+            }
+
+            await WriteSseEventAsync(
+                "channel_test.error",
+                errorResponse,
+                cancellationToken);
+        }
+        finally
+        {
+            WriteTestChannelLog(
+                body,
+                user,
+                requestMetadata,
+                started,
+                payload,
+                compatibleRequest,
+                upstreamResponse,
+                null,
+                errorResponse,
+                originalModel,
+                upstreamModel,
+                channelId,
+                channelType,
+                statusCode,
+                error,
+                streamWriteMetrics: metrics);
+        }
+
+        async Task WriteSseEventAsync(string eventName, object data, CancellationToken token)
+        {
+            var lines = new[]
+            {
+                $"event: {eventName}\n",
+                $"data: {JsonSerializer.Serialize(data, StreamJsonOptions)}\n",
+                "\n"
+            };
+            await writer.WriteLinesAsync(
+                Lines(lines, token),
+                static _ => false,
+                () => ElapsedMilliseconds(started),
+                token);
+        }
+    }
+
+    private TestChannelPreparedRequest PrepareTestChannel(
+        IReadOnlyDictionary<string, object?> body,
+        ProxyRequestMetadata requestMetadata)
+    {
+        var (channel, payload) = ParseTestChannelBody(body);
+        var channelType = JsonDictionaryValue.String(channel, "type");
+        var (originalModel, upstreamModel) = TestModels(channel, JsonDictionaryValue.Get(payload, "model"));
+        var route = new ProxyRouteDto(
+            channel,
+            originalModel,
+            upstreamModel,
+            supportsImage: true,
+            matchedModelMapping: false);
+        route = ProxyEndpointService.ApplyResponsesPassthroughHeaders(
+            route,
+            ProtocolConverter.Responses,
+            channelType,
+            requestMetadata);
+        channel = route.Channel;
+
+        var upstreamRequest = ProtocolConverter.ConvertRequest(
+            payload,
+            channelType,
+            channelType,
+            upstreamModel);
+        upstreamRequest["stream"] = true;
+        var compatResult = ApplyCompat(
+            upstreamRequest,
+            JsonDictionaryValue.Object(channel, "compat", CloneObject));
+        var compatibleRequest = compatResult.Payload;
+        compatibleRequest["stream"] = true;
+        return new TestChannelPreparedRequest(
+            channel,
+            payload,
+            compatibleRequest,
+            compatResult.Details,
+            originalModel,
+            upstreamModel,
+            channelType);
+    }
+
+    private async Task<ChannelTestStreamCapture> CollectStreamTestAsync(
+        IReadOnlyDictionary<string, object?> channel,
+        IReadOnlyDictionary<string, object?> payload,
+        int defaultTimeout,
+        CancellationToken cancellationToken)
+    {
+        var capture = new ChannelTestStreamCapture();
+        await foreach (var _ in CaptureTestStreamAsync(
+                           _upstreamClient.StreamJsonAsync(
+                               channel,
+                               payload,
+                               defaultTimeout,
+                               cancellationToken),
+                           capture,
+                           cancellationToken))
+        {
+        }
+
+        return capture;
+    }
+
+    private static async IAsyncEnumerable<string> CaptureTestStreamAsync(
+        IAsyncEnumerable<string> lines,
+        ChannelTestStreamCapture capture,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await foreach (var line in lines.WithCancellation(cancellationToken))
+        {
+            capture.Accept(line);
+            yield return line;
+        }
+    }
+
+    private static async IAsyncEnumerable<string> Lines(
+        IEnumerable<string> lines,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        foreach (var line in lines)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return line;
+            await Task.CompletedTask;
+        }
+    }
+
+    private sealed class TestChannelPreparedRequest
+    {
+        public TestChannelPreparedRequest(
+            Dictionary<string, object?> channel,
+            Dictionary<string, object?> payload,
+            Dictionary<string, object?> compatibleRequest,
+            List<string> compatDetails,
+            string originalModel,
+            string upstreamModel,
+            string channelType)
+        {
+            Channel = channel;
+            Payload = payload;
+            CompatibleRequest = compatibleRequest;
+            CompatDetails = compatDetails;
+            OriginalModel = originalModel;
+            UpstreamModel = upstreamModel;
+            ChannelType = channelType;
+        }
+
+        public Dictionary<string, object?> Channel { get; }
+
+        public Dictionary<string, object?> Payload { get; }
+
+        public Dictionary<string, object?> CompatibleRequest { get; }
+
+        public List<string> CompatDetails { get; }
+
+        public string OriginalModel { get; }
+
+        public string UpstreamModel { get; }
+
+        public string ChannelType { get; }
+    }
+
+    private sealed class ChannelTestStreamCapture
+    {
+        private readonly List<string> _outputText = [];
+        private Dictionary<string, object?>? _response;
+        private object? _model;
+        private object? _usage;
+
+        public Dictionary<string, object?>? UpstreamResponse
+        {
+            get
+            {
+                if (_response is not null)
+                {
+                    if (_outputText.Count > 0 && !_response.ContainsKey("output_text"))
+                    {
+                        _response["output_text"] = string.Concat(_outputText);
+                    }
+
+                    return _response;
+                }
+
+                if (_model is null && _usage is null && _outputText.Count == 0)
+                {
+                    return null;
+                }
+
+                var response = new Dictionary<string, object?>(StringComparer.Ordinal);
+                if (_model is not null)
+                {
+                    response["model"] = _model;
+                }
+
+                if (_usage is not null)
+                {
+                    response["usage"] = _usage;
+                }
+
+                if (_outputText.Count > 0)
+                {
+                    response["output_text"] = string.Concat(_outputText);
+                }
+
+                return response;
+            }
+        }
+
+        public void Accept(string line)
+        {
+            if (!line.StartsWith("data:", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            var json = line["data:".Length..].Trim();
+            if (json.Length == 0 || json == "[DONE]")
+            {
+                return;
+            }
+
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Object)
+                {
+                    return;
+                }
+
+                CaptureObject(root);
+                var type = ProxyStreamService.TryExtractString(root, "type");
+                if (string.Equals(type, "response.output_text.delta", StringComparison.Ordinal)
+                    && ProxyStreamService.TryExtractString(root, "delta") is { Length: > 0 } delta)
+                {
+                    _outputText.Add(delta);
+                }
+
+                if (root.TryGetProperty("response", out var responseElement)
+                    && responseElement.ValueKind == JsonValueKind.Object)
+                {
+                    CaptureObject(responseElement);
+                    if (string.Equals(type, "response.completed", StringComparison.Ordinal))
+                    {
+                        _response = ProxyStreamService.FromJsonElement(responseElement) as Dictionary<string, object?>;
+                    }
+                }
+            }
+            catch (JsonException)
+            {
+            }
+        }
+
+        private void CaptureObject(JsonElement element)
+        {
+            _model ??= ProxyStreamService.TryExtractString(element, "model");
+            _usage ??= ProxyStreamService.TryExtractObject(element, "usage");
         }
     }
 
@@ -233,7 +573,9 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
         string? channelId,
         string? channelType,
         int statusCode,
-        string? error)
+        string? error,
+        bool isStream = false,
+        StreamWriteMetrics? streamWriteMetrics = null)
     {
         _logs.WriteLog(
             new ProxyLogContext(
@@ -249,12 +591,13 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
                 UpstreamModel: upstreamModel,
                 ChannelId: channelId,
                 ChannelType: channelType,
-                IsStream: false,
-                TtftMs: null,
+                IsStream: isStream,
+                TtftMs: streamWriteMetrics?.TtftMs,
                 StatusCode: statusCode,
                 DurationMs: ElapsedMilliseconds(started),
                 Error: error,
-                WebSearchDetails: null),
+                WebSearchDetails: null,
+                StreamWriteMetrics: streamWriteMetrics),
             RedactRequestMetadata(requestMetadata));
     }
 

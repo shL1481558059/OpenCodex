@@ -345,6 +345,7 @@ import {
 const props = defineProps({
   api: { type: Function, required: true },
 });
+const devApiPrefix = import.meta.env.DEV ? import.meta.env.BASE_URL.replace(/\/$/, "") : "";
 const configLoading = ref(false);
 const saveLoading = ref(false);
 const testLoading = ref(false);
@@ -366,7 +367,7 @@ const compatTexts = reactive({
 const testResult = ref(null);
 const channelTestVisible = ref(false);
 const testingChannel = ref(null);
-const channelTestForm = reactive({ model: "", prompt: "ping" });
+const channelTestForm = reactive({ model: "", prompt: "你好" });
 const discoveredModels = ref([]);
 const selectedDiscoveredModels = ref([]);
 const config = reactive({ channels: [] });
@@ -426,7 +427,7 @@ function openChannelDrawer(channel = null, index = -1) {
 function openChannelTest(channel) {
   testingChannel.value = channel;
   channelTestForm.model = normalizeModels(channel.models)[0]?.model || "";
-  channelTestForm.prompt = "ping";
+  channelTestForm.prompt = "你好";
   testResult.value = null;
   channelTestVisible.value = true;
 }
@@ -549,20 +550,33 @@ async function discoverModels() {
 
 async function testChannel() {
   testLoading.value = true;
-  testResult.value = null;
+  const startedAt = performance.now();
+  testResult.value = {
+    ok: true,
+    streaming: true,
+    response: { output_text: "" },
+    raw_events: []
+  };
   try {
     const channel = testingChannel.value;
     const payload = buildChannelTestPayload(channel);
     payload.model = channelTestForm.model || normalizeModels(channel.models)[0]?.model || "";
-    payload.input = channelTestForm.prompt || "ping";
+    payload.input = channelTestForm.prompt || "你好";
     payload.max_output_tokens = 256;
-    const result = await props.api("/test-channel", {
-      method: "POST",
-      body: JSON.stringify(payload)
+    await streamChannelTest(payload, (event) => {
+      applyChannelTestStreamEvent(testResult.value, event);
     });
-    testResult.value = result;
+    testResult.value.streaming = false;
+    testResult.value.duration_ms = Math.round(performance.now() - startedAt);
+    if (testResult.value.ok !== false && !formatChannelTestResult(testResult.value)) {
+      testResult.value.response.output_text = "连接已打通，但响应中没有可展示的文本内容。";
+    }
   } catch (error) {
-    testResult.value = { ok: false, error: error.message };
+    testResult.value = {
+      ok: false,
+      error: error.message,
+      duration_ms: Math.round(performance.now() - startedAt)
+    };
   } finally {
     testLoading.value = false;
   }
@@ -595,13 +609,105 @@ function buildChannelTestPayload(channel) {
     models: channel.models || [],
     enabled: channel.enabled !== false,
     model: "",
-    input: "ping",
+    input: "你好",
     max_output_tokens: 256
   };
 }
 
 function channelTestModelSuggestions(query, callback) {
   callback(buildSuggestions(channelTestModelOptions.value, query));
+}
+
+async function streamChannelTest(payload, onEvent) {
+  const response = await fetch(`${devApiPrefix}/test-channel/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    throw new Error(await response.text() || response.statusText);
+  }
+  if (!response.body) {
+    throw new Error("浏览器不支持流式响应读取");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    buffer = consumeSseBuffer(buffer, onEvent);
+  }
+  buffer += decoder.decode();
+  consumeSseBuffer(`${buffer}\n\n`, onEvent);
+}
+
+function consumeSseBuffer(buffer, onEvent) {
+  let remaining = buffer;
+  while (true) {
+    const separator = remaining.indexOf("\n\n");
+    if (separator === -1) {
+      return remaining;
+    }
+    const chunk = remaining.slice(0, separator);
+    remaining = remaining.slice(separator + 2);
+    const event = parseSseChunk(chunk);
+    if (event) onEvent(event);
+  }
+}
+
+function parseSseChunk(chunk) {
+  const lines = chunk.split(/\r?\n/);
+  let eventName = "message";
+  const data = [];
+  for (const line of lines) {
+    if (line.startsWith("event:")) {
+      eventName = line.slice("event:".length).trim();
+    } else if (line.startsWith("data:")) {
+      data.push(line.slice("data:".length).trimStart());
+    }
+  }
+  if (data.length === 0) return null;
+  const text = data.join("\n");
+  if (text === "[DONE]") {
+    return { event: eventName, data: text };
+  }
+  try {
+    return { event: eventName, data: JSON.parse(text), raw: text };
+  } catch {
+    return { event: eventName, data: text, raw: text };
+  }
+}
+
+function applyChannelTestStreamEvent(result, event) {
+  if (!result) return;
+  result.raw_events = [...(result.raw_events || []), event].slice(-20);
+  if (event.event === "channel_test.error") {
+    result.ok = false;
+    result.body = event.data;
+    result.error = extractErrorMessage(event.data) || "上游请求失败";
+    return;
+  }
+
+  const data = event.data;
+  if (!data || typeof data !== "object") return;
+  if (data.type === "response.output_text.delta" && typeof data.delta === "string") {
+    result.response.output_text = `${result.response.output_text || ""}${data.delta}`;
+  }
+  if (data.type === "response.completed" && data.response) {
+    result.response = {
+      ...data.response,
+      output_text: result.response.output_text || extractResponseText(data.response)
+    };
+    result.upstream_model = data.response.model;
+    result.ok = data.response.error ? false : true;
+  }
+  const response = data.response || data;
+  if (response?.model) {
+    result.upstream_model = response.model;
+  }
 }
 
 // --- Channel helpers ---

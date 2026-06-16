@@ -245,6 +245,38 @@ public sealed class ProxyEndpointServiceTests
     }
 
     [Fact]
+    public async Task ProxyAsync_ResponsesPassthrough_AddsDefaultCodexHeadersWhenMissing()
+    {
+        var capacity = new ChannelCapacityService();
+        var channel = CreateChannel("responses", priority: 0);
+        channel["type"] = ProtocolConverter.Responses;
+        var nonStreams = new StubProxyNonStreamService(_ =>
+            Task.FromResult(new ProxyNonStreamResult(200, new { ok = true })));
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService([CreateRoute(channel, "shared-model", "upstream")]),
+            nonStreams: nonStreams);
+
+        var result = await service.ProxyAsync(CreateResponsesContext(
+            "shared-model",
+            new Dictionary<string, string>
+            {
+                ["User-Agent"] = "Mozilla/5.0"
+            }));
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.NotNull(nonStreams.LastContext);
+        var headers = Assert.IsType<Dictionary<string, object?>>(nonStreams.LastContext!.Route.Channel["headers"]);
+        Assert.Contains("Codex Desktop", Assert.IsType<string>(headers["User-Agent"]));
+        Assert.Equal("test-attestation", headers["x-oai-attestation"]);
+        Assert.Equal("Codex Desktop", headers["originator"]);
+        Assert.Equal("test-window", headers["x-codex-window-id"]);
+        Assert.Equal("test-request", headers["x-client-request-id"]);
+        Assert.Equal("test-session", headers["session-id"]);
+        Assert.Equal("test-thread", headers["thread-id"]);
+    }
+
+    [Fact]
     public async Task ProxyAsync_ResponsesToChat_DoesNotCopyCodexHeaders()
     {
         var capacity = new ChannelCapacityService();
