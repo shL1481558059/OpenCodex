@@ -1,3 +1,4 @@
+using OpenCodex.Core.Errors;
 using OpenCodex.CoreBase.Abstractions;
 
 namespace OpenCodex.Core.Services.Proxy;
@@ -11,9 +12,77 @@ public static class ChannelCompatRequestRewriter
         var result = WebSearchPayload.DeepCopyObject(payload);
         var details = new List<string>();
 
+        // 1. default_params: 仅在参数不存在时添加
+        foreach (var (key, value) in JsonDictionaryValue.Object(compat, "default_params", WebSearchPayload.DeepCopyObject))
+        {
+            if (!result.ContainsKey(key))
+            {
+                result[key] = CloneJsonValue(value);
+                details.Add($"default:{key}");
+            }
+        }
+
+        // 2. rename_params: 重命名参数
+        foreach (var (source, targetValue) in JsonDictionaryValue.Object(compat, "rename_params", WebSearchPayload.DeepCopyObject))
+        {
+            var target = targetValue?.ToString() ?? string.Empty;
+            if (target.Length == 0 || !result.ContainsKey(source))
+            {
+                continue;
+            }
+
+            if (!result.ContainsKey(target))
+            {
+                result[target] = CloneJsonValue(result[source]);
+            }
+
+            result.Remove(source);
+            details.Add($"rename:{source}->{target}");
+        }
+
+        // 3. drop_params: 删除参数
+        foreach (var item in JsonDictionaryValue.List(compat, "drop_params"))
+        {
+            var key = item?.ToString() ?? string.Empty;
+            if (key.Length > 0 && result.Remove(key))
+            {
+                details.Add($"drop:{key}");
+            }
+        }
+
+        // 4. force_params: 强制设置参数（覆盖已有值）
+        foreach (var (key, value) in JsonDictionaryValue.Object(compat, "force_params", WebSearchPayload.DeepCopyObject))
+        {
+            result[key] = CloneJsonValue(value);
+            details.Add($"force:{key}");
+        }
+
+        // 5. drop_tool_types: 删除特定类型的工具
         ApplyDropToolTypes(result, compat, details);
 
+        // 6. unsupported_params: 检查不支持的参数并抛出异常
+        var unsupported = JsonDictionaryValue.List(compat, "unsupported_params")
+            .Select(item => item?.ToString() ?? string.Empty)
+            .Where(key => key.Length > 0 && result.ContainsKey(key))
+            .Order(StringComparer.Ordinal)
+            .ToList();
+        if (unsupported.Count > 0)
+        {
+            throw new BadRequestException($"upstream does not support parameter(s): {string.Join(", ", unsupported)}");
+        }
+
         return new ChannelCompatRewriteResult(result, details);
+    }
+
+    private static object? CloneJsonValue(object? value)
+    {
+        return value switch
+        {
+            null => null,
+            IReadOnlyDictionary<string, object?> dict => WebSearchPayload.DeepCopyObject(dict),
+            IReadOnlyList<object?> list => list.Select(CloneJsonValue).ToList(),
+            _ => value
+        };
     }
 
     private static void ApplyDropToolTypes(
@@ -155,3 +224,4 @@ public sealed class ChannelCompatRewriteResult
 
     public IReadOnlyList<string> Details { get; }
 }
+
