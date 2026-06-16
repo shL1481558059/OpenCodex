@@ -58,8 +58,7 @@ public sealed partial class HttpUpstreamClient
     {
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["content-type"] = "application/json",
-            ["user-agent"] = "OpenCodex-Proxy/0.1"
+            ["content-type"] = "application/json"
         };
 
         if (ConfigValue.TryAsObject(JsonDictionaryValue.Get(channel, "headers"), out var customHeaders))
@@ -71,7 +70,10 @@ public sealed partial class HttpUpstreamClient
         }
 
         var channelType = JsonDictionaryValue.String(channel, "type");
-        headers["user-agent"] = UserAgentForChannelType(channelType);
+        if (!headers.ContainsKey("user-agent"))
+        {
+            headers["user-agent"] = UserAgentForChannelType(channelType);
+        }
 
         var authMode = JsonDictionaryValue.String(channel, "auth_mode");
         if (authMode.Length == 0)
