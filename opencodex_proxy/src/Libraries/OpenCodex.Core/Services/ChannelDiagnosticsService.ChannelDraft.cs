@@ -85,7 +85,7 @@ public sealed partial class ChannelDiagnosticsService
         var inputText = JsonDictionaryValue.String(body, "input");
         if (inputText.Length == 0)
         {
-            inputText = "ping";
+            inputText = "你好";
         }
 
         var maxOutputTokens = ToInt(JsonDictionaryValue.Get(body, "max_output_tokens"), 256);
@@ -102,7 +102,8 @@ public sealed partial class ChannelDiagnosticsService
                         ["content"] = inputText
                     }
                 },
-                ["max_tokens"] = maxOutputTokens
+                ["max_tokens"] = maxOutputTokens,
+                ["stream"] = true
             },
             ProtocolConverter.Messages => new Dictionary<string, object?>
             {
@@ -115,13 +116,50 @@ public sealed partial class ChannelDiagnosticsService
                         ["content"] = inputText
                     }
                 },
-                ["max_tokens"] = maxOutputTokens
+                ["max_tokens"] = maxOutputTokens,
+                ["stream"] = true
             },
             _ => new Dictionary<string, object?>
             {
                 ["model"] = model,
-                ["input"] = inputText,
-                ["max_output_tokens"] = maxOutputTokens
+                ["instructions"] = "You are Codex.",
+                ["input"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "message",
+                        ["role"] = "user",
+                        ["content"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "input_text",
+                                ["text"] = inputText
+                            }
+                        }
+                    }
+                },
+                ["store"] = false,
+                ["stream"] = true,
+                ["include"] = new List<object?> { "reasoning.encrypted_content" },
+                ["parallel_tool_calls"] = true,
+                ["tool_choice"] = "auto",
+                ["tools"] = new List<object?>(),
+                ["reasoning"] = new Dictionary<string, object?>
+                {
+                    ["effort"] = "low"
+                },
+                ["text"] = new Dictionary<string, object?>
+                {
+                    ["verbosity"] = "low"
+                },
+                ["service_tier"] = "priority",
+                ["prompt_cache_key"] = "channel-test",
+                ["client_metadata"] = new Dictionary<string, object?>
+                {
+                    ["x-codex-installation-id"] = "00000000-0000-4000-8000-000000000000",
+                    ["x-codex-window-id"] = "test-window"
+                }
             }
         };
     }

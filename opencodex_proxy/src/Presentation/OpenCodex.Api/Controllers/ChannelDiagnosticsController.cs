@@ -42,4 +42,19 @@ public sealed class ChannelDiagnosticsController : AuthenticatedApiControllerBas
             HttpContext.RequestAborted);
         return Api(result);
     }
+
+    [HttpPost("/channels/test/stream")]
+    [HttpPost("/test-channel/stream")]
+    public async Task TestChannelStream(ChannelDiagnosticsRequest request)
+    {
+        var user = RequireUser();
+        await _channelDiagnostics.StreamTestChannelAsync(
+            request.ToDictionary(),
+            user,
+            ProxyRequestMetadataFactory.FromHttpRequest(
+                Request,
+                HttpContext.Connection.RemoteIpAddress?.ToString()),
+            new ProxyStreamResponseWriter(Response),
+            HttpContext.RequestAborted);
+    }
 }

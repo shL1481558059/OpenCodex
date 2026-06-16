@@ -64,7 +64,7 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
                     }
                 },
                 model = "public-model",
-                input = "ping",
+                input = "你好",
                 max_output_tokens = 32
             });
 
@@ -78,7 +78,7 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
         Assert.Equal("diag-channel", log.ChannelId);
         Assert.Equal("admin", log.OwnerUsername);
         Assert.Null(log.ApiKeyId);
-        Assert.False(log.IsStream);
+        Assert.True(log.IsStream);
         Assert.Equal(200, log.StatusCode);
 
         var detail = context.RequestLogDetails.Single(item => item.RequestLogId == log.Id);
@@ -93,6 +93,10 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
         Assert.DoesNotContain(SecretHeaderValue, persistedDetail, StringComparison.Ordinal);
         Assert.DoesNotContain("opencodex_admin_auth", persistedDetail, StringComparison.Ordinal);
         Assert.Contains("\"X-Normal\":\"visible\"", detail.RequestBody, StringComparison.Ordinal);
+        Assert.Contains("\"stream\":true", detail.UpstreamRequestBody, StringComparison.Ordinal);
+        Assert.Contains("\"text\":\"你好\"", detail.UpstreamRequestBody, StringComparison.Ordinal);
+        Assert.Contains("\"x-oai-attestation\":\"test-attestation\"", detail.RequestBody, StringComparison.Ordinal);
+        Assert.Contains("\"originator\":\"Codex Desktop\"", detail.RequestBody, StringComparison.Ordinal);
     }
 
     public void Dispose()
@@ -167,6 +171,8 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
 
     private sealed class SuccessfulUpstreamClient : IUpstreamClient
     {
+        private static readonly JsonSerializerOptions JsonOptions = new();
+
         public Task<Dictionary<string, object?>> PostJsonAsync(
             IReadOnlyDictionary<string, object?> channel,
             IReadOnlyDictionary<string, object?> payload,
@@ -208,7 +214,38 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
         {
             await Task.CompletedTask;
-            yield break;
+            var response = new Dictionary<string, object?>
+            {
+                ["id"] = "resp_test",
+                ["model"] = JsonElementValue(payload, "model"),
+                ["output"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "message",
+                        ["role"] = "assistant",
+                        ["content"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "output_text",
+                                ["text"] = "pong"
+                            }
+                        }
+                    }
+                },
+                ["usage"] = new Dictionary<string, object?>
+                {
+                    ["input_tokens"] = 3,
+                    ["output_tokens"] = 5
+                }
+            };
+            yield return "event: response.output_text.delta\n";
+            yield return "data: {\"type\":\"response.output_text.delta\",\"delta\":\"pong\"}\n";
+            yield return "\n";
+            yield return "event: response.completed\n";
+            yield return $"data: {{\"type\":\"response.completed\",\"response\":{JsonSerializer.Serialize(response, JsonOptions)}}}\n";
+            yield return "\n";
         }
 
         private static string JsonElementValue(
