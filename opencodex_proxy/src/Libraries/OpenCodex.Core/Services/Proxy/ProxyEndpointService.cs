@@ -10,6 +10,19 @@ namespace OpenCodex.Core.Services.Proxy;
 
 public sealed class ProxyEndpointService : IProxyEndpointService
 {
+    private static readonly string[] ResponsesPassthroughHeaders =
+    [
+        "User-Agent",
+        "x-oai-attestation",
+        "x-codex-turn-metadata",
+        "x-codex-window-id",
+        "x-client-request-id",
+        "originator",
+        "session-id",
+        "thread-id",
+        "x-codex-beta-features"
+    ];
+
     private readonly IProxyLogService _logs;
     private readonly IProxyRequestService _requests;
     private readonly IProxyRouteService _routes;
@@ -85,6 +98,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             channelType = JsonDictionaryValue.String(route.Channel, "type");
             channelId = JsonDictionaryValue.String(route.Channel, "id");
             upstreamModel = route.UpstreamModel;
+            route = ApplyResponsesPassthroughHeaders(route, context.EntryProtocol, channelType, requestMetadata);
 
             if (requestContainsImages
                 && !route.SupportsImage
@@ -258,6 +272,80 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         throw new RoutingException(
             $"all enabled channels for {modelLabel} are at capacity",
             ProxyHttpStatus.TooManyRequests);
+    }
+
+    private static ProxyRouteDto ApplyResponsesPassthroughHeaders(
+        ProxyRouteDto route,
+        string entryProtocol,
+        string channelType,
+        ProxyRequestMetadata requestMetadata)
+    {
+        if (entryProtocol != ProtocolConverter.Responses || channelType != ProtocolConverter.Responses)
+        {
+            return route;
+        }
+
+        var passthroughHeaders = ResponsesPassthroughHeaders
+            .Select(headerName => TryGetHeader(requestMetadata.Headers, headerName, out var value)
+                ? (Name: headerName, Value: value)
+                : (Name: (string?)null, Value: (string?)null))
+            .Where(item => !string.IsNullOrEmpty(item.Name) && !string.IsNullOrEmpty(item.Value))
+            .ToList();
+        if (passthroughHeaders.Count == 0)
+        {
+            return route;
+        }
+
+        var channel = WebSearchPayload.DeepCopyObject(route.Channel);
+        var headers = WebSearchPayload.TryAsObject(JsonDictionaryValue.Get(channel, "headers"), out var existingHeaders)
+            ? existingHeaders
+            : new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var (name, value) in passthroughHeaders)
+        {
+            if (!ContainsHeader(headers, name!))
+            {
+                headers[name!] = value;
+            }
+        }
+
+        channel["headers"] = headers;
+        return new ProxyRouteDto(
+            channel,
+            route.OriginalModel,
+            route.UpstreamModel,
+            route.SupportsImage,
+            route.MatchedModelMapping);
+    }
+
+    private static bool TryGetHeader(
+        IReadOnlyDictionary<string, string> headers,
+        string headerName,
+        out string value)
+    {
+        foreach (var (key, headerValue) in headers)
+        {
+            if (string.Equals(key, headerName, StringComparison.OrdinalIgnoreCase))
+            {
+                value = headerValue;
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    private static bool ContainsHeader(IReadOnlyDictionary<string, object?> headers, string headerName)
+    {
+        foreach (var key in headers.Keys)
+        {
+            if (string.Equals(key, headerName, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static int PriorityValue(IReadOnlyDictionary<string, object?> channel)

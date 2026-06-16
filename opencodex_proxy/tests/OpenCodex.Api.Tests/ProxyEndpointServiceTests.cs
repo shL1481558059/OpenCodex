@@ -202,6 +202,108 @@ public sealed class ProxyEndpointServiceTests
         Assert.Equal(0, capacity.GetActiveRequests("admin", "stream-failure"));
     }
 
+    [Fact]
+    public async Task ProxyAsync_ResponsesPassthrough_CopiesCodexHeadersToUpstreamChannel()
+    {
+        var capacity = new ChannelCapacityService();
+        var channel = CreateChannel("responses", priority: 0);
+        channel["type"] = ProtocolConverter.Responses;
+        var nonStreams = new StubProxyNonStreamService(_ =>
+            Task.FromResult(new ProxyNonStreamResult(200, new { ok = true })));
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService([CreateRoute(channel, "shared-model", "upstream")]),
+            nonStreams: nonStreams);
+
+        var result = await service.ProxyAsync(CreateResponsesContext(
+            "shared-model",
+            new Dictionary<string, string>
+            {
+                ["User-Agent"] = "Codex Desktop/0.140.0-alpha.2",
+                ["x-oai-attestation"] = "attestation-token",
+                ["x-codex-turn-metadata"] = "turn-metadata",
+                ["x-codex-window-id"] = "window-id",
+                ["x-client-request-id"] = "request-id",
+                ["originator"] = "Codex Desktop",
+                ["session-id"] = "session-id",
+                ["thread-id"] = "thread-id",
+                ["Authorization"] = "Bearer proxy-key"
+            }));
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.NotNull(nonStreams.LastContext);
+        var headers = Assert.IsType<Dictionary<string, object?>>(nonStreams.LastContext!.Route.Channel["headers"]);
+        Assert.Equal("Codex Desktop/0.140.0-alpha.2", headers["User-Agent"]);
+        Assert.Equal("attestation-token", headers["x-oai-attestation"]);
+        Assert.Equal("turn-metadata", headers["x-codex-turn-metadata"]);
+        Assert.Equal("window-id", headers["x-codex-window-id"]);
+        Assert.Equal("request-id", headers["x-client-request-id"]);
+        Assert.Equal("Codex Desktop", headers["originator"]);
+        Assert.Equal("session-id", headers["session-id"]);
+        Assert.Equal("thread-id", headers["thread-id"]);
+        Assert.False(headers.ContainsKey("Authorization"));
+    }
+
+    [Fact]
+    public async Task ProxyAsync_ResponsesToChat_DoesNotCopyCodexHeaders()
+    {
+        var capacity = new ChannelCapacityService();
+        var channel = CreateChannel("chat", priority: 0);
+        var nonStreams = new StubProxyNonStreamService(_ =>
+            Task.FromResult(new ProxyNonStreamResult(200, new { ok = true })));
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService([CreateRoute(channel, "shared-model", "upstream")]),
+            nonStreams: nonStreams);
+
+        var result = await service.ProxyAsync(CreateResponsesContext(
+            "shared-model",
+            new Dictionary<string, string>
+            {
+                ["User-Agent"] = "Codex Desktop/0.140.0-alpha.2",
+                ["x-oai-attestation"] = "attestation-token"
+            }));
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.NotNull(nonStreams.LastContext);
+        Assert.False(nonStreams.LastContext!.Route.Channel.ContainsKey("headers"));
+    }
+
+    [Fact]
+    public async Task ProxyAsync_ResponsesPassthrough_DoesNotReplaceConfiguredHeaders()
+    {
+        var capacity = new ChannelCapacityService();
+        var channel = CreateChannel("responses", priority: 0);
+        channel["type"] = ProtocolConverter.Responses;
+        channel["headers"] = new Dictionary<string, object?>
+        {
+            ["User-Agent"] = "configured-agent",
+            ["x-oai-attestation"] = "configured-attestation"
+        };
+        var nonStreams = new StubProxyNonStreamService(_ =>
+            Task.FromResult(new ProxyNonStreamResult(200, new { ok = true })));
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService([CreateRoute(channel, "shared-model", "upstream")]),
+            nonStreams: nonStreams);
+
+        var result = await service.ProxyAsync(CreateResponsesContext(
+            "shared-model",
+            new Dictionary<string, string>
+            {
+                ["User-Agent"] = "Codex Desktop/0.140.0-alpha.2",
+                ["x-oai-attestation"] = "attestation-token",
+                ["thread-id"] = "thread-id"
+            }));
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.NotNull(nonStreams.LastContext);
+        var headers = Assert.IsType<Dictionary<string, object?>>(nonStreams.LastContext!.Route.Channel["headers"]);
+        Assert.Equal("configured-agent", headers["User-Agent"]);
+        Assert.Equal("configured-attestation", headers["x-oai-attestation"]);
+        Assert.Equal("thread-id", headers["thread-id"]);
+    }
+
     private static ProxyEndpointService CreateService(
         IChannelCapacityService capacity,
         IProxyRouteService routes,
@@ -233,6 +335,23 @@ public sealed class ProxyEndpointServiceTests
             payload,
             "Bearer test",
             new ProxyRequestMetadata("POST", "/v1/chat/completions", null, new Dictionary<string, string>()),
+            new StubProxyStreamWriter(),
+            CancellationToken.None);
+    }
+
+    private static ProxyEndpointContext CreateResponsesContext(
+        string model,
+        IReadOnlyDictionary<string, string> headers)
+    {
+        return new ProxyEndpointContext(
+            ProtocolConverter.Responses,
+            new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["model"] = model,
+                ["input"] = "ping"
+            },
+            "Bearer test",
+            new ProxyRequestMetadata("POST", "/v1/responses", null, headers),
             new StubProxyStreamWriter(),
             CancellationToken.None);
     }
