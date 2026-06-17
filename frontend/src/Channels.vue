@@ -305,14 +305,13 @@
       <el-alert
         v-if="testResult"
         class="channel-test-result"
-        :title="testResult.ok === false ? '连接测试失败' : '连接测试成功'"
-        :type="testResult.ok === false ? 'error' : 'success'"
+        :title="getChannelTestAlertTitle(testResult)"
+        :type="getChannelTestAlertType(testResult)"
         show-icon
         :closable="false"
       >
         <div class="channel-test-result__meta">
           <span v-if="testResult.duration_ms !== undefined">耗时 {{ displayMs(testResult.duration_ms) }}</span>
-          <span v-if="testResult.upstream_model">上游模型 {{ testResult.upstream_model }}</span>
         </div>
         <div class="channel-test-output">{{ formatChannelTestResult(testResult) }}</div>
       </el-alert>
@@ -330,6 +329,14 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from "vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
+import {
+  applyChannelTestStreamEvent,
+  createChannelTestState,
+  finalizeChannelTestResult,
+  formatChannelTestResult,
+  getChannelTestAlertTitle,
+  getChannelTestAlertType
+} from "./channelTestState.js";
 import {
   Connection,
   Delete,
@@ -550,12 +557,7 @@ async function discoverModels() {
 async function testChannel() {
   testLoading.value = true;
   const startedAt = performance.now();
-  testResult.value = {
-    ok: true,
-    streaming: true,
-    response: { output_text: "" },
-    raw_events: []
-  };
+  testResult.value = createChannelTestState();
   try {
     const channel = testingChannel.value;
     const payload = buildChannelTestPayload(channel);
@@ -565,16 +567,17 @@ async function testChannel() {
     await streamChannelTest(payload, (event) => {
       applyChannelTestStreamEvent(testResult.value, event);
     });
-    testResult.value.streaming = false;
+    finalizeChannelTestResult(testResult.value);
     testResult.value.duration_ms = Math.round(performance.now() - startedAt);
-    if (testResult.value.ok !== false && !formatChannelTestResult(testResult.value)) {
-      testResult.value.response.output_text = "连接已打通，但响应中没有可展示的文本内容。";
-    }
   } catch (error) {
     testResult.value = {
-      ok: false,
+      phase: "error",
       error: error.message,
-      duration_ms: Math.round(performance.now() - startedAt)
+      duration_ms: Math.round(performance.now() - startedAt),
+      response: { output_text: "" },
+      raw_events: [],
+      hasReceivedEvent: false,
+      body: null
     };
   } finally {
     testLoading.value = false;
@@ -677,35 +680,6 @@ function parseSseChunk(chunk) {
     return { event: eventName, data: JSON.parse(text), raw: text };
   } catch {
     return { event: eventName, data: text, raw: text };
-  }
-}
-
-function applyChannelTestStreamEvent(result, event) {
-  if (!result) return;
-  result.raw_events = [...(result.raw_events || []), event].slice(-20);
-  if (event.event === "channel_test.error") {
-    result.ok = false;
-    result.body = event.data;
-    result.error = extractErrorMessage(event.data) || "上游请求失败";
-    return;
-  }
-
-  const data = event.data;
-  if (!data || typeof data !== "object") return;
-  if (data.type === "response.output_text.delta" && typeof data.delta === "string") {
-    result.response.output_text = `${result.response.output_text || ""}${data.delta}`;
-  }
-  if (data.type === "response.completed" && data.response) {
-    result.response = {
-      ...data.response,
-      output_text: result.response.output_text || extractResponseText(data.response)
-    };
-    result.upstream_model = data.response.model;
-    result.ok = data.response.error ? false : true;
-  }
-  const response = data.response || data;
-  if (response?.model) {
-    result.upstream_model = response.model;
   }
 }
 
@@ -820,17 +794,6 @@ function normalizeModels(models) {
     .filter((item) => item.model);
 }
 
-function formatChannelTestResult(result) {
-  if (!result) return "";
-  if (result.ok === false) {
-    const details = extractErrorMessage(result.body);
-    return [result.error || "上游请求失败", details].filter(Boolean).join("\n");
-  }
-  const responseText = extractResponseText(result.response);
-  if (responseText) return responseText;
-  return "连接已打通，但响应中没有可展示的文本内容。";
-}
-
 // --- Shared utils ---
 
 function buildSuggestions(values, query) {
@@ -874,42 +837,6 @@ function formatAssignmentMap(value) {
 
 function formatStringList(value) {
   return Array.isArray(value) ? value.join("\n") : "";
-}
-
-function extractErrorMessage(value) {
-  if (!value) return "";
-  if (typeof value === "string") return value;
-  if (typeof value.error === "string") return value.error;
-  if (value.error?.message) return String(value.error.message);
-  if (value.message) return String(value.message);
-  return "";
-}
-
-function extractResponseText(response) {
-  if (!response || typeof response !== "object") return "";
-  const outputText = String(response.output_text || "").trim();
-  if (outputText) return outputText;
-  const choiceContent = response.choices?.[0]?.message?.content;
-  const choiceText = stringifyContent(choiceContent).trim();
-  if (choiceText) return choiceText;
-  const messageText = stringifyContent(response.content).trim();
-  if (messageText) return messageText;
-  const output = Array.isArray(response.output) ? response.output : [];
-  const parts = [];
-  for (const item of output) {
-    const content = Array.isArray(item?.content) ? item.content : [];
-    for (const block of content) {
-      const text = block?.text || block?.output_text;
-      if (text) parts.push(String(text));
-    }
-  }
-  return parts.join("\n").trim();
-}
-
-function stringifyContent(content) {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.map((item) => (typeof item === "string" ? item : item?.text || "")).filter(Boolean).join("\n");
 }
 
 function displayMs(value) {
