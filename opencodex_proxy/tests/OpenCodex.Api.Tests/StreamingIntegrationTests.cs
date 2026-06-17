@@ -166,7 +166,7 @@ public sealed class StreamingIntegrationTests
 
             // 记录第一个内容事件的时间（非metadata事件）
             if (firstContentTime is null &&
-                (line.Contains("response.text.delta") || line.Contains("response.function_call_arguments.delta")))
+                (line.Contains("response.output_text.delta") || line.Contains("response.function_call_arguments.delta")))
             {
                 firstContentTime = now;
             }
@@ -206,10 +206,10 @@ public sealed class StreamingIntegrationTests
         Assert.Equal("response.created", FindEvent(parsed, "response.created")?["type"]);
         Assert.Equal("response.output_item.added", FindEvent(parsed, "response.output_item.added")?["type"]);
         Assert.Equal("response.content_part.added", FindEvent(parsed, "response.content_part.added")?["type"]);
-        Assert.NotNull(FindEvent(parsed, "response.text.delta"));
-        Assert.NotNull(FindEvent(parsed, "response.text.done"));
+        Assert.NotNull(FindEvent(parsed, "response.output_text.delta"));
+        Assert.NotNull(FindEvent(parsed, "response.output_text.done"));
         Assert.NotNull(FindEvent(parsed, "response.output_item.done"));
-        Assert.NotNull(FindEvent(parsed, "response.done"));
+        Assert.NotNull(FindEvent(parsed, "response.completed"));
 
         // Assert - 流式特性：TTFT应该很短（< 100ms）
         Assert.True(ttft < TimeSpan.FromMilliseconds(100),
@@ -225,8 +225,8 @@ public sealed class StreamingIntegrationTests
 
         // Assert - 内容完整性
         var textDeltas = parsed
-            .Where(e => "response.text.delta".Equals(e["type"]))
-            .Select(e => ((Dictionary<string, object?>)e["delta"]!)["text"]?.ToString() ?? "")
+            .Where(e => "response.output_text.delta".Equals(e["type"]))
+            .Select(e => e["delta"]?.ToString() ?? "")
             .ToList();
         Assert.Equal("Hello world!", string.Join("", textDeltas));
     }
@@ -261,8 +261,8 @@ public sealed class StreamingIntegrationTests
 
         // Assert - 内容完整性
         var textDeltas = parsed
-            .Where(e => "response.text.delta".Equals(e["type"]))
-            .Select(e => ((Dictionary<string, object?>)e["delta"]!)["text"]?.ToString() ?? "")
+            .Where(e => "response.output_text.delta".Equals(e["type"]))
+            .Select(e => e["delta"]?.ToString() ?? "")
             .ToList();
         Assert.Equal("Hello Claude", string.Join("", textDeltas));
     }
@@ -301,17 +301,17 @@ public sealed class StreamingIntegrationTests
         var parsed = ParseEvents(events);
 
         // Assert - Vision相关的usage应该正确
-        var completed = FindEvent(parsed, "response.done");
+        var completed = FindEvent(parsed, "response.completed");
         Assert.NotNull(completed);
         var response = completed!["response"] as Dictionary<string, object?>;
         var usage = response!["usage"] as Dictionary<string, object?>;
         Assert.NotNull(usage);
-        Assert.Equal(1500L, usage!["input_tokens"]);
+        Assert.Equal(1500, Convert.ToInt64(usage!["input_tokens"]));
 
         // Assert - 内容正确识别
         var textDeltas = parsed
-            .Where(e => "response.text.delta".Equals(e["type"]))
-            .Select(e => ((Dictionary<string, object?>)e["delta"]!)["text"]?.ToString() ?? "")
+            .Where(e => "response.output_text.delta".Equals(e["type"]))
+            .Select(e => e["delta"]?.ToString() ?? "")
             .ToList();
         Assert.Contains("猫", string.Join("", textDeltas));
     }
@@ -354,7 +354,7 @@ public sealed class StreamingIntegrationTests
         var parsed = ParseEvents(events);
 
         // Assert - 转换成exec_command
-        var completed = FindEvent(parsed, "response.done");
+        var completed = FindEvent(parsed, "response.completed");
         Assert.NotNull(completed);
         var response = completed!["response"] as Dictionary<string, object?>;
         var output = response!["output"] as List<object?>;
@@ -415,7 +415,7 @@ public sealed class StreamingIntegrationTests
         }
 
         var parsed = ParseEvents(events);
-        var completed = FindEvent(parsed, "response.done");
+        var completed = FindEvent(parsed, "response.completed");
         var response = (completed!["response"] as Dictionary<string, object?>)!;
         var output = (response["output"] as List<object?>)!;
         var functionCall = output.OfType<Dictionary<string, object?>>()
@@ -462,7 +462,7 @@ public sealed class StreamingIntegrationTests
         }
 
         var parsed = ParseEvents(events);
-        var completed = FindEvent(parsed, "response.done");
+        var completed = FindEvent(parsed, "response.completed");
         var response = (completed!["response"] as Dictionary<string, object?>)!;
         var output = (response["output"] as List<object?>)!;
         var functionCall = output.OfType<Dictionary<string, object?>>()
@@ -554,19 +554,18 @@ public sealed class StreamingIntegrationTests
         Assert.Equal(1, eventCounts["response.created"]);
         Assert.Equal(1, eventCounts["response.output_item.added"]);
         Assert.Equal(1, eventCounts["response.content_part.added"]);
-        Assert.Equal(3, eventCounts["response.text.delta"]); // A, B, C
-        Assert.Equal(1, eventCounts["response.text.done"]);
+        Assert.Equal(3, eventCounts["response.output_text.delta"]); // A, B, C
+        Assert.Equal(1, eventCounts["response.output_text.done"]);
         Assert.Equal(1, eventCounts["response.output_item.done"]);
-        Assert.Equal(1, eventCounts["response.done"]);
+        Assert.Equal(1, eventCounts["response.completed"]);
 
         // Assert - 事件顺序正确
         var eventTypes = parsed.Select(e => e["type"]?.ToString()).ToList();
         Assert.Equal("response.created", eventTypes[0]);
-        Assert.Equal("response.done", eventTypes[^1]);
-        Assert.True(eventTypes.IndexOf("response.output_item.added") < eventTypes.IndexOf("response.text.delta"));
-        Assert.True(eventTypes.LastIndexOf("response.text.delta") < eventTypes.IndexOf("response.text.done"));
+        Assert.Equal("response.completed", eventTypes[^1]);
+        Assert.True(eventTypes.IndexOf("response.output_item.added") < eventTypes.IndexOf("response.output_text.delta"));
+        Assert.True(eventTypes.LastIndexOf("response.output_text.delta") < eventTypes.IndexOf("response.output_text.done"));
     }
 
     #endregion
 }
-

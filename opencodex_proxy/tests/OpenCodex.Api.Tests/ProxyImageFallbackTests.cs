@@ -211,7 +211,7 @@ public sealed class ProxyImageFallbackTests
         var body = await response.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Contains("require a configured vision OCR model", body, StringComparison.Ordinal);
+        Assert.Contains("requires a configured vision model", body, StringComparison.Ordinal);
         Assert.Empty(factory.Upstream.Requests);
 
         using var context = OpenCodexDbContextFactory.Create(factory.DbPath);
@@ -221,10 +221,10 @@ public sealed class ProxyImageFallbackTests
         var ocrLog = Assert.Single(logs, item => item.RequestType == ProxyRequestTypes.Ocr);
         Assert.Equal(400, mainLog.StatusCode);
         Assert.Equal(400, ocrLog.StatusCode);
-        Assert.Equal("__ocr_paddleocr__", ocrLog.Model);
-        Assert.Equal("__ocr_paddleocr__", ocrLog.UpstreamModel);
-        Assert.Equal("__local__", ocrLog.ChannelId);
-        Assert.Equal("/internal/ocr/paddleocr", ocrLog.Path);
+        Assert.Null(ocrLog.Model);
+        Assert.Null(ocrLog.UpstreamModel);
+        Assert.Null(ocrLog.ChannelId);
+        Assert.Equal("/internal/ocr/vision", ocrLog.Path);
     }
 
     // [Fact]

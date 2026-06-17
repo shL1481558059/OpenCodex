@@ -312,7 +312,6 @@
       >
         <div class="channel-test-result__meta">
           <span v-if="testResult.duration_ms !== undefined">耗时 {{ displayMs(testResult.duration_ms) }}</span>
-          <span v-if="testResult.status_code">状态码 {{ testResult.status_code }}</span>
           <span v-if="testResult.upstream_model">上游模型 {{ testResult.upstream_model }}</span>
         </div>
         <div class="channel-test-output">{{ formatChannelTestResult(testResult) }}</div>
