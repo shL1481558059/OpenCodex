@@ -104,6 +104,10 @@ public sealed class LogEventResponse
     /// <param name="id">日志标识。</param>
     /// <param name="requestId">请求标识。</param>
     /// <param name="createdAt">创建时间戳。</param>
+    /// <param name="processingStartedAt">请求进入处理状态的时间戳。</param>
+    /// <param name="completedAt">请求完成时间戳。</param>
+    /// <param name="processingStartedAt">请求进入处理状态的时间戳。</param>
+    /// <param name="completedAt">请求完成时间戳。</param>
     /// <param name="method">请求方法。</param>
     /// <param name="path">请求路径。</param>
     /// <param name="clientIp">客户端地址。</param>
@@ -129,6 +133,8 @@ public sealed class LogEventResponse
         long id,
         string? requestId,
         double? createdAt,
+        double? processingStartedAt,
+        double? completedAt,
         string? method,
         string? path,
         string? clientIp,
@@ -154,6 +160,8 @@ public sealed class LogEventResponse
         Id = id;
         RequestId = requestId;
         CreatedAt = createdAt;
+        ProcessingStartedAt = processingStartedAt;
+        CompletedAt = completedAt;
         Method = method;
         Path = path;
         ClientIp = clientIp;
@@ -194,6 +202,18 @@ public sealed class LogEventResponse
     /// </summary>
     [JsonPropertyName("created_at")]
     public double? CreatedAt { get; }
+
+    /// <summary>
+    /// 获取请求进入处理状态的时间戳。
+    /// </summary>
+    [JsonPropertyName("processing_started_at")]
+    public double? ProcessingStartedAt { get; }
+
+    /// <summary>
+    /// 获取请求完成时间戳。
+    /// </summary>
+    [JsonPropertyName("completed_at")]
+    public double? CompletedAt { get; }
 
     /// <summary>
     /// 获取请求方法。
@@ -334,6 +354,8 @@ public sealed class LogEventResponse
             log.Id,
             log.RequestId,
             log.CreatedAt,
+            log.ProcessingStartedAt,
+            log.CompletedAt,
             log.Method,
             log.Path,
             log.ClientIp,
@@ -370,6 +392,29 @@ public sealed class LogEventResponse
 /// <summary>
 /// 表示请求日志详情响应。
 /// </summary>
+public sealed class RequestLogStreamLineResponse
+{
+    public RequestLogStreamLineResponse(int sequence, double occurredAt, string source, string rawLine)
+    {
+        Sequence = sequence;
+        OccurredAt = occurredAt;
+        Source = source;
+        RawLine = rawLine;
+    }
+
+    [JsonPropertyName("sequence")]
+    public int Sequence { get; }
+
+    [JsonPropertyName("occurred_at")]
+    public double OccurredAt { get; }
+
+    [JsonPropertyName("source")]
+    public string Source { get; }
+
+    [JsonPropertyName("raw_line")]
+    public string RawLine { get; }
+}
+
 public sealed class LogDetailResponse
 {
     /// <summary>
@@ -407,10 +452,13 @@ public sealed class LogDetailResponse
     /// <param name="webSearchJson">联网搜索记录内容。</param>
     /// <param name="ocrJson">OCR 记录内容。</param>
     /// <param name="streamTimingsJson">流式写出时序诊断内容。</param>
+    /// <param name="streamLines">原始 SSE line 记录。</param>
     public LogDetailResponse(
         long id,
         string? requestId,
         double? createdAt,
+        double? processingStartedAt,
+        double? completedAt,
         string? method,
         string? path,
         string? clientIp,
@@ -439,11 +487,14 @@ public sealed class LogDetailResponse
         string? responseBody,
         string? webSearchJson,
         string? ocrJson,
-        string? streamTimingsJson)
+        string? streamTimingsJson,
+        IReadOnlyList<RequestLogStreamLineResponse> streamLines)
     {
         Id = id;
         RequestId = requestId;
         CreatedAt = createdAt;
+        ProcessingStartedAt = processingStartedAt;
+        CompletedAt = completedAt;
         Method = method;
         Path = path;
         ClientIp = clientIp;
@@ -473,6 +524,7 @@ public sealed class LogDetailResponse
         WebSearchJson = webSearchJson;
         OcrJson = ocrJson;
         StreamTimingsJson = streamTimingsJson;
+        StreamLines = streamLines;
     }
 
     /// <summary>
@@ -492,6 +544,18 @@ public sealed class LogDetailResponse
     /// </summary>
     [JsonPropertyName("created_at")]
     public double? CreatedAt { get; }
+
+    /// <summary>
+    /// 获取请求进入处理状态的时间戳。
+    /// </summary>
+    [JsonPropertyName("processing_started_at")]
+    public double? ProcessingStartedAt { get; }
+
+    /// <summary>
+    /// 获取请求完成时间戳。
+    /// </summary>
+    [JsonPropertyName("completed_at")]
+    public double? CompletedAt { get; }
 
     /// <summary>
     /// 获取请求方法。
@@ -668,6 +732,12 @@ public sealed class LogDetailResponse
     public string? StreamTimingsJson { get; }
 
     /// <summary>
+    /// 获取原始 SSE line 记录。
+    /// </summary>
+    [JsonPropertyName("stream_lines")]
+    public IReadOnlyList<RequestLogStreamLineResponse> StreamLines { get; }
+
+    /// <summary>
     /// 根据请求日志详情数据创建响应对象。
     /// </summary>
     /// <param name="log">请求日志详情数据。</param>
@@ -680,6 +750,8 @@ public sealed class LogDetailResponse
             log.Id,
             log.RequestId,
             log.CreatedAt,
+            log.ProcessingStartedAt,
+            log.CompletedAt,
             log.Method,
             log.Path,
             log.ClientIp,
@@ -705,6 +777,8 @@ public sealed class LogDetailResponse
             logEvent.Id,
             logEvent.RequestId,
             logEvent.CreatedAt,
+            logEvent.ProcessingStartedAt,
+            logEvent.CompletedAt,
             logEvent.Method,
             logEvent.Path,
             logEvent.ClientIp,
@@ -733,7 +807,12 @@ public sealed class LogDetailResponse
             log.ResponseBody,
             log.WebSearchJson,
             log.OcrJson,
-            log.StreamTimingsJson);
+            log.StreamTimingsJson,
+            log.StreamLines.Select(line => new RequestLogStreamLineResponse(
+                line.Sequence,
+                line.OccurredAt,
+                line.Source,
+                line.RawLine)).ToList());
     }
 }
 

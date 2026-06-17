@@ -21,18 +21,4 @@ public interface IConfigService
     /// <returns>保存后的通道配置结果。</returns>
     ApiOpResult<ConfigResponse> SaveConfig(
         IReadOnlyDictionary<string, object?> body);
-
-    /// <summary>
-    /// 导入通道配置。
-    /// </summary>
-    /// <param name="body">导入请求内容。</param>
-    /// <returns>配置导入结果。</returns>
-    ApiOpResult<ConfigImportResponse> ImportConfig(
-        IReadOnlyDictionary<string, object?> body);
-
-    /// <summary>
-    /// 导出通道配置。
-    /// </summary>
-    /// <returns>配置导出结果。</returns>
-    ApiOpResult<ConfigExportResponse> ExportConfig();
 }

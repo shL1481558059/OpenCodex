@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Text.Json.Serialization;
 using OpenCodex.CoreBase.DTOs;
 
@@ -32,11 +31,13 @@ public sealed class ConfigResponse
     /// <returns>配置响应。</returns>
     public static ConfigResponse From(
         IReadOnlyList<ChannelDto> channels,
-        Func<ChannelDto, int>? activeRequestsResolver = null)
+        Func<ChannelDto, int>? activeRequestsResolver = null,
+        Func<ChannelDto, string>? healthStatusResolver = null)
     {
         return new ConfigResponse(channels.Select(channel => ChannelResponse.From(
             channel,
-            activeRequestsResolver?.Invoke(channel) ?? 0)).ToList());
+            activeRequestsResolver?.Invoke(channel) ?? 0,
+            healthStatusResolver?.Invoke(channel) ?? "healthy")).ToList());
     }
 }
 
@@ -64,6 +65,7 @@ public sealed class ChannelResponse
     /// <param name="compat">通道兼容性选项。</param>
     /// <param name="models">通道配置的模型。</param>
     /// <param name="enabled">指示通道是否启用的值。</param>
+    /// <param name="healthStatus">渠道运行时健康状态。</param>
     public ChannelResponse(
         string ownerUsername,
         string id,
@@ -80,7 +82,8 @@ public sealed class ChannelResponse
         int activeRequests,
         IReadOnlyDictionary<string, object?> compat,
         IReadOnlyList<object?> models,
-        bool enabled)
+        bool enabled,
+        string healthStatus)
     {
         OwnerUsername = ownerUsername;
         Id = id;
@@ -98,6 +101,7 @@ public sealed class ChannelResponse
         Compat = compat;
         Models = models;
         Enabled = enabled;
+        HealthStatus = healthStatus;
     }
 
     /// <summary>
@@ -197,12 +201,18 @@ public sealed class ChannelResponse
     public bool Enabled { get; }
 
     /// <summary>
+    /// 获取渠道运行时健康状态。
+    /// </summary>
+    [JsonPropertyName("health_status")]
+    public string HealthStatus { get; }
+
+    /// <summary>
     /// 根据通道 DTO 创建通道响应。
     /// </summary>
     /// <param name="channel">通道 DTO。</param>
     /// <param name="activeRequests">渠道当前主请求并发占用数。</param>
     /// <returns>通道响应。</returns>
-    public static ChannelResponse From(ChannelDto channel, int activeRequests)
+    public static ChannelResponse From(ChannelDto channel, int activeRequests, string healthStatus)
     {
         return new ChannelResponse(
             channel.OwnerUsername,
@@ -220,154 +230,7 @@ public sealed class ChannelResponse
             activeRequests,
             channel.Compat,
             channel.Models,
-            channel.Enabled);
-    }
-}
-
-/// <summary>
-/// 表示配置导入响应。
-/// </summary>
-public sealed class ConfigImportResponse
-{
-    /// <summary>
-    /// 初始化 <see cref="ConfigImportResponse"/> 类的新实例。
-    /// </summary>
-    /// <param name="config">导入后的配置响应。</param>
-    /// <param name="imported">已导入的通道数量。</param>
-    /// <param name="skipped">已跳过的通道数量。</param>
-    /// <param name="skippedIds">已跳过的通道标识符列表。</param>
-    public ConfigImportResponse(
-        ConfigResponse config,
-        int imported,
-        int skipped,
-        IReadOnlyList<string> skippedIds)
-    {
-        Config = config;
-        Imported = imported;
-        Skipped = skipped;
-        SkippedIds = skippedIds;
-    }
-
-    /// <summary>
-    /// 获取导入后的配置响应。
-    /// </summary>
-    [JsonPropertyName("config")]
-    public ConfigResponse Config { get; }
-
-    /// <summary>
-    /// 获取已导入的通道数量。
-    /// </summary>
-    [JsonPropertyName("imported")]
-    public int Imported { get; }
-
-    /// <summary>
-    /// 获取已跳过的通道数量。
-    /// </summary>
-    [JsonPropertyName("skipped")]
-    public int Skipped { get; }
-
-    /// <summary>
-    /// 获取已跳过的通道标识符列表。
-    /// </summary>
-    [JsonPropertyName("skipped_ids")]
-    public IReadOnlyList<string> SkippedIds { get; }
-
-    /// <summary>
-    /// 根据导入结果创建配置导入响应。
-    /// </summary>
-    /// <param name="config">导入后的通道 DTO 列表。</param>
-    /// <param name="imported">已导入的通道数量。</param>
-    /// <param name="skipped">已跳过的通道数量。</param>
-    /// <param name="skippedIds">已跳过的通道标识符列表。</param>
-    /// <returns>配置导入响应。</returns>
-    public static ConfigImportResponse From(
-        IReadOnlyList<ChannelDto> config,
-        int imported,
-        int skipped,
-        IReadOnlyList<string> skippedIds)
-    {
-        return new ConfigImportResponse(
-            ConfigResponse.From(config),
-            imported,
-            skipped,
-            skippedIds);
-    }
-}
-
-/// <summary>
-/// 表示配置导出响应。
-/// </summary>
-public sealed class ConfigExportResponse
-{
-    /// <summary>
-    /// 初始化 <see cref="ConfigExportResponse"/> 类的新实例。
-    /// </summary>
-    /// <param name="payload">导出的配置内容。</param>
-    /// <param name="contentType">导出内容类型。</param>
-    /// <param name="fileName">建议下载文件名。</param>
-    public ConfigExportResponse(string payload, string contentType, string fileName)
-    {
-        Payload = payload;
-        ContentType = contentType;
-        FileName = fileName;
-    }
-
-    /// <summary>
-    /// 获取导出的配置内容。
-    /// </summary>
-    public string Payload { get; }
-
-    /// <summary>
-    /// 获取导出内容类型。
-    /// </summary>
-    public string ContentType { get; }
-
-    /// <summary>
-    /// 获取建议下载文件名。
-    /// </summary>
-    public string FileName { get; }
-
-    /// <summary>
-    /// 导出配置时使用的 JSON 序列化选项。
-    /// </summary>
-    private static readonly JsonSerializerOptions ExportJsonOptions = new()
-    {
-        WriteIndented = true
-    };
-
-    /// <summary>
-    /// 根据通道 DTO 列表创建配置导出响应。
-    /// </summary>
-    /// <param name="channels">要导出的通道 DTO 列表。</param>
-    /// <returns>配置导出响应。</returns>
-    public static ConfigExportResponse From(IReadOnlyList<ChannelDto> channels)
-    {
-        var payload = JsonSerializer.Serialize(
-            new Dictionary<string, object?>
-            {
-                ["channels"] = channels.Select(channel => new Dictionary<string, object?>
-                {
-                    ["owner_username"] = channel.OwnerUsername,
-                    ["id"] = channel.Id,
-                    ["name"] = channel.Name,
-                    ["type"] = channel.Type,
-                    ["baseurl"] = channel.BaseUrl,
-                    ["apikey"] = channel.ApiKey,
-                    ["auth_mode"] = channel.AuthMode,
-                    ["headers"] = channel.Headers,
-                    ["timeout_seconds"] = channel.TimeoutSeconds,
-                    ["retry_count"] = channel.RetryCount,
-                    ["priority"] = channel.Priority,
-                    ["capacity"] = channel.Capacity,
-                    ["compat"] = channel.Compat,
-                    ["models"] = channel.Models,
-                    ["enabled"] = channel.Enabled
-                }).ToList()
-            },
-            ExportJsonOptions) + "\n";
-        return new ConfigExportResponse(
-            payload,
-            "application/json",
-            "opencodex-channels-config.json");
+            channel.Enabled,
+            healthStatus);
     }
 }

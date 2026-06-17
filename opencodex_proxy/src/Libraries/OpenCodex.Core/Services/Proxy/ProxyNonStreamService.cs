@@ -65,7 +65,7 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
                     errorResponse = exception.ProxyException.ToResponse();
                     upstreamRequest = exception.FinalUpstreamRequest;
                     webSearchDetails = exception.Details;
-                    return new ProxyNonStreamResult(statusCode, errorResponse);
+                    return new ProxyNonStreamResult(statusCode, errorResponse, exception.ProxyException);
                 }
             }
             else
@@ -90,11 +90,12 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
             error = exception.Message;
             errorResponse = exception.ToResponse();
             upstreamResponse = UpstreamErrorBody(exception);
-            return new ProxyNonStreamResult(statusCode, errorResponse);
+            return new ProxyNonStreamResult(statusCode, errorResponse, exception);
         }
         finally
         {
-            _logs.WriteLog(
+            _logs.CompleteLog(
+                context.RequestLogId,
                 new ProxyLogContext(
                     context.RequestId,
                     context.OwnerUsername,

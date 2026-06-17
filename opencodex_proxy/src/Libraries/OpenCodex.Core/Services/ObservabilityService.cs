@@ -1,5 +1,4 @@
 using System.Globalization;
-using Mapster;
 using Microsoft.EntityFrameworkCore;
 using OpenCodex.Data;
 using OpenCodex.Core.Domain;
@@ -17,6 +16,8 @@ public sealed class ObservabilityService : IObservabilityService
 {
     private static readonly HashSet<string> RequestStatusValues = new(StringComparer.Ordinal)
     {
+        ProxyRequestLifecycleStatus.Queued,
+        ProxyRequestLifecycleStatus.Processing,
         "success",
         "failed"
     };
@@ -116,7 +117,8 @@ public sealed class ObservabilityService : IObservabilityService
     public ApiOpResult<StatsResponse> ReadStats(
         string rangeKey,
         object? startTs,
-        object? endTs)
+        object? endTs,
+        IReadOnlyDictionary<string, object?> filters)
     {
         var (currentUsername, isSuperadmin) = CurrentScope();
         return ApiOpResult<StatsResponse>.Succeed(StatsResponse.From(ReadStats(
@@ -124,7 +126,7 @@ public sealed class ObservabilityService : IObservabilityService
             rangeKey,
             startTs,
             endTs,
-            isSuperadmin ? null : currentUsername)));
+            ScopedFilters(filters, currentUsername, isSuperadmin))));
     }
 
     private (string Username, bool IsSuperadmin) CurrentScope()
@@ -156,7 +158,7 @@ public sealed class ObservabilityService : IObservabilityService
             .Skip(offset)
             .Take(parsedPageSize)
             .AsEnumerable()
-            .Select(log => log.Adapt<RequestLogEventDto>())
+            .Select(MapRequestLogEvent)
             .ToList();
 
         return new RequestLogPageDto(events, total, parsedPage, parsedPageSize);
@@ -182,8 +184,9 @@ public sealed class ObservabilityService : IObservabilityService
         var query = ApplyLogFilters(context.RequestLogs.AsNoTracking(), filters ?? new Dictionary<string, object?>());
         var log = query
             .Include(item => item.Detail)
+            .Include(item => item.StreamLines)
             .FirstOrDefault(item => item.Id == parsedId);
-        return log is null ? null : log.Adapt<RequestLogDto>();
+        return log is null ? null : MapRequestLog(log);
     }
 
     private static IReadOnlyDictionary<string, object> ReadLogFilterOption(
@@ -201,7 +204,7 @@ public sealed class ObservabilityService : IObservabilityService
         {
             return new Dictionary<string, object>(StringComparer.Ordinal)
             {
-                ["request_statuses"] = new List<string> { "success", "failed" }
+                ["request_statuses"] = RequestStatusValues.ToList()
             };
         }
 
@@ -237,7 +240,7 @@ public sealed class ObservabilityService : IObservabilityService
         string? rangeKey = "1h",
         object? startTs = null,
         object? endTs = null,
-        string? ownerUsername = null)
+        IReadOnlyDictionary<string, object?>? filters = null)
     {
         var resolved = ResolveStatsRange(rangeKey, startTs, endTs);
         if (!File.Exists(settings.DbPath))
@@ -247,13 +250,11 @@ public sealed class ObservabilityService : IObservabilityService
 
         using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
         OpenCodexRequestLogs.EnsureSchema(context);
-        var query = context.RequestLogs
+        var query = ApplyLogFilters(
+            context.RequestLogs
             .AsNoTracking()
-            .Where(log => log.CreatedAt >= resolved.StartTs && log.CreatedAt < resolved.EndTs);
-        if (!string.IsNullOrWhiteSpace(ownerUsername))
-        {
-            query = query.Where(log => log.OwnerUsername == ownerUsername);
-        }
+            .Where(log => log.CreatedAt >= resolved.StartTs && log.CreatedAt < resolved.EndTs),
+            filters ?? new Dictionary<string, object?>());
 
         var logs = query.ToList();
         var bucketSeconds = resolved.GranularityMinutes * 60.0;
@@ -382,9 +383,18 @@ public sealed class ObservabilityService : IObservabilityService
             return query;
         }
 
-        return requestStatus == "success"
-            ? query.Where(log => log.StatusCode < 400 && (log.Error == null || log.Error == string.Empty))
-            : query.Where(log => log.StatusCode >= 400 || (log.Error != null && log.Error != string.Empty));
+        return requestStatus switch
+        {
+            ProxyRequestLifecycleStatus.Queued => query.Where(log => log.LifecycleStatus == ProxyRequestLifecycleStatus.Queued),
+            ProxyRequestLifecycleStatus.Processing => query.Where(log => log.LifecycleStatus == ProxyRequestLifecycleStatus.Processing),
+            ProxyRequestLifecycleStatus.Success => query.Where(log =>
+                log.LifecycleStatus == ProxyRequestLifecycleStatus.Success
+                || (log.LifecycleStatus == null && log.StatusCode < 400 && string.IsNullOrEmpty(log.Error))),
+            ProxyRequestLifecycleStatus.Failed => query.Where(log =>
+                log.LifecycleStatus == ProxyRequestLifecycleStatus.Failed
+                || (log.LifecycleStatus == null && (log.StatusCode >= 400 || !string.IsNullOrEmpty(log.Error)))),
+            _ => query
+        };
     }
 
     private static IQueryable<RequestLog> ApplyCreatedFromFilter(IQueryable<RequestLog> query, object? value)
@@ -414,7 +424,7 @@ public sealed class ObservabilityService : IObservabilityService
             ["request_types"] = new List<string> { ProxyRequestTypes.Main, ProxyRequestTypes.Ocr },
             ["status_codes"] = new List<long>(),
             ["api_key_ids"] = new List<LogApiKeyFilterOption>(),
-            ["request_statuses"] = new List<string> { "success", "failed" }
+            ["request_statuses"] = RequestStatusValues.ToList()
         };
     }
 
@@ -606,7 +616,7 @@ public sealed class ObservabilityService : IObservabilityService
         IReadOnlyList<StatsPointDto> points)
     {
         var requestCount = logs.Count;
-        var successCount = logs.Count(log => log.StatusCode < 400 && string.IsNullOrEmpty(log.Error));
+        var successCount = logs.Count(IsSuccessfulLog);
         var inputTokens = logs.Sum(log => log.InputTokens);
         var cachedTokens = logs.Sum(log => log.CachedTokens);
         var outputTokens = logs.Sum(log => log.OutputTokens);
@@ -650,6 +660,101 @@ public sealed class ObservabilityService : IObservabilityService
             .OrderByDescending(item => item.Count)
             .Take(20)
             .ToList();
+    }
+
+    private static bool IsSuccessfulLog(RequestLog log)
+    {
+        return log.LifecycleStatus == ProxyRequestLifecycleStatus.Success
+            || (log.LifecycleStatus is null && log.StatusCode < 400 && string.IsNullOrEmpty(log.Error));
+    }
+
+    private static RequestLogEventDto MapRequestLogEvent(RequestLog log)
+    {
+        return new RequestLogEventDto(
+            log.Id,
+            log.RequestId,
+            log.CreatedAt,
+            log.ProcessingStartedAt,
+            log.CompletedAt,
+            log.Method,
+            log.Path,
+            log.ClientIp,
+            log.Model,
+            log.UpstreamModel,
+            log.ChannelId,
+            log.RequestType,
+            log.ParentRequestLogId,
+            log.IsStream,
+            log.TtftMs,
+            log.DurationMs,
+            log.StatusCode,
+            log.InputTokens,
+            log.CachedTokens,
+            log.OutputTokens,
+            log.Cost,
+            log.OwnerUsername,
+            log.ApiKeyId,
+            log.Error,
+            NormalizeRequestStatus(log.LifecycleStatus, log.StatusCode, log.Error));
+    }
+
+    private static RequestLogDto MapRequestLog(RequestLog log)
+    {
+        return new RequestLogDto(
+            log.Id,
+            log.RequestId,
+            log.CreatedAt,
+            log.ProcessingStartedAt,
+            log.CompletedAt,
+            log.Method,
+            log.Path,
+            log.ClientIp,
+            log.Model,
+            log.UpstreamModel,
+            log.ChannelId,
+            log.RequestType,
+            log.ParentRequestLogId,
+            log.IsStream,
+            log.TtftMs,
+            log.DurationMs,
+            log.StatusCode,
+            log.InputTokens,
+            log.CachedTokens,
+            log.OutputTokens,
+            log.Cost,
+            log.OwnerUsername,
+            log.ApiKeyId,
+            log.Error,
+            log.Detail?.RequestHeaders,
+            log.Detail?.RequestBody,
+            log.Detail?.UpstreamRequestBody,
+            log.Detail?.UpstreamResponseBody,
+            log.Detail?.ResponseBody,
+            log.Detail?.WebSearchJson,
+            log.Detail?.OcrJson,
+            log.Detail?.StreamTimingsJson,
+            log.StreamLines
+                .OrderBy(item => item.Sequence)
+                .Select(item => new RequestLogStreamLineDto(
+                    item.Sequence,
+                    item.OccurredAt,
+                    item.Source,
+                    item.RawLine))
+                .ToList(),
+            NormalizeRequestStatus(log.LifecycleStatus, log.StatusCode, log.Error));
+    }
+
+    private static string NormalizeRequestStatus(string? lifecycleStatus, int? statusCode, string? error)
+    {
+        if (!string.IsNullOrWhiteSpace(lifecycleStatus))
+        {
+            return lifecycleStatus;
+        }
+
+        var status = statusCode ?? 0;
+        return status >= 400 || !string.IsNullOrWhiteSpace(error)
+            ? ProxyRequestLifecycleStatus.Failed
+            : ProxyRequestLifecycleStatus.Success;
     }
 
     private static ResolvedStatsRange ResolveStatsRange(

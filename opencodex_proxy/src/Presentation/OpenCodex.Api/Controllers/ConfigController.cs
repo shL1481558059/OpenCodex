@@ -25,29 +25,6 @@ public sealed class ConfigController : AuthenticatedApiControllerBase
         return Api(result);
     }
 
-    [HttpGet("/config/export")]
-    public IActionResult ExportConfig()
-    {
-        RequireUser();
-        var result = _config.ExportConfig();
-        if (!result.Succeeded || result.Payload is null)
-        {
-            return Api(result);
-        }
-
-        var export = result.Payload;
-        Response.Headers.ContentDisposition = $"attachment; filename=\"{export.FileName}\"";
-        return Content(export.Payload, export.ContentType);
-    }
-
-    [HttpPost("/config/import")]
-    public IActionResult ImportConfig(ConfigSaveRequest request)
-    {
-        RequireUser();
-        var result = _config.ImportConfig(request.ToDictionary());
-        return Api(result);
-    }
-
     [HttpPost("/config")]
     public IActionResult SaveConfig(ConfigSaveRequest request)
     {

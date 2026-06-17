@@ -163,6 +163,139 @@ public sealed class ProxyEndpointServiceTests
     }
 
     [Fact]
+    public async Task ProxyAsync_NonStreamRetryableFailure_FailsOverToNextChannel()
+    {
+        var capacity = new ChannelCapacityService();
+        var primary = CreateChannel("primary", priority: 0, capacity: 1);
+        var secondary = CreateChannel("secondary", priority: 1, capacity: 1);
+        var attempts = new List<string>();
+        var nonStreams = new StubProxyNonStreamService(context =>
+        {
+            attempts.Add(context.ChannelId);
+            if (context.ChannelId == "primary")
+            {
+                throw new UpstreamException("primary unavailable", ProxyHttpStatus.BadGateway);
+            }
+
+            return Task.FromResult(new ProxyNonStreamResult(200, new { ok = true }));
+        });
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService(
+            [
+                CreateRoute(primary, "shared-model", "upstream-primary"),
+                CreateRoute(secondary, "shared-model", "upstream-secondary")
+            ]),
+            nonStreams: nonStreams);
+
+        var result = await service.ProxyAsync(CreateChatContext("shared-model"));
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.Equal(["primary", "secondary"], attempts);
+        Assert.Equal("secondary", nonStreams.LastContext!.ChannelId);
+        Assert.Equal(0, capacity.GetActiveRequests("admin", "primary"));
+        Assert.Equal(0, capacity.GetActiveRequests("admin", "secondary"));
+    }
+
+    [Fact]
+    public async Task ProxyAsync_NonStreamUpstreamBadRequest_FailsOverToNextChannel()
+    {
+        var capacity = new ChannelCapacityService();
+        var primary = CreateChannel("primary", priority: 0, capacity: 1);
+        var secondary = CreateChannel("secondary", priority: 1, capacity: 1);
+        var attempts = new List<string>();
+        var nonStreams = new StubProxyNonStreamService(context =>
+        {
+            attempts.Add(context.ChannelId);
+            if (context.ChannelId == "primary")
+            {
+                throw new UpstreamException("primary rejected payload", ProxyHttpStatus.BadRequest);
+            }
+
+            return Task.FromResult(new ProxyNonStreamResult(200, new { ok = true }));
+        });
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService(
+            [
+                CreateRoute(primary, "shared-model", "upstream-primary"),
+                CreateRoute(secondary, "shared-model", "upstream-secondary")
+            ]),
+            nonStreams: nonStreams);
+
+        var result = await service.ProxyAsync(CreateChatContext("shared-model"));
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.Equal(["primary", "secondary"], attempts);
+        Assert.Equal("secondary", nonStreams.LastContext!.ChannelId);
+        Assert.Equal(0, capacity.GetActiveRequests("admin", "primary"));
+        Assert.Equal(0, capacity.GetActiveRequests("admin", "secondary"));
+    }
+
+    [Fact]
+    public async Task ProxyAsync_NonStreamFailureResult_FailsOverToNextChannel()
+    {
+        var capacity = new ChannelCapacityService();
+        var breaker = new ChannelCircuitBreakerService();
+        var primary = CreateChannel("primary", priority: 0, capacity: 1);
+        var secondary = CreateChannel("secondary", priority: 1, capacity: 1);
+        var attempts = new List<string>();
+        var nonStreams = new StubProxyNonStreamService(context =>
+        {
+            attempts.Add(context.ChannelId);
+            return context.ChannelId == "primary"
+                ? Task.FromResult(new ProxyNonStreamResult(
+                    ProxyHttpStatus.BadGateway,
+                    new { error = true },
+                    new UpstreamException("primary unavailable", ProxyHttpStatus.BadGateway)))
+                : Task.FromResult(new ProxyNonStreamResult(200, new { ok = true }));
+        });
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService(
+            [
+                CreateRoute(primary, "shared-model", "upstream-primary"),
+                CreateRoute(secondary, "shared-model", "upstream-secondary")
+            ]),
+            breaker: breaker,
+            nonStreams: nonStreams);
+
+        var result = await service.ProxyAsync(CreateChatContext("shared-model"));
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.Equal(["primary", "secondary"], attempts);
+        Assert.Equal(ChannelHealthStatus.Healthy, breaker.GetHealthStatus("admin", "secondary", enabled: true));
+    }
+
+    [Fact]
+    public async Task ProxyAsync_NonStreamBadRequest_DoesNotFailOver()
+    {
+        var capacity = new ChannelCapacityService();
+        var primary = CreateChannel("primary", priority: 0, capacity: 1);
+        var secondary = CreateChannel("secondary", priority: 1, capacity: 1);
+        var attempts = new List<string>();
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService(
+            [
+                CreateRoute(primary, "shared-model", "upstream-primary"),
+                CreateRoute(secondary, "shared-model", "upstream-secondary")
+            ]),
+            nonStreams: new StubProxyNonStreamService(context =>
+            {
+                attempts.Add(context.ChannelId);
+                throw new BadRequestException("bad payload");
+            }));
+
+        var result = await service.ProxyAsync(CreateChatContext("shared-model"));
+
+        Assert.Equal(400, result.StatusCode);
+        Assert.Equal(["primary"], attempts);
+        Assert.Equal(0, capacity.GetActiveRequests("admin", "primary"));
+        Assert.Equal(0, capacity.GetActiveRequests("admin", "secondary"));
+    }
+
+    [Fact]
     public async Task ProxyAsync_StreamSuccess_ReleasesCapacity()
     {
         var capacity = new ChannelCapacityService();
@@ -200,6 +333,194 @@ public sealed class ProxyEndpointServiceTests
 
         Assert.Equal(502, result.StatusCode);
         Assert.Equal(0, capacity.GetActiveRequests("admin", "stream-failure"));
+    }
+
+    [Fact]
+    public async Task ProxyAsync_StreamRetryableFailureBeforeFirstByte_FailsOverToNextChannel()
+    {
+        var capacity = new ChannelCapacityService();
+        var primary = CreateChannel("primary", priority: 0, capacity: 1);
+        var secondary = CreateChannel("secondary", priority: 1, capacity: 1);
+        var attempts = new List<string>();
+        var streams = new StubProxyStreamService(async context =>
+        {
+            attempts.Add(context.ChannelId);
+            if (context.ChannelId == "primary")
+            {
+                throw new UpstreamException("stream timeout", ProxyHttpStatus.GatewayTimeout);
+            }
+
+            await context.StreamWriter.WriteLinesAsync(
+                ToAsyncEnumerable("data: {\"type\":\"response.created\"}\n\n"),
+                static _ => true,
+                static () => 1,
+                CancellationToken.None);
+        });
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService(
+            [
+                CreateRoute(primary, "shared-model", "upstream-primary"),
+                CreateRoute(secondary, "shared-model", "upstream-secondary")
+            ]),
+            streams: streams);
+
+        var payload = CreateChatPayload("shared-model");
+        payload["stream"] = true;
+        var writer = new RecordingProxyStreamWriter();
+        var result = await service.ProxyAsync(CreateChatContext(payload, writer));
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.True(result.IsEmpty);
+        Assert.Equal(["primary", "secondary"], attempts);
+        Assert.Single(writer.WrittenLines);
+        Assert.Equal(0, capacity.GetActiveRequests("admin", "primary"));
+        Assert.Equal(0, capacity.GetActiveRequests("admin", "secondary"));
+    }
+
+    [Fact]
+    public async Task ProxyAsync_StreamUpstreamBadRequestBeforeFirstByte_FailsOverToNextChannel()
+    {
+        var capacity = new ChannelCapacityService();
+        var primary = CreateChannel("primary", priority: 0, capacity: 1);
+        var secondary = CreateChannel("secondary", priority: 1, capacity: 1);
+        var attempts = new List<string>();
+        var streams = new StubProxyStreamService(async context =>
+        {
+            attempts.Add(context.ChannelId);
+            if (context.ChannelId == "primary")
+            {
+                throw new UpstreamException("primary rejected stream payload", ProxyHttpStatus.BadRequest);
+            }
+
+            await context.StreamWriter.WriteLinesAsync(
+                ToAsyncEnumerable("data: {\"type\":\"response.created\"}\n\n"),
+                static _ => true,
+                static () => 1,
+                CancellationToken.None);
+        });
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService(
+            [
+                CreateRoute(primary, "shared-model", "upstream-primary"),
+                CreateRoute(secondary, "shared-model", "upstream-secondary")
+            ]),
+            streams: streams);
+
+        var payload = CreateChatPayload("shared-model");
+        payload["stream"] = true;
+        var writer = new RecordingProxyStreamWriter();
+        var result = await service.ProxyAsync(CreateChatContext(payload, writer));
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.True(result.IsEmpty);
+        Assert.Equal(["primary", "secondary"], attempts);
+        Assert.Single(writer.WrittenLines);
+        Assert.Equal(0, capacity.GetActiveRequests("admin", "primary"));
+        Assert.Equal(0, capacity.GetActiveRequests("admin", "secondary"));
+    }
+
+    [Fact]
+    public async Task ProxyAsync_StreamRetryableFailureAfterFirstByte_DoesNotFailOver()
+    {
+        var capacity = new ChannelCapacityService();
+        var primary = CreateChannel("primary", priority: 0, capacity: 1);
+        var secondary = CreateChannel("secondary", priority: 1, capacity: 1);
+        var attempts = new List<string>();
+        var streams = new StubProxyStreamService(async context =>
+        {
+            attempts.Add(context.ChannelId);
+            await context.StreamWriter.WriteLinesAsync(
+                ToAsyncEnumerable("data: {\"type\":\"response.created\"}\n\n"),
+                static _ => true,
+                static () => 1,
+                CancellationToken.None);
+            throw new UpstreamException("stream dropped", ProxyHttpStatus.BadGateway);
+        });
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService(
+            [
+                CreateRoute(primary, "shared-model", "upstream-primary"),
+                CreateRoute(secondary, "shared-model", "upstream-secondary")
+            ]),
+            streams: streams);
+
+        var payload = CreateChatPayload("shared-model");
+        payload["stream"] = true;
+        var writer = new RecordingProxyStreamWriter();
+
+        await Assert.ThrowsAsync<UpstreamException>(() => service.ProxyAsync(CreateChatContext(payload, writer)));
+
+        Assert.Equal(["primary"], attempts);
+        Assert.Single(writer.WrittenLines);
+        Assert.Equal(0, capacity.GetActiveRequests("admin", "primary"));
+        Assert.Equal(0, capacity.GetActiveRequests("admin", "secondary"));
+    }
+
+    [Fact]
+    public async Task ProxyAsync_OpenCircuit_SkipsPrimaryChannel()
+    {
+        var capacity = new ChannelCapacityService();
+        var now = DateTimeOffset.UtcNow;
+        var breaker = new ChannelCircuitBreakerService(
+            failureThreshold: 1,
+            openDuration: TimeSpan.FromSeconds(30),
+            halfOpenMaxProbeRequests: 1,
+            clock: () => now);
+        var primary = CreateChannel("primary", priority: 0, capacity: 1);
+        var secondary = CreateChannel("secondary", priority: 1, capacity: 1);
+        breaker.RecordFailure("admin", "primary", new UpstreamException("down", ProxyHttpStatus.BadGateway));
+
+        var attempts = new List<string>();
+        var nonStreams = new StubProxyNonStreamService(context =>
+        {
+            attempts.Add(context.ChannelId);
+            return Task.FromResult(new ProxyNonStreamResult(200, new { ok = true }));
+        });
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService(
+            [
+                CreateRoute(primary, "shared-model", "upstream-primary"),
+                CreateRoute(secondary, "shared-model", "upstream-secondary")
+            ]),
+            breaker: breaker,
+            nonStreams: nonStreams);
+
+        var result = await service.ProxyAsync(CreateChatContext("shared-model"));
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.Equal(["secondary"], attempts);
+    }
+
+    [Fact]
+    public async Task ProxyAsync_HalfOpenProbeSuccess_ClosesCircuit()
+    {
+        var capacity = new ChannelCapacityService();
+        var now = DateTimeOffset.UtcNow;
+        var breaker = new ChannelCircuitBreakerService(
+            failureThreshold: 1,
+            openDuration: TimeSpan.FromSeconds(10),
+            halfOpenMaxProbeRequests: 1,
+            clock: () => now);
+        var primary = CreateChannel("primary", priority: 0, capacity: 1);
+        breaker.RecordFailure("admin", "primary", new UpstreamException("down", ProxyHttpStatus.BadGateway));
+        now = now.AddSeconds(11);
+
+        var nonStreams = new StubProxyNonStreamService(_ =>
+            Task.FromResult(new ProxyNonStreamResult(200, new { ok = true })));
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService([CreateRoute(primary, "shared-model", "upstream-primary")]),
+            breaker: breaker,
+            nonStreams: nonStreams);
+
+        var result = await service.ProxyAsync(CreateChatContext("shared-model"));
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.Equal(ChannelHealthStatus.Healthy, breaker.GetHealthStatus("admin", "primary", enabled: true));
     }
 
     [Fact]
@@ -339,6 +660,7 @@ public sealed class ProxyEndpointServiceTests
     private static ProxyEndpointService CreateService(
         IChannelCapacityService capacity,
         IProxyRouteService routes,
+        IChannelCircuitBreakerService? breaker = null,
         IChannelAffinityService? affinity = null,
         IProxyNonStreamService? nonStreams = null,
         IProxyStreamService? streams = null)
@@ -348,6 +670,7 @@ public sealed class ProxyEndpointServiceTests
             new StubProxyRequestService(),
             routes,
             capacity,
+            breaker ?? new ChannelCircuitBreakerService(),
             affinity ?? new ChannelAffinityService(),
             new StubProxyImageFallbackService(),
             nonStreams ?? new StubProxyNonStreamService(_ =>
@@ -362,12 +685,19 @@ public sealed class ProxyEndpointServiceTests
 
     private static ProxyEndpointContext CreateChatContext(Dictionary<string, object?> payload)
     {
+        return CreateChatContext(payload, new StubProxyStreamWriter());
+    }
+
+    private static ProxyEndpointContext CreateChatContext(
+        Dictionary<string, object?> payload,
+        IProxyStreamWriter streamWriter)
+    {
         return new ProxyEndpointContext(
             ProtocolConverter.Chat,
             payload,
             "Bearer test",
             new ProxyRequestMetadata("POST", "/v1/chat/completions", null, new Dictionary<string, string>()),
-            new StubProxyStreamWriter(),
+            streamWriter,
             CancellationToken.None);
     }
 
@@ -552,8 +882,53 @@ public sealed class ProxyEndpointServiceTests
         }
     }
 
+    private sealed class RecordingProxyStreamWriter : IProxyStreamWriter
+    {
+        public List<string> WrittenLines { get; } = [];
+
+        public void PrepareSse()
+        {
+        }
+
+        public async Task<StreamWriteMetrics> WriteLinesAsync(
+            IAsyncEnumerable<string> lines,
+            Func<string, bool> countsForTtft,
+            Func<int> elapsedMilliseconds,
+            CancellationToken cancellationToken = default)
+        {
+            await foreach (var line in lines.WithCancellation(cancellationToken))
+            {
+                WrittenLines.Add(line);
+            }
+
+            return new StreamWriteMetrics();
+        }
+    }
+
+    private static async IAsyncEnumerable<string> ToAsyncEnumerable(params string[] lines)
+    {
+        foreach (var line in lines)
+        {
+            yield return line;
+            await Task.Yield();
+        }
+    }
+
     private sealed class StubProxyLogService : IProxyLogService
     {
+        public long CreateQueuedLog(ProxyRequestLogQueuedContext context)
+        {
+            return 1;
+        }
+
+        public void MarkProcessing(long requestLogId, ProxyRequestLogProcessingContext context)
+        {
+        }
+
+        public void CompleteLog(long requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
+        {
+        }
+
         public long WriteLog(ProxyLogContext context, ProxyRequestMetadata request)
         {
             return 0;

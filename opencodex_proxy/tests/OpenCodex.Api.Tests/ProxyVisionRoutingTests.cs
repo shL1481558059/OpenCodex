@@ -50,6 +50,42 @@ public sealed class ProxyVisionRoutingTests
     }
 
     [Fact]
+    public void ValidateCompat_RejectsRemovedFallbackThinkingField()
+    {
+        var config = ConfigNormalizer.Normalize(new Dictionary<string, object?>
+        {
+            ["channels"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["owner_username"] = "admin",
+                    ["id"] = "chat",
+                    ["name"] = "chat",
+                    ["type"] = ProtocolConverter.Chat,
+                    ["baseurl"] = "https://example.test/v1",
+                    ["apikey"] = "secret",
+                    ["auth_mode"] = "config",
+                    ["timeout_seconds"] = 30,
+                    ["retry_count"] = 0,
+                    ["capacity"] = 3,
+                    ["models"] = new List<object?>
+                    {
+                        ModelConfig("text-model", "text-upstream")
+                    },
+                    ["compat"] = new Dictionary<string, object?>
+                    {
+                        ["fallback_thinking_on_tool_use"] = true
+                    },
+                    ["enabled"] = true
+                }
+            }
+        });
+
+        var exception = Assert.Throws<ConfigException>(() => ConfigValidator.Validate(config));
+        Assert.Contains("compat has unsupported field(s): fallback_thinking_on_tool_use", exception.Message);
+    }
+
+    [Fact]
     public void ChooseRoute_ImageInput_KeepsOriginalTextModel()
     {
         var service = CreateRouteService(
@@ -317,7 +353,7 @@ public sealed class ProxyVisionRoutingTests
             Id = id,
             Position = position,
             Priority = priority ?? position,
-            Capacity = capacity,
+            Capacity = capacity ?? 3,
             Name = id,
             Type = ProtocolConverter.Chat,
             BaseUrl = "https://example.test/v1",
@@ -350,6 +386,7 @@ public sealed class ProxyVisionRoutingTests
             ["auth_mode"] = "config",
             ["timeout_seconds"] = 30,
             ["retry_count"] = 0,
+            ["capacity"] = 3,
             ["models"] = models,
             ["enabled"] = true
         };

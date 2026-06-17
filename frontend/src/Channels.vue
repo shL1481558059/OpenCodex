@@ -6,12 +6,6 @@
         <div class="text-muted">保存单个渠道后立即生效</div>
       </div>
       <div class="toolbar-actions">
-        <el-upload :show-file-list="false" accept="application/json" :before-upload="importConfig">
-          <template #trigger>
-            <el-button :icon="Upload">导入配置</el-button>
-          </template>
-        </el-upload>
-        <el-button :icon="Download" @click="exportConfig">导出配置</el-button>
         <el-button :icon="Refresh" @click="loadConfig">刷新</el-button>
         <el-button type="primary" :icon="Plus" @click="openChannelDrawer()">新增渠道</el-button>
       </div>
@@ -48,6 +42,11 @@
         <el-table-column prop="priority" label="优先级" width="90" />
         <el-table-column label="容量状态" width="140">
           <template #default="{ row }">{{ formatCapacityStatus(row) }}</template>
+        </el-table-column>
+        <el-table-column label="健康状态" width="120">
+          <template #default="{ row }">
+            <el-tag :type="healthStatusTagType(row.health_status)">{{ formatHealthStatus(row.health_status) }}</el-tag>
+          </template>
         </el-table-column>
         <el-table-column label="状态" width="100">
           <template #default="{ row, $index }">
@@ -166,12 +165,11 @@
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="容量（留空不限）">
+            <el-form-item label="容量">
               <el-input-number
                 v-model="channelDraft.capacity"
                 :min="1"
                 :step="1"
-                :value-on-clear="null"
                 step-strictly
                 class="full-width"
               />
@@ -225,11 +223,6 @@
 
         <el-divider content-position="left">兼容规则</el-divider>
         <el-row :gutter="12">
-          <el-col :span="24">
-            <el-form-item label="fallback_thinking_on_tool_use">
-              <el-switch v-model="compatDraft.fallback_thinking_on_tool_use" />
-            </el-form-item>
-          </el-col>
           <el-col :span="12">
             <el-form-item label="rename_params">
               <el-input v-model="compatTexts.rename_params" type="textarea" :rows="4" placeholder="from=to" />
@@ -341,12 +334,10 @@ import {
   Connection,
   Delete,
   DocumentCopy,
-  Download,
   Edit,
   MoreFilled,
   Plus,
   Refresh,
-  Upload
 } from "@element-plus/icons-vue";
 const props = defineProps({
   api: { type: Function, required: true },
@@ -360,7 +351,6 @@ const channelDrawerVisible = ref(false);
 const editingIndex = ref(-1);
 const channelDraft = reactive(defaultChannel());
 const headersText = ref("{}");
-const compatDraft = reactive({ fallback_thinking_on_tool_use: false });
 const compatTexts = reactive({
   rename_params: "",
   drop_params: "",
@@ -499,34 +489,6 @@ function copyChannel(channel) {
   const cloned = JSON.parse(JSON.stringify(channel));
   cloned.id = newId;
   openChannelDrawer(cloned, -1);
-}
-async function importConfig(file) {
-  try {
-    const text = await file.text();
-    const data = JSON.parse(text);
-    if (!Array.isArray(data.channels)) {
-      throw new Error("配置文件必须包含 channels 数组");
-    }
-    await saveConfig(data.channels);
-  } catch (error) {
-    ElMessage.error(error.message);
-  }
-  return false;
-}
-
-function exportConfig() {
-  const text = JSON.stringify(
-    { channels: channels.value.map(exportChannel) },
-    null,
-    2
-  );
-  const blob = new Blob([text], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "opencodex-config.json";
-  a.click();
-  URL.revokeObjectURL(url);
 }
 
 async function discoverModels() {
@@ -697,7 +659,7 @@ function defaultChannel(priority = 0) {
     timeout_seconds: 120,
     retry_count: 3,
     priority,
-    capacity: null,
+    capacity: 3,
     compat: {},
     models: [],
     enabled: true
@@ -715,9 +677,6 @@ function assignChannelDraft(channel) {
 }
 
 function assignCompat(compat) {
-  Object.assign(compatDraft, {
-    fallback_thinking_on_tool_use: compat.fallback_thinking_on_tool_use === true
-  });
   Object.assign(compatTexts, {
     rename_params: formatAssignmentMap(compat.rename_params || {}),
     drop_params: formatStringList(compat.drop_params || []),
@@ -738,8 +697,8 @@ function buildChannelFromDraft() {
   if (!Number.isInteger(priority) || priority < 0) {
     throw new Error("优先级必须是大于等于 0 的整数");
   }
-  if (capacity !== null && (!Number.isInteger(capacity) || capacity <= 0)) {
-    throw new Error("容量必须是正整数，或留空表示不限");
+  if (!Number.isInteger(capacity) || capacity <= 0) {
+    throw new Error("容量必须是正整数");
   }
   return {
     id: channelDraft.id.trim(),
@@ -768,9 +727,6 @@ function buildCompat() {
     default_params: parseAssignmentMap(compatTexts.default_params, true),
     unsupported_params: parseStringList(compatTexts.unsupported_params)
   };
-  if (compatDraft.fallback_thinking_on_tool_use) {
-    compat.fallback_thinking_on_tool_use = true;
-  }
   for (const key of Object.keys(compat)) {
     const value = compat[key];
     if ((Array.isArray(value) && value.length === 0) || (isPlainObject(value) && Object.keys(value).length === 0)) {
@@ -846,7 +802,33 @@ function displayMs(value) {
 function formatCapacityStatus(channel) {
   const activeRequests = Number(channel?.active_requests ?? 0);
   const capacity = normalizeCapacityValue(channel?.capacity);
-  return `${activeRequests} / ${capacity === null ? "不限" : capacity}`;
+  return `${activeRequests} / ${capacity ?? "-"}`;
+}
+
+function formatHealthStatus(value) {
+  switch (value) {
+    case "disabled":
+      return "停用";
+    case "open":
+      return "熔断开启";
+    case "half_open":
+      return "半开探测";
+    default:
+      return "健康";
+  }
+}
+
+function healthStatusTagType(value) {
+  switch (value) {
+    case "disabled":
+      return "info";
+    case "open":
+      return "danger";
+    case "half_open":
+      return "warning";
+    default:
+      return "success";
+  }
 }
 
 function formatJson(value) {
@@ -872,26 +854,6 @@ function normalizeCapacityValue(value) {
 
   const capacity = Number(value);
   return Number.isInteger(capacity) && capacity > 0 ? capacity : null;
-}
-
-function exportChannel(channel) {
-  return {
-    owner_username: channel.owner_username,
-    id: channel.id,
-    name: channel.name,
-    type: channel.type,
-    baseurl: channel.baseurl,
-    apikey: channel.apikey,
-    auth_mode: channel.auth_mode,
-    headers: channel.headers || {},
-    timeout_seconds: Number(channel.timeout_seconds || 120),
-    retry_count: Number(channel.retry_count ?? 3),
-    priority: normalizePriorityValue(channel.priority),
-    capacity: normalizeCapacityValue(channel.capacity),
-    compat: channel.compat || {},
-    models: normalizeModels(channel.models),
-    enabled: channel.enabled !== false
-  };
 }
 
 function isPlainObject(value) {

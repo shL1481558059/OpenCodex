@@ -29,7 +29,6 @@ public static class OpenCodexConfig
         "drop_tool_types",
         "force_params",
         "default_params",
-        "unsupported_params",
-        "fallback_thinking_on_tool_use"
+        "unsupported_params"
     };
 }

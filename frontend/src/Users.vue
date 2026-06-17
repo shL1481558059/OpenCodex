@@ -130,7 +130,6 @@ const props = defineProps({
   api: { type: Function, required: true },
   currentUser: { type: Object, default: null },
 });
-const emit = defineEmits(["users-loaded"]);
 
 const usersLoading = ref(false);
 const userDialogVisible = ref(false);
@@ -146,7 +145,6 @@ async function loadUsers() {
   try {
     const data = await props.api("/users");
     users.value = Array.isArray(data.users) ? data.users : [];
-    emit("users-loaded", users.value);
   } catch (error) {
     ElMessage.error(error.message);
   } finally {

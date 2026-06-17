@@ -95,13 +95,15 @@ public static class ConfigValidator
             channel["priority"] = 0;
         }
 
-        if (channel.TryGetValue("capacity", out var capacityValue)
-            && capacityValue is not null)
+        if (!channel.TryGetValue("capacity", out var capacityValue)
+            || capacityValue is null)
         {
-            if (capacityValue is not int capacity || capacity <= 0)
-            {
-                throw new ConfigException($"channel {channelId} capacity must be a positive integer or null");
-            }
+            throw new ConfigException($"channel {channelId} capacity is required");
+        }
+
+        if (capacityValue is not int capacity || capacity <= 0)
+        {
+            throw new ConfigException($"channel {channelId} capacity must be a positive integer");
         }
 
         var headers = GetValue(channel, "headers", new Dictionary<string, object?>());
@@ -213,12 +215,6 @@ public static class ConfigValidator
             {
                 throw new ConfigException($"{label}.{field} must be a list");
             }
-        }
-
-        if (compat.TryGetValue("fallback_thinking_on_tool_use", out var fallbackValue)
-            && fallbackValue is not bool)
-        {
-            throw new ConfigException($"{label}.fallback_thinking_on_tool_use must be a boolean");
         }
     }
 

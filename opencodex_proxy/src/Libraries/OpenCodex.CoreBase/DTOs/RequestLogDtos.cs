@@ -1,3 +1,5 @@
+using OpenCodex.CoreBase.Domain.Proxy;
+
 namespace OpenCodex.CoreBase.DTOs;
 
 /// <summary>
@@ -33,6 +35,9 @@ namespace OpenCodex.CoreBase.DTOs;
 public sealed class RequestLogWriteDto(
     string requestId,
     double createdAt,
+    double? processingStartedAt,
+    double? completedAt,
+    string? lifecycleStatus,
     string method,
     string path,
     string? clientIp,
@@ -59,7 +64,8 @@ public sealed class RequestLogWriteDto(
     long? apiKeyId,
     string? error,
     string? ocrJson,
-    string? streamTimingsJson)
+    string? streamTimingsJson,
+    IReadOnlyList<ProxyRequestStreamLineCapture>? streamLines)
 {
     /// <summary>
     /// 获取唯一请求标识符。
@@ -70,6 +76,21 @@ public sealed class RequestLogWriteDto(
     /// 获取请求创建时间戳。
     /// </summary>
     public double CreatedAt { get; } = createdAt;
+
+    /// <summary>
+    /// 获取请求进入处理状态的时间戳（如果可用）。
+    /// </summary>
+    public double? ProcessingStartedAt { get; } = processingStartedAt;
+
+    /// <summary>
+    /// 获取请求完成时间戳（如果可用）。
+    /// </summary>
+    public double? CompletedAt { get; } = completedAt;
+
+    /// <summary>
+    /// 获取请求生命周期状态。
+    /// </summary>
+    public string? LifecycleStatus { get; } = lifecycleStatus;
 
     /// <summary>
     /// 获取传入 HTTP 方法。
@@ -205,6 +226,45 @@ public sealed class RequestLogWriteDto(
     /// 获取序列化后的流式写出时序诊断（如果可用）。
     /// </summary>
     public string? StreamTimingsJson { get; } = streamTimingsJson;
+
+    /// <summary>
+    /// 获取按原始 SSE line 记录的上游流片段。
+    /// </summary>
+    public IReadOnlyList<ProxyRequestStreamLineCapture>? StreamLines { get; } = streamLines;
+}
+
+/// <summary>
+/// 表示请求日志中的一条原始流式响应行。
+/// </summary>
+/// <param name="sequence">该行在请求内的顺序。</param>
+/// <param name="occurredAt">记录该行的时间戳。</param>
+/// <param name="source">该行来源。</param>
+/// <param name="rawLine">原始行文本。</param>
+public sealed class RequestLogStreamLineDto(
+    int sequence,
+    double occurredAt,
+    string source,
+    string rawLine)
+{
+    /// <summary>
+    /// 获取该行在请求内的顺序。
+    /// </summary>
+    public int Sequence { get; } = sequence;
+
+    /// <summary>
+    /// 获取记录该行的时间戳。
+    /// </summary>
+    public double OccurredAt { get; } = occurredAt;
+
+    /// <summary>
+    /// 获取该行来源。
+    /// </summary>
+    public string Source { get; } = source;
+
+    /// <summary>
+    /// 获取原始行文本。
+    /// </summary>
+    public string RawLine { get; } = rawLine;
 }
 
 /// <summary>
@@ -245,6 +305,8 @@ public sealed class RequestLogDto(
     long id,
     string? requestId,
     double? createdAt,
+    double? processingStartedAt,
+    double? completedAt,
     string? method,
     string? path,
     string? clientIp,
@@ -272,6 +334,7 @@ public sealed class RequestLogDto(
     string? webSearchJson,
     string? ocrJson,
     string? streamTimingsJson,
+    IReadOnlyList<RequestLogStreamLineDto> streamLines,
     string requestStatus)
 {
     /// <summary>
@@ -288,6 +351,16 @@ public sealed class RequestLogDto(
     /// 获取请求创建时间戳（如果可用）。
     /// </summary>
     public double? CreatedAt { get; } = createdAt;
+
+    /// <summary>
+    /// 获取请求进入处理状态的时间戳（如果可用）。
+    /// </summary>
+    public double? ProcessingStartedAt { get; } = processingStartedAt;
+
+    /// <summary>
+    /// 获取请求完成时间戳（如果可用）。
+    /// </summary>
+    public double? CompletedAt { get; } = completedAt;
 
     /// <summary>
     /// 获取传入 HTTP 方法（如果可用）。
@@ -425,6 +498,11 @@ public sealed class RequestLogDto(
     public string? StreamTimingsJson { get; } = streamTimingsJson;
 
     /// <summary>
+    /// 获取按原始 SSE line 记录的上游流片段。
+    /// </summary>
+    public IReadOnlyList<RequestLogStreamLineDto> StreamLines { get; } = streamLines;
+
+    /// <summary>
     /// 获取标准化后的请求状态。
     /// </summary>
     public string RequestStatus { get; } = requestStatus;
@@ -460,6 +538,8 @@ public sealed class RequestLogEventDto(
     long id,
     string? requestId,
     double? createdAt,
+    double? processingStartedAt,
+    double? completedAt,
     string? method,
     string? path,
     string? clientIp,
@@ -495,6 +575,16 @@ public sealed class RequestLogEventDto(
     /// 获取请求创建时间戳（如果可用）。
     /// </summary>
     public double? CreatedAt { get; } = createdAt;
+
+    /// <summary>
+    /// 获取请求进入处理状态的时间戳（如果可用）。
+    /// </summary>
+    public double? ProcessingStartedAt { get; } = processingStartedAt;
+
+    /// <summary>
+    /// 获取请求完成时间戳（如果可用）。
+    /// </summary>
+    public double? CompletedAt { get; } = completedAt;
 
     /// <summary>
     /// 获取传入 HTTP 方法（如果可用）。

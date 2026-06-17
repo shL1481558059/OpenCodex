@@ -117,13 +117,43 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
     public IActionResult Stats(
         string range = "1h",
         string? start = null,
-        string? end = null)
+        string? end = null,
+        string? request_id = null,
+        string? model = null,
+        string? upstream_model = null,
+        string? channel_id = null,
+        string? owner_username = null,
+        string? api_key_id = null,
+        string? path = null,
+        string? request_type = null,
+        string? status_code = null,
+        string? is_stream = null,
+        string? client_ip = null,
+        string? error = null,
+        string? request_status = null)
     {
         RequireUser();
+        var filters = BuildLogFilters(
+            request_id,
+            model,
+            upstream_model,
+            channel_id,
+            owner_username,
+            api_key_id,
+            path,
+            request_type,
+            status_code,
+            is_stream,
+            client_ip,
+            error,
+            request_status,
+            null,
+            null);
         var result = _observability.ReadStats(
             range,
             start,
-            end);
+            end,
+            filters);
         return Api(result);
     }
 

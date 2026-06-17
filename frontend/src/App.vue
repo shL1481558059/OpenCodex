@@ -59,10 +59,10 @@
               <Channels :api="api"  />
             </section>
             <section v-if="activeTab === 'api-keys'">
-              <AccessKeys :api="api" :is-superadmin="isSuperadmin" :users="usersData"  />
+              <AccessKeys :api="api" :is-superadmin="isSuperadmin" />
             </section>
             <section v-if="isSuperadmin && activeTab === 'users'">
-              <Users :api="api" :current-user="currentUser"  @users-loaded="onUsersLoaded" />
+              <Users :api="api" :current-user="currentUser" />
             </section>
             <section v-if="isSuperadmin && activeTab === 'web-search'">
               <WebSearch :api="api"  />
@@ -126,9 +126,6 @@ const currentUser = ref(null);
 const menuCollapsed = ref(false);
 const mobileMenuVisible = ref(false);
 
-// Users list shared with AccessKeys for owner_username dropdown
-const usersData = ref([]);
-
 const isSuperadmin = computed(() => currentUser.value?.role === "superadmin");
 const visibleMenuItems = computed(() =>
   menuItems.filter((item) => !item.superadminOnly || isSuperadmin.value)
@@ -143,10 +140,6 @@ const menuItems = [
   { index: "pricing", label: "定价管理", icon: Money, superadminOnly: true },
   { index: "logs", label: "请求日志", icon: Tickets }
 ];
-
-function onUsersLoaded(users) {
-  usersData.value = users;
-}
 
 // --- API helper ---
 

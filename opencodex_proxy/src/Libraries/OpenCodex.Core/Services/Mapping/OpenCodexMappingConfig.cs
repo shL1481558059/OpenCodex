@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Mapster;
 using OpenCodex.Core.Domain;
+using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs;
 
 namespace OpenCodex.Core.Services.Mapping;
@@ -87,6 +88,8 @@ public static class OpenCodexMappingConfig
                 source.Id,
                 source.RequestId,
                 source.CreatedAt,
+                source.ProcessingStartedAt,
+                source.CompletedAt,
                 source.Method,
                 source.Path,
                 source.ClientIp,
@@ -114,7 +117,15 @@ public static class OpenCodexMappingConfig
                 source.Detail == null ? null : source.Detail.WebSearchJson,
                 source.Detail == null ? null : source.Detail.OcrJson,
                 source.Detail == null ? null : source.Detail.StreamTimingsJson,
-                RequestStatus(source.StatusCode, source.Error)));
+                source.StreamLines
+                    .OrderBy(line => line.Sequence)
+                    .Select(line => new RequestLogStreamLineDto(
+                        line.Sequence,
+                        line.OccurredAt,
+                        line.Source,
+                        line.RawLine))
+                    .ToList(),
+                RequestStatus(source.LifecycleStatus, source.StatusCode, source.Error)));
 
         TypeAdapterConfig<RequestLog, RequestLogEventDto>
             .NewConfig()
@@ -122,6 +133,8 @@ public static class OpenCodexMappingConfig
                 source.Id,
                 source.RequestId,
                 source.CreatedAt,
+                source.ProcessingStartedAt,
+                source.CompletedAt,
                 source.Method,
                 source.Path,
                 source.ClientIp,
@@ -141,7 +154,7 @@ public static class OpenCodexMappingConfig
                 source.OwnerUsername,
                 source.ApiKeyId,
                 source.Error,
-                RequestStatus(source.StatusCode, source.Error)));
+                RequestStatus(source.LifecycleStatus, source.StatusCode, source.Error)));
     }
 
     private static Dictionary<string, object?> DeserializeObject(string? raw)
@@ -192,9 +205,16 @@ public static class OpenCodexMappingConfig
         };
     }
 
-    private static string RequestStatus(int? statusCode, string? error)
+    private static string RequestStatus(string? lifecycleStatus, int? statusCode, string? error)
     {
+        if (lifecycleStatus is not null)
+        {
+            return lifecycleStatus;
+        }
+
         var status = statusCode ?? 0;
-        return status >= 400 || !string.IsNullOrWhiteSpace(error) ? "failed" : "success";
+        return status >= 400 || !string.IsNullOrWhiteSpace(error)
+            ? ProxyRequestLifecycleStatus.Failed
+            : ProxyRequestLifecycleStatus.Success;
     }
 }
