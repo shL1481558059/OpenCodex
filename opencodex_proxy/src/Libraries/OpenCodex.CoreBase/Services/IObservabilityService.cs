@@ -46,9 +46,11 @@ public interface IObservabilityService
     /// <param name="rangeKey">统计范围键。</param>
     /// <param name="startTs">自定义开始时间戳。</param>
     /// <param name="endTs">自定义结束时间戳。</param>
+    /// <param name="filters">日志筛选条件。</param>
     /// <returns>统计数据结果。</returns>
     ApiOpResult<StatsResponse> ReadStats(
         string rangeKey,
         object? startTs,
-        object? endTs);
+        object? endTs,
+        IReadOnlyDictionary<string, object?> filters);
 }

@@ -26,7 +26,7 @@ public sealed class Channel : BaseEntity
 
     public int RetryCount { get; set; }
 
-    public int? Capacity { get; set; }
+    public int Capacity { get; set; }
 
     public string CompatJson { get; set; } = "{}";
 

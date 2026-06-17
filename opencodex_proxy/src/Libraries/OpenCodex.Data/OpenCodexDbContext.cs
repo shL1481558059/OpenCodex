@@ -26,6 +26,8 @@ public sealed class OpenCodexDbContext : DbContext
 
     public DbSet<RequestLogDetail> RequestLogDetails => Set<RequestLogDetail>();
 
+    public DbSet<RequestLogStreamLine> RequestLogStreamLines => Set<RequestLogStreamLine>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ConfigureUsers(modelBuilder);
@@ -61,6 +63,7 @@ public sealed class OpenCodexDbContext : DbContext
         entity.Property(channel => channel.ApiKey).IsRequired();
         entity.Property(channel => channel.AuthMode).IsRequired();
         entity.Property(channel => channel.HeadersJson).IsRequired();
+        entity.Property(channel => channel.Capacity).IsRequired();
         entity.Property(channel => channel.CompatJson).IsRequired();
         entity.Property(channel => channel.ModelsJson).IsRequired();
         entity.HasIndex(channel => new { channel.OwnerUsername, channel.Position });
@@ -128,6 +131,7 @@ public sealed class OpenCodexDbContext : DbContext
         logs.HasIndex(log => log.UpstreamModel);
         logs.HasIndex(log => log.ChannelId);
         logs.HasIndex(log => log.RequestType);
+        logs.HasIndex(log => log.LifecycleStatus);
         logs.HasIndex(log => log.ParentRequestLogId);
         logs.HasIndex(log => log.Path);
         logs.HasIndex(log => log.StatusCode);
@@ -146,6 +150,19 @@ public sealed class OpenCodexDbContext : DbContext
             .HasOne(detail => detail.RequestLog)
             .WithOne(log => log.Detail)
             .HasForeignKey<RequestLogDetail>(detail => detail.RequestLogId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        var lines = modelBuilder.Entity<RequestLogStreamLine>();
+        lines.ToTable("RequestLogStreamLines");
+        lines.HasKey(line => line.Id);
+        lines.Property(line => line.Source).IsRequired();
+        lines.Property(line => line.RawLine).IsRequired();
+        lines.HasIndex(line => new { line.RequestLogId, line.Sequence }).IsUnique();
+        lines.HasIndex(line => line.OccurredAt);
+        lines
+            .HasOne(line => line.RequestLog)
+            .WithMany(log => log.StreamLines)
+            .HasForeignKey(line => line.RequestLogId)
             .OnDelete(DeleteBehavior.Cascade);
     }
 }

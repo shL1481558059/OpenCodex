@@ -32,6 +32,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
     private readonly IProxyRequestService _requests;
     private readonly IProxyRouteService _routes;
     private readonly IChannelCapacityService _channelCapacity;
+    private readonly IChannelCircuitBreakerService _channelCircuitBreaker;
     private readonly IChannelAffinityService _channelAffinity;
     private readonly IProxyImageFallbackService _imageFallback;
     private readonly IProxyNonStreamService _nonStreams;
@@ -42,6 +43,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         IProxyRequestService requests,
         IProxyRouteService routes,
         IChannelCapacityService channelCapacity,
+        IChannelCircuitBreakerService channelCircuitBreaker,
         IChannelAffinityService channelAffinity,
         IProxyImageFallbackService imageFallback,
         IProxyNonStreamService nonStreams,
@@ -51,6 +53,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         _requests = requests;
         _routes = routes;
         _channelCapacity = channelCapacity;
+        _channelCircuitBreaker = channelCircuitBreaker;
         _channelAffinity = channelAffinity;
         _imageFallback = imageFallback;
         _nonStreams = nonStreams;
@@ -79,7 +82,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         object? errorResponse = null;
         var logInFinally = true;
         var requestMetadata = context.RequestMetadata;
-        IChannelCapacityLease? capacityLease = null;
+        var streamResponseStarted = false;
+        long? requestLogId = null;
 
         try
         {
@@ -95,98 +99,245 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             }
 
             requestModel = JsonDictionaryValue.String(payload, "model");
-            effectivePayload = payload;
             var requestContainsImages = ProxyImageRequestDetector.ContainsImageInput(payload, context.EntryProtocol);
             var stickyKey = JsonDictionaryValue.String(payload, "prompt_cache_key");
-            var (route, lease) = AcquireRoute(ownerUsername, requestModel, requestContainsImages, stickyKey);
-            capacityLease = lease;
-            channelType = JsonDictionaryValue.String(route.Channel, "type");
-            channelId = JsonDictionaryValue.String(route.Channel, "id");
-            upstreamModel = route.UpstreamModel;
-            route = ApplyResponsesPassthroughHeaders(route, context.EntryProtocol, channelType, requestMetadata);
+            var isStream = payload.TryGetValue("stream", out var streamValue) && streamValue is true;
+            requestLogId = _logs.CreateQueuedLog(new ProxyRequestLogQueuedContext(
+                requestId,
+                ownerUsername,
+                apiKeyId,
+                payload,
+                requestModel,
+                isStream,
+                requestMetadata.Method,
+                requestMetadata.Path,
+                requestMetadata.ClientIp,
+                requestMetadata.Headers));
+            var candidates = OrderCandidates(
+                ownerUsername,
+                requestModel,
+                requestContainsImages,
+                stickyKey);
 
-            if (requestContainsImages
-                && !route.SupportsImage
-                && route.MatchedModelMapping)
+            ProxyException? lastFailoverException = null;
+            foreach (var candidate in candidates)
             {
-                var fallback = await _imageFallback.RewriteAsync(new ProxyImageFallbackContext(
-                    requestId,
+                var candidateChannelId = JsonDictionaryValue.String(candidate.Route.Channel, "id");
+                var candidateEnabled = !candidate.Route.Channel.TryGetValue("enabled", out var enabledValue) || enabledValue is true;
+                var healthStatus = _channelCircuitBreaker.GetHealthStatus(
                     ownerUsername,
-                    apiKeyId,
-                    payload,
-                    context.EntryProtocol,
-                    requestModel,
-                    defaultTimeout,
-                    requestMetadata,
-                    context.CancellationToken));
-                effectivePayload = fallback.Payload;
-            }
-
-            effectivePayload = ChannelCompatRequestRewriter.Apply(
-                effectivePayload,
-                JsonDictionaryValue.Object(route.Channel, "compat", WebSearchPayload.DeepCopyObject)).Payload;
-
-            upstreamRequest = ProtocolConverter.ConvertRequest(
-                effectivePayload,
-                context.EntryProtocol,
-                channelType,
-                route.UpstreamModel);
-
-            if (payload.TryGetValue("stream", out var streamValue) && streamValue is true)
-            {
-                if (!ProtocolConverter.SupportsStreamingConversion(context.EntryProtocol, channelType))
+                    candidateChannelId,
+                    candidateEnabled);
+                if (healthStatus == ChannelHealthStatus.Open)
                 {
-                    throw new BadRequestException($"streaming conversion is not migrated for {context.EntryProtocol} to {channelType}");
+                    continue;
                 }
 
-                logInFinally = false;
-                await _streams.StreamAsync(
-                    new ProxyStreamContext(
-                        started,
-                        requestId,
+                var halfOpenProbeAcquired = false;
+                if (healthStatus == ChannelHealthStatus.HalfOpen)
+                {
+                    halfOpenProbeAcquired = _channelCircuitBreaker.TryAcquireHalfOpenProbe(
                         ownerUsername,
-                        apiKeyId,
-                        payload,
+                        candidateChannelId);
+                    if (!halfOpenProbeAcquired)
+                    {
+                        continue;
+                    }
+                }
+
+                using var capacityLease = _channelCapacity.TryAcquire(ownerUsername, candidate.Route.Channel);
+                if (capacityLease is null)
+                {
+                    if (halfOpenProbeAcquired)
+                    {
+                        _channelCircuitBreaker.ReleaseHalfOpenProbe(ownerUsername, candidateChannelId);
+                    }
+                    continue;
+                }
+
+                TrackingProxyStreamWriter? trackingWriter = null;
+                try
+                {
+                    if (!string.IsNullOrEmpty(stickyKey))
+                    {
+                        _channelAffinity.Remember(
+                            ownerUsername,
+                            stickyKey,
+                            candidateChannelId);
+                    }
+
+                    var route = candidate.Route;
+                    channelType = JsonDictionaryValue.String(route.Channel, "type");
+                    channelId = candidateChannelId;
+                    upstreamModel = route.UpstreamModel;
+                    route = ApplyResponsesPassthroughHeaders(route, context.EntryProtocol, channelType, requestMetadata);
+
+                    effectivePayload = payload;
+                    if (requestContainsImages
+                        && !route.SupportsImage
+                        && route.MatchedModelMapping)
+                    {
+                        var fallback = await _imageFallback.RewriteAsync(new ProxyImageFallbackContext(
+                            requestId,
+                            ownerUsername,
+                            apiKeyId,
+                            payload,
+                            context.EntryProtocol,
+                            requestModel,
+                            defaultTimeout,
+                            requestMetadata,
+                            context.CancellationToken));
+                        effectivePayload = fallback.Payload;
+                    }
+
+                    effectivePayload = ChannelCompatRequestRewriter.Apply(
                         effectivePayload,
-                        upstreamRequest,
+                        JsonDictionaryValue.Object(route.Channel, "compat", WebSearchPayload.DeepCopyObject)).Payload;
+
+                    upstreamRequest = ProtocolConverter.ConvertRequest(
+                        effectivePayload,
                         context.EntryProtocol,
-                        route,
                         channelType,
-                        channelId,
-                        ownerRole ?? string.Empty,
-                        upstreamModel,
-                        requestModel,
-                        defaultTimeout,
-                        requestMetadata,
-                        context.StreamWriter,
-                        context.CancellationToken));
-                return new ProxyEndpointResult(200, Payload: null, IsEmpty: true);
+                        route.UpstreamModel);
+
+                    if (requestLogId.HasValue)
+                    {
+                        _logs.MarkProcessing(requestLogId.Value, new ProxyRequestLogProcessingContext(
+                            ownerUsername,
+                            apiKeyId,
+                            upstreamRequest,
+                            requestModel,
+                            upstreamModel,
+                            channelId,
+                            channelType,
+                            isStream));
+                    }
+
+                    if (isStream)
+                    {
+                        if (!ProtocolConverter.SupportsStreamingConversion(context.EntryProtocol, channelType))
+                        {
+                            throw new BadRequestException($"streaming conversion is not migrated for {context.EntryProtocol} to {channelType}");
+                        }
+
+                        logInFinally = false;
+                        trackingWriter = new TrackingProxyStreamWriter(context.StreamWriter);
+                        await _streams.StreamAsync(
+                            new ProxyStreamContext(
+                                started,
+                                requestLogId ?? 0,
+                                requestId,
+                                ownerUsername,
+                                apiKeyId,
+                                payload,
+                                effectivePayload,
+                                upstreamRequest,
+                                context.EntryProtocol,
+                                route,
+                                channelType,
+                                channelId,
+                                ownerRole ?? string.Empty,
+                                upstreamModel,
+                                requestModel,
+                                defaultTimeout,
+                                requestMetadata,
+                                trackingWriter,
+                                context.CancellationToken));
+
+                        _channelCircuitBreaker.RecordSuccess(ownerUsername, candidateChannelId);
+                        streamResponseStarted = trackingWriter.HasWritten;
+                        return new ProxyEndpointResult(200, Payload: null, IsEmpty: true);
+                    }
+
+                    logInFinally = false;
+                    var result = await _nonStreams.SendAsync(
+                        new ProxyNonStreamContext(
+                            started,
+                            requestLogId ?? 0,
+                            requestId,
+                            ownerUsername,
+                            apiKeyId,
+                            payload,
+                            effectivePayload,
+                            upstreamRequest,
+                            context.EntryProtocol,
+                            route,
+                            channelType,
+                            channelId,
+                            ownerRole ?? string.Empty,
+                            upstreamModel,
+                            requestModel,
+                            defaultTimeout,
+                            requestMetadata,
+                            context.CancellationToken));
+
+                    if (result.FailureException is ProxyException failureException)
+                    {
+                        throw failureException;
+                    }
+
+                    _channelCircuitBreaker.RecordSuccess(ownerUsername, candidateChannelId);
+                    return new ProxyEndpointResult(result.StatusCode, result.Payload, IsEmpty: false);
+                }
+                catch (ProxyException exception)
+                {
+                    var counted = _channelCircuitBreaker.RecordFailure(ownerUsername, candidateChannelId, exception);
+                    if (halfOpenProbeAcquired && !counted)
+                    {
+                        _channelCircuitBreaker.ReleaseHalfOpenProbe(ownerUsername, candidateChannelId);
+                    }
+
+                    if (isStream)
+                    {
+                        streamResponseStarted = trackingWriter?.HasWritten == true;
+                        if (!streamResponseStarted
+                            && ProxyFailoverPolicy.CanFailover(exception))
+                        {
+                            lastFailoverException = exception;
+                            continue;
+                        }
+
+                        throw;
+                    }
+
+                    if (ProxyFailoverPolicy.CanFailover(exception))
+                    {
+                        lastFailoverException = exception;
+                        continue;
+                    }
+
+                    throw;
+                }
+                catch
+                {
+                    if (halfOpenProbeAcquired)
+                    {
+                        _channelCircuitBreaker.ReleaseHalfOpenProbe(ownerUsername, candidateChannelId);
+                    }
+
+                    throw;
+                }
             }
 
-            logInFinally = false;
-            var result = await _nonStreams.SendAsync(
-                new ProxyNonStreamContext(
-                        started,
-                        requestId,
-                        ownerUsername,
-                        apiKeyId,
-                        payload,
-                        effectivePayload,
-                        upstreamRequest,
-                        context.EntryProtocol,
-                    route,
-                    channelType,
-                    channelId,
-                    ownerRole ?? string.Empty,
-                    upstreamModel,
-                    requestModel,
-                    defaultTimeout,
-                    requestMetadata,
-                    context.CancellationToken));
-            return new ProxyEndpointResult(result.StatusCode, result.Payload, IsEmpty: false);
+            if (lastFailoverException is not null)
+            {
+                throw lastFailoverException;
+            }
+
+            var modelLabel = string.IsNullOrWhiteSpace(requestModel)
+                ? "requested route"
+                : $"model {requestModel.Trim()}";
+            throw new RoutingException(
+                $"all enabled channels for {modelLabel} are at capacity",
+                ProxyHttpStatus.TooManyRequests);
         }
         catch (ProxyException exception)
         {
+            if (streamResponseStarted)
+            {
+                throw;
+            }
+
             statusCode = exception.StatusCode;
             error = exception.Message;
             errorResponse = exception.ToResponse();
@@ -197,8 +348,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         {
             if (logInFinally)
             {
-                _logs.WriteLog(
-                    new ProxyLogContext(
+                var logContext = new ProxyLogContext(
                         requestId,
                         ownerUsername,
                         apiKeyId,
@@ -216,15 +366,20 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         statusCode,
                         ElapsedMilliseconds(started),
                         error,
-                        WebSearchDetails: null),
-                    requestMetadata);
+                        WebSearchDetails: null);
+                if (requestLogId.HasValue)
+                {
+                    _logs.CompleteLog(requestLogId.Value, logContext, requestMetadata);
+                }
+                else
+                {
+                    _logs.WriteLog(logContext, requestMetadata);
+                }
             }
-
-            capacityLease?.Dispose();
         }
     }
 
-    private (ProxyRouteDto Route, IChannelCapacityLease Lease) AcquireRoute(
+    private IReadOnlyList<OrderedRouteCandidate> OrderCandidates(
         string ownerUsername,
         string? requestModel,
         bool requestContainsImages,
@@ -254,29 +409,9 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             .ThenBy(item => item.ActiveRequests)
             .ThenBy(item => item.Order);
 
-        foreach (var item in orderedCandidates)
-        {
-            var lease = _channelCapacity.TryAcquire(ownerUsername, item.Candidate.Channel);
-            if (lease is not null)
-            {
-                if (!string.IsNullOrEmpty(stickyKey))
-                {
-                    _channelAffinity.Remember(
-                        ownerUsername,
-                        stickyKey,
-                        JsonDictionaryValue.String(item.Candidate.Channel, "id"));
-                }
-
-                return (item.Candidate, lease);
-            }
-        }
-
-        var modelLabel = string.IsNullOrWhiteSpace(requestModel)
-            ? "requested route"
-            : $"model {requestModel!.Trim()}";
-        throw new RoutingException(
-            $"all enabled channels for {modelLabel} are at capacity",
-            ProxyHttpStatus.TooManyRequests);
+        return orderedCandidates
+            .Select(item => new OrderedRouteCandidate(item.Candidate))
+            .ToList();
     }
 
     internal static ProxyRouteDto ApplyResponsesPassthroughHeaders(
@@ -458,4 +593,6 @@ public sealed class ProxyEndpointService : IProxyEndpointService
 
         return null;
     }
+
+    private sealed record OrderedRouteCandidate(ProxyRouteDto Route);
 }

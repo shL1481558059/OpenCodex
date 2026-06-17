@@ -8,6 +8,7 @@ using OpenCodex.Core.Config;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Persistence;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.Config;
 using OpenCodex.CoreBase.Results;
@@ -24,16 +25,19 @@ public sealed class ConfigService : IConfigService
     };
 
     private readonly IChannelCapacityService _channelCapacity;
+    private readonly IChannelCircuitBreakerService _channelCircuitBreaker;
     private readonly IOpenCodexRuntimeSettingsProvider _settingsProvider;
     private readonly IWorkContext _workContext;
 
     public ConfigService(
         IOpenCodexRuntimeSettingsProvider settingsProvider,
         IChannelCapacityService channelCapacity,
+        IChannelCircuitBreakerService channelCircuitBreaker,
         IWorkContext workContext)
     {
         _settingsProvider = settingsProvider;
         _channelCapacity = channelCapacity;
+        _channelCircuitBreaker = channelCircuitBreaker;
         _workContext = workContext;
     }
 
@@ -42,7 +46,8 @@ public sealed class ConfigService : IConfigService
         var (currentUsername, isSuperadmin) = CurrentScope();
         return ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
             ReadChannels(currentUsername, isSuperadmin),
-            ResolveActiveRequests));
+            ResolveActiveRequests,
+            ResolveHealthStatus));
     }
 
     public ApiOpResult<ConfigResponse> SaveConfig(
@@ -53,93 +58,28 @@ public sealed class ConfigService : IConfigService
         return saved.Succeeded
             ? ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
                 ReadChannels(currentUsername, isSuperadmin),
-                ResolveActiveRequests))
+                ResolveActiveRequests,
+                ResolveHealthStatus))
             : ApiOpResult<ConfigResponse>.Fail(saved.Code, saved.Description);
-    }
-
-    public ApiOpResult<ConfigImportResponse> ImportConfig(
-        IReadOnlyDictionary<string, object?> body)
-    {
-        var (currentUsername, isSuperadmin) = CurrentScope();
-        if (!ConfigValue.TryAsList(JsonDictionaryValue.Get(body, "channels"), out var importedChannels))
-        {
-            return ValidationFailure<ConfigImportResponse>("channels must be a list");
-        }
-
-        var currentChannels = ReadChannels(currentUsername, isSuperadmin)
-            .Select(ChannelToDictionary)
-            .Select(channel => (object?)channel)
-            .ToList();
-        var currentIds = new HashSet<(string OwnerUsername, string ChannelId)>();
-        foreach (var item in currentChannels)
-        {
-            if (item is IReadOnlyDictionary<string, object?> channel)
-            {
-                currentIds.Add((
-                    ImportOwnerForExisting(channel, currentUsername),
-                    JsonDictionaryValue.String(channel, "id")));
-            }
-        }
-
-        var mergedChannels = currentChannels.Select(CloneJsonValue).ToList();
-        var skippedIds = new List<string>();
-        foreach (var item in importedChannels)
-        {
-            if (item is not IReadOnlyDictionary<string, object?> channel)
-            {
-                mergedChannels.Add(CloneJsonValue(item));
-                continue;
-            }
-
-            var channelId = JsonDictionaryValue.String(channel, "id");
-            var ownerUsername = isSuperadmin
-                ? JsonDictionaryValue.String(channel, "owner_username")
-                : currentUsername;
-            if (ownerUsername.Length == 0)
-            {
-                ownerUsername = currentUsername;
-            }
-
-            var key = (ownerUsername, channelId);
-            if (currentIds.Contains(key))
-            {
-                skippedIds.Add(channelId);
-                continue;
-            }
-
-            currentIds.Add(key);
-            mergedChannels.Add(CloneObject(channel));
-        }
-
-        var saved = SaveChannels(
-            new Dictionary<string, object?>
-            {
-                ["channels"] = mergedChannels
-            },
-            currentUsername,
-            isSuperadmin);
-        if (!saved.Succeeded)
-        {
-            return ApiOpResult<ConfigImportResponse>.Fail(saved.Code, saved.Description);
-        }
-
-        var config = ReadChannels(currentUsername, isSuperadmin);
-        return ApiOpResult<ConfigImportResponse>.Succeed(ConfigImportResponse.From(
-            config,
-            mergedChannels.Count - currentChannels.Count,
-            skippedIds.Count,
-            skippedIds));
-    }
-
-    public ApiOpResult<ConfigExportResponse> ExportConfig()
-    {
-        var (currentUsername, isSuperadmin) = CurrentScope();
-        return ApiOpResult<ConfigExportResponse>.Succeed(ConfigExportResponse.From(ReadChannels(currentUsername, isSuperadmin)));
     }
 
     private int ResolveActiveRequests(ChannelDto channel)
     {
         return _channelCapacity.GetActiveRequests(channel.OwnerUsername, channel.Id);
+    }
+
+    private string ResolveHealthStatus(ChannelDto channel)
+    {
+        return _channelCircuitBreaker.GetHealthStatus(
+            channel.OwnerUsername,
+            channel.Id,
+            channel.Enabled) switch
+        {
+            ChannelHealthStatus.Disabled => "disabled",
+            ChannelHealthStatus.Open => "open",
+            ChannelHealthStatus.HalfOpen => "half_open",
+            _ => "healthy"
+        };
     }
 
     private (string Username, bool IsSuperadmin) CurrentScope()
@@ -223,7 +163,7 @@ public sealed class ConfigService : IConfigService
         string? ownerUsername,
         string adminUsername)
     {
-        var copied = CloneObject(candidate);
+        var copied = WebSearchPayload.DeepCopyObject(candidate);
         var channels = JsonDictionaryValue.List(copied, "channels");
         foreach (var item in channels)
         {
@@ -243,62 +183,9 @@ public sealed class ConfigService : IConfigService
         return copied;
     }
 
-    private static Dictionary<string, object?> ChannelToDictionary(ChannelDto channel)
-    {
-        return new Dictionary<string, object?>
-        {
-            ["owner_username"] = channel.OwnerUsername,
-            ["id"] = channel.Id,
-            ["name"] = channel.Name,
-            ["type"] = channel.Type,
-            ["baseurl"] = channel.BaseUrl,
-            ["apikey"] = channel.ApiKey,
-            ["auth_mode"] = channel.AuthMode,
-            ["headers"] = channel.Headers,
-            ["timeout_seconds"] = channel.TimeoutSeconds,
-            ["retry_count"] = channel.RetryCount,
-            ["priority"] = channel.Priority,
-            ["capacity"] = channel.Capacity,
-            ["compat"] = channel.Compat,
-            ["models"] = channel.Models,
-            ["enabled"] = channel.Enabled
-        };
-    }
-
-    private static string ImportOwnerForExisting(
-        IReadOnlyDictionary<string, object?> channel,
-        string currentUsername)
-    {
-        var ownerUsername = JsonDictionaryValue.String(channel, "owner_username");
-        return ownerUsername.Length == 0 ? currentUsername : ownerUsername;
-    }
-
     private static ApiOpResult ValidationFailure(string message)
     {
         return ApiOpResult.Fail(400, message);
-    }
-
-    private static ApiOpResult<T> ValidationFailure<T>(string message)
-    {
-        return ApiOpResult<T>.Fail(400, message);
-    }
-
-    private static Dictionary<string, object?> CloneObject(IReadOnlyDictionary<string, object?> source)
-    {
-        return source.ToDictionary(
-            pair => pair.Key,
-            pair => CloneJsonValue(pair.Value),
-            StringComparer.Ordinal);
-    }
-
-    private static object? CloneJsonValue(object? value)
-    {
-        return value switch
-        {
-            IReadOnlyDictionary<string, object?> dictionary => CloneObject(dictionary),
-            IReadOnlyList<object?> list => list.Select(CloneJsonValue).ToList(),
-            _ => value
-        };
     }
 
     private static void ReplaceChannels(
@@ -322,6 +209,11 @@ public sealed class ConfigService : IConfigService
             .ToDictionary(
                 channel => (channel.OwnerUsername, channel.Id),
                 channel => channel.CreatedAt);
+        var existingCapacities = context.Channels
+            .AsNoTracking()
+            .ToDictionary(
+                channel => (channel.OwnerUsername, channel.Id),
+                channel => channel.Capacity);
 
         var oldChannels = normalizedOwner is null
             ? context.Channels
@@ -345,6 +237,7 @@ public sealed class ConfigService : IConfigService
             var createdAt = existingCreated.TryGetValue(key, out var existingCreatedAt)
                 ? existingCreatedAt
                 : now;
+            var capacity = CapacityValue(channel, existingCapacities, key);
             context.Channels.Add(new Channel
             {
                 OwnerUsername = channelOwner,
@@ -363,7 +256,7 @@ public sealed class ConfigService : IConfigService
                     settings.DefaultTimeout),
                 RetryCount = RetryCountValue(channel),
                 Priority = PriorityValue(channel, position),
-                Capacity = CapacityValue(channel),
+                Capacity = capacity,
                 CompatJson = JsonSerializer.Serialize(
                     JsonDictionaryValue.Get(channel, "compat") ?? new Dictionary<string, object?>(),
                     JsonOptions),
@@ -414,11 +307,19 @@ public sealed class ConfigService : IConfigService
             CultureInfo.InvariantCulture);
     }
 
-    private static int? CapacityValue(IReadOnlyDictionary<string, object?> channel)
+    private static int CapacityValue(
+        IReadOnlyDictionary<string, object?> channel,
+        IReadOnlyDictionary<(string OwnerUsername, string ChannelId), int> existingCapacities,
+        (string OwnerUsername, string ChannelId) key)
     {
         if (!channel.TryGetValue("capacity", out var value) || value is null)
         {
-            return null;
+            if (existingCapacities.TryGetValue(key, out var existingCapacity))
+            {
+                return existingCapacity;
+            }
+
+            throw new ArgumentException($"channel {key.ChannelId} capacity is required");
         }
 
         return Convert.ToInt32(value, CultureInfo.InvariantCulture);

@@ -63,6 +63,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                         auth_mode = "config",
                         timeout_seconds = 30,
                         retry_count = 0,
+                        capacity = 3,
                         enabled = true,
                         models = new[]
                         {
@@ -179,6 +180,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                         auth_mode = "config",
                         timeout_seconds = 30,
                         retry_count = 0,
+                        capacity = 3,
                         enabled = true,
                         models = new[]
                         {
@@ -195,6 +197,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                         auth_mode = "config",
                         timeout_seconds = 30,
                         retry_count = 0,
+                        capacity = 3,
                         enabled = false,
                         models = new[]
                         {
@@ -264,6 +267,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                         auth_mode = "config",
                         timeout_seconds = 30,
                         retry_count = 0,
+                        capacity = 3,
                         enabled = true,
                         models = new[]
                         {

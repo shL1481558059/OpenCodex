@@ -48,7 +48,7 @@
             </el-dropdown-menu>
           </template>
         </el-dropdown>
-        <el-button :icon="Refresh" @click="loadLogs()">刷新</el-button>
+        <el-button :icon="Refresh" @click="refreshLogPageData()">刷新</el-button>
       </div>
     </div>
 
@@ -58,7 +58,7 @@
           v-model="logFilters.created_from"
           type="datetime"
           clearable
-          @change="loadLogs(1)"
+          @change="refreshLogPageData(1)"
         />
       </el-form-item>
       <el-form-item label="结束时间">
@@ -66,54 +66,70 @@
           v-model="logFilters.created_to"
           type="datetime"
           clearable
-          @change="loadLogs(1)"
+          @change="refreshLogPageData(1)"
         />
       </el-form-item>
       <el-form-item label="请求 ID">
-        <el-autocomplete v-model="logFilters.request_id" :fetch-suggestions="requestIdSuggestions" clearable @focus="loadFilterOptions('request_id')" @select="loadLogs(1)" @clear="loadLogs(1)" />
+        <el-autocomplete v-model="logFilters.request_id" :fetch-suggestions="requestIdSuggestions" clearable @focus="loadFilterOptions('request_id')" @select="refreshLogPageData(1)" @clear="refreshLogPageData(1)" />
       </el-form-item>
       <el-form-item label="模型">
-        <el-autocomplete v-model="logFilters.model" :fetch-suggestions="modelSuggestions" clearable @focus="loadFilterOptions('model')" @select="loadLogs(1)" @clear="loadLogs(1)" />
+        <el-autocomplete v-model="logFilters.model" :fetch-suggestions="modelSuggestions" clearable @focus="loadFilterOptions('model')" @select="refreshLogPageData(1)" @clear="refreshLogPageData(1)" />
       </el-form-item>
       <el-form-item label="渠道">
-        <el-select v-model="logFilters.channel_id" clearable filterable remote :remote-method="(query) => loadFilterOptions('channel_id', query)" :loading="filterOptionsLoading.channel_id" @visible-change="(visible) => handleFilterVisible('channel_id', visible)" @change="loadLogs(1)">
+        <el-select v-model="logFilters.channel_id" clearable filterable remote :remote-method="(query) => loadFilterOptions('channel_id', query)" :loading="filterOptionsLoading.channel_id" @visible-change="(visible) => handleFilterVisible('channel_id', visible)" @change="refreshLogPageData(1)">
           <el-option v-for="item in filterOptions.channel_ids" :key="item" :label="item" :value="item" />
         </el-select>
       </el-form-item>
       <el-form-item label="路径">
-        <el-select v-model="logFilters.path" clearable filterable remote :remote-method="(query) => loadFilterOptions('path', query)" :loading="filterOptionsLoading.path" @visible-change="(visible) => handleFilterVisible('path', visible)" @change="loadLogs(1)">
+        <el-select v-model="logFilters.path" clearable filterable remote :remote-method="(query) => loadFilterOptions('path', query)" :loading="filterOptionsLoading.path" @visible-change="(visible) => handleFilterVisible('path', visible)" @change="refreshLogPageData(1)">
           <el-option v-for="item in filterOptions.paths" :key="item" :label="item" :value="item" />
         </el-select>
       </el-form-item>
       <el-form-item label="状态">
-        <el-select v-model="logFilters.request_status" clearable @change="loadLogs(1)">
-          <el-option v-for="item in filterOptions.request_statuses" :key="item" :label="item === 'success' ? '成功' : '失败'" :value="item" />
+        <el-select v-model="logFilters.request_status" clearable @change="refreshLogPageData(1)">
+          <el-option v-for="item in filterOptions.request_statuses" :key="item" :label="formatRequestStatus(item)" :value="item" />
         </el-select>
       </el-form-item>
       <el-form-item label="请求类型">
-        <el-select v-model="logFilters.request_type" clearable @change="loadLogs(1)">
+        <el-select v-model="logFilters.request_type" clearable @change="refreshLogPageData(1)">
           <el-option v-for="item in filterOptions.request_types" :key="item" :label="formatRequestType(item)" :value="item" />
         </el-select>
       </el-form-item>
       <el-form-item label="状态码">
-        <el-select v-model="logFilters.status_code" clearable filterable remote :remote-method="(query) => loadFilterOptions('status_code', query)" :loading="filterOptionsLoading.status_code" @visible-change="(visible) => handleFilterVisible('status_code', visible)" @change="loadLogs(1)">
+        <el-select v-model="logFilters.status_code" clearable filterable remote :remote-method="(query) => loadFilterOptions('status_code', query)" :loading="filterOptionsLoading.status_code" @visible-change="(visible) => handleFilterVisible('status_code', visible)" @change="refreshLogPageData(1)">
           <el-option v-for="item in filterOptions.status_codes" :key="item" :label="item" :value="String(item)" />
         </el-select>
       </el-form-item>
       <el-form-item v-if="isSuperadmin" label="用户">
-        <el-select v-model="logFilters.owner_username" clearable filterable remote :remote-method="(query) => loadFilterOptions('owner_username', query)" :loading="filterOptionsLoading.owner_username" @visible-change="(visible) => handleFilterVisible('owner_username', visible)" @change="loadLogs(1)">
+        <el-select v-model="logFilters.owner_username" clearable filterable remote :remote-method="(query) => loadFilterOptions('owner_username', query)" :loading="filterOptionsLoading.owner_username" @visible-change="(visible) => handleFilterVisible('owner_username', visible)" @change="refreshLogPageData(1)">
           <el-option v-for="item in filterOptions.owner_usernames" :key="item" :label="item" :value="item" />
         </el-select>
       </el-form-item>
       <el-form-item label="Key 名称">
-        <el-select v-model="logFilters.api_key_id" clearable filterable remote :remote-method="(query) => loadFilterOptions('api_key_id', query)" :loading="filterOptionsLoading.api_key_id" @visible-change="(visible) => handleFilterVisible('api_key_id', visible)" @change="loadLogs(1)">
+        <el-select v-model="logFilters.api_key_id" clearable filterable remote :remote-method="(query) => loadFilterOptions('api_key_id', query)" :loading="filterOptionsLoading.api_key_id" @visible-change="(visible) => handleFilterVisible('api_key_id', visible)" @change="refreshLogPageData(1)">
           <el-option v-for="item in filterOptions.api_key_ids" :key="apiKeyOptionValue(item)" :label="apiKeyOptionLabel(item)" :value="apiKeyOptionValue(item)" />
         </el-select>
       </el-form-item>
       <el-form-item class="log-filter-actions">
-        <el-button type="primary" :icon="Search" @click="loadLogs(1)">查询</el-button>
+        <el-button type="primary" :icon="Search" @click="refreshLogPageData(1)">查询</el-button>
       </el-form-item>
     </el-form>
+
+    <div v-loading="statsLoading" class="dashboard-summary-grid log-summary-grid">
+      <div
+        v-for="card in summaryCards"
+        :key="card.key"
+        class="dashboard-summary-card"
+        :class="`dashboard-summary-card--${card.tone}`"
+      >
+        <div class="dashboard-summary-card__icon">
+          <el-icon><component :is="card.icon" /></el-icon>
+        </div>
+        <div class="dashboard-summary-card__title">{{ card.title }}</div>
+        <div class="dashboard-summary-card__value">{{ card.value }}</div>
+        <div class="dashboard-summary-card__meta">{{ card.meta }}</div>
+      </div>
+    </div>
 
     <div class="table-area">
       <el-table
@@ -133,9 +149,23 @@
           :show-overflow-tooltip="column.showOverflowTooltip"
         >
           <template #default="{ row }">
-            <el-tag v-if="column.key === 'request_status'" :type="row.request_status === 'success' ? 'success' : 'danger'">
-              {{ row.request_status === "success" ? "成功" : "失败" }}
+            <el-tag v-if="column.key === 'request_status'" :type="requestStatusTagType(row.request_status)">
+              {{ formatRequestStatus(row.request_status) }}
             </el-tag>
+            <div v-else-if="column.key === 'created_at'" class="log-cell-stack">
+              <div class="log-cell-stack__line">
+                <span class="log-cell-stack__label">创建:</span>
+                <span class="log-cell-stack__value">{{ formatTimeOrDash(row.created_at) }}</span>
+              </div>
+              <div class="log-cell-stack__line">
+                <span class="log-cell-stack__label">开始:</span>
+                <span class="log-cell-stack__value">{{ formatTimeOrDash(row.processing_started_at) }}</span>
+              </div>
+              <div class="log-cell-stack__line">
+                <span class="log-cell-stack__label">完成:</span>
+                <span class="log-cell-stack__value">{{ formatTimeOrDash(row.completed_at) }}</span>
+              </div>
+            </div>
             <div v-else-if="column.key === 'model'" class="log-cell-stack">
               <div class="log-cell-stack__line">
                 <span class="log-cell-stack__label">入站:</span>
@@ -185,7 +215,7 @@
           layout="total, sizes, prev, pager, next"
           :page-sizes="[20, 50, 100, 200]"
           :total="logTotal"
-          @current-change="loadLogs"
+          @current-change="refreshLogPageData"
           @size-change="handleLogPageSizeChange"
         />
       </div>
@@ -199,7 +229,9 @@
           <el-descriptions :column="2" border>
             <el-descriptions-item label="请求 ID">{{ selectedLog.request_id }}</el-descriptions-item>
             <el-descriptions-item label="请求状态">
-              {{ selectedLog.request_status === "success" ? "成功" : "失败" }}
+              <el-tag :type="requestStatusTagType(selectedLog.request_status)">
+                {{ formatRequestStatus(selectedLog.request_status) }}
+              </el-tag>
             </el-descriptions-item>
             <el-descriptions-item label="请求类型">
               <el-tag :type="selectedLog.request_type === 'ocr' ? 'warning' : 'info'">
@@ -219,6 +251,12 @@
             <el-descriptions-item label="渠道">{{ selectedLog.channel_id || "-" }}</el-descriptions-item>
             <el-descriptions-item label="状态码">{{ selectedLog.status_code }}</el-descriptions-item>
             <el-descriptions-item label="成本">{{ formatCost(selectedLog.cost) }}</el-descriptions-item>
+            <el-descriptions-item label="创建时间">{{ formatTimeOrDash(selectedLog.created_at) }}</el-descriptions-item>
+            <el-descriptions-item label="开始处理">{{ formatTimeOrDash(selectedLog.processing_started_at) }}</el-descriptions-item>
+            <el-descriptions-item label="完成时间">{{ formatTimeOrDash(selectedLog.completed_at) }}</el-descriptions-item>
+            <el-descriptions-item label="流式写出">
+              {{ selectedLog.is_stream ? "是" : "否" }}
+            </el-descriptions-item>
           </el-descriptions>
           <div class="log-detail-actions">
             <el-button
@@ -243,6 +281,51 @@
             <pre class="json-view">{{ selectedLog.error }}</pre>
           </el-alert>
           <el-tabs style="margin-top: 16px">
+            <el-tab-pane v-if="selectedStreamLines.length" label="SSE 流">
+              <div class="stream-view-toolbar">
+                <el-radio-group v-model="streamDetailMode" size="small">
+                  <el-radio-button label="merged">合并事件</el-radio-button>
+                  <el-radio-button label="raw">原始行</el-radio-button>
+                </el-radio-group>
+                <el-button
+                  size="small"
+                  :icon="CopyDocument"
+                  @click="copyStreamDetailContent()"
+                >
+                  复制当前视图
+                </el-button>
+              </div>
+
+              <div v-if="streamDetailMode === 'raw'" class="stream-record-list">
+                <div
+                  v-for="line in selectedStreamLines"
+                  :key="line.sequence"
+                  class="stream-record-card"
+                >
+                  <div class="stream-record-card__meta">
+                    <span>#{{ line.sequence }}</span>
+                    <span>{{ formatTimeOrDash(line.occurred_at) }}</span>
+                    <span>{{ line.source || "upstream" }}</span>
+                  </div>
+                  <pre class="json-view stream-record-card__body">{{ formatStreamLine(line.raw_line) }}</pre>
+                </div>
+              </div>
+
+              <div v-else class="stream-record-list">
+                <div
+                  v-for="event in selectedStreamEvents"
+                  :key="event.key"
+                  class="stream-record-card"
+                >
+                  <div class="stream-record-card__meta">
+                    <span>事件 {{ event.index }}</span>
+                    <span>{{ formatTimeOrDash(event.started_at) }}</span>
+                    <span>{{ event.line_count }} 行</span>
+                  </div>
+                  <pre class="json-view stream-record-card__body">{{ event.text }}</pre>
+                </div>
+              </div>
+            </el-tab-pane>
             <el-tab-pane v-for="section in logDetailSections" :key="section.key" :label="section.label">
               <div class="json-view-frame">
                 <el-tooltip :content="`复制${section.label}`">
@@ -263,7 +346,7 @@
 <script setup>
 import { ref, reactive, computed, onBeforeUnmount, onMounted, watch } from "vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
-import { Check, CopyDocument, Refresh, Search, Setting, View } from "@element-plus/icons-vue";
+import { Box, Check, Coin, CopyDocument, DataLine, Lightning, Refresh, Search, Setting, Timer, View } from "@element-plus/icons-vue";
 import VueJsonPretty from "vue-json-pretty";
 import "vue-json-pretty/lib/styles.css";
 
@@ -278,9 +361,14 @@ const logs = ref([]);
 const logPage = ref(1);
 const logPageSize = ref(20);
 const logTotal = ref(0);
+const statsLoading = ref(false);
 const logAutoRefreshOptions = [5, 10, 30, 60];
 const logAutoRefreshSeconds = ref(0);
 let logAutoRefreshTimer = null;
+const statsData = reactive({
+  currency_rate: 7.25,
+  summary: defaultSummary()
+});
 
 const filterOptions = reactive({
   request_ids: [],
@@ -291,7 +379,7 @@ const filterOptions = reactive({
   api_key_ids: [],
   paths: [],
   status_codes: [],
-  request_statuses: ["success", "failed"],
+  request_statuses: ["queued", "processing", "success", "failed"],
   request_types: ["main", "ocr"]
 });
 
@@ -343,6 +431,7 @@ const selectedLog = ref(null);
 const logDetailVisible = ref(false);
 const logDetailLoading = ref(false);
 const logDetailError = ref("");
+const streamDetailMode = ref("merged");
 let logDetailRequestToken = 0;
 const logDetailSections = [
   { key: "request_headers", label: "请求头" },
@@ -350,14 +439,15 @@ const logDetailSections = [
   { key: "upstream_request_body", label: "转换后请求" },
   { key: "upstream_response_body", label: "转换前响应" },
   { key: "response_body", label: "转换后响应" },
+  { key: "stream_timings_json", label: "流式时序" },
   { key: "ocr_json", label: "OCR 元数据" },
   { key: "web_search_json", label: "Web Search" }
 ];
 
 const logColumnDefinitions = [
-  { key: "created_at", prop: "created_at", label: "时间", width: 180 },
+  { key: "created_at", prop: "created_at", label: "时间", width: 220 },
   { key: "request_id", prop: "request_id", label: "请求", width: 130, showOverflowTooltip: true },
-  { key: "request_status", prop: "request_status", label: "状态", width: 90 },
+  { key: "request_status", prop: "request_status", label: "状态", width: 100 },
   { key: "owner_username", prop: "owner_username", label: "用户", width: 120, showOverflowTooltip: true },
   { key: "api_key_id", prop: "api_key_id", label: "Key 名称", width: 140, showOverflowTooltip: true },
   { key: "model", prop: "model", label: "模型", minWidth: 190 },
@@ -383,6 +473,54 @@ const visibleLogColumns = computed(() =>
 const logAutoRefreshLabel = computed(() =>
   logAutoRefreshSeconds.value ? `${logAutoRefreshSeconds.value} 秒刷新` : "自动刷新"
 );
+const summaryCards = computed(() => {
+  const summary = statsData.summary || defaultSummary();
+  return [
+    {
+      key: "requests",
+      title: "总请求数",
+      value: formatInteger(summary.request_count),
+      meta: `成功: ${formatInteger(summary.success_count)}  近 1 小时: ${formatInteger(summary.recent_1h_request_count)}`,
+      icon: DataLine,
+      tone: "blue"
+    },
+    {
+      key: "tokens",
+      title: "总 TOKEN 数",
+      value: formatInteger(summary.total_tokens),
+      meta: `输入: ${formatInteger(summary.input_tokens)}  缓存: ${formatInteger(summary.cached_tokens)}  输出: ${formatInteger(summary.output_tokens)}`,
+      icon: Box,
+      tone: "cyan"
+    },
+    {
+      key: "cost",
+      title: "总计费",
+      value: formatDualCurrency(summary.cost),
+      meta: `近 1 小时: ${formatDualCurrency(summary.recent_1h_cost)}`,
+      icon: Coin,
+      tone: "green"
+    },
+    {
+      key: "rpm",
+      title: "RPM",
+      value: formatCompactNumber(summary.rpm),
+      meta: "每分钟请求数",
+      icon: Timer,
+      tone: "green"
+    },
+    {
+      key: "tpm",
+      title: "TPM",
+      value: formatCompactNumber(summary.tpm),
+      meta: "每分钟 Token 数",
+      icon: Lightning,
+      tone: "red"
+    }
+  ];
+});
+
+const selectedStreamLines = computed(() => Array.isArray(selectedLog.value?.stream_lines) ? selectedLog.value.stream_lines : []);
+const selectedStreamEvents = computed(() => mergeStreamLines(selectedStreamLines.value));
 
 async function loadLogs(page = logPage.value) {
   logsLoading.value = true;
@@ -400,6 +538,31 @@ async function loadLogs(page = logPage.value) {
     ElMessage.error(error.message);
   } finally {
     logsLoading.value = false;
+  }
+}
+
+async function loadStats() {
+  statsLoading.value = true;
+  try {
+    const params = new URLSearchParams({ range: "custom" });
+    const start = normalizeLogFilterValue("created_from", logFilters.created_from);
+    const end = normalizeLogFilterValue("created_to", logFilters.created_to);
+    if (start !== null) params.set("start", start);
+    if (end !== null) params.set("end", end);
+
+    for (const [key, value] of Object.entries(logFilters)) {
+      if (key === "created_from" || key === "created_to") continue;
+      const normalized = normalizeLogFilterValue(key, value);
+      if (normalized !== null) params.set(key, normalized);
+    }
+
+    const data = await props.api(`/stats?${params.toString()}`);
+    statsData.currency_rate = data.currency_rate || 7.25;
+    statsData.summary = { ...defaultSummary(), ...(data.summary || {}) };
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    statsLoading.value = false;
   }
 }
 
@@ -421,11 +584,11 @@ function stopLogAutoRefreshTimer() {
 }
 
 async function refreshLogsFromAutoRefresh() {
-  if (!props.active || logsLoading.value) return;
-  await loadLogs();
+  if (!props.active || logsLoading.value || statsLoading.value) return;
+  await Promise.all([loadLogs(), loadStats()]);
 }
 
-function handleLogPageSizeChange() { logPage.value = 1; loadLogs(1); }
+function handleLogPageSizeChange() { logPage.value = 1; refreshLogPageData(1); }
 
 function handleFilterVisible(field, visible) {
   if (visible) loadFilterOptions(field);
@@ -444,7 +607,7 @@ function resetLogFilters() {
     request_status: "",
     request_type: ""
   });
-  loadLogs(1);
+  refreshLogPageData(1);
 }
 
 function moveLogColumn(index, direction) {
@@ -465,6 +628,7 @@ async function openLogDetail(row) {
   const token = ++logDetailRequestToken;
   selectedLog.value = null;
   logDetailError.value = "";
+  streamDetailMode.value = "merged";
   logDetailVisible.value = true;
   logDetailLoading.value = true;
   try {
@@ -486,7 +650,7 @@ function openRelatedLogs(requestId, requestType) {
   logFilters.request_id = requestId || "";
   logFilters.request_type = requestType || "";
   logDetailVisible.value = false;
-  loadLogs(1);
+  refreshLogPageData(1);
 }
 
 function resetLogDetail() {
@@ -494,6 +658,7 @@ function resetLogDetail() {
   selectedLog.value = null;
   logDetailError.value = "";
   logDetailLoading.value = false;
+  streamDetailMode.value = "merged";
 }
 
 async function copyLogDetailContent(label, value) {
@@ -502,6 +667,22 @@ async function copyLogDetailContent(label, value) {
   try {
     await copyLogDetailText(text);
     ElMessage.success(`${label}已复制`);
+  } catch (error) {
+    ElMessage.error(error.message || "复制失败");
+  }
+}
+
+async function copyStreamDetailContent() {
+  const text = streamDetailMode.value === "raw"
+    ? buildRawStreamText(selectedStreamLines.value)
+    : buildMergedStreamText(selectedStreamEvents.value);
+  if (!text) {
+    ElMessage.warning("当前没有可复制的 SSE 内容");
+    return;
+  }
+  try {
+    await copyLogDetailText(text);
+    ElMessage.success(streamDetailMode.value === "raw" ? "原始 SSE 已复制" : "合并 SSE 已复制");
   } catch (error) {
     ElMessage.error(error.message || "复制失败");
   }
@@ -587,6 +768,26 @@ function formatRequestType(value) {
   return value === "ocr" ? "OCR" : value === "main" ? "主请求" : value || "";
 }
 
+function formatRequestStatus(value) {
+  switch (value) {
+    case "queued": return "排队中";
+    case "processing": return "处理中";
+    case "success": return "成功";
+    case "failed": return "失败";
+    default: return value || "-";
+  }
+}
+
+function requestStatusTagType(value) {
+  switch (value) {
+    case "queued": return "info";
+    case "processing": return "warning";
+    case "success": return "success";
+    case "failed": return "danger";
+    default: return "info";
+  }
+}
+
 function formatApiKeyName(row) {
   const name = String(row.api_key_name || "").trim();
   if (name) return name;
@@ -617,6 +818,10 @@ function formatTime(timestamp) {
   return new Date(Number(timestamp) * 1000).toLocaleString();
 }
 
+function formatTimeOrDash(timestamp) {
+  return formatTime(timestamp) || "-";
+}
+
 function formatLatencyValue(value) {
   if (value === null || value === undefined) return "-";
   const number = Number(value);
@@ -645,13 +850,102 @@ function formatJson(value) {
   return JSON.stringify(value, null, 2);
 }
 
+function formatStreamLine(value) {
+  return value === "" ? "(空行)" : String(value ?? "");
+}
+
+function mergeStreamLines(lines) {
+  const events = [];
+  let bucket = [];
+  let eventIndex = 1;
+
+  const flush = () => {
+    if (!bucket.length) return;
+    const endedAt = bucket[bucket.length - 1]?.occurred_at ?? null;
+    const normalized = bucket[bucket.length - 1]?.raw_line === "" ? bucket.slice(0, -1) : bucket.slice();
+    events.push({
+      key: `event-${eventIndex}-${bucket[0]?.sequence ?? 0}`,
+      index: eventIndex,
+      started_at: bucket[0]?.occurred_at ?? null,
+      completed_at: endedAt,
+      line_count: normalized.length,
+      text: normalized.map((item) => String(item.raw_line ?? "")).join("\n") || "(空事件)"
+    });
+    eventIndex += 1;
+    bucket = [];
+  };
+
+  for (const line of lines || []) {
+    bucket.push(line);
+    if (line?.raw_line === "") flush();
+  }
+
+  flush();
+  return events;
+}
+
+function buildRawStreamText(lines) {
+  return (lines || []).map((line) => {
+    const rawText = line?.raw_line === "" ? "(空行)" : String(line?.raw_line ?? "");
+    return `#${line?.sequence ?? 0} ${formatTimeOrDash(line?.occurred_at)} ${line?.source || "upstream"}\n${rawText}`;
+  }).join("\n\n");
+}
+
+function buildMergedStreamText(events) {
+  return (events || []).map((event) => `事件 ${event.index} ${formatTimeOrDash(event.started_at)}\n${event.text}`).join("\n\n");
+}
+
+function defaultSummary() {
+  return {
+    request_count: 0,
+    success_count: 0,
+    recent_1h_request_count: 0,
+    input_tokens: 0,
+    cached_tokens: 0,
+    output_tokens: 0,
+    total_tokens: 0,
+    recent_1h_tokens: 0,
+    cost: 0,
+    recent_1h_cost: 0,
+    rpm: 0,
+    tpm: 0
+  };
+}
+
+function formatInteger(value) {
+  return Math.round(Number(value || 0)).toLocaleString();
+}
+
+function formatCompactNumber(value) {
+  const number = Number(value || 0);
+  if (Number.isInteger(number)) return formatInteger(number);
+  return number.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+function formatDualCurrency(value) {
+  const cny = Number(value || 0);
+  const usd = cny / (statsData.currency_rate || 7.25);
+  return `¥${formatCurrencyNumber(cny)}/$${formatCurrencyNumber(usd)}`;
+}
+
+function formatCurrencyNumber(value) {
+  return Number(value || 0).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
+}
+
+function refreshLogPageData(page = logPage.value) {
+  return Promise.all([loadLogs(page), loadStats()]);
+}
+
 // --- Visibility / auto-refresh ---
 
 const loaded = ref(false);
 
 watch(() => props.active, (now) => {
   if (now) {
-    if (!loaded.value) loadLogs();
+    if (!loaded.value) refreshLogPageData();
     loaded.value = true;
     restartLogAutoRefreshTimer();
   } else {
@@ -700,10 +994,146 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
 }
 
+.stream-view-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.stream-record-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.stream-record-card {
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--el-fill-color-blank);
+}
+
+.stream-record-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.stream-record-card__body {
+  margin: 0;
+}
+
 .log-detail-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 12px;
+}
+
+.log-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(180px, 1fr));
+  gap: 16px;
+  margin: 4px 0 16px;
+}
+
+.dashboard-summary-card {
+  position: relative;
+  min-height: 124px;
+  box-sizing: border-box;
+  padding: 20px 18px 16px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgb(31 45 61 / 10%);
+  overflow: hidden;
+}
+
+.dashboard-summary-card__icon {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: grid;
+  place-items: center;
+  width: 50px;
+  height: 50px;
+  border-radius: 8px;
+  font-size: 24px;
+}
+
+.dashboard-summary-card__title {
+  padding-right: 56px;
+  color: var(--el-text-color-secondary);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.dashboard-summary-card__value {
+  margin-top: 28px;
+  color: #121826;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.dashboard-summary-card__meta {
+  margin-top: 12px;
+  color: var(--el-text-color-secondary);
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.dashboard-summary-card--blue .dashboard-summary-card__icon {
+  background: #eef5ff;
+  color: #356fc7;
+}
+
+.dashboard-summary-card--cyan .dashboard-summary-card__icon {
+  background: #eef7fb;
+  color: #337ea3;
+}
+
+.dashboard-summary-card--green .dashboard-summary-card__icon {
+  background: #edf8f0;
+  color: #32865c;
+}
+
+.dashboard-summary-card--red .dashboard-summary-card__icon {
+  background: #fdf0f0;
+  color: #e05b5b;
+}
+
+.dashboard-summary-card--green .dashboard-summary-card__value {
+  color: #2f8a5a;
+}
+
+.dashboard-summary-card--red .dashboard-summary-card__value {
+  color: #e05b5b;
+}
+
+@media (max-width: 1440px) {
+  .log-summary-grid {
+    grid-template-columns: repeat(3, minmax(180px, 1fr));
+  }
+}
+
+@media (max-width: 960px) {
+  .log-summary-grid {
+    grid-template-columns: repeat(2, minmax(180px, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .log-summary-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using OpenCodex.Core.Errors;
 using OpenCodex.CoreBase.Services.Proxy;
 using Xunit;
 
@@ -123,6 +124,177 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         Assert.Equal(2, channel.GetProperty("priority").GetInt32());
         Assert.Equal(3, channel.GetProperty("capacity").GetInt32());
         Assert.Equal(1, channel.GetProperty("active_requests").GetInt32());
+        Assert.Equal("healthy", channel.GetProperty("health_status").GetString());
+    }
+
+    [Fact]
+    public async Task ConfigEndpoint_ReturnsOpenHealthStatusWhenCircuitIsOpen()
+    {
+        using var factory = new OpenCodexApiFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = false
+        });
+        var cookie = await LoginAndReadSessionCookie(client, "admin", OpenCodexApiFactory.AdminPassword);
+
+        var config = await SendJsonWithCookie(
+            client,
+            HttpMethod.Post,
+            "/config",
+            cookie,
+            new
+            {
+                channels = new[]
+                {
+                    new
+                    {
+                        id = "chat",
+                        name = "Chat",
+                        type = "chat",
+                        baseurl = "https://example.test/v1",
+                        apikey = "secret",
+                        auth_mode = "config",
+                        timeout_seconds = 30,
+                        retry_count = 0,
+                        priority = 2,
+                        capacity = 3,
+                        enabled = true,
+                        models = new[]
+                        {
+                            new { model = "public-model", upstream_model = "upstream-model" }
+                        }
+                    }
+                }
+            });
+        Assert.Equal(HttpStatusCode.OK, config.StatusCode);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var breaker = scope.ServiceProvider.GetRequiredService<IChannelCircuitBreakerService>();
+            breaker.RecordFailure("admin", "chat", new UpstreamException("down", ProxyHttpStatus.BadGateway));
+            breaker.RecordFailure("admin", "chat", new UpstreamException("down", ProxyHttpStatus.BadGateway));
+            breaker.RecordFailure("admin", "chat", new UpstreamException("down", ProxyHttpStatus.BadGateway));
+        }
+
+        var response = await SendWithCookie(client, HttpMethod.Get, "/config", cookie);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        var channel = document.RootElement.GetProperty("Data").GetProperty("channels")[0];
+        Assert.Equal("open", channel.GetProperty("health_status").GetString());
+    }
+
+    [Fact]
+    public async Task ConfigSave_BackfillsHistoricalNullCapacityToThreeAndRejectsNewNullCapacity()
+    {
+        using var factory = new OpenCodexApiFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = false
+        });
+        var cookie = await LoginAndReadSessionCookie(client, "admin", OpenCodexApiFactory.AdminPassword);
+
+        var initialSave = await SendJsonWithCookie(
+            client,
+            HttpMethod.Post,
+            "/config",
+            cookie,
+            new
+            {
+                channels = new[]
+                {
+                    new
+                    {
+                        id = "legacy-null-capacity",
+                        name = "Legacy",
+                        type = "chat",
+                        baseurl = "https://example.test/v1",
+                        apikey = "secret",
+                        auth_mode = "config",
+                        timeout_seconds = 30,
+                        retry_count = 0,
+                        priority = 0,
+                        enabled = true,
+                        models = new[]
+                        {
+                            new { model = "legacy-model", upstream_model = "legacy-upstream" }
+                        }
+                    }
+                }
+            });
+        Assert.Equal(HttpStatusCode.BadRequest, initialSave.StatusCode);
+
+        await SeedHistoricalNullCapacityChannel(factory.Services);
+
+        var rejectMissingCapacityForHistoricalChannel = await SendJsonWithCookie(
+            client,
+            HttpMethod.Post,
+            "/config",
+            cookie,
+            new
+            {
+                channels = new[]
+                {
+                    new
+                    {
+                        id = "legacy-null-capacity",
+                        name = "Legacy Updated",
+                        type = "chat",
+                        baseurl = "https://example.test/v1",
+                        apikey = "secret",
+                        auth_mode = "config",
+                        timeout_seconds = 45,
+                        retry_count = 1,
+                        priority = 0,
+                        enabled = true,
+                        models = new[]
+                        {
+                            new { model = "legacy-model", upstream_model = "legacy-upstream" }
+                        }
+                    }
+                }
+            });
+        Assert.Equal(HttpStatusCode.BadRequest, rejectMissingCapacityForHistoricalChannel.StatusCode);
+
+        var preserveBackfilledCapacity = await SendJsonWithCookie(
+            client,
+            HttpMethod.Post,
+            "/config",
+            cookie,
+            new
+            {
+                channels = new[]
+                {
+                    new
+                    {
+                        id = "legacy-null-capacity",
+                        name = "Legacy Updated",
+                        type = "chat",
+                        baseurl = "https://example.test/v1",
+                        apikey = "secret",
+                        auth_mode = "config",
+                        timeout_seconds = 45,
+                        retry_count = 1,
+                        priority = 0,
+                        capacity = 3,
+                        enabled = true,
+                        models = new[]
+                        {
+                            new { model = "legacy-model", upstream_model = "legacy-upstream" }
+                        }
+                    }
+                }
+            });
+        Assert.Equal(HttpStatusCode.OK, preserveBackfilledCapacity.StatusCode);
+
+        var config = await SendWithCookie(client, HttpMethod.Get, "/config", cookie);
+        Assert.Equal(HttpStatusCode.OK, config.StatusCode);
+        using var document = await JsonDocument.ParseAsync(await config.Content.ReadAsStreamAsync());
+        var channel = document.RootElement.GetProperty("Data").GetProperty("channels")[0];
+        Assert.Equal(3, channel.GetProperty("capacity").GetInt32());
+        Assert.Equal("Legacy Updated", channel.GetProperty("name").GetString());
     }
 
     [Fact]
@@ -407,6 +579,37 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         }
 
         return element.GetInt64();
+    }
+
+    private static async Task SeedHistoricalNullCapacityChannel(IServiceProvider services)
+    {
+        using var scope = services.CreateScope();
+        var configuration = scope.ServiceProvider.GetRequiredService<IConfiguration>();
+        var dbPath = configuration["OPENCODEX_DB_PATH"] ?? throw new InvalidOperationException("Missing test DB path");
+        using var context = OpenCodex.Data.OpenCodexDbContextFactory.Create(dbPath);
+        OpenCodex.Core.Persistence.OpenCodexChannels.EnsureSchema(context);
+        context.Channels.Add(new OpenCodex.Core.Domain.Channel
+        {
+            OwnerUsername = "admin",
+            Id = "legacy-null-capacity",
+            Position = 0,
+            Priority = 0,
+            Name = "Legacy",
+            Type = "chat",
+            BaseUrl = "https://example.test/v1",
+            ApiKey = "secret",
+            AuthMode = "config",
+            HeadersJson = "{}",
+            TimeoutSeconds = 30,
+            RetryCount = 0,
+            Capacity = 3,
+            CompatJson = "{}",
+            ModelsJson = """[{"model":"legacy-model","upstream_model":"legacy-upstream","supports_image":false}]""",
+            Enabled = true,
+            CreatedAt = 1,
+            UpdatedAt = 1
+        });
+        await context.SaveChangesAsync();
     }
 }
 

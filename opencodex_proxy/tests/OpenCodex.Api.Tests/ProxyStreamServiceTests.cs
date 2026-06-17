@@ -61,6 +61,7 @@ public sealed class ProxyStreamServiceTests
         var started = Stopwatch.GetTimestamp();
         var context = new ProxyStreamContext(
             started,
+            requestLogId: 1,
             requestId: "req_reasoning",
             ownerUsername: "admin",
             apiKeyId: 1,
@@ -117,6 +118,7 @@ public sealed class ProxyStreamServiceTests
             matchedModelMapping: true);
         var context = new ProxyStreamContext(
             startedTimestamp: 0,
+            requestLogId: 1,
             requestId: "req_1",
             ownerUsername: "admin",
             apiKeyId: 1,
@@ -178,6 +180,7 @@ public sealed class ProxyStreamServiceTests
             matchedModelMapping: true);
         var context = new ProxyStreamContext(
             startedTimestamp: Stopwatch.GetTimestamp(),
+            requestLogId: 1,
             requestId: "req_stream_fail",
             ownerUsername: "admin",
             apiKeyId: 1,
@@ -206,6 +209,80 @@ public sealed class ProxyStreamServiceTests
         var upstreamError = Assert.IsType<Dictionary<string, object?>>(logs.LastContext.UpstreamResponse!["error"]);
         var upstreamDetail = Assert.IsType<Dictionary<string, object?>>(upstreamError["error"]);
         Assert.Equal("rate limit exceeded", upstreamDetail["message"]);
+    }
+
+    [Fact]
+    public async Task StreamAsync_PassThrough_CapturesOriginalUpstreamSseLines()
+    {
+        var upstream = new SequencedUpstreamClient(
+        [
+            ("event: response.output_text.delta", 0),
+            ("data: {\"delta\":\"hello\"}", 0),
+            ("", 0),
+            ("data: [DONE]", 0)
+        ]);
+        var logs = new StubProxyLogService();
+        var service = new ProxyStreamService(upstream, logs, new StubWebSearchSimulator(false, []));
+        var writer = new CapturingProxyStreamWriter();
+        var channel = new Dictionary<string, object?>
+        {
+            ["id"] = "responses",
+            ["type"] = ProtocolConverter.Responses
+        };
+        var route = new ProxyRouteDto(
+            channel,
+            "public-model",
+            "upstream-model",
+            supportsImage: false,
+            matchedModelMapping: true);
+        var context = new ProxyStreamContext(
+            startedTimestamp: Stopwatch.GetTimestamp(),
+            requestLogId: 99,
+            requestId: "req-stream-lines",
+            ownerUsername: "admin",
+            apiKeyId: 1,
+            originalPayload: new Dictionary<string, object?>(),
+            payload: new Dictionary<string, object?>(),
+            upstreamRequest: new Dictionary<string, object?>(),
+            entryProtocol: ProtocolConverter.Responses,
+            route: route,
+            channelType: ProtocolConverter.Responses,
+            channelId: "responses",
+            ownerRole: "superadmin",
+            upstreamModel: "upstream-model",
+            requestModel: "public-model",
+            defaultTimeout: 120,
+            requestMetadata: new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
+            streamWriter: writer,
+            cancellationToken: CancellationToken.None);
+
+        await service.StreamAsync(context);
+
+        Assert.NotNull(logs.LastContext);
+        Assert.NotNull(logs.LastContext!.StreamLines);
+        Assert.Collection(
+            logs.LastContext.StreamLines!,
+            line =>
+            {
+                Assert.Equal(0, line.Sequence);
+                Assert.Equal("upstream", line.Source);
+                Assert.Equal("event: response.output_text.delta", line.RawLine);
+            },
+            line =>
+            {
+                Assert.Equal(1, line.Sequence);
+                Assert.Equal("data: {\"delta\":\"hello\"}", line.RawLine);
+            },
+            line =>
+            {
+                Assert.Equal(2, line.Sequence);
+                Assert.Equal(string.Empty, line.RawLine);
+            },
+            line =>
+            {
+                Assert.Equal(3, line.Sequence);
+                Assert.Equal("data: [DONE]", line.RawLine);
+            });
     }
 
     [Fact]
@@ -595,6 +672,20 @@ public sealed class ProxyStreamServiceTests
 
     private sealed class StubProxyLogService : IProxyLogService
     {
+        public long CreateQueuedLog(ProxyRequestLogQueuedContext context)
+        {
+            return 1;
+        }
+
+        public void MarkProcessing(long requestLogId, ProxyRequestLogProcessingContext context)
+        {
+        }
+
+        public void CompleteLog(long requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
+        {
+            LastContext = context;
+        }
+
         public ProxyLogContext? LastContext { get; private set; }
 
         public long WriteLog(ProxyLogContext context, ProxyRequestMetadata request)

@@ -40,6 +40,7 @@ public sealed class ProxyStreamService : IProxyStreamService
         Dictionary<string, object?>? webSearchDetails = null;
         Dictionary<string, object?>? upstreamResponse = null;
         Dictionary<string, object?>? responsePayload = null;
+        var upstreamStreamLines = new List<ProxyRequestStreamLineCapture>();
         var statusCode = ProxyHttpStatus.Ok;
         var upstreamRequest = context.UpstreamRequest;
         var isConversion = context.EntryProtocol != context.ChannelType;
@@ -85,7 +86,10 @@ public sealed class ProxyStreamService : IProxyStreamService
                     context.CancellationToken);
                 var capture = new PassThroughCapture();
                 streamWriteMetrics = await context.StreamWriter.WriteLinesAsync(
-                    CaptureStreamUsage(streamLines, capture, context.CancellationToken),
+                    CaptureStreamUsage(
+                        CaptureRawStreamLines(streamLines, upstreamStreamLines, context.CancellationToken),
+                        capture,
+                        context.CancellationToken),
                     static line => line.Trim().Length > 0,
                     () => ElapsedMilliseconds(ttftStarted),
                     context.CancellationToken);
@@ -103,10 +107,14 @@ public sealed class ProxyStreamService : IProxyStreamService
                     upstreamRequest,
                     context.DefaultTimeout,
                     context.CancellationToken);
+                var capturedStreamLines = CaptureRawStreamLines(
+                    streamLines,
+                    upstreamStreamLines,
+                    context.CancellationToken);
                 // 方案A: 直接调用内部重载，消除外层 await foreach 包装
                 var convertedLines = context.ChannelType == ProtocolConverter.Chat
                     ? SseStreamConverter.ChatToResponsesEvents(
-                        streamLines,
+                        capturedStreamLines,
                         visibleModel,
                         converted,
                         SkipToolNames: null,
@@ -115,7 +123,7 @@ public sealed class ProxyStreamService : IProxyStreamService
                         InitialOutputIndex: 0,
                         context.CancellationToken)
                     : SseStreamConverter.MessagesToResponsesEvents(
-                        streamLines,
+                        capturedStreamLines,
                         visibleModel,
                         converted,
                         SkipToolNames: null,
@@ -156,7 +164,8 @@ public sealed class ProxyStreamService : IProxyStreamService
         }
         finally
         {
-            _logs.WriteLog(
+            _logs.CompleteLog(
+                context.RequestLogId,
                 new ProxyLogContext(
                     context.RequestId,
                     context.OwnerUsername,
@@ -176,7 +185,8 @@ public sealed class ProxyStreamService : IProxyStreamService
                     DurationMs: ElapsedMilliseconds(context.StartedTimestamp),
                     error,
                     webSearchDetails,
-                    StreamWriteMetrics: streamWriteMetrics),
+                    StreamWriteMetrics: streamWriteMetrics,
+                    StreamLines: upstreamStreamLines),
                 context.RequestMetadata);
         }
     }
@@ -267,6 +277,24 @@ public sealed class ProxyStreamService : IProxyStreamService
                 ["usage"] = usage ?? new Dictionary<string, object?>()
             };
     }
+
+    internal static async IAsyncEnumerable<string> CaptureRawStreamLines(
+        IAsyncEnumerable<string> lines,
+        IList<ProxyRequestStreamLineCapture> capture,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var sequence = capture.Count;
+        await foreach (var line in lines.WithCancellation(cancellationToken))
+        {
+            capture.Add(new ProxyRequestStreamLineCapture(
+                sequence++,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+                "upstream",
+                line));
+            yield return line;
+        }
+    }
+
     internal static string? TryExtractString(JsonElement element, string property)
     {
         return element.TryGetProperty(property, out var value)

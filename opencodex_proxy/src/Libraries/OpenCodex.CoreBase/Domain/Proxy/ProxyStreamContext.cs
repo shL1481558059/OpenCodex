@@ -12,6 +12,7 @@ public sealed class ProxyStreamContext
     /// 初始化 <see cref="ProxyStreamContext"/> 类的新实例。
     /// </summary>
     /// <param name="startedTimestamp">请求开始时间戳，单位为毫秒。</param>
+    /// <param name="requestLogId">请求日志标识符。</param>
     /// <param name="requestId">唯一请求标识符。</param>
     /// <param name="ownerUsername">拥有该请求的用户名。</param>
     /// <param name="apiKeyId">请求使用的访问密钥标识符（如果可用）。</param>
@@ -31,6 +32,7 @@ public sealed class ProxyStreamContext
     /// <param name="cancellationToken">请求取消令牌。</param>
     public ProxyStreamContext(
         long startedTimestamp,
+        long requestLogId,
         string requestId,
         string ownerUsername,
         long? apiKeyId,
@@ -50,6 +52,7 @@ public sealed class ProxyStreamContext
         CancellationToken cancellationToken)
     {
         StartedTimestamp = startedTimestamp;
+        RequestLogId = requestLogId;
         RequestId = requestId;
         OwnerUsername = ownerUsername;
         ApiKeyId = apiKeyId;
@@ -73,6 +76,8 @@ public sealed class ProxyStreamContext
     /// 获取请求开始时间戳，单位为毫秒。
     /// </summary>
     public long StartedTimestamp { get; }
+
+    public long RequestLogId { get; }
 
     /// <summary>
     /// 获取唯一请求标识符。

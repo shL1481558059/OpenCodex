@@ -6,6 +6,10 @@ public sealed class RequestLog : BaseEntity<long>
 
     public double? CreatedAt { get; set; }
 
+    public double? ProcessingStartedAt { get; set; }
+
+    public double? CompletedAt { get; set; }
+
     public string? Method { get; set; }
 
     public string? Path { get; set; }
@@ -19,6 +23,8 @@ public sealed class RequestLog : BaseEntity<long>
     public string? ChannelId { get; set; }
 
     public string RequestType { get; set; } = "main";
+
+    public string? LifecycleStatus { get; set; }
 
     public long? ParentRequestLogId { get; set; }
 
@@ -49,4 +55,6 @@ public sealed class RequestLog : BaseEntity<long>
     public RequestLog? ParentRequestLog { get; set; }
 
     public ICollection<RequestLog> ChildRequestLogs { get; set; } = new List<RequestLog>();
+
+    public ICollection<RequestLogStreamLine> StreamLines { get; set; } = new List<RequestLogStreamLine>();
 }

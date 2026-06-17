@@ -76,6 +76,12 @@ public sealed class ChannelDiagnosticsRequest
     public int? RetryCount { get; set; }
 
     /// <summary>
+    /// 获取或设置渠道允许的主请求并发上限。
+    /// </summary>
+    [JsonPropertyName("capacity")]
+    public int? Capacity { get; set; }
+
+    /// <summary>
     /// 获取或设置通道兼容性选项。
     /// </summary>
     [JsonPropertyName("compat")]
@@ -168,6 +174,7 @@ public sealed class ChannelDiagnosticsRequest
             Headers = Headers ?? [],
             TimeoutSeconds = TimeoutSeconds,
             RetryCount = RetryCount,
+            Capacity = Capacity,
             Compat = Compat ?? [],
             Models = Models ?? [],
             Enabled = Enabled

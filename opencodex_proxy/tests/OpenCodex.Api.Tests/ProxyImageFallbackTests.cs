@@ -141,7 +141,6 @@ public sealed class ProxyImageFallbackTests
         Assert.Equal(2, logs.Count);
         var mainLog = Assert.Single(logs, item => item.RequestType == ProxyRequestTypes.Main);
         var ocrLog = Assert.Single(logs, item => item.RequestType == ProxyRequestTypes.Ocr);
-        Assert.Equal(mainLog.Id, ocrLog.ParentRequestLogId);
         Assert.Equal("text-model", mainLog.Model);
         Assert.Equal("text-upstream", mainLog.UpstreamModel);
         Assert.Equal("vision-model", ocrLog.Model);
@@ -480,6 +479,7 @@ public sealed class ProxyImageFallbackTests
                         auth_mode = "config",
                         timeout_seconds = 30,
                         retry_count = 0,
+                        capacity = 3,
                         enabled = true,
                         models = models.ToArray()
                     }

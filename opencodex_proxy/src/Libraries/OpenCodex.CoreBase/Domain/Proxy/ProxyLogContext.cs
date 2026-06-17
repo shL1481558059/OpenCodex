@@ -32,6 +32,7 @@ public sealed class ProxyLogContext
     /// <param name="ParentRequestLogId">父请求日志标识符（如果可用）。</param>
     /// <param name="OcrDetails">OCR 专用详情（如果可用）。</param>
     /// <param name="StreamWriteMetrics">流式写出时序诊断（如果可用）。</param>
+    /// <param name="StreamLines">按原始 SSE line 记录的上游流片段（如果可用）。</param>
     public ProxyLogContext(
         string RequestId,
         string OwnerUsername,
@@ -54,7 +55,8 @@ public sealed class ProxyLogContext
         string RequestType = ProxyRequestTypes.Main,
         long? ParentRequestLogId = null,
         Dictionary<string, object?>? OcrDetails = null,
-        StreamWriteMetrics? StreamWriteMetrics = null)
+        StreamWriteMetrics? StreamWriteMetrics = null,
+        IReadOnlyList<ProxyRequestStreamLineCapture>? StreamLines = null)
     {
         this.RequestId = RequestId;
         this.OwnerUsername = OwnerUsername;
@@ -78,6 +80,7 @@ public sealed class ProxyLogContext
         this.ParentRequestLogId = ParentRequestLogId;
         this.OcrDetails = OcrDetails;
         this.StreamWriteMetrics = StreamWriteMetrics;
+        this.StreamLines = StreamLines;
     }
 
     /// <summary>
@@ -189,4 +192,9 @@ public sealed class ProxyLogContext
     /// 获取流式写出时序诊断（如果可用）。
     /// </summary>
     public StreamWriteMetrics? StreamWriteMetrics { get; }
+
+    /// <summary>
+    /// 获取按原始 SSE line 记录的上游流片段（如果可用）。
+    /// </summary>
+    public IReadOnlyList<ProxyRequestStreamLineCapture>? StreamLines { get; }
 }

@@ -8,6 +8,12 @@ namespace OpenCodex.CoreBase.Services.Proxy;
 /// </summary>
 public interface IProxyLogService
 {
+    long CreateQueuedLog(ProxyRequestLogQueuedContext context);
+
+    void MarkProcessing(long requestLogId, ProxyRequestLogProcessingContext context);
+
+    void CompleteLog(long requestLogId, ProxyLogContext context, ProxyRequestMetadata request);
+
     /// <summary>
     /// 根据代理日志上下文和请求元数据写入日志。
     /// </summary>

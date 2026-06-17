@@ -82,7 +82,7 @@
     <el-dialog v-model="accessKeyDialogVisible" title="新增 API Key" width="560px" @closed="createdAccessKey = null">
       <el-form label-position="top" :model="accessKeyDraft">
         <el-form-item v-if="isSuperadmin" label="归属用户">
-          <el-select v-model="accessKeyDraft.owner_username" class="full-width" filterable>
+          <el-select v-model="accessKeyDraft.owner_username" class="full-width" filterable :loading="usersLoading">
             <el-option
               v-for="user in enabledUsers"
               :key="user.username"
@@ -125,14 +125,15 @@ import { CopyDocument, Delete, Plus, Refresh } from "@element-plus/icons-vue";
 const props = defineProps({
   api: { type: Function, required: true },
   isSuperadmin: { type: Boolean, default: false },
-  users: { type: Array, default: () => [] },
 });
 const accessKeysLoading = ref(false);
+const usersLoading = ref(false);
 const accessKeyDialogVisible = ref(false);
 const accessKeySaving = ref(false);
 const createdAccessKey = ref(null);
 const accessKeyDraft = reactive({ owner_username: "", name: "" });
 const accessKeys = ref([]);
+const users = ref([]);
 
 const enabledAccessKeyCount = computed(() => accessKeys.value.filter((k) => k.enabled !== false).length);
 const lastAccessKeyUsedTimestamp = computed(() => {
@@ -143,7 +144,7 @@ const lastAccessKeyUsedTimestamp = computed(() => {
   return timestamps[0] || 0;
 });
 
-const enabledUsers = computed(() => props.users.filter((u) => u.enabled !== false));
+const enabledUsers = computed(() => users.value.filter((u) => u.enabled !== false));
 
 async function loadAccessKeys() {
   accessKeysLoading.value = true;
@@ -154,6 +155,23 @@ async function loadAccessKeys() {
     ElMessage.error(error.message);
   } finally {
     accessKeysLoading.value = false;
+  }
+}
+
+async function loadUsers() {
+  if (!props.isSuperadmin) {
+    users.value = [];
+    return;
+  }
+
+  usersLoading.value = true;
+  try {
+    const data = await props.api("/users");
+    users.value = Array.isArray(data.users) ? data.users : [];
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    usersLoading.value = false;
   }
 }
 
@@ -231,5 +249,8 @@ function formatLastAccessKeyUsed(value) {
   return value ? formatTime(value) : "-";
 }
 
-onMounted(() => loadAccessKeys());
+onMounted(() => {
+  loadAccessKeys();
+  loadUsers();
+});
 </script>

@@ -48,6 +48,7 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
                 baseurl = "https://upstream.example/v1",
                 apikey = SecretApiKey,
                 auth_mode = "config",
+                capacity = 3,
                 headers = new Dictionary<string, object?>
                 {
                     ["Authorization"] = $"Bearer {SecretHeaderValue}",
@@ -116,6 +117,7 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
                 baseurl = "https://upstream.example/v1",
                 apikey = SecretApiKey,
                 auth_mode = "config",
+                capacity = 3,
                 models = new[]
                 {
                     new
@@ -175,6 +177,7 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
                 baseurl = "https://upstream.example/v1",
                 apikey = SecretApiKey,
                 auth_mode = "config",
+                capacity = 3,
                 models = new[]
                 {
                     new { model = "m", upstream_model = "m", supports_image = false }
