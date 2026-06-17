@@ -69,96 +69,6 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
         }
     }
 
-    public async Task<ApiOpResult<TestChannelResponse>> TestChannelAsync(
-        IReadOnlyDictionary<string, object?> body,
-        SessionUser user,
-        ProxyRequestMetadata requestMetadata,
-        CancellationToken cancellationToken)
-    {
-        var started = Stopwatch.GetTimestamp();
-        Dictionary<string, object?>? channel = null;
-        Dictionary<string, object?>? payload = null;
-        Dictionary<string, object?>? compatibleRequest = null;
-        Dictionary<string, object?>? upstreamResponse = null;
-        Dictionary<string, object?>? responsePayload = null;
-        object? errorResponse = null;
-        string? originalModel = null;
-        string? upstreamModel = null;
-        string? channelType = null;
-        string? channelId = null;
-        var statusCode = 200;
-        string? error = null;
-
-        try
-        {
-            var prepared = PrepareTestChannel(body, requestMetadata);
-            channel = prepared.Channel;
-            payload = prepared.Payload;
-            compatibleRequest = prepared.CompatibleRequest;
-            originalModel = prepared.OriginalModel;
-            upstreamModel = prepared.UpstreamModel;
-            channelType = prepared.ChannelType;
-            channelId = JsonDictionaryValue.String(channel, "id");
-
-            var streamResult = await CollectStreamTestAsync(
-                channel,
-                compatibleRequest,
-                DefaultTimeout(),
-                cancellationToken);
-            upstreamResponse = streamResult.UpstreamResponse;
-            responsePayload = upstreamResponse is null
-                ? null
-                : ProtocolConverter.ConvertResponse(
-                    upstreamResponse,
-                    channelType,
-                    channelType,
-                    originalModel);
-
-            return ApiOpResult<TestChannelResponse>.Succeed(TestChannelResponse.From(
-                originalModel,
-                upstreamModel,
-                prepared.CompatDetails,
-                responsePayload ?? new Dictionary<string, object?>(),
-                ElapsedMilliseconds(started)));
-        }
-        catch (ConfigException exception)
-        {
-            statusCode = 400;
-            error = exception.Message;
-            errorResponse = BuildErrorResponse(error, "config_error");
-            return ApiOpResult<TestChannelResponse>.Fail(400, exception.Message);
-        }
-        catch (ProxyException exception)
-        {
-            statusCode = exception.StatusCode;
-            error = exception.Message;
-            errorResponse = exception.ToResponse();
-            return ApiOpResult<TestChannelResponse>.Fail(
-                exception.StatusCode,
-                exception.Message);
-        }
-        finally
-        {
-            WriteTestChannelLog(
-                body,
-                user,
-                requestMetadata,
-                started,
-                payload,
-                compatibleRequest,
-                upstreamResponse,
-                responsePayload,
-                errorResponse,
-                originalModel,
-                upstreamModel,
-                channelId,
-                channelType,
-                statusCode,
-                error,
-                isStream: true);
-        }
-    }
-
     public async Task StreamTestChannelAsync(
         IReadOnlyDictionary<string, object?> body,
         SessionUser user,
@@ -193,19 +103,28 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
             channelId = JsonDictionaryValue.String(channel, "id");
 
             var capture = new ChannelTestStreamCapture();
+            var upstreamLines = _upstreamClient.StreamJsonAsync(
+                channel,
+                compatibleRequest,
+                DefaultTimeout(),
+                cancellationToken);
+            // chat/messages 渠道的上游流式事件需要转换为 responses 协议事件，
+            // 以便 ChannelTestStreamCapture 统一提取 output_text。
+            var converted = new ConvertedStreamResult();
+            IAsyncEnumerable<string> observableLines = channelType switch
+            {
+                ProtocolConverter.Chat => SseStreamConverter.ChatToResponsesEvents(
+                    upstreamLines, originalModel, converted, cancellationToken),
+                ProtocolConverter.Messages => SseStreamConverter.MessagesToResponsesEvents(
+                    upstreamLines, originalModel, converted, cancellationToken),
+                _ => upstreamLines
+            };
             metrics = await writer.WriteLinesAsync(
-                CaptureTestStreamAsync(
-                    _upstreamClient.StreamJsonAsync(
-                        channel,
-                        compatibleRequest,
-                        DefaultTimeout(),
-                        cancellationToken),
-                    capture,
-                    cancellationToken),
+                CaptureTestStreamAsync(observableLines, capture, cancellationToken),
                 static line => line.Trim().Length > 0,
                 () => ElapsedMilliseconds(started),
                 cancellationToken);
-            upstreamResponse = capture.UpstreamResponse;
+            upstreamResponse = capture.UpstreamResponse ?? converted.UpstreamResponse;
         }
         catch (ConfigException exception)
         {
@@ -253,6 +172,7 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
                 channelType,
                 statusCode,
                 error,
+                isStream: true,
                 streamWriteMetrics: metrics);
         }
 
@@ -311,27 +231,6 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
             originalModel,
             upstreamModel,
             channelType);
-    }
-
-    private async Task<ChannelTestStreamCapture> CollectStreamTestAsync(
-        IReadOnlyDictionary<string, object?> channel,
-        IReadOnlyDictionary<string, object?> payload,
-        int defaultTimeout,
-        CancellationToken cancellationToken)
-    {
-        var capture = new ChannelTestStreamCapture();
-        await foreach (var _ in CaptureTestStreamAsync(
-                           _upstreamClient.StreamJsonAsync(
-                               channel,
-                               payload,
-                               defaultTimeout,
-                               cancellationToken),
-                           capture,
-                           cancellationToken))
-        {
-        }
-
-        return capture;
     }
 
     private static async IAsyncEnumerable<string> CaptureTestStreamAsync(

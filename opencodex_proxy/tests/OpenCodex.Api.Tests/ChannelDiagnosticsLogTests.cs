@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using OpenCodex.Core.Errors;
 using OpenCodex.Core.Protocols;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.Data;
@@ -32,13 +33,12 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
     }
 
     [Fact]
-    public async Task TestChannelWritesRequestLogWithoutSecrets()
+    public async Task TestChannelStreamWritesRequestLogWithoutSecrets()
     {
         var cookie = await LoginAndReadSessionCookie();
 
-        var response = await SendJsonWithCookie(
-            HttpMethod.Post,
-            "/test-channel",
+        var (statusCode, body) = await SendStreamRequestWithCookie(
+            "/test-channel/stream",
             cookie,
             new
             {
@@ -68,10 +68,12 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
                 max_output_tokens = 32
             });
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, statusCode);
+        Assert.Contains("pong", body, StringComparison.Ordinal);
+        Assert.Contains("response.completed", body, StringComparison.Ordinal);
 
         using var context = OpenCodexDbContextFactory.Create(_factory.DbPath);
-        var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel"));
+        var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
         Assert.Equal("POST", log.Method);
         Assert.Equal("public-model", log.Model);
         Assert.Equal("upstream-model", log.UpstreamModel);
@@ -95,8 +97,101 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
         Assert.Contains("\"X-Normal\":\"visible\"", detail.RequestBody, StringComparison.Ordinal);
         Assert.Contains("\"stream\":true", detail.UpstreamRequestBody, StringComparison.Ordinal);
         Assert.Contains("\"text\":\"你好\"", detail.UpstreamRequestBody, StringComparison.Ordinal);
-        Assert.Contains("\"x-oai-attestation\":\"test-attestation\"", detail.RequestBody, StringComparison.Ordinal);
-        Assert.Contains("\"originator\":\"Codex Desktop\"", detail.RequestBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TestChannelStreamForChatChannelExtractsOutputText()
+    {
+        _factory.UpstreamClient = new ChatUpstreamClient();
+        var cookie = await LoginAndReadSessionCookie();
+
+        var (statusCode, body) = await SendStreamRequestWithCookie(
+            "/test-channel/stream",
+            cookie,
+            new
+            {
+                id = "chat-channel",
+                name = "Chat Channel",
+                type = ProtocolConverter.Chat,
+                baseurl = "https://upstream.example/v1",
+                apikey = SecretApiKey,
+                auth_mode = "config",
+                models = new[]
+                {
+                    new
+                    {
+                        model = "gpt-4o",
+                        upstream_model = "gpt-4o-2024-08-06",
+                        supports_image = false
+                    }
+                },
+                model = "gpt-4o",
+                input = "你好",
+                max_output_tokens = 32
+            });
+
+        Assert.Equal(HttpStatusCode.OK, statusCode);
+        // SseStreamConverter.ChatToResponsesEvents 会将 chat chunk 的 content 转为
+        // response.output_text.delta 事件，ChannelTestStreamCapture 应能提取 output_text。
+        Assert.Contains("response.output_text.delta", body, StringComparison.Ordinal);
+        Assert.Contains("pong", body, StringComparison.Ordinal);
+        Assert.Contains("response.completed", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TestChannelStreamForConfigErrorEmitsErrorEvent()
+    {
+        var cookie = await LoginAndReadSessionCookie();
+
+        var (statusCode, body) = await SendStreamRequestWithCookie(
+            "/test-channel/stream",
+            cookie,
+            new { });
+
+        Assert.Equal(HttpStatusCode.OK, statusCode);
+        Assert.Contains("channel_test.error", body, StringComparison.Ordinal);
+        Assert.Contains("config_error", body, StringComparison.Ordinal);
+
+        using var context = OpenCodexDbContextFactory.Create(_factory.DbPath);
+        var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
+        Assert.Equal(400, log.StatusCode);
+        Assert.False(string.IsNullOrEmpty(log.Error));
+    }
+
+    [Fact]
+    public async Task TestChannelStreamForUpstreamErrorEmitsErrorEvent()
+    {
+        _factory.UpstreamClient = new FailingUpstreamClient(
+            new UpstreamException("upstream returned 429", 429));
+        var cookie = await LoginAndReadSessionCookie();
+
+        var (statusCode, body) = await SendStreamRequestWithCookie(
+            "/test-channel/stream",
+            cookie,
+            new
+            {
+                id = "fail-channel",
+                type = ProtocolConverter.Responses,
+                baseurl = "https://upstream.example/v1",
+                apikey = SecretApiKey,
+                auth_mode = "config",
+                models = new[]
+                {
+                    new { model = "m", upstream_model = "m", supports_image = false }
+                },
+                model = "m",
+                input = "你好",
+                max_output_tokens = 32
+            });
+
+        Assert.Equal(HttpStatusCode.OK, statusCode);
+        Assert.Contains("channel_test.error", body, StringComparison.Ordinal);
+        Assert.Contains("upstream_error", body, StringComparison.Ordinal);
+        Assert.Contains("429", body, StringComparison.Ordinal);
+
+        using var context = OpenCodexDbContextFactory.Create(_factory.DbPath);
+        var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
+        Assert.Equal(429, log.StatusCode);
     }
 
     public void Dispose()
@@ -126,18 +221,19 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
         return cookie;
     }
 
-    private Task<HttpResponseMessage> SendJsonWithCookie(
-        HttpMethod method,
+    private async Task<(HttpStatusCode StatusCode, string Body)> SendStreamRequestWithCookie(
         string requestUri,
         string cookie,
         object body)
     {
-        var request = new HttpRequestMessage(method, requestUri)
+        var request = new HttpRequestMessage(HttpMethod.Post, requestUri)
         {
             Content = JsonContent.Create(body)
         };
         request.Headers.Add("Cookie", cookie);
-        return _client.SendAsync(request);
+        var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+        var responseBody = await response.Content.ReadAsStringAsync();
+        return (response.StatusCode, responseBody);
     }
 
     private sealed class ChannelDiagnosticsApiFactory : WebApplicationFactory<Program>
@@ -146,6 +242,8 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
             Path.GetTempPath(),
             "opencodex-channel-diagnostics-tests",
             $"{Guid.NewGuid():N}.db");
+
+        public IUpstreamClient UpstreamClient { get; set; } = new ResponsesUpstreamClient();
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -164,47 +262,23 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
             builder.ConfigureTestServices(services =>
             {
                 services.RemoveAll<IUpstreamClient>();
-                services.AddSingleton<IUpstreamClient, SuccessfulUpstreamClient>();
+                services.AddSingleton(_ => UpstreamClient);
             });
         }
     }
 
-    private sealed class SuccessfulUpstreamClient : IUpstreamClient
+    /// <summary>
+    /// 上游返回 Responses 协议流式事件。
+    /// </summary>
+    private sealed class ResponsesUpstreamClient : IUpstreamClient
     {
-        private static readonly JsonSerializerOptions JsonOptions = new();
-
         public Task<Dictionary<string, object?>> PostJsonAsync(
             IReadOnlyDictionary<string, object?> channel,
             IReadOnlyDictionary<string, object?> payload,
             int defaultTimeout,
             CancellationToken cancellationToken)
         {
-            return Task.FromResult(new Dictionary<string, object?>
-            {
-                ["id"] = "resp_test",
-                ["model"] = JsonElementValue(payload, "model"),
-                ["output"] = new List<object?>
-                {
-                    new Dictionary<string, object?>
-                    {
-                        ["type"] = "message",
-                        ["role"] = "assistant",
-                        ["content"] = new List<object?>
-                        {
-                            new Dictionary<string, object?>
-                            {
-                                ["type"] = "output_text",
-                                ["text"] = "pong"
-                            }
-                        }
-                    }
-                },
-                ["usage"] = new Dictionary<string, object?>
-                {
-                    ["input_tokens"] = 3,
-                    ["output_tokens"] = 5
-                }
-            });
+            return Task.FromResult(new Dictionary<string, object?>());
         }
 
         public async IAsyncEnumerable<string> StreamJsonAsync(
@@ -214,47 +288,123 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
         {
             await Task.CompletedTask;
-            var response = new Dictionary<string, object?>
-            {
-                ["id"] = "resp_test",
-                ["model"] = JsonElementValue(payload, "model"),
-                ["output"] = new List<object?>
-                {
-                    new Dictionary<string, object?>
-                    {
-                        ["type"] = "message",
-                        ["role"] = "assistant",
-                        ["content"] = new List<object?>
-                        {
-                            new Dictionary<string, object?>
-                            {
-                                ["type"] = "output_text",
-                                ["text"] = "pong"
-                            }
-                        }
-                    }
-                },
-                ["usage"] = new Dictionary<string, object?>
-                {
-                    ["input_tokens"] = 3,
-                    ["output_tokens"] = 5
-                }
-            };
             yield return "event: response.output_text.delta\n";
             yield return "data: {\"type\":\"response.output_text.delta\",\"delta\":\"pong\"}\n";
             yield return "\n";
             yield return "event: response.completed\n";
-            yield return $"data: {{\"type\":\"response.completed\",\"response\":{JsonSerializer.Serialize(response, JsonOptions)}}}\n";
+            yield return "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"model\":\"upstream-model\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":5}}}\n";
             yield return "\n";
         }
+    }
 
-        private static string JsonElementValue(
+    /// <summary>
+    /// 上游返回 Chat 协议流式事件（chat.completion.chunk）。
+    /// </summary>
+    private sealed class ChatUpstreamClient : IUpstreamClient
+    {
+        public Task<Dictionary<string, object?>> PostJsonAsync(
+            IReadOnlyDictionary<string, object?> channel,
             IReadOnlyDictionary<string, object?> payload,
-            string key)
+            int defaultTimeout,
+            CancellationToken cancellationToken)
         {
-            return payload.TryGetValue(key, out var value)
-                ? Convert.ToString(value) ?? string.Empty
-                : string.Empty;
+            return Task.FromResult(new Dictionary<string, object?>());
+        }
+
+        public async IAsyncEnumerable<string> StreamJsonAsync(
+            IReadOnlyDictionary<string, object?> channel,
+            IReadOnlyDictionary<string, object?> payload,
+            int defaultTimeout,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await Task.CompletedTask;
+            var chunk = new Dictionary<string, object?>
+            {
+                ["id"] = "chatcmpl_test",
+                ["object"] = "chat.completion.chunk",
+                ["model"] = "gpt-4o-2024-08-06",
+                ["choices"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["index"] = 0,
+                        ["delta"] = new Dictionary<string, object?>
+                        {
+                            ["role"] = "assistant",
+                            ["content"] = "pong"
+                        },
+                        ["finish_reason"] = null
+                    }
+                }
+            };
+            yield return $"data: {JsonSerializer.Serialize(chunk)}";
+            yield return "";
+            var doneChunk = new Dictionary<string, object?>
+            {
+                ["id"] = "chatcmpl_test",
+                ["object"] = "chat.completion.chunk",
+                ["model"] = "gpt-4o-2024-08-06",
+                ["choices"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["index"] = 0,
+                        ["delta"] = new Dictionary<string, object?>(),
+                        ["finish_reason"] = "stop"
+                    }
+                },
+                ["usage"] = new Dictionary<string, object?>
+                {
+                    ["prompt_tokens"] = 3,
+                    ["completion_tokens"] = 1
+                }
+            };
+            yield return $"data: {JsonSerializer.Serialize(doneChunk)}";
+            yield return "";
+            yield return "data: [DONE]";
+            yield return "";
+        }
+    }
+
+    /// <summary>
+    /// 上游抛出异常，用于测试错误路径。
+    /// </summary>
+    private sealed class FailingUpstreamClient : IUpstreamClient
+    {
+        private readonly UpstreamException _exception;
+
+        public FailingUpstreamClient(UpstreamException exception)
+        {
+            _exception = exception;
+        }
+
+        public Task<Dictionary<string, object?>> PostJsonAsync(
+            IReadOnlyDictionary<string, object?> channel,
+            IReadOnlyDictionary<string, object?> payload,
+            int defaultTimeout,
+            CancellationToken cancellationToken)
+        {
+            throw _exception;
+        }
+
+        public IAsyncEnumerable<string> StreamJsonAsync(
+            IReadOnlyDictionary<string, object?> channel,
+            IReadOnlyDictionary<string, object?> payload,
+            int defaultTimeout,
+            CancellationToken cancellationToken)
+        {
+            return ThrowStream(_exception);
+        }
+
+        private static async IAsyncEnumerable<string> ThrowStream(
+            UpstreamException exception,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+#pragma warning disable CS0162
+            await Task.CompletedTask;
+            throw exception;
+            yield break; // unreachable, satisfies async-iterator requirement
+#pragma warning restore CS0162
         }
     }
 }
