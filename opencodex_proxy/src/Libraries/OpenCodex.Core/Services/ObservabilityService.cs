@@ -296,8 +296,7 @@ public sealed class ObservabilityService : IObservabilityService
             logs,
             resolved.StartTs,
             resolved.EndTs,
-            resolved.GranularityMinutes,
-            points);
+            resolved.GranularityMinutes);
 
         return new StatsDto(
             resolved.RangeKey,
@@ -612,8 +611,7 @@ public sealed class ObservabilityService : IObservabilityService
         IReadOnlyList<RequestLog> logs,
         double startTs,
         double endTs,
-        int granularityMinutes,
-        IReadOnlyList<StatsPointDto> points)
+        int granularityMinutes)
     {
         var requestCount = logs.Count;
         var successCount = logs.Count(IsSuccessfulLog);
@@ -622,9 +620,10 @@ public sealed class ObservabilityService : IObservabilityService
         var outputTokens = logs.Sum(log => log.OutputTokens);
         var cost = logs.Sum(log => log.Cost);
 
-        var recentStartTs = Math.Max(startTs, endTs - 3600);
+        var effectiveEndTs = Math.Min(endTs, UnixTimeSeconds());
+        var recentStartTs = Math.Max(startTs, effectiveEndTs - 3600);
         var recentLogs = logs
-            .Where(log => log.CreatedAt >= recentStartTs && log.CreatedAt < endTs)
+            .Where(log => log.CreatedAt >= recentStartTs && log.CreatedAt < effectiveEndTs)
             .ToList();
         var recentRequestCount = recentLogs.Count;
         var recentInputTokens = recentLogs.Sum(log => log.InputTokens);
@@ -632,10 +631,11 @@ public sealed class ObservabilityService : IObservabilityService
         var recentOutputTokens = recentLogs.Sum(log => log.OutputTokens);
         var recentCost = recentLogs.Sum(log => log.Cost);
 
-        var latestPoint = points.LastOrDefault();
-        var latestTokens = latestPoint is null
-            ? 0
-            : latestPoint.InputTokens + latestPoint.CachedTokens + latestPoint.OutputTokens;
+        var latestWindowStartTs = Math.Max(startTs, effectiveEndTs - granularityMinutes * 60.0);
+        var latestWindowLogs = logs
+            .Where(log => log.CreatedAt >= latestWindowStartTs && log.CreatedAt < effectiveEndTs)
+            .ToList();
+        var latestTokens = latestWindowLogs.Sum(log => log.InputTokens + log.CachedTokens + log.OutputTokens);
 
         return new StatsSummaryDto(
             requestCount,
@@ -648,7 +648,7 @@ public sealed class ObservabilityService : IObservabilityService
             recentInputTokens + recentCachedTokens + recentOutputTokens,
             Math.Round(cost, 6),
             Math.Round(recentCost, 6),
-            latestPoint?.Rpm ?? 0,
+            latestWindowLogs.Count > 0 ? Math.Round((double)latestWindowLogs.Count / granularityMinutes, 2) : 0,
             latestTokens > 0 ? Math.Round((double)latestTokens / granularityMinutes, 2) : 0);
     }
 

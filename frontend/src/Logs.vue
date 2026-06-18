@@ -48,7 +48,7 @@
             </el-dropdown-menu>
           </template>
         </el-dropdown>
-        <el-button :icon="Refresh" @click="refreshLogPageData()">刷新</el-button>
+        <el-button :icon="Refresh" :loading="refreshLoading" @click="refreshLogPageData()">刷新</el-button>
       </div>
     </div>
 
@@ -115,7 +115,7 @@
       </el-form-item>
     </el-form>
 
-    <div v-loading="statsLoading" class="dashboard-summary-grid log-summary-grid">
+    <div v-loading="initialStatsLoading" class="dashboard-summary-grid log-summary-grid">
       <div
         v-for="card in summaryCards"
         :key="card.key"
@@ -134,7 +134,7 @@
     <div class="table-area">
       <el-table
         class="log-table"
-        v-loading="logsLoading"
+        v-loading="initialLogsLoading"
         :data="logs"
         style="width: 100%"
         empty-text="暂无日志"
@@ -357,11 +357,13 @@ const props = defineProps({
 });
 
 const logsLoading = ref(false);
+const hasLoadedLogs = ref(false);
 const logs = ref([]);
 const logPage = ref(1);
 const logPageSize = ref(20);
 const logTotal = ref(0);
 const statsLoading = ref(false);
+const hasLoadedStats = ref(false);
 const logAutoRefreshOptions = [5, 10, 30, 60];
 const logAutoRefreshSeconds = ref(0);
 let logAutoRefreshTimer = null;
@@ -473,6 +475,9 @@ const visibleLogColumns = computed(() =>
 const logAutoRefreshLabel = computed(() =>
   logAutoRefreshSeconds.value ? `${logAutoRefreshSeconds.value} 秒刷新` : "自动刷新"
 );
+const refreshLoading = computed(() => logsLoading.value || statsLoading.value);
+const initialLogsLoading = computed(() => logsLoading.value && !hasLoadedLogs.value);
+const initialStatsLoading = computed(() => statsLoading.value && !hasLoadedStats.value);
 const summaryCards = computed(() => {
   const summary = statsData.summary || defaultSummary();
   return [
@@ -534,6 +539,7 @@ async function loadLogs(page = logPage.value) {
     const data = await props.api(`/logs?${params.toString()}`);
     logs.value = data.events || [];
     logTotal.value = data.total || 0;
+    hasLoadedLogs.value = true;
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
@@ -559,6 +565,7 @@ async function loadStats() {
     const data = await props.api(`/stats?${params.toString()}`);
     statsData.currency_rate = data.currency_rate || 7.25;
     statsData.summary = { ...defaultSummary(), ...(data.summary || {}) };
+    hasLoadedStats.value = true;
   } catch (error) {
     ElMessage.error(error.message);
   } finally {

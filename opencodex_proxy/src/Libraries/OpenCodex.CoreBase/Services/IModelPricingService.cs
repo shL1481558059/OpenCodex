@@ -24,7 +24,8 @@ public interface IModelPricingService
     ApiOpResult<DeleteModelPricingResponse> DeletePrice(
         long id);
 
-    ApiOpResult<SeedModelPricingResponse> SeedDefaults();
+    Task<ApiOpResult<SeedModelPricingResponse>> SeedDefaultsAsync(
+        CancellationToken cancellationToken = default);
 
     double CalculateCost(
         string model,

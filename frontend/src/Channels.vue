@@ -404,11 +404,11 @@ async function saveConfig(nextChannels) {
 }
 
 async function persistChannels(nextChannels) {
-  await props.api("/config", {
+  const data = await props.api("/config", {
     method: "POST",
     body: JSON.stringify({ channels: nextChannels })
   });
-  config.channels = nextChannels;
+  config.channels = Array.isArray(data?.channels) ? data.channels : nextChannels;
 }
 
 function openChannelDrawer(channel = null, index = -1) {
@@ -812,7 +812,7 @@ function formatHealthStatus(value) {
     case "open":
       return "熔断开启";
     case "half_open":
-      return "半开探测";
+      return "降级";
     default:
       return "健康";
   }

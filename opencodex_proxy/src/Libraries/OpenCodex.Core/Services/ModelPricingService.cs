@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Collections.Concurrent;
+using System.Text.Json;
 using Mapster;
 using Microsoft.EntityFrameworkCore;
 using OpenCodex.Core.Domain;
@@ -123,10 +124,24 @@ public sealed class ModelPricingService : IModelPricingService
         return ApiOpResult<DeleteModelPricingResponse>.Succeed(DeleteModelPricingResponse.From(deleted));
     }
 
-    public ApiOpResult<SeedModelPricingResponse> SeedDefaults()
+    public async Task<ApiOpResult<SeedModelPricingResponse>> SeedDefaultsAsync(
+        CancellationToken cancellationToken = default)
     {
-        var result = SeedDefaults(insertOnlyWhenEmpty: false);
-        return ApiOpResult<SeedModelPricingResponse>.Succeed(new SeedModelPricingResponse(result.Inserted, result.Skipped));
+        try
+        {
+            var defaults = await OpenCodexPricingDefaults.CurrentRemoteAsync(cancellationToken);
+            var result = UpdateDefaults(defaults);
+            return ApiOpResult<SeedModelPricingResponse>.Succeed(
+                new SeedModelPricingResponse(result.Inserted, result.Updated, result.Skipped));
+        }
+        catch (Exception exception) when (exception is HttpRequestException
+            or JsonException
+            or InvalidOperationException)
+        {
+            return ApiOpResult<SeedModelPricingResponse>.Fail(
+                502,
+                $"failed to fetch latest model pricing: {exception.Message}");
+        }
     }
 
     public double CalculateCost(
@@ -189,6 +204,65 @@ public sealed class ModelPricingService : IModelPricingService
         }
 
         return (inserted, skipped);
+    }
+
+    internal (int Inserted, int Updated, int Skipped) UpdateDefaults(
+        IReadOnlyList<DefaultModelPricing> defaults)
+    {
+        using var context = OpenContext();
+        var now = UnixTimeSeconds();
+        var existing = context.ModelPricings
+            .ToDictionary(price => price.ModelId, StringComparer.OrdinalIgnoreCase);
+        var inserted = 0;
+        var updated = 0;
+        var skipped = 0;
+
+        foreach (var price in defaults)
+        {
+            if (!existing.TryGetValue(price.ModelId, out var existingPrice))
+            {
+                var created = new ModelPricing
+                {
+                    ModelId = price.ModelId,
+                    Vendor = price.Vendor,
+                    Name = price.Name,
+                    MatchPattern = price.ModelId,
+                    InputPrice = price.InputPrice,
+                    CachedInputPrice = price.CachedInputPrice,
+                    OutputPrice = price.OutputPrice,
+                    Enabled = true,
+                    Source = OpenCodexPricingDefaults.Source,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                };
+                context.ModelPricings.Add(created);
+                existing.Add(price.ModelId, created);
+                inserted++;
+                continue;
+            }
+
+            if (!string.Equals(existingPrice.Source, OpenCodexPricingDefaults.Source, StringComparison.Ordinal))
+            {
+                skipped++;
+                continue;
+            }
+
+            if (!ApplyDefaultUpdates(existingPrice, price))
+            {
+                skipped++;
+                continue;
+            }
+
+            existingPrice.UpdatedAt = now;
+            updated++;
+        }
+
+        if (inserted > 0 || updated > 0)
+        {
+            context.SaveChanges();
+        }
+
+        return (inserted, updated, skipped);
     }
 
     private OpenCodexDbContext OpenContext()
@@ -283,6 +357,52 @@ public sealed class ModelPricingService : IModelPricingService
         {
             price.Enabled = ParseBool(JsonDictionaryValue.Get(values, "enabled"), "enabled");
         }
+
+        price.Source = "manual";
+    }
+
+    private static bool ApplyDefaultUpdates(
+        ModelPricing target,
+        DefaultModelPricing source)
+    {
+        var changed = false;
+        if (!string.Equals(target.Vendor, source.Vendor, StringComparison.Ordinal))
+        {
+            target.Vendor = source.Vendor;
+            changed = true;
+        }
+
+        if (!string.Equals(target.Name, source.Name, StringComparison.Ordinal))
+        {
+            target.Name = source.Name;
+            changed = true;
+        }
+
+        if (!string.Equals(target.MatchPattern, source.ModelId, StringComparison.Ordinal))
+        {
+            target.MatchPattern = source.ModelId;
+            changed = true;
+        }
+
+        if (Math.Abs(target.InputPrice - source.InputPrice) >= double.Epsilon)
+        {
+            target.InputPrice = source.InputPrice;
+            changed = true;
+        }
+
+        if (!Nullable.Equals(target.CachedInputPrice, source.CachedInputPrice))
+        {
+            target.CachedInputPrice = source.CachedInputPrice;
+            changed = true;
+        }
+
+        if (Math.Abs(target.OutputPrice - source.OutputPrice) >= double.Epsilon)
+        {
+            target.OutputPrice = source.OutputPrice;
+            changed = true;
+        }
+
+        return changed;
     }
 
     private static string NormalizeRequired(string? value, string field)

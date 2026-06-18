@@ -61,7 +61,7 @@
       </div>
     </div>
 
-    <div v-loading="loading" class="dashboard-grid">
+    <div v-loading="initialChartLoading" class="dashboard-grid">
       <!-- 消费趋势 -->
       <div class="dashboard-card">
         <div class="dashboard-card__header">
@@ -157,6 +157,7 @@ const range = ref("1h");
 const customRange = ref(defaultCustomRange());
 const autoRefreshSeconds = ref(0);
 const loading = ref(false);
+const hasLoadedStats = ref(false);
 const costCurrency = ref("CNY");
 const tokenUnit = ref("K");
 
@@ -192,6 +193,7 @@ let refreshTimer = null;
 const autoRefreshLabel = computed(() =>
   autoRefreshSeconds.value ? `${autoRefreshSeconds.value} 秒刷新` : "自动刷新"
 );
+const initialChartLoading = computed(() => loading.value && !hasLoadedStats.value);
 const summaryCards = computed(() => {
   const summary = statsData.summary || defaultSummary();
   return [
@@ -251,6 +253,7 @@ async function fetchStats() {
     statsData.summary = { ...defaultSummary(), ...(data.summary || {}) };
     statsData.points = data.points || [];
     statsData.model_distribution = data.model_distribution || [];
+    hasLoadedStats.value = true;
     renderAllCharts();
   } catch (err) {
     ElMessage.error(err.message || "获取统计数据失败");
