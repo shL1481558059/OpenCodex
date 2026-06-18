@@ -714,26 +714,26 @@ public sealed class SseStreamConverterTests
                 AssistantPreamble = (string?)"I will perform multiple actions.",
                 Tools = new[]
                 {
-                    new GeneratedSseToolCall(
-                        "toolu_patch",
+                   new GeneratedSseToolCall(
+                       "toolu_patch",
+                       "apply_patch_update_file",
+                       new Dictionary<string, object?>
+                       {
+                           ["path"] = "notes.txt",
+                           ["hunks"] = new List<object?>
+                           {
+                               new Dictionary<string, object?>
+                               {
+                                   ["lines"] = new List<object?>
+                                   {
+                                       new Dictionary<string, object?> { ["op"] = "remove", ["text"] = "old" },
+                                       new Dictionary<string, object?> { ["op"] = "add", ["text"] = "new" }
+                                   }
+                               }
+                           }
+                       },
                         "apply_patch_update_file",
-                        new Dictionary<string, object?>
-                        {
-                            ["path"] = "notes.txt",
-                            ["hunks"] = new List<object?>
-                            {
-                                new Dictionary<string, object?>
-                                {
-                                    ["lines"] = new List<object?>
-                                    {
-                                        new Dictionary<string, object?> { ["op"] = "remove", ["text"] = "old" },
-                                        new Dictionary<string, object?> { ["op"] = "add", ["text"] = "new" }
-                                    }
-                                }
-                            }
-                        },
-                        "exec_command",
-                        null),
+                       null),
                     new GeneratedSseToolCall(
                         "toolu_press",
                         "mcp__computer_use__keyboard__press_key",
@@ -824,7 +824,7 @@ public sealed class SseStreamConverterTests
     }
 
     [Fact]
-    public async Task ToolUse_ApplyPatchTool_UsesExecCommandInOutput()
+    public async Task ToolUse_ApplyPatchTool_PassesThroughInOutput()
     {
         var lines = SseLines(
             SseBlock("""{"type":"message_start","message":{"id":"msg_1","model":"claude-3","usage":{"input_tokens":5,"output_tokens":0}}}""", "message_start"),
@@ -846,12 +846,13 @@ public sealed class SseStreamConverterTests
         var fc = output!.FirstOrDefault(i => i is Dictionary<string, object?> d && d.TryGetValue("type", out var t) && "function_call".Equals(t)) as Dictionary<string, object?>;
         Assert.NotNull(fc);
         Assert.Equal("toolu_patch", fc!["call_id"]?.ToString());
-        Assert.Equal("exec_command", fc["name"]?.ToString());
+        Assert.Equal("apply_patch_update_file", fc["name"]?.ToString());
 
-        var arguments = JsonSerializer.Deserialize<Dictionary<string, string>>(Assert.IsType<string>(fc["arguments"]));
+        var arguments = JsonSerializer.Deserialize<Dictionary<string, object?>>(Assert.IsType<string>(fc["arguments"]));
         Assert.NotNull(arguments);
-        Assert.Contains("apply_patch <<'OPENCODEX_PATCH'", arguments["cmd"]);
-        Assert.Contains("*** Update File: data.json", arguments["cmd"]);
+        Assert.Equal("data.json", arguments!["path"]?.ToString());
+        Assert.DoesNotContain("cmd", arguments.Keys);
+        Assert.DoesNotContain("OPENCODEX_PATCH", Assert.IsType<string>(fc["arguments"]));
     }
     // ── response.completed P2 fields ──────────────────────────
 

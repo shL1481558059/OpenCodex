@@ -136,7 +136,7 @@ public static partial class ProtocolConverter
     private static List<object?> CanonicalToolsToChat(List<object?> tools)
     {
         var result = new List<object?>();
-        foreach (var item in ExpandApplyPatchProxyTools(tools))
+        foreach (var item in tools)
         {
             if (!TryAsObject(item, out var tool) || !HasNonNullValue(tool, "name"))
             {
@@ -157,7 +157,7 @@ public static partial class ProtocolConverter
     private static List<object?> CanonicalToolsToAnthropic(List<object?> tools)
     {
         var result = new List<object?>();
-        foreach (var item in ExpandApplyPatchProxyTools(tools))
+        foreach (var item in tools)
         {
             if (!TryAsObject(item, out var tool) || !HasNonNullValue(tool, "name"))
             {
