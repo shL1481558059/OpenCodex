@@ -753,6 +753,49 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
+    public void ConvertRequest_ResponsesApplyPatchGrammarTool_UsesPatchSchemaForChat()
+    {
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = "patch this",
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "custom",
+                        ["name"] = "apply_patch",
+                        ["description"] = "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.",
+                        ["format"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "grammar",
+                            ["syntax"] = "lark",
+                            ["definition"] = "start: begin_patch"
+                        }
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Chat,
+            "upstream");
+
+        var tools = Assert.IsType<List<object?>>(request["tools"]);
+        var wrapper = Assert.IsType<Dictionary<string, object?>>(Assert.Single(tools));
+        Assert.Equal("function", wrapper["type"]);
+        var function = Assert.IsType<Dictionary<string, object?>>(wrapper["function"]);
+        Assert.Equal("apply_patch", function["name"]);
+
+        var parameters = Assert.IsType<Dictionary<string, object?>>(function["parameters"]);
+        var properties = Assert.IsType<Dictionary<string, object?>>(parameters["properties"]);
+        Assert.True(properties.ContainsKey("patch"));
+        Assert.False(properties.ContainsKey("input"));
+
+        var required = Assert.IsType<List<object?>>(parameters["required"]);
+        Assert.Contains("patch", required);
+    }
+
+    [Fact]
     public void ConvertRequest_ResponsesWebSearchTool_ConvertsForMessages()
     {
         var request = ProtocolConverter.ConvertRequest(
