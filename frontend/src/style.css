@@ -642,6 +642,10 @@ body {
   min-width: 220px;
 }
 
+.channel-action-buttons .el-button + .el-button {
+  margin-left: 0;
+}
+
 .channel-action-buttons .action-btn {
   flex-shrink: 0;
   white-space: nowrap;
