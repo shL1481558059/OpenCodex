@@ -1521,6 +1521,133 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
+    public void ConvertRequest_ResponsesApplyPatchHistory_PreservesMultiTurnToolCallsAndResults()
+    {
+        const string failedOutput =
+            "apply_patch verification failed: Failed to find expected lines in notes.txt:\nold";
+        const string successOutput = "Success. Updated the following files:\nM notes.txt";
+
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "message",
+                        ["role"] = "user",
+                        ["content"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "input_text",
+                                ["text"] = "请修一下 notes.txt"
+                            }
+                        }
+                    },
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "function_call",
+                        ["call_id"] = "call_patch_1",
+                        ["name"] = "apply_patch",
+                        ["arguments"] = "*** Begin Patch\n*** Update File: notes.txt\n@@\n-old\n+new\n*** End Patch"
+                    },
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "function_call_output",
+                        ["call_id"] = "call_patch_1",
+                        ["output"] = failedOutput
+                    },
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "function_call",
+                        ["call_id"] = "call_patch_2",
+                        ["name"] = "apply_patch",
+                        ["arguments"] = new Dictionary<string, object?>
+                        {
+                            ["patch"] = "*** Begin Patch\n*** Update File: notes.txt\n@@\n-old line\n+new line\n*** End Patch"
+                        }
+                    },
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "function_call_output",
+                        ["call_id"] = "call_patch_2",
+                        ["output"] = successOutput
+                    },
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "message",
+                        ["role"] = "assistant",
+                        ["content"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "output_text",
+                                ["text"] = "已经重新尝试并修好了。"
+                            }
+                        }
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Messages,
+            "upstream");
+
+        var messages = Assert.IsType<List<object?>>(request["messages"]);
+        Assert.Equal(6, messages.Count);
+
+        var firstToolCallMessage = Assert.IsType<Dictionary<string, object?>>(messages[1]);
+        Assert.Equal("assistant", firstToolCallMessage["role"]);
+        var firstAssistantContent = Assert.IsType<List<object?>>(firstToolCallMessage["content"]);
+        var firstToolCall = Assert.IsType<Dictionary<string, object?>>(Assert.Single(firstAssistantContent));
+        Assert.Equal("tool_use", firstToolCall["type"]);
+        Assert.Equal("call_patch_1", firstToolCall["id"]);
+        Assert.Equal("apply_patch", firstToolCall["name"]);
+        var firstInput = Assert.IsType<Dictionary<string, object?>>(firstToolCall["input"]);
+        var firstArguments = JsonSerializer.Serialize(firstInput);
+        Assert.Contains("\"patch\":\"*** Begin Patch", firstArguments, StringComparison.Ordinal);
+        Assert.DoesNotContain("cmd", firstArguments, StringComparison.Ordinal);
+        Assert.DoesNotContain("OPENCODEX_PATCH", firstArguments, StringComparison.Ordinal);
+
+        var firstToolResultMessage = Assert.IsType<Dictionary<string, object?>>(messages[2]);
+        Assert.Equal("user", firstToolResultMessage["role"]);
+        var firstToolResultContent = Assert.IsType<List<object?>>(firstToolResultMessage["content"]);
+        var firstToolResult = Assert.IsType<Dictionary<string, object?>>(Assert.Single(firstToolResultContent));
+        Assert.Equal("tool_result", firstToolResult["type"]);
+        Assert.Equal("call_patch_1", firstToolResult["tool_use_id"]);
+        Assert.Equal(failedOutput, firstToolResult["content"]);
+
+        var secondToolCallMessage = Assert.IsType<Dictionary<string, object?>>(messages[3]);
+        Assert.Equal("assistant", secondToolCallMessage["role"]);
+        var secondAssistantContent = Assert.IsType<List<object?>>(secondToolCallMessage["content"]);
+        var secondToolCall = Assert.IsType<Dictionary<string, object?>>(Assert.Single(secondAssistantContent));
+        Assert.Equal("tool_use", secondToolCall["type"]);
+        Assert.Equal("call_patch_2", secondToolCall["id"]);
+        Assert.Equal("apply_patch", secondToolCall["name"]);
+        var secondInput = Assert.IsType<Dictionary<string, object?>>(secondToolCall["input"]);
+        var secondArguments = JsonSerializer.Serialize(secondInput);
+        Assert.Contains("\"patch\":\"*** Begin Patch", secondArguments, StringComparison.Ordinal);
+        Assert.DoesNotContain("cmd", secondArguments, StringComparison.Ordinal);
+        Assert.DoesNotContain("OPENCODEX_PATCH", secondArguments, StringComparison.Ordinal);
+
+        var secondToolResultMessage = Assert.IsType<Dictionary<string, object?>>(messages[4]);
+        Assert.Equal("user", secondToolResultMessage["role"]);
+        var secondToolResultContent = Assert.IsType<List<object?>>(secondToolResultMessage["content"]);
+        var secondToolResult = Assert.IsType<Dictionary<string, object?>>(Assert.Single(secondToolResultContent));
+        Assert.Equal("tool_result", secondToolResult["type"]);
+        Assert.Equal("call_patch_2", secondToolResult["tool_use_id"]);
+        Assert.Equal(successOutput, secondToolResult["content"]);
+
+        var finalAssistantMessage = Assert.IsType<Dictionary<string, object?>>(messages[5]);
+        Assert.Equal("assistant", finalAssistantMessage["role"]);
+        var finalAssistantContent = Assert.IsType<List<object?>>(finalAssistantMessage["content"]);
+        var finalText = Assert.IsType<Dictionary<string, object?>>(Assert.Single(finalAssistantContent));
+        Assert.Equal("text", finalText["type"]);
+        Assert.Equal("已经重新尝试并修好了。", finalText["text"]);
+    }
+
+    [Fact]
     public async Task ChatToResponsesEvents_ApplyPatchProxy_PassesThroughAsFunctionCall()
     {
         var arguments = JsonSerializer.Serialize(new
@@ -1594,7 +1721,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         var body = string.Concat(events);
         Assert.Contains("\"type\":\"function_call\"", body);
         Assert.Contains("\"name\":\"apply_patch_update_file\"", body);
-        Assert.DoesNotContain("response.function_call_arguments.delta", body);
+        Assert.Contains("response.function_call_arguments.delta", body);
         Assert.DoesNotContain("OPENCODEX_PATCH", body);
     }
 

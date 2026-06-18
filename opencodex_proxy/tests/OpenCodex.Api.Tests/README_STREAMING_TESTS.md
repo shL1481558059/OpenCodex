@@ -30,21 +30,20 @@
 ### 3. ApplyPatch 工具转换
 
 #### Update File
-- `ApplyPatch_UpdateFile_ConvertsToExecCommand`
-  - 验证 `apply_patch_update_file` → `exec_command` 转换
-  - 验证patch格式：`*** Begin Patch` / `*** Update File` / hunks / `*** End Patch`
-  - 验证diff格式：context/remove/add行
+- `ApplyPatch_UpdateFile_PassesThroughAsFunctionCall`
+  - 验证 `apply_patch_update_file` 作为普通函数调用透传
+  - 验证 arguments 保持原始 JSON
+  - 验证不会改写成 `exec_command` / heredoc
 
 #### Add File
-- `ApplyPatch_AddFile_ConvertsCorrectly`
-  - 验证 `apply_patch_add_file` → `exec_command` 转换
-  - 验证 `*** Add File` 格式
-  - 验证内容前缀 `+`
+- `ApplyPatch_AddFile_PassesThroughAsFunctionCall`
+  - 验证 `apply_patch_add_file` 透传
+  - 验证 `path` / `content` 原样保留
 
 #### Batch Operations
-- `ApplyPatch_Batch_ConvertsMultipleOperations`
-  - 验证 `apply_patch_batch` 多操作转换
-  - 验证多个文件操作合并到一个patch
+- `ApplyPatch_Batch_PassesThroughAsFunctionCall`
+  - 验证 `apply_patch_batch` 多操作透传
+  - 验证 `operations[]` 原样保留
 
 ### 4. 流式性能验证
 
@@ -217,4 +216,3 @@ MessagesBlock("content_block_delta", new { type = "text_delta", text = "Hi" })
 - `ProtocolConverter.ApplyPatchTools.cs` - ApplyPatch工具转换
 - `WebSearchSimulator.Streaming.cs` - WebSearch流式处理
 - `SseStreamConverterTests.cs` - 现有的单元测试
-
