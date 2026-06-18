@@ -390,6 +390,14 @@ public static partial class SseStreamConverter
                             continue;
                         }
 
+                        // apply_patch is a FREEFORM tool: upstream sends JSON like {"patch":"..."}.
+                        // The client expects raw patch text, not JSON fragments.
+                        // Skip delta streaming for apply_patch; the done event carries the unwrapped text.
+                        if (ProtocolConverter.IsApplyPatchPublic(StringValue(block, "name", string.Empty)))
+                        {
+                            continue;
+                        }
+
                         var state = EnsureToolState(index);
                         yield return Emit(
                             "response.function_call_arguments.delta",

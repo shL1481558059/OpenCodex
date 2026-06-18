@@ -4,6 +4,12 @@ namespace OpenCodex.Core.Protocols;
 
 public static partial class ProtocolConverter
 {
+    public static bool IsApplyPatchPublic(string name)
+    {
+        var normalized = name.Replace("-", "_", StringComparison.Ordinal);
+        return IsApplyPatchName(normalized);
+    }
+
     internal static Dictionary<string, object?> ResponsesToolCallItemFromToolCall(
         object? callId,
         object? name,
