@@ -12,13 +12,21 @@ public static partial class ProtocolConverter
         string? itemId = null)
     {
         var toolName = Convert.ToString(name) ?? string.Empty;
+        var serializedArguments = JsonDumps(arguments ?? "{}");
+
+        // apply_patch is a FREEFORM tool: the client expects raw patch text as arguments,
+        // not a JSON object wrapper like {"patch":"..."}.
+        if (IsApplyPatchName(toolName.Replace("-", "_", StringComparison.Ordinal)))
+        {
+            serializedArguments = ExtractPatchText(serializedArguments) ?? serializedArguments;
+        }
 
         var functionCall = Obj(
             ("id", itemId ?? NewId("fc")),
             ("type", "function_call"),
             ("status", "completed"),
             ("call_id", callId),
-            ("arguments", JsonDumps(arguments ?? "{}")));
+            ("arguments", serializedArguments));
         MergeInto(functionCall, ResponsesFunctionCallNameFields(toolName, namespaceValue));
         return functionCall;
     }
@@ -63,5 +71,37 @@ public static partial class ProtocolConverter
         {
             return false;
         }
+    }
+
+    private static string? ExtractPatchText(string arguments)
+    {
+        if (string.IsNullOrEmpty(arguments))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(arguments);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (property.Name is "patch" or "input" or "command"
+                    && property.Value.ValueKind == JsonValueKind.String)
+                {
+                    return property.Value.GetString();
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            return arguments;
+        }
+
+        return null;
     }
 }
