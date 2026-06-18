@@ -20,7 +20,7 @@
         </el-select>
         <el-button :icon="Search" @click="loadPrices">搜索</el-button>
         <el-button :icon="Refresh" @click="loadPrices">刷新</el-button>
-        <el-button :icon="Download" :loading="seedLoading" @click="seedDefaults">补齐默认</el-button>
+        <el-button :icon="Download" :loading="seedLoading" @click="seedDefaults">更新</el-button>
         <el-button type="primary" :icon="Plus" @click="openPriceDialog()">新增定价</el-button>
       </div>
     </div>
@@ -230,7 +230,7 @@ async function seedDefaults() {
   try {
     const data = await props.api("/pricing/seed-defaults", { method: "POST", body: "{}" });
     await loadPrices();
-    ElMessage.success(`已新增 ${data.inserted || 0} 条，跳过 ${data.skipped || 0} 条`);
+    ElMessage.success(`已新增 ${data.inserted || 0} 条，更新 ${data.updated || 0} 条，跳过 ${data.skipped || 0} 条`);
   } catch (error) {
     ElMessage.error(error.message);
   } finally {

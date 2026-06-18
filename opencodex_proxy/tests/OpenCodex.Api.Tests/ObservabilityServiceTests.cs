@@ -183,6 +183,83 @@ public sealed class ObservabilityServiceTests
     }
 
     [Fact]
+    public void StatsUsesCurrentTimeForRecentMetricsWhenCustomEndIsInFuture()
+    {
+        var dbPath = Path.Combine(
+            Path.GetTempPath(),
+            "opencodex-api-tests",
+            $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        using (var context = OpenCodexDbContextFactory.Create(dbPath))
+        {
+            context.Database.EnsureCreated();
+            context.Users.Add(new User
+            {
+                Username = "admin",
+                PasswordHash = "hash",
+                Role = "superadmin",
+                Enabled = true,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            context.RequestLogs.AddRange(
+                new RequestLog
+                {
+                    Id = 621,
+                    RequestId = "req-recent",
+                    CreatedAt = now - 30,
+                    Method = "POST",
+                    Path = "/v1/responses",
+                    Model = "gpt-test",
+                    LifecycleStatus = ProxyRequestLifecycleStatus.Success,
+                    IsStream = true,
+                    StatusCode = 200,
+                    OwnerUsername = "admin",
+                    InputTokens = 10,
+                    OutputTokens = 5,
+                    Cost = 0.01
+                },
+                new RequestLog
+                {
+                    Id = 622,
+                    RequestId = "req-old",
+                    CreatedAt = now - 7200,
+                    Method = "POST",
+                    Path = "/v1/responses",
+                    Model = "gpt-test",
+                    LifecycleStatus = ProxyRequestLifecycleStatus.Success,
+                    IsStream = true,
+                    StatusCode = 200,
+                    OwnerUsername = "admin",
+                    InputTokens = 20,
+                    OutputTokens = 10,
+                    Cost = 0.02
+                });
+            context.SaveChanges();
+        }
+
+        var service = new ObservabilityService(
+            new TestSettingsProvider(dbPath),
+            new TestWorkContext("admin", "superadmin"));
+
+        var stats = service.ReadStats(
+            "custom",
+            now - 10800,
+            now + 10800,
+            new Dictionary<string, object?>());
+
+        Assert.True(stats.Succeeded);
+        var summary = stats.Payload!.Summary;
+        Assert.Equal(2, summary.RequestCount);
+        Assert.Equal(1, summary.Recent1hRequestCount);
+        Assert.Equal(15, summary.Recent1hTokens);
+        Assert.True(summary.Rpm > 0);
+        Assert.True(summary.Tpm > 0);
+    }
+
+    [Fact]
     public void LogsAndDetailsExposeLifecycleStatusesAndStreamLines()
     {
         var dbPath = Path.Combine(

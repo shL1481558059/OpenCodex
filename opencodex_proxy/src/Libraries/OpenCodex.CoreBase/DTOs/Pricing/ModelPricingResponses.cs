@@ -69,14 +69,18 @@ public sealed class DeleteModelPricingResponse
 /// </summary>
 public sealed class SeedModelPricingResponse
 {
-    public SeedModelPricingResponse(int inserted, int skipped)
+    public SeedModelPricingResponse(int inserted, int updated, int skipped)
     {
         Inserted = inserted;
+        Updated = updated;
         Skipped = skipped;
     }
 
     [JsonPropertyName("inserted")]
     public int Inserted { get; }
+
+    [JsonPropertyName("updated")]
+    public int Updated { get; }
 
     [JsonPropertyName("skipped")]
     public int Skipped { get; }
