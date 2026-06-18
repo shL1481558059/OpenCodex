@@ -356,11 +356,6 @@ public static partial class SseStreamConverter
                         continue;
                     }
 
-                    if (ProtocolConverter.IsApplyPatchToolName(aggregate.Name))
-                    {
-                        continue;
-                    }
-
                     if (SkipToolNames?.Contains(aggregate.Name) is true)
                     {
                         continue;
