@@ -181,6 +181,7 @@ public static partial class ProtocolConverter
         }
 
         var toolType = GetString(tool, "type") ?? "function";
+        var toolName = Convert.ToString(GetValue(tool, "name")) ?? string.Empty;
         if (toolType == "namespace")
         {
             var namespaceName = Convert.ToString(GetValue(tool, "name")) ?? string.Empty;
@@ -238,6 +239,11 @@ public static partial class ProtocolConverter
             ];
         }
 
+        if (toolType == "custom" && IsApplyPatchName(toolName.Replace("-", "_", StringComparison.Ordinal)))
+        {
+            return [WrapNativeTool("apply_patch", tool)];
+        }
+
         return [WrapNativeTool(toolType, tool)];
     }
 
@@ -283,7 +289,9 @@ public static partial class ProtocolConverter
 
         return Obj(
             ("name", name),
-            ("description", GetValue(tool, "description") ?? $"Wrapped Responses tool: {toolType}"),
+            ("description", toolType == "apply_patch"
+                ? "Apply a patch to files. Provide the patch text in the `patch` field."
+                : GetValue(tool, "description") ?? $"Wrapped Responses tool: {toolType}"),
             ("parameters", parameters),
             ("native_type", toolType),
             ("raw", DeepCopy(tool)));
