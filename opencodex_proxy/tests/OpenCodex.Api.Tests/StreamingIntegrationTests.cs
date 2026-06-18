@@ -321,7 +321,7 @@ public sealed class StreamingIntegrationTests
     #region ApplyPatch 工具转换
 
     [Fact]
-    public async Task ApplyPatch_UpdateFile_ConvertsToExecCommand()
+    public async Task ApplyPatch_UpdateFile_PassesThroughAsFunctionCall()
     {
         // Arrange - 模拟apply_patch_update_file tool_use
         var lines = SseLines(
@@ -353,7 +353,7 @@ public sealed class StreamingIntegrationTests
 
         var parsed = ParseEvents(events);
 
-        // Assert - 转换成exec_command
+        // Assert - apply_patch tool call passed through as-is
         var completed = FindEvent(parsed, "response.completed");
         Assert.NotNull(completed);
         var response = completed!["response"] as Dictionary<string, object?>;
@@ -365,26 +365,19 @@ public sealed class StreamingIntegrationTests
             .FirstOrDefault(fc => "function_call".Equals(fc["type"]));
         Assert.NotNull(functionCall);
         Assert.Equal("toolu_patch_001", functionCall!["call_id"]?.ToString());
-        Assert.Equal("exec_command", functionCall["name"]?.ToString());
+        Assert.Equal("apply_patch_update_file", functionCall["name"]?.ToString());
 
-        // Assert - 命令格式正确
-        var arguments = JsonSerializer.Deserialize<Dictionary<string, string>>(
+        // Assert - arguments passed through as original JSON
+        var arguments = JsonSerializer.Deserialize<Dictionary<string, object?>>(
             Assert.IsType<string>(functionCall["arguments"]));
         Assert.NotNull(arguments);
-        var cmd = arguments!["cmd"];
-        Assert.Contains("apply_patch <<'OPENCODEX_PATCH'", cmd);
-        Assert.Contains("*** Begin Patch", cmd);
-        Assert.Contains("*** Update File: src/Example.cs", cmd);
-        Assert.Contains("@@", cmd);
-        Assert.Contains(" public class Example", cmd);
-        Assert.Contains("-    // TODO", cmd);
-        Assert.Contains("+    // DONE", cmd);
-        Assert.Contains("*** End Patch", cmd);
-        Assert.Contains("OPENCODEX_PATCH", cmd);
+        Assert.Equal("src/Example.cs", arguments!["path"]?.ToString());
+        Assert.DoesNotContain("cmd", arguments.Keys);
+        Assert.DoesNotContain("OPENCODEX_PATCH", Assert.IsType<string>(functionCall["arguments"]));
     }
 
     [Fact]
-    public async Task ApplyPatch_AddFile_ConvertsCorrectly()
+    public async Task ApplyPatch_AddFile_PassesThroughAsFunctionCall()
     {
         // Arrange
         var lines = SseLines(
@@ -420,18 +413,19 @@ public sealed class StreamingIntegrationTests
         var output = (response["output"] as List<object?>)!;
         var functionCall = output.OfType<Dictionary<string, object?>>()
             .First(fc => "function_call".Equals(fc["type"]));
-        var arguments = JsonSerializer.Deserialize<Dictionary<string, string>>(
+        var arguments = JsonSerializer.Deserialize<Dictionary<string, object?>>(
             Assert.IsType<string>(functionCall["arguments"]));
 
-        // Assert
-        var cmd = arguments!["cmd"];
-        Assert.Contains("*** Add File: new_file.txt", cmd);
-        Assert.Contains("+Hello", cmd);
-        Assert.Contains("+World", cmd);
+        // Assert - arguments passed through as original JSON
+        Assert.Equal("apply_patch_add_file", functionCall["name"]?.ToString());
+        Assert.Equal("new_file.txt", arguments!["path"]?.ToString());
+        Assert.Equal("Hello\nWorld", arguments["content"]?.ToString());
+        Assert.DoesNotContain("cmd", arguments.Keys);
+        Assert.DoesNotContain("OPENCODEX_PATCH", Assert.IsType<string>(functionCall["arguments"]));
     }
 
     [Fact]
-    public async Task ApplyPatch_Batch_ConvertsMultipleOperations()
+    public async Task ApplyPatch_Batch_PassesThroughAsFunctionCall()
     {
         // Arrange
         var lines = SseLines(
@@ -467,14 +461,22 @@ public sealed class StreamingIntegrationTests
         var output = (response["output"] as List<object?>)!;
         var functionCall = output.OfType<Dictionary<string, object?>>()
             .First(fc => "function_call".Equals(fc["type"]));
-        var arguments = JsonSerializer.Deserialize<Dictionary<string, string>>(
+        var arguments = JsonSerializer.Deserialize<Dictionary<string, object?>>(
             Assert.IsType<string>(functionCall["arguments"]));
 
-        // Assert - 包含多个操作
-        var cmd = arguments!["cmd"];
-        Assert.Contains("*** Add File: a.txt", cmd);
-        Assert.Contains("+A", cmd);
-        Assert.Contains("*** Delete File: b.txt", cmd);
+        // Assert - arguments passed through as original JSON with operations
+        Assert.Equal("apply_patch_batch", functionCall["name"]?.ToString());
+        Assert.DoesNotContain("cmd", arguments!.Keys);
+        var operationsJson = Assert.IsType<JsonElement>(arguments["operations"]);
+        Assert.Equal(JsonValueKind.Array, operationsJson.ValueKind);
+        Assert.Equal(2, operationsJson.GetArrayLength());
+        var firstOp = operationsJson[0];
+        Assert.Equal("add_file", firstOp.GetProperty("type").GetString());
+        Assert.Equal("a.txt", firstOp.GetProperty("path").GetString());
+        var secondOp = operationsJson[1];
+        Assert.Equal("delete_file", secondOp.GetProperty("type").GetString());
+        Assert.Equal("b.txt", secondOp.GetProperty("path").GetString());
+        Assert.DoesNotContain("OPENCODEX_PATCH", Assert.IsType<string>(functionCall["arguments"]));
     }
 
     #endregion

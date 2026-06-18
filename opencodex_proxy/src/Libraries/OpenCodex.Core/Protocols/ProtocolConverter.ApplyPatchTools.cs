@@ -20,10 +20,6 @@ public static partial class ProtocolConverter
         string? itemId = null)
     {
         var toolName = Convert.ToString(name) ?? string.Empty;
-        if (IsApplyPatchToolName(toolName))
-        {
-            return ResponsesApplyPatchItemFromToolCall(callId, toolName, arguments, itemId);
-        }
 
         var functionCall = Obj(
             ("id", itemId ?? NewId("fc")),

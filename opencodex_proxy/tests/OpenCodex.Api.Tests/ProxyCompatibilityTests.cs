@@ -742,23 +742,14 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             ProtocolConverter.Messages,
             "upstream");
 
+        // apply_patch is passed through as a single function tool (no expansion)
         var tools = Assert.IsType<List<object?>>(request["tools"])
             .Select(item => Assert.IsType<Dictionary<string, object?>>(item))
             .ToArray();
-        Assert.Equal(
-            [
-                "apply_patch_add_file",
-                "apply_patch_delete_file",
-                "apply_patch_update_file",
-                "apply_patch_replace_file",
-                "apply_patch_batch"
-            ],
-            tools.Select(tool => tool["name"]?.ToString() ?? string.Empty).ToArray());
-        Assert.All(tools, tool =>
-        {
-            Assert.True(tool.ContainsKey("input_schema"));
-            Assert.False(tool.ContainsKey("parameters"));
-        });
+        Assert.Single(tools);
+        Assert.Equal("apply_patch", tools[0]["name"]?.ToString());
+        Assert.True(tools[0].ContainsKey("input_schema"));
+        Assert.False(tools[0].ContainsKey("parameters"));
     }
 
     [Fact]
@@ -1100,7 +1091,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
-    public void ConvertResponse_MessagesApplyPatchToolUse_UsesExecCommand()
+    public void ConvertResponse_MessagesApplyPatchToolUse_PassesThroughAsFunctionCall()
     {
         var response = ProtocolConverter.ConvertResponse(
             MessagesToolUseResponse(
@@ -1130,13 +1121,15 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             .Select(entry => entry as Dictionary<string, object?>)
             .FirstOrDefault(entry => (string?)entry?["type"] == "function_call");
         Assert.NotNull(item);
-        Assert.Equal("exec_command", item!["name"]);
+        Assert.Equal("apply_patch_update_file", item!["name"]);
         Assert.Equal("toolu_patch", item["call_id"]);
 
-        var arguments = JsonSerializer.Deserialize<Dictionary<string, string>>(Assert.IsType<string>(item["arguments"]));
+        // arguments are passed through as-is (no exec_command/heredoc wrapping)
+        var arguments = JsonSerializer.Deserialize<Dictionary<string, object?>>(Assert.IsType<string>(item["arguments"]));
         Assert.NotNull(arguments);
-        Assert.Contains("apply_patch <<'OPENCODEX_PATCH'", arguments["cmd"]);
-        Assert.Contains("*** Update File: data.json", arguments["cmd"]);
+        Assert.Equal("data.json", arguments!["path"]?.ToString());
+        Assert.DoesNotContain("cmd", arguments.Keys);
+        Assert.DoesNotContain("OPENCODEX_PATCH", Assert.IsType<string>(item["arguments"]));
     }
 
     [Fact]
@@ -1407,7 +1400,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
-    public void ConvertResponse_ChatApplyPatchProxy_RebuildsExecCommand()
+    public void ConvertResponse_ChatApplyPatchProxy_PassesThroughAsFunctionCall()
     {
         var response = ProtocolConverter.ConvertResponse(
             new Dictionary<string, object?>
@@ -1461,16 +1454,17 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         var output = Assert.IsType<List<object?>>(response["output"]);
         var item = Assert.IsType<Dictionary<string, object?>>(output[0]);
         Assert.Equal("function_call", item["type"]);
-        Assert.Equal("exec_command", item["name"]);
+        Assert.Equal("apply_patch_update_file", item["name"]);
         Assert.Equal("call_patch", item["call_id"]);
-        var arguments = JsonSerializer.Deserialize<Dictionary<string, string>>(Assert.IsType<string>(item["arguments"]));
+        var arguments = JsonSerializer.Deserialize<Dictionary<string, object?>>(Assert.IsType<string>(item["arguments"]));
         Assert.NotNull(arguments);
-        Assert.Contains("apply_patch <<'OPENCODEX_PATCH'", arguments["cmd"]);
-        Assert.Contains("*** Update File: data.json", arguments["cmd"]);
+        Assert.Equal("data.json", arguments!["path"]?.ToString());
+        Assert.DoesNotContain("cmd", arguments.Keys);
+        Assert.DoesNotContain("OPENCODEX_PATCH", Assert.IsType<string>(item["arguments"]));
     }
 
     [Fact]
-    public void ConvertResponse_ChatApplyPatchText_UsesExecCommand()
+    public void ConvertResponse_ChatApplyPatchText_PassesThroughAsFunctionCall()
     {
         const string patch = """
                              *** Begin Patch
@@ -1517,16 +1511,17 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         var output = Assert.IsType<List<object?>>(response["output"]);
         var item = Assert.IsType<Dictionary<string, object?>>(output[0]);
         Assert.Equal("function_call", item["type"]);
-        Assert.Equal("exec_command", item["name"]);
+        Assert.Equal("apply_patch", item["name"]);
         Assert.Equal("call_patch", item["call_id"]);
-        var arguments = JsonSerializer.Deserialize<Dictionary<string, string>>(Assert.IsType<string>(item["arguments"]));
+        var arguments = JsonSerializer.Deserialize<Dictionary<string, object?>>(Assert.IsType<string>(item["arguments"]));
         Assert.NotNull(arguments);
-        Assert.Contains("*** Add File: cli_patch_probe.txt", arguments["cmd"]);
-        Assert.Contains("+OK", arguments["cmd"]);
+        Assert.Contains("*** Add File: cli_patch_probe.txt", arguments!["patch"]?.ToString() ?? string.Empty);
+        Assert.Contains("+OK", arguments["patch"]?.ToString() ?? string.Empty);
+        Assert.DoesNotContain("cmd", arguments.Keys);
     }
 
     [Fact]
-    public async Task ChatToResponsesEvents_ApplyPatchProxy_EmitsExecCommand()
+    public async Task ChatToResponsesEvents_ApplyPatchProxy_PassesThroughAsFunctionCall()
     {
         var arguments = JsonSerializer.Serialize(new
         {
@@ -1598,10 +1593,9 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
 
         var body = string.Concat(events);
         Assert.Contains("\"type\":\"function_call\"", body);
-        Assert.Contains("\"name\":\"exec_command\"", body);
-        Assert.Contains("apply_patch <<'OPENCODEX_PATCH'", body);
+        Assert.Contains("\"name\":\"apply_patch_update_file\"", body);
         Assert.DoesNotContain("response.function_call_arguments.delta", body);
-        Assert.DoesNotContain("\"name\":\"apply_patch_update_file\"", body);
+        Assert.DoesNotContain("OPENCODEX_PATCH", body);
     }
 
     [Fact]
@@ -2134,26 +2128,26 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                 "I found enough context to continue.",
                 ["apply patch guidance"],
                 [
-                    new GeneratedMessagesToolCall(
-                        "toolu_patch",
+                   new GeneratedMessagesToolCall(
+                       "toolu_patch",
+                       "apply_patch_update_file",
+                       new Dictionary<string, object?>
+                       {
+                           ["path"] = "notes.txt",
+                           ["hunks"] = new List<object?>
+                           {
+                               new Dictionary<string, object?>
+                               {
+                                   ["lines"] = new List<object?>
+                                   {
+                                       new Dictionary<string, object?> { ["op"] = "remove", ["text"] = "old" },
+                                       new Dictionary<string, object?> { ["op"] = "add", ["text"] = "new" }
+                                   }
+                               }
+                           }
+                       },
                         "apply_patch_update_file",
-                        new Dictionary<string, object?>
-                        {
-                            ["path"] = "notes.txt",
-                            ["hunks"] = new List<object?>
-                            {
-                                new Dictionary<string, object?>
-                                {
-                                    ["lines"] = new List<object?>
-                                    {
-                                        new Dictionary<string, object?> { ["op"] = "remove", ["text"] = "old" },
-                                        new Dictionary<string, object?> { ["op"] = "add", ["text"] = "new" }
-                                    }
-                                }
-                            }
-                        },
-                        "exec_command",
-                        null),
+                       null),
                     new GeneratedMessagesToolCall(
                         "toolu_press",
                         "mcp__computer_use__keyboard__press_key",
