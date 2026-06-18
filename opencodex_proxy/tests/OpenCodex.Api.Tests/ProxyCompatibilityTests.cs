@@ -1556,11 +1556,72 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Assert.Equal("function_call", item["type"]);
         Assert.Equal("apply_patch", item["name"]);
         Assert.Equal("call_patch", item["call_id"]);
-        var arguments = JsonSerializer.Deserialize<Dictionary<string, object?>>(Assert.IsType<string>(item["arguments"]));
-        Assert.NotNull(arguments);
-        Assert.Contains("*** Add File: cli_patch_probe.txt", arguments!["patch"]?.ToString() ?? string.Empty);
-        Assert.Contains("+OK", arguments["patch"]?.ToString() ?? string.Empty);
-        Assert.DoesNotContain("cmd", arguments.Keys);
+        var arguments = Assert.IsType<string>(item["arguments"]);
+        // FREEFORM: arguments must be raw patch text, not a JSON object wrapper
+        Assert.StartsWith("*** Begin Patch", arguments, StringComparison.Ordinal);
+        Assert.Contains("*** Add File: cli_patch_probe.txt", arguments, StringComparison.Ordinal);
+        Assert.Contains("+OK", arguments, StringComparison.Ordinal);
+        Assert.False(arguments.StartsWith("{", StringComparison.Ordinal));
+        Assert.DoesNotContain("\"cmd\"", arguments, StringComparison.Ordinal);
+    }
+
+
+    [Fact]
+    public void ConvertResponse_ChatApplyPatchToolCall_ReturnsFreeformArgumentsToClient()
+    {
+        var response = ProtocolConverter.ConvertResponse(
+            new Dictionary<string, object?>
+            {
+                ["id"] = "chatcmpl_freeform",
+                ["model"] = "upstream",
+                ["choices"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["message"] = new Dictionary<string, object?>
+                        {
+                            ["role"] = "assistant",
+                            ["content"] = string.Empty,
+                            ["tool_calls"] = new List<object?>
+                            {
+                                new Dictionary<string, object?>
+                                {
+                                    ["id"] = "call_freeform",
+                                    ["type"] = "function",
+                                    ["function"] = new Dictionary<string, object?>
+                                    {
+                                        ["name"] = "apply_patch",
+                                        ["arguments"] = JsonSerializer.Serialize(new
+                                        {
+                                            patch = "*** Begin Patch\n*** Add File: test.txt\n+hello\n*** End Patch"
+                                        })
+                                    }
+                                }
+                            }
+                        },
+                        ["finish_reason"] = "tool_calls"
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Chat,
+            "local");
+
+        var output = Assert.IsType<List<object?>>(response["output"]);
+        var item = Assert.IsType<Dictionary<string, object?>>(output[0]);
+        Assert.Equal("function_call", item["type"]);
+        Assert.Equal("apply_patch", item["name"]);
+        var arguments = Assert.IsType<string>(item["arguments"]);
+
+        // FREEFORM: arguments must be the raw patch text, NOT a JSON object wrapper
+        Assert.StartsWith("*** Begin Patch", arguments, StringComparison.Ordinal);
+        Assert.Contains("*** Add File: test.txt", arguments, StringComparison.Ordinal);
+        Assert.Contains("+hello", arguments, StringComparison.Ordinal);
+        Assert.Contains("*** End Patch", arguments, StringComparison.Ordinal);
+
+        // Must NOT be a JSON object like {"patch":"..."}
+        Assert.False(arguments.StartsWith("{", StringComparison.Ordinal));
+        Assert.DoesNotContain("\"patch\"", arguments, StringComparison.Ordinal);
     }
 
     [Fact]
