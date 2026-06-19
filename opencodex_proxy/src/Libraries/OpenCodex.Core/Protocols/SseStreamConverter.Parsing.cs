@@ -51,6 +51,7 @@ public static partial class SseStreamConverter
         return line.Contains("response.output_text.delta", StringComparison.Ordinal)
             || line.Contains("response.reasoning_summary_text.delta", StringComparison.Ordinal)
             || line.Contains("response.function_call_arguments.delta", StringComparison.Ordinal)
+            || line.Contains("response.custom_tool_call_input.delta", StringComparison.Ordinal)
             || line.Contains("response.output_item.done", StringComparison.Ordinal);
     }
 

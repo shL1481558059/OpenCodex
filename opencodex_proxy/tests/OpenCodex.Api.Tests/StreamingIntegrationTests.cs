@@ -321,9 +321,65 @@ public sealed class StreamingIntegrationTests
     #region ApplyPatch 工具转换
 
     [Fact]
-    public async Task ApplyPatch_UpdateFile_PassesThroughAsFunctionCall()
+    public async Task ApplyPatch_FreeformTool_StreamsAsCustomToolCall()
     {
-        // Arrange - 模拟apply_patch_update_file tool_use
+        var lines = SseLines(
+            SseBlock(ChatChunk(toolCalls: new[]
+            {
+                new Dictionary<string, object?>
+                {
+                    ["index"] = 0,
+                    ["id"] = "call_patch_001",
+                    ["type"] = "function",
+                    ["function"] = new Dictionary<string, object?>
+                    {
+                        ["name"] = "apply_patch",
+                        ["arguments"] = JsonSerializer.Serialize(new
+                        {
+                            patch = "*** Begin Patch\n*** Add File: freeform.txt\n+hello\n*** End Patch"
+                        })
+                    }
+                }
+            })),
+            SseBlock(ChatChunk(finishReason: "tool_calls")),
+            SseBlock("[DONE]"));
+
+        var result = new ConvertedStreamResult();
+        var events = new List<string>();
+        await foreach (var line in SseStreamConverter.ChatToResponsesEvents(lines, "gpt-5", result, CancellationToken.None))
+        {
+            events.Add(line);
+        }
+
+        var parsed = ParseEvents(events);
+        var added = parsed.FirstOrDefault(e =>
+            "response.output_item.added".Equals(e["type"]?.ToString(), StringComparison.Ordinal)
+            && e["item"] is Dictionary<string, object?> item
+            && "custom_tool_call".Equals(item["type"]?.ToString(), StringComparison.Ordinal));
+        Assert.NotNull(added);
+
+        var deltas = parsed.Where(e => "response.custom_tool_call_input.delta".Equals(e["type"]?.ToString(), StringComparison.Ordinal)).ToList();
+        Assert.NotEmpty(deltas);
+        Assert.DoesNotContain(parsed, e => "response.function_call_arguments.delta".Equals(e["type"]?.ToString(), StringComparison.Ordinal));
+
+        var completed = FindEvent(parsed, "response.completed");
+        Assert.NotNull(completed);
+        var response = completed!["response"] as Dictionary<string, object?>;
+        var output = response!["output"] as List<object?>;
+        var customToolCall = output!
+            .OfType<Dictionary<string, object?>>()
+            .FirstOrDefault(entry => "custom_tool_call".Equals(entry["type"]?.ToString(), StringComparison.Ordinal));
+        Assert.NotNull(customToolCall);
+        Assert.Equal("apply_patch", customToolCall!["name"]?.ToString());
+        var input = Assert.IsType<string>(customToolCall["input"]);
+        Assert.StartsWith("*** Begin Patch", input, StringComparison.Ordinal);
+        Assert.Contains("*** Add File: freeform.txt", input, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task LegacyApplyPatchUpdateFileTool_PassesThroughAsFunctionCall()
+    {
+        // Arrange - 模拟历史兼容 apply_patch_update_file tool_use
         var lines = SseLines(
             MessagesBlock("message_start", new { id = "msg_patch", model = "claude-3", usage = new { input_tokens = 100, output_tokens = 0 } }),
             MessagesBlock("content_block_start", new
@@ -353,7 +409,7 @@ public sealed class StreamingIntegrationTests
 
         var parsed = ParseEvents(events);
 
-        // Assert - apply_patch tool call passed through as-is
+        // Assert - 历史兼容 apply_patch 工具仍按普通 function_call 透传
         var completed = FindEvent(parsed, "response.completed");
         Assert.NotNull(completed);
         var response = completed!["response"] as Dictionary<string, object?>;
@@ -377,7 +433,7 @@ public sealed class StreamingIntegrationTests
     }
 
     [Fact]
-    public async Task ApplyPatch_AddFile_PassesThroughAsFunctionCall()
+    public async Task LegacyApplyPatchAddFileTool_PassesThroughAsFunctionCall()
     {
         // Arrange
         var lines = SseLines(
@@ -425,7 +481,7 @@ public sealed class StreamingIntegrationTests
     }
 
     [Fact]
-    public async Task ApplyPatch_Batch_PassesThroughAsFunctionCall()
+    public async Task LegacyApplyPatchBatchTool_PassesThroughAsFunctionCall()
     {
         // Arrange
         var lines = SseLines(

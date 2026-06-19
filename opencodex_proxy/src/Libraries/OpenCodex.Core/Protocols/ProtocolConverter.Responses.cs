@@ -72,10 +72,16 @@ public static partial class ProtocolConverter
             }
             else if (IsResponsesToolCallLike(item))
             {
+                var arguments = ResponsesToolCallArguments(item);
+                if (GetResponsesToolCallKind(ResponsesToolCallName(item)) == ResponsesToolCallKind.CustomTool)
+                {
+                    arguments = NormalizeApplyPatchArguments(type ?? string.Empty, ResponsesToolCallName(item), arguments);
+                }
+
                 toolCalls.Add(Obj(
                     ("id", GetValue(item, "call_id") ?? GetValue(item, "id") ?? NewId("call")),
                     ("name", ResponsesToolCallName(item)),
-                    ("arguments", JsonDumps(ResponsesToolCallArguments(item)))));
+                    ("arguments", JsonDumps(arguments))));
             }
         }
 

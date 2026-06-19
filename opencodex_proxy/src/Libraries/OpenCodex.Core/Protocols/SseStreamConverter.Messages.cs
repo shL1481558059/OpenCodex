@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using OpenCodex.CoreBase.Abstractions;
 
@@ -270,6 +271,13 @@ public static partial class SseStreamConverter
                         }
 
                         var state = EnsureToolState(index);
+                        state.CallKind = ProtocolConverter.GetResponsesToolCallKind(toolName);
+                        state.ApplyPatchDecoder ??= state.CallKind == ResponsesToolCallKind.CustomTool
+                            ? new ApplyPatchJsonDeltaDecoder()
+                            : null;
+                        state.DecodedInputBuilder ??= state.CallKind == ResponsesToolCallKind.CustomTool
+                            ? new StringBuilder()
+                            : null;
                         if (!state.ItemAdded)
                         {
                             state.ItemAdded = true;
@@ -281,11 +289,11 @@ public static partial class SseStreamConverter
                                     ["item"] = new Dictionary<string, object?>
                                     {
                                         ["id"] = state.ItemId,
-                                        ["type"] = "function_call",
+                                        ["type"] = state.CallKind == ResponsesToolCallKind.CustomTool ? "custom_tool_call" : "function_call",
                                         ["status"] = "in_progress",
                                         ["call_id"] = GetValue(block, "id"),
                                         ["name"] = GetValue(block, "name"),
-                                        ["arguments"] = string.Empty
+                                        [state.CallKind == ResponsesToolCallKind.CustomTool ? "input" : "arguments"] = string.Empty
                                     }
                                 });
                         }
@@ -390,15 +398,27 @@ public static partial class SseStreamConverter
                             continue;
                         }
 
-                        // apply_patch is a FREEFORM tool: upstream sends JSON like {"patch":"..."}.
-                        // The client expects raw patch text, not JSON fragments.
-                        // Skip delta streaming for apply_patch; the done event carries the unwrapped text.
-                        if (ProtocolConverter.IsApplyPatchPublic(StringValue(block, "name", string.Empty)))
+                        var state = EnsureToolState(index);
+                        if (state.CallKind == ResponsesToolCallKind.CustomTool)
                         {
+                            var decodedDelta = state.ApplyPatchDecoder?.Append(partialJson) ?? string.Empty;
+                            if (decodedDelta.Length == 0)
+                            {
+                                continue;
+                            }
+
+                            state.DecodedInputBuilder?.Append(decodedDelta);
+                            yield return Emit(
+                                "response.custom_tool_call_input.delta",
+                                new Dictionary<string, object?>
+                                {
+                                    ["item_id"] = state.ItemId,
+                                    ["output_index"] = state.OutputIndex,
+                                    ["delta"] = decodedDelta
+                                });
                             continue;
                         }
 
-                        var state = EnsureToolState(index);
                         yield return Emit(
                             "response.function_call_arguments.delta",
                             new Dictionary<string, object?>
@@ -452,7 +472,18 @@ public static partial class SseStreamConverter
                 contentBlocks[index] = block;
             }
 
-            block["input"] = ParseJsonObject(string.Concat(parts));
+            if (toolStates.TryGetValue(index, out var state)
+                && state.CallKind == ResponsesToolCallKind.CustomTool)
+            {
+                block["input"] = new Dictionary<string, object?>
+                {
+                    ["patch"] = state.DecodedInputBuilder?.ToString() ?? string.Empty
+                };
+            }
+            else
+            {
+                block["input"] = ParseJsonObject(string.Concat(parts));
+            }
         }
 
         var orderedBlocks = contentBlocks.Values.Cast<object?>().ToList();
@@ -594,17 +625,20 @@ public static partial class SseStreamConverter
                 name,
                 arguments,
                 itemId: itemId);
-
-            yield return Emit(
-                "response.function_call_arguments.done",
-                new Dictionary<string, object?>
-                {
-                    ["item_id"] = itemId,
-                    ["output_index"] = outputIndex,
-                    ["arguments"] = functionItem.TryGetValue("arguments", out var itemArguments)
-                        ? itemArguments
-                        : arguments
-                });
+            if (functionItem.TryGetValue("type", out var functionItemType)
+                && string.Equals(functionItemType?.ToString(), "function_call", StringComparison.Ordinal))
+            {
+                yield return Emit(
+                    "response.function_call_arguments.done",
+                    new Dictionary<string, object?>
+                    {
+                        ["item_id"] = itemId,
+                        ["output_index"] = outputIndex,
+                        ["arguments"] = functionItem.TryGetValue("arguments", out var itemArguments)
+                            ? itemArguments
+                            : arguments
+                    });
+            }
             yield return Emit(
                 "response.output_item.done",
                 new Dictionary<string, object?>
