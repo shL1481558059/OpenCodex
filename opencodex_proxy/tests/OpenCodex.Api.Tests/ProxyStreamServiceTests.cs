@@ -286,6 +286,115 @@ public sealed class ProxyStreamServiceTests
     }
 
     [Fact]
+    public async Task StreamAsync_ConvertedChat_CapturesUpstreamAndDownstreamDeltas()
+    {
+        var upstream = new SequencedUpstreamClient(
+        [
+            ("data: {\"id\":\"chat-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}", 0),
+            ("", 0),
+            ("data: {\"id\":\"chat-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1,\"total_tokens\":6}}", 0),
+            ("", 0)
+        ]);
+        var logs = new StubProxyLogService();
+        var service = new ProxyStreamService(upstream, logs, new StubWebSearchSimulator(false, []));
+        var writer = new CapturingProxyStreamWriter();
+        var channel = new Dictionary<string, object?>
+        {
+            ["id"] = "chat",
+            ["type"] = ProtocolConverter.Chat
+        };
+        var route = new ProxyRouteDto(
+            channel,
+            "public-model",
+            "upstream-model",
+            supportsImage: false,
+            matchedModelMapping: true);
+        var context = new ProxyStreamContext(
+            startedTimestamp: Stopwatch.GetTimestamp(),
+            requestLogId: 100,
+            requestId: "req-converted-stream-lines",
+            ownerUsername: "admin",
+            apiKeyId: 1,
+            originalPayload: new Dictionary<string, object?>(),
+            payload: new Dictionary<string, object?>(),
+            upstreamRequest: new Dictionary<string, object?>(),
+            entryProtocol: ProtocolConverter.Responses,
+            route: route,
+            channelType: ProtocolConverter.Chat,
+            channelId: "chat",
+            ownerRole: "superadmin",
+            upstreamModel: "upstream-model",
+            requestModel: "public-model",
+            defaultTimeout: 120,
+            requestMetadata: new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
+            streamWriter: writer,
+            cancellationToken: CancellationToken.None);
+
+        await service.StreamAsync(context);
+
+        Assert.Contains(writer.Lines, line => line.Contains("response.output_text.delta", StringComparison.Ordinal));
+        Assert.NotNull(logs.LastContext?.StreamLines);
+        var streamLines = logs.LastContext!.StreamLines!;
+        Assert.Contains(streamLines, line =>
+            line.Source == "upstream"
+            && line.RawLine.Contains("\"choices\"", StringComparison.Ordinal)
+            && line.RawLine.Contains("\"content\":\"hello\"", StringComparison.Ordinal));
+        Assert.Contains(streamLines, line =>
+            line.Source == "downstream"
+            && line.RawLine == "event: response.output_text.delta");
+        Assert.Contains(streamLines, line =>
+            line.Source == "downstream"
+            && line.RawLine.Contains("\"type\":\"response.output_text.delta\"", StringComparison.Ordinal)
+            && line.RawLine.Contains("\"delta\":\"hello\"", StringComparison.Ordinal));
+        Assert.DoesNotContain(streamLines, line =>
+            line.Source == "downstream"
+            && (line.RawLine.Contains("response.created", StringComparison.Ordinal)
+                || line.RawLine.Contains("response.in_progress", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public async Task CaptureLoggableStreamLines_SkipsRequestConfigSnapshotsAndKeepsDeltas()
+    {
+        var input = new[]
+        {
+            "event: response.created",
+            "data: {\"type\":\"response.created\",\"response\":{\"model\":\"gpt-5\",\"instructions\":\"secret instructions\",\"tools\":[{\"name\":\"secret_tool\"}]}}",
+            "",
+            "event: response.output_text.delta",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}",
+            "",
+            "event: response.completed",
+            "data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5\",\"status\":\"completed\",\"instructions\":\"secret instructions\",\"tools\":[{\"name\":\"secret_tool\"}],\"output\":[{\"type\":\"message\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}",
+            ""
+        };
+        var capture = new List<ProxyRequestStreamLineCapture>();
+        var forwarded = new List<string>();
+
+        await foreach (var line in ProxyStreamService.CaptureLoggableStreamLines(
+            ToAsyncEnumerable(input),
+            capture,
+            "upstream",
+            CancellationToken.None))
+        {
+            forwarded.Add(line);
+        }
+
+        Assert.Equal(input, forwarded);
+        Assert.DoesNotContain(capture, line => line.RawLine.Contains("secret instructions", StringComparison.Ordinal));
+        Assert.DoesNotContain(capture, line => line.RawLine.Contains("secret_tool", StringComparison.Ordinal));
+        Assert.DoesNotContain(capture, line => line.RawLine.Contains("response.created", StringComparison.Ordinal));
+        Assert.Contains(capture, line => line.RawLine == "event: response.output_text.delta");
+        Assert.Contains(capture, line => line.RawLine.Contains("\"delta\":\"hello\"", StringComparison.Ordinal));
+        var completed = Assert.Single(capture, line =>
+            line.RawLine.StartsWith("data:", StringComparison.Ordinal)
+            && line.RawLine.Contains("\"type\":\"response.completed\"", StringComparison.Ordinal));
+        Assert.Contains("\"usage\"", completed.RawLine, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"instructions\"", completed.RawLine, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"tools\"", completed.RawLine, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"output\":[", completed.RawLine, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task CaptureStreamUsage_ForwardsAllLines()
     {
         var input = new[] { "event: message", "data: {}", "", "data: [DONE]" };
