@@ -290,7 +290,7 @@ public static partial class ProtocolConverter
         return Obj(
             ("name", name),
             ("description", toolType == "apply_patch"
-                ? "Apply a patch to files. Provide the patch text in the `patch` field."
+                ? "Apply a patch to files. Provide the complete patch text in the `patch` field."
                 : GetValue(tool, "description") ?? $"Wrapped Responses tool: {toolType}"),
             ("parameters", parameters),
             ("native_type", toolType),

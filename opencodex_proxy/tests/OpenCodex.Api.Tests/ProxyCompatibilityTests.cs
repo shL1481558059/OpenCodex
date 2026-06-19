@@ -785,6 +785,10 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Assert.Equal("function", wrapper["type"]);
         var function = Assert.IsType<Dictionary<string, object?>>(wrapper["function"]);
         Assert.Equal("apply_patch", function["name"]);
+        var description = Assert.IsType<string>(function["description"]);
+        Assert.DoesNotContain("FREEFORM", description, StringComparison.Ordinal);
+        Assert.DoesNotContain("do not wrap the patch in JSON", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("patch", description, StringComparison.OrdinalIgnoreCase);
 
         var parameters = Assert.IsType<Dictionary<string, object?>>(function["parameters"]);
         var properties = Assert.IsType<Dictionary<string, object?>>(parameters["properties"]);
@@ -1134,7 +1138,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
-    public void ConvertResponse_MessagesApplyPatchToolUse_PassesThroughAsFunctionCall()
+    public void ConvertResponse_MessagesLegacyApplyPatchToolUse_PassesThroughAsFunctionCall()
     {
         var response = ProtocolConverter.ConvertResponse(
             MessagesToolUseResponse(
@@ -1167,7 +1171,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Assert.Equal("apply_patch_update_file", item!["name"]);
         Assert.Equal("toolu_patch", item["call_id"]);
 
-        // arguments are passed through as-is (no exec_command/heredoc wrapping)
+        // 历史兼容 apply_patch_* 工具仍按普通 function_call arguments 透传
         var arguments = JsonSerializer.Deserialize<Dictionary<string, object?>>(Assert.IsType<string>(item["arguments"]));
         Assert.NotNull(arguments);
         Assert.Equal("data.json", arguments!["path"]?.ToString());
@@ -1443,7 +1447,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
-    public void ConvertResponse_ChatApplyPatchProxy_PassesThroughAsFunctionCall()
+    public void ConvertResponse_ChatLegacyApplyPatchProxy_PassesThroughAsFunctionCall()
     {
         var response = ProtocolConverter.ConvertResponse(
             new Dictionary<string, object?>
@@ -1507,7 +1511,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
-    public void ConvertResponse_ChatApplyPatchText_PassesThroughAsFunctionCall()
+    public void ConvertResponse_ChatApplyPatchText_ReturnsCustomToolCall()
     {
         const string patch = """
                              *** Begin Patch
@@ -1553,21 +1557,20 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
 
         var output = Assert.IsType<List<object?>>(response["output"]);
         var item = Assert.IsType<Dictionary<string, object?>>(output[0]);
-        Assert.Equal("function_call", item["type"]);
+        Assert.Equal("custom_tool_call", item["type"]);
         Assert.Equal("apply_patch", item["name"]);
         Assert.Equal("call_patch", item["call_id"]);
-        var arguments = Assert.IsType<string>(item["arguments"]);
-        // FREEFORM: arguments must be raw patch text, not a JSON object wrapper
-        Assert.StartsWith("*** Begin Patch", arguments, StringComparison.Ordinal);
-        Assert.Contains("*** Add File: cli_patch_probe.txt", arguments, StringComparison.Ordinal);
-        Assert.Contains("+OK", arguments, StringComparison.Ordinal);
-        Assert.False(arguments.StartsWith("{", StringComparison.Ordinal));
-        Assert.DoesNotContain("\"cmd\"", arguments, StringComparison.Ordinal);
+        var input = Assert.IsType<string>(item["input"]);
+        Assert.StartsWith("*** Begin Patch", input, StringComparison.Ordinal);
+        Assert.Contains("*** Add File: cli_patch_probe.txt", input, StringComparison.Ordinal);
+        Assert.Contains("+OK", input, StringComparison.Ordinal);
+        Assert.False(input.StartsWith("{", StringComparison.Ordinal));
+        Assert.DoesNotContain("\"cmd\"", input, StringComparison.Ordinal);
     }
 
 
     [Fact]
-    public void ConvertResponse_ChatApplyPatchToolCall_ReturnsFreeformArgumentsToClient()
+    public void ConvertResponse_ChatApplyPatchToolCall_ReturnsCustomToolCallInputToClient()
     {
         var response = ProtocolConverter.ConvertResponse(
             new Dictionary<string, object?>
@@ -1609,19 +1612,17 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
 
         var output = Assert.IsType<List<object?>>(response["output"]);
         var item = Assert.IsType<Dictionary<string, object?>>(output[0]);
-        Assert.Equal("function_call", item["type"]);
+        Assert.Equal("custom_tool_call", item["type"]);
         Assert.Equal("apply_patch", item["name"]);
-        var arguments = Assert.IsType<string>(item["arguments"]);
+        var input = Assert.IsType<string>(item["input"]);
 
-        // FREEFORM: arguments must be the raw patch text, NOT a JSON object wrapper
-        Assert.StartsWith("*** Begin Patch", arguments, StringComparison.Ordinal);
-        Assert.Contains("*** Add File: test.txt", arguments, StringComparison.Ordinal);
-        Assert.Contains("+hello", arguments, StringComparison.Ordinal);
-        Assert.Contains("*** End Patch", arguments, StringComparison.Ordinal);
+        Assert.StartsWith("*** Begin Patch", input, StringComparison.Ordinal);
+        Assert.Contains("*** Add File: test.txt", input, StringComparison.Ordinal);
+        Assert.Contains("+hello", input, StringComparison.Ordinal);
+        Assert.Contains("*** End Patch", input, StringComparison.Ordinal);
 
-        // Must NOT be a JSON object like {"patch":"..."}
-        Assert.False(arguments.StartsWith("{", StringComparison.Ordinal));
-        Assert.DoesNotContain("\"patch\"", arguments, StringComparison.Ordinal);
+        Assert.False(input.StartsWith("{", StringComparison.Ordinal));
+        Assert.DoesNotContain("\"patch\"", input, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1652,10 +1653,10 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                     },
                     new Dictionary<string, object?>
                     {
-                        ["type"] = "function_call",
+                        ["type"] = "custom_tool_call",
                         ["call_id"] = "call_patch_1",
                         ["name"] = "apply_patch",
-                        ["arguments"] = "*** Begin Patch\n*** Update File: notes.txt\n@@\n-old\n+new\n*** End Patch"
+                        ["input"] = "*** Begin Patch\n*** Update File: notes.txt\n@@\n-old\n+new\n*** End Patch"
                     },
                     new Dictionary<string, object?>
                     {
@@ -1752,23 +1753,9 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
-    public async Task ChatToResponsesEvents_ApplyPatchProxy_PassesThroughAsFunctionCall()
+    public async Task ChatToResponsesEvents_ApplyPatchProxy_StreamsCustomToolCallInput()
     {
-        var arguments = JsonSerializer.Serialize(new
-        {
-            path = "data.json",
-            hunks = new[]
-            {
-                new
-                {
-                    lines = new object[]
-                    {
-                        new { op = "remove", text = "old" },
-                        new { op = "add", text = "new" }
-                    }
-                }
-            }
-        });
+        const string patch = "*** Begin Patch\n*** Add File: cli_patch_probe.txt\n+OK\n*** End Patch";
         var firstChunk = new Dictionary<string, object?>
         {
             ["id"] = "chatcmpl_tool",
@@ -1792,8 +1779,8 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                                 ["type"] = "function",
                                 ["function"] = new Dictionary<string, object?>
                                 {
-                                    ["name"] = "apply_patch_update_file",
-                                    ["arguments"] = arguments
+                                    ["name"] = "apply_patch",
+                                    ["arguments"] = JsonSerializer.Serialize(new { patch })
                                 }
                             }
                         }
@@ -1823,9 +1810,10 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         }
 
         var body = string.Concat(events);
-        Assert.Contains("\"type\":\"function_call\"", body);
-        Assert.Contains("\"name\":\"apply_patch_update_file\"", body);
-        Assert.Contains("response.function_call_arguments.delta", body);
+        Assert.Contains("\"type\":\"custom_tool_call\"", body);
+        Assert.Contains("\"name\":\"apply_patch\"", body);
+        Assert.Contains("response.custom_tool_call_input.delta", body);
+        Assert.DoesNotContain("response.function_call_arguments.delta", body);
         Assert.DoesNotContain("OPENCODEX_PATCH", body);
     }
 

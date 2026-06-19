@@ -260,6 +260,11 @@ public sealed class SseStreamConverterTests
         string ExpectedName,
         string? ExpectedNamespace);
 
+    private static bool IsApplyPatchExpectedTool(GeneratedSseToolCall tool)
+    {
+        return string.Equals(tool.ExpectedName, "apply_patch", StringComparison.Ordinal);
+    }
+
     // ── Chat → Responses: response.in_progress ───────────────
 
     [Fact]
@@ -771,7 +776,15 @@ public sealed class SseStreamConverterTests
                     && itemValue is Dictionary<string, object?> item
                     && (string?)item["type"] == "function_call")
                 .ToList();
-            Assert.Equal(testCase.Tools.Length, functionCallAdded.Count);
+            var customToolCallAdded = parsed
+                .Where(e => e.TryGetValue("type", out var type)
+                    && type?.ToString() == "response.output_item.added"
+                    && e.TryGetValue("item", out var itemValue)
+                    && itemValue is Dictionary<string, object?> item
+                    && (string?)item["type"] == "custom_tool_call")
+                .ToList();
+            Assert.Equal(testCase.Tools.Count(IsApplyPatchExpectedTool), customToolCallAdded.Count);
+            Assert.Equal(testCase.Tools.Length - testCase.Tools.Count(IsApplyPatchExpectedTool), functionCallAdded.Count);
 
             var functionCallDone = parsed
                 .Where(e => e.TryGetValue("type", out var type)
@@ -780,15 +793,36 @@ public sealed class SseStreamConverterTests
                     && itemValue is Dictionary<string, object?> item
                     && (string?)item["type"] == "function_call")
                 .ToList();
-            Assert.Equal(testCase.Tools.Length, functionCallDone.Count);
+            var customToolCallDone = parsed
+                .Where(e => e.TryGetValue("type", out var type)
+                    && type?.ToString() == "response.output_item.done"
+                    && e.TryGetValue("item", out var itemValue)
+                    && itemValue is Dictionary<string, object?> item
+                    && (string?)item["type"] == "custom_tool_call")
+                .ToList();
+            Assert.Equal(testCase.Tools.Count(IsApplyPatchExpectedTool), customToolCallDone.Count);
+            Assert.Equal(testCase.Tools.Length - testCase.Tools.Count(IsApplyPatchExpectedTool), functionCallDone.Count);
 
             var argumentsDone = AllByType(parsed, "response.function_call_arguments.done").ToList();
-            Assert.Equal(testCase.Tools.Length, argumentsDone.Count);
+            var customInputDeltas = AllByType(parsed, "response.custom_tool_call_input.delta").ToList();
+            Assert.Equal(testCase.Tools.Length - testCase.Tools.Count(IsApplyPatchExpectedTool), argumentsDone.Count);
+            if (testCase.Tools.Any(IsApplyPatchExpectedTool))
+            {
+                Assert.NotEmpty(customInputDeltas);
+            }
 
             var addedCallIds = functionCallAdded
                 .Select(entry => Assert.IsType<Dictionary<string, object?>>(entry["item"])["call_id"]?.ToString())
                 .ToArray();
-            Assert.Equal(testCase.Tools.Select(tool => tool.CallId).ToArray(), addedCallIds);
+            var customAddedCallIds = customToolCallAdded
+                .Select(entry => Assert.IsType<Dictionary<string, object?>>(entry["item"])["call_id"]?.ToString())
+                .ToArray();
+            Assert.Equal(
+                testCase.Tools.Where(tool => !IsApplyPatchExpectedTool(tool)).Select(tool => tool.CallId).ToArray(),
+                addedCallIds);
+            Assert.Equal(
+                testCase.Tools.Where(IsApplyPatchExpectedTool).Select(tool => tool.CallId).ToArray(),
+                customAddedCallIds);
 
             var completed = ByType(parsed, "response.completed");
             Assert.NotNull(completed);
@@ -797,7 +831,12 @@ public sealed class SseStreamConverterTests
                 .Select(item => item as Dictionary<string, object?>)
                 .Where(entry => (string?)entry?["type"] == "function_call")
                 .ToList();
-            Assert.Equal(testCase.Tools.Length, functionCalls.Count);
+            var customToolCalls = output
+                .Select(item => item as Dictionary<string, object?>)
+                .Where(entry => (string?)entry?["type"] == "custom_tool_call")
+                .ToList();
+            Assert.Equal(testCase.Tools.Length - testCase.Tools.Count(IsApplyPatchExpectedTool), functionCalls.Count);
+            Assert.Equal(testCase.Tools.Count(IsApplyPatchExpectedTool), customToolCalls.Count);
 
             if (!string.IsNullOrEmpty(testCase.AssistantPreamble))
             {
@@ -808,7 +847,17 @@ public sealed class SseStreamConverterTests
             for (var index = 0; index < testCase.Tools.Length; index++)
             {
                 var expected = testCase.Tools[index];
-                var actual = Assert.IsType<Dictionary<string, object?>>(functionCalls[index]);
+                Dictionary<string, object?> actual;
+                if (IsApplyPatchExpectedTool(expected))
+                {
+                    actual = customToolCalls.Single(item => string.Equals(item?["call_id"]?.ToString(), expected.CallId, StringComparison.Ordinal))
+                        ?? throw new Xunit.Sdk.XunitException($"missing custom tool call for {expected.CallId}");
+                }
+                else
+                {
+                    actual = functionCalls.Single(item => string.Equals(item?["call_id"]?.ToString(), expected.CallId, StringComparison.Ordinal))
+                        ?? throw new Xunit.Sdk.XunitException($"missing function call for {expected.CallId}");
+                }
                 Assert.Equal(expected.CallId, actual["call_id"]);
                 Assert.Equal(expected.ExpectedName, actual["name"]);
                 if (expected.ExpectedNamespace is null)
@@ -824,12 +873,12 @@ public sealed class SseStreamConverterTests
     }
 
     [Fact]
-    public async Task ToolUse_ApplyPatchTool_PassesThroughInOutput()
+    public async Task ToolUse_ApplyPatchTool_UsesCustomToolCallOutput()
     {
         var lines = SseLines(
             SseBlock("""{"type":"message_start","message":{"id":"msg_1","model":"claude-3","usage":{"input_tokens":5,"output_tokens":0}}}""", "message_start"),
-            SseBlock("""{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_patch","name":"apply_patch_update_file","input":{}}}""", "content_block_start"),
-            SseBlock("""{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"data.json\",\"hunks\":[{\"lines\":[{\"op\":\"remove\",\"text\":\"old\"},{\"op\":\"add\",\"text\":\"new\"}]}]}"}}""", "content_block_delta"),
+            SseBlock("""{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_patch","name":"apply_patch","input":{}}}""", "content_block_start"),
+            SseBlock("""{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"patch\":\"*** Begin Patch\n*** Add File: data.json\n+new\n*** End Patch\"}"}}""", "content_block_delta"),
             SseBlock("""{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":15}}""", "message_delta"),
             SseBlock("""{"type":"message_stop"}""", "message_stop"));
 
@@ -843,16 +892,37 @@ public sealed class SseStreamConverterTests
         var output = ((Dictionary<string, object?>)completed!["response"]!)["output"] as List<object?>;
         Assert.NotNull(output);
 
-        var fc = output!.FirstOrDefault(i => i is Dictionary<string, object?> d && d.TryGetValue("type", out var t) && "function_call".Equals(t)) as Dictionary<string, object?>;
+        var fc = output!.FirstOrDefault(i => i is Dictionary<string, object?> d && d.TryGetValue("type", out var t) && "custom_tool_call".Equals(t)) as Dictionary<string, object?>;
         Assert.NotNull(fc);
         Assert.Equal("toolu_patch", fc!["call_id"]?.ToString());
-        Assert.Equal("apply_patch_update_file", fc["name"]?.ToString());
+        Assert.Equal("apply_patch", fc["name"]?.ToString());
+        var input = Assert.IsType<string>(fc["input"]);
+        Assert.StartsWith("*** Begin Patch", input, StringComparison.Ordinal);
+        Assert.Contains("*** Add File: data.json", input, StringComparison.Ordinal);
+        Assert.DoesNotContain("OPENCODEX_PATCH", input, StringComparison.Ordinal);
+    }
 
-        var arguments = JsonSerializer.Deserialize<Dictionary<string, object?>>(Assert.IsType<string>(fc["arguments"]));
-        Assert.NotNull(arguments);
-        Assert.Equal("data.json", arguments!["path"]?.ToString());
-        Assert.DoesNotContain("cmd", arguments.Keys);
-        Assert.DoesNotContain("OPENCODEX_PATCH", Assert.IsType<string>(fc["arguments"]));
+    [Fact]
+    public async Task ToolUse_ApplyPatchTool_StreamsCustomToolCallInputDeltas()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"message_start","message":{"id":"msg_1","model":"claude-3","usage":{"input_tokens":5,"output_tokens":0}}}""", "message_start"),
+            SseBlock("""{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_patch","name":"apply_patch","input":{}}}""", "content_block_start"),
+            SseBlock("""{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"patch\":\"*** Begin Patch\n*** Add File: data.json"}}""", "content_block_delta"),
+            SseBlock("""{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\n+new\n*** End Patch\"}"}}""", "content_block_delta"),
+            SseBlock("""{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":15}}""", "message_delta"),
+            SseBlock("""{"type":"message_stop"}""", "message_stop"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.MessagesToResponsesEvents(lines, "claude-3", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var deltas = AllByType(parsed, "response.custom_tool_call_input.delta").ToList();
+        Assert.NotEmpty(deltas);
+        Assert.DoesNotContain(parsed, entry => (string?)entry["type"] == "response.function_call_arguments.delta");
+        Assert.Contains(deltas, delta => delta["delta"]?.ToString()?.Contains("*** Begin Patch", StringComparison.Ordinal) is true);
+        Assert.Contains(deltas, delta => delta["delta"]?.ToString()?.Contains("*** End Patch", StringComparison.Ordinal) is true);
     }
     // ── response.completed P2 fields ──────────────────────────
 

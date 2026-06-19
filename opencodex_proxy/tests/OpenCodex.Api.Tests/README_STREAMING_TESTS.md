@@ -29,9 +29,15 @@
 
 ### 3. ApplyPatch 工具转换
 
+#### Freeform ApplyPatch
+- `ApplyPatch_FreeformTool_StreamsAsCustomToolCall`
+  - 验证原生 `apply_patch` 以 `custom_tool_call` 输出
+  - 验证流式事件使用 `response.custom_tool_call_input.delta`
+  - 验证最终 `input` 为完整 raw patch 文本
+
 #### Update File
 - `ApplyPatch_UpdateFile_PassesThroughAsFunctionCall`
-  - 验证 `apply_patch_update_file` 作为普通函数调用透传
+  - 验证历史兼容工具 `apply_patch_update_file` 仍作为普通函数调用透传
   - 验证 arguments 保持原始 JSON
   - 验证不会改写成 `exec_command` / heredoc
 
@@ -206,8 +212,8 @@ MessagesBlock("content_block_delta", new { type = "text_delta", text = "Hi" })
 
 如果ApplyPatch格式不对，检查：
 1. `ProtocolConverter.ApplyPatchTools.cs` 的转换逻辑
-2. hunks的序列化是否正确
-3. delimiter是否避免冲突
+2. `ApplyPatchJsonDeltaDecoder.cs` 是否正确处理 JSON 字符串增量和转义
+3. `SseStreamConverter.Chat.cs` / `SseStreamConverter.Messages.cs` 是否对 apply_patch 发送了 `custom_tool_call_input.delta`
 
 ## 相关文件
 

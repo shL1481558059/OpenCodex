@@ -19,12 +19,23 @@ public static partial class ProtocolConverter
     {
         var toolName = Convert.ToString(name) ?? string.Empty;
         var serializedArguments = JsonDumps(arguments ?? "{}");
+        var callKind = GetResponsesToolCallKind(toolName);
 
-        // apply_patch is a FREEFORM tool: the client expects raw patch text as arguments,
-        // not a JSON object wrapper like {"patch":"..."}.
-        if (IsApplyPatchName(toolName.Replace("-", "_", StringComparison.Ordinal)))
+        if (callKind == ResponsesToolCallKind.CustomTool)
         {
             serializedArguments = ExtractPatchText(serializedArguments) ?? serializedArguments;
+        }
+
+        if (callKind == ResponsesToolCallKind.CustomTool)
+        {
+            var customToolCall = Obj(
+                ("id", itemId ?? NewId("tc")),
+                ("type", "custom_tool_call"),
+                ("status", "completed"),
+                ("call_id", callId),
+                ("input", serializedArguments));
+            MergeInto(customToolCall, ResponsesFunctionCallNameFields(toolName, namespaceValue));
+            return customToolCall;
         }
 
         var functionCall = Obj(

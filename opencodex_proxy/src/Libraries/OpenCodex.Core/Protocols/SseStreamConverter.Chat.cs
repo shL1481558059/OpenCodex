@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 
 namespace OpenCodex.Core.Protocols;
@@ -362,6 +363,13 @@ public static partial class SseStreamConverter
                     }
 
                     var state = EnsureToolStreamState(index);
+                    state.CallKind = ProtocolConverter.GetResponsesToolCallKind(aggregate.Name);
+                    state.ApplyPatchDecoder ??= state.CallKind == ResponsesToolCallKind.CustomTool
+                        ? new ApplyPatchJsonDeltaDecoder()
+                        : null;
+                    state.DecodedInputBuilder ??= state.CallKind == ResponsesToolCallKind.CustomTool
+                        ? new StringBuilder()
+                        : null;
                     if (!state.ItemAdded)
                     {
                         state.ItemAdded = true;
@@ -373,11 +381,11 @@ public static partial class SseStreamConverter
                                 ["item"] = new Dictionary<string, object?>
                                 {
                                     ["id"] = state.ItemId,
-                                    ["type"] = "function_call",
+                                    ["type"] = state.CallKind == ResponsesToolCallKind.CustomTool ? "custom_tool_call" : "function_call",
                                     ["status"] = "in_progress",
                                     ["call_id"] = aggregate.Id,
                                     ["name"] = aggregate.Name,
-                                    ["arguments"] = string.Empty
+                                    [state.CallKind == ResponsesToolCallKind.CustomTool ? "input" : "arguments"] = string.Empty
                                 }
                             });
                     }
@@ -387,12 +395,25 @@ public static partial class SseStreamConverter
                         continue;
                     }
 
-                    // apply_patch is a FREEFORM tool: upstream sends JSON like {"patch":"..."}.
-                    // The client expects raw patch text, not JSON fragments.
-                    // Skip delta streaming for apply_patch; the done event carries the unwrapped text.
-                    if (ProtocolConverter.IsApplyPatchPublic(aggregate.Name))
+                    if (state.CallKind == ResponsesToolCallKind.CustomTool)
                     {
+                        var decodedDelta = state.ApplyPatchDecoder?.Append(
+                            aggregate.Arguments[state.StreamedArgumentsLength..]) ?? string.Empty;
                         state.StreamedArgumentsLength = aggregate.Arguments.Length;
+                        if (decodedDelta.Length == 0)
+                        {
+                            continue;
+                        }
+
+                        state.DecodedInputBuilder?.Append(decodedDelta);
+                        yield return Emit(
+                            "response.custom_tool_call_input.delta",
+                            new Dictionary<string, object?>
+                            {
+                                ["item_id"] = state.ItemId,
+                                ["output_index"] = state.OutputIndex,
+                                ["delta"] = decodedDelta
+                            });
                         continue;
                     }
 
@@ -577,7 +598,7 @@ public static partial class SseStreamConverter
             var functionItemType = functionItem.TryGetValue("type", out var itemType)
                 ? itemType?.ToString()
                 : null;
-            if (!state.ItemAdded && functionItemType == "function_call")
+            if (!state.ItemAdded && (functionItemType == "function_call" || functionItemType == "custom_tool_call"))
             {
                 yield return Emit(
                     "response.output_item.added",
@@ -587,7 +608,7 @@ public static partial class SseStreamConverter
                         ["item"] = new Dictionary<string, object?>
                         {
                             ["id"] = itemId,
-                            ["type"] = "function_call",
+                            ["type"] = functionItemType,
                             ["status"] = "in_progress",
                             ["call_id"] = aggregate.Id,
                             ["name"] = functionItem.TryGetValue("name", out var itemName)
@@ -596,7 +617,7 @@ public static partial class SseStreamConverter
                             ["namespace"] = functionItem.TryGetValue("namespace", out var itemNamespace)
                                 ? itemNamespace
                                 : null,
-                            ["arguments"] = string.Empty
+                            [functionItemType == "custom_tool_call" ? "input" : "arguments"] = string.Empty
                         }
                     });
             }

@@ -1,5 +1,6 @@
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text;
 
 namespace OpenCodex.Core.Protocols;
 
@@ -43,4 +44,7 @@ internal sealed class ToolStreamState
     public string? ItemId { get; set; }
     public bool ItemAdded { get; set; }
     public int StreamedArgumentsLength { get; set; }
+    public ResponsesToolCallKind CallKind { get; set; } = ResponsesToolCallKind.Function;
+    public ApplyPatchJsonDeltaDecoder? ApplyPatchDecoder { get; set; }
+    public StringBuilder? DecodedInputBuilder { get; set; }
 }
