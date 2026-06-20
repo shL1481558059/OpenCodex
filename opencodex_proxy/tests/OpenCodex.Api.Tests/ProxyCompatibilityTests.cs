@@ -1936,6 +1936,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             new FixedSettingsProvider(dbPath));
         var streamResult = new WebSearchStreamResult();
         var events = new List<string>();
+        var capturedStreamLines = new List<(string Source, string Line)>();
         await foreach (var line in simulator.RunChatStreamAsync(
             new Dictionary<string, object?>
             {
@@ -1970,12 +1971,16 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             "public-model",
             120,
             streamResult,
+            (lines, source) => CaptureStreamForTest(lines, source, capturedStreamLines),
             CancellationToken.None))
         {
             events.Add(line);
         }
 
         Assert.Equal(3, upstream.Requests.Count);
+        Assert.Contains(capturedStreamLines, line =>
+            line.Source == "upstream"
+            && line.Line.Contains("\"choices\"", StringComparison.Ordinal));
         var body = string.Concat(events);
         Assert.Contains("OpenAI first", body, StringComparison.Ordinal);
         Assert.Contains("OpenAI second", body, StringComparison.Ordinal);
@@ -2048,6 +2053,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             new FixedSettingsProvider(dbPath));
         var streamResult = new WebSearchStreamResult();
         var events = new List<string>();
+        var capturedStreamLines = new List<(string Source, string Line)>();
         await foreach (var line in simulator.RunChatStreamAsync(
             new Dictionary<string, object?>
             {
@@ -2095,12 +2101,16 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             "public-model",
             120,
             streamResult,
+            (lines, source) => CaptureStreamForTest(lines, source, capturedStreamLines),
             CancellationToken.None))
         {
             events.Add(line);
         }
 
         Assert.Equal(2, upstream.Requests.Count);
+        Assert.Contains(capturedStreamLines, line =>
+            line.Source == "upstream"
+            && line.Line.Contains("content_block", StringComparison.Ordinal));
         Assert.False(upstream.Requests[1].ContainsKey("tool_choice"));
 
         var secondMessages = Assert.IsType<List<object?>>(upstream.Requests[1]["messages"]);
@@ -2274,6 +2284,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             "public-model",
             120,
             streamResult,
+            null,
             CancellationToken.None))
         {
             events.Add(line);
@@ -2450,6 +2461,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                 "public-model",
                 120,
                 streamResult,
+                null,
                 CancellationToken.None))
             {
                 events.Add(line);
@@ -2783,6 +2795,18 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         {
             yield return line;
             await Task.Yield();
+        }
+    }
+
+    private static async IAsyncEnumerable<string> CaptureStreamForTest(
+        IAsyncEnumerable<string> lines,
+        string source,
+        List<(string Source, string Line)> capture)
+    {
+        await foreach (var line in lines)
+        {
+            capture.Add((source, line));
+            yield return line;
         }
     }
 

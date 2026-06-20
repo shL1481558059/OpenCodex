@@ -15,6 +15,7 @@ public sealed partial class WebSearchSimulator
         string? originalModel,
         int defaultTimeout,
         WebSearchStreamResult result,
+        Func<IAsyncEnumerable<string>, string, IAsyncEnumerable<string>>? streamCapture,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var protocol = StringValue(channel, "type");
@@ -34,6 +35,7 @@ public sealed partial class WebSearchSimulator
         {
             var converted = new ConvertedStreamResult();
             var lines = _upstream.StreamJsonAsync(channel, requestPayload, defaultTimeout, cancellationToken);
+            lines = CaptureUpstreamLines(lines, streamCapture);
             var events = new List<string>();
             var convertedLines = protocol == ProtocolConverter.Messages
                 ? SseStreamConverter.MessagesToResponsesEvents(
@@ -170,6 +172,7 @@ public sealed partial class WebSearchSimulator
 
             converted = new ConvertedStreamResult();
             lines = _upstream.StreamJsonAsync(channel, requestPayload, defaultTimeout, cancellationToken);
+            lines = CaptureUpstreamLines(lines, streamCapture);
             events = [];
             convertedLines = protocol == ProtocolConverter.Messages
                 ? SseStreamConverter.MessagesToResponsesEvents(
@@ -254,5 +257,12 @@ public sealed partial class WebSearchSimulator
             responsePayload = WebSearchResponsePayload.AddSourceAnnotations(responsePayload, webResults);
             result.ResponsePayload = responsePayload;
         }
+    }
+
+    private static IAsyncEnumerable<string> CaptureUpstreamLines(
+        IAsyncEnumerable<string> lines,
+        Func<IAsyncEnumerable<string>, string, IAsyncEnumerable<string>>? streamCapture)
+    {
+        return streamCapture is null ? lines : streamCapture(lines, "upstream");
     }
 }

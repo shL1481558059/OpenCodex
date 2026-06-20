@@ -114,9 +114,18 @@ public sealed class ProxyStreamService : IProxyStreamService
                     visibleModel,
                     context.DefaultTimeout,
                     streamResult,
+                    (lines, source) => CaptureLoggableStreamLines(
+                        lines,
+                        streamLineCaptures,
+                        source,
+                        context.CancellationToken),
                     context.CancellationToken);
                 streamWriteMetrics = await context.StreamWriter.WriteLinesAsync(
-                    streamLines,
+                    CaptureLoggableStreamLines(
+                        streamLines,
+                        streamLineCaptures,
+                        "downstream",
+                        context.CancellationToken),
                     SseStreamConverter.CountsForTtft,
                     () => ElapsedMilliseconds(ttftStarted),
                     context.CancellationToken);

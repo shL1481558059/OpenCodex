@@ -147,6 +147,13 @@ public sealed class ProxyStreamServiceTests
         Assert.Equal(2, writer.Lines.Count);
         Assert.Contains("response.created", writer.Lines[0], StringComparison.Ordinal);
         Assert.Contains("response.completed", writer.Lines[1], StringComparison.Ordinal);
+        Assert.NotNull(logs.LastContext?.StreamLines);
+        Assert.Contains(logs.LastContext!.StreamLines!, line =>
+            line.Source == "upstream"
+            && line.RawLine.Contains("content_block_delta", StringComparison.Ordinal));
+        Assert.Contains(logs.LastContext!.StreamLines!, line =>
+            line.Source == "downstream"
+            && line.RawLine.Contains("response.completed", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -767,10 +774,23 @@ public sealed class ProxyStreamServiceTests
             string? originalModel,
             int defaultTimeout,
             WebSearchStreamResult result,
+            Func<IAsyncEnumerable<string>, string, IAsyncEnumerable<string>>? streamCapture,
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
         {
             StreamCalled = true;
             result.ResponsePayload = new Dictionary<string, object?>();
+            if (streamCapture is not null)
+            {
+                await foreach (var _ in streamCapture(
+                    ToAsyncEnumerable([
+                        "event: content_block_delta",
+                        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"upstream text\"}}",
+                        ""]),
+                    "upstream").WithCancellation(cancellationToken))
+                {
+                }
+            }
+
             foreach (var line in _streamLines)
             {
                 yield return line;
