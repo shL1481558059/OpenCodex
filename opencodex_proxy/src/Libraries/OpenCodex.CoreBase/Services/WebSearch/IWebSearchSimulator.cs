@@ -48,6 +48,7 @@ public interface IWebSearchSimulator
     /// <param name="originalModel">原始请求模型名称。</param>
     /// <param name="defaultTimeout">默认超时时间。</param>
     /// <param name="result">用于累计模拟结果的对象。</param>
+    /// <param name="streamCapture">用于捕获上游流式片段的包装器（如果可用）。</param>
     /// <param name="cancellationToken">取消令牌。</param>
     /// <returns>逐段返回给客户端的流式内容。</returns>
     IAsyncEnumerable<string> RunChatStreamAsync(
@@ -57,5 +58,6 @@ public interface IWebSearchSimulator
         string? originalModel,
         int defaultTimeout,
         WebSearchStreamResult result,
+        Func<IAsyncEnumerable<string>, string, IAsyncEnumerable<string>>? streamCapture,
         CancellationToken cancellationToken);
 }
