@@ -157,10 +157,9 @@ public static class OpenCodexServiceCollectionExtensions
             return absoluteConfigured;
         }
 
-        var dbPath = ConfigValue(configuration, "OpenCodex:DbPath", "OPENCODEX_DB_PATH") ?? "logs/opencodex.db";
-        var absoluteDbPath = Path.GetFullPath(dbPath);
-        var directory = Path.GetDirectoryName(absoluteDbPath) ?? AppContext.BaseDirectory;
-        var keysPath = Path.Combine(directory, $"{Path.GetFileNameWithoutExtension(absoluteDbPath)}.keys");
+        // 显式配置优先;否则回退到运行目录下的 logs/.keys。
+        // 注:此前版本依赖 DbPath 目录推断,切换到多 provider 后该路径不再可用,改为固定默认。
+        var keysPath = Path.GetFullPath("logs/.keys");
         Directory.CreateDirectory(keysPath);
         return keysPath;
     }

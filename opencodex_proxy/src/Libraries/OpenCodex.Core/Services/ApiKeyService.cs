@@ -38,7 +38,7 @@ public sealed class ApiKeyService : IApiKeyService
             ? string.Empty
             : ownerUsername.Trim();
         var settings = _settingsProvider.GetSettings();
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
+        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         var query = context.AccessApiKeys.AsNoTracking();
         if (normalizedOwnerUsername.Length > 0)
         {
@@ -165,7 +165,7 @@ public sealed class ApiKeyService : IApiKeyService
             throw new ArgumentException("owner_username is required", nameof(ownerUsername));
         }
 
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
+        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         if (!context.Users.Any(user => user.Username == ownerUsername))
         {
             throw new InvalidOperationException("user not found");
@@ -199,7 +199,7 @@ public sealed class ApiKeyService : IApiKeyService
     {
         ownerUsername = ownerUsername is null ? null : NormalizeUsername(ownerUsername);
 
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
+        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         var query = context.AccessApiKeys.Where(key => key.Id == keyId);
         if (!string.IsNullOrEmpty(ownerUsername))
         {
@@ -221,7 +221,7 @@ public sealed class ApiKeyService : IApiKeyService
     {
         ownerUsername = ownerUsername is null ? null : NormalizeUsername(ownerUsername);
 
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
+        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         var query = context.AccessApiKeys.Where(key => key.Id == keyId);
         if (!string.IsNullOrEmpty(ownerUsername))
         {

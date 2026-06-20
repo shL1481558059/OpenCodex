@@ -1,40 +1,9 @@
-using Microsoft.EntityFrameworkCore;
 using OpenCodex.Core.Domain;
-using OpenCodex.Data;
 
 namespace OpenCodex.Core.Persistence;
 
 public static class OpenCodexPricing
 {
-    public static void EnsureSchema(OpenCodexDbContext context)
-    {
-        context.Database.ExecuteSqlRaw(
-            """
-            CREATE TABLE IF NOT EXISTS "ModelPricings" (
-                "Id" INTEGER NOT NULL CONSTRAINT "PK_ModelPricings" PRIMARY KEY AUTOINCREMENT,
-                "ModelId" TEXT NOT NULL,
-                "Vendor" TEXT NOT NULL,
-                "Name" TEXT NOT NULL,
-                "MatchPattern" TEXT NOT NULL,
-                "InputPrice" REAL NOT NULL,
-                "CachedInputPrice" REAL NULL,
-                "OutputPrice" REAL NOT NULL,
-                "Enabled" INTEGER NOT NULL DEFAULT 1,
-                "Source" TEXT NOT NULL DEFAULT '',
-                "CreatedAt" REAL NOT NULL DEFAULT 0,
-                "UpdatedAt" REAL NOT NULL DEFAULT 0
-            );
-            """);
-        context.Database.ExecuteSqlRaw(
-            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ModelPricings_ModelId" ON "ModelPricings" ("ModelId");""");
-        context.Database.ExecuteSqlRaw(
-            """CREATE INDEX IF NOT EXISTS "IX_ModelPricings_Vendor" ON "ModelPricings" ("Vendor");""");
-        context.Database.ExecuteSqlRaw(
-            """CREATE INDEX IF NOT EXISTS "IX_ModelPricings_Enabled" ON "ModelPricings" ("Enabled");""");
-        context.Database.ExecuteSqlRaw(
-            """CREATE INDEX IF NOT EXISTS "IX_ModelPricings_MatchPattern" ON "ModelPricings" ("MatchPattern");""");
-    }
-
     public static double CalculateCost(
         IReadOnlyList<ModelPricing> prices,
         string model,

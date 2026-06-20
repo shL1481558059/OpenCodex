@@ -1,6 +1,6 @@
 namespace OpenCodex.Core.Domain;
 
-public sealed class RequestLog : BaseEntity<long>
+public sealed class RequestLog : BaseEntity<Guid>
 {
     public string? RequestId { get; set; }
 
@@ -20,13 +20,13 @@ public sealed class RequestLog : BaseEntity<long>
 
     public string? UpstreamModel { get; set; }
 
-    public string? ChannelId { get; set; }
+    public Guid? ChannelId { get; set; }
 
     public string RequestType { get; set; } = "main";
 
     public string? LifecycleStatus { get; set; }
 
-    public long? ParentRequestLogId { get; set; }
+    public Guid? ParentRequestLogId { get; set; }
 
     public bool IsStream { get; set; }
 
@@ -44,17 +44,9 @@ public sealed class RequestLog : BaseEntity<long>
 
     public double Cost { get; set; }
 
-    public string OwnerUsername { get; set; } = "admin";
+    public Guid OwnerUserId { get; set; }
 
-    public long? ApiKeyId { get; set; }
+    public Guid? ApiKeyId { get; set; }
 
     public string? Error { get; set; }
-
-    public RequestLogDetail? Detail { get; set; }
-
-    public RequestLog? ParentRequestLog { get; set; }
-
-    public ICollection<RequestLog> ChildRequestLogs { get; set; } = new List<RequestLog>();
-
-    public ICollection<RequestLogStreamLine> StreamLines { get; set; } = new List<RequestLogStreamLine>();
 }

@@ -4,7 +4,9 @@ public sealed class OpenCodexSettings
 {
     public required string AdminPassword { get; init; }
 
-    public required string DbPath { get; init; }
+    public required string DatabaseProvider { get; init; }
+
+    public required string ConnectionString { get; init; }
 
     public required string LogPath { get; init; }
 

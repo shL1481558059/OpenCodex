@@ -142,15 +142,9 @@ public sealed class ObservabilityService : IObservabilityService
         IReadOnlyDictionary<string, object?>? filters = null)
     {
         var parsedPageSize = ParseLogPageSize(pageSize);
-        if (!File.Exists(settings.DbPath))
-        {
-            return new RequestLogPageDto([], 0, 1, parsedPageSize);
-        }
-
         var parsedPage = ParseLogPage(page);
         var offset = (parsedPage - 1) * parsedPageSize;
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
-        OpenCodexRequestLogs.EnsureSchema(context);
+        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         var query = ApplyLogFilters(context.RequestLogs.AsNoTracking(), filters ?? new Dictionary<string, object?>());
         var total = query.Count();
         var events = query
@@ -169,18 +163,12 @@ public sealed class ObservabilityService : IObservabilityService
         object? logId,
         IReadOnlyDictionary<string, object?>? filters = null)
     {
-        if (!File.Exists(settings.DbPath))
-        {
-            return null;
-        }
-
         if (!TryConvertInt64(logId, out var parsedId))
         {
             return null;
         }
 
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
-        OpenCodexRequestLogs.EnsureSchema(context);
+        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         var query = ApplyLogFilters(context.RequestLogs.AsNoTracking(), filters ?? new Dictionary<string, object?>());
         var log = query
             .Include(item => item.Detail)
@@ -195,11 +183,6 @@ public sealed class ObservabilityService : IObservabilityService
         object? query = null,
         IReadOnlyDictionary<string, object?>? filters = null)
     {
-        if (!File.Exists(settings.DbPath))
-        {
-            return EmptyLogFilterOptions();
-        }
-
         if (field == "request_status")
         {
             return new Dictionary<string, object>(StringComparer.Ordinal)
@@ -221,8 +204,7 @@ public sealed class ObservabilityService : IObservabilityService
             return new Dictionary<string, object>(StringComparer.Ordinal);
         }
 
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
-        OpenCodexRequestLogs.EnsureSchema(context);
+        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         var logs = ApplyLogFilters(context.RequestLogs.AsNoTracking(), filters ?? new Dictionary<string, object?>());
         var values = field == "api_key_id"
             ? (object)DistinctApiKeyOptions(context, logs, query)
@@ -243,13 +225,7 @@ public sealed class ObservabilityService : IObservabilityService
         IReadOnlyDictionary<string, object?>? filters = null)
     {
         var resolved = ResolveStatsRange(rangeKey, startTs, endTs);
-        if (!File.Exists(settings.DbPath))
-        {
-            return EmptyStatsResponse(resolved);
-        }
-
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
-        OpenCodexRequestLogs.EnsureSchema(context);
+        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         var query = ApplyLogFilters(
             context.RequestLogs
             .AsNoTracking()
@@ -431,12 +407,7 @@ public sealed class ObservabilityService : IObservabilityService
         OpenCodexRuntimeSettings settings,
         IEnumerable<long?> apiKeyIds)
     {
-        if (!File.Exists(settings.DbPath))
-        {
-            return [];
-        }
-
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
+        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         return ReadApiKeyNames(context, apiKeyIds);
     }
 

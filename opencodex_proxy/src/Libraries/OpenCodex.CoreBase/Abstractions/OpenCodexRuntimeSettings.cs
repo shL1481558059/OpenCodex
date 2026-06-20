@@ -5,24 +5,17 @@ namespace OpenCodex.CoreBase.Abstractions;
 /// </summary>
 public sealed class OpenCodexRuntimeSettings
 {
-    /// <summary>
-    /// 初始化 <see cref="OpenCodexRuntimeSettings"/> 类的新实例。
-    /// </summary>
-    /// <param name="dbPath">SQLite 数据库路径。</param>
-    /// <param name="adminUsername">配置的管理员用户名。</param>
-    /// <param name="adminPassword">配置的管理员密码。</param>
-    /// <param name="defaultTimeout">默认上游请求超时时间，单位为秒。</param>
-    /// <param name="ocrCacheDir">OCR 缓存目录。</param>
-    /// <param name="localOcrModel">本地 OCR 模型名称。</param>
     public OpenCodexRuntimeSettings(
-        string dbPath,
+        string databaseProvider,
+        string connectionString,
         string adminUsername,
         string adminPassword,
         int defaultTimeout,
         string? ocrCacheDir = null,
         string? localOcrModel = null)
     {
-        DbPath = dbPath;
+        DatabaseProvider = databaseProvider;
+        ConnectionString = connectionString;
         AdminUsername = adminUsername;
         AdminPassword = adminPassword;
         DefaultTimeout = defaultTimeout;
@@ -31,9 +24,14 @@ public sealed class OpenCodexRuntimeSettings
     }
 
     /// <summary>
-    /// 获取运行时使用的轻量级数据库路径。
+    /// 获取数据库提供程序标识(sqlite / postgres)。
     /// </summary>
-    public string DbPath { get; }
+    public string DatabaseProvider { get; }
+
+    /// <summary>
+    /// 获取数据库连接字符串。
+    /// </summary>
+    public string ConnectionString { get; }
 
     /// <summary>
     /// 获取配置的管理员用户名。
@@ -46,7 +44,7 @@ public sealed class OpenCodexRuntimeSettings
     public string AdminPassword { get; }
 
     /// <summary>
-    /// 获取默认上游请求超时时间，单位为秒。
+    /// 获取默认上游请求超时时间,单位为秒。
     /// </summary>
     public int DefaultTimeout { get; }
 

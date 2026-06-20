@@ -1,4 +1,5 @@
 using System.Net;
+using Microsoft.EntityFrameworkCore;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
@@ -73,8 +74,9 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
         Assert.Contains("pong", body, StringComparison.Ordinal);
         Assert.Contains("response.completed", body, StringComparison.Ordinal);
 
-        using var context = OpenCodexDbContextFactory.Create(_factory.DbPath);
-        var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={_factory.DbPath}");
+        context.Database.Migrate();
+var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
         Assert.Equal("POST", log.Method);
         Assert.Equal("public-model", log.Model);
         Assert.Equal("upstream-model", log.UpstreamModel);
@@ -154,8 +156,9 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
         Assert.Contains("channel_test.error", body, StringComparison.Ordinal);
         Assert.Contains("config_error", body, StringComparison.Ordinal);
 
-        using var context = OpenCodexDbContextFactory.Create(_factory.DbPath);
-        var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={_factory.DbPath}");
+        context.Database.Migrate();
+var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
         Assert.Equal(400, log.StatusCode);
         Assert.False(string.IsNullOrEmpty(log.Error));
     }
@@ -192,8 +195,9 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
         Assert.Contains("upstream_error", body, StringComparison.Ordinal);
         Assert.Contains("429", body, StringComparison.Ordinal);
 
-        using var context = OpenCodexDbContextFactory.Create(_factory.DbPath);
-        var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={_factory.DbPath}");
+        context.Database.Migrate();
+var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
         Assert.Equal(429, log.StatusCode);
     }
 
@@ -258,7 +262,8 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
                 {
                     ["OPENCODEX_ADMIN_USERNAME"] = "admin",
                     ["OPENCODEX_ADMIN_PASSWORD"] = AdminPassword,
-                    ["OPENCODEX_DB_PATH"] = DbPath,
+                    ["OPENCODEX_DB_PROVIDER"] = "sqlite",
+                    ["OPENCODEX_DB_CONNECTION_STRING"] = $"Data Source={DbPath}",
                     ["OPENCODEX_DEFAULT_TIMEOUT"] = "120"
                 });
             });

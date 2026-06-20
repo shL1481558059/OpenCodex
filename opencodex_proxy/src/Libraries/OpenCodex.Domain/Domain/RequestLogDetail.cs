@@ -1,8 +1,8 @@
 namespace OpenCodex.Core.Domain;
 
-public sealed class RequestLogDetail : BaseEntity
+public sealed class RequestLogDetail : BaseEntity<Guid>
 {
-    public long RequestLogId { get; set; }
+    public Guid RequestLogId { get; set; }
 
     public string? RequestHeaders { get; set; }
 
@@ -19,11 +19,4 @@ public sealed class RequestLogDetail : BaseEntity
     public string? OcrJson { get; set; }
 
     public string? StreamTimingsJson { get; set; }
-
-    public RequestLog? RequestLog { get; set; }
-
-    public override object? GetId()
-    {
-        return RequestLogId == 0 ? null : RequestLogId;
-    }
 }

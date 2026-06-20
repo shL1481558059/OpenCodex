@@ -1,12 +1,11 @@
 using Mapster;
-using Microsoft.EntityFrameworkCore;
-using OpenCodex.Data;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Persistence;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Data;
+using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.Users;
-using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
 
@@ -22,38 +21,39 @@ public sealed class UserService : IUserService
 
     private readonly IOpenCodexRuntimeSettingsProvider _settingsProvider;
     private readonly IWorkContext _workContext;
+    private readonly IRepository<User> _userRepository;
+    private readonly IRepository<AccessApiKey> _apiKeyRepository;
+    private readonly IRepository<Channel> _channelRepository;
 
     public UserService(
         IOpenCodexRuntimeSettingsProvider settingsProvider,
-        IWorkContext workContext)
+        IWorkContext workContext,
+        IRepository<User> userRepository,
+        IRepository<AccessApiKey> apiKeyRepository,
+        IRepository<Channel> channelRepository)
     {
         _settingsProvider = settingsProvider;
         _workContext = workContext;
+        _userRepository = userRepository;
+        _apiKeyRepository = apiKeyRepository;
+        _channelRepository = channelRepository;
     }
 
     public ApiOpResult<UsersResponse> ListUsers()
     {
-        var settings = _settingsProvider.GetSettings();
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
-        return ApiOpResult<UsersResponse>.Succeed(UsersResponse.From(context.Users
-            .AsNoTracking()
+        var users = _userRepository.TableNoTracking
             .OrderBy(user => user.Role)
             .ThenBy(user => user.Username)
-            .AsEnumerable()
             .Select(user => user.Adapt<UserDto>())
-            .ToList()));
+            .ToList();
+        return ApiOpResult<UsersResponse>.Succeed(UsersResponse.From(users));
     }
 
-    public ApiOpResult<UserResponsePayload> CreateUser(
-        UserCreateCommand command)
+    public ApiOpResult<UserResponsePayload> CreateUser(UserCreateCommand command)
     {
         try
         {
-            var user = CreateUser(
-                _settingsProvider.GetSettings(),
-                command.Username.Trim(),
-                command.Password.Trim(),
-                enabled: command.Enabled);
+            var user = CreateUser(command.Username.Trim(), command.Password.Trim(), enabled: command.Enabled);
             return ApiOpResult<UserResponsePayload>.Succeed(UserResponsePayload.From(user));
         }
         catch (ArgumentException exception)
@@ -62,9 +62,7 @@ public sealed class UserService : IUserService
         }
     }
 
-    public ApiOpResult<UserResponsePayload> UpdateUser(
-        string username,
-        UserUpdateCommand command)
+    public ApiOpResult<UserResponsePayload> UpdateUser(string username, UserUpdateCommand command)
     {
         try
         {
@@ -72,28 +70,21 @@ public sealed class UserService : IUserService
             UserDto user;
             if (command.Enabled.HasValue)
             {
-                user = SetUserEnabled(
-                    settings,
-                    username,
-                    command.Enabled.Value);
+                user = SetUserEnabled(username, command.Enabled.Value);
             }
             else
             {
-                user = GetUser(settings, username)
-                    ?? throw new InvalidOperationException("user not found");
+                user = GetUser(username) ?? throw new InvalidOperationException("user not found");
             }
 
             if (command.Password is not null)
             {
-                if (string.Equals(
-                    username,
-                    settings.AdminUsername,
-                    StringComparison.Ordinal))
+                if (string.Equals(username, settings.AdminUsername, StringComparison.Ordinal))
                 {
                     return ValidationFailure("environment superadmin password is managed by env");
                 }
 
-                user = ResetUserPassword(settings, username, command.Password.Trim());
+                user = ResetUserPassword(username, command.Password.Trim());
             }
 
             return ApiOpResult<UserResponsePayload>.Succeed(UserResponsePayload.From(user));
@@ -112,16 +103,12 @@ public sealed class UserService : IUserService
         }
     }
 
-    public ApiOpResult<DeleteUserResponse> DeleteUser(
-        string username)
+    public ApiOpResult<DeleteUserResponse> DeleteUser(string username)
     {
         try
         {
             var currentUser = _workContext.RequireUser();
-            var user = DeleteUser(
-                _settingsProvider.GetSettings(),
-                username,
-                currentUser.Username);
+            var user = DeleteUser(username, currentUser.Username);
             return ApiOpResult<DeleteUserResponse>.Succeed(DeleteUserResponse.From(user));
         }
         catch (ArgumentException exception)
@@ -143,12 +130,7 @@ public sealed class UserService : IUserService
         return ApiOpResult<UserResponsePayload>.Fail(400, message);
     }
 
-    private static UserDto CreateUser(
-        OpenCodexRuntimeSettings settings,
-        string username,
-        string password,
-        string role = "user",
-        bool enabled = true)
+    private UserDto CreateUser(string username, string password, string role = "user", bool enabled = true)
     {
         username = NormalizeUsername(username);
         if (username.Length == 0)
@@ -166,8 +148,7 @@ public sealed class UserService : IUserService
             throw new ArgumentException("password is required", nameof(password));
         }
 
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
-        if (context.Users.Any(user => user.Username == username))
+        if (_userRepository.TableNoTracking.Any(user => user.Username == username))
         {
             throw new ArgumentException("username already exists", nameof(username));
         }
@@ -182,21 +163,11 @@ public sealed class UserService : IUserService
             CreatedAt = now,
             UpdatedAt = now
         };
-        context.Users.Add(created);
-
-        try
-        {
-            context.SaveChanges();
-        }
-        catch (DbUpdateException exception)
-        {
-            throw new ArgumentException("username already exists", nameof(username), exception);
-        }
-
+        _userRepository.Insert(created);
         return created.Adapt<UserDto>();
     }
 
-    private static UserDto? GetUser(OpenCodexRuntimeSettings settings, string username)
+    private UserDto? GetUser(string username)
     {
         username = NormalizeUsername(username);
         if (username.Length == 0)
@@ -204,20 +175,14 @@ public sealed class UserService : IUserService
             return null;
         }
 
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
-        var user = context.Users
-            .AsNoTracking()
-            .FirstOrDefault(item => item.Username == username);
+        var user = _userRepository.TableNoTracking.FirstOrDefault(item => item.Username == username);
         return user is null ? null : user.Adapt<UserDto>();
     }
 
-    private static UserDto SetUserEnabled(
-        OpenCodexRuntimeSettings settings,
-        string username,
-        bool enabled)
+    private UserDto SetUserEnabled(string username, bool enabled)
     {
         username = NormalizeUsername(username);
-        var protectedUsername = NormalizeUsername(settings.AdminUsername);
+        var protectedUsername = NormalizeUsername(_settingsProvider.GetSettings().AdminUsername);
         if (username.Length == 0)
         {
             throw new ArgumentException("username is required", nameof(username));
@@ -228,19 +193,15 @@ public sealed class UserService : IUserService
             throw new InvalidOperationException("cannot disable the environment superadmin");
         }
 
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
-        var user = context.Users.FirstOrDefault(item => item.Username == username)
+        var user = _userRepository.Table.FirstOrDefault(item => item.Username == username)
             ?? throw new InvalidOperationException("user not found");
         user.Enabled = enabled;
         user.UpdatedAt = UnixTimeSeconds();
-        context.SaveChanges();
+        _userRepository.Update(user);
         return user.Adapt<UserDto>();
     }
 
-    private static UserDto ResetUserPassword(
-        OpenCodexRuntimeSettings settings,
-        string username,
-        string password)
+    private UserDto ResetUserPassword(string username, string password)
     {
         username = NormalizeUsername(username);
         if (username.Length == 0)
@@ -253,19 +214,15 @@ public sealed class UserService : IUserService
             throw new ArgumentException("password is required", nameof(password));
         }
 
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
-        var user = context.Users.FirstOrDefault(item => item.Username == username)
+        var user = _userRepository.Table.FirstOrDefault(item => item.Username == username)
             ?? throw new InvalidOperationException("user not found");
         user.PasswordHash = OpenCodexSecurity.HashPassword(password);
         user.UpdatedAt = UnixTimeSeconds();
-        context.SaveChanges();
+        _userRepository.Update(user);
         return user.Adapt<UserDto>();
     }
 
-    private static UserDto DeleteUser(
-        OpenCodexRuntimeSettings settings,
-        string username,
-        string protectedUsername)
+    private UserDto DeleteUser(string username, string protectedUsername)
     {
         username = NormalizeUsername(username);
         protectedUsername = NormalizeUsername(protectedUsername);
@@ -284,16 +241,13 @@ public sealed class UserService : IUserService
             throw new InvalidOperationException("cannot delete current user");
         }
 
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
-        using var transaction = context.Database.BeginTransaction();
-        var user = context.Users.FirstOrDefault(item => item.Username == username)
+        var user = _userRepository.Table.FirstOrDefault(item => item.Username == username)
             ?? throw new InvalidOperationException("user not found");
         var deleted = user.Adapt<UserDto>();
-        context.AccessApiKeys.RemoveRange(context.AccessApiKeys.Where(key => key.OwnerUsername == username));
-        context.Channels.RemoveRange(context.Channels.Where(channel => channel.OwnerUsername == username));
-        context.Users.Remove(user);
-        context.SaveChanges();
-        transaction.Commit();
+
+        _apiKeyRepository.Delete(_apiKeyRepository.Table.Where(key => key.OwnerUserId == user.Id).ToList());
+        _channelRepository.Delete(_channelRepository.Table.Where(channel => channel.OwnerUserId == user.Id).ToList());
+        _userRepository.Delete(user);
         return deleted;
     }
 

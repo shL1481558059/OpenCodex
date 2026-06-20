@@ -1,4 +1,5 @@
 using OpenCodex.Core.Domain;
+using Microsoft.EntityFrameworkCore;
 using OpenCodex.Core.Persistence;
 using OpenCodex.Core.Services;
 using OpenCodex.CoreBase.Abstractions;
@@ -15,10 +16,9 @@ public sealed class ModelPricingServiceTests
     {
         var dbPath = CreateDbPath();
 
-        using (var context = OpenCodexDbContextFactory.Create(dbPath))
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
-            context.Database.EnsureCreated();
-            OpenCodexPricing.EnsureSchema(context);
+            context.Database.Migrate();
             context.ModelPricings.Add(new ModelPricing
             {
                 ModelId = "match-model",
@@ -97,10 +97,9 @@ public sealed class ModelPricingServiceTests
     public void UpdateDefaultsUpdatesDefaultSourceAndSkipsManualSource()
     {
         var dbPath = CreateDbPath();
-        using (var context = OpenCodexDbContextFactory.Create(dbPath))
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
-            context.Database.EnsureCreated();
-            OpenCodexPricing.EnsureSchema(context);
+            context.Database.Migrate();
             context.ModelPricings.AddRange(
                 new ModelPricing
                 {
@@ -142,7 +141,7 @@ public sealed class ModelPricingServiceTests
         ]);
 
         Assert.Equal((1, 1, 1), result);
-        using var verify = OpenCodexDbContextFactory.Create(dbPath);
+        using var verify = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         var defaultPrice = verify.ModelPricings.Single(price => price.ModelId == "default-model");
         var manualPrice = verify.ModelPricings.Single(price => price.ModelId == "manual-model");
         var newPrice = verify.ModelPricings.Single(price => price.ModelId == "new-model");
@@ -160,10 +159,9 @@ public sealed class ModelPricingServiceTests
     {
         var dbPath = CreateDbPath();
         long id;
-        using (var context = OpenCodexDbContextFactory.Create(dbPath))
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
-            context.Database.EnsureCreated();
-            OpenCodexPricing.EnsureSchema(context);
+            context.Database.Migrate();
             var price = new ModelPricing
             {
                 ModelId = "editable-model",
@@ -192,7 +190,7 @@ public sealed class ModelPricingServiceTests
             }));
 
         Assert.True(result.Succeeded);
-        using var verify = OpenCodexDbContextFactory.Create(dbPath);
+        using var verify = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         var updated = verify.ModelPricings.Single(price => price.Id == id);
         Assert.Equal("manual", updated.Source);
         Assert.Equal(7, updated.InputPrice);
@@ -215,7 +213,8 @@ public sealed class ModelPricingServiceTests
         public TestSettingsProvider(string dbPath)
         {
             _settings = new OpenCodexRuntimeSettings(
-                dbPath,
+                "sqlite",
+                $"Data Source={dbPath}",
                 "admin",
                 "password",
                 120);

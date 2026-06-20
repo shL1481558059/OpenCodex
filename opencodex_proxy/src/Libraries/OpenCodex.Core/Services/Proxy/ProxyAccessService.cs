@@ -53,7 +53,7 @@ public sealed class ProxyAccessService : IProxyAccessService
         }
 
         var settings = _settingsProvider.GetSettings();
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
+        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         using var transaction = context.Database.BeginTransaction();
         var hash = OpenCodexSecurity.HashAccessApiKey(rawKey);
         var key = context.AccessApiKeys

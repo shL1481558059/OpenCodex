@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using OpenCodex.Core.Config;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Protocols;
@@ -329,10 +330,10 @@ public sealed class ProxyVisionRoutingTests
             "opencodex-vision-routing-tests",
             $"{Guid.NewGuid():N}.db");
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
-        using (var context = OpenCodexDbContextFactory.Create(dbPath))
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
-            context.Database.EnsureCreated();
-            context.Channels.AddRange(channels);
+            context.Database.Migrate();
+context.Channels.AddRange(channels);
             context.SaveChanges();
         }
 
@@ -421,7 +422,7 @@ public sealed class ProxyVisionRoutingTests
 
         public OpenCodexRuntimeSettings GetSettings()
         {
-            return new OpenCodexRuntimeSettings(_dbPath, "admin", "password", 120);
+            return new OpenCodexRuntimeSettings("sqlite", $"Data Source={_dbPath}", "admin", "password", 120);
         }
     }
 }

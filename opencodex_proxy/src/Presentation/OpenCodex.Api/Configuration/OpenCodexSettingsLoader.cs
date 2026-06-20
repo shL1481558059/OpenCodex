@@ -67,7 +67,8 @@ public static class OpenCodexSettingsLoader
         return new OpenCodexSettings
         {
             AdminPassword = adminPassword,
-            DbPath = GetValue(values, "OPENCODEX_DB_PATH") ?? "logs/opencodex.db",
+            DatabaseProvider = ResolveDbProvider(values),
+            ConnectionString = ResolveDbConnectionString(values),
             LogPath = GetValue(values, "OPENCODEX_LOG_PATH") ?? "logs/opencodex.log",
             LogLevel = logLevel,
             LogViewLevel = logViewLevel,
@@ -81,18 +82,34 @@ public static class OpenCodexSettingsLoader
         };
     }
 
+    private static string ResolveDbProvider(IReadOnlyDictionary<string, string?> values)
+    {
+        var value = (GetValue(values, "OPENCODEX_DB_PROVIDER") ?? "sqlite").Trim();
+        return value.Length == 0 ? "sqlite" : value.ToLowerInvariant();
+    }
+
+    private static string ResolveDbConnectionString(IReadOnlyDictionary<string, string?> values)
+    {
+        var value = (GetValue(values, "OPENCODEX_DB_CONNECTION_STRING") ?? string.Empty).Trim();
+        if (value.Length > 0)
+        {
+            return value;
+        }
+
+        return "Data Source=logs/opencodex.db";
+    }
+
     private static string ResolveDataProtectionKeysPath(IReadOnlyDictionary<string, string?> values)
     {
         var configured = GetValue(values, "OPENCODEX_DATA_PROTECTION_KEYS_PATH");
+        // 显式配置优先;否则回退到运行目录下的 logs/.keys。
+        // 注:此前版本依赖 DbPath 目录推断,切换到多 provider 后该路径不再可用,改为固定默认。
         if (!string.IsNullOrWhiteSpace(configured))
         {
             return configured.Trim();
         }
 
-        var dbPath = GetValue(values, "OPENCODEX_DB_PATH") ?? "logs/opencodex.db";
-        var absoluteDbPath = Path.GetFullPath(dbPath);
-        var directory = Path.GetDirectoryName(absoluteDbPath) ?? AppContext.BaseDirectory;
-        return Path.Combine(directory, $"{Path.GetFileNameWithoutExtension(absoluteDbPath)}.keys");
+        return Path.GetFullPath("logs/.keys");
     }
 
     private static string ResolveLocalOcrModel(IReadOnlyDictionary<string, string?> values)

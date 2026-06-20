@@ -17,8 +17,6 @@ namespace OpenCodex.Core.Services;
 
 public sealed class ModelPricingService : IModelPricingService
 {
-    private static readonly ConcurrentDictionary<string, bool> SchemaInitialized = new(StringComparer.Ordinal);
-
     private readonly IOpenCodexRuntimeSettingsProvider _settingsProvider;
 
     public ModelPricingService(IOpenCodexRuntimeSettingsProvider settingsProvider)
@@ -267,14 +265,8 @@ public sealed class ModelPricingService : IModelPricingService
 
     private OpenCodexDbContext OpenContext()
     {
-        var dbPath = _settingsProvider.GetSettings().DbPath;
-        var context = OpenCodexDbContextFactory.Create(dbPath);
-        if (SchemaInitialized.TryAdd(Path.GetFullPath(dbPath), true))
-        {
-            OpenCodexPricing.EnsureSchema(context);
-        }
-
-        return context;
+        var settings = _settingsProvider.GetSettings();
+        return OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
     }
 
     private static IQueryable<ModelPricing> ApplyFilters(

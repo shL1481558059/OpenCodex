@@ -65,7 +65,7 @@ public sealed partial class WebSearchSimulator : IWebSearchSimulator
     private bool WebSearchEnabled()
     {
         var settings = _settingsProvider.GetSettings();
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
+        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         return context.WebSearchSettings
             .AsNoTracking()
             .FirstOrDefault(item => item.Id == 1)
@@ -75,7 +75,7 @@ public sealed partial class WebSearchSimulator : IWebSearchSimulator
     private TavilyKeyDto? ReserveTavilyKey()
     {
         var settings = _settingsProvider.GetSettings();
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
+        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         using var transaction = context.Database.BeginTransaction();
         var reserved = context.TavilyKeys
             .Where(key => key.Enabled && key.UsageCount < key.UsageLimit)

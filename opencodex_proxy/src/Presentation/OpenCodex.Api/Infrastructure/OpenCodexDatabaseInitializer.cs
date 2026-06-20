@@ -1,8 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using OpenCodex.Data;
 using OpenCodex.Core.Domain;
-using OpenCodex.Core.Persistence;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.Core.Persistence;
 
 namespace OpenCodex.Api.Infrastructure;
 
@@ -14,17 +14,9 @@ public static class OpenCodexDatabaseInitializer
         var settings = scope.ServiceProvider
             .GetRequiredService<IOpenCodexRuntimeSettingsProvider>()
             .GetSettings();
-        var directory = Path.GetDirectoryName(Path.GetFullPath(settings.DbPath));
-        if (!string.IsNullOrEmpty(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
 
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
-        context.Database.EnsureCreated();
-        OpenCodexChannels.EnsureSchema(context);
-        OpenCodexPricing.EnsureSchema(context);
-        OpenCodexRequestLogs.EnsureSchema(context);
+        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
+        context.Database.Migrate();
         SeedDefaultModelPricing(context);
     }
 

@@ -20,10 +20,9 @@ public sealed class ProxyLogServiceTests
             $"{Guid.NewGuid():N}.db");
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
 
-        using (var bootstrap = OpenCodexDbContextFactory.Create(dbPath))
+        using (var bootstrap = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
-            bootstrap.Database.EnsureCreated();
-            OpenCodexRequestLogs.EnsureSchema(bootstrap);
+            bootstrap.Database.Migrate();
         }
 
         var settingsProvider = new TestSettingsProvider(dbPath);
@@ -69,8 +68,9 @@ public sealed class ProxyLogServiceTests
                 firstFunctionCallArgumentsDeltaMs: null,
                 completedEventMs: 340)));
 
-        using var context = OpenCodexDbContextFactory.Create(dbPath);
-        var detail = context.RequestLogDetails.Single();
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        context.Database.Migrate();
+var detail = context.RequestLogDetails.Single();
         Assert.NotNull(detail.StreamTimingsJson);
         Assert.Contains("\"first_output_text_delta_ms\":120", detail.StreamTimingsJson!, StringComparison.Ordinal);
         Assert.Contains("\"first_sse_event_ms\":15", detail.StreamTimingsJson!, StringComparison.Ordinal);
@@ -85,10 +85,9 @@ public sealed class ProxyLogServiceTests
             $"{Guid.NewGuid():N}.db");
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
 
-        using (var bootstrap = OpenCodexDbContextFactory.Create(dbPath))
+        using (var bootstrap = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
-            bootstrap.Database.EnsureCreated();
-            OpenCodexRequestLogs.EnsureSchema(bootstrap);
+            bootstrap.Database.Migrate();
         }
 
         var settingsProvider = new TestSettingsProvider(dbPath);
@@ -107,9 +106,10 @@ public sealed class ProxyLogServiceTests
             clientIp: "127.0.0.1",
             requestHeaders: new Dictionary<string, string>()));
 
-        using (var context = OpenCodexDbContextFactory.Create(dbPath))
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
-            var queued = context.RequestLogs
+            context.Database.Migrate();
+var queued = context.RequestLogs
                 .Include(item => item.Detail)
                 .Single(item => item.Id == requestLogId);
             Assert.Equal(ProxyRequestLifecycleStatus.Queued, queued.LifecycleStatus);
@@ -129,9 +129,10 @@ public sealed class ProxyLogServiceTests
             channelType: "responses",
             isStream: true));
 
-        using (var context = OpenCodexDbContextFactory.Create(dbPath))
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
-            var processing = context.RequestLogs
+            context.Database.Migrate();
+var processing = context.RequestLogs
                 .Include(item => item.Detail)
                 .Single(item => item.Id == requestLogId);
             Assert.Equal(ProxyRequestLifecycleStatus.Processing, processing.LifecycleStatus);
@@ -178,9 +179,10 @@ public sealed class ProxyLogServiceTests
                 ]),
             new ProxyRequestMetadata("POST", "/v1/responses", "127.0.0.1", new Dictionary<string, string>()));
 
-        using (var context = OpenCodexDbContextFactory.Create(dbPath))
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
-            var completed = context.RequestLogs
+            context.Database.Migrate();
+var completed = context.RequestLogs
                 .Include(item => item.Detail)
                 .Include(item => item.StreamLines)
                 .Single(item => item.Id == requestLogId);
@@ -219,7 +221,8 @@ public sealed class ProxyLogServiceTests
         public TestSettingsProvider(string dbPath)
         {
             _settings = new OpenCodexRuntimeSettings(
-                dbPath,
+                "sqlite",
+                $"Data Source={dbPath}",
                 "admin",
                 "password",
                 120);

@@ -38,13 +38,14 @@ public sealed class SessionResponse
     /// <param name="enabled">指示管理员用户是否启用的值。</param>
     /// <returns>已认证的会话响应。</returns>
     public static SessionResponse From(
+        Guid userId,
         string username,
         string role,
         bool enabled)
     {
         return new SessionResponse(
             true,
-            new SessionUserResponse(username, role, enabled));
+            new SessionUserResponse(userId, username, role, enabled));
     }
 
     /// <summary>
@@ -68,12 +69,19 @@ public sealed class SessionUserResponse
     /// <param name="username">管理员用户名。</param>
     /// <param name="role">管理员角色。</param>
     /// <param name="enabled">指示管理员用户是否启用的值。</param>
-    public SessionUserResponse(string username, string role, bool enabled)
+    public SessionUserResponse(Guid userId, string username, string role, bool enabled)
     {
+        UserId = userId;
         Username = username;
         Role = role;
         Enabled = enabled;
     }
+
+    /// <summary>
+    /// 获取管理员用户标识。
+    /// </summary>
+    [JsonPropertyName("user_id")]
+    public Guid UserId { get; }
 
     /// <summary>
     /// 获取管理员用户名。
