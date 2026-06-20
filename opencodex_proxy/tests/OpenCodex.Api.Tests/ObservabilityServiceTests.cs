@@ -1,4 +1,5 @@
 using OpenCodex.Core.Domain;
+using Microsoft.EntityFrameworkCore;
 using OpenCodex.Core.Services;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain;
@@ -21,10 +22,10 @@ public sealed class ObservabilityServiceTests
             $"{Guid.NewGuid():N}.db");
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
 
-        using (var context = OpenCodexDbContextFactory.Create(dbPath))
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
-            context.Database.EnsureCreated();
-            context.Users.Add(new User
+            context.Database.Migrate();
+context.Users.Add(new User
             {
                 Username = "admin",
                 PasswordHash = "hash",
@@ -95,10 +96,10 @@ public sealed class ObservabilityServiceTests
             $"{Guid.NewGuid():N}.db");
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
 
-        using (var context = OpenCodexDbContextFactory.Create(dbPath))
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
-            context.Database.EnsureCreated();
-            context.Users.Add(new User
+            context.Database.Migrate();
+context.Users.Add(new User
             {
                 Username = "admin",
                 PasswordHash = "hash",
@@ -192,10 +193,10 @@ public sealed class ObservabilityServiceTests
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
 
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        using (var context = OpenCodexDbContextFactory.Create(dbPath))
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
-            context.Database.EnsureCreated();
-            context.Users.Add(new User
+            context.Database.Migrate();
+context.Users.Add(new User
             {
                 Username = "admin",
                 PasswordHash = "hash",
@@ -268,10 +269,10 @@ public sealed class ObservabilityServiceTests
             $"{Guid.NewGuid():N}.db");
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
 
-        using (var context = OpenCodexDbContextFactory.Create(dbPath))
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
-            context.Database.EnsureCreated();
-            context.Users.Add(new User
+            context.Database.Migrate();
+context.Users.Add(new User
             {
                 Username = "admin",
                 PasswordHash = "hash",
@@ -414,7 +415,8 @@ public sealed class ObservabilityServiceTests
         public TestSettingsProvider(string dbPath)
         {
             _settings = new OpenCodexRuntimeSettings(
-                dbPath,
+                "sqlite",
+                $"Data Source={dbPath}",
                 "admin",
                 "password",
                 120);

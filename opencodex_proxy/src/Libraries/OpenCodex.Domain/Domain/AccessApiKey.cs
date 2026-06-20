@@ -1,8 +1,8 @@
 namespace OpenCodex.Core.Domain;
 
-public sealed class AccessApiKey : BaseEntity<long>
+public sealed class AccessApiKey : BaseEntity<Guid>
 {
-    public string OwnerUsername { get; set; } = string.Empty;
+    public Guid OwnerUserId { get; set; }
 
     public string Name { get; set; } = string.Empty;
 
@@ -21,7 +21,4 @@ public sealed class AccessApiKey : BaseEntity<long>
     public double UpdatedAt { get; set; }
 
     public double? LastUsedAt { get; set; }
-
-    public User? Owner { get; set; }
-
 }

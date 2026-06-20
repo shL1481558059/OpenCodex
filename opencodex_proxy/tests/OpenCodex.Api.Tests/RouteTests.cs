@@ -1,4 +1,5 @@
 using System.Net;
+using Microsoft.EntityFrameworkCore;
 using System.Reflection;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
@@ -585,9 +586,9 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
     {
         using var scope = services.CreateScope();
         var configuration = scope.ServiceProvider.GetRequiredService<IConfiguration>();
-        var dbPath = configuration["OPENCODEX_DB_PATH"] ?? throw new InvalidOperationException("Missing test DB path");
-        using var context = OpenCodex.Data.OpenCodexDbContextFactory.Create(dbPath);
-        OpenCodex.Core.Persistence.OpenCodexChannels.EnsureSchema(context);
+        var connectionString = configuration["OPENCODEX_DB_CONNECTION_STRING"] ?? throw new InvalidOperationException("Missing test DB connection string");
+        using var context = OpenCodex.Data.OpenCodexDbContextFactory.Create("sqlite", connectionString);
+        context.Database.Migrate();
         context.Channels.Add(new OpenCodex.Core.Domain.Channel
         {
             OwnerUsername = "admin",
@@ -653,7 +654,8 @@ public sealed class OpenCodexApiFactory : WebApplicationFactory<Program>
             {
                 ["OPENCODEX_ADMIN_USERNAME"] = "admin",
                 ["OPENCODEX_ADMIN_PASSWORD"] = AdminPassword,
-                ["OPENCODEX_DB_PATH"] = _dbPath,
+                ["OPENCODEX_DB_PROVIDER"] = "sqlite",
+                    ["OPENCODEX_DB_CONNECTION_STRING"] = $"Data Source={_dbPath}",
                 ["OPENCODEX_DEFAULT_TIMEOUT"] = "120",
                 ["OPENCODEX_DATA_PROTECTION_KEYS_PATH"] = _dataProtectionKeysPath
             });

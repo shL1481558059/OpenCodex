@@ -135,8 +135,7 @@ public sealed class ConfigService : IConfigService
             ? string.Empty
             : ownerUsername.Trim();
         var settings = _settingsProvider.GetSettings();
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
-        OpenCodexChannels.EnsureSchema(context);
+        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         var query = context.Channels.AsNoTracking();
         if (normalizedOwnerUsername.Length > 0)
         {
@@ -201,8 +200,7 @@ public sealed class ConfigService : IConfigService
 
         var normalizedOwner = ownerUsername is null ? null : NormalizeUsername(ownerUsername);
 
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
-        OpenCodexChannels.EnsureSchema(context);
+        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         using var transaction = context.Database.BeginTransaction();
         var existingCreated = context.Channels
             .AsNoTracking()

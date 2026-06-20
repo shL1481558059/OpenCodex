@@ -1,7 +1,6 @@
-using Microsoft.EntityFrameworkCore;
-using OpenCodex.Data;
 using OpenCodex.Core.Errors;
-using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.Core.Domain;
+using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.Services;
 
@@ -11,11 +10,11 @@ public sealed class SessionService : ISessionService
 {
     private const string AuthenticationRequiredMessage = "admin authentication required";
 
-    private readonly IOpenCodexRuntimeSettingsProvider _settingsProvider;
+    private readonly IRepository<User> _userRepository;
 
-    public SessionService(IOpenCodexRuntimeSettingsProvider settingsProvider)
+    public SessionService(IRepository<User> userRepository)
     {
-        _settingsProvider = settingsProvider;
+        _userRepository = userRepository;
     }
 
     public SessionUser RequireUser(SessionUser? currentUser)
@@ -25,17 +24,14 @@ public sealed class SessionService : ISessionService
             throw Unauthorized();
         }
 
-        var settings = _settingsProvider.GetSettings();
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
-        var storedUser = context.Users
-            .AsNoTracking()
-            .FirstOrDefault(user => user.Username == currentUser.Username);
+        var storedUser = _userRepository.TableNoTracking
+            .FirstOrDefault(user => user.Id == currentUser.UserId);
         if (storedUser is null || !storedUser.Enabled)
         {
             throw Unauthorized();
         }
 
-        return new SessionUser(storedUser.Username, storedUser.Role, storedUser.Enabled);
+        return new SessionUser(storedUser.Id, storedUser.Username, storedUser.Role, storedUser.Enabled);
     }
 
     public SessionUser RequireSuperadmin(SessionUser? currentUser)

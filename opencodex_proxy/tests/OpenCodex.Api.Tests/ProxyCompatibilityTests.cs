@@ -1184,7 +1184,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     {
         var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-web-search-tests", $"{Guid.NewGuid():N}.db");
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
-        await using (var db = OpenCodexDbContextFactory.Create(dbPath))
+        await using (var db = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
             await db.Database.EnsureCreatedAsync();
             db.WebSearchSettings.Add(new WebSearchSettings
@@ -1303,7 +1303,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     {
         var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-web-search-tests", $"{Guid.NewGuid():N}.db");
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
-        await using (var db = OpenCodexDbContextFactory.Create(dbPath))
+        await using (var db = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
             await db.Database.EnsureCreatedAsync();
             db.WebSearchSettings.Add(new WebSearchSettings
@@ -1822,7 +1822,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     {
         var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-web-search-tests", $"{Guid.NewGuid():N}.db");
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
-        await using (var db = OpenCodexDbContextFactory.Create(dbPath))
+        await using (var db = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
             await db.Database.EnsureCreatedAsync();
             db.WebSearchSettings.Add(new WebSearchSettings
@@ -1901,7 +1901,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     {
         var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-web-search-tests", $"{Guid.NewGuid():N}.db");
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
-        await using (var db = OpenCodexDbContextFactory.Create(dbPath))
+        await using (var db = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
             await db.Database.EnsureCreatedAsync();
             db.WebSearchSettings.Add(new WebSearchSettings
@@ -2013,7 +2013,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     {
         var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-web-search-tests", $"{Guid.NewGuid():N}.db");
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
-        await using (var db = OpenCodexDbContextFactory.Create(dbPath))
+        await using (var db = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
             await db.Database.EnsureCreatedAsync();
             db.WebSearchSettings.Add(new WebSearchSettings
@@ -2151,7 +2151,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     {
         var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-web-search-tests", $"{Guid.NewGuid():N}.db");
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
-        await using (var db = OpenCodexDbContextFactory.Create(dbPath))
+        await using (var db = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
             await db.Database.EnsureCreatedAsync();
             db.WebSearchSettings.Add(new WebSearchSettings
@@ -2814,8 +2814,9 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     {
         var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-web-search-tests", $"{Guid.NewGuid():N}.db");
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
-        await using var db = OpenCodexDbContextFactory.Create(dbPath);
-        await db.Database.EnsureCreatedAsync();
+        await using var db = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        db.Database.Migrate();
+await db.Database.EnsureCreatedAsync();
         db.WebSearchSettings.Add(new WebSearchSettings
         {
             Id = 1,
@@ -3267,7 +3268,8 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                 {
                     ["OPENCODEX_ADMIN_USERNAME"] = "admin",
                     ["OPENCODEX_ADMIN_PASSWORD"] = OpenCodexApiFactory.AdminPassword,
-                    ["OPENCODEX_DB_PATH"] = DbPath,
+                    ["OPENCODEX_DB_PROVIDER"] = "sqlite",
+                    ["OPENCODEX_DB_CONNECTION_STRING"] = $"Data Source={DbPath}",
                     ["OPENCODEX_DEFAULT_TIMEOUT"] = "120"
                 });
             });
@@ -3406,7 +3408,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
 
         public OpenCodexRuntimeSettings GetSettings()
         {
-            return new OpenCodexRuntimeSettings(_dbPath, "admin", "password", 120);
+            return new OpenCodexRuntimeSettings("sqlite", $"Data Source={_dbPath}", "admin", "password", 120);
         }
     }
 }

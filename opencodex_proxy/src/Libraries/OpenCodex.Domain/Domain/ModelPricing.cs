@@ -1,6 +1,6 @@
 namespace OpenCodex.Core.Domain;
 
-public sealed class ModelPricing : BaseEntity<long>
+public sealed class ModelPricing : BaseEntity<Guid>
 {
     public string ModelId { get; set; } = string.Empty;
 

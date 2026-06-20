@@ -14,12 +14,31 @@ public sealed class OpenCodexRuntimeSettingsProvider : IOpenCodexRuntimeSettings
     public OpenCodexRuntimeSettings GetSettings()
     {
         return new OpenCodexRuntimeSettings(
-            ConfigValue("OpenCodex:DbPath", "OPENCODEX_DB_PATH") ?? "logs/opencodex.db",
+            DbProvider(),
+            DbConnectionString(),
             AdminUsername(),
             (ConfigValue("OpenCodex:AdminPassword", "OPENCODEX_ADMIN_PASSWORD") ?? string.Empty).Trim(),
             PositiveInt("OpenCodex:DefaultTimeout", "OPENCODEX_DEFAULT_TIMEOUT", 120),
             ConfigValue("OpenCodex:OcrCacheDir", "OPENCODEX_OCR_CACHE_DIR") ?? "ocr-cache",
             LocalOcrModel());
+    }
+
+    private string DbProvider()
+    {
+        var value = (ConfigValue("OpenCodex:DbProvider", "OPENCODEX_DB_PROVIDER") ?? "sqlite").Trim();
+        return value.Length == 0 ? "sqlite" : value.ToLowerInvariant();
+    }
+
+    private string DbConnectionString()
+    {
+        var value = (ConfigValue("OpenCodex:DbConnectionString", "OPENCODEX_DB_CONNECTION_STRING") ?? string.Empty).Trim();
+        if (value.Length > 0)
+        {
+            return value;
+        }
+
+        // 默认 SQLite,文件落在运行目录下的 logs/opencodex.db。
+        return "Data Source=logs/opencodex.db";
     }
 
     private string AdminUsername()

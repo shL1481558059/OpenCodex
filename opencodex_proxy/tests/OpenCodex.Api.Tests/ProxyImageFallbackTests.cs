@@ -1,4 +1,5 @@
 using System.Net;
+using Microsoft.EntityFrameworkCore;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
@@ -136,8 +137,9 @@ public sealed class ProxyImageFallbackTests
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        using var context = OpenCodexDbContextFactory.Create(factory.DbPath);
-        var logs = context.RequestLogs.OrderBy(item => item.Id).ToList();
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={factory.DbPath}");
+        context.Database.Migrate();
+var logs = context.RequestLogs.OrderBy(item => item.Id).ToList();
         Assert.Equal(2, logs.Count);
         var mainLog = Assert.Single(logs, item => item.RequestType == ProxyRequestTypes.Main);
         var ocrLog = Assert.Single(logs, item => item.RequestType == ProxyRequestTypes.Ocr);
@@ -213,8 +215,9 @@ public sealed class ProxyImageFallbackTests
         Assert.Contains("requires a configured vision model", body, StringComparison.Ordinal);
         Assert.Empty(factory.Upstream.Requests);
 
-        using var context = OpenCodexDbContextFactory.Create(factory.DbPath);
-        var logs = context.RequestLogs.OrderBy(item => item.Id).ToList();
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={factory.DbPath}");
+        context.Database.Migrate();
+var logs = context.RequestLogs.OrderBy(item => item.Id).ToList();
         Assert.Equal(2, logs.Count);
         var mainLog = Assert.Single(logs, item => item.RequestType == ProxyRequestTypes.Main);
         var ocrLog = Assert.Single(logs, item => item.RequestType == ProxyRequestTypes.Ocr);
@@ -272,7 +275,7 @@ public sealed class ProxyImageFallbackTests
     // Assert.DoesNotContain("\"input_image\"", factory.Upstream.RequestJsons[0], StringComparison.Ordinal);
     // Assert.Contains("本地识别文本", factory.Upstream.RequestJsons[0], StringComparison.Ordinal);
     // 
-    // using var context = OpenCodexDbContextFactory.Create(factory.DbPath);
+    // using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={factory.DbPath}");
     // var logs = context.RequestLogs.OrderBy(item => item.Id).ToList();
     // Assert.Equal(2, logs.Count);
     // var mainLog = Assert.Single(logs, item => item.RequestType == ProxyRequestTypes.Main);
@@ -294,9 +297,8 @@ public sealed class ProxyImageFallbackTests
     // {
     // var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-ocr-cache-tests", $"{Guid.NewGuid():N}.db");
     // Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
-    // using (var context = OpenCodexDbContextFactory.Create(dbPath))
+    // using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
     // {
-    // context.Database.EnsureCreated();
     // }
     // 
     // var cachedUrl = "https://example.com/cached-image.png";
@@ -343,7 +345,7 @@ public sealed class ProxyImageFallbackTests
     // Assert.Equal("vision", result.Engine);
     // Assert.Empty(upstream.Requests);
     // 
-    // using var readContext = OpenCodexDbContextFactory.Create(dbPath);
+    // using var readContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
     // var ocrLog = Assert.Single(readContext.RequestLogs.Where(item => item.RequestType == ProxyRequestTypes.Ocr));
     // Assert.Equal("/internal/ocr/vision", ocrLog.Path);
     // using var ocrJson = JsonDocument.Parse(readContext.RequestLogDetails.Single(item => item.RequestLogId == ocrLog.Id).OcrJson!);
@@ -619,7 +621,8 @@ public sealed class ProxyImageFallbackTests
                 {
                     ["OPENCODEX_ADMIN_USERNAME"] = "admin",
                     ["OPENCODEX_ADMIN_PASSWORD"] = OpenCodexApiFactory.AdminPassword,
-                    ["OPENCODEX_DB_PATH"] = DbPath,
+                    ["OPENCODEX_DB_PROVIDER"] = "sqlite",
+                    ["OPENCODEX_DB_CONNECTION_STRING"] = $"Data Source={DbPath}",
                     ["OPENCODEX_DEFAULT_TIMEOUT"] = "120",
                     ["OPENCODEX_OCR_CACHE_DIR"] = OcrCacheDir
                 });
@@ -777,7 +780,8 @@ public sealed class ProxyImageFallbackTests
         public OpenCodexRuntimeSettings GetSettings()
         {
             return new OpenCodexRuntimeSettings(
-                _dbPath,
+                "sqlite",
+                $"Data Source={_dbPath}",
                 "admin",
                 OpenCodexApiFactory.AdminPassword,
                 120,

@@ -1,6 +1,6 @@
 namespace OpenCodex.Core.Domain;
 
-public sealed class User : BaseEntity<string>
+public sealed class User : BaseEntity<Guid>
 {
     public string Username { get; set; } = string.Empty;
 
@@ -13,13 +13,4 @@ public sealed class User : BaseEntity<string>
     public double CreatedAt { get; set; }
 
     public double UpdatedAt { get; set; }
-
-    public List<Channel> Channels { get; set; } = [];
-
-    public List<AccessApiKey> AccessApiKeys { get; set; } = [];
-
-    public override object? GetId()
-    {
-        return Username.Length == 0 ? null : Username;
-    }
 }

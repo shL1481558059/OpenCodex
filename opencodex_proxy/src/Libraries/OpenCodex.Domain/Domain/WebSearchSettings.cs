@@ -1,6 +1,6 @@
 namespace OpenCodex.Core.Domain;
 
-public sealed class WebSearchSettings : BaseEntity<long>
+public sealed class WebSearchSettings : BaseEntity<Guid>
 {
     public bool Enabled { get; set; }
 

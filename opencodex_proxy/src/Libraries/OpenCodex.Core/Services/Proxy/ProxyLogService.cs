@@ -38,8 +38,7 @@ public sealed class ProxyLogService : IProxyLogService
         var defaultOwnerUsername = DefaultOwnerUsername(settings);
         var createdAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
 
-        using var db = OpenCodexDbContextFactory.Create(settings.DbPath);
-        OpenCodexRequestLogs.EnsureSchema(db);
+        using var db = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         var log = new RequestLog
         {
             RequestId = context.RequestId,
@@ -68,8 +67,7 @@ public sealed class ProxyLogService : IProxyLogService
     public void MarkProcessing(long requestLogId, ProxyRequestLogProcessingContext context)
     {
         var settings = _settingsProvider.GetSettings();
-        using var db = OpenCodexDbContextFactory.Create(settings.DbPath);
-        OpenCodexRequestLogs.EnsureSchema(db);
+        using var db = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         var log = db.RequestLogs
             .Include(item => item.Detail)
             .FirstOrDefault(item => item.Id == requestLogId);
@@ -176,8 +174,7 @@ public sealed class ProxyLogService : IProxyLogService
             responseModel = context.UpstreamModel ?? context.RequestModel ?? string.Empty;
         }
 
-        using var db = OpenCodexDbContextFactory.Create(settings.DbPath);
-        OpenCodexRequestLogs.EnsureSchema(db);
+        using var db = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         var log = db.RequestLogs
             .Include(item => item.Detail)
             .Include(item => item.StreamLines)
@@ -357,8 +354,7 @@ public sealed class ProxyLogService : IProxyLogService
             defaultOwnerUsername = "admin";
         }
 
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
-        OpenCodexRequestLogs.EnsureSchema(context);
+        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         using var transaction = context.Database.BeginTransaction();
         var log = new RequestLog
         {

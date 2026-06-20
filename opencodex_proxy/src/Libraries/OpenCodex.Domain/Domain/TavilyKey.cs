@@ -1,6 +1,6 @@
 namespace OpenCodex.Core.Domain;
 
-public sealed class TavilyKey : BaseEntity<long>
+public sealed class TavilyKey : BaseEntity<Guid>
 {
     public int Position { get; set; }
 
@@ -19,5 +19,4 @@ public sealed class TavilyKey : BaseEntity<long>
     public double UpdatedAt { get; set; }
 
     public int KeyUsageLimit => UsageLimit;
-
 }

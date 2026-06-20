@@ -1,10 +1,8 @@
 namespace OpenCodex.Core.Domain;
 
-public sealed class Channel : BaseEntity
+public sealed class Channel : BaseEntity<Guid>
 {
-    public string OwnerUsername { get; set; } = string.Empty;
-
-    public string Id { get; set; } = string.Empty;
+    public Guid OwnerUserId { get; set; }
 
     public int Position { get; set; }
 
@@ -37,11 +35,4 @@ public sealed class Channel : BaseEntity
     public double CreatedAt { get; set; }
 
     public double UpdatedAt { get; set; }
-
-    public User? Owner { get; set; }
-
-    public override object? GetId()
-    {
-        return OwnerUsername.Length == 0 || Id.Length == 0 ? null : (OwnerUsername, Id);
-    }
 }

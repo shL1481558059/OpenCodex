@@ -329,8 +329,7 @@ public sealed class ProxyRouteService : IProxyRouteService
             ? string.Empty
             : ownerUsername.Trim();
         var settings = _settingsProvider.GetSettings();
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
-        OpenCodexChannels.EnsureSchema(context);
+        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         var query = context.Channels.AsNoTracking();
         if (normalizedOwnerUsername.Length > 0)
         {

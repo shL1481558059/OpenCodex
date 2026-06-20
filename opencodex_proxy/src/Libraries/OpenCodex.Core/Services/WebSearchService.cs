@@ -87,7 +87,7 @@ public sealed class WebSearchService : IWebSearchService
 
     private static WebSearchConfigDto ReadWebSearchConfig(OpenCodexRuntimeSettings settings)
     {
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
+        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         var webSearchSettings = context.WebSearchSettings
             .AsNoTracking()
             .FirstOrDefault(item => item.Id == 1);
@@ -116,7 +116,7 @@ public sealed class WebSearchService : IWebSearchService
             throw new ArgumentException("web search keys must be a list", nameof(config));
         }
 
-        using var context = OpenCodexDbContextFactory.Create(runtimeSettings.DbPath);
+        using var context = OpenCodexDbContextFactory.Create(runtimeSettings.DatabaseProvider, runtimeSettings.ConnectionString);
         using var transaction = context.Database.BeginTransaction();
         var now = UnixTimeSeconds();
         var currentDefaultKeyUsageLimit = context.WebSearchSettings
@@ -232,7 +232,7 @@ public sealed class WebSearchService : IWebSearchService
 
     private static TavilyKeyDto? ReserveTavilyKeyById(OpenCodexRuntimeSettings settings, long keyId)
     {
-        using var context = OpenCodexDbContextFactory.Create(settings.DbPath);
+        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         using var transaction = context.Database.BeginTransaction();
         var reserved = context.TavilyKeys
             .Where(key => key.Id == keyId && key.UsageCount < key.UsageLimit)

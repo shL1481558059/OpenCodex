@@ -513,10 +513,8 @@ public sealed class ProxyOcrService : IProxyOcrService
             return settings.OcrCacheDir;
         }
 
-        var dbDirectory = Path.GetDirectoryName(settings.DbPath);
-        return string.IsNullOrWhiteSpace(dbDirectory)
-            ? Path.GetFullPath(settings.OcrCacheDir)
-            : Path.Combine(dbDirectory, settings.OcrCacheDir);
+        // 相对路径以当前工作目录为根。此前版本以 DbPath 目录为根,切换到多 provider 后该路径不再可用。
+        return Path.GetFullPath(settings.OcrCacheDir);
     }
 
     private static string CacheKey(ProxyImageInput image)

@@ -42,21 +42,20 @@ public sealed class OpenCodexDbContext : DbContext
     {
         var entity = modelBuilder.Entity<User>();
         entity.ToTable("Users");
-        entity.HasKey(user => user.Username);
-        entity.Property(user => user.Username).ValueGeneratedNever();
+        entity.HasKey(user => user.Id);
+        entity.Property(user => user.Id).ValueGeneratedOnAdd();
+        entity.Property(user => user.Username).IsRequired();
+        entity.HasIndex(user => user.Username).IsUnique();
         entity.Property(user => user.PasswordHash).IsRequired();
         entity.Property(user => user.Role).IsRequired();
-        entity.Ignore(user => user.Id);
-        entity.Ignore(user => user.Channels);
     }
 
     private static void ConfigureChannels(ModelBuilder modelBuilder)
     {
         var entity = modelBuilder.Entity<Channel>();
         entity.ToTable("Channels");
-        entity.HasKey(channel => new { channel.OwnerUsername, channel.Id });
-        entity.Property(channel => channel.OwnerUsername).ValueGeneratedNever();
-        entity.Property(channel => channel.Id).ValueGeneratedNever();
+        entity.HasKey(channel => channel.Id);
+        entity.Property(channel => channel.Id).ValueGeneratedOnAdd();
         entity.Property(channel => channel.Name).IsRequired();
         entity.Property(channel => channel.Type).IsRequired();
         entity.Property(channel => channel.BaseUrl).IsRequired();
@@ -66,9 +65,8 @@ public sealed class OpenCodexDbContext : DbContext
         entity.Property(channel => channel.Capacity).IsRequired();
         entity.Property(channel => channel.CompatJson).IsRequired();
         entity.Property(channel => channel.ModelsJson).IsRequired();
-        entity.HasIndex(channel => new { channel.OwnerUsername, channel.Position });
-        entity.HasIndex(channel => new { channel.OwnerUsername, channel.Priority, channel.Position, channel.Id });
-        entity.Ignore(channel => channel.Owner);
+        entity.HasIndex(channel => new { channel.OwnerUserId, channel.Position });
+        entity.HasIndex(channel => new { channel.OwnerUserId, channel.Priority, channel.Position });
     }
 
     private static void ConfigureAccessApiKeys(ModelBuilder modelBuilder)
@@ -76,18 +74,14 @@ public sealed class OpenCodexDbContext : DbContext
         var entity = modelBuilder.Entity<AccessApiKey>();
         entity.ToTable("AccessApiKeys");
         entity.HasKey(key => key.Id);
+        entity.Property(key => key.Id).ValueGeneratedOnAdd();
         entity.Property(key => key.Name).IsRequired();
-        entity.Property(key => key.OwnerUsername).IsRequired();
+        entity.Property(key => key.OwnerUserId).IsRequired();
         entity.Property(key => key.KeyHash).IsRequired();
         entity.Property(key => key.KeyPrefix).IsRequired();
         entity.Property(key => key.KeySuffix).IsRequired();
         entity.HasIndex(key => key.KeyHash).IsUnique();
-        entity.HasIndex(key => new { key.OwnerUsername, key.Id });
-        entity
-            .HasOne(key => key.Owner)
-            .WithMany(user => user.AccessApiKeys)
-            .HasForeignKey(key => key.OwnerUsername)
-            .OnDelete(DeleteBehavior.Cascade);
+        entity.HasIndex(key => new { key.OwnerUserId, key.Id });
     }
 
     private static void ConfigureWebSearch(ModelBuilder modelBuilder)
@@ -95,11 +89,12 @@ public sealed class OpenCodexDbContext : DbContext
         var settings = modelBuilder.Entity<WebSearchSettings>();
         settings.ToTable("WebSearchSettings");
         settings.HasKey(item => item.Id);
-        settings.Property(item => item.Id).ValueGeneratedNever();
+        settings.Property(item => item.Id).ValueGeneratedOnAdd();
 
         var keys = modelBuilder.Entity<TavilyKey>();
         keys.ToTable("TavilyKeys");
         keys.HasKey(key => key.Id);
+        keys.Property(key => key.Id).ValueGeneratedOnAdd();
         keys.Property(key => key.Provider).IsRequired();
         keys.Property(key => key.ApiKey).IsRequired();
         keys.HasIndex(key => key.Position);
@@ -110,6 +105,7 @@ public sealed class OpenCodexDbContext : DbContext
         var entity = modelBuilder.Entity<ModelPricing>();
         entity.ToTable("ModelPricings");
         entity.HasKey(pricing => pricing.Id);
+        entity.Property(pricing => pricing.Id).ValueGeneratedOnAdd();
         entity.Property(pricing => pricing.ModelId).IsRequired();
         entity.Property(pricing => pricing.Vendor).IsRequired();
         entity.Property(pricing => pricing.Name).IsRequired();
@@ -126,6 +122,7 @@ public sealed class OpenCodexDbContext : DbContext
         var logs = modelBuilder.Entity<RequestLog>();
         logs.ToTable("RequestLogs");
         logs.HasKey(log => log.Id);
+        logs.Property(log => log.Id).ValueGeneratedOnAdd();
         logs.HasIndex(log => log.CreatedAt);
         logs.HasIndex(log => log.Model);
         logs.HasIndex(log => log.UpstreamModel);
@@ -136,33 +133,20 @@ public sealed class OpenCodexDbContext : DbContext
         logs.HasIndex(log => log.Path);
         logs.HasIndex(log => log.StatusCode);
         logs.HasIndex(log => log.ApiKeyId);
-        logs.HasIndex(log => new { log.OwnerUsername, log.Id });
-        logs
-            .HasOne(log => log.ParentRequestLog)
-            .WithMany(parent => parent.ChildRequestLogs)
-            .HasForeignKey(log => log.ParentRequestLogId)
-            .OnDelete(DeleteBehavior.Restrict);
+        logs.HasIndex(log => new { log.OwnerUserId, log.Id });
 
         var details = modelBuilder.Entity<RequestLogDetail>();
         details.ToTable("RequestLogDetails");
         details.HasKey(detail => detail.RequestLogId);
-        details
-            .HasOne(detail => detail.RequestLog)
-            .WithOne(log => log.Detail)
-            .HasForeignKey<RequestLogDetail>(detail => detail.RequestLogId)
-            .OnDelete(DeleteBehavior.Cascade);
+        details.Property(detail => detail.RequestLogId).ValueGeneratedNever();
 
         var lines = modelBuilder.Entity<RequestLogStreamLine>();
         lines.ToTable("RequestLogStreamLines");
         lines.HasKey(line => line.Id);
+        lines.Property(line => line.Id).ValueGeneratedOnAdd();
         lines.Property(line => line.Source).IsRequired();
         lines.Property(line => line.RawLine).IsRequired();
         lines.HasIndex(line => new { line.RequestLogId, line.Sequence }).IsUnique();
         lines.HasIndex(line => line.OccurredAt);
-        lines
-            .HasOne(line => line.RequestLog)
-            .WithMany(log => log.StreamLines)
-            .HasForeignKey(line => line.RequestLogId)
-            .OnDelete(DeleteBehavior.Cascade);
     }
 }
