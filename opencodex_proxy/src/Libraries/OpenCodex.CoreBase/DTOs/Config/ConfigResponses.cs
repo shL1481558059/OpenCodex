@@ -68,7 +68,7 @@ public sealed class ChannelResponse
     /// <param name="healthStatus">渠道运行时健康状态。</param>
     public ChannelResponse(
         string ownerUsername,
-        string id,
+        Guid id,
         string name,
         string type,
         string baseUrl,
@@ -114,7 +114,7 @@ public sealed class ChannelResponse
     /// 获取通道标识符。
     /// </summary>
     [JsonPropertyName("id")]
-    public string Id { get; }
+    public Guid Id { get; }
 
     /// <summary>
     /// 获取通道显示名称。

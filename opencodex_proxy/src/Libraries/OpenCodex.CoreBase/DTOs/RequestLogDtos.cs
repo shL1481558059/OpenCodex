@@ -49,9 +49,9 @@ public sealed class RequestLogWriteDto(
     string? webSearchJson,
     string? model,
     string? upstreamModel,
-    string? channelId,
+    Guid? channelId,
     string requestType,
-    long? parentRequestLogId,
+    Guid? parentRequestLogId,
     bool isStream,
     int? ttftMs,
     int durationMs,
@@ -60,8 +60,8 @@ public sealed class RequestLogWriteDto(
     int cachedTokens,
     int outputTokens,
     double cost,
-    string ownerUsername,
-    long? apiKeyId,
+    Guid ownerUserId,
+    Guid? apiKeyId,
     string? error,
     string? ocrJson,
     string? streamTimingsJson,
@@ -150,7 +150,7 @@ public sealed class RequestLogWriteDto(
     /// <summary>
     /// 获取选中的通道标识符（如果可用）。
     /// </summary>
-    public string? ChannelId { get; } = channelId;
+    public Guid? ChannelId { get; } = channelId;
 
     /// <summary>
     /// 获取请求日志类型。
@@ -160,7 +160,7 @@ public sealed class RequestLogWriteDto(
     /// <summary>
     /// 获取父请求日志标识符（如果可用）。
     /// </summary>
-    public long? ParentRequestLogId { get; } = parentRequestLogId;
+    public Guid? ParentRequestLogId { get; } = parentRequestLogId;
 
     /// <summary>
     /// 获取指示请求是否使用流式响应的值。
@@ -205,12 +205,12 @@ public sealed class RequestLogWriteDto(
     /// <summary>
     /// 获取拥有该请求的用户名。
     /// </summary>
-    public string OwnerUsername { get; } = ownerUsername;
+    public Guid OwnerUserId { get; } = ownerUserId;
 
     /// <summary>
     /// 获取请求使用的 API 密钥标识符（如果可用）。
     /// </summary>
-    public long? ApiKeyId { get; } = apiKeyId;
+    public Guid? ApiKeyId { get; } = apiKeyId;
 
     /// <summary>
     /// 获取错误消息（如果可用）。
@@ -302,7 +302,7 @@ public sealed class RequestLogStreamLineDto(
 /// <param name="streamTimingsJson">序列化后的流式写出时序诊断（如果可用）。</param>
 /// <param name="requestStatus">标准化后的请求状态。</param>
 public sealed class RequestLogDto(
-    long id,
+    Guid id,
     string? requestId,
     double? createdAt,
     double? processingStartedAt,
@@ -312,9 +312,9 @@ public sealed class RequestLogDto(
     string? clientIp,
     string? model,
     string? upstreamModel,
-    string? channelId,
+    Guid? channelId,
     string requestType,
-    long? parentRequestLogId,
+    Guid? parentRequestLogId,
     bool isStream,
     int? ttftMs,
     int? durationMs,
@@ -324,7 +324,7 @@ public sealed class RequestLogDto(
     int outputTokens,
     double cost,
     string ownerUsername,
-    long? apiKeyId,
+    Guid? apiKeyId,
     string? error,
     string? requestHeaders,
     string? requestBody,
@@ -340,7 +340,7 @@ public sealed class RequestLogDto(
     /// <summary>
     /// 获取请求日志的数据库标识符。
     /// </summary>
-    public long Id { get; } = id;
+    public Guid Id { get; } = id;
 
     /// <summary>
     /// 获取唯一请求标识符（如果可用）。
@@ -390,7 +390,7 @@ public sealed class RequestLogDto(
     /// <summary>
     /// 获取选中的通道标识符（如果可用）。
     /// </summary>
-    public string? ChannelId { get; } = channelId;
+    public Guid? ChannelId { get; } = channelId;
 
     /// <summary>
     /// 获取请求日志类型。
@@ -400,7 +400,7 @@ public sealed class RequestLogDto(
     /// <summary>
     /// 获取父请求日志标识符（如果可用）。
     /// </summary>
-    public long? ParentRequestLogId { get; } = parentRequestLogId;
+    public Guid? ParentRequestLogId { get; } = parentRequestLogId;
 
     /// <summary>
     /// 获取指示请求是否使用流式响应的值。
@@ -450,7 +450,7 @@ public sealed class RequestLogDto(
     /// <summary>
     /// 获取请求使用的 API 密钥标识符（如果可用）。
     /// </summary>
-    public long? ApiKeyId { get; } = apiKeyId;
+    public Guid? ApiKeyId { get; } = apiKeyId;
 
     /// <summary>
     /// 获取错误消息（如果可用）。
@@ -535,7 +535,7 @@ public sealed class RequestLogDto(
 /// <param name="error">错误消息（如果可用）。</param>
 /// <param name="requestStatus">标准化后的请求状态。</param>
 public sealed class RequestLogEventDto(
-    long id,
+    Guid id,
     string? requestId,
     double? createdAt,
     double? processingStartedAt,
@@ -547,7 +547,7 @@ public sealed class RequestLogEventDto(
     string? upstreamModel,
     string? channelId,
     string requestType,
-    long? parentRequestLogId,
+    Guid? parentRequestLogId,
     bool isStream,
     int? ttftMs,
     int? durationMs,
@@ -557,14 +557,14 @@ public sealed class RequestLogEventDto(
     int outputTokens,
     double cost,
     string ownerUsername,
-    long? apiKeyId,
+    Guid? apiKeyId,
     string? error,
     string requestStatus)
 {
     /// <summary>
     /// 获取请求日志的数据库标识符。
     /// </summary>
-    public long Id { get; } = id;
+    public Guid Id { get; } = id;
 
     /// <summary>
     /// 获取唯一请求标识符（如果可用）。
@@ -624,7 +624,7 @@ public sealed class RequestLogEventDto(
     /// <summary>
     /// 获取父请求日志标识符（如果可用）。
     /// </summary>
-    public long? ParentRequestLogId { get; } = parentRequestLogId;
+    public Guid? ParentRequestLogId { get; } = parentRequestLogId;
 
     /// <summary>
     /// 获取指示请求是否使用流式响应的值。
@@ -674,7 +674,7 @@ public sealed class RequestLogEventDto(
     /// <summary>
     /// 获取请求使用的 API 密钥标识符（如果可用）。
     /// </summary>
-    public long? ApiKeyId { get; } = apiKeyId;
+    public Guid? ApiKeyId { get; } = apiKeyId;
 
     /// <summary>
     /// 获取错误消息（如果可用）。

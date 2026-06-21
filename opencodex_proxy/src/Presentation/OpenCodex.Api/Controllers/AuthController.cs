@@ -56,6 +56,7 @@ public sealed class AuthController : ApiControllerBase
             await SessionState.SetUserAsync(
                 HttpContext,
                 new SessionUser(
+                    result.Payload.User.UserId,
                     result.Payload.User.Username,
                     result.Payload.User.Role,
                     result.Payload.User.Enabled),
@@ -76,6 +77,6 @@ public sealed class AuthController : ApiControllerBase
     {
         return user is null
             ? SessionResponse.LoggedOut()
-            : SessionResponse.From(user.Username, user.Role, user.Enabled);
+            : SessionResponse.From(user.UserId, user.Username, user.Role, user.Enabled);
     }
 }

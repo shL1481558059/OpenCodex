@@ -54,7 +54,7 @@ public sealed class LogsPageResponse
     /// <returns>请求日志分页响应。</returns>
     public static LogsPageResponse From(
         RequestLogPageDto page,
-        IReadOnlyDictionary<long, string>? apiKeyNames = null)
+        IReadOnlyDictionary<Guid, string>? apiKeyNames = null)
     {
         return new LogsPageResponse(
             page.Events.Select(log => LogEventResponse.From(log, apiKeyNames)).ToList(),
@@ -74,7 +74,7 @@ public sealed class LogApiKeyFilterOption
     /// </summary>
     /// <param name="id">访问密钥标识。</param>
     /// <param name="name">访问密钥显示名称。</param>
-    public LogApiKeyFilterOption(long id, string? name)
+    public LogApiKeyFilterOption(Guid id, string? name)
     {
         Id = id;
         Name = name;
@@ -84,7 +84,7 @@ public sealed class LogApiKeyFilterOption
     /// 获取访问密钥标识。
     /// </summary>
     [JsonPropertyName("id")]
-    public long Id { get; }
+    public Guid Id { get; }
 
     /// <summary>
     /// 获取访问密钥显示名称。
@@ -130,7 +130,7 @@ public sealed class LogEventResponse
     /// <param name="error">错误消息。</param>
     /// <param name="requestStatus">请求状态。</param>
     public LogEventResponse(
-        long id,
+        Guid id,
         string? requestId,
         double? createdAt,
         double? processingStartedAt,
@@ -142,7 +142,7 @@ public sealed class LogEventResponse
         string? upstreamModel,
         string? channelId,
         string requestType,
-        long? parentRequestLogId,
+        Guid? parentRequestLogId,
         int isStream,
         int? ttftMs,
         int? durationMs,
@@ -152,7 +152,7 @@ public sealed class LogEventResponse
         int outputTokens,
         double cost,
         string? ownerUsername,
-        long? apiKeyId,
+        Guid? apiKeyId,
         string? apiKeyName,
         string? error,
         string requestStatus)
@@ -189,7 +189,7 @@ public sealed class LogEventResponse
     /// 获取日志标识。
     /// </summary>
     [JsonPropertyName("id")]
-    public long Id { get; }
+    public Guid Id { get; }
 
     /// <summary>
     /// 获取请求标识。
@@ -261,7 +261,7 @@ public sealed class LogEventResponse
     /// 获取父请求日志标识。
     /// </summary>
     [JsonPropertyName("parent_request_log_id")]
-    public long? ParentRequestLogId { get; }
+    public Guid? ParentRequestLogId { get; }
 
     /// <summary>
     /// 获取是否为流式请求的数值标记。
@@ -321,7 +321,7 @@ public sealed class LogEventResponse
     /// 获取访问密钥标识。
     /// </summary>
     [JsonPropertyName("api_key_id")]
-    public long? ApiKeyId { get; }
+    public Guid? ApiKeyId { get; }
 
     /// <summary>
     /// 获取访问密钥显示名称。
@@ -348,7 +348,7 @@ public sealed class LogEventResponse
     /// <returns>请求日志列表事件响应。</returns>
     public static LogEventResponse From(
         RequestLogEventDto log,
-        IReadOnlyDictionary<long, string>? apiKeyNames = null)
+        IReadOnlyDictionary<Guid, string>? apiKeyNames = null)
     {
         return new LogEventResponse(
             log.Id,
@@ -361,7 +361,7 @@ public sealed class LogEventResponse
             log.ClientIp,
             log.Model,
             log.UpstreamModel,
-            log.ChannelId,
+            log.ChannelId?.ToString(),
             log.RequestType,
             log.ParentRequestLogId,
             log.IsStream ? 1 : 0,
@@ -380,8 +380,8 @@ public sealed class LogEventResponse
     }
 
     private static string? ReadApiKeyName(
-        long? apiKeyId,
-        IReadOnlyDictionary<long, string>? apiKeyNames)
+        Guid? apiKeyId,
+        IReadOnlyDictionary<Guid, string>? apiKeyNames)
     {
         return apiKeyId.HasValue && apiKeyNames?.TryGetValue(apiKeyId.Value, out var name) == true
             ? name
@@ -454,7 +454,7 @@ public sealed class LogDetailResponse
     /// <param name="streamTimingsJson">流式写出时序诊断内容。</param>
     /// <param name="streamLines">原始 SSE line 记录。</param>
     public LogDetailResponse(
-        long id,
+        Guid id,
         string? requestId,
         double? createdAt,
         double? processingStartedAt,
@@ -466,7 +466,7 @@ public sealed class LogDetailResponse
         string? upstreamModel,
         string? channelId,
         string requestType,
-        long? parentRequestLogId,
+        Guid? parentRequestLogId,
         int isStream,
         int? ttftMs,
         int? durationMs,
@@ -476,7 +476,7 @@ public sealed class LogDetailResponse
         int outputTokens,
         double cost,
         string? ownerUsername,
-        long? apiKeyId,
+        Guid? apiKeyId,
         string? apiKeyName,
         string? error,
         string requestStatus,
@@ -531,7 +531,7 @@ public sealed class LogDetailResponse
     /// 获取日志标识。
     /// </summary>
     [JsonPropertyName("id")]
-    public long Id { get; }
+    public Guid Id { get; }
 
     /// <summary>
     /// 获取请求标识。
@@ -603,7 +603,7 @@ public sealed class LogDetailResponse
     /// 获取父请求日志标识。
     /// </summary>
     [JsonPropertyName("parent_request_log_id")]
-    public long? ParentRequestLogId { get; }
+    public Guid? ParentRequestLogId { get; }
 
     /// <summary>
     /// 获取是否为流式请求的数值标记。
@@ -663,7 +663,7 @@ public sealed class LogDetailResponse
     /// 获取访问密钥标识。
     /// </summary>
     [JsonPropertyName("api_key_id")]
-    public long? ApiKeyId { get; }
+    public Guid? ApiKeyId { get; }
 
     /// <summary>
     /// 获取访问密钥显示名称。
@@ -744,7 +744,7 @@ public sealed class LogDetailResponse
     /// <returns>请求日志详情响应。</returns>
     public static LogDetailResponse From(
         RequestLogDto log,
-        IReadOnlyDictionary<long, string>? apiKeyNames = null)
+        IReadOnlyDictionary<Guid, string>? apiKeyNames = null)
     {
         var logEvent = LogEventResponse.From(new RequestLogEventDto(
             log.Id,
@@ -757,7 +757,7 @@ public sealed class LogDetailResponse
             log.ClientIp,
             log.Model,
             log.UpstreamModel,
-            log.ChannelId,
+            log.ChannelId?.ToString(),
             log.RequestType,
             log.ParentRequestLogId,
             log.IsStream,

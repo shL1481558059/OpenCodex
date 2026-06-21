@@ -84,7 +84,7 @@ public sealed class TavilyKeyResponse
     /// <param name="usageLimit">使用次数上限。</param>
     /// <param name="keyUsageLimit">兼容字段中的使用次数上限。</param>
     public TavilyKeyResponse(
-        long id,
+        Guid id,
         int position,
         string provider,
         string key,
@@ -107,7 +107,7 @@ public sealed class TavilyKeyResponse
     /// 获取密钥标识。
     /// </summary>
     [JsonPropertyName("id")]
-    public long Id { get; }
+    public Guid Id { get; }
 
     /// <summary>
     /// 获取密钥排序位置。
@@ -184,7 +184,7 @@ public sealed class WebSearchTestKeyResponse
     /// <param name="usageLimit">使用次数上限。</param>
     /// <param name="keyUsageLimit">兼容字段中的使用次数上限。</param>
     public WebSearchTestKeyResponse(
-        long id,
+        Guid id,
         string provider,
         int usageCount,
         int usageLimit,
@@ -201,7 +201,7 @@ public sealed class WebSearchTestKeyResponse
     /// 获取密钥标识。
     /// </summary>
     [JsonPropertyName("id")]
-    public long Id { get; }
+    public Guid Id { get; }
 
     /// <summary>
     /// 获取搜索提供方。

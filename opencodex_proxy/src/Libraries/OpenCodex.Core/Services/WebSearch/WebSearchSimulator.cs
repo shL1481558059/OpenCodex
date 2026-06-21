@@ -1,10 +1,8 @@
-using Mapster;
-using Microsoft.EntityFrameworkCore;
-using OpenCodex.Data;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Errors;
 using OpenCodex.Core.Protocols;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain.WebSearch;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.Services.WebSearch;
@@ -17,16 +15,19 @@ public sealed partial class WebSearchSimulator : IWebSearchSimulator
 
     private readonly IUpstreamClient _upstream;
     private readonly IWebSearchClient _webSearchClient;
-    private readonly IOpenCodexRuntimeSettingsProvider _settingsProvider;
+    private readonly IRepository<WebSearchSettings> _settingsRepository;
+    private readonly IRepository<TavilyKey> _keyRepository;
 
     public WebSearchSimulator(
         IUpstreamClient upstream,
         IWebSearchClient webSearchClient,
-        IOpenCodexRuntimeSettingsProvider settingsProvider)
+        IRepository<WebSearchSettings> settingsRepository,
+        IRepository<TavilyKey> keyRepository)
     {
         _upstream = upstream;
         _webSearchClient = webSearchClient;
-        _settingsProvider = settingsProvider;
+        _settingsRepository = settingsRepository;
+        _keyRepository = keyRepository;
     }
 
     public bool CanSimulate(
@@ -64,35 +65,38 @@ public sealed partial class WebSearchSimulator : IWebSearchSimulator
 
     private bool WebSearchEnabled()
     {
-        var settings = _settingsProvider.GetSettings();
-        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
-        return context.WebSearchSettings
-            .AsNoTracking()
-            .FirstOrDefault(item => item.Id == 1)
-            ?.Enabled ?? false;
+        return _settingsRepository.TableNoTracking.FirstOrDefault()?.Enabled ?? false;
     }
 
     private TavilyKeyDto? ReserveTavilyKey()
     {
-        var settings = _settingsProvider.GetSettings();
-        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
-        using var transaction = context.Database.BeginTransaction();
-        var reserved = context.TavilyKeys
+        var reserved = _keyRepository.Table
             .Where(key => key.Enabled && key.UsageCount < key.UsageLimit)
             .OrderBy(key => key.Position)
             .ThenBy(key => key.Id)
             .FirstOrDefault();
         if (reserved is null)
         {
-            transaction.Rollback();
             return null;
         }
 
         reserved.UsageCount += 1;
         reserved.UpdatedAt = UnixTimeSeconds();
-        context.SaveChanges();
-        transaction.Commit();
-        return reserved.Adapt<TavilyKeyDto>();
+        _keyRepository.Update(reserved);
+        return MapToDto(reserved);
+    }
+
+    private static TavilyKeyDto MapToDto(TavilyKey key)
+    {
+        return new TavilyKeyDto(
+            key.Id,
+            key.Position,
+            key.Provider,
+            key.ApiKey,
+            key.Enabled,
+            key.UsageCount,
+            key.UsageLimit,
+            key.UsageLimit);
     }
 
     private static double UnixTimeSeconds()

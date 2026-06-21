@@ -13,7 +13,7 @@ internal sealed class WebSearchToolResult
         Dictionary<string, object?> openCodexResult,
         string? logError,
         string? provider,
-        long? keyId,
+        Guid? keyId,
         int? keyPosition,
         int? keyUsageCount,
         int? keyUsageLimit,
@@ -51,7 +51,7 @@ internal sealed class WebSearchToolResult
 
     public string? Provider { get; }
 
-    public long? KeyId { get; }
+    public Guid? KeyId { get; }
 
     public int? KeyPosition { get; }
 

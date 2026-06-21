@@ -5,7 +5,7 @@ public sealed class ProxyRequestLogQueuedContext
     public ProxyRequestLogQueuedContext(
         string requestId,
         string ownerUsername,
-        long? apiKeyId,
+        Guid? apiKeyId,
         Dictionary<string, object?>? payload,
         string? requestModel,
         bool isStream,
@@ -14,7 +14,7 @@ public sealed class ProxyRequestLogQueuedContext
         string? clientIp,
         IReadOnlyDictionary<string, string> requestHeaders,
         string requestType = ProxyRequestTypes.Main,
-        long? parentRequestLogId = null)
+        Guid? parentRequestLogId = null)
     {
         RequestId = requestId;
         OwnerUsername = ownerUsername;
@@ -34,7 +34,7 @@ public sealed class ProxyRequestLogQueuedContext
 
     public string OwnerUsername { get; }
 
-    public long? ApiKeyId { get; }
+    public Guid? ApiKeyId { get; }
 
     public Dictionary<string, object?>? Payload { get; }
 
@@ -52,14 +52,14 @@ public sealed class ProxyRequestLogQueuedContext
 
     public string RequestType { get; }
 
-    public long? ParentRequestLogId { get; }
+    public Guid? ParentRequestLogId { get; }
 }
 
 public sealed class ProxyRequestLogProcessingContext
 {
     public ProxyRequestLogProcessingContext(
         string ownerUsername,
-        long? apiKeyId,
+        Guid? apiKeyId,
         Dictionary<string, object?>? upstreamRequest,
         string? requestModel,
         string? upstreamModel,
@@ -79,7 +79,7 @@ public sealed class ProxyRequestLogProcessingContext
 
     public string OwnerUsername { get; }
 
-    public long? ApiKeyId { get; }
+    public Guid? ApiKeyId { get; }
 
     public Dictionary<string, object?>? UpstreamRequest { get; }
 

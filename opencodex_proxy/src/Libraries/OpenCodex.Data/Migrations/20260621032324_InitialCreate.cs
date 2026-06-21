@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore.Migrations;
+﻿using System;
+using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
@@ -11,11 +12,32 @@ namespace OpenCodex.Data.Migrations
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.CreateTable(
+                name: "AccessApiKeys",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "TEXT", nullable: false),
+                    OwnerUserId = table.Column<Guid>(type: "TEXT", nullable: false),
+                    Name = table.Column<string>(type: "TEXT", nullable: false),
+                    KeyHash = table.Column<string>(type: "TEXT", nullable: false),
+                    KeyPlaintext = table.Column<string>(type: "TEXT", nullable: true),
+                    KeyPrefix = table.Column<string>(type: "TEXT", nullable: false),
+                    KeySuffix = table.Column<string>(type: "TEXT", nullable: false),
+                    Enabled = table.Column<bool>(type: "INTEGER", nullable: false),
+                    CreatedAt = table.Column<double>(type: "REAL", nullable: false),
+                    UpdatedAt = table.Column<double>(type: "REAL", nullable: false),
+                    LastUsedAt = table.Column<double>(type: "REAL", nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_AccessApiKeys", x => x.Id);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "Channels",
                 columns: table => new
                 {
-                    OwnerUsername = table.Column<string>(type: "TEXT", nullable: false),
-                    Id = table.Column<string>(type: "TEXT", nullable: false),
+                    Id = table.Column<Guid>(type: "TEXT", nullable: false),
+                    OwnerUserId = table.Column<Guid>(type: "TEXT", nullable: false),
                     Position = table.Column<int>(type: "INTEGER", nullable: false),
                     Priority = table.Column<int>(type: "INTEGER", nullable: false),
                     Name = table.Column<string>(type: "TEXT", nullable: false),
@@ -35,15 +57,14 @@ namespace OpenCodex.Data.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_Channels", x => new { x.OwnerUsername, x.Id });
+                    table.PrimaryKey("PK_Channels", x => x.Id);
                 });
 
             migrationBuilder.CreateTable(
                 name: "ModelPricings",
                 columns: table => new
                 {
-                    Id = table.Column<long>(type: "INTEGER", nullable: false)
-                        .Annotation("Sqlite:Autoincrement", true),
+                    Id = table.Column<Guid>(type: "TEXT", nullable: false),
                     ModelId = table.Column<string>(type: "TEXT", nullable: false),
                     Vendor = table.Column<string>(type: "TEXT", nullable: false),
                     Name = table.Column<string>(type: "TEXT", nullable: false),
@@ -62,11 +83,30 @@ namespace OpenCodex.Data.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "RequestLogDetails",
+                columns: table => new
+                {
+                    RequestLogId = table.Column<Guid>(type: "TEXT", nullable: false),
+                    RequestHeaders = table.Column<string>(type: "TEXT", nullable: true),
+                    RequestBody = table.Column<string>(type: "TEXT", nullable: true),
+                    UpstreamRequestBody = table.Column<string>(type: "TEXT", nullable: true),
+                    UpstreamResponseBody = table.Column<string>(type: "TEXT", nullable: true),
+                    ResponseBody = table.Column<string>(type: "TEXT", nullable: true),
+                    WebSearchJson = table.Column<string>(type: "TEXT", nullable: true),
+                    OcrJson = table.Column<string>(type: "TEXT", nullable: true),
+                    StreamTimingsJson = table.Column<string>(type: "TEXT", nullable: true),
+                    Id = table.Column<Guid>(type: "TEXT", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_RequestLogDetails", x => x.RequestLogId);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "RequestLogs",
                 columns: table => new
                 {
-                    Id = table.Column<long>(type: "INTEGER", nullable: false)
-                        .Annotation("Sqlite:Autoincrement", true),
+                    Id = table.Column<Guid>(type: "TEXT", nullable: false),
                     RequestId = table.Column<string>(type: "TEXT", nullable: true),
                     CreatedAt = table.Column<double>(type: "REAL", nullable: true),
                     ProcessingStartedAt = table.Column<double>(type: "REAL", nullable: true),
@@ -76,10 +116,10 @@ namespace OpenCodex.Data.Migrations
                     ClientIp = table.Column<string>(type: "TEXT", nullable: true),
                     Model = table.Column<string>(type: "TEXT", nullable: true),
                     UpstreamModel = table.Column<string>(type: "TEXT", nullable: true),
-                    ChannelId = table.Column<string>(type: "TEXT", nullable: true),
+                    ChannelId = table.Column<Guid>(type: "TEXT", nullable: true),
                     RequestType = table.Column<string>(type: "TEXT", nullable: false),
                     LifecycleStatus = table.Column<string>(type: "TEXT", nullable: true),
-                    ParentRequestLogId = table.Column<long>(type: "INTEGER", nullable: true),
+                    ParentRequestLogId = table.Column<Guid>(type: "TEXT", nullable: true),
                     IsStream = table.Column<bool>(type: "INTEGER", nullable: false),
                     TtftMs = table.Column<int>(type: "INTEGER", nullable: true),
                     DurationMs = table.Column<int>(type: "INTEGER", nullable: true),
@@ -88,27 +128,36 @@ namespace OpenCodex.Data.Migrations
                     CachedTokens = table.Column<int>(type: "INTEGER", nullable: false),
                     OutputTokens = table.Column<int>(type: "INTEGER", nullable: false),
                     Cost = table.Column<double>(type: "REAL", nullable: false),
-                    OwnerUsername = table.Column<string>(type: "TEXT", nullable: false),
-                    ApiKeyId = table.Column<long>(type: "INTEGER", nullable: true),
+                    OwnerUserId = table.Column<Guid>(type: "TEXT", nullable: false),
+                    ApiKeyId = table.Column<Guid>(type: "TEXT", nullable: true),
                     Error = table.Column<string>(type: "TEXT", nullable: true)
                 },
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_RequestLogs", x => x.Id);
-                    table.ForeignKey(
-                        name: "FK_RequestLogs_RequestLogs_ParentRequestLogId",
-                        column: x => x.ParentRequestLogId,
-                        principalTable: "RequestLogs",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "RequestLogStreamLines",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "TEXT", nullable: false),
+                    RequestLogId = table.Column<Guid>(type: "TEXT", nullable: false),
+                    Sequence = table.Column<int>(type: "INTEGER", nullable: false),
+                    OccurredAt = table.Column<double>(type: "REAL", nullable: false),
+                    Source = table.Column<string>(type: "TEXT", nullable: false),
+                    RawLine = table.Column<string>(type: "TEXT", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_RequestLogStreamLines", x => x.Id);
                 });
 
             migrationBuilder.CreateTable(
                 name: "TavilyKeys",
                 columns: table => new
                 {
-                    Id = table.Column<long>(type: "INTEGER", nullable: false)
-                        .Annotation("Sqlite:Autoincrement", true),
+                    Id = table.Column<Guid>(type: "TEXT", nullable: false),
                     Position = table.Column<int>(type: "INTEGER", nullable: false),
                     Provider = table.Column<string>(type: "TEXT", nullable: false),
                     ApiKey = table.Column<string>(type: "TEXT", nullable: false),
@@ -127,6 +176,7 @@ namespace OpenCodex.Data.Migrations
                 name: "Users",
                 columns: table => new
                 {
+                    Id = table.Column<Guid>(type: "TEXT", nullable: false),
                     Username = table.Column<string>(type: "TEXT", nullable: false),
                     PasswordHash = table.Column<string>(type: "TEXT", nullable: false),
                     Role = table.Column<string>(type: "TEXT", nullable: false),
@@ -136,14 +186,14 @@ namespace OpenCodex.Data.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_Users", x => x.Username);
+                    table.PrimaryKey("PK_Users", x => x.Id);
                 });
 
             migrationBuilder.CreateTable(
                 name: "WebSearchSettings",
                 columns: table => new
                 {
-                    Id = table.Column<long>(type: "INTEGER", nullable: false),
+                    Id = table.Column<Guid>(type: "TEXT", nullable: false),
                     Enabled = table.Column<bool>(type: "INTEGER", nullable: false),
                     KeyUsageLimit = table.Column<int>(type: "INTEGER", nullable: false),
                     CreatedAt = table.Column<double>(type: "REAL", nullable: false),
@@ -154,82 +204,6 @@ namespace OpenCodex.Data.Migrations
                     table.PrimaryKey("PK_WebSearchSettings", x => x.Id);
                 });
 
-            migrationBuilder.CreateTable(
-                name: "RequestLogDetails",
-                columns: table => new
-                {
-                    RequestLogId = table.Column<long>(type: "INTEGER", nullable: false),
-                    RequestHeaders = table.Column<string>(type: "TEXT", nullable: true),
-                    RequestBody = table.Column<string>(type: "TEXT", nullable: true),
-                    UpstreamRequestBody = table.Column<string>(type: "TEXT", nullable: true),
-                    UpstreamResponseBody = table.Column<string>(type: "TEXT", nullable: true),
-                    ResponseBody = table.Column<string>(type: "TEXT", nullable: true),
-                    WebSearchJson = table.Column<string>(type: "TEXT", nullable: true),
-                    OcrJson = table.Column<string>(type: "TEXT", nullable: true),
-                    StreamTimingsJson = table.Column<string>(type: "TEXT", nullable: true)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_RequestLogDetails", x => x.RequestLogId);
-                    table.ForeignKey(
-                        name: "FK_RequestLogDetails_RequestLogs_RequestLogId",
-                        column: x => x.RequestLogId,
-                        principalTable: "RequestLogs",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Cascade);
-                });
-
-            migrationBuilder.CreateTable(
-                name: "RequestLogStreamLines",
-                columns: table => new
-                {
-                    Id = table.Column<long>(type: "INTEGER", nullable: false)
-                        .Annotation("Sqlite:Autoincrement", true),
-                    RequestLogId = table.Column<long>(type: "INTEGER", nullable: false),
-                    Sequence = table.Column<int>(type: "INTEGER", nullable: false),
-                    OccurredAt = table.Column<double>(type: "REAL", nullable: false),
-                    Source = table.Column<string>(type: "TEXT", nullable: false),
-                    RawLine = table.Column<string>(type: "TEXT", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_RequestLogStreamLines", x => x.Id);
-                    table.ForeignKey(
-                        name: "FK_RequestLogStreamLines_RequestLogs_RequestLogId",
-                        column: x => x.RequestLogId,
-                        principalTable: "RequestLogs",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Cascade);
-                });
-
-            migrationBuilder.CreateTable(
-                name: "AccessApiKeys",
-                columns: table => new
-                {
-                    Id = table.Column<long>(type: "INTEGER", nullable: false)
-                        .Annotation("Sqlite:Autoincrement", true),
-                    OwnerUsername = table.Column<string>(type: "TEXT", nullable: false),
-                    Name = table.Column<string>(type: "TEXT", nullable: false),
-                    KeyHash = table.Column<string>(type: "TEXT", nullable: false),
-                    KeyPlaintext = table.Column<string>(type: "TEXT", nullable: true),
-                    KeyPrefix = table.Column<string>(type: "TEXT", nullable: false),
-                    KeySuffix = table.Column<string>(type: "TEXT", nullable: false),
-                    Enabled = table.Column<bool>(type: "INTEGER", nullable: false),
-                    CreatedAt = table.Column<double>(type: "REAL", nullable: false),
-                    UpdatedAt = table.Column<double>(type: "REAL", nullable: false),
-                    LastUsedAt = table.Column<double>(type: "REAL", nullable: true)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_AccessApiKeys", x => x.Id);
-                    table.ForeignKey(
-                        name: "FK_AccessApiKeys_Users_OwnerUsername",
-                        column: x => x.OwnerUsername,
-                        principalTable: "Users",
-                        principalColumn: "Username",
-                        onDelete: ReferentialAction.Cascade);
-                });
-
             migrationBuilder.CreateIndex(
                 name: "IX_AccessApiKeys_KeyHash",
                 table: "AccessApiKeys",
@@ -237,19 +211,19 @@ namespace OpenCodex.Data.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
-                name: "IX_AccessApiKeys_OwnerUsername_Id",
+                name: "IX_AccessApiKeys_OwnerUserId_Id",
                 table: "AccessApiKeys",
-                columns: new[] { "OwnerUsername", "Id" });
+                columns: new[] { "OwnerUserId", "Id" });
 
             migrationBuilder.CreateIndex(
-                name: "IX_Channels_OwnerUsername_Position",
+                name: "IX_Channels_OwnerUserId_Position",
                 table: "Channels",
-                columns: new[] { "OwnerUsername", "Position" });
+                columns: new[] { "OwnerUserId", "Position" });
 
             migrationBuilder.CreateIndex(
-                name: "IX_Channels_OwnerUsername_Priority_Position_Id",
+                name: "IX_Channels_OwnerUserId_Priority_Position",
                 table: "Channels",
-                columns: new[] { "OwnerUsername", "Priority", "Position", "Id" });
+                columns: new[] { "OwnerUserId", "Priority", "Position" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_ModelPricings_Enabled",
@@ -298,9 +272,9 @@ namespace OpenCodex.Data.Migrations
                 column: "Model");
 
             migrationBuilder.CreateIndex(
-                name: "IX_RequestLogs_OwnerUsername_Id",
+                name: "IX_RequestLogs_OwnerUserId_Id",
                 table: "RequestLogs",
-                columns: new[] { "OwnerUsername", "Id" });
+                columns: new[] { "OwnerUserId", "Id" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_RequestLogs_ParentRequestLogId",
@@ -342,6 +316,12 @@ namespace OpenCodex.Data.Migrations
                 name: "IX_TavilyKeys_Position",
                 table: "TavilyKeys",
                 column: "Position");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Users_Username",
+                table: "Users",
+                column: "Username",
+                unique: true);
         }
 
         /// <inheritdoc />
@@ -360,19 +340,19 @@ namespace OpenCodex.Data.Migrations
                 name: "RequestLogDetails");
 
             migrationBuilder.DropTable(
+                name: "RequestLogs");
+
+            migrationBuilder.DropTable(
                 name: "RequestLogStreamLines");
 
             migrationBuilder.DropTable(
                 name: "TavilyKeys");
 
             migrationBuilder.DropTable(
-                name: "WebSearchSettings");
-
-            migrationBuilder.DropTable(
                 name: "Users");
 
             migrationBuilder.DropTable(
-                name: "RequestLogs");
+                name: "WebSearchSettings");
         }
     }
 }

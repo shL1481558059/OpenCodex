@@ -8,18 +8,18 @@ public sealed class ApiKeyCreateCommand
     /// <summary>
     /// 初始化 <see cref="ApiKeyCreateCommand"/> 类的新实例。
     /// </summary>
-    /// <param name="ownerUsername">将拥有该访问密钥的用户名。</param>
+    /// <param name="ownerUserId">将拥有该访问密钥的用户标识符。</param>
     /// <param name="name">访问密钥的显示名称。</param>
-    public ApiKeyCreateCommand(string ownerUsername, string name)
+    public ApiKeyCreateCommand(Guid ownerUserId, string name)
     {
-        OwnerUsername = ownerUsername;
+        OwnerUserId = ownerUserId;
         Name = name;
     }
 
     /// <summary>
-    /// 获取将拥有该访问密钥的用户名。
+    /// 获取将拥有该访问密钥的用户标识符。
     /// </summary>
-    public string OwnerUsername { get; }
+    public Guid OwnerUserId { get; }
 
     /// <summary>
     /// 获取访问密钥的显示名称。

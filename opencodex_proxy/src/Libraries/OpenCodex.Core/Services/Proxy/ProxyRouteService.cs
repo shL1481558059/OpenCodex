@@ -1,10 +1,9 @@
-using Mapster;
-using Microsoft.EntityFrameworkCore;
-using OpenCodex.Data;
+using System.Text.Json;
+using OpenCodex.Core.Domain;
 using OpenCodex.Core.Config;
 using OpenCodex.Core.Errors;
 using OpenCodex.Core.Persistence;
-using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.Proxy;
 using OpenCodex.CoreBase.Services.Proxy;
@@ -13,11 +12,15 @@ namespace OpenCodex.Core.Services.Proxy;
 
 public sealed class ProxyRouteService : IProxyRouteService
 {
-    private readonly IOpenCodexRuntimeSettingsProvider _settingsProvider;
+    private readonly IRepository<Channel> _channelRepository;
+    private readonly IRepository<User> _userRepository;
 
-    public ProxyRouteService(IOpenCodexRuntimeSettingsProvider settingsProvider)
+    public ProxyRouteService(
+        IRepository<Channel> channelRepository,
+        IRepository<User> userRepository)
     {
-        _settingsProvider = settingsProvider;
+        _channelRepository = channelRepository;
+        _userRepository = userRepository;
     }
 
     public ProxyRouteDto ChooseRoute(
@@ -328,21 +331,36 @@ public sealed class ProxyRouteService : IProxyRouteService
         var normalizedOwnerUsername = string.IsNullOrWhiteSpace(ownerUsername)
             ? string.Empty
             : ownerUsername.Trim();
-        var settings = _settingsProvider.GetSettings();
-        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
-        var query = context.Channels.AsNoTracking();
+
+        var query = _channelRepository.TableNoTracking;
         if (normalizedOwnerUsername.Length > 0)
         {
-            query = query.Where(channel => channel.OwnerUsername == normalizedOwnerUsername);
+            // 按 owner username 过滤:先查 User 拿 UserId
+            var ownerUser = _userRepository.TableNoTracking.FirstOrDefault(u => u.Username == normalizedOwnerUsername);
+            if (ownerUser is null)
+            {
+                return [];
+            }
+            query = query.Where(channel => channel.OwnerUserId == ownerUser.Id);
         }
 
-        var channelConfigs = query
-            .OrderBy(channel => channel.OwnerUsername)
+        var channels = query
+            .OrderBy(channel => channel.OwnerUserId)
             .ThenBy(channel => channel.Position)
             .ThenBy(channel => channel.Id)
-            .AsEnumerable()
-            .Select(channel => channel.Adapt<ChannelDto>())
-            .Select(ChannelToConfig)
+            .ToList();
+
+        // 手动 join User 拿 username(禁止导航属性)
+        var ownerIds = channels.Select(ch => ch.OwnerUserId).Distinct().ToList();
+        var owners = ownerIds.Count > 0
+            ? _userRepository.TableNoTracking
+                .Where(u => ownerIds.Contains(u.Id))
+                .ToDictionary(u => u.Id, u => u.Username)
+            : new Dictionary<Guid, string>();
+
+        var channelConfigs = channels
+            .Select(channel => ChannelToConfig(MapToChannelDto(channel,
+                owners.TryGetValue(channel.OwnerUserId, out var name) ? name : string.Empty)))
             .ToList<object?>();
         var config = new Dictionary<string, object?>
         {
@@ -361,6 +379,84 @@ public sealed class ProxyRouteService : IProxyRouteService
         }
 
         return channelValues;
+    }
+
+    private static ChannelDto MapToChannelDto(Channel channel, string ownerUsername)
+    {
+        return new ChannelDto(
+            channel.Id,
+            channel.OwnerUserId,
+            ownerUsername,
+            channel.Position,
+            channel.Name,
+            channel.Type,
+            channel.BaseUrl,
+            channel.ApiKey,
+            channel.AuthMode,
+            DeserializeObject(channel.HeadersJson),
+            channel.TimeoutSeconds,
+            channel.RetryCount,
+            channel.Priority,
+            channel.Capacity,
+            DeserializeObject(channel.CompatJson),
+            DeserializeList(channel.ModelsJson),
+            channel.Enabled);
+    }
+
+    private static IReadOnlyDictionary<string, object?> DeserializeObject(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return new Dictionary<string, object?>();
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(raw);
+            return FromJsonElement(document.RootElement) as Dictionary<string, object?>
+                ?? new Dictionary<string, object?>();
+        }
+        catch (JsonException)
+        {
+            return new Dictionary<string, object?>();
+        }
+    }
+
+    private static IReadOnlyList<object?> DeserializeList(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return [];
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(raw);
+            return FromJsonElement(document.RootElement) as List<object?> ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private static object? FromJsonElement(JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.Object => element.EnumerateObject().ToDictionary(
+                property => property.Name,
+                property => FromJsonElement(property.Value),
+                StringComparer.Ordinal),
+            JsonValueKind.Array => element.EnumerateArray().Select(FromJsonElement).ToList(),
+            JsonValueKind.String => element.GetString(),
+            JsonValueKind.Number when element.TryGetInt64(out var longValue) => longValue,
+            JsonValueKind.Number when element.TryGetDouble(out var doubleValue) => doubleValue,
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Null => null,
+            _ => null
+        };
     }
 
     private static Dictionary<string, object?> ChannelToConfig(ChannelDto channel)

@@ -40,7 +40,7 @@ public sealed class ProxyRequestLogContext
     public ProxyRequestLogContext(
         string requestId,
         string ownerUsername,
-        long? apiKeyId,
+        Guid? apiKeyId,
         Dictionary<string, object?>? payload,
         Dictionary<string, object?>? upstreamRequest,
         Dictionary<string, object?>? upstreamResponse,
@@ -61,7 +61,7 @@ public sealed class ProxyRequestLogContext
         string? clientIp,
         IReadOnlyDictionary<string, string> requestHeaders,
         string requestType = ProxyRequestTypes.Main,
-        long? parentRequestLogId = null,
+        Guid? parentRequestLogId = null,
         Dictionary<string, object?>? ocrDetails = null,
         StreamWriteMetrics? streamWriteMetrics = null,
         IReadOnlyList<ProxyRequestStreamLineCapture>? streamLines = null)
@@ -108,7 +108,7 @@ public sealed class ProxyRequestLogContext
     /// <summary>
     /// 获取请求使用的访问密钥标识符（如果可用）。
     /// </summary>
-    public long? ApiKeyId { get; }
+    public Guid? ApiKeyId { get; }
 
     /// <summary>
     /// 获取标准化后的传入请求载荷。
@@ -213,7 +213,7 @@ public sealed class ProxyRequestLogContext
     /// <summary>
     /// 获取父请求日志标识符（如果可用）。
     /// </summary>
-    public long? ParentRequestLogId { get; }
+    public Guid? ParentRequestLogId { get; }
 
     /// <summary>
     /// 获取 OCR 专用详情（如果可用）。

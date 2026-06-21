@@ -11,7 +11,7 @@ public sealed class WebSearchTestKeyRequest
     /// 获取或设置要测试的密钥标识。
     /// </summary>
     [JsonPropertyName("id")]
-    public long? Id { get; set; }
+    public Guid? Id { get; set; }
 
     /// <summary>
     /// 获取或设置测试搜索词。

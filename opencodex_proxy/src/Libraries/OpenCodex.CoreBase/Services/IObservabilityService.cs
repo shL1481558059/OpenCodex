@@ -37,8 +37,8 @@ public interface IObservabilityService
     /// </summary>
     /// <param name="logId">日志标识。</param>
     /// <returns>日志详情结果。</returns>
-    ApiOpResult<LogDetailResponse> ReadLogById(
-        long logId);
+   ApiOpResult<LogDetailResponse> ReadLogById(
+        Guid logId);
 
     /// <summary>
     /// 读取统计数据。

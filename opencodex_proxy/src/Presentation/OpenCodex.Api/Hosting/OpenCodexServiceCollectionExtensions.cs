@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi;
 using OpenCodex.Api.Configuration;
 using OpenCodex.Api.Controllers;
@@ -15,6 +16,8 @@ using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Services;
 using OpenCodex.CoreBase.Services.Proxy;
 using OpenCodex.CoreBase.Services.WebSearch;
+using OpenCodex.CoreBase.Data;
+using OpenCodex.Data;
 
 namespace OpenCodex.Api.Hosting;
 
@@ -44,6 +47,19 @@ public static class OpenCodexServiceCollectionExtensions
 
     private static IServiceCollection AddOpenCodexServices(this IServiceCollection services)
     {
+        // DbContext 按 IOpenCodexRuntimeSettingsProvider 动态选择 provider,支持 SQLite/PostgreSQL 切换。
+        services.AddDbContext<OpenCodexDbContext>((serviceProvider, options) =>
+        {
+            var settings = serviceProvider
+                .GetRequiredService<IOpenCodexRuntimeSettingsProvider>()
+                .GetSettings();
+            OpenCodexDbContextFactory.Configure(
+                options,
+                settings.DatabaseProvider,
+                settings.ConnectionString);
+        });
+        services.AddScoped(typeof(IRepository<>), typeof(EfRepository<>));
+
         services.AddHttpClient<IUpstreamClient, HttpUpstreamClient>()
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {

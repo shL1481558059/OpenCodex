@@ -1,9 +1,8 @@
 using System.Globalization;
-using Microsoft.EntityFrameworkCore;
-using OpenCodex.Data;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Persistence;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.Observability;
@@ -58,13 +57,28 @@ public sealed class ObservabilityService : IObservabilityService
 
     private readonly IOpenCodexRuntimeSettingsProvider _settingsProvider;
     private readonly IWorkContext _workContext;
+    private readonly IRepository<RequestLog> _logRepository;
+    private readonly IRepository<RequestLogDetail> _detailRepository;
+    private readonly IRepository<RequestLogStreamLine> _streamLineRepository;
+    private readonly IRepository<AccessApiKey> _keyRepository;
+    private readonly IRepository<User> _userRepository;
 
     public ObservabilityService(
         IOpenCodexRuntimeSettingsProvider settingsProvider,
-        IWorkContext workContext)
+        IWorkContext workContext,
+        IRepository<RequestLog> logRepository,
+        IRepository<RequestLogDetail> detailRepository,
+        IRepository<RequestLogStreamLine> streamLineRepository,
+        IRepository<AccessApiKey> keyRepository,
+        IRepository<User> userRepository)
     {
         _settingsProvider = settingsProvider;
         _workContext = workContext;
+        _logRepository = logRepository;
+        _detailRepository = detailRepository;
+        _streamLineRepository = streamLineRepository;
+        _keyRepository = keyRepository;
+        _userRepository = userRepository;
     }
 
     public ApiOpResult<LogsPageResponse> ReadLogsPage(
@@ -73,15 +87,13 @@ public sealed class ObservabilityService : IObservabilityService
         IReadOnlyDictionary<string, object?> filters)
     {
         var (currentUsername, isSuperadmin) = CurrentScope();
-        var settings = _settingsProvider.GetSettings();
-        var logsPage = ReadLogsPage(
-            settings,
+        var logsPage = QueryLogsPage(
             page,
             pageSize,
             ScopedFilters(filters, currentUsername, isSuperadmin));
         return ApiOpResult<LogsPageResponse>.Succeed(LogsPageResponse.From(
             logsPage,
-            ReadApiKeyNames(settings, logsPage.Events.Select(log => log.ApiKeyId))));
+            ReadApiKeyNames(logsPage.Events.Select(log => log.ApiKeyId))));
     }
 
     public ApiOpResult<IReadOnlyDictionary<string, object>> ReadLogFilterOption(
@@ -90,28 +102,26 @@ public sealed class ObservabilityService : IObservabilityService
         IReadOnlyDictionary<string, object?> filters)
     {
         var (currentUsername, isSuperadmin) = CurrentScope();
-        return ApiOpResult<IReadOnlyDictionary<string, object>>.Succeed(ReadLogFilterOption(
-            _settingsProvider.GetSettings(),
+        return ApiOpResult<IReadOnlyDictionary<string, object>>.Succeed(QueryLogFilterOption(
             field,
             query,
             ScopedFilters(filters, currentUsername, isSuperadmin)));
     }
 
     public ApiOpResult<LogDetailResponse> ReadLogById(
-        long logId)
+        Guid logId)
     {
         var (currentUsername, isSuperadmin) = CurrentScope();
         var filters = ScopedFilters(
             new Dictionary<string, object?>(StringComparer.Ordinal),
             currentUsername,
             isSuperadmin);
-        var settings = _settingsProvider.GetSettings();
-        var log = ReadLogById(settings, logId, filters);
+        var log = ReadLogById(logId, filters);
         return log is null
             ? ApiOpResult<LogDetailResponse>.Fail(404, "log not found")
             : ApiOpResult<LogDetailResponse>.Succeed(LogDetailResponse.From(
                 log,
-                ReadApiKeyNames(settings, new[] { log.ApiKeyId })));
+                ReadApiKeyNames(new[] { log.ApiKeyId })));
     }
 
     public ApiOpResult<StatsResponse> ReadStats(
@@ -121,12 +131,31 @@ public sealed class ObservabilityService : IObservabilityService
         IReadOnlyDictionary<string, object?> filters)
     {
         var (currentUsername, isSuperadmin) = CurrentScope();
-        return ApiOpResult<StatsResponse>.Succeed(StatsResponse.From(ReadStats(
-            _settingsProvider.GetSettings(),
+        return ApiOpResult<StatsResponse>.Succeed(StatsResponse.From(QueryStats(
             rangeKey,
             startTs,
             endTs,
             ScopedFilters(filters, currentUsername, isSuperadmin))));
+    }
+
+    private Dictionary<Guid, string> BuildOwnerMap(IReadOnlyList<RequestLog> logs)
+    {
+        var ownerIds = logs.Select(log => log.OwnerUserId).Distinct().ToList();
+        return ownerIds.Count > 0
+            ? _userRepository.TableNoTracking
+                .Where(u => ownerIds.Contains(u.Id))
+                .ToDictionary(u => u.Id, u => u.Username)
+            : new Dictionary<Guid, string>();
+    }
+
+    private Guid ResolveOwnerUserIdFilter(string username)
+    {
+        var normalized = (username ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return Guid.Empty;
+        }
+        return _userRepository.TableNoTracking.FirstOrDefault(u => u.Username == normalized)?.Id ?? Guid.Empty;
     }
 
     private (string Username, bool IsSuperadmin) CurrentScope()
@@ -135,8 +164,7 @@ public sealed class ObservabilityService : IObservabilityService
         return (currentUser.Username, currentUser.Role == "superadmin");
     }
 
-    private static RequestLogPageDto ReadLogsPage(
-        OpenCodexRuntimeSettings settings,
+    private RequestLogPageDto QueryLogsPage(
         object? page = null,
         object? pageSize = null,
         IReadOnlyDictionary<string, object?>? filters = null)
@@ -144,41 +172,56 @@ public sealed class ObservabilityService : IObservabilityService
         var parsedPageSize = ParseLogPageSize(pageSize);
         var parsedPage = ParseLogPage(page);
         var offset = (parsedPage - 1) * parsedPageSize;
-        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
-        var query = ApplyLogFilters(context.RequestLogs.AsNoTracking(), filters ?? new Dictionary<string, object?>());
+        var query = ApplyLogFilters(_logRepository.TableNoTracking, filters ?? new Dictionary<string, object?>());
         var total = query.Count();
-        var events = query
+        var logs = query
             .OrderByDescending(log => log.Id)
             .Skip(offset)
             .Take(parsedPageSize)
-            .AsEnumerable()
-            .Select(MapRequestLogEvent)
+            .ToList();
+        var ownerMap = BuildOwnerMap(logs);
+        var events = logs
+            .Select(log => MapRequestLogEvent(log, ownerMap.TryGetValue(log.OwnerUserId, out var name) ? name : string.Empty))
             .ToList();
 
         return new RequestLogPageDto(events, total, parsedPage, parsedPageSize);
     }
 
-    private static RequestLogDto? ReadLogById(
-        OpenCodexRuntimeSettings settings,
+    private RequestLogDto? ReadLogById(
         object? logId,
         IReadOnlyDictionary<string, object?>? filters = null)
     {
-        if (!TryConvertInt64(logId, out var parsedId))
+        if (logId is Guid guidId)
+        {
+            // 直接用 Guid
+        }
+        else if (logId is string text && Guid.TryParse(text, out var parsed))
+        {
+            guidId = parsed;
+        }
+        else
         {
             return null;
         }
 
-        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
-        var query = ApplyLogFilters(context.RequestLogs.AsNoTracking(), filters ?? new Dictionary<string, object?>());
-        var log = query
-            .Include(item => item.Detail)
-            .Include(item => item.StreamLines)
-            .FirstOrDefault(item => item.Id == parsedId);
-        return log is null ? null : MapRequestLog(log);
+        var query = ApplyLogFilters(_logRepository.TableNoTracking, filters ?? new Dictionary<string, object?>());
+        var log = query.FirstOrDefault(item => item.Id == guidId);
+        if (log is null)
+        {
+            return null;
+        }
+
+        var detail = _detailRepository.TableNoTracking.FirstOrDefault(d => d.RequestLogId == log.Id);
+        var streamLines = _streamLineRepository.TableNoTracking
+            .Where(line => line.RequestLogId == log.Id)
+            .OrderBy(line => line.Sequence)
+            .ToList();
+        var ownerUsername = _userRepository.TableNoTracking
+            .FirstOrDefault(u => u.Id == log.OwnerUserId)?.Username ?? string.Empty;
+        return MapRequestLog(log, detail, streamLines, ownerUsername);
     }
 
-    private static IReadOnlyDictionary<string, object> ReadLogFilterOption(
-        OpenCodexRuntimeSettings settings,
+    private IReadOnlyDictionary<string, object> QueryLogFilterOption(
         string field,
         object? query = null,
         IReadOnlyDictionary<string, object?>? filters = null)
@@ -204,10 +247,9 @@ public sealed class ObservabilityService : IObservabilityService
             return new Dictionary<string, object>(StringComparer.Ordinal);
         }
 
-        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
-        var logs = ApplyLogFilters(context.RequestLogs.AsNoTracking(), filters ?? new Dictionary<string, object?>());
+        var logs = ApplyLogFilters(_logRepository.TableNoTracking, filters ?? new Dictionary<string, object?>());
         var values = field == "api_key_id"
-            ? (object)DistinctApiKeyOptions(context, logs, query)
+            ? (object)DistinctApiKeyOptions(logs, query)
             : option.OptionType == "int"
             ? (object)DistinctIntValues(logs, field, query)
             : DistinctTextValues(logs, field, query);
@@ -217,18 +259,15 @@ public sealed class ObservabilityService : IObservabilityService
         };
     }
 
-    private static StatsDto ReadStats(
-        OpenCodexRuntimeSettings settings,
+    private StatsDto QueryStats(
         string? rangeKey = "1h",
         object? startTs = null,
         object? endTs = null,
         IReadOnlyDictionary<string, object?>? filters = null)
     {
         var resolved = ResolveStatsRange(rangeKey, startTs, endTs);
-        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         var query = ApplyLogFilters(
-            context.RequestLogs
-            .AsNoTracking()
+            _logRepository.TableNoTracking
             .Where(log => log.CreatedAt >= resolved.StartTs && log.CreatedAt < resolved.EndTs),
             filters ?? new Dictionary<string, object?>());
 
@@ -285,7 +324,7 @@ public sealed class ObservabilityService : IObservabilityService
             modelDistribution);
     }
 
-    private static IQueryable<RequestLog> ApplyLogFilters(
+    private IQueryable<RequestLog> ApplyLogFilters(
         IQueryable<RequestLog> query,
         IReadOnlyDictionary<string, object?> filters)
     {
@@ -302,7 +341,7 @@ public sealed class ObservabilityService : IObservabilityService
         return query;
     }
 
-    private static IQueryable<RequestLog> ApplyLogFilter(
+    private IQueryable<RequestLog> ApplyLogFilter(
         IQueryable<RequestLog> query,
         string field,
         object? value)
@@ -313,8 +352,8 @@ public sealed class ObservabilityService : IObservabilityService
             "request_id" when text.Length > 0 => query.Where(log => log.RequestId != null && log.RequestId.Contains(text)),
             "model" when text.Length > 0 => query.Where(log => log.Model != null && log.Model.Contains(text)),
             "upstream_model" when text.Length > 0 => query.Where(log => log.UpstreamModel != null && log.UpstreamModel.Contains(text)),
-            "channel_id" when text.Length > 0 => query.Where(log => log.ChannelId != null && log.ChannelId.Contains(text)),
-            "owner_username" when text.Length > 0 => query.Where(log => log.OwnerUsername.Contains(text)),
+            "channel_id" when text.Length > 0 && Guid.TryParse(text, out var channelId) => query.Where(log => log.ChannelId == channelId),
+            "owner_username" when text.Length > 0 => query.Where(log => log.OwnerUserId == ResolveOwnerUserIdFilter(text)),
             "path" when text.Length > 0 => query.Where(log => log.Path != null && log.Path.Contains(text)),
             "request_type" when text.Length > 0 => query.Where(log => log.RequestType == text),
             "client_ip" when text.Length > 0 => query.Where(log => log.ClientIp != null && log.ClientIp.Contains(text)),
@@ -345,7 +384,8 @@ public sealed class ObservabilityService : IObservabilityService
 
     private static IQueryable<RequestLog> ApplyApiKeyIdFilter(IQueryable<RequestLog> query, object? value)
     {
-        return TryConvertInt64(value, out var parsed)
+        var text = value?.ToString() ?? string.Empty;
+        return Guid.TryParse(text, out var parsed)
             ? query.Where(log => log.ApiKeyId == parsed)
             : query;
     }
@@ -397,23 +437,14 @@ public sealed class ObservabilityService : IObservabilityService
             ["owner_usernames"] = new List<string>(),
             ["paths"] = new List<string>(),
             ["request_types"] = new List<string> { ProxyRequestTypes.Main, ProxyRequestTypes.Ocr },
-            ["status_codes"] = new List<long>(),
+            ["status_codes"] = new List<int>(),
             ["api_key_ids"] = new List<LogApiKeyFilterOption>(),
             ["request_statuses"] = RequestStatusValues.ToList()
         };
     }
 
-    private static Dictionary<long, string> ReadApiKeyNames(
-        OpenCodexRuntimeSettings settings,
-        IEnumerable<long?> apiKeyIds)
-    {
-        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
-        return ReadApiKeyNames(context, apiKeyIds);
-    }
-
-    private static Dictionary<long, string> ReadApiKeyNames(
-        OpenCodexDbContext context,
-        IEnumerable<long?> apiKeyIds)
+    private Dictionary<Guid, string> ReadApiKeyNames(
+        IEnumerable<Guid?> apiKeyIds)
     {
         var ids = apiKeyIds
             .Where(value => value.HasValue)
@@ -425,15 +456,14 @@ public sealed class ObservabilityService : IObservabilityService
             return [];
         }
 
-        return context.AccessApiKeys
-            .AsNoTracking()
+        return _keyRepository.TableNoTracking
             .Where(key => ids.Contains(key.Id))
             .Select(key => new { key.Id, key.Name })
             .AsEnumerable()
             .ToDictionary(key => key.Id, key => key.Name);
     }
 
-    private static List<string> DistinctTextValues(
+    private List<string> DistinctTextValues(
         IQueryable<RequestLog> query,
         string field,
         object? search = null)
@@ -443,8 +473,10 @@ public sealed class ObservabilityService : IObservabilityService
             "request_id" => query.Select(log => log.RequestId),
             "model" => query.Select(log => log.Model),
             "upstream_model" => query.Select(log => log.UpstreamModel),
-            "channel_id" => query.Select(log => log.ChannelId),
-            "owner_username" => query.Select(log => log.OwnerUsername),
+            "channel_id" => query.Select(log => log.ChannelId != null ? log.ChannelId.Value.ToString() : null),
+            "owner_username" => from log in query
+                                join user in _userRepository.TableNoTracking on log.OwnerUserId equals user.Id
+                                select user.Username,
             "path" => query.Select(log => log.Path),
             "request_type" => query.Select(log => log.RequestType),
             _ => Enumerable.Empty<string?>().AsQueryable()
@@ -466,41 +498,52 @@ public sealed class ObservabilityService : IObservabilityService
             .ToList();
     }
 
-    private static List<long> DistinctIntValues(
+    private List<object> DistinctIntValues(
         IQueryable<RequestLog> query,
         string field,
         object? search = null)
     {
         var queryText = (search?.ToString() ?? string.Empty).Trim();
-        if (queryText.Length > 0 && !TryConvertInt64(queryText, out _))
+        if (field == "status_code")
         {
-            return [];
+            if (queryText.Length > 0 && !TryConvertInt32(queryText, out _))
+            {
+                return [];
+            }
+            var statusValues = query.Select(log => log.StatusCode);
+            if (queryText.Length > 0 && TryConvertInt32(queryText, out var parsedStatus))
+            {
+                statusValues = statusValues.Where(value => value == parsedStatus);
+            }
+            return statusValues
+                .Where(value => value.HasValue)
+                .Distinct()
+                .OrderBy(value => value)
+                .Take(200)
+                .AsEnumerable()
+                .Select(value => (object)value!.Value)
+                .ToList();
         }
 
-        var values = field switch
+        // api_key_id: Guid
+        var keyValues = query.Select(log => log.ApiKeyId);
+        Guid? parsedKey = null;
+        if (queryText.Length > 0 && Guid.TryParse(queryText, out var pk))
         {
-            "status_code" => query.Select(log => log.StatusCode.HasValue ? (long?)log.StatusCode.Value : null),
-            "api_key_id" => query.Select(log => log.ApiKeyId),
-            _ => Enumerable.Empty<long?>().AsQueryable()
-        };
-
-        if (queryText.Length > 0 && TryConvertInt64(queryText, out var parsed))
-        {
-            values = values.Where(value => value == parsed);
+            parsedKey = pk;
+            keyValues = keyValues.Where(value => value == parsedKey);
         }
-
-        return values
+        return keyValues
             .Where(value => value.HasValue)
             .Distinct()
             .OrderBy(value => value)
             .Take(200)
             .AsEnumerable()
-            .Select(value => value!.Value)
+            .Select(value => (object)value!.Value)
             .ToList();
     }
 
-    private static List<LogApiKeyFilterOption> DistinctApiKeyOptions(
-        OpenCodexDbContext context,
+    private List<LogApiKeyFilterOption> DistinctApiKeyOptions(
         IQueryable<RequestLog> query,
         object? search = null)
     {
@@ -510,11 +553,11 @@ public sealed class ObservabilityService : IObservabilityService
             .Where(value => value.HasValue);
         if (queryText.Length > 0)
         {
-            var matchingNameIds = context.AccessApiKeys
-                .AsNoTracking()
+            var matchingNameIds = _keyRepository.TableNoTracking
                 .Where(key => key.Name.Contains(queryText))
-                .Select(key => (long?)key.Id);
-            values = TryConvertInt64(queryText, out var parsed)
+                .Select(key => (Guid?)key.Id);
+            Guid? parsed = Guid.TryParse(queryText, out var p) ? p : null;
+            values = parsed.HasValue
                 ? values.Where(value => value == parsed || matchingNameIds.Contains(value))
                 : values.Where(value => matchingNameIds.Contains(value));
         }
@@ -526,7 +569,7 @@ public sealed class ObservabilityService : IObservabilityService
             .AsEnumerable()
             .Select(value => value!.Value)
             .ToList();
-        var names = ReadApiKeyNames(context, ids.Select(id => (long?)id));
+        var names = ReadApiKeyNames(ids.Select(id => (Guid?)id));
         return ids
             .Select(id => new LogApiKeyFilterOption(
                 id,
@@ -639,7 +682,7 @@ public sealed class ObservabilityService : IObservabilityService
             || (log.LifecycleStatus is null && log.StatusCode < 400 && string.IsNullOrEmpty(log.Error));
     }
 
-    private static RequestLogEventDto MapRequestLogEvent(RequestLog log)
+    private static RequestLogEventDto MapRequestLogEvent(RequestLog log, string ownerUsername)
     {
         return new RequestLogEventDto(
             log.Id,
@@ -652,7 +695,7 @@ public sealed class ObservabilityService : IObservabilityService
             log.ClientIp,
             log.Model,
             log.UpstreamModel,
-            log.ChannelId,
+            log.ChannelId?.ToString(),
             log.RequestType,
             log.ParentRequestLogId,
             log.IsStream,
@@ -663,13 +706,17 @@ public sealed class ObservabilityService : IObservabilityService
             log.CachedTokens,
             log.OutputTokens,
             log.Cost,
-            log.OwnerUsername,
+            ownerUsername,
             log.ApiKeyId,
             log.Error,
             NormalizeRequestStatus(log.LifecycleStatus, log.StatusCode, log.Error));
     }
 
-    private static RequestLogDto MapRequestLog(RequestLog log)
+    private static RequestLogDto MapRequestLog(
+        RequestLog log,
+        RequestLogDetail? detail,
+        IReadOnlyList<RequestLogStreamLine> streamLines,
+        string ownerUsername)
     {
         return new RequestLogDto(
             log.Id,
@@ -693,18 +740,18 @@ public sealed class ObservabilityService : IObservabilityService
             log.CachedTokens,
             log.OutputTokens,
             log.Cost,
-            log.OwnerUsername,
+            ownerUsername,
             log.ApiKeyId,
             log.Error,
-            log.Detail?.RequestHeaders,
-            log.Detail?.RequestBody,
-            log.Detail?.UpstreamRequestBody,
-            log.Detail?.UpstreamResponseBody,
-            log.Detail?.ResponseBody,
-            log.Detail?.WebSearchJson,
-            log.Detail?.OcrJson,
-            log.Detail?.StreamTimingsJson,
-            log.StreamLines
+            detail?.RequestHeaders,
+            detail?.RequestBody,
+            detail?.UpstreamRequestBody,
+            detail?.UpstreamResponseBody,
+            detail?.ResponseBody,
+            detail?.WebSearchJson,
+            detail?.OcrJson,
+            detail?.StreamTimingsJson,
+            streamLines
                 .OrderBy(item => item.Sequence)
                 .Select(item => new RequestLogStreamLineDto(
                     item.Sequence,

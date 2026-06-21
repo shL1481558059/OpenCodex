@@ -309,7 +309,7 @@ public sealed class ProxyOcrService : IProxyOcrService
         string sourceKind,
         bool cacheHit,
         string parentRequestId,
-        long? parentRequestLogId)
+        Guid? parentRequestLogId)
     {
         return new Dictionary<string, object?>(StringComparer.Ordinal)
         {
