@@ -87,7 +87,7 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
                 {
                     new
                     {
-                        id = "chat",
+                        id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                         name = "Chat",
                         type = "chat",
                         baseurl = "https://example.test/v1",
@@ -113,7 +113,7 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
             "admin",
             new Dictionary<string, object?>
             {
-                ["id"] = "chat",
+                ["id"] = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                 ["capacity"] = 3
             });
 
@@ -150,7 +150,7 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
                 {
                     new
                     {
-                        id = "chat",
+                        id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                         name = "Chat",
                         type = "chat",
                         baseurl = "https://example.test/v1",
@@ -173,9 +173,9 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         using (var scope = factory.Services.CreateScope())
         {
             var breaker = scope.ServiceProvider.GetRequiredService<IChannelCircuitBreakerService>();
-            breaker.RecordFailure("admin", "chat", new UpstreamException("down", ProxyHttpStatus.BadGateway));
-            breaker.RecordFailure("admin", "chat", new UpstreamException("down", ProxyHttpStatus.BadGateway));
-            breaker.RecordFailure("admin", "chat", new UpstreamException("down", ProxyHttpStatus.BadGateway));
+            breaker.RecordFailure("admin", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", new UpstreamException("down", ProxyHttpStatus.BadGateway));
+            breaker.RecordFailure("admin", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", new UpstreamException("down", ProxyHttpStatus.BadGateway));
+            breaker.RecordFailure("admin", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", new UpstreamException("down", ProxyHttpStatus.BadGateway));
         }
 
         var response = await SendWithCookie(client, HttpMethod.Get, "/config", cookie);
@@ -335,7 +335,7 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         await AssertResponseCode(login, HttpStatusCode.Unauthorized);
 
         var cookie = await LoginAndReadSessionCookie();
-        var log = await SendWithCookie(HttpMethod.Get, "/logs/999999", cookie);
+        var log = await SendWithCookie(HttpMethod.Get, "/logs/00000000-0000-0000-0000-000000000001", cookie);
         await AssertResponseCode(log, HttpStatusCode.NotFound);
     }
 
@@ -367,7 +367,7 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
             });
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
 
-        var priceId = await ReadLongProperty(created, "Data", "price", "id");
+        var priceId = await ReadIdProperty(created, "Data", "price", "id");
         var updated = await SendJsonWithCookie(
             HttpMethod.Patch,
             $"/pricing/{priceId}",
@@ -459,6 +459,21 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         Assert.True(document.RootElement.GetProperty("Data").GetProperty("authenticated").GetBoolean());
     }
 
+    private static async Task<Guid> ReadIdProperty(HttpResponseMessage response, params string[] path)
+    {
+        using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        var element = document.RootElement;
+        foreach (var key in path)
+        {
+            element = element.GetProperty(key);
+        }
+        var idStr = element.GetString();
+        if (idStr is null || !Guid.TryParse(idStr, out var id))
+        {
+            throw new InvalidOperationException($"Invalid GUID at path {string.Join(".", path)}");
+        }
+        return id;
+    }
     private async Task<string> LoginAndReadSessionCookie()
     {
         return await LoginAndReadSessionCookie(_client, "admin", OpenCodexApiFactory.AdminPassword);
@@ -563,10 +578,14 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         Assert.Equal(expectedStatusCode, response.StatusCode);
 
         var body = await response.Content.ReadAsStringAsync();
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            Assert.Fail($"Expected JSON response but got empty body for status {response.StatusCode}");
+            return;
+        }
         using var document = JsonDocument.Parse(body);
         Assert.Equal((int)expectedStatusCode, document.RootElement.GetProperty("ErrorCode").GetInt32());
-        Assert.True(document.RootElement.TryGetProperty("ErrorMsg", out _));
-    }
+        Assert.True(document.RootElement.TryGetProperty("ErrorMsg", out _));    }
 
     private static async Task<long> ReadLongProperty(
         HttpResponseMessage response,
@@ -591,8 +610,8 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         context.Database.Migrate();
         context.Channels.Add(new OpenCodex.Core.Domain.Channel
         {
-            OwnerUsername = "admin",
-            Id = "legacy-null-capacity",
+            OwnerUserId = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             Position = 0,
             Priority = 0,
             Name = "Legacy",

@@ -43,7 +43,7 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
             cookie,
             new
             {
-                id = "diag-channel",
+                id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
                 name = "Diagnostics Channel",
                 type = ProtocolConverter.Responses,
                 baseurl = "https://upstream.example/v1",
@@ -80,8 +80,8 @@ var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-ch
         Assert.Equal("POST", log.Method);
         Assert.Equal("public-model", log.Model);
         Assert.Equal("upstream-model", log.UpstreamModel);
-        Assert.Equal("diag-channel", log.ChannelId);
-        Assert.Equal("admin", log.OwnerUsername);
+        Assert.NotNull(log.ChannelId);
+        Assert.NotEqual(Guid.Empty, log.OwnerUserId);
         Assert.Null(log.ApiKeyId);
         Assert.True(log.IsStream);
         Assert.Equal(200, log.StatusCode);

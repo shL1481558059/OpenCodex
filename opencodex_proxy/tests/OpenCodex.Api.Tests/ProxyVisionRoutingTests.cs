@@ -5,6 +5,7 @@ using OpenCodex.Core.Domain;
 using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Data;
 using OpenCodex.Data;
 using Xunit;
 
@@ -108,7 +109,7 @@ public sealed class ProxyVisionRoutingTests
 
         Assert.Equal("text-model", route.OriginalModel);
         Assert.Equal("text-upstream", route.UpstreamModel);
-        Assert.Equal("primary", route.Channel["id"]);
+        Assert.Equal("primary", route.Channel["name"]);
         Assert.False(route.SupportsImage);
     }
 
@@ -131,7 +132,7 @@ public sealed class ProxyVisionRoutingTests
 
         var route = service.ChooseRoute("admin", "shared-model");
 
-        Assert.Equal("later-position-better-priority", route.Channel["id"]);
+        Assert.Equal("later-position-better-priority", route.Channel["name"]);
         Assert.Equal("shared-upstream-b", route.UpstreamModel);
     }
 
@@ -154,7 +155,7 @@ public sealed class ProxyVisionRoutingTests
 
         var route = service.ChooseRoute("admin", "shared-model");
 
-        Assert.Equal("position-0", route.Channel["id"]);
+        Assert.Equal("position-0", route.Channel["name"]);
         Assert.Equal("shared-upstream-a", route.UpstreamModel);
     }
 
@@ -181,7 +182,7 @@ public sealed class ProxyVisionRoutingTests
         Assert.NotNull(route);
         Assert.Equal("same-vision", route!.OriginalModel);
         Assert.Equal("same-vision-upstream", route.UpstreamModel);
-        Assert.Equal("primary", route.Channel["id"]);
+        Assert.Equal("primary", route.Channel["name"]);
         Assert.True(route.SupportsImage);
     }
 
@@ -205,7 +206,7 @@ public sealed class ProxyVisionRoutingTests
         Assert.NotNull(route);
         Assert.Equal("other-vision", route!.OriginalModel);
         Assert.Equal("other-vision-upstream", route.UpstreamModel);
-        Assert.Equal("secondary", route.Channel["id"]);
+        Assert.Equal("secondary", route.Channel["name"]);
         Assert.True(route.SupportsImage);
     }
 
@@ -226,7 +227,7 @@ public sealed class ProxyVisionRoutingTests
 
         Assert.Equal("vision-model", route.OriginalModel);
         Assert.Equal("vision-upstream", route.UpstreamModel);
-        Assert.Equal("primary", route.Channel["id"]);
+        Assert.Equal("primary", route.Channel["name"]);
     }
 
     [Fact]
@@ -337,8 +338,32 @@ context.Channels.AddRange(channels);
             context.SaveChanges();
         }
 
-        return new ProxyRouteService(new FixedSettingsProvider(dbPath));
+        using (var seedContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            seedContext.Database.Migrate();
+            if (!seedContext.Users.Any(u => u.Username == "admin"))
+            {
+                seedContext.Users.Add(new OpenCodex.Core.Domain.User
+                {
+                    Id = AdminUserId,
+                    Username = "admin",
+                    PasswordHash = "hash",
+                    Role = "superadmin",
+                    Enabled = true,
+                    CreatedAt = 1,
+                    UpdatedAt = 1
+                });
+                seedContext.SaveChanges();
+            }
+        }
+
+        var routeContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        return new ProxyRouteService(
+            new EfRepository<OpenCodex.Core.Domain.Channel>(routeContext),
+            new EfRepository<OpenCodex.Core.Domain.User>(routeContext));
     }
+
+    private static readonly Guid AdminUserId = Guid.Parse("77777777-7777-7777-7777-777777777701");
 
     private static Channel ChannelEntity(
         string ownerUsername,
@@ -350,8 +375,8 @@ context.Channels.AddRange(channels);
     {
         return new Channel
         {
-            OwnerUsername = ownerUsername,
-            Id = id,
+            OwnerUserId = AdminUserId,
+            Id = Guid.NewGuid(),
             Position = position,
             Priority = priority ?? position,
             Capacity = capacity ?? 3,

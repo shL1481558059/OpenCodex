@@ -61,10 +61,10 @@ public sealed class ProxyStreamServiceTests
         var started = Stopwatch.GetTimestamp();
         var context = new ProxyStreamContext(
             started,
-            requestLogId: 1,
+            requestLogId: Guid.NewGuid(),
             requestId: "req_reasoning",
             ownerUsername: "admin",
-            apiKeyId: 1,
+            apiKeyId: Guid.NewGuid(),
             originalPayload: new Dictionary<string, object?>(),
             payload: new Dictionary<string, object?>(),
             upstreamRequest: new Dictionary<string, object?>(),
@@ -118,10 +118,10 @@ public sealed class ProxyStreamServiceTests
             matchedModelMapping: true);
         var context = new ProxyStreamContext(
             startedTimestamp: 0,
-            requestLogId: 1,
+            requestLogId: Guid.NewGuid(),
             requestId: "req_1",
             ownerUsername: "admin",
-            apiKeyId: 1,
+            apiKeyId: Guid.NewGuid(),
             originalPayload: new Dictionary<string, object?>(),
             payload: new Dictionary<string, object?>
             {
@@ -187,10 +187,10 @@ public sealed class ProxyStreamServiceTests
             matchedModelMapping: true);
         var context = new ProxyStreamContext(
             startedTimestamp: Stopwatch.GetTimestamp(),
-            requestLogId: 1,
+            requestLogId: Guid.NewGuid(),
             requestId: "req_stream_fail",
             ownerUsername: "admin",
-            apiKeyId: 1,
+            apiKeyId: Guid.NewGuid(),
             originalPayload: new Dictionary<string, object?>(),
             payload: new Dictionary<string, object?>(),
             upstreamRequest: new Dictionary<string, object?>(),
@@ -244,10 +244,10 @@ public sealed class ProxyStreamServiceTests
             matchedModelMapping: true);
         var context = new ProxyStreamContext(
             startedTimestamp: Stopwatch.GetTimestamp(),
-            requestLogId: 99,
+            requestLogId: Guid.NewGuid(),
             requestId: "req-stream-lines",
             ownerUsername: "admin",
-            apiKeyId: 1,
+            apiKeyId: Guid.NewGuid(),
             originalPayload: new Dictionary<string, object?>(),
             payload: new Dictionary<string, object?>(),
             upstreamRequest: new Dictionary<string, object?>(),
@@ -318,10 +318,10 @@ public sealed class ProxyStreamServiceTests
             matchedModelMapping: true);
         var context = new ProxyStreamContext(
             startedTimestamp: Stopwatch.GetTimestamp(),
-            requestLogId: 100,
+            requestLogId: Guid.NewGuid(),
             requestId: "req-converted-stream-lines",
             ownerUsername: "admin",
-            apiKeyId: 1,
+            apiKeyId: Guid.NewGuid(),
             originalPayload: new Dictionary<string, object?>(),
             payload: new Dictionary<string, object?>(),
             upstreamRequest: new Dictionary<string, object?>(),
@@ -801,31 +801,31 @@ public sealed class ProxyStreamServiceTests
 
     private sealed class StubProxyLogService : IProxyLogService
     {
-        public long CreateQueuedLog(ProxyRequestLogQueuedContext context)
+        public Guid CreateQueuedLog(ProxyRequestLogQueuedContext context)
         {
-            return 1;
+            return Guid.NewGuid();
         }
 
-        public void MarkProcessing(long requestLogId, ProxyRequestLogProcessingContext context)
+        public void MarkProcessing(Guid requestLogId, ProxyRequestLogProcessingContext context)
         {
         }
 
-        public void CompleteLog(long requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
+        public void CompleteLog(Guid requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
         {
             LastContext = context;
         }
 
         public ProxyLogContext? LastContext { get; private set; }
 
-        public long WriteLog(ProxyLogContext context, ProxyRequestMetadata request)
+        public Guid WriteLog(ProxyLogContext context, ProxyRequestMetadata request)
         {
             LastContext = context;
-            return 0;
+            return Guid.Empty;
         }
 
-        public long WriteLog(ProxyRequestLogContext context)
+        public Guid WriteLog(ProxyRequestLogContext context)
         {
-            return 0;
+            return Guid.Empty;
         }
     }
 }
