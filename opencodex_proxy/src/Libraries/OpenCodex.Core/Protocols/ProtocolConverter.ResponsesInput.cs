@@ -25,6 +25,7 @@ public static partial class ProtocolConverter
             }
 
             var arguments = ResponsesToolCallArguments(inputItem);
+            arguments = EnrichMcpToolCallArguments(name, arguments);
             arguments = NormalizeApplyPatchArguments(itemType ?? string.Empty, name, arguments);
             return
             [
@@ -199,5 +200,32 @@ public static partial class ProtocolConverter
         }
 
         return [Obj(("role", "system"), ("content", string.Join("\n\n", systemParts))), .. nonSystem];
+    }
+
+    /// <summary>
+    /// 临时修复：为 MCP 工具补全必需参数
+    /// TODO: 迁移到专用的 McpToolCallEnricher 服务
+    /// </summary>
+    private static object? EnrichMcpToolCallArguments(string toolName, object? arguments)
+    {
+        // 只处理 MCP 工具
+        if (!toolName.StartsWith("mcp__", StringComparison.Ordinal))
+        {
+            return arguments;
+        }
+
+        if (!TryAsObject(arguments, out var argsDict))
+        {
+            return arguments;
+        }
+
+        // 为 node_repl 工具补全 sandboxPolicy
+        if (toolName.StartsWith("mcp__node_repl__", StringComparison.Ordinal) 
+            && !argsDict.ContainsKey("sandboxPolicy"))
+        {
+            argsDict["sandboxPolicy"] = "use_default";
+        }
+
+        return argsDict;
     }
 }
