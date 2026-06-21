@@ -16,6 +16,7 @@ using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.Core.Services.WebSearch;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain.WebSearch;
 using OpenCodex.Data;
 using Xunit;
@@ -172,7 +173,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                 {
                     new
                     {
-                        id = "chat",
+                        id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                         name = "Chat",
                         type = "chat",
                         baseurl = "https://example.test/v1",
@@ -259,7 +260,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                 {
                     new
                     {
-                        id = "chat",
+                        id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                         name = "Chat",
                         type = "chat",
                         baseurl = "https://example.test/v1",
@@ -1189,7 +1190,6 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             await db.Database.EnsureCreatedAsync();
             db.WebSearchSettings.Add(new WebSearchSettings
             {
-                Id = 1,
                 Enabled = true,
                 KeyUsageLimit = 5,
                 CreatedAt = 1,
@@ -1218,10 +1218,12 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                     ["query"] = "OpenAI"
                 }),
             MessagesTextResponse("final answer"));
+        var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         var simulator = new WebSearchSimulator(
             upstream,
             new SuccessfulWebSearchClient(),
-            new FixedSettingsProvider(dbPath));
+            new EfRepository<WebSearchSettings>(wsContext),
+            new EfRepository<TavilyKey>(wsContext));
         var result = await simulator.RunAsync(
             new Dictionary<string, object?>
             {
@@ -1308,7 +1310,6 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             await db.Database.EnsureCreatedAsync();
             db.WebSearchSettings.Add(new WebSearchSettings
             {
-                Id = 1,
                 Enabled = true,
                 KeyUsageLimit = 5,
                 CreatedAt = 1,
@@ -1344,10 +1345,12 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                     ["x"] = 12,
                     ["y"] = 34
                 }));
+        var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         var simulator = new WebSearchSimulator(
             upstream,
             new SuccessfulWebSearchClient(),
-            new FixedSettingsProvider(dbPath));
+            new EfRepository<WebSearchSettings>(wsContext),
+            new EfRepository<TavilyKey>(wsContext));
         var result = await simulator.RunAsync(
             new Dictionary<string, object?>
             {
@@ -1827,7 +1830,6 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             await db.Database.EnsureCreatedAsync();
             db.WebSearchSettings.Add(new WebSearchSettings
             {
-                Id = 1,
                 Enabled = true,
                 KeyUsageLimit = 5,
                 CreatedAt = 1,
@@ -1850,14 +1852,16 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         var upstream = new RecordingUpstreamClient(
             ChatToolResponse("call_web", "web_search", "{\"query\":\"OpenAI\"}"),
             ChatTextResponse("final answer"));
+        var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         var simulator = new WebSearchSimulator(
             upstream,
             new SuccessfulWebSearchClient(),
-            new FixedSettingsProvider(dbPath));
+            new EfRepository<WebSearchSettings>(wsContext),
+            new EfRepository<TavilyKey>(wsContext));
         var result = await simulator.RunAsync(
             new Dictionary<string, object?>
             {
-                ["id"] = "chat",
+                ["id"] = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                 ["type"] = ProtocolConverter.Chat
             },
             new Dictionary<string, object?>
@@ -1906,7 +1910,6 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             await db.Database.EnsureCreatedAsync();
             db.WebSearchSettings.Add(new WebSearchSettings
             {
-                Id = 1,
                 Enabled = true,
                 KeyUsageLimit = 5,
                 CreatedAt = 1,
@@ -1930,17 +1933,19 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             ChatToolStreamResponse("call_web_1", "web_search", "{\"query\":\"OpenAI first\"}"),
             ChatToolStreamResponse("call_web_2", "web_search", "{\"query\":\"OpenAI second\"}"),
             ChatTextStreamResponse("final answer"));
+        var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         var simulator = new WebSearchSimulator(
             upstream,
             new SuccessfulWebSearchClient(),
-            new FixedSettingsProvider(dbPath));
+            new EfRepository<WebSearchSettings>(wsContext),
+            new EfRepository<TavilyKey>(wsContext));
         var streamResult = new WebSearchStreamResult();
         var events = new List<string>();
         var capturedStreamLines = new List<(string Source, string Line)>();
         await foreach (var line in simulator.RunChatStreamAsync(
             new Dictionary<string, object?>
             {
-                ["id"] = "chat",
+                ["id"] = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                 ["type"] = ProtocolConverter.Chat
             },
             new Dictionary<string, object?>
@@ -2018,7 +2023,6 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             await db.Database.EnsureCreatedAsync();
             db.WebSearchSettings.Add(new WebSearchSettings
             {
-                Id = 1,
                 Enabled = true,
                 KeyUsageLimit = 5,
                 CreatedAt = 1,
@@ -2047,10 +2051,12 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                     ["query"] = "OpenAI"
                 }),
             MessagesTextStreamResponse("final answer"));
+        var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         var simulator = new WebSearchSimulator(
             upstream,
             new SuccessfulWebSearchClient(),
-            new FixedSettingsProvider(dbPath));
+            new EfRepository<WebSearchSettings>(wsContext),
+            new EfRepository<TavilyKey>(wsContext));
         var streamResult = new WebSearchStreamResult();
         var events = new List<string>();
         var capturedStreamLines = new List<(string Source, string Line)>();
@@ -2156,7 +2162,6 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             await db.Database.EnsureCreatedAsync();
             db.WebSearchSettings.Add(new WebSearchSettings
             {
-                Id = 1,
                 Enabled = true,
                 KeyUsageLimit = 5,
                 CreatedAt = 1,
@@ -2192,10 +2197,12 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                     ["x"] = 12,
                     ["y"] = 34
                 }));
+        var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         var simulator = new WebSearchSimulator(
             upstream,
             new SuccessfulWebSearchClient(),
-            new FixedSettingsProvider(dbPath));
+            new EfRepository<WebSearchSettings>(wsContext),
+            new EfRepository<TavilyKey>(wsContext));
         var streamResult = new WebSearchStreamResult();
         var events = new List<string>();
         await foreach (var line in simulator.RunChatStreamAsync(
@@ -2414,10 +2421,12 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             upstreamResponses.Add(MessagesMultiToolStreamResponse(testCase.FinalToolCalls, testCase.AssistantPreamble));
 
             var upstream = new RecordingStreamUpstreamClient(upstreamResponses.ToArray());
-            var simulator = new WebSearchSimulator(
-                upstream,
-                new SuccessfulWebSearchClient(),
-                new FixedSettingsProvider(dbPath));
+            var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var simulator = new WebSearchSimulator(
+            upstream,
+            new SuccessfulWebSearchClient(),
+            new EfRepository<WebSearchSettings>(wsContext),
+            new EfRepository<TavilyKey>(wsContext));
             var streamResult = new WebSearchStreamResult();
             var events = new List<string>();
             await foreach (var line in simulator.RunChatStreamAsync(
@@ -2819,7 +2828,6 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
 await db.Database.EnsureCreatedAsync();
         db.WebSearchSettings.Add(new WebSearchSettings
         {
-            Id = 1,
             Enabled = true,
             KeyUsageLimit = 5,
             CreatedAt = 1,

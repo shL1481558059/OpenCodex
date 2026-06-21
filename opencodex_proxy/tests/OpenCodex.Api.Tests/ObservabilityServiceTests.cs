@@ -2,6 +2,7 @@ using OpenCodex.Core.Domain;
 using Microsoft.EntityFrameworkCore;
 using OpenCodex.Core.Services;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs.Observability;
@@ -13,6 +14,22 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class ObservabilityServiceTests
 {
+    private static readonly Guid AdminUserId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+    private static readonly Guid KeyId101 = Guid.Parse("22222222-2222-2222-2222-222222222201");
+
+    private static ObservabilityService CreateService(string dbPath)
+    {
+        var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        return new ObservabilityService(
+            new TestSettingsProvider(dbPath),
+            new TestWorkContext(AdminUserId, "admin", "superadmin"),
+            new EfRepository<RequestLog>(context),
+            new EfRepository<RequestLogDetail>(context),
+            new EfRepository<RequestLogStreamLine>(context),
+            new EfRepository<AccessApiKey>(context),
+            new EfRepository<User>(context));
+    }
+
     [Fact]
     public void LogsAndApiKeyFilterOptionsExposeApiKeyName()
     {
@@ -27,6 +44,7 @@ public sealed class ObservabilityServiceTests
             context.Database.Migrate();
 context.Users.Add(new User
             {
+                Id = AdminUserId,
                 Username = "admin",
                 PasswordHash = "hash",
                 Role = "superadmin",
@@ -36,8 +54,8 @@ context.Users.Add(new User
             });
             context.AccessApiKeys.Add(new AccessApiKey
             {
-                Id = 101,
-                OwnerUsername = "admin",
+                Id = KeyId101,
+                OwnerUserId = AdminUserId,
                 Name = "Primary Key",
                 KeyHash = "hash-101",
                 KeyPrefix = "sk",
@@ -48,31 +66,29 @@ context.Users.Add(new User
             });
             context.RequestLogs.Add(new RequestLog
             {
-                Id = 501,
+                Id = Guid.Parse("33333333-3333-3333-3333-333333333301"),
                 RequestId = "req-501",
                 CreatedAt = 1,
                 Method = "POST",
                 Path = "/v1/chat/completions",
                 Model = "gpt-test",
                 UpstreamModel = "gpt-test",
-                ChannelId = "channel-a",
+                ChannelId = Guid.Parse("44444444-4444-4444-4444-444444444401"),
                 IsStream = false,
                 StatusCode = 200,
-                OwnerUsername = "admin",
-                ApiKeyId = 101
+                OwnerUserId = AdminUserId,
+                ApiKeyId = KeyId101
             });
             context.SaveChanges();
         }
 
-        var service = new ObservabilityService(
-            new TestSettingsProvider(dbPath),
-            new TestWorkContext("admin", "superadmin"));
+        var service = CreateService(dbPath);
 
         var logs = service.ReadLogsPage(1, 20, new Dictionary<string, object?>());
 
         Assert.True(logs.Succeeded);
         var log = Assert.Single(logs.Payload!.Events);
-        Assert.Equal(101, log.ApiKeyId);
+        Assert.Equal(KeyId101, log.ApiKeyId);
         Assert.Equal("Primary Key", log.ApiKeyName);
 
         var options = service.ReadLogFilterOption(
@@ -83,7 +99,7 @@ context.Users.Add(new User
         Assert.True(options.Succeeded);
         var apiKeyOptions = Assert.IsType<List<LogApiKeyFilterOption>>(options.Payload!["api_key_ids"]);
         var option = Assert.Single(apiKeyOptions);
-        Assert.Equal(101, option.Id);
+        Assert.Equal(KeyId101, option.Id);
         Assert.Equal("Primary Key", option.Name);
     }
 
@@ -101,6 +117,7 @@ context.Users.Add(new User
             context.Database.Migrate();
 context.Users.Add(new User
             {
+                Id = AdminUserId,
                 Username = "admin",
                 PasswordHash = "hash",
                 Role = "superadmin",
@@ -111,17 +128,17 @@ context.Users.Add(new User
             context.RequestLogs.AddRange(
                 new RequestLog
                 {
-                    Id = 601,
+                    Id = Guid.Parse("33333333-3333-3333-3333-333333333311"),
                     RequestId = "req-a",
                     CreatedAt = 1_700_000_000,
                     Method = "POST",
                     Path = "/v1/responses",
                     Model = "gpt-4.1",
                     UpstreamModel = "gpt-4.1",
-                    ChannelId = "alpha",
+                    ChannelId = Guid.Parse("44444444-4444-4444-4444-444444444411"),
                     IsStream = true,
                     StatusCode = 200,
-                    OwnerUsername = "admin",
+                    OwnerUserId = AdminUserId,
                     InputTokens = 120,
                     CachedTokens = 30,
                     OutputTokens = 50,
@@ -129,18 +146,18 @@ context.Users.Add(new User
                 },
                 new RequestLog
                 {
-                    Id = 602,
+                    Id = Guid.Parse("33333333-3333-3333-3333-333333333312"),
                     RequestId = "req-b",
                     CreatedAt = 1_700_000_030,
                     Method = "POST",
                     Path = "/v1/responses",
                     Model = "gpt-4.1",
                     UpstreamModel = "gpt-4.1",
-                    ChannelId = "beta",
+                    ChannelId = Guid.Parse("44444444-4444-4444-4444-444444444412"),
                     IsStream = false,
                     StatusCode = 500,
                     Error = "upstream failed",
-                    OwnerUsername = "admin",
+                    OwnerUserId = AdminUserId,
                     InputTokens = 80,
                     CachedTokens = 0,
                     OutputTokens = 20,
@@ -149,9 +166,7 @@ context.Users.Add(new User
             context.SaveChanges();
         }
 
-        var service = new ObservabilityService(
-            new TestSettingsProvider(dbPath),
-            new TestWorkContext("admin", "superadmin"));
+        var service = CreateService(dbPath);
 
         var stats = service.ReadStats(
             "custom",
@@ -160,7 +175,7 @@ context.Users.Add(new User
             new Dictionary<string, object?>
             {
                 ["model"] = "gpt-4.1",
-                ["channel_id"] = "alpha",
+                ["channel_id"] = Guid.Parse("44444444-4444-4444-4444-444444444411").ToString(),
                 ["request_status"] = "success"
             });
 
@@ -198,6 +213,7 @@ context.Users.Add(new User
             context.Database.Migrate();
 context.Users.Add(new User
             {
+                Id = AdminUserId,
                 Username = "admin",
                 PasswordHash = "hash",
                 Role = "superadmin",
@@ -208,7 +224,7 @@ context.Users.Add(new User
             context.RequestLogs.AddRange(
                 new RequestLog
                 {
-                    Id = 621,
+                    Id = Guid.Parse("33333333-3333-3333-3333-333333333321"),
                     RequestId = "req-recent",
                     CreatedAt = now - 30,
                     Method = "POST",
@@ -217,14 +233,14 @@ context.Users.Add(new User
                     LifecycleStatus = ProxyRequestLifecycleStatus.Success,
                     IsStream = true,
                     StatusCode = 200,
-                    OwnerUsername = "admin",
+                    OwnerUserId = AdminUserId,
                     InputTokens = 10,
                     OutputTokens = 5,
                     Cost = 0.01
                 },
                 new RequestLog
                 {
-                    Id = 622,
+                    Id = Guid.Parse("33333333-3333-3333-3333-333333333322"),
                     RequestId = "req-old",
                     CreatedAt = now - 7200,
                     Method = "POST",
@@ -233,7 +249,7 @@ context.Users.Add(new User
                     LifecycleStatus = ProxyRequestLifecycleStatus.Success,
                     IsStream = true,
                     StatusCode = 200,
-                    OwnerUsername = "admin",
+                    OwnerUserId = AdminUserId,
                     InputTokens = 20,
                     OutputTokens = 10,
                     Cost = 0.02
@@ -241,9 +257,7 @@ context.Users.Add(new User
             context.SaveChanges();
         }
 
-        var service = new ObservabilityService(
-            new TestSettingsProvider(dbPath),
-            new TestWorkContext("admin", "superadmin"));
+        var service = CreateService(dbPath);
 
         var stats = service.ReadStats(
             "custom",
@@ -274,6 +288,7 @@ context.Users.Add(new User
             context.Database.Migrate();
 context.Users.Add(new User
             {
+                Id = AdminUserId,
                 Username = "admin",
                 PasswordHash = "hash",
                 Role = "superadmin",
@@ -284,7 +299,7 @@ context.Users.Add(new User
             context.RequestLogs.AddRange(
                 new RequestLog
                 {
-                    Id = 701,
+                    Id = Guid.Parse("33333333-3333-3333-3333-333333333331"),
                     RequestId = "req-queued",
                     CreatedAt = 1_700_000_000,
                     Method = "POST",
@@ -292,11 +307,11 @@ context.Users.Add(new User
                     Model = "gpt-test",
                     LifecycleStatus = ProxyRequestLifecycleStatus.Queued,
                     IsStream = true,
-                    OwnerUsername = "admin"
+                    OwnerUserId = AdminUserId
                 },
                 new RequestLog
                 {
-                    Id = 702,
+                    Id = Guid.Parse("33333333-3333-3333-3333-333333333332"),
                     RequestId = "req-processing",
                     CreatedAt = 1_700_000_010,
                     ProcessingStartedAt = 1_700_000_011,
@@ -305,11 +320,11 @@ context.Users.Add(new User
                     Model = "gpt-test",
                     LifecycleStatus = ProxyRequestLifecycleStatus.Processing,
                     IsStream = true,
-                    OwnerUsername = "admin"
+                    OwnerUserId = AdminUserId
                 },
                 new RequestLog
                 {
-                    Id = 703,
+                    Id = Guid.Parse("33333333-3333-3333-3333-333333333333"),
                     RequestId = "req-success",
                     CreatedAt = 1_700_000_020,
                     ProcessingStartedAt = 1_700_000_021,
@@ -320,34 +335,11 @@ context.Users.Add(new User
                     LifecycleStatus = ProxyRequestLifecycleStatus.Success,
                     IsStream = true,
                     StatusCode = 200,
-                    OwnerUsername = "admin",
-                    Detail = new RequestLogDetail
-                    {
-                        RequestBody = "{\"model\":\"gpt-test\"}"
-                    },
-                    StreamLines =
-                    [
-                        new RequestLogStreamLine
-                        {
-                            Id = 1,
-                            Sequence = 0,
-                            OccurredAt = 1_700_000_020.100,
-                            Source = "upstream",
-                            RawLine = "event: response.output_text.delta"
-                        },
-                        new RequestLogStreamLine
-                        {
-                            Id = 2,
-                            Sequence = 1,
-                            OccurredAt = 1_700_000_020.120,
-                            Source = "upstream",
-                            RawLine = "data: {\"delta\":\"hi\"}"
-                        }
-                    ]
+                    OwnerUserId = AdminUserId
                 },
                 new RequestLog
                 {
-                    Id = 704,
+                    Id = Guid.Parse("33333333-3333-3333-3333-333333333334"),
                     RequestId = "req-failed",
                     CreatedAt = 1_700_000_030,
                     ProcessingStartedAt = 1_700_000_031,
@@ -359,14 +351,34 @@ context.Users.Add(new User
                     IsStream = true,
                     StatusCode = 500,
                     Error = "failed",
-                    OwnerUsername = "admin"
+                    OwnerUserId = AdminUserId
+                });
+            context.RequestLogDetails.Add(new RequestLogDetail
+            {
+                RequestLogId = Guid.Parse("33333333-3333-3333-3333-333333333333"),
+                RequestBody = "{\"model\":\"gpt-test\"}"
+            });
+            context.RequestLogStreamLines.AddRange(
+                new RequestLogStreamLine
+                {
+                    RequestLogId = Guid.Parse("33333333-3333-3333-3333-333333333333"),
+                    Sequence = 0,
+                    OccurredAt = 1_700_000_020.100,
+                    Source = "upstream",
+                    RawLine = "event: response.output_text.delta"
+                },
+                new RequestLogStreamLine
+                {
+                    RequestLogId = Guid.Parse("33333333-3333-3333-3333-333333333333"),
+                    Sequence = 1,
+                    OccurredAt = 1_700_000_020.120,
+                    Source = "upstream",
+                    RawLine = "data: {\"delta\":\"hi\"}"
                 });
             context.SaveChanges();
         }
 
-        var service = new ObservabilityService(
-            new TestSettingsProvider(dbPath),
-            new TestWorkContext("admin", "superadmin"));
+        var service = CreateService(dbPath);
 
         var logs = service.ReadLogsPage(1, 20, new Dictionary<string, object?>());
 
@@ -389,7 +401,7 @@ context.Users.Add(new User
         var processingLog = Assert.Single(processingOnly.Payload!.Events);
         Assert.Equal("req-processing", processingLog.RequestId);
 
-        var detail = service.ReadLogById(703);
+        var detail = service.ReadLogById(Guid.Parse("33333333-3333-3333-3333-333333333333"));
         Assert.True(detail.Succeeded);
         Assert.Equal(ProxyRequestLifecycleStatus.Success, detail.Payload!.RequestStatus);
         Assert.NotNull(detail.Payload.StreamLines);
@@ -432,9 +444,9 @@ context.Users.Add(new User
     {
         private readonly SessionUser _user;
 
-        public TestWorkContext(string username, string role)
+        public TestWorkContext(Guid userId, string username, string role)
         {
-            _user = new SessionUser(username, role, true);
+            _user = new SessionUser(userId, username, role, true);
         }
 
         public SessionUser? CurrentUser => _user;

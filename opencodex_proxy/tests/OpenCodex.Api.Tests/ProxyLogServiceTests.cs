@@ -1,8 +1,10 @@
 using Microsoft.EntityFrameworkCore;
+using OpenCodex.Core.Domain;
 using OpenCodex.Core.Persistence;
 using OpenCodex.Core.Services;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.Data;
 using Xunit;
@@ -11,6 +13,9 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class ProxyLogServiceTests
 {
+    private static readonly Guid TestApiKeyId = Guid.Parse("55555555-5555-5555-5555-555555555501");
+    private static readonly Guid TestChannelId = Guid.Parse("66666666-6666-6666-6666-666666666601");
+
     [Fact]
     public void WriteLog_PersistsStreamTimingsJson()
     {
@@ -25,9 +30,8 @@ public sealed class ProxyLogServiceTests
             bootstrap.Database.Migrate();
         }
 
-        var settingsProvider = new TestSettingsProvider(dbPath);
-        var pricing = new ModelPricingService(settingsProvider);
-        var service = new ProxyLogService(settingsProvider, pricing);
+        EnsureAdminUser(dbPath);
+        var service = CreateService(dbPath);
 
         service.WriteLog(new ProxyRequestLogContext(
             requestId: "req-stream-1",
@@ -48,7 +52,7 @@ public sealed class ProxyLogServiceTests
             errorResponse: null,
             requestModel: "gpt-5",
             upstreamModel: "gpt-5",
-            channelId: "lucky",
+            channelId: TestChannelId.ToString(),
             channelType: "responses",
             isStream: true,
             ttftMs: 120,
@@ -90,9 +94,8 @@ var detail = context.RequestLogDetails.Single();
             bootstrap.Database.Migrate();
         }
 
-        var settingsProvider = new TestSettingsProvider(dbPath);
-        var pricing = new ModelPricingService(settingsProvider);
-        var service = new ProxyLogService(settingsProvider, pricing);
+        EnsureAdminUser(dbPath);
+        var service = CreateService(dbPath);
 
         var requestLogId = service.CreateQueuedLog(new ProxyRequestLogQueuedContext(
             requestId: "req-lifecycle-1",
@@ -110,22 +113,22 @@ var detail = context.RequestLogDetails.Single();
         {
             context.Database.Migrate();
 var queued = context.RequestLogs
-                .Include(item => item.Detail)
                 .Single(item => item.Id == requestLogId);
+            var queuedDetail = context.RequestLogDetails.Single(d => d.RequestLogId == requestLogId);
             Assert.Equal(ProxyRequestLifecycleStatus.Queued, queued.LifecycleStatus);
             Assert.Null(queued.ProcessingStartedAt);
             Assert.Null(queued.CompletedAt);
-            Assert.NotNull(queued.Detail);
-            Assert.Contains("\"model\":\"gpt-5\"", queued.Detail!.RequestBody!, StringComparison.Ordinal);
+            Assert.NotNull(queuedDetail);
+            Assert.Contains("\"model\":\"gpt-5\"", queuedDetail.RequestBody!, StringComparison.Ordinal);
         }
 
         service.MarkProcessing(requestLogId, new ProxyRequestLogProcessingContext(
             ownerUsername: "admin",
-            apiKeyId: 11,
+            apiKeyId: TestApiKeyId,
             upstreamRequest: new Dictionary<string, object?> { ["stream"] = true, ["model"] = "upstream-gpt-5" },
             requestModel: "gpt-5",
             upstreamModel: "upstream-gpt-5",
-            channelId: "lucky",
+            channelId: TestChannelId.ToString(),
             channelType: "responses",
             isStream: true));
 
@@ -133,13 +136,13 @@ var queued = context.RequestLogs
         {
             context.Database.Migrate();
 var processing = context.RequestLogs
-                .Include(item => item.Detail)
                 .Single(item => item.Id == requestLogId);
+            var processingDetail = context.RequestLogDetails.Single(d => d.RequestLogId == requestLogId);
             Assert.Equal(ProxyRequestLifecycleStatus.Processing, processing.LifecycleStatus);
             Assert.NotNull(processing.ProcessingStartedAt);
-            Assert.Equal(11, processing.ApiKeyId);
-            Assert.Equal("lucky", processing.ChannelId);
-            Assert.Contains("\"stream\":true", processing.Detail!.UpstreamRequestBody!, StringComparison.Ordinal);
+            Assert.Equal(TestApiKeyId, processing.ApiKeyId);
+            Assert.Equal(TestChannelId, processing.ChannelId);
+            Assert.Contains("\"stream\":true", processingDetail.UpstreamRequestBody!, StringComparison.Ordinal);
         }
 
         service.CompleteLog(
@@ -147,7 +150,7 @@ var processing = context.RequestLogs
             new ProxyLogContext(
                 RequestId: "req-lifecycle-1",
                 OwnerUsername: "admin",
-                ApiKeyId: 11,
+                ApiKeyId: TestApiKeyId,
                 Payload: new Dictionary<string, object?> { ["model"] = "gpt-5" },
                 UpstreamRequest: new Dictionary<string, object?> { ["stream"] = true, ["model"] = "upstream-gpt-5" },
                 UpstreamResponse: new Dictionary<string, object?>
@@ -163,7 +166,7 @@ var processing = context.RequestLogs
                 ErrorResponse: null,
                 RequestModel: "gpt-5",
                 UpstreamModel: "upstream-gpt-5",
-                ChannelId: "lucky",
+                ChannelId: TestChannelId.ToString(),
                 ChannelType: "responses",
                 IsStream: true,
                 TtftMs: 88,
@@ -183,18 +186,20 @@ var processing = context.RequestLogs
         {
             context.Database.Migrate();
 var completed = context.RequestLogs
-                .Include(item => item.Detail)
-                .Include(item => item.StreamLines)
                 .Single(item => item.Id == requestLogId);
+            var completedStreamLines = context.RequestLogStreamLines
+                .Where(line => line.RequestLogId == requestLogId)
+                .OrderBy(line => line.Sequence)
+                .ToList();
             Assert.Equal(ProxyRequestLifecycleStatus.Success, completed.LifecycleStatus);
             Assert.NotNull(completed.CompletedAt);
             Assert.Equal(88, completed.TtftMs);
             Assert.Equal(320, completed.DurationMs);
             Assert.Equal(2, completed.InputTokens);
             Assert.Equal(3, completed.OutputTokens);
-            Assert.Equal(3, completed.StreamLines.Count);
+            Assert.Equal(3, completedStreamLines.Count);
             Assert.Collection(
-                completed.StreamLines.OrderBy(item => item.Sequence),
+                completedStreamLines,
                 line =>
                 {
                     Assert.Equal(0, line.Sequence);
@@ -211,6 +216,39 @@ var completed = context.RequestLogs
                     Assert.Equal(2, line.Sequence);
                     Assert.Equal(string.Empty, line.RawLine);
                 });
+        }
+    }
+
+    private static ProxyLogService CreateService(string dbPath)
+    {
+        var settingsProvider = new TestSettingsProvider(dbPath);
+        var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var pricing = new ModelPricingService(new EfRepository<ModelPricing>(context));
+        return new ProxyLogService(
+            settingsProvider,
+            pricing,
+            new EfRepository<RequestLog>(context),
+            new EfRepository<RequestLogDetail>(context),
+            new EfRepository<RequestLogStreamLine>(context),
+            new EfRepository<User>(context));
+    }
+
+    private static void EnsureAdminUser(string dbPath)
+    {
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        context.Database.Migrate();
+        if (!context.Users.Any(u => u.Username == "admin"))
+        {
+            context.Users.Add(new User
+            {
+                Username = "admin",
+                PasswordHash = "hash",
+                Role = "superadmin",
+                Enabled = true,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            context.SaveChanges();
         }
     }
 

@@ -2,7 +2,7 @@ using OpenCodex.Core.Domain;
 using Microsoft.EntityFrameworkCore;
 using OpenCodex.Core.Persistence;
 using OpenCodex.Core.Services;
-using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain;
 using OpenCodex.Data;
 using Xunit;
@@ -36,7 +36,7 @@ public sealed class ModelPricingServiceTests
             context.SaveChanges();
         }
 
-        var service = new ModelPricingService(new TestSettingsProvider(dbPath));
+        var service = CreateService(dbPath);
         var cost = service.CalculateCost("provider/match-model", 1_000, 200, 3_000);
 
         Assert.Equal(0.014, cost, precision: 6);
@@ -132,7 +132,7 @@ public sealed class ModelPricingServiceTests
             context.SaveChanges();
         }
 
-        var service = new ModelPricingService(new TestSettingsProvider(dbPath));
+        var service = CreateService(dbPath);
         var result = service.UpdateDefaults(
         [
             new DefaultModelPricing("default-model", "remote", "Remote", 3, 1, 4),
@@ -158,7 +158,7 @@ public sealed class ModelPricingServiceTests
     public void UpdatePriceMarksPricingAsManual()
     {
         var dbPath = CreateDbPath();
-        long id;
+        Guid id;
         using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
             context.Database.Migrate();
@@ -181,7 +181,7 @@ public sealed class ModelPricingServiceTests
             id = price.Id;
         }
 
-        var service = new ModelPricingService(new TestSettingsProvider(dbPath));
+        var service = CreateService(dbPath);
         var result = service.UpdatePrice(
             id,
             new ModelPricingUpdateCommand(new Dictionary<string, object?>
@@ -206,23 +206,9 @@ public sealed class ModelPricingServiceTests
         return dbPath;
     }
 
-    private sealed class TestSettingsProvider : IOpenCodexRuntimeSettingsProvider
+    private static ModelPricingService CreateService(string dbPath)
     {
-        private readonly OpenCodexRuntimeSettings _settings;
-
-        public TestSettingsProvider(string dbPath)
-        {
-            _settings = new OpenCodexRuntimeSettings(
-                "sqlite",
-                $"Data Source={dbPath}",
-                "admin",
-                "password",
-                120);
-        }
-
-        public OpenCodexRuntimeSettings GetSettings()
-        {
-            return _settings;
-        }
+        var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        return new ModelPricingService(new EfRepository<ModelPricing>(context));
     }
 }

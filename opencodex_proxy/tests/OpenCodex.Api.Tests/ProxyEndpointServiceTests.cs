@@ -824,7 +824,8 @@ public sealed class ProxyEndpointServiceTests
         public AuthenticatedAccessApiKeyDto AuthenticateAccessKey(string? authorizationHeader)
         {
             return new AuthenticatedAccessApiKeyDto(
-                1,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
                 "admin",
                 "test",
                 "sk-test",
@@ -834,7 +835,7 @@ public sealed class ProxyEndpointServiceTests
                 0,
                 0,
                 null,
-                new AccessApiKeyUserDto("admin", "superadmin", true));
+                new AccessApiKeyUserDto(Guid.NewGuid(), "admin", "superadmin", true));
         }
     }
 
@@ -916,27 +917,27 @@ public sealed class ProxyEndpointServiceTests
 
     private sealed class StubProxyLogService : IProxyLogService
     {
-        public long CreateQueuedLog(ProxyRequestLogQueuedContext context)
+        public Guid CreateQueuedLog(ProxyRequestLogQueuedContext context)
         {
-            return 1;
+            return Guid.NewGuid();
         }
 
-        public void MarkProcessing(long requestLogId, ProxyRequestLogProcessingContext context)
-        {
-        }
-
-        public void CompleteLog(long requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
+        public void MarkProcessing(Guid requestLogId, ProxyRequestLogProcessingContext context)
         {
         }
 
-        public long WriteLog(ProxyLogContext context, ProxyRequestMetadata request)
+        public void CompleteLog(Guid requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
         {
-            return 0;
         }
 
-        public long WriteLog(ProxyRequestLogContext context)
+        public Guid WriteLog(ProxyLogContext context, ProxyRequestMetadata request)
         {
-            return 0;
+            return Guid.Empty;
+        }
+
+        public Guid WriteLog(ProxyRequestLogContext context)
+        {
+            return Guid.Empty;
         }
     }
 

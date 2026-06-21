@@ -169,7 +169,7 @@ var logs = context.RequestLogs.OrderBy(item => item.Id).ToList();
         using var ocrJson = JsonDocument.Parse(ocrDetail.OcrJson!);
         Assert.Equal("vision", ocrJson.RootElement.GetProperty("engine").GetString());
         Assert.False(ocrJson.RootElement.GetProperty("cache_hit").GetBoolean());
-        Assert.Equal(mainLog.Id, ocrJson.RootElement.GetProperty("parent_request_log_id").GetInt64());
+        Assert.Equal(mainLog.Id, Guid.Parse(ocrJson.RootElement.GetProperty("parent_request_log_id").GetString()!));
     }
 
     [Fact]
