@@ -67,7 +67,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         var requestId = requestState.RequestId;
         var ownerUsername = requestState.DefaultOwnerUsername;
         var defaultTimeout = requestState.DefaultTimeout;
-        long? apiKeyId = null;
+        Guid? apiKeyId = null;
         Dictionary<string, object?>? payload = null;
         Dictionary<string, object?>? effectivePayload = null;
         Dictionary<string, object?>? upstreamRequest = null;
@@ -83,7 +83,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         var logInFinally = true;
         var requestMetadata = context.RequestMetadata;
         var streamResponseStarted = false;
-        long? requestLogId = null;
+        Guid? requestLogId = null;
 
         try
         {
@@ -225,7 +225,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         await _streams.StreamAsync(
                             new ProxyStreamContext(
                                 started,
-                                requestLogId ?? 0,
+                                requestLogId ?? Guid.Empty,
                                 requestId,
                                 ownerUsername,
                                 apiKeyId,
@@ -253,7 +253,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                     var result = await _nonStreams.SendAsync(
                         new ProxyNonStreamContext(
                             started,
-                            requestLogId ?? 0,
+                            requestLogId ?? Guid.Empty,
                             requestId,
                             ownerUsername,
                             apiKeyId,

@@ -31,10 +31,10 @@ public sealed class ProxyNonStreamContext
     /// <param name="cancellationToken">请求取消令牌。</param>
     public ProxyNonStreamContext(
         long startedTimestamp,
-        long requestLogId,
+        Guid requestLogId,
         string requestId,
         string ownerUsername,
-        long? apiKeyId,
+        Guid? apiKeyId,
         Dictionary<string, object?> originalPayload,
         Dictionary<string, object?> payload,
         Dictionary<string, object?> upstreamRequest,
@@ -74,7 +74,7 @@ public sealed class ProxyNonStreamContext
     /// </summary>
     public long StartedTimestamp { get; }
 
-    public long RequestLogId { get; }
+    public Guid RequestLogId { get; }
 
     /// <summary>
     /// 获取唯一请求标识符。
@@ -89,7 +89,7 @@ public sealed class ProxyNonStreamContext
     /// <summary>
     /// 获取请求使用的访问密钥标识符（如果可用）。
     /// </summary>
-    public long? ApiKeyId { get; }
+    public Guid? ApiKeyId { get; }
 
     /// <summary>
     /// 获取标准化后的原始传入请求载荷。

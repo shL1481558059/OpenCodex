@@ -2,11 +2,10 @@ using System.Collections;
 using System.Globalization;
 using System.Text.Encodings.Web;
 using System.Text.Json;
-using Microsoft.EntityFrameworkCore;
-using OpenCodex.Data;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Persistence;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.Services;
@@ -23,22 +22,35 @@ public sealed class ProxyLogService : IProxyLogService
 
     private readonly IOpenCodexRuntimeSettingsProvider _settingsProvider;
     private readonly IModelPricingService _pricing;
+    private readonly IRepository<RequestLog> _logRepository;
+    private readonly IRepository<RequestLogDetail> _detailRepository;
+    private readonly IRepository<RequestLogStreamLine> _streamLineRepository;
+    private readonly IRepository<User> _userRepository;
 
     public ProxyLogService(
         IOpenCodexRuntimeSettingsProvider settingsProvider,
-        IModelPricingService pricing)
+        IModelPricingService pricing,
+        IRepository<RequestLog> logRepository,
+        IRepository<RequestLogDetail> detailRepository,
+        IRepository<RequestLogStreamLine> streamLineRepository,
+        IRepository<User> userRepository)
     {
         _settingsProvider = settingsProvider;
         _pricing = pricing;
+        _logRepository = logRepository;
+        _detailRepository = detailRepository;
+        _streamLineRepository = streamLineRepository;
+        _userRepository = userRepository;
     }
 
-    public long CreateQueuedLog(ProxyRequestLogQueuedContext context)
+    public Guid CreateQueuedLog(ProxyRequestLogQueuedContext context)
     {
         var settings = _settingsProvider.GetSettings();
         var defaultOwnerUsername = DefaultOwnerUsername(settings);
+        var ownerUsername = context.OwnerUsername.Length == 0 ? defaultOwnerUsername : context.OwnerUsername;
+        var ownerUserId = ResolveOwnerUserId(ownerUsername);
         var createdAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
 
-        using var db = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         var log = new RequestLog
         {
             RequestId = context.RequestId,
@@ -50,48 +62,61 @@ public sealed class ProxyLogService : IProxyLogService
             RequestType = context.RequestType,
             ParentRequestLogId = context.ParentRequestLogId,
             IsStream = context.IsStream,
-            OwnerUsername = context.OwnerUsername.Length == 0 ? defaultOwnerUsername : context.OwnerUsername,
+            OwnerUserId = ownerUserId,
             ApiKeyId = context.ApiKeyId,
-            LifecycleStatus = ProxyRequestLifecycleStatus.Queued,
-            Detail = new RequestLogDetail
-            {
-                RequestHeaders = JsonSerializer.Serialize(context.RequestHeaders, JsonOptions),
-                RequestBody = JsonSerializer.Serialize(context.Payload, JsonOptions)
-            }
+            LifecycleStatus = ProxyRequestLifecycleStatus.Queued
         };
-        db.RequestLogs.Add(log);
-        db.SaveChanges();
+        _logRepository.Insert(log);
+
+        _detailRepository.Insert(new RequestLogDetail
+        {
+            RequestLogId = log.Id,
+            RequestHeaders = JsonSerializer.Serialize(context.RequestHeaders, JsonOptions),
+            RequestBody = JsonSerializer.Serialize(context.Payload, JsonOptions)
+        });
         return log.Id;
     }
 
-    public void MarkProcessing(long requestLogId, ProxyRequestLogProcessingContext context)
+    public void MarkProcessing(Guid requestLogId, ProxyRequestLogProcessingContext context)
     {
         var settings = _settingsProvider.GetSettings();
-        using var db = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
-        var log = db.RequestLogs
-            .Include(item => item.Detail)
-            .FirstOrDefault(item => item.Id == requestLogId);
+        var log = _logRepository.Table.FirstOrDefault(item => item.Id == requestLogId);
         if (log is null)
         {
             return;
         }
 
-        log.OwnerUsername = context.OwnerUsername.Length == 0
+        var ownerUsername = context.OwnerUsername.Length == 0
             ? DefaultOwnerUsername(settings)
             : context.OwnerUsername;
+        log.OwnerUserId = ResolveOwnerUserId(ownerUsername);
         log.ApiKeyId = context.ApiKeyId;
         log.Model = context.RequestModel ?? log.Model;
         log.UpstreamModel = context.UpstreamModel;
-        log.ChannelId = context.ChannelId;
+        log.ChannelId = ParseChannelId(context.ChannelId);
         log.IsStream = context.IsStream;
         log.LifecycleStatus = ProxyRequestLifecycleStatus.Processing;
         log.ProcessingStartedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
-        log.Detail ??= new RequestLogDetail();
-        log.Detail.UpstreamRequestBody = JsonSerializer.Serialize(context.UpstreamRequest, JsonOptions);
-        db.SaveChanges();
+        _logRepository.Update(log);
+
+        // 手动维护 Detail(禁止导航属性)
+        var detail = _detailRepository.Table.FirstOrDefault(d => d.RequestLogId == requestLogId);
+        if (detail is null)
+        {
+            _detailRepository.Insert(new RequestLogDetail
+            {
+                RequestLogId = requestLogId,
+                UpstreamRequestBody = JsonSerializer.Serialize(context.UpstreamRequest, JsonOptions)
+            });
+        }
+        else
+        {
+            detail.UpstreamRequestBody = JsonSerializer.Serialize(context.UpstreamRequest, JsonOptions);
+            _detailRepository.Update(detail);
+        }
     }
 
-    public void CompleteLog(long requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
+    public void CompleteLog(Guid requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
     {
         CompleteLog(requestLogId, new ProxyRequestLogContext(
             context.RequestId,
@@ -123,7 +148,7 @@ public sealed class ProxyLogService : IProxyLogService
             context.StreamLines));
     }
 
-    public long WriteLog(ProxyLogContext context, ProxyRequestMetadata request)
+    public Guid WriteLog(ProxyLogContext context, ProxyRequestMetadata request)
     {
         return WriteLog(new ProxyRequestLogContext(
             context.RequestId,
@@ -155,13 +180,13 @@ public sealed class ProxyLogService : IProxyLogService
             context.StreamLines));
     }
 
-    public long WriteLog(ProxyRequestLogContext context)
+    public Guid WriteLog(ProxyRequestLogContext context)
     {
         var settings = _settingsProvider.GetSettings();
         return WriteCompletedLog(settings, context);
     }
 
-    private long CompleteLog(long requestLogId, ProxyRequestLogContext context)
+    private Guid CompleteLog(Guid requestLogId, ProxyRequestLogContext context)
     {
         var settings = _settingsProvider.GetSettings();
         var responseForUsage = context.UpstreamResponse ?? [];
@@ -174,23 +199,20 @@ public sealed class ProxyLogService : IProxyLogService
             responseModel = context.UpstreamModel ?? context.RequestModel ?? string.Empty;
         }
 
-        using var db = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
-        var log = db.RequestLogs
-            .Include(item => item.Detail)
-            .Include(item => item.StreamLines)
-            .FirstOrDefault(item => item.Id == requestLogId);
+        var log = _logRepository.Table.FirstOrDefault(item => item.Id == requestLogId);
         if (log is null)
         {
             return WriteCompletedLog(settings, context);
         }
 
-        log.OwnerUsername = context.OwnerUsername.Length == 0
+        var ownerUsername = context.OwnerUsername.Length == 0
             ? DefaultOwnerUsername(settings)
             : context.OwnerUsername;
+        log.OwnerUserId = ResolveOwnerUserId(ownerUsername);
         log.ApiKeyId = context.ApiKeyId;
         log.Model = context.RequestModel ?? log.Model;
         log.UpstreamModel = context.UpstreamModel;
-        log.ChannelId = context.ChannelId;
+        log.ChannelId = ParseChannelId(context.ChannelId);
         log.RequestType = context.RequestType;
         log.ParentRequestLogId = context.ParentRequestLogId;
         log.IsStream = context.IsStream;
@@ -208,61 +230,117 @@ public sealed class ProxyLogService : IProxyLogService
         log.Error = context.Error;
         log.LifecycleStatus = DetermineLifecycleStatus(context.StatusCode, context.Error);
         log.CompletedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
-        log.Detail ??= new RequestLogDetail();
-        log.Detail.RequestHeaders = JsonSerializer.Serialize(context.RequestHeaders, JsonOptions);
-        log.Detail.RequestBody = JsonSerializer.Serialize(context.Payload, JsonOptions);
-        log.Detail.UpstreamRequestBody = JsonSerializer.Serialize(context.UpstreamRequest, JsonOptions);
-        log.Detail.UpstreamResponseBody = JsonSerializer.Serialize(context.UpstreamResponse, JsonOptions);
-        log.Detail.ResponseBody = JsonSerializer.Serialize(context.ResponsePayload ?? context.ErrorResponse, JsonOptions);
-        log.Detail.WebSearchJson = context.WebSearchDetails is null ? null : JsonSerializer.Serialize(context.WebSearchDetails, JsonOptions);
-        log.Detail.OcrJson = context.OcrDetails is null ? null : JsonSerializer.Serialize(context.OcrDetails, JsonOptions);
-        log.Detail.StreamTimingsJson = context.StreamWriteMetrics is { HasValues: true }
+        _logRepository.Update(log);
+
+        // 手动维护 Detail
+        var detail = _detailRepository.Table.FirstOrDefault(d => d.RequestLogId == requestLogId);
+        var detailHeaders = JsonSerializer.Serialize(context.RequestHeaders, JsonOptions);
+        var detailBody = JsonSerializer.Serialize(context.Payload, JsonOptions);
+        var detailUpstreamReq = JsonSerializer.Serialize(context.UpstreamRequest, JsonOptions);
+        var detailUpstreamResp = JsonSerializer.Serialize(context.UpstreamResponse, JsonOptions);
+        var detailResp = JsonSerializer.Serialize(context.ResponsePayload ?? context.ErrorResponse, JsonOptions);
+        var detailWebSearch = context.WebSearchDetails is null ? null : JsonSerializer.Serialize(context.WebSearchDetails, JsonOptions);
+        var detailOcr = context.OcrDetails is null ? null : JsonSerializer.Serialize(context.OcrDetails, JsonOptions);
+        var detailStreamTimings = context.StreamWriteMetrics is { HasValues: true }
             ? JsonSerializer.Serialize(context.StreamWriteMetrics, JsonOptions)
             : null;
+        if (detail is null)
+        {
+            _detailRepository.Insert(new RequestLogDetail
+            {
+                RequestLogId = requestLogId,
+                RequestHeaders = detailHeaders,
+                RequestBody = detailBody,
+                UpstreamRequestBody = detailUpstreamReq,
+                UpstreamResponseBody = detailUpstreamResp,
+                ResponseBody = detailResp,
+                WebSearchJson = detailWebSearch,
+                OcrJson = detailOcr,
+                StreamTimingsJson = detailStreamTimings
+            });
+        }
+        else
+        {
+            detail.RequestHeaders = detailHeaders;
+            detail.RequestBody = detailBody;
+            detail.UpstreamRequestBody = detailUpstreamReq;
+            detail.UpstreamResponseBody = detailUpstreamResp;
+            detail.ResponseBody = detailResp;
+            detail.WebSearchJson = detailWebSearch;
+            detail.OcrJson = detailOcr;
+            detail.StreamTimingsJson = detailStreamTimings;
+            _detailRepository.Update(detail);
+        }
+
+        // 手动维护 StreamLines(删旧+插新)
         if (context.StreamLines is not null && context.StreamLines.Count > 0)
         {
-            db.RequestLogStreamLines.RemoveRange(log.StreamLines);
-            foreach (var line in context.StreamLines.OrderBy(item => item.Sequence))
+            var oldLines = _streamLineRepository.Table
+                .Where(line => line.RequestLogId == requestLogId)
+                .ToList();
+            if (oldLines.Count > 0)
             {
-                log.StreamLines.Add(new RequestLogStreamLine
+                _streamLineRepository.Delete(oldLines);
+            }
+
+            var newLines = context.StreamLines
+                .OrderBy(item => item.Sequence)
+                .Select(item => new RequestLogStreamLine
                 {
-                    Sequence = line.Sequence,
-                    OccurredAt = line.OccurredAt,
-                    Source = line.Source,
-                    RawLine = line.RawLine
-                });
+                    RequestLogId = requestLogId,
+                    Sequence = item.Sequence,
+                    OccurredAt = item.OccurredAt,
+                    Source = item.Source,
+                    RawLine = item.RawLine
+                })
+                .ToList();
+            if (newLines.Count > 0)
+            {
+                _streamLineRepository.Insert(newLines);
             }
         }
 
-        db.SaveChanges();
         if (context.RequestType == ProxyRequestTypes.Main)
         {
-            var childLogs = db.RequestLogs
-                .Include(item => item.Detail)
+            var childLogs = _logRepository.Table
                 .Where(item => item.RequestType == ProxyRequestTypes.Ocr
                     && item.RequestId == context.RequestId
                     && item.ParentRequestLogId == null)
                 .ToList();
-            foreach (var child in childLogs)
-            {
-                child.ParentRequestLogId = log.Id;
-                if (child.Detail is not null)
-                {
-                    child.Detail.OcrJson = UpdateOcrJsonParentRequestLogId(child.Detail.OcrJson, log.Id);
-                }
-            }
-
             if (childLogs.Count > 0)
             {
-                db.SaveChanges();
+                var childDetails = _detailRepository.Table
+                    .Where(d => childLogs.Select(c => c.Id).Contains(d.RequestLogId))
+                    .ToList();
+                foreach (var child in childLogs)
+                {
+                    child.ParentRequestLogId = log.Id;
+                    var childDetail = childDetails.FirstOrDefault(d => d.RequestLogId == child.Id);
+                    if (childDetail is not null)
+                    {
+                        childDetail.OcrJson = UpdateOcrJsonParentRequestLogId(childDetail.OcrJson, log.Id);
+                    }
+                }
+                foreach (var child in childLogs)
+                {
+                    _logRepository.Update(child);
+                }
+                foreach (var childDetail in childDetails)
+                {
+                    _detailRepository.Update(childDetail);
+                }
             }
         }
 
         return log.Id;
     }
 
-    private long WriteCompletedLog(OpenCodexRuntimeSettings settings, ProxyRequestLogContext context)
+    private Guid WriteCompletedLog(OpenCodexRuntimeSettings settings, ProxyRequestLogContext context)
     {
+        var ownerUsername = context.OwnerUsername.Length == 0
+            ? DefaultOwnerUsername(settings)
+            : context.OwnerUsername;
+        var ownerUserId = ResolveOwnerUserId(ownerUsername);
         var responseForUsage = context.UpstreamResponse ?? [];
         var usage = context.ChannelType is null
             ? new UsageDto(0, 0, 0)
@@ -292,7 +370,7 @@ public sealed class ProxyLogService : IProxyLogService
                 context.WebSearchDetails is null ? null : JsonSerializer.Serialize(context.WebSearchDetails, JsonOptions),
                 context.RequestModel,
                 context.UpstreamModel,
-                context.ChannelId,
+                ParseChannelId(context.ChannelId),
                 context.RequestType,
                 context.ParentRequestLogId,
                 context.IsStream,
@@ -307,7 +385,7 @@ public sealed class ProxyLogService : IProxyLogService
                     usage.InputTokens,
                     usage.CachedTokens,
                     usage.OutputTokens),
-                context.OwnerUsername,
+                ownerUserId,
                 context.ApiKeyId,
                 context.Error,
                 context.OcrDetails is null ? null : JsonSerializer.Serialize(context.OcrDetails, JsonOptions),
@@ -332,7 +410,9 @@ public sealed class ProxyLogService : IProxyLogService
                 CachedTokensFromNestedDetails(usageObject, "input_tokens_details"),
                 ToInt(JsonDictionaryValue.Get(usageObject, "output_tokens"))),
             "messages" => new UsageDto(
-                ToInt(JsonDictionaryValue.Get(usageObject, "input_tokens")),
+                ToInt(JsonDictionaryValue.Get(usageObject, "input_tokens"))
+                    + ToInt(JsonDictionaryValue.Get(usageObject, "cache_creation_input_tokens"))
+                    + ToInt(JsonDictionaryValue.Get(usageObject, "cache_read_input_tokens")),
                 ToInt(JsonDictionaryValue.Get(usageObject, "cache_creation_input_tokens"))
                     + ToInt(JsonDictionaryValue.Get(usageObject, "cache_read_input_tokens")),
                 ToInt(JsonDictionaryValue.Get(usageObject, "output_tokens"))),
@@ -344,18 +424,10 @@ public sealed class ProxyLogService : IProxyLogService
         };
     }
 
-    private static long WriteRequestLog(
+    private Guid WriteRequestLog(
         OpenCodexRuntimeSettings settings,
         RequestLogWriteDto record)
     {
-        var defaultOwnerUsername = NormalizeUsername(settings.AdminUsername);
-        if (defaultOwnerUsername.Length == 0)
-        {
-            defaultOwnerUsername = "admin";
-        }
-
-        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
-        using var transaction = context.Database.BeginTransaction();
         var log = new RequestLog
         {
             RequestId = record.RequestId,
@@ -379,61 +451,77 @@ public sealed class ProxyLogService : IProxyLogService
             CachedTokens = record.CachedTokens,
             OutputTokens = record.OutputTokens,
             Cost = record.Cost,
-            OwnerUsername = record.OwnerUsername.Length == 0 ? defaultOwnerUsername : record.OwnerUsername,
+            OwnerUserId = record.OwnerUserId,
             ApiKeyId = record.ApiKeyId,
-            Error = record.Error,
-            Detail = new RequestLogDetail
-            {
-                RequestHeaders = record.RequestHeaders,
-                RequestBody = record.RequestBody,
-                UpstreamRequestBody = record.UpstreamRequestBody,
-                UpstreamResponseBody = record.UpstreamResponseBody,
-                ResponseBody = record.ResponseBody,
-                WebSearchJson = record.WebSearchJson,
-                OcrJson = record.OcrJson,
-                StreamTimingsJson = record.StreamTimingsJson
-            },
-            StreamLines = record.StreamLines?
+            Error = record.Error
+        };
+        _logRepository.Insert(log);
+
+        _detailRepository.Insert(new RequestLogDetail
+        {
+            RequestLogId = log.Id,
+            RequestHeaders = record.RequestHeaders,
+            RequestBody = record.RequestBody,
+            UpstreamRequestBody = record.UpstreamRequestBody,
+            UpstreamResponseBody = record.UpstreamResponseBody,
+            ResponseBody = record.ResponseBody,
+            WebSearchJson = record.WebSearchJson,
+            OcrJson = record.OcrJson,
+            StreamTimingsJson = record.StreamTimingsJson
+        });
+
+        if (record.StreamLines is not null && record.StreamLines.Count > 0)
+        {
+            var streamLines = record.StreamLines
                 .OrderBy(item => item.Sequence)
                 .Select(item => new RequestLogStreamLine
                 {
+                    RequestLogId = log.Id,
                     Sequence = item.Sequence,
                     OccurredAt = item.OccurredAt,
                     Source = item.Source,
                     RawLine = item.RawLine
                 })
-                .ToList() ?? []
-        };
-        context.RequestLogs.Add(log);
-        context.SaveChanges();
+                .ToList();
+            _streamLineRepository.Insert(streamLines);
+        }
+
         if (record.RequestType == ProxyRequestTypes.Main)
         {
-            var childLogs = context.RequestLogs
-                .Include(item => item.Detail)
+            var childLogs = _logRepository.Table
                 .Where(item => item.RequestType == ProxyRequestTypes.Ocr
                     && item.RequestId == record.RequestId
                     && item.ParentRequestLogId == null)
                 .ToList();
-            foreach (var child in childLogs)
-            {
-                child.ParentRequestLogId = log.Id;
-                if (child.Detail is not null)
-                {
-                    child.Detail.OcrJson = UpdateOcrJsonParentRequestLogId(child.Detail.OcrJson, log.Id);
-                }
-            }
-
             if (childLogs.Count > 0)
             {
-                context.SaveChanges();
+                var childDetails = _detailRepository.Table
+                    .Where(d => childLogs.Select(c => c.Id).Contains(d.RequestLogId))
+                    .ToList();
+                foreach (var child in childLogs)
+                {
+                    child.ParentRequestLogId = log.Id;
+                    var childDetail = childDetails.FirstOrDefault(d => d.RequestLogId == child.Id);
+                    if (childDetail is not null)
+                    {
+                        childDetail.OcrJson = UpdateOcrJsonParentRequestLogId(childDetail.OcrJson, log.Id);
+                    }
+                }
+                foreach (var child in childLogs)
+                {
+                    _logRepository.Update(child);
+                }
+                foreach (var childDetail in childDetails)
+                {
+                    _detailRepository.Update(childDetail);
+                }
             }
         }
 
-        transaction.Commit();
         return log.Id;
     }
 
-    private static string? UpdateOcrJsonParentRequestLogId(string? ocrJson, long parentRequestLogId)
+    private static string? UpdateOcrJsonParentRequestLogId(string? ocrJson, Guid parentRequestLogId)
     {
         if (string.IsNullOrWhiteSpace(ocrJson))
         {
@@ -571,6 +659,26 @@ public sealed class ProxyLogService : IProxyLogService
     private static string NormalizeUsername(string? value)
     {
         return (value ?? string.Empty).Trim();
+    }
+
+    private Guid ResolveOwnerUserId(string ownerUsername)
+    {
+        var normalized = NormalizeUsername(ownerUsername);
+        if (normalized.Length == 0)
+        {
+            normalized = "admin";
+        }
+        var user = _userRepository.TableNoTracking.FirstOrDefault(u => u.Username == normalized);
+        return user?.Id ?? Guid.Empty;
+    }
+
+    private static Guid? ParseChannelId(string? channelId)
+    {
+        if (string.IsNullOrWhiteSpace(channelId))
+        {
+            return null;
+        }
+        return Guid.TryParse(channelId, out var parsed) ? parsed : null;
     }
 
     private static string DefaultOwnerUsername(OpenCodexRuntimeSettings settings)

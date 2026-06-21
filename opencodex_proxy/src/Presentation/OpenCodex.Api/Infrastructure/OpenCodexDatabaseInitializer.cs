@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using OpenCodex.Data;
 using OpenCodex.Core.Domain;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Data;
 using OpenCodex.Core.Persistence;
 
 namespace OpenCodex.Api.Infrastructure;
@@ -11,18 +12,19 @@ public static class OpenCodexDatabaseInitializer
     public static void Initialize(WebApplication app)
     {
         using var scope = app.Services.CreateScope();
+        var serviceProvider = scope.ServiceProvider;
         var settings = scope.ServiceProvider
             .GetRequiredService<IOpenCodexRuntimeSettingsProvider>()
             .GetSettings();
 
         using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
         context.Database.Migrate();
-        SeedDefaultModelPricing(context);
+        SeedDefaultModelPricing(serviceProvider.GetRequiredService<IRepository<ModelPricing>>());
     }
 
-    private static void SeedDefaultModelPricing(OpenCodexDbContext context)
+    private static void SeedDefaultModelPricing(IRepository<ModelPricing> pricingRepository)
     {
-        if (context.ModelPricings.Any())
+        if (pricingRepository.TableNoTracking.Any())
         {
             return;
         }
@@ -30,7 +32,7 @@ public static class OpenCodexDatabaseInitializer
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
         foreach (var price in OpenCodexPricingDefaults.Current())
         {
-            context.ModelPricings.Add(new ModelPricing
+            pricingRepository.Insert(new ModelPricing
             {
                 ModelId = price.ModelId,
                 Vendor = price.Vendor,
@@ -45,7 +47,5 @@ public static class OpenCodexDatabaseInitializer
                 UpdatedAt = now
             });
         }
-
-        context.SaveChanges();
     }
 }

@@ -29,8 +29,8 @@ public interface IWebSearchService
     /// <param name="query">测试搜索词。</param>
     /// <param name="cancellationToken">取消令牌。</param>
     /// <returns>密钥测试结果。</returns>
-    Task<ApiOpResult<WebSearchTestKeyResponsePayload>> TestKeyAsync(
-        long keyId,
-        string query,
-        CancellationToken cancellationToken);
+   Task<ApiOpResult<WebSearchTestKeyResponsePayload>> TestKeyAsync(
+        Guid keyId,
+       string query,
+       CancellationToken cancellationToken);
 }

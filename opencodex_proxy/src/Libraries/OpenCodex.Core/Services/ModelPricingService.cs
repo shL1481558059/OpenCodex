@@ -2,26 +2,25 @@ using System.Globalization;
 using System.Collections.Concurrent;
 using System.Text.Json;
 using Mapster;
-using Microsoft.EntityFrameworkCore;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Persistence;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.Pricing;
 using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
-using OpenCodex.Data;
 
 namespace OpenCodex.Core.Services;
 
 public sealed class ModelPricingService : IModelPricingService
 {
-    private readonly IOpenCodexRuntimeSettingsProvider _settingsProvider;
+    private readonly IRepository<ModelPricing> _repository;
 
-    public ModelPricingService(IOpenCodexRuntimeSettingsProvider settingsProvider)
+    public ModelPricingService(IRepository<ModelPricing> repository)
     {
-        _settingsProvider = settingsProvider;
+        _repository = repository;
     }
 
     public ApiOpResult<ModelPricingListResponse> ListPrices(
@@ -29,8 +28,7 @@ public sealed class ModelPricingService : IModelPricingService
         string? vendor,
         bool? enabled)
     {
-        using var context = OpenContext();
-        var prices = ApplyFilters(context.ModelPricings.AsNoTracking(), query, vendor, enabled)
+        var prices = ApplyFilters(_repository.TableNoTracking, query, vendor, enabled)
             .OrderBy(price => price.Vendor)
             .ThenBy(price => price.ModelId)
             .AsEnumerable()
@@ -44,7 +42,6 @@ public sealed class ModelPricingService : IModelPricingService
     {
         try
         {
-            using var context = OpenContext();
             var now = UnixTimeSeconds();
             var price = new ModelPricing
             {
@@ -65,28 +62,31 @@ public sealed class ModelPricingService : IModelPricingService
                 price.Name = price.ModelId;
             }
 
-            context.ModelPricings.Add(price);
-            context.SaveChanges();
+            if (_repository.TableNoTracking.Any(p => p.ModelId == price.ModelId))
+            {
+                return ValidationFailure("model_id already exists");
+            }
+
+            _repository.Insert(price);
             return ApiOpResult<ModelPricingResponsePayload>.Succeed(ModelPricingResponsePayload.From(price.Adapt<ModelPricingDto>()));
         }
         catch (ArgumentException exception)
         {
             return ValidationFailure(exception.Message);
         }
-        catch (DbUpdateException exception)
+        catch (Exception exception)
         {
             return ValidationFailure("model_id already exists", exception);
         }
     }
 
     public ApiOpResult<ModelPricingResponsePayload> UpdatePrice(
-        long id,
+        Guid id,
         ModelPricingUpdateCommand command)
     {
         try
         {
-            using var context = OpenContext();
-            var price = context.ModelPricings.FirstOrDefault(item => item.Id == id);
+            var price = _repository.Table.FirstOrDefault(item => item.Id == id);
             if (price is null)
             {
                 return ApiOpResult<ModelPricingResponsePayload>.Fail(404, "price not found");
@@ -94,31 +94,29 @@ public sealed class ModelPricingService : IModelPricingService
 
             ApplyUpdates(price, command.Values);
             price.UpdatedAt = UnixTimeSeconds();
-            context.SaveChanges();
+            _repository.Update(price);
             return ApiOpResult<ModelPricingResponsePayload>.Succeed(ModelPricingResponsePayload.From(price.Adapt<ModelPricingDto>()));
         }
         catch (ArgumentException exception)
         {
             return ValidationFailure(exception.Message);
         }
-        catch (DbUpdateException exception)
+        catch (Exception exception)
         {
             return ValidationFailure("model_id already exists", exception);
         }
     }
 
-    public ApiOpResult<DeleteModelPricingResponse> DeletePrice(long id)
+    public ApiOpResult<DeleteModelPricingResponse> DeletePrice(Guid id)
     {
-        using var context = OpenContext();
-        var price = context.ModelPricings.FirstOrDefault(item => item.Id == id);
+        var price = _repository.Table.FirstOrDefault(item => item.Id == id);
         if (price is null)
         {
             return ApiOpResult<DeleteModelPricingResponse>.Fail(404, "price not found");
         }
 
         var deleted = price.Adapt<ModelPricingDto>();
-        context.ModelPricings.Remove(price);
-        context.SaveChanges();
+        _repository.Delete(price);
         return ApiOpResult<DeleteModelPricingResponse>.Succeed(DeleteModelPricingResponse.From(deleted));
     }
 
@@ -148,9 +146,7 @@ public sealed class ModelPricingService : IModelPricingService
         int cachedTokens,
         int outputTokens)
     {
-        using var context = OpenContext();
-        var prices = context.ModelPricings
-            .AsNoTracking()
+        var prices = _repository.TableNoTracking
             .Where(price => price.Enabled)
             .ToList();
         return OpenCodexPricing.CalculateCost(prices, model, inputTokens, cachedTokens, outputTokens);
@@ -158,18 +154,18 @@ public sealed class ModelPricingService : IModelPricingService
 
     public (int Inserted, int Skipped) SeedDefaults(bool insertOnlyWhenEmpty)
     {
-        using var context = OpenContext();
-        if (insertOnlyWhenEmpty && context.ModelPricings.Any())
+        if (insertOnlyWhenEmpty && _repository.TableNoTracking.Any())
         {
-            return (0, context.ModelPricings.Count());
+            return (0, _repository.TableNoTracking.Count());
         }
 
         var now = UnixTimeSeconds();
-        var existing = context.ModelPricings
+        var existing = _repository.TableNoTracking
             .Select(price => price.ModelId)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var inserted = 0;
         var skipped = 0;
+        var toInsert = new List<ModelPricing>();
         foreach (var price in OpenCodexPricingDefaults.Current())
         {
             if (existing.Contains(price.ModelId))
@@ -178,7 +174,7 @@ public sealed class ModelPricingService : IModelPricingService
                 continue;
             }
 
-            context.ModelPricings.Add(new ModelPricing
+            toInsert.Add(new ModelPricing
             {
                 ModelId = price.ModelId,
                 Vendor = price.Vendor,
@@ -196,9 +192,9 @@ public sealed class ModelPricingService : IModelPricingService
             inserted++;
         }
 
-        if (inserted > 0)
+        if (toInsert.Count > 0)
         {
-            context.SaveChanges();
+            _repository.Insert(toInsert);
         }
 
         return (inserted, skipped);
@@ -207,13 +203,13 @@ public sealed class ModelPricingService : IModelPricingService
     internal (int Inserted, int Updated, int Skipped) UpdateDefaults(
         IReadOnlyList<DefaultModelPricing> defaults)
     {
-        using var context = OpenContext();
         var now = UnixTimeSeconds();
-        var existing = context.ModelPricings
+        var existing = _repository.Table
             .ToDictionary(price => price.ModelId, StringComparer.OrdinalIgnoreCase);
         var inserted = 0;
         var updated = 0;
         var skipped = 0;
+        var toInsert = new List<ModelPricing>();
 
         foreach (var price in defaults)
         {
@@ -233,7 +229,7 @@ public sealed class ModelPricingService : IModelPricingService
                     CreatedAt = now,
                     UpdatedAt = now
                 };
-                context.ModelPricings.Add(created);
+                toInsert.Add(created);
                 existing.Add(price.ModelId, created);
                 inserted++;
                 continue;
@@ -255,18 +251,17 @@ public sealed class ModelPricingService : IModelPricingService
             updated++;
         }
 
-        if (inserted > 0 || updated > 0)
+        if (toInsert.Count > 0)
         {
-            context.SaveChanges();
+            _repository.Insert(toInsert);
+        }
+
+        if (updated > 0)
+        {
+            _repository.SaveChanges();
         }
 
         return (inserted, updated, skipped);
-    }
-
-    private OpenCodexDbContext OpenContext()
-    {
-        var settings = _settingsProvider.GetSettings();
-        return OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
     }
 
     private static IQueryable<ModelPricing> ApplyFilters(

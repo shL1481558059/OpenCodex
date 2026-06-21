@@ -62,7 +62,7 @@ public sealed class ProxyImagePayloadRewritePlan(
 public sealed class ProxyImageFallbackContext(
     string requestId,
     string ownerUsername,
-    long? apiKeyId,
+    Guid? apiKeyId,
     Dictionary<string, object?> payload,
     string entryProtocol,
     string? requestModel,
@@ -74,7 +74,7 @@ public sealed class ProxyImageFallbackContext(
 
     public string OwnerUsername { get; } = ownerUsername;
 
-    public long? ApiKeyId { get; } = apiKeyId;
+    public Guid? ApiKeyId { get; } = apiKeyId;
 
     public Dictionary<string, object?> Payload { get; } = payload;
 
@@ -101,7 +101,7 @@ public sealed class ProxyImageFallbackResult(
 public sealed class ProxyOcrContext(
     string requestId,
     string ownerUsername,
-    long? apiKeyId,
+    Guid? apiKeyId,
     ProxyRequestMetadata requestMetadata,
     ProxyImageInput image,
     ProxyRouteDto? visionRoute,
@@ -112,7 +112,7 @@ public sealed class ProxyOcrContext(
 
     public string OwnerUsername { get; } = ownerUsername;
 
-    public long? ApiKeyId { get; } = apiKeyId;
+    public Guid? ApiKeyId { get; } = apiKeyId;
 
     public ProxyRequestMetadata RequestMetadata { get; } = requestMetadata;
 

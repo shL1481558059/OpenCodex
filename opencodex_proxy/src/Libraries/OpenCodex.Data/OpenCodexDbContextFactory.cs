@@ -13,8 +13,21 @@ public static class OpenCodexDbContextFactory
         return new OpenCodexDbContext(builder.Options);
     }
 
+    /// <summary>
+    /// 在指定的 <see cref="DbContextOptionsBuilder"/> 上按 provider 配置连接,供 DI 注册和测试复用。
+    /// </summary>
+    public static void Configure(
+        DbContextOptionsBuilder builder,
+        string provider,
+        string connectionString,
+        System.Reflection.Assembly? migrationsAssembly = null)
+    {
+        builder.ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning));
+        ConfigureProvider(builder, provider, connectionString, migrationsAssembly ?? typeof(OpenCodexDbContext).Assembly);
+    }
+
     private static void ConfigureProvider(
-        DbContextOptionsBuilder<OpenCodexDbContext> builder,
+        DbContextOptionsBuilder builder,
         string provider,
         string connectionString,
         System.Reflection.Assembly migrationsAssembly)

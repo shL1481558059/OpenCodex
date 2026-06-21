@@ -31,15 +31,15 @@ public interface IApiKeyService
     /// <param name="keyId">访问密钥标识。</param>
     /// <param name="command">更新访问密钥命令。</param>
     /// <returns>更新后的访问密钥结果。</returns>
-    ApiOpResult<ApiKeyResponsePayload> UpdateKey(
-        long keyId,
-        ApiKeyUpdateCommand command);
+   ApiOpResult<ApiKeyResponsePayload> UpdateKey(
+        Guid keyId,
+       ApiKeyUpdateCommand command);
 
-    /// <summary>
-    /// 删除指定访问密钥。
-    /// </summary>
-    /// <param name="keyId">访问密钥标识。</param>
-    /// <returns>删除操作结果。</returns>
-    ApiOpResult<DeleteApiKeyResponse> DeleteKey(
-        long keyId);
+   /// <summary>
+   /// 删除指定访问密钥。
+   /// </summary>
+   /// <param name="keyId">访问密钥标识。</param>
+   /// <returns>删除操作结果。</returns>
+   ApiOpResult<DeleteApiKeyResponse> DeleteKey(
+        Guid keyId);
 }

@@ -37,9 +37,9 @@ public sealed class PricingController : AuthenticatedApiControllerBase
         return Api(result, StatusCodes.Status201Created);
     }
 
-    [HttpPatch("/pricing/{id:long}")]
+    [HttpPatch("/pricing/{id:guid}")]
     public IActionResult UpdatePrice(
-        long id,
+        Guid id,
         Dictionary<string, object?> request)
     {
         RequireSuperadmin();
@@ -49,8 +49,8 @@ public sealed class PricingController : AuthenticatedApiControllerBase
         return Api(result);
     }
 
-    [HttpDelete("/pricing/{id:long}")]
-    public IActionResult DeletePrice(long id)
+    [HttpDelete("/pricing/{id:guid}")]
+    public IActionResult DeletePrice(Guid id)
     {
         RequireSuperadmin();
         var result = _pricing.DeletePrice(id);

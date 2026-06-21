@@ -86,7 +86,7 @@ public sealed class AccessApiKeyResponse
     /// <param name="lastUsedAt">最后使用时间戳（如果可用）。</param>
     /// <param name="key">完整密钥值（如果可用）。</param>
     public AccessApiKeyResponse(
-        long id,
+        Guid id,
         string ownerUsername,
         string name,
         string keyPrefix,
@@ -115,7 +115,7 @@ public sealed class AccessApiKeyResponse
     /// 获取访问密钥的数据库标识符。
     /// </summary>
     [JsonPropertyName("id")]
-    public long Id { get; }
+    public Guid Id { get; }
 
     /// <summary>
     /// 获取拥有该访问密钥的用户名。

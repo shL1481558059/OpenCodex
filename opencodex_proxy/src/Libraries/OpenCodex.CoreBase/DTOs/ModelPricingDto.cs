@@ -4,7 +4,7 @@ namespace OpenCodex.CoreBase.DTOs;
 /// 表示模型定价数据传输对象。
 /// </summary>
 public sealed class ModelPricingDto(
-    long id,
+    Guid id,
     string modelId,
     string vendor,
     string name,
@@ -17,7 +17,7 @@ public sealed class ModelPricingDto(
     double createdAt,
     double updatedAt)
 {
-    public long Id { get; } = id;
+    public Guid Id { get; } = id;
 
     public string ModelId { get; } = modelId;
 

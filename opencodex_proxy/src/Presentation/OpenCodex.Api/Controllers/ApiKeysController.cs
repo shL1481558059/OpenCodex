@@ -33,16 +33,16 @@ public sealed class ApiKeysController : AuthenticatedApiControllerBase
         return Api(result, StatusCodes.Status201Created);
     }
 
-    [HttpPatch("/api-keys/{keyId:long}")]
-    public IActionResult UpdateApiKey(long keyId, ApiKeyUpdateRequest request)
+    [HttpPatch("/api-keys/{keyId:guid}")]
+    public IActionResult UpdateApiKey(Guid keyId, ApiKeyUpdateRequest request)
     {
         RequireUser();
         var result = _apiKeys.UpdateKey(keyId, request.ToCommand());
         return Api(result);
     }
 
-    [HttpDelete("/api-keys/{keyId:long}")]
-    public IActionResult DeleteApiKey(long keyId)
+    [HttpDelete("/api-keys/{keyId:guid}")]
+    public IActionResult DeleteApiKey(Guid keyId)
     {
         RequireUser();
         var result = _apiKeys.DeleteKey(keyId);

@@ -1,9 +1,7 @@
-using Mapster;
-using Microsoft.EntityFrameworkCore;
-using OpenCodex.Data;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Persistence;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.ApiKeys;
 using OpenCodex.CoreBase.Domain;
@@ -14,15 +12,18 @@ namespace OpenCodex.Core.Services;
 
 public sealed class ApiKeyService : IApiKeyService
 {
-    private readonly IOpenCodexRuntimeSettingsProvider _settingsProvider;
     private readonly IWorkContext _workContext;
+    private readonly IRepository<AccessApiKey> _keyRepository;
+    private readonly IRepository<User> _userRepository;
 
     public ApiKeyService(
-        IOpenCodexRuntimeSettingsProvider settingsProvider,
-        IWorkContext workContext)
+        IWorkContext workContext,
+        IRepository<AccessApiKey> keyRepository,
+        IRepository<User> userRepository)
     {
-        _settingsProvider = settingsProvider;
         _workContext = workContext;
+        _keyRepository = keyRepository;
+        _userRepository = userRepository;
     }
 
     public ApiOpResult<ApiKeysResponse> ListKeys(
@@ -30,29 +31,47 @@ public sealed class ApiKeyService : IApiKeyService
     {
         var currentUser = _workContext.RequireUser();
         var isSuperadmin = currentUser.Role == "superadmin";
-        var ownerUsername = OwnerScope(
-            requestedOwnerUsername,
-            currentUser.Username,
-            isSuperadmin);
-        var normalizedOwnerUsername = string.IsNullOrWhiteSpace(ownerUsername)
-            ? string.Empty
-            : ownerUsername.Trim();
-        var settings = _settingsProvider.GetSettings();
-        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
-        var query = context.AccessApiKeys.AsNoTracking();
-        if (normalizedOwnerUsername.Length > 0)
+        var scopeUsername = OwnerScope(requestedOwnerUsername, currentUser.Username, isSuperadmin);
+
+        var query = _keyRepository.TableNoTracking;
+
+        // 非 superadmin 只能看自己的 key;superadmin 未指定 owner 时看全部
+        Guid? scopeUserId;
+        if (!isSuperadmin)
         {
-            query = query.Where(key => key.OwnerUsername == normalizedOwnerUsername);
+            scopeUserId = currentUser.UserId;
+        }
+        else if (!string.IsNullOrWhiteSpace(scopeUsername))
+        {
+            var owner = _userRepository.TableNoTracking.FirstOrDefault(u => u.Username == scopeUsername!.Trim());
+            scopeUserId = owner?.Id ?? Guid.Empty;
+        }
+        else
+        {
+            scopeUserId = null;
         }
 
-        var ordered = normalizedOwnerUsername.Length == 0
-            ? query.OrderBy(key => key.OwnerUsername).ThenByDescending(key => key.Id)
-            : query.OrderByDescending(key => key.Id);
+        if (scopeUserId.HasValue && scopeUserId.Value != Guid.Empty)
+        {
+            query = query.Where(key => key.OwnerUserId == scopeUserId.Value);
+        }
 
-        return ApiOpResult<ApiKeysResponse>.Succeed(ApiKeysResponse.From(ordered
-            .AsEnumerable()
-            .Select(key => key.Adapt<AccessApiKeyDto>())
-            .ToList()));
+        var ordered = scopeUserId.HasValue
+            ? query.OrderByDescending(key => key.Id)
+            : query.OrderBy(key => key.OwnerUserId).ThenByDescending(key => key.Id);
+
+        var keys = ordered.ToList();
+        var ownerIds = keys.Select(k => k.OwnerUserId).Distinct().ToList();
+        var owners = ownerIds.Count > 0
+            ? _userRepository.TableNoTracking
+                .Where(u => ownerIds.Contains(u.Id))
+                .ToDictionary(u => u.Id, u => u.Username)
+            : new Dictionary<Guid, string>();
+
+        var dtos = keys
+            .Select(key => MapToDto(key, owners.TryGetValue(key.OwnerUserId, out var name) ? name : string.Empty))
+            .ToList();
+        return ApiOpResult<ApiKeysResponse>.Succeed(ApiKeysResponse.From(dtos));
     }
 
     public ApiOpResult<ApiKeyResponsePayload> CreateKey(
@@ -62,22 +81,40 @@ public sealed class ApiKeyService : IApiKeyService
         {
             var currentUser = _workContext.RequireUser();
             var isSuperadmin = currentUser.Role == "superadmin";
-            var owner = command.OwnerUsername.Trim();
-            if (string.IsNullOrWhiteSpace(owner))
+            var ownerUserId = command.OwnerUserId;
+            if (ownerUserId == Guid.Empty)
             {
-                owner = currentUser.Username;
+                ownerUserId = currentUser.UserId;
             }
-
             if (!isSuperadmin)
             {
-                owner = currentUser.Username;
+                ownerUserId = currentUser.UserId;
             }
 
-            var key = CreateAccessApiKey(
-                _settingsProvider.GetSettings(),
-                owner,
-                command.Name.Trim());
-            return ApiOpResult<ApiKeyResponsePayload>.Succeed(ApiKeyResponsePayload.From(key));
+            var owner = _userRepository.TableNoTracking.FirstOrDefault(u => u.Id == ownerUserId);
+            if (owner is null)
+            {
+                throw new InvalidOperationException("user not found");
+            }
+
+            var rawKey = OpenCodexSecurity.GenerateAccessApiKey();
+            var now = UnixTimeSeconds();
+            var key = new AccessApiKey
+            {
+                OwnerUserId = ownerUserId,
+                Name = (command.Name ?? string.Empty).Trim(),
+                KeyHash = OpenCodexSecurity.HashAccessApiKey(rawKey),
+                KeyPlaintext = rawKey,
+                KeyPrefix = rawKey[..12],
+                KeySuffix = rawKey[^6..],
+                Enabled = true,
+                CreatedAt = now,
+                UpdatedAt = now
+            };
+            _keyRepository.Insert(key);
+
+            return ApiOpResult<ApiKeyResponsePayload>.Succeed(
+                ApiKeyResponsePayload.From(MapToDto(key, owner.Username)));
         }
         catch (ArgumentException exception)
         {
@@ -90,19 +127,30 @@ public sealed class ApiKeyService : IApiKeyService
     }
 
     public ApiOpResult<ApiKeyResponsePayload> UpdateKey(
-        long keyId,
+        Guid keyId,
         ApiKeyUpdateCommand command)
     {
         try
         {
             var currentUser = _workContext.RequireUser();
             var isSuperadmin = currentUser.Role == "superadmin";
-            var key = SetAccessApiKeyEnabled(
-                _settingsProvider.GetSettings(),
-                keyId,
-                command.Enabled,
-                OwnerScope(currentUser.Username, isSuperadmin));
-            return ApiOpResult<ApiKeyResponsePayload>.Succeed(ApiKeyResponsePayload.From(key));
+            var scopeUserId = isSuperadmin ? (Guid?)null : currentUser.UserId;
+
+            var query = _keyRepository.Table.Where(key => key.Id == keyId);
+            if (scopeUserId.HasValue)
+            {
+                query = query.Where(key => key.OwnerUserId == scopeUserId.Value);
+            }
+
+            var existing = query.FirstOrDefault()
+                ?? throw new InvalidOperationException("api key not found");
+            existing.Enabled = command.Enabled;
+            existing.UpdatedAt = UnixTimeSeconds();
+            _keyRepository.Update(existing);
+
+            var owner = _userRepository.TableNoTracking.FirstOrDefault(u => u.Id == existing.OwnerUserId);
+            return ApiOpResult<ApiKeyResponsePayload>.Succeed(
+                ApiKeyResponsePayload.From(MapToDto(existing, owner?.Username ?? string.Empty)));
         }
         catch (InvalidOperationException exception)
         {
@@ -111,22 +159,46 @@ public sealed class ApiKeyService : IApiKeyService
     }
 
     public ApiOpResult<DeleteApiKeyResponse> DeleteKey(
-        long keyId)
+        Guid keyId)
     {
         try
         {
             var currentUser = _workContext.RequireUser();
             var isSuperadmin = currentUser.Role == "superadmin";
-            DeleteAccessApiKey(
-                _settingsProvider.GetSettings(),
-                keyId,
-                OwnerScope(currentUser.Username, isSuperadmin));
+            var scopeUserId = isSuperadmin ? (Guid?)null : currentUser.UserId;
+
+            var query = _keyRepository.Table.Where(key => key.Id == keyId);
+            if (scopeUserId.HasValue)
+            {
+                query = query.Where(key => key.OwnerUserId == scopeUserId.Value);
+            }
+
+            var existing = query.FirstOrDefault()
+                ?? throw new InvalidOperationException("api key not found");
+            _keyRepository.Delete(existing);
             return ApiOpResult<DeleteApiKeyResponse>.Succeed(new DeleteApiKeyResponse(true));
         }
         catch (InvalidOperationException exception)
         {
             return ApiOpResult<DeleteApiKeyResponse>.Fail(404, exception.Message);
         }
+    }
+
+    private static AccessApiKeyDto MapToDto(AccessApiKey key, string ownerUsername)
+    {
+        return new AccessApiKeyDto(
+            key.Id,
+            key.OwnerUserId,
+            ownerUsername,
+            key.Name,
+            key.KeyPrefix,
+            key.KeySuffix,
+            $"{key.KeyPrefix}...{key.KeySuffix}",
+            key.Enabled,
+            key.CreatedAt,
+            key.UpdatedAt,
+            key.LastUsedAt,
+            key.KeyPlaintext);
     }
 
     private static string? OwnerScope(
@@ -144,99 +216,9 @@ public sealed class ApiKeyService : IApiKeyService
             : requestedOwnerUsername.Trim();
     }
 
-    private static string? OwnerScope(string currentUsername, bool isSuperadmin)
-    {
-        return isSuperadmin ? null : currentUsername;
-    }
-
     private static ApiOpResult<ApiKeyResponsePayload> ValidationFailure(string message)
     {
         return ApiOpResult<ApiKeyResponsePayload>.Fail(400, message);
-    }
-
-    private static AccessApiKeyDto CreateAccessApiKey(
-        OpenCodexRuntimeSettings settings,
-        string ownerUsername,
-        string name = "")
-    {
-        ownerUsername = NormalizeUsername(ownerUsername);
-        if (ownerUsername.Length == 0)
-        {
-            throw new ArgumentException("owner_username is required", nameof(ownerUsername));
-        }
-
-        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
-        if (!context.Users.Any(user => user.Username == ownerUsername))
-        {
-            throw new InvalidOperationException("user not found");
-        }
-
-        var rawKey = OpenCodexSecurity.GenerateAccessApiKey();
-        var now = UnixTimeSeconds();
-        var key = new AccessApiKey
-        {
-            OwnerUsername = ownerUsername,
-            Name = (name ?? string.Empty).Trim(),
-            KeyHash = OpenCodexSecurity.HashAccessApiKey(rawKey),
-            KeyPlaintext = rawKey,
-            KeyPrefix = rawKey[..12],
-            KeySuffix = rawKey[^6..],
-            Enabled = true,
-            CreatedAt = now,
-            UpdatedAt = now
-        };
-        context.AccessApiKeys.Add(key);
-        context.SaveChanges();
-
-        return key.Adapt<AccessApiKeyDto>();
-    }
-
-    private static AccessApiKeyDto SetAccessApiKeyEnabled(
-        OpenCodexRuntimeSettings settings,
-        long keyId,
-        bool enabled,
-        string? ownerUsername = null)
-    {
-        ownerUsername = ownerUsername is null ? null : NormalizeUsername(ownerUsername);
-
-        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
-        var query = context.AccessApiKeys.Where(key => key.Id == keyId);
-        if (!string.IsNullOrEmpty(ownerUsername))
-        {
-            query = query.Where(key => key.OwnerUsername == ownerUsername);
-        }
-
-        var existing = query.FirstOrDefault()
-            ?? throw new InvalidOperationException("api key not found");
-        existing.Enabled = enabled;
-        existing.UpdatedAt = UnixTimeSeconds();
-        context.SaveChanges();
-        return existing.Adapt<AccessApiKeyDto>();
-    }
-
-    private static void DeleteAccessApiKey(
-        OpenCodexRuntimeSettings settings,
-        long keyId,
-        string? ownerUsername = null)
-    {
-        ownerUsername = ownerUsername is null ? null : NormalizeUsername(ownerUsername);
-
-        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
-        var query = context.AccessApiKeys.Where(key => key.Id == keyId);
-        if (!string.IsNullOrEmpty(ownerUsername))
-        {
-            query = query.Where(key => key.OwnerUsername == ownerUsername);
-        }
-
-        var existing = query.FirstOrDefault()
-            ?? throw new InvalidOperationException("api key not found");
-        context.AccessApiKeys.Remove(existing);
-        context.SaveChanges();
-    }
-
-    private static string NormalizeUsername(string? value)
-    {
-        return (value ?? string.Empty).Trim();
     }
 
     private static double UnixTimeSeconds()

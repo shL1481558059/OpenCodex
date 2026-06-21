@@ -105,8 +105,8 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         return Api(result);
     }
 
-    [HttpGet("/logs/{logId:long}")]
-    public IActionResult LogDetail(long logId)
+    [HttpGet("/logs/{logId:guid}")]
+    public IActionResult LogDetail(Guid logId)
     {
         RequireUser();
         var result = _observability.ReadLogById(logId);

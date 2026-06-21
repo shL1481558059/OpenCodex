@@ -1,10 +1,8 @@
 using System.Globalization;
-using Mapster;
-using Microsoft.EntityFrameworkCore;
-using OpenCodex.Data;
 using OpenCodex.Core.Config;
 using OpenCodex.Core.Domain;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.WebSearch;
 using OpenCodex.CoreBase.Results;
@@ -22,21 +20,23 @@ public sealed class WebSearchService : IWebSearchService
         "tavily"
     };
 
-    private readonly IOpenCodexRuntimeSettingsProvider _settingsProvider;
     private readonly IWebSearchClient _webSearchClient;
+    private readonly IRepository<WebSearchSettings> _settingsRepository;
+    private readonly IRepository<TavilyKey> _keyRepository;
 
     public WebSearchService(
-        IOpenCodexRuntimeSettingsProvider settingsProvider,
-        IWebSearchClient webSearchClient)
+        IWebSearchClient webSearchClient,
+        IRepository<WebSearchSettings> settingsRepository,
+        IRepository<TavilyKey> keyRepository)
     {
-        _settingsProvider = settingsProvider;
         _webSearchClient = webSearchClient;
+        _settingsRepository = settingsRepository;
+        _keyRepository = keyRepository;
     }
 
     public ApiOpResult<WebSearchConfigResponse> ReadConfig()
     {
-        var settings = _settingsProvider.GetSettings();
-        return ApiOpResult<WebSearchConfigResponse>.Succeed(WebSearchConfigResponse.From(ReadWebSearchConfig(settings)));
+        return ApiOpResult<WebSearchConfigResponse>.Succeed(WebSearchConfigResponse.From(ReadWebSearchConfig()));
     }
 
     public ApiOpResult<WebSearchConfigResponse> SaveConfig(
@@ -44,9 +44,7 @@ public sealed class WebSearchService : IWebSearchService
     {
         try
         {
-            return ApiOpResult<WebSearchConfigResponse>.Succeed(WebSearchConfigResponse.From(ReplaceWebSearchConfig(
-                _settingsProvider.GetSettings(),
-                body)));
+            return ApiOpResult<WebSearchConfigResponse>.Succeed(WebSearchConfigResponse.From(ReplaceWebSearchConfig(body)));
         }
         catch (ArgumentException exception)
         {
@@ -54,16 +52,16 @@ public sealed class WebSearchService : IWebSearchService
         }
     }
 
-    private ApiOpResult<TavilyKeyDto> ReserveTestKey(long keyId)
+    private ApiOpResult<TavilyKeyDto> ReserveTestKey(Guid keyId)
     {
-        var key = ReserveTavilyKeyById(_settingsProvider.GetSettings(), keyId);
+        var key = ReserveTavilyKeyById(keyId);
         return key is null
             ? ApiOpResult<TavilyKeyDto>.Fail(400, KeyUnavailableMessage)
             : ApiOpResult<TavilyKeyDto>.Succeed(key);
     }
 
     public async Task<ApiOpResult<WebSearchTestKeyResponsePayload>> TestKeyAsync(
-        long keyId,
+        Guid keyId,
         string query,
         CancellationToken cancellationToken)
     {
@@ -77,7 +75,7 @@ public sealed class WebSearchService : IWebSearchService
             new WebSearchProviderKey(reserved.Payload.Provider, reserved.Payload.Key),
             query,
             cancellationToken);
-        var config = ReadWebSearchConfig(_settingsProvider.GetSettings());
+        var config = ReadWebSearchConfig();
         return ApiOpResult<WebSearchTestKeyResponsePayload>.Succeed(WebSearchTestKeyResponsePayload.From(
             reserved.Payload,
             result,
@@ -85,18 +83,14 @@ public sealed class WebSearchService : IWebSearchService
             result.DurationMs));
     }
 
-    private static WebSearchConfigDto ReadWebSearchConfig(OpenCodexRuntimeSettings settings)
+    private WebSearchConfigDto ReadWebSearchConfig()
     {
-        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
-        var webSearchSettings = context.WebSearchSettings
-            .AsNoTracking()
-            .FirstOrDefault(item => item.Id == 1);
-        var keys = context.TavilyKeys
-            .AsNoTracking()
+        var webSearchSettings = _settingsRepository.TableNoTracking.FirstOrDefault();
+        var keys = _keyRepository.TableNoTracking
             .OrderBy(key => key.Position)
             .ThenBy(key => key.Id)
             .AsEnumerable()
-            .Select(key => key.Adapt<TavilyKeyDto>())
+            .Select(MapToDto)
             .ToList();
 
         return new WebSearchConfigDto(
@@ -106,8 +100,7 @@ public sealed class WebSearchService : IWebSearchService
             keys);
     }
 
-    private static WebSearchConfigDto ReplaceWebSearchConfig(
-        OpenCodexRuntimeSettings runtimeSettings,
+    private WebSearchConfigDto ReplaceWebSearchConfig(
         IReadOnlyDictionary<string, object?> config)
     {
         var keysValue = JsonDictionaryValue.Get(config, "keys") ?? new List<object?>();
@@ -116,18 +109,13 @@ public sealed class WebSearchService : IWebSearchService
             throw new ArgumentException("web search keys must be a list", nameof(config));
         }
 
-        using var context = OpenCodexDbContextFactory.Create(runtimeSettings.DatabaseProvider, runtimeSettings.ConnectionString);
-        using var transaction = context.Database.BeginTransaction();
         var now = UnixTimeSeconds();
-        var currentDefaultKeyUsageLimit = context.WebSearchSettings
-            .AsNoTracking()
-            .FirstOrDefault(settings => settings.Id == 1)
+        var currentDefaultKeyUsageLimit = _settingsRepository.TableNoTracking.FirstOrDefault()
             ?.KeyUsageLimit ?? DefaultWebSearchKeyUsageLimit;
         var defaultKeyUsageLimit = ParseRequiredPositiveInt(
             JsonDictionaryValue.Get(config, "key_usage_limit") ?? currentDefaultKeyUsageLimit,
             "web search key_usage_limit");
-        var existing = context.TavilyKeys
-            .AsNoTracking()
+        var existing = _keyRepository.TableNoTracking
             .ToDictionary(
                 key => key.Id,
                 key => new ExistingTavilyKey(
@@ -137,39 +125,59 @@ public sealed class WebSearchService : IWebSearchService
                     key.UsageLimit,
                     key.CreatedAt));
 
-        var settings = context.WebSearchSettings.FirstOrDefault(item => item.Id == 1);
+        var settings = _settingsRepository.Table.FirstOrDefault();
         if (settings is null)
         {
             settings = new WebSearchSettings
             {
-                Id = 1,
                 CreatedAt = now
             };
-            context.WebSearchSettings.Add(settings);
+            _settingsRepository.Insert(settings);
         }
 
         settings.Enabled = JsonDictionaryValue.Get(config, "enabled") is true;
         settings.KeyUsageLimit = defaultKeyUsageLimit;
         settings.UpdatedAt = now;
+        _settingsRepository.Update(settings);
 
-        context.TavilyKeys.RemoveRange(context.TavilyKeys);
-        context.SaveChanges();
+       // 先删除全部旧 key,再插入新 key(不考虑历史数据,接受非原子)
+       var oldKeys = _keyRepository.Table.ToList();
+       if (oldKeys.Count > 0)
+       {
+           _keyRepository.Delete(oldKeys);
+       }
 
+        var newKeys = BuildNewKeys(keys, existing, defaultKeyUsageLimit, now);
+        if (newKeys.Count > 0)
+        {
+            _keyRepository.Insert(newKeys);
+        }
+
+        return ReadWebSearchConfig();
+    }
+
+    private List<TavilyKey> BuildNewKeys(
+        IReadOnlyList<object?> keys,
+        Dictionary<Guid, ExistingTavilyKey> existing,
+        int defaultKeyUsageLimit,
+        double now)
+    {
+        var result = new List<TavilyKey>();
         for (var position = 0; position < keys.Count; position++)
         {
             if (!ConfigValue.TryAsObject(keys[position], out var item))
             {
-                throw new ArgumentException($"web search keys[{position + 1}] must be an object", nameof(config));
+                throw new ArgumentException($"web search keys[{position + 1}] must be an object", nameof(keys));
             }
 
             var provider = NormalizeWebSearchProvider(JsonDictionaryValue.Get(item, "provider"));
             var apiKey = WebSearchApiKey(item);
             if (apiKey.Length == 0)
             {
-                throw new ArgumentException($"web search keys[{position + 1}].key is required", nameof(config));
+                throw new ArgumentException($"web search keys[{position + 1}].key is required", nameof(keys));
             }
 
-            var existingId = ParsePositiveLong(JsonDictionaryValue.Get(item, "id"));
+            var existingId = ParsePositiveGuid(JsonDictionaryValue.Get(item, "id"));
             var old = existingId is null ? null : existing.GetValueOrDefault(existingId.Value);
             var usageLimitSource = JsonDictionaryValue.Get(item, "usage_limit")
                 ?? JsonDictionaryValue.Get(item, "key_usage_limit");
@@ -206,7 +214,7 @@ public sealed class WebSearchService : IWebSearchService
                 createdAt = now;
             }
 
-            var row = new TavilyKey
+            result.Add(new TavilyKey
             {
                 Position = position,
                 Provider = provider,
@@ -216,38 +224,39 @@ public sealed class WebSearchService : IWebSearchService
                 UsageLimit = usageLimit,
                 CreatedAt = createdAt,
                 UpdatedAt = now
-            };
-            if (existingId is not null)
-            {
-                row.Id = existingId.Value;
-            }
-
-            context.TavilyKeys.Add(row);
+            });
         }
 
-        context.SaveChanges();
-        transaction.Commit();
-        return ReadWebSearchConfig(runtimeSettings);
+        return result;
     }
 
-    private static TavilyKeyDto? ReserveTavilyKeyById(OpenCodexRuntimeSettings settings, long keyId)
+    private TavilyKeyDto? ReserveTavilyKeyById(Guid keyId)
     {
-        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
-        using var transaction = context.Database.BeginTransaction();
-        var reserved = context.TavilyKeys
+        var reserved = _keyRepository.Table
             .Where(key => key.Id == keyId && key.UsageCount < key.UsageLimit)
             .FirstOrDefault();
         if (reserved is null)
         {
-            transaction.Rollback();
             return null;
         }
 
         reserved.UsageCount += 1;
         reserved.UpdatedAt = UnixTimeSeconds();
-        context.SaveChanges();
-        transaction.Commit();
-        return reserved.Adapt<TavilyKeyDto>();
+        _keyRepository.Update(reserved);
+        return MapToDto(reserved);
+    }
+
+    private static TavilyKeyDto MapToDto(TavilyKey key)
+    {
+        return new TavilyKeyDto(
+            key.Id,
+            key.Position,
+            key.Provider,
+            key.ApiKey,
+            key.Enabled,
+            key.UsageCount,
+            key.UsageLimit,
+            key.UsageLimit);
     }
 
     private static string NormalizeWebSearchProvider(object? value)
@@ -309,28 +318,20 @@ public sealed class WebSearchService : IWebSearchService
         }
     }
 
-    private static long? ParsePositiveLong(object? value)
+    private static Guid? ParsePositiveGuid(object? value)
     {
-        if (value is bool)
+        if (value is bool || value is null)
         {
             return null;
         }
 
-        return TryConvertInt64(value, out var parsed) && parsed > 0 ? parsed : null;
-    }
+        var text = value.ToString();
+        if (Guid.TryParse(text, out var parsed) && parsed != Guid.Empty)
+        {
+            return parsed;
+        }
 
-    private static bool TryConvertInt64(object? value, out long parsed)
-    {
-        try
-        {
-            parsed = Convert.ToInt64(value, CultureInfo.InvariantCulture);
-            return true;
-        }
-        catch (Exception exception) when (exception is FormatException or InvalidCastException or OverflowException)
-        {
-            parsed = 0;
-            return false;
-        }
+        return null;
     }
 
     private static bool IsPythonFalsy(object? value)

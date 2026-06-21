@@ -17,12 +17,12 @@ public interface IModelPricingService
     ApiOpResult<ModelPricingResponsePayload> CreatePrice(
         ModelPricingCreateCommand command);
 
-    ApiOpResult<ModelPricingResponsePayload> UpdatePrice(
-        long id,
-        ModelPricingUpdateCommand command);
+   ApiOpResult<ModelPricingResponsePayload> UpdatePrice(
+        Guid id,
+       ModelPricingUpdateCommand command);
 
-    ApiOpResult<DeleteModelPricingResponse> DeletePrice(
-        long id);
+   ApiOpResult<DeleteModelPricingResponse> DeletePrice(
+        Guid id);
 
     Task<ApiOpResult<SeedModelPricingResponse>> SeedDefaultsAsync(
         CancellationToken cancellationToken = default);

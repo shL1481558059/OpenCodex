@@ -13,6 +13,7 @@ public static class OpenCodexMappingConfig
         TypeAdapterConfig<User, UserDto>
             .NewConfig()
             .MapWith(source => new UserDto(
+                source.Id,
                 source.Username,
                 source.Role,
                 source.Enabled,
@@ -22,8 +23,9 @@ public static class OpenCodexMappingConfig
         TypeAdapterConfig<Channel, ChannelDto>
             .NewConfig()
             .MapWith(source => new ChannelDto(
-                source.OwnerUsername,
                 source.Id,
+                source.OwnerUserId,
+                string.Empty,
                 source.Position,
                 source.Name,
                 source.Type,
@@ -37,22 +39,7 @@ public static class OpenCodexMappingConfig
                 source.Capacity,
                 DeserializeObject(source.CompatJson),
                 DeserializeList(source.ModelsJson),
-                source.Enabled));
-
-        TypeAdapterConfig<AccessApiKey, AccessApiKeyDto>
-            .NewConfig()
-            .MapWith(source => new AccessApiKeyDto(
-                source.Id,
-                source.OwnerUsername,
-                source.Name,
-                source.KeyPrefix,
-                source.KeySuffix,
-                $"{source.KeyPrefix}...{source.KeySuffix}",
-                source.Enabled,
-                source.CreatedAt,
-                source.UpdatedAt,
-                source.LastUsedAt,
-                source.KeyPlaintext));
+               source.Enabled));
 
         TypeAdapterConfig<TavilyKey, TavilyKeyDto>
             .NewConfig()
@@ -79,82 +66,9 @@ public static class OpenCodexMappingConfig
                 source.OutputPrice,
                 source.Enabled,
                 source.Source,
-                source.CreatedAt,
-                source.UpdatedAt));
+               source.CreatedAt,
+               source.UpdatedAt));
 
-        TypeAdapterConfig<RequestLog, RequestLogDto>
-            .NewConfig()
-            .MapWith(source => new RequestLogDto(
-                source.Id,
-                source.RequestId,
-                source.CreatedAt,
-                source.ProcessingStartedAt,
-                source.CompletedAt,
-                source.Method,
-                source.Path,
-                source.ClientIp,
-                source.Model,
-                source.UpstreamModel,
-                source.ChannelId,
-                source.RequestType,
-                source.ParentRequestLogId,
-                source.IsStream,
-                source.TtftMs,
-                source.DurationMs,
-                source.StatusCode,
-                source.InputTokens,
-                source.CachedTokens,
-                source.OutputTokens,
-                source.Cost,
-                source.OwnerUsername,
-                source.ApiKeyId,
-                source.Error,
-                source.Detail == null ? null : source.Detail.RequestHeaders,
-                source.Detail == null ? null : source.Detail.RequestBody,
-                source.Detail == null ? null : source.Detail.UpstreamRequestBody,
-                source.Detail == null ? null : source.Detail.UpstreamResponseBody,
-                source.Detail == null ? null : source.Detail.ResponseBody,
-                source.Detail == null ? null : source.Detail.WebSearchJson,
-                source.Detail == null ? null : source.Detail.OcrJson,
-                source.Detail == null ? null : source.Detail.StreamTimingsJson,
-                source.StreamLines
-                    .OrderBy(line => line.Sequence)
-                    .Select(line => new RequestLogStreamLineDto(
-                        line.Sequence,
-                        line.OccurredAt,
-                        line.Source,
-                        line.RawLine))
-                    .ToList(),
-                RequestStatus(source.LifecycleStatus, source.StatusCode, source.Error)));
-
-        TypeAdapterConfig<RequestLog, RequestLogEventDto>
-            .NewConfig()
-            .MapWith(source => new RequestLogEventDto(
-                source.Id,
-                source.RequestId,
-                source.CreatedAt,
-                source.ProcessingStartedAt,
-                source.CompletedAt,
-                source.Method,
-                source.Path,
-                source.ClientIp,
-                source.Model,
-                source.UpstreamModel,
-                source.ChannelId,
-                source.RequestType,
-                source.ParentRequestLogId,
-                source.IsStream,
-                source.TtftMs,
-                source.DurationMs,
-                source.StatusCode,
-                source.InputTokens,
-                source.CachedTokens,
-                source.OutputTokens,
-                source.Cost,
-                source.OwnerUsername,
-                source.ApiKeyId,
-                source.Error,
-                RequestStatus(source.LifecycleStatus, source.StatusCode, source.Error)));
     }
 
     private static Dictionary<string, object?> DeserializeObject(string? raw)

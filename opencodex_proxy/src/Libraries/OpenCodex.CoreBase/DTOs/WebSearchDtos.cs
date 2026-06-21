@@ -12,7 +12,7 @@ namespace OpenCodex.CoreBase.DTOs;
 /// <param name="usageLimit">密钥配置的使用上限。</param>
 /// <param name="keyUsageLimit">生效的单密钥使用上限。</param>
 public sealed class TavilyKeyDto(
-    long id,
+    Guid id,
     int position,
     string provider,
     string key,
@@ -24,7 +24,7 @@ public sealed class TavilyKeyDto(
     /// <summary>
     /// 获取密钥的数据库标识符。
     /// </summary>
-    public long Id { get; } = id;
+    public Guid Id { get; } = id;
 
     /// <summary>
     /// 获取密钥选择位置。

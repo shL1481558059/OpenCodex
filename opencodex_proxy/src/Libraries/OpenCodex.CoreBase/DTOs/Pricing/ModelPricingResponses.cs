@@ -92,7 +92,7 @@ public sealed class SeedModelPricingResponse
 public sealed class ModelPricingResponse
 {
     public ModelPricingResponse(
-        long id,
+        Guid id,
         string modelId,
         string vendor,
         string name,
@@ -120,7 +120,7 @@ public sealed class ModelPricingResponse
     }
 
     [JsonPropertyName("id")]
-    public long Id { get; }
+    public Guid Id { get; }
 
     [JsonPropertyName("model_id")]
     public string ModelId { get; }
