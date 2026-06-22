@@ -56,7 +56,7 @@ public sealed class TavilyKeyRequest
     /// 获取或设置既有密钥的标识。
     /// </summary>
     [JsonPropertyName("id")]
-    public long? Id { get; set; }
+    public Guid? Id { get; set; }
 
     /// <summary>
     /// 获取或设置密钥所属的搜索提供方。
@@ -106,7 +106,7 @@ public sealed class TavilyKeyRequest
             ["key"] = Key
         };
 
-        if (Id.HasValue)
+        if (Id.HasValue && Id.Value != Guid.Empty)
         {
             key["id"] = Id.Value;
         }
