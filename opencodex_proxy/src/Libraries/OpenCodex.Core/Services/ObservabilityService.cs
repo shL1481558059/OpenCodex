@@ -151,29 +151,16 @@ public sealed class ObservabilityService : IObservabilityService
             return ApiOpResult<ClearLogsResponse>.Fail(403, "only superadmin can clear logs");
         }
 
-        var logs = _logRepository.Table.ToList();
-        var details = _detailRepository.Table.ToList();
-        var streamLines = _streamLineRepository.Table.ToList();
-
-        if (streamLines.Count > 0)
-        {
-            _streamLineRepository.Delete(streamLines);
-        }
-
-        if (details.Count > 0)
-        {
-            _detailRepository.Delete(details);
-        }
-
-        if (logs.Count > 0)
-        {
-            _logRepository.Delete(logs);
-        }
+        // 使用 ExecuteDelete 直接在数据库层面执行 DELETE FROM，
+        // 避免将数十万条流式行记录加载到内存。
+        var deletedStreamLines = _streamLineRepository.ExecuteDeleteAll();
+        var deletedDetails = _detailRepository.ExecuteDeleteAll();
+        var deletedLogs = _logRepository.ExecuteDeleteAll();
 
         return ApiOpResult<ClearLogsResponse>.Succeed(new ClearLogsResponse(
-            logs.Count,
-            details.Count,
-            streamLines.Count));
+            deletedLogs,
+            deletedDetails,
+            deletedStreamLines));
     }
 
     private Dictionary<Guid, string> BuildOwnerMap(IReadOnlyList<RequestLog> logs)
