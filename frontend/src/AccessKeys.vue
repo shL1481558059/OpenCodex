@@ -7,6 +7,15 @@
       </div>
       <div class="toolbar-actions">
         <el-button :icon="Refresh" @click="loadAccessKeys">刷新</el-button>
+        <el-button :icon="Download" @click="exportAccessKeys">导出</el-button>
+        <el-button :icon="Upload" @click="triggerImportAccessKeys">导入</el-button>
+        <input
+          ref="importAccessKeysInput"
+          type="file"
+          accept="application/json,.json"
+          style="display:none"
+          @change="handleImportAccessKeysFile"
+        />
         <el-button type="primary" :icon="Plus" @click="openAccessKeyDialog()">新增 API Key</el-button>
       </div>
     </div>
@@ -121,7 +130,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from "vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
-import { CopyDocument, Delete, Plus, Refresh } from "@element-plus/icons-vue";
+import { CopyDocument, Delete, Download, Plus, Refresh, Upload } from "@element-plus/icons-vue";
 const props = defineProps({
   api: { type: Function, required: true },
   isSuperadmin: { type: Boolean, default: false },
@@ -155,6 +164,59 @@ async function loadAccessKeys() {
     ElMessage.error(error.message);
   } finally {
     accessKeysLoading.value = false;
+  }
+}
+
+const importAccessKeysInput = ref(null);
+
+function exportAccessKeys() {
+  const keys = accessKeys.value.map((k) => ({
+    owner_username: k.owner_username || "",
+    name: k.name || "",
+    key: k.key || "",
+    enabled: k.enabled !== false
+  }));
+  const payload = {
+    exported_at: new Date().toISOString(),
+    type: "api_keys",
+    keys
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `api-keys-${Date.now()}.json`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+  ElMessage.success("API Key 已导出（含明文，请妥善保管）");
+}
+
+function triggerImportAccessKeys() {
+  importAccessKeysInput.value?.click();
+}
+
+async function handleImportAccessKeysFile(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  event.target.value = "";
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    const keys = Array.isArray(parsed.keys) ? parsed.keys : Array.isArray(parsed) ? parsed : null;
+    if (!keys) {
+      ElMessage.error("导入文件格式不正确：缺少 keys 数组");
+      return;
+    }
+    await props.api("/api-keys/import", {
+      method: "POST",
+      body: JSON.stringify({ keys })
+    });
+    ElMessage.success("API Key 导入成功");
+    await loadAccessKeys();
+  } catch (error) {
+    ElMessage.error(error.message || "导入失败");
   }
 }
 

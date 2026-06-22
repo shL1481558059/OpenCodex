@@ -184,6 +184,117 @@ public sealed class ApiKeyService : IApiKeyService
         }
     }
 
+    public ApiOpResult<ApiKeysResponse> ImportKeys(
+        ApiKeyImportCommand command)
+    {
+        try
+        {
+            var currentUser = _workContext.RequireUser();
+            var isSuperadmin = currentUser.Role == "superadmin";
+            var now = UnixTimeSeconds();
+
+            // 收集导入条目里涉及的 owner 用户名，批量解析为 userId
+            var ownerUsernames = command.Items
+                .Select(item => item.OwnerUsername)
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Distinct()
+                .ToList();
+            var ownerMap = ownerUsernames.Count > 0
+                ? _userRepository.TableNoTracking
+                    .Where(u => ownerUsernames.Contains(u.Username))
+                    .ToDictionary(u => u.Username, u => u.Id)
+                : new Dictionary<string, Guid>();
+
+            // 非 superadmin 只能导入到自己的名下；superadmin 按 owner_username 分配，缺省归当前用户
+            Guid? scopeUserId = isSuperadmin ? null : currentUser.UserId;
+            var existingKeys = (scopeUserId.HasValue
+                    ? _keyRepository.Table.Where(key => key.OwnerUserId == scopeUserId.Value)
+                    : _keyRepository.Table)
+                .ToList();
+            // 合并键:(ownerUserId, name)
+            var existingByName = existingKeys
+                .ToDictionary(key => (key.OwnerUserId, key.Name), key => key);
+
+            var toInsert = new List<AccessApiKey>();
+            var toUpdate = new List<AccessApiKey>();
+            foreach (var item in command.Items)
+            {
+                if (string.IsNullOrWhiteSpace(item.Name))
+                {
+                    throw new ArgumentException("api key name is required");
+                }
+                if (string.IsNullOrWhiteSpace(item.Key))
+                {
+                    throw new ArgumentException($"api key '{item.Name}' key is required");
+                }
+
+                Guid ownerUserId;
+                if (!isSuperadmin)
+                {
+                    ownerUserId = currentUser.UserId;
+                }
+                else if (!string.IsNullOrWhiteSpace(item.OwnerUsername))
+                {
+                    if (!ownerMap.TryGetValue(item.OwnerUsername!, out ownerUserId))
+                    {
+                        throw new InvalidOperationException($"owner user '{item.OwnerUsername}' not found");
+                    }
+                }
+                else
+                {
+                    ownerUserId = currentUser.UserId;
+                }
+
+                var matchKey = (ownerUserId, item.Name);
+                if (existingByName.TryGetValue(matchKey, out var existing))
+                {
+                    existing.KeyHash = OpenCodexSecurity.HashAccessApiKey(item.Key);
+                    existing.KeyPlaintext = item.Key;
+                    existing.KeyPrefix = item.Key.Length >= 12 ? item.Key[..12] : item.Key;
+                    existing.KeySuffix = item.Key.Length >= 6 ? item.Key[^6..] : item.Key;
+                    existing.Enabled = item.Enabled;
+                    existing.UpdatedAt = now;
+                    toUpdate.Add(existing);
+                }
+                else
+                {
+                    toInsert.Add(new AccessApiKey
+                    {
+                        OwnerUserId = ownerUserId,
+                        Name = item.Name,
+                        KeyHash = OpenCodexSecurity.HashAccessApiKey(item.Key),
+                        KeyPlaintext = item.Key,
+                        KeyPrefix = item.Key.Length >= 12 ? item.Key[..12] : item.Key,
+                        KeySuffix = item.Key.Length >= 6 ? item.Key[^6..] : item.Key,
+                        Enabled = item.Enabled,
+                        CreatedAt = now,
+                        UpdatedAt = now
+                    });
+                }
+            }
+
+            foreach (var key in toUpdate)
+            {
+                _keyRepository.Update(key);
+            }
+
+            if (toInsert.Count > 0)
+            {
+                _keyRepository.Insert(toInsert);
+            }
+
+            return ListKeys(isSuperadmin ? null : currentUser.Username);
+        }
+        catch (ArgumentException exception)
+        {
+            return ApiOpResult<ApiKeysResponse>.Fail(400, exception.Message);
+        }
+        catch (InvalidOperationException exception)
+        {
+            return ApiOpResult<ApiKeysResponse>.Fail(400, exception.Message);
+        }
+    }
+
     private static AccessApiKeyDto MapToDto(AccessApiKey key, string ownerUsername)
     {
         return new AccessApiKeyDto(

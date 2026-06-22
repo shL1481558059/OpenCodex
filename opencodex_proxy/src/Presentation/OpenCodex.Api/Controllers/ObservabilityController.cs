@@ -113,6 +113,14 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         return Api(result);
     }
 
+    [HttpDelete("/logs")]
+    public IActionResult ClearLogs()
+    {
+        RequireSuperadmin();
+        var result = _observability.ClearLogs();
+        return Api(result);
+    }
+
     [HttpGet("/stats")]
     public IActionResult Stats(
         string range = "1h",

@@ -32,4 +32,12 @@ public sealed class ConfigController : AuthenticatedApiControllerBase
         var result = _config.SaveConfig(request.ToDictionary());
         return Api(result);
     }
+
+    [HttpPost("/config/import")]
+    public IActionResult ImportConfig(ConfigSaveRequest request)
+    {
+        RequireUser();
+        var result = _config.ImportConfig(request.ToDictionary());
+        return Api(result);
+    }
 }

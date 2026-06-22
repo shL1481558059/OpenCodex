@@ -54,10 +54,11 @@ public sealed class LogsPageResponse
     /// <returns>请求日志分页响应。</returns>
     public static LogsPageResponse From(
         RequestLogPageDto page,
-        IReadOnlyDictionary<Guid, string>? apiKeyNames = null)
+        IReadOnlyDictionary<Guid, string>? apiKeyNames = null,
+        IReadOnlyDictionary<Guid, string>? channelNames = null)
     {
         return new LogsPageResponse(
-            page.Events.Select(log => LogEventResponse.From(log, apiKeyNames)).ToList(),
+            page.Events.Select(log => LogEventResponse.From(log, apiKeyNames, channelNames)).ToList(),
             page.Total,
             page.Page,
             page.PageSize);
@@ -127,6 +128,7 @@ public sealed class LogEventResponse
     /// <param name="ownerUsername">所属用户名。</param>
     /// <param name="apiKeyId">访问密钥标识。</param>
     /// <param name="apiKeyName">访问密钥显示名称。</param>
+    /// <param name="channelName">通道显示名称。</param>
     /// <param name="error">错误消息。</param>
     /// <param name="requestStatus">请求状态。</param>
     public LogEventResponse(
@@ -154,6 +156,7 @@ public sealed class LogEventResponse
         string? ownerUsername,
         Guid? apiKeyId,
         string? apiKeyName,
+        string? channelName,
         string? error,
         string requestStatus)
     {
@@ -181,6 +184,7 @@ public sealed class LogEventResponse
         OwnerUsername = ownerUsername;
         ApiKeyId = apiKeyId;
         ApiKeyName = apiKeyName;
+        ChannelName = channelName;
         Error = error;
         RequestStatus = requestStatus;
     }
@@ -330,6 +334,12 @@ public sealed class LogEventResponse
     public string? ApiKeyName { get; }
 
     /// <summary>
+    /// 获取通道显示名称。
+    /// </summary>
+    [JsonPropertyName("channel_name")]
+    public string? ChannelName { get; }
+
+    /// <summary>
     /// 获取错误消息。
     /// </summary>
     [JsonPropertyName("error")]
@@ -348,7 +358,8 @@ public sealed class LogEventResponse
     /// <returns>请求日志列表事件响应。</returns>
     public static LogEventResponse From(
         RequestLogEventDto log,
-        IReadOnlyDictionary<Guid, string>? apiKeyNames = null)
+        IReadOnlyDictionary<Guid, string>? apiKeyNames = null,
+        IReadOnlyDictionary<Guid, string>? channelNames = null)
     {
         return new LogEventResponse(
             log.Id,
@@ -375,6 +386,7 @@ public sealed class LogEventResponse
             log.OwnerUsername,
             log.ApiKeyId,
             ReadApiKeyName(log.ApiKeyId, apiKeyNames),
+            ReadChannelName(log.ChannelId, channelNames),
             log.Error,
             log.RequestStatus);
     }
@@ -383,9 +395,27 @@ public sealed class LogEventResponse
         Guid? apiKeyId,
         IReadOnlyDictionary<Guid, string>? apiKeyNames)
     {
-        return apiKeyId.HasValue && apiKeyNames?.TryGetValue(apiKeyId.Value, out var name) == true
+        return apiKeyId.HasValue && apiKeyNames is not null && apiKeyNames.TryGetValue(apiKeyId.Value, out var name)
             ? name
             : null;
+    }
+
+    /// <summary>
+    /// 从通道名称映射中读取指定通道的名称。
+    /// </summary>
+    /// <param name="channelIdText">通道标识文本。</param>
+    /// <param name="channelNames">通道标识到名称的映射。</param>
+    /// <returns>通道显示名称；如果未提供映射或未命中则返回 null。</returns>
+    private static string? ReadChannelName(
+        string? channelIdText,
+        IReadOnlyDictionary<Guid, string>? channelNames)
+    {
+        if (channelNames is null || !Guid.TryParse(channelIdText, out var channelId) || channelId == Guid.Empty)
+        {
+            return null;
+        }
+
+        return channelNames.TryGetValue(channelId, out var name) ? name : null;
     }
 }
 
@@ -744,7 +774,8 @@ public sealed class LogDetailResponse
     /// <returns>请求日志详情响应。</returns>
     public static LogDetailResponse From(
         RequestLogDto log,
-        IReadOnlyDictionary<Guid, string>? apiKeyNames = null)
+        IReadOnlyDictionary<Guid, string>? apiKeyNames = null,
+        IReadOnlyDictionary<Guid, string>? channelNames = null)
     {
         var logEvent = LogEventResponse.From(new RequestLogEventDto(
             log.Id,
@@ -771,7 +802,7 @@ public sealed class LogDetailResponse
             log.OwnerUsername,
             log.ApiKeyId,
             log.Error,
-            log.RequestStatus), apiKeyNames);
+            log.RequestStatus), apiKeyNames, channelNames);
 
         return new LogDetailResponse(
             logEvent.Id,
@@ -1202,4 +1233,41 @@ public sealed class StatsModelDistributionResponse
     {
         return new StatsModelDistributionResponse(item.Model, item.Count);
     }
+}
+
+/// <summary>
+/// 表示清除全部日志的响应。
+/// </summary>
+public sealed class ClearLogsResponse
+{
+    /// <summary>
+    /// 初始化 <see cref="ClearLogsResponse"/> 类的新实例。
+    /// </summary>
+    /// <param name="deletedLogs">已删除的请求日志数。</param>
+    /// <param name="deletedDetails">已删除的日志详情数。</param>
+    /// <param name="deletedStreamLines">已删除的流式行数。</param>
+    public ClearLogsResponse(int deletedLogs, int deletedDetails, int deletedStreamLines)
+    {
+        DeletedLogs = deletedLogs;
+        DeletedDetails = deletedDetails;
+        DeletedStreamLines = deletedStreamLines;
+    }
+
+    /// <summary>
+    /// 获取已删除的请求日志数。
+    /// </summary>
+    [JsonPropertyName("deleted_logs")]
+    public int DeletedLogs { get; }
+
+    /// <summary>
+    /// 获取已删除的日志详情数。
+    /// </summary>
+    [JsonPropertyName("deleted_details")]
+    public int DeletedDetails { get; }
+
+    /// <summary>
+    /// 获取已删除的流式行数。
+    /// </summary>
+    [JsonPropertyName("deleted_stream_lines")]
+    public int DeletedStreamLines { get; }
 }

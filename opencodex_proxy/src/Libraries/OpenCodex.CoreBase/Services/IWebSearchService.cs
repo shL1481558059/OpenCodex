@@ -33,4 +33,12 @@ public interface IWebSearchService
         Guid keyId,
        string query,
        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// 合并导入联网搜索配置。按 (provider, key) 匹配：已存在则更新，不存在则新增。
+    /// </summary>
+    /// <param name="body">导入的联网搜索配置请求内容。</param>
+    /// <returns>导入后的联网搜索配置结果。</returns>
+    ApiOpResult<WebSearchConfigResponse> ImportConfig(
+        IReadOnlyDictionary<string, object?> body);
 }

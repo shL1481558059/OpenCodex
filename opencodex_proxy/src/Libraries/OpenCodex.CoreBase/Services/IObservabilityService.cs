@@ -53,4 +53,10 @@ public interface IObservabilityService
         object? startTs,
         object? endTs,
         IReadOnlyDictionary<string, object?> filters);
+
+    /// <summary>
+    /// 清除全部请求日志及其关联详情和流式行记录。
+    /// </summary>
+    /// <returns>清除操作结果，载荷为已删除的记录总数。</returns>
+    ApiOpResult<ClearLogsResponse> ClearLogs();
 }

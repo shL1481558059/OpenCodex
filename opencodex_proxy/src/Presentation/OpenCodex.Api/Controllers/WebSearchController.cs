@@ -33,6 +33,14 @@ public sealed class WebSearchController : AuthenticatedApiControllerBase
         return Api(result);
     }
 
+    [HttpPost("/web-search/import")]
+    public IActionResult ImportWebSearch(WebSearchConfigRequest request)
+    {
+        RequireSuperadmin();
+        var result = _webSearch.ImportConfig(request.ToDictionary());
+        return Api(result);
+    }
+
     [HttpPost("/web-search/test-key")]
     public async Task<IActionResult> TestWebSearchKey(WebSearchTestKeyRequest request)
     {
