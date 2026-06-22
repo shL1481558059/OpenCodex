@@ -113,6 +113,11 @@ public class EfRepository<TEntity> : IRepository<TEntity> where TEntity : BaseEn
         _context.SaveChanges();
     }
 
+    public int ExecuteDeleteAll()
+    {
+        return Entities.ExecuteDelete();
+    }
+
     public async Task DeleteAsync(IEnumerable<TEntity> entities)
     {
         if (entities == null) throw new ArgumentNullException(nameof(entities));

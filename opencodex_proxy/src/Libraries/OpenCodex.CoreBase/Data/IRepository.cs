@@ -54,6 +54,10 @@ public interface IRepository<TEntity> where TEntity : BaseEntity
     /// <summary>批量删除实体并保存。</summary>
     void Delete(IEnumerable<TEntity> entities);
 
+    /// <summary>批量删除所有实体（直接执行 DELETE FROM，不加载实体到内存）。</summary>
+    /// <returns>受影响的行数。</returns>
+    int ExecuteDeleteAll();
+
     /// <summary>异步批量删除实体并保存。</summary>
     Task DeleteAsync(IEnumerable<TEntity> entities);
 
