@@ -90,7 +90,7 @@
       </el-form-item>
       <el-form-item label="渠道">
         <el-select v-model="logFilters.channel_id" clearable filterable remote :remote-method="(query) => loadFilterOptions('channel_id', query)" :loading="filterOptionsLoading.channel_id" @visible-change="(visible) => handleFilterVisible('channel_id', visible)" @change="refreshLogPageData(1)">
-          <el-option v-for="item in filterOptions.channel_ids" :key="item" :label="item" :value="item" />
+          <el-option v-for="item in filterOptions.channel_ids" :key="channelOptionValue(item)" :label="channelOptionLabel(item)" :value="channelOptionValue(item)" />
         </el-select>
       </el-form-item>
       <el-form-item label="路径">
@@ -786,6 +786,19 @@ function apiKeyOptionLabel(item) {
   }
   const value = apiKeyOptionValue(item);
   return value ? `#${value}` : "";
+}
+
+function channelOptionValue(item) {
+  if (item && typeof item === "object" && item.id !== null && item.id !== undefined) return String(item.id);
+  return String(item ?? "");
+}
+
+function channelOptionLabel(item) {
+  if (item && typeof item === "object") {
+    const name = String(item.name || "").trim();
+    return name || channelOptionValue(item);
+  }
+  return String(item ?? "");
 }
 
 // --- Formatting helpers ---
