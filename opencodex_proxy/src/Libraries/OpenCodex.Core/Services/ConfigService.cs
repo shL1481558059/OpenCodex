@@ -67,6 +67,19 @@ public sealed class ConfigService : IConfigService
             : ApiOpResult<ConfigResponse>.Fail(saved.Code, saved.Description);
     }
 
+    public ApiOpResult<ConfigResponse> ImportConfig(
+        IReadOnlyDictionary<string, object?> body)
+    {
+        var (currentUsername, isSuperadmin) = CurrentScope();
+        var merged = MergeChannels(body, currentUsername, isSuperadmin);
+        return merged.Succeeded
+            ? ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
+                ReadChannels(currentUsername, isSuperadmin),
+                ResolveActiveRequests,
+                ResolveHealthStatus))
+            : ApiOpResult<ConfigResponse>.Fail(merged.Code, merged.Description);
+    }
+
     private int ResolveActiveRequests(ChannelDto channel)
     {
         return _channelCapacity.GetActiveRequests(channel.OwnerUsername, channel.Id.ToString());
@@ -124,9 +137,177 @@ public sealed class ConfigService : IConfigService
         {
             return ValidationFailure(exception.Message);
         }
+       catch (ArgumentException exception)
+       {
+           return ValidationFailure(exception.Message);
+       }
+    }
+
+    private ApiOpResult MergeChannels(
+        IReadOnlyDictionary<string, object?> body,
+        string currentUsername,
+        bool isSuperadmin)
+    {
+        try
+        {
+            var ownerUsername = OwnerScope(currentUsername, isSuperadmin);
+            var settings = _settingsProvider.GetSettings();
+            var normalized = ConfigNormalizer.Normalize(WithEffectiveOwner(
+                body,
+                ownerUsername,
+                settings.AdminUsername));
+            ConfigValidator.Validate(normalized, settings.DefaultTimeout);
+            var channels = JsonDictionaryValue.List(normalized, "channels")
+                .Select(item => item as IReadOnlyDictionary<string, object?>)
+                .ToList();
+            if (channels.Any(item => item is null))
+            {
+                return ValidationFailure("each channel must be an object");
+            }
+
+            MergeChannelsIntoStore(
+                settings,
+                channels.Cast<IReadOnlyDictionary<string, object?>>(),
+                ownerUsername);
+            return ApiOpResult.Succeed();
+        }
+        catch (ConfigException exception)
+        {
+            return ValidationFailure(exception.Message);
+        }
         catch (ArgumentException exception)
         {
             return ValidationFailure(exception.Message);
+        }
+    }
+
+    private void MergeChannelsIntoStore(
+        OpenCodexRuntimeSettings settings,
+        IEnumerable<IReadOnlyDictionary<string, object?>> channels,
+        string? ownerUsername)
+    {
+        var normalizedDefaultOwner = NormalizeUsername(settings.AdminUsername);
+        if (normalizedDefaultOwner.Length == 0)
+        {
+            normalizedDefaultOwner = "admin";
+        }
+
+        var normalizedOwner = ownerUsername is null ? null : NormalizeUsername(ownerUsername);
+
+        Guid defaultOwnerUserId = Guid.Empty;
+        var defaultOwner = _userRepository.TableNoTracking.FirstOrDefault(u => u.Username == normalizedDefaultOwner);
+        if (defaultOwner is not null)
+        {
+            defaultOwnerUserId = defaultOwner.Id;
+        }
+
+        Guid? scopeUserId = null;
+        if (normalizedOwner is not null)
+        {
+            var scopeUser = _userRepository.TableNoTracking.FirstOrDefault(u => u.Username == normalizedOwner);
+            scopeUserId = scopeUser?.Id ?? Guid.Empty;
+        }
+
+        // 合并键:(ownerUserId, name)
+        var existingChannels = (scopeUserId.HasValue && scopeUserId.Value != Guid.Empty
+                ? _channelRepository.Table.Where(channel => channel.OwnerUserId == scopeUserId.Value)
+                : _channelRepository.Table).ToList();
+        var existingByName = existingChannels.ToDictionary(
+            channel => (channel.OwnerUserId, channel.Name),
+            channel => channel);
+
+        var now = UnixTimeSeconds();
+        var nextPosition = existingChannels.Count > 0
+            ? existingChannels.Max(channel => channel.Position) + 1
+            : 0;
+        var toInsert = new List<Channel>();
+        var toUpdate = new List<Channel>();
+
+        foreach (var channel in channels)
+        {
+            var channelOwnerUsername = normalizedOwner
+                ?? NormalizeUsername(JsonDictionaryValue.Get(channel, "owner_username"));
+            if (channelOwnerUsername.Length == 0)
+            {
+                channelOwnerUsername = normalizedDefaultOwner;
+            }
+
+            var channelOwnerUser = _userRepository.TableNoTracking
+                .FirstOrDefault(u => u.Username == channelOwnerUsername);
+            var channelOwnerUserId = channelOwnerUser?.Id ?? defaultOwnerUserId;
+            var channelName = JsonDictionaryValue.String(channel, "name");
+            var matchKey = (channelOwnerUserId, channelName);
+
+            if (existingByName.TryGetValue(matchKey, out var existing))
+            {
+                existing.Type = JsonDictionaryValue.String(channel, "type");
+                existing.BaseUrl = JsonDictionaryValue.String(channel, "baseurl");
+                existing.ApiKey = JsonDictionaryValue.String(channel, "apikey");
+                existing.AuthMode = StringOrDefault(channel, "auth_mode", "config");
+                existing.HeadersJson = JsonSerializer.Serialize(
+                    JsonDictionaryValue.Get(channel, "headers") ?? new Dictionary<string, object?>(),
+                    JsonOptions);
+                existing.TimeoutSeconds = TimeoutValue(
+                    JsonDictionaryValue.Get(channel, "timeout_seconds"),
+                    settings.DefaultTimeout);
+                existing.RetryCount = RetryCountValue(channel);
+                existing.Priority = PriorityValue(channel, existing.Priority);
+                existing.Capacity = CapacityValue(channel, null, (existing.OwnerUserId, existing.Id), existing.Capacity);
+                existing.CompatJson = JsonSerializer.Serialize(
+                    JsonDictionaryValue.Get(channel, "compat") ?? new Dictionary<string, object?>(),
+                    JsonOptions);
+                existing.ModelsJson = JsonSerializer.Serialize(
+                    JsonDictionaryValue.Get(channel, "models") ?? new List<object?>(),
+                    JsonOptions);
+                existing.Enabled = JsonDictionaryValue.Get(channel, "enabled") is not false;
+                existing.UpdatedAt = now;
+                toUpdate.Add(existing);
+            }
+            else
+            {
+                toInsert.Add(new Channel
+                {
+                    Id = Guid.NewGuid(),
+                    OwnerUserId = channelOwnerUserId,
+                    Position = nextPosition++,
+                    Name = channelName,
+                    Type = JsonDictionaryValue.String(channel, "type"),
+                    BaseUrl = JsonDictionaryValue.String(channel, "baseurl"),
+                    ApiKey = JsonDictionaryValue.String(channel, "apikey"),
+                    AuthMode = StringOrDefault(channel, "auth_mode", "config"),
+                    HeadersJson = JsonSerializer.Serialize(
+                        JsonDictionaryValue.Get(channel, "headers") ?? new Dictionary<string, object?>(),
+                        JsonOptions),
+                    TimeoutSeconds = TimeoutValue(
+                        JsonDictionaryValue.Get(channel, "timeout_seconds"),
+                        settings.DefaultTimeout),
+                    RetryCount = RetryCountValue(channel),
+                    Priority = PriorityValue(channel, nextPosition - 1),
+                    Capacity = CapacityValue(channel, null, (channelOwnerUserId, Guid.Empty)),
+                    CompatJson = JsonSerializer.Serialize(
+                        JsonDictionaryValue.Get(channel, "compat") ?? new Dictionary<string, object?>(),
+                        JsonOptions),
+                    ModelsJson = JsonSerializer.Serialize(
+                        JsonDictionaryValue.Get(channel, "models") ?? new List<object?>(),
+                        JsonOptions),
+                    Enabled = JsonDictionaryValue.Get(channel, "enabled") is not false,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                });
+            }
+        }
+
+        if (toUpdate.Count > 0)
+        {
+            foreach (var channel in toUpdate)
+            {
+                _channelRepository.Update(channel);
+            }
+        }
+
+        if (toInsert.Count > 0)
+        {
+            _channelRepository.Insert(toInsert);
         }
     }
 
@@ -428,17 +609,18 @@ public sealed class ConfigService : IConfigService
 
     private static int CapacityValue(
         IReadOnlyDictionary<string, object?> channel,
-        IReadOnlyDictionary<(Guid OwnerUserId, Guid ChannelId), int> existingCapacities,
-        (Guid OwnerUserId, Guid ChannelId) key)
+        IReadOnlyDictionary<(Guid OwnerUserId, Guid ChannelId), int>? existingCapacities,
+        (Guid OwnerUserId, Guid ChannelId) key,
+        int fallback = 0)
     {
         if (!channel.TryGetValue("capacity", out var value) || value is null)
         {
-            if (existingCapacities.TryGetValue(key, out var existingCapacity))
+            if (existingCapacities is not null && existingCapacities.TryGetValue(key, out var existingCapacity))
             {
                 return existingCapacity;
             }
 
-            throw new ArgumentException($"channel {key.ChannelId} capacity is required");
+            return fallback;
         }
 
         return Convert.ToInt32(value, CultureInfo.InvariantCulture);

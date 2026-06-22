@@ -62,6 +62,7 @@ public sealed class ObservabilityService : IObservabilityService
     private readonly IRepository<RequestLogStreamLine> _streamLineRepository;
     private readonly IRepository<AccessApiKey> _keyRepository;
     private readonly IRepository<User> _userRepository;
+    private readonly IRepository<Channel> _channelRepository;
 
     public ObservabilityService(
         IOpenCodexRuntimeSettingsProvider settingsProvider,
@@ -70,7 +71,8 @@ public sealed class ObservabilityService : IObservabilityService
         IRepository<RequestLogDetail> detailRepository,
         IRepository<RequestLogStreamLine> streamLineRepository,
         IRepository<AccessApiKey> keyRepository,
-        IRepository<User> userRepository)
+        IRepository<User> userRepository,
+        IRepository<Channel> channelRepository)
     {
         _settingsProvider = settingsProvider;
         _workContext = workContext;
@@ -79,6 +81,7 @@ public sealed class ObservabilityService : IObservabilityService
         _streamLineRepository = streamLineRepository;
         _keyRepository = keyRepository;
         _userRepository = userRepository;
+        _channelRepository = channelRepository;
     }
 
     public ApiOpResult<LogsPageResponse> ReadLogsPage(
@@ -93,7 +96,8 @@ public sealed class ObservabilityService : IObservabilityService
             ScopedFilters(filters, currentUsername, isSuperadmin));
         return ApiOpResult<LogsPageResponse>.Succeed(LogsPageResponse.From(
             logsPage,
-            ReadApiKeyNames(logsPage.Events.Select(log => log.ApiKeyId))));
+            ReadApiKeyNames(logsPage.Events.Select(log => log.ApiKeyId)),
+            ReadChannelNames(logsPage.Events.Select(log => log.ChannelId))));
     }
 
     public ApiOpResult<IReadOnlyDictionary<string, object>> ReadLogFilterOption(
@@ -121,7 +125,8 @@ public sealed class ObservabilityService : IObservabilityService
             ? ApiOpResult<LogDetailResponse>.Fail(404, "log not found")
             : ApiOpResult<LogDetailResponse>.Succeed(LogDetailResponse.From(
                 log,
-                ReadApiKeyNames(new[] { log.ApiKeyId })));
+                ReadApiKeyNames(new[] { log.ApiKeyId }),
+                ReadChannelNames(new[] { log.ChannelId?.ToString() })));
     }
 
     public ApiOpResult<StatsResponse> ReadStats(
@@ -138,10 +143,43 @@ public sealed class ObservabilityService : IObservabilityService
             ScopedFilters(filters, currentUsername, isSuperadmin))));
     }
 
-    private Dictionary<Guid, string> BuildOwnerMap(IReadOnlyList<RequestLog> logs)
+    public ApiOpResult<ClearLogsResponse> ClearLogs()
     {
-        var ownerIds = logs.Select(log => log.OwnerUserId).Distinct().ToList();
-        return ownerIds.Count > 0
+        var currentUser = _workContext.RequireUser();
+        if (currentUser.Role != "superadmin")
+        {
+            return ApiOpResult<ClearLogsResponse>.Fail(403, "only superadmin can clear logs");
+        }
+
+        var logs = _logRepository.Table.ToList();
+        var details = _detailRepository.Table.ToList();
+        var streamLines = _streamLineRepository.Table.ToList();
+
+        if (streamLines.Count > 0)
+        {
+            _streamLineRepository.Delete(streamLines);
+        }
+
+        if (details.Count > 0)
+        {
+            _detailRepository.Delete(details);
+        }
+
+        if (logs.Count > 0)
+        {
+            _logRepository.Delete(logs);
+        }
+
+        return ApiOpResult<ClearLogsResponse>.Succeed(new ClearLogsResponse(
+            logs.Count,
+            details.Count,
+            streamLines.Count));
+    }
+
+    private Dictionary<Guid, string> BuildOwnerMap(IReadOnlyList<RequestLog> logs)
+{
+    var ownerIds = logs.Select(log => log.OwnerUserId).Distinct().ToList();
+    return ownerIds.Count > 0
             ? _userRepository.TableNoTracking
                 .Where(u => ownerIds.Contains(u.Id))
                 .ToDictionary(u => u.Id, u => u.Username)
@@ -461,6 +499,27 @@ public sealed class ObservabilityService : IObservabilityService
             .Select(key => new { key.Id, key.Name })
             .AsEnumerable()
             .ToDictionary(key => key.Id, key => key.Name);
+    }
+
+    private Dictionary<Guid, string> ReadChannelNames(
+        IEnumerable<string?> channelIdTexts)
+    {
+        var ids = channelIdTexts
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => Guid.TryParse(value, out var parsed) ? parsed : Guid.Empty)
+            .Where(value => value != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+        {
+            return [];
+        }
+
+        return _channelRepository.TableNoTracking
+            .Where(channel => ids.Contains(channel.Id))
+            .Select(channel => new { channel.Id, channel.Name })
+            .AsEnumerable()
+            .ToDictionary(channel => channel.Id, channel => channel.Name);
     }
 
     private List<string> DistinctTextValues(

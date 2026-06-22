@@ -16,6 +16,7 @@ public sealed class ObservabilityServiceTests
 {
     private static readonly Guid AdminUserId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid KeyId101 = Guid.Parse("22222222-2222-2222-2222-222222222201");
+    private static readonly Guid ChannelId401 = Guid.Parse("44444444-4444-4444-4444-444444444401");
 
     private static ObservabilityService CreateService(string dbPath)
     {
@@ -27,7 +28,8 @@ public sealed class ObservabilityServiceTests
             new EfRepository<RequestLogDetail>(context),
             new EfRepository<RequestLogStreamLine>(context),
             new EfRepository<AccessApiKey>(context),
-            new EfRepository<User>(context));
+            new EfRepository<User>(context),
+            new EfRepository<Channel>(context));
     }
 
     [Fact]
@@ -64,6 +66,26 @@ context.Users.Add(new User
                 CreatedAt = 1,
                 UpdatedAt = 1
             });
+            context.Channels.Add(new Channel
+            {
+                Id = ChannelId401,
+                OwnerUserId = AdminUserId,
+                Position = 0,
+                Name = "主渠道",
+                Type = "openai",
+                BaseUrl = "https://example.com",
+                ApiKey = "sk-channel",
+                AuthMode = "config",
+                HeadersJson = "{}",
+                TimeoutSeconds = 30,
+                RetryCount = 0,
+                Capacity = 1,
+                CompatJson = "{}",
+                ModelsJson = "[]",
+                Enabled = true,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
             context.RequestLogs.Add(new RequestLog
             {
                 Id = Guid.Parse("33333333-3333-3333-3333-333333333301"),
@@ -73,7 +95,7 @@ context.Users.Add(new User
                 Path = "/v1/chat/completions",
                 Model = "gpt-test",
                 UpstreamModel = "gpt-test",
-                ChannelId = Guid.Parse("44444444-4444-4444-4444-444444444401"),
+                ChannelId = ChannelId401,
                 IsStream = false,
                 StatusCode = 200,
                 OwnerUserId = AdminUserId,
@@ -90,6 +112,8 @@ context.Users.Add(new User
         var log = Assert.Single(logs.Payload!.Events);
         Assert.Equal(KeyId101, log.ApiKeyId);
         Assert.Equal("Primary Key", log.ApiKeyName);
+        Assert.Equal(ChannelId401.ToString(), log.ChannelId);
+        Assert.Equal("主渠道", log.ChannelName);
 
         var options = service.ReadLogFilterOption(
             "api_key_id",

@@ -42,4 +42,12 @@ public interface IApiKeyService
    /// <returns>删除操作结果。</returns>
    ApiOpResult<DeleteApiKeyResponse> DeleteKey(
         Guid keyId);
+
+    /// <summary>
+    /// 合并导入访问密钥。按 (owner_username, name) 匹配：已存在则更新 key 与启用状态，不存在则新增并保留原 key 明文。
+    /// </summary>
+    /// <param name="command">导入访问密钥命令。</param>
+    /// <returns>导入后的访问密钥列表结果。</returns>
+    ApiOpResult<ApiKeysResponse> ImportKeys(
+        ApiKeyImportCommand command);
 }

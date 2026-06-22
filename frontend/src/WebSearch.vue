@@ -7,6 +7,15 @@
       </div>
       <div class="toolbar-actions">
         <el-button :icon="Refresh" :loading="webSearchLoading" :disabled="webSearchSaving" @click="loadWebSearch">刷新</el-button>
+        <el-button :icon="Download" :disabled="webSearchSaving" @click="exportWebSearch">导出</el-button>
+        <el-button :icon="Upload" :disabled="webSearchSaving" @click="triggerImportWebSearch">导入</el-button>
+        <input
+          ref="importWebSearchInput"
+          type="file"
+          accept="application/json,.json"
+          style="display:none"
+          @change="handleImportWebSearchFile"
+        />
         <el-button :icon="Plus" :disabled="webSearchSaving" @click="openWebSearchKeyDrawer()">新增 Web Search Key</el-button>
       </div>
     </div>
@@ -182,7 +191,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from "vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
-import { Delete, Edit, Plus, Refresh } from "@element-plus/icons-vue";
+import { Delete, Download, Edit, Plus, Refresh, Upload } from "@element-plus/icons-vue";
 
 const WEB_SEARCH_PROVIDER_LABELS = { tavily: "Tavily" };
 
@@ -220,6 +229,65 @@ async function loadWebSearch() {
     ElMessage.error(error.message);
   } finally {
     webSearchLoading.value = false;
+  }
+}
+
+const importWebSearchInput = ref(null);
+
+function exportWebSearch() {
+  const payload = {
+    exported_at: new Date().toISOString(),
+    type: "web_search",
+    enabled: webSearchConfig.enabled,
+    key_usage_limit: webSearchConfig.default_key_usage_limit,
+    keys: webSearchConfig.keys.map((k) => ({
+      provider: k.provider,
+      key: k.key,
+      enabled: k.enabled,
+      usage_count: k.usage_count,
+      usage_limit: k.usage_limit
+    }))
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `web-search-${Date.now()}.json`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+  ElMessage.success("Web Search 配置已导出（含明文，请妥善保管）");
+}
+
+function triggerImportWebSearch() {
+  importWebSearchInput.value?.click();
+}
+
+async function handleImportWebSearchFile(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  event.target.value = "";
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed.keys)) {
+      ElMessage.error("导入文件格式不正确：缺少 keys 数组");
+      return;
+    }
+    const payload = {
+      enabled: parsed.enabled ?? webSearchConfig.enabled,
+      key_usage_limit: parsed.key_usage_limit ?? webSearchConfig.default_key_usage_limit,
+      keys: parsed.keys
+    };
+    await props.api("/web-search/import", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+    ElMessage.success("Web Search 配置导入成功");
+    await loadWebSearch();
+  } catch (error) {
+    ElMessage.error(error.message || "导入失败");
   }
 }
 

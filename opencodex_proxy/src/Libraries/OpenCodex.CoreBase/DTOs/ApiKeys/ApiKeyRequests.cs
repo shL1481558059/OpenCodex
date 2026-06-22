@@ -50,3 +50,62 @@ public sealed class ApiKeyUpdateRequest
         return new ApiKeyUpdateCommand(Enabled);
     }
 }
+
+/// <summary>
+    /// 表示导入管理员 API 密钥的请求。
+    /// </summary>
+public sealed class ApiKeyImportRequest
+{
+    /// <summary>
+    /// 获取或设置要导入的访问密钥条目列表。
+    /// </summary>
+    [JsonPropertyName("keys")]
+    public List<ApiKeyImportItemRequest> Keys { get; set; } = [];
+
+    /// <summary>
+    /// 将请求转换为导入访问密钥命令。
+    /// </summary>
+    /// <returns>导入访问密钥命令。</returns>
+    public ApiKeyImportCommand ToCommand()
+    {
+        var items = (Keys ?? [])
+            .Where(item => item is not null)
+            .Select(item => new ApiKeyImportItem(
+                string.IsNullOrWhiteSpace(item.OwnerUsername) ? null : item.OwnerUsername.Trim(),
+                (item.Name ?? string.Empty).Trim(),
+                (item.Key ?? string.Empty).Trim(),
+                item.Enabled))
+            .ToList();
+        return new ApiKeyImportCommand(items);
+    }
+}
+
+/// <summary>
+    /// 表示导入的单个访问密钥条目请求。
+    /// </summary>
+public sealed class ApiKeyImportItemRequest
+{
+    /// <summary>
+    /// 获取或设置拥有该访问密钥的用户名。
+    /// </summary>
+    [JsonPropertyName("owner_username")]
+    public string? OwnerUsername { get; set; }
+
+    /// <summary>
+    /// 获取或设置访问密钥显示名称。
+    /// </summary>
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 获取或设置访问密钥明文。
+    /// </summary>
+    [JsonPropertyName("key")]
+    public string Key { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 获取或设置指示访问密钥是否启用的值。
+    /// </summary>
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; } = true;
+}

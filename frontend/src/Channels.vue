@@ -7,6 +7,15 @@
       </div>
       <div class="toolbar-actions">
         <el-button :icon="Refresh" @click="loadConfig">刷新</el-button>
+        <el-button :icon="Download" @click="exportChannels">导出</el-button>
+        <el-button :icon="Upload" @click="triggerImportChannels">导入</el-button>
+        <input
+          ref="importChannelsInput"
+          type="file"
+          accept="application/json,.json"
+          style="display:none"
+          @change="handleImportChannelsFile"
+        />
         <el-button type="primary" :icon="Plus" @click="openChannelDrawer()">新增渠道</el-button>
       </div>
     </div>
@@ -333,11 +342,13 @@ import {
 import {
   Connection,
   Delete,
+  Download,
   DocumentCopy,
   Edit,
   MoreFilled,
   Plus,
   Refresh,
+  Upload,
 } from "@element-plus/icons-vue";
 const props = defineProps({
   api: { type: Function, required: true },
@@ -388,6 +399,53 @@ async function loadConfig() {
     ElMessage.error(error.message);
   } finally {
     configLoading.value = false;
+  }
+}
+
+const importChannelsInput = ref(null);
+
+function exportChannels() {
+  const payload = {
+    exported_at: new Date().toISOString(),
+    type: "channels",
+    channels: config.channels
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `channels-${Date.now()}.json`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+  ElMessage.success("渠道配置已导出");
+}
+
+function triggerImportChannels() {
+  importChannelsInput.value?.click();
+}
+
+async function handleImportChannelsFile(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  event.target.value = "";
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    const channels = Array.isArray(parsed.channels) ? parsed.channels : Array.isArray(parsed) ? parsed : null;
+    if (!channels) {
+      ElMessage.error("导入文件格式不正确：缺少 channels 数组");
+      return;
+    }
+    await props.api("/config/import", {
+      method: "POST",
+      body: JSON.stringify({ channels })
+    });
+    ElMessage.success("渠道配置导入成功");
+    await loadConfig();
+  } catch (error) {
+    ElMessage.error(error.message || "导入失败");
   }
 }
 

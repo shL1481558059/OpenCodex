@@ -48,4 +48,12 @@ public sealed class ApiKeysController : AuthenticatedApiControllerBase
         var result = _apiKeys.DeleteKey(keyId);
         return Api(result);
     }
+
+    [HttpPost("/api-keys/import")]
+    public IActionResult ImportApiKeys(ApiKeyImportRequest request)
+    {
+        RequireUser();
+        var result = _apiKeys.ImportKeys(request.ToCommand());
+        return Api(result);
+    }
 }

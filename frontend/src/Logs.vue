@@ -48,7 +48,20 @@
             </el-dropdown-menu>
           </template>
         </el-dropdown>
-        <el-button :icon="Refresh" :loading="refreshLoading" @click="refreshLogPageData()">刷新</el-button>
+       <el-button :icon="Refresh" :loading="refreshLoading" @click="refreshLogPageData()">刷新</el-button>
+        <el-popconfirm
+          v-if="isSuperadmin"
+          title="确定清除全部请求日志？此操作不可恢复，将删除所有日志、详情及 SSE 流行。"
+          confirm-button-text="清除"
+          cancel-button-text="取消"
+          confirm-button-type="danger"
+          width="320"
+          @confirm="clearAllLogs"
+        >
+          <template #reference>
+            <el-button type="danger" :icon="Delete" :loading="clearingLogs">清除全部日志</el-button>
+          </template>
+        </el-popconfirm>
       </div>
     </div>
 
@@ -248,7 +261,7 @@
             </el-descriptions-item>
             <el-descriptions-item label="模型">{{ selectedLog.model }}</el-descriptions-item>
             <el-descriptions-item label="上游模型">{{ selectedLog.upstream_model }}</el-descriptions-item>
-            <el-descriptions-item label="渠道">{{ selectedLog.channel_id || "-" }}</el-descriptions-item>
+            <el-descriptions-item label="渠道">{{ formatChannelName(selectedLog) || "-" }}</el-descriptions-item>
             <el-descriptions-item label="状态码">{{ selectedLog.status_code }}</el-descriptions-item>
             <el-descriptions-item label="成本">{{ formatCost(selectedLog.cost) }}</el-descriptions-item>
             <el-descriptions-item label="创建时间">{{ formatTimeOrDash(selectedLog.created_at) }}</el-descriptions-item>
@@ -346,7 +359,7 @@
 <script setup>
 import { ref, reactive, computed, onBeforeUnmount, onMounted, watch } from "vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
-import { Box, Check, Coin, CopyDocument, DataLine, Lightning, Refresh, Search, Setting, Timer, View } from "@element-plus/icons-vue";
+import { Box, Check, Coin, CopyDocument, DataLine, Delete, Lightning, Refresh, Search, Setting, Timer, View } from "@element-plus/icons-vue";
 import VueJsonPretty from "vue-json-pretty";
 import "vue-json-pretty/lib/styles.css";
 
@@ -478,6 +491,21 @@ const logAutoRefreshLabel = computed(() =>
 const refreshLoading = computed(() => logsLoading.value || statsLoading.value);
 const initialLogsLoading = computed(() => logsLoading.value && !hasLoadedLogs.value);
 const initialStatsLoading = computed(() => statsLoading.value && !hasLoadedStats.value);
+const clearingLogs = ref(false);
+
+async function clearAllLogs() {
+  clearingLogs.value = true;
+  try {
+    const result = await props.api("/logs", { method: "DELETE" });
+    const deleted = result?.deleted_logs ?? 0;
+    ElMessage.success(`已清除 ${deleted} 条日志`);
+    await refreshLogPageData(1);
+  } catch (error) {
+    ElMessage.error(error.message || "清除日志失败");
+  } finally {
+    clearingLogs.value = false;
+  }
+}
 const summaryCards = computed(() => {
   const summary = statsData.summary || defaultSummary();
   return [
@@ -766,6 +794,7 @@ function formatLogCell(row, column) {
   switch (column.key) {
     case "created_at": return formatTime(row.created_at);
     case "api_key_id": return formatApiKeyName(row);
+    case "channel_id": return formatChannelName(row);
     case "cost": return formatCost(row.cost);
     default: return row[column.prop] ?? "";
   }
@@ -799,6 +828,12 @@ function formatApiKeyName(row) {
   const name = String(row.api_key_name || "").trim();
   if (name) return name;
   return row.api_key_id === null || row.api_key_id === undefined ? "" : `#${row.api_key_id}`;
+}
+
+function formatChannelName(row) {
+  const name = String(row.channel_name || "").trim();
+  if (name) return name;
+  return row.channel_id ? row.channel_id : "";
 }
 
 function formatStoredJson(value) {

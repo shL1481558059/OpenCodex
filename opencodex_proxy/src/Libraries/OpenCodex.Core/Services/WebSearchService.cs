@@ -52,6 +52,19 @@ public sealed class WebSearchService : IWebSearchService
         }
     }
 
+    public ApiOpResult<WebSearchConfigResponse> ImportConfig(
+        IReadOnlyDictionary<string, object?> body)
+    {
+        try
+        {
+            return ApiOpResult<WebSearchConfigResponse>.Succeed(WebSearchConfigResponse.From(MergeWebSearchConfig(body)));
+        }
+        catch (ArgumentException exception)
+        {
+            return ApiOpResult<WebSearchConfigResponse>.Fail(400, exception.Message);
+        }
+    }
+
     private ApiOpResult<TavilyKeyDto> ReserveTestKey(Guid keyId)
     {
         var key = ReserveTavilyKeyById(keyId);
@@ -151,6 +164,117 @@ public sealed class WebSearchService : IWebSearchService
         if (newKeys.Count > 0)
         {
             _keyRepository.Insert(newKeys);
+        }
+
+        return ReadWebSearchConfig();
+    }
+
+    private WebSearchConfigDto MergeWebSearchConfig(
+        IReadOnlyDictionary<string, object?> config)
+    {
+        var keysValue = JsonDictionaryValue.Get(config, "keys") ?? new List<object?>();
+        if (!ConfigValue.TryAsList(keysValue, out var keys))
+        {
+            throw new ArgumentException("web search keys must be a list", nameof(config));
+        }
+
+        var now = UnixTimeSeconds();
+        var currentDefaultKeyUsageLimit = _settingsRepository.TableNoTracking.FirstOrDefault()
+            ?.KeyUsageLimit ?? DefaultWebSearchKeyUsageLimit;
+        var defaultKeyUsageLimit = ParseRequiredPositiveInt(
+            JsonDictionaryValue.Get(config, "key_usage_limit") ?? currentDefaultKeyUsageLimit,
+            "web search key_usage_limit");
+
+        var settings = _settingsRepository.Table.FirstOrDefault();
+        if (settings is null)
+        {
+            settings = new WebSearchSettings
+            {
+                CreatedAt = now
+            };
+            _settingsRepository.Insert(settings);
+        }
+
+        settings.Enabled = JsonDictionaryValue.Get(config, "enabled") is true;
+        settings.KeyUsageLimit = defaultKeyUsageLimit;
+        settings.UpdatedAt = now;
+        _settingsRepository.Update(settings);
+
+        var existingKeys = _keyRepository.Table.ToList();
+        // 合并键:(provider, api_key)
+        var existingByKey = existingKeys.ToDictionary(
+            key => (key.Provider, key.ApiKey),
+            key => key);
+
+        var nextPosition = existingKeys.Count > 0
+            ? existingKeys.Max(key => key.Position) + 1
+            : 0;
+        var toInsert = new List<TavilyKey>();
+        var toUpdate = new List<TavilyKey>();
+
+        for (var index = 0; index < keys.Count; index++)
+        {
+            if (!ConfigValue.TryAsObject(keys[index], out var item))
+            {
+                throw new ArgumentException($"web search keys[{index + 1}] must be an object", nameof(keys));
+            }
+
+            var provider = NormalizeWebSearchProvider(JsonDictionaryValue.Get(item, "provider"));
+            var apiKey = WebSearchApiKey(item);
+            if (apiKey.Length == 0)
+            {
+                throw new ArgumentException($"web search keys[{index + 1}].key is required", nameof(keys));
+            }
+
+            var matchKey = (provider, apiKey);
+            var usageLimitSource = JsonDictionaryValue.Get(item, "usage_limit")
+                ?? JsonDictionaryValue.Get(item, "key_usage_limit");
+            var usageCountValue = JsonDictionaryValue.Get(item, "usage_count");
+
+            if (existingByKey.TryGetValue(matchKey, out var existing))
+            {
+                existing.Enabled = JsonDictionaryValue.Get(item, "enabled") is not false;
+                if (usageLimitSource is not null)
+                {
+                    existing.UsageLimit = ParseRequiredPositiveInt(usageLimitSource, $"web search keys[{index + 1}].usage_limit");
+                }
+                if (usageCountValue is not null)
+                {
+                    existing.UsageCount = ParseRequiredNonNegativeInt(usageCountValue, $"web search keys[{index + 1}].usage_count");
+                }
+                existing.UpdatedAt = now;
+                toUpdate.Add(existing);
+            }
+            else
+            {
+                var usageLimit = usageLimitSource is not null
+                    ? ParseRequiredPositiveInt(usageLimitSource, $"web search keys[{index + 1}].usage_limit")
+                    : defaultKeyUsageLimit;
+                var usageCount = usageCountValue is not null
+                    ? ParseRequiredNonNegativeInt(usageCountValue, $"web search keys[{index + 1}].usage_count")
+                    : 0;
+                toInsert.Add(new TavilyKey
+                {
+                    Position = nextPosition++,
+                    Provider = provider,
+                    ApiKey = apiKey,
+                    Enabled = JsonDictionaryValue.Get(item, "enabled") is not false,
+                    UsageCount = usageCount,
+                    UsageLimit = usageLimit,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                });
+            }
+        }
+
+        foreach (var key in toUpdate)
+        {
+            _keyRepository.Update(key);
+        }
+
+        if (toInsert.Count > 0)
+        {
+            _keyRepository.Insert(toInsert);
         }
 
         return ReadWebSearchConfig();
