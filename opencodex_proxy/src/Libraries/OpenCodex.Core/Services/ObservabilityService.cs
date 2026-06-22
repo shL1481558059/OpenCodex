@@ -27,7 +27,7 @@ public sealed class ObservabilityService : IObservabilityService
             ["request_id"] = ("request_ids", "text"),
             ["model"] = ("models", "text"),
             ["upstream_model"] = ("upstream_models", "text"),
-            ["channel_id"] = ("channel_ids", "text"),
+            ["channel_id"] = ("channel_ids", "select_option"),
             ["owner_username"] = ("owner_usernames", "text"),
             ["path"] = ("paths", "text"),
             ["request_type"] = ("request_types", "text"),
@@ -275,6 +275,8 @@ public sealed class ObservabilityService : IObservabilityService
         var logs = ApplyLogFilters(_logRepository.TableNoTracking, filters ?? new Dictionary<string, object?>());
         var values = field == "api_key_id"
             ? (object)DistinctApiKeyOptions(logs, query)
+            : field == "channel_id"
+            ? (object)DistinctChannelOptions(logs, query)
             : option.OptionType == "int"
             ? (object)DistinctIntValues(logs, field, query)
             : DistinctTextValues(logs, field, query);
@@ -458,7 +460,7 @@ public sealed class ObservabilityService : IObservabilityService
             ["request_ids"] = new List<string>(),
             ["models"] = new List<string>(),
             ["upstream_models"] = new List<string>(),
-            ["channel_ids"] = new List<string>(),
+            ["channel_ids"] = new List<SelectOption<Guid>>(),
             ["owner_usernames"] = new List<string>(),
             ["paths"] = new List<string>(),
             ["request_types"] = new List<string> { ProxyRequestTypes.Main, ProxyRequestTypes.Ocr },
@@ -623,6 +625,60 @@ public sealed class ObservabilityService : IObservabilityService
             .ToList();
     }
 
+
+    private List<SelectOption<Guid>> DistinctChannelOptions(
+        IQueryable<RequestLog> query,
+        object? search = null)
+    {
+        var queryText = (search?.ToString() ?? string.Empty).Trim();
+        var values = query
+            .Select(log => log.ChannelId)
+            .Where(value => value.HasValue);
+        if (queryText.Length > 0)
+        {
+            var matchingNameIds = _channelRepository.TableNoTracking
+                .Where(channel => channel.Name.Contains(queryText))
+                .Select(channel => (Guid?)channel.Id);
+            Guid? parsed = Guid.TryParse(queryText, out var p) ? p : null;
+            values = parsed.HasValue
+                ? values.Where(value => value == parsed || matchingNameIds.Contains(value))
+                : values.Where(value => matchingNameIds.Contains(value));
+        }
+
+        var ids = values
+            .Distinct()
+            .OrderBy(value => value)
+            .Take(200)
+            .AsEnumerable()
+            .Select(value => value!.Value)
+            .ToList();
+        var names = ReadChannelNames(ids.Select(id => (Guid?)id));
+        return ids
+            .Select(id => new SelectOption<Guid>(
+                id,
+                names.TryGetValue(id, out var name) ? name : null))
+            .ToList();
+    }
+
+    private Dictionary<Guid, string> ReadChannelNames(
+        IEnumerable<Guid?> channelIds)
+    {
+        var ids = channelIds
+            .Where(value => value.HasValue)
+            .Select(value => value!.Value)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+        {
+            return [];
+        }
+
+        return _channelRepository.TableNoTracking
+            .Where(channel => ids.Contains(channel.Id))
+            .Select(channel => new { channel.Id, channel.Name })
+            .AsEnumerable()
+            .ToDictionary(item => item.Id, item => item.Name);
+    }
     private static int ParseLogPage(object? page)
     {
         return TryConvertInt32(page, out var parsed)
