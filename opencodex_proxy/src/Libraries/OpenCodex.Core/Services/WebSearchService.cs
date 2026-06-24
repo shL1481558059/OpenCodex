@@ -109,7 +109,7 @@ public sealed class WebSearchService : IWebSearchService
         return new WebSearchConfigDto(
             webSearchSettings?.Enabled ?? false,
             WebSearchProviders.Order(StringComparer.Ordinal).ToList(),
-            DefaultWebSearchKeyUsageLimit,
+            webSearchSettings?.KeyUsageLimit ?? DefaultWebSearchKeyUsageLimit,
             keys);
     }
 

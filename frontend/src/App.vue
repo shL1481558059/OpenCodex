@@ -56,7 +56,7 @@
               </div>
             </section>
             <section v-if="activeTab === 'channels'">
-              <Channels :api="api"  />
+              <Channels :api="api" :is-superadmin="isSuperadmin" />
             </section>
             <section v-if="activeTab === 'api-keys'">
               <AccessKeys :api="api" :is-superadmin="isSuperadmin" />

@@ -1,4 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
+using System.Text.Json;
+using OpenCodex.Api.Infrastructure;
 using OpenCodex.CoreBase.DTOs.Observability;
 using OpenCodex.CoreBase.Services;
 
@@ -163,6 +165,41 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
             end,
             filters);
         return Api(result);
+    }
+
+    [HttpGet("/stats/active-channels")]
+    public IActionResult ActiveChannels()
+    {
+        RequireUser();
+        var result = _observability.ReadActiveChannelQueue();
+        return Api(result);
+    }
+
+    [HttpGet("/stats/active-channels/stream")]
+    public async Task ActiveChannelsStream()
+    {
+        RequireUser();
+        ProxyStreamResponseWriter.PrepareSse(Response);
+
+        while (!HttpContext.RequestAborted.IsCancellationRequested)
+        {
+            var result = _observability.ReadActiveChannelQueue();
+            var payload = result.Payload ?? new ActiveChannelQueueResponse(string.Empty, []);
+            var data = JsonSerializer.Serialize(payload);
+
+            await Response.WriteAsync($"event: queue\n", HttpContext.RequestAborted);
+            await Response.WriteAsync($"data: {data}\n\n", HttpContext.RequestAborted);
+            await Response.Body.FlushAsync(HttpContext.RequestAborted);
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), HttpContext.RequestAborted);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
     }
 
     private static Dictionary<string, object?> BuildLogFilters(

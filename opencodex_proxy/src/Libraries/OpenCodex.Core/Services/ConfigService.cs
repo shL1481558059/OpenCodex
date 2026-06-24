@@ -352,11 +352,7 @@ public sealed class ConfigService : IConfigService
             query = query.Where(channel => channel.OwnerUserId == scopeUserId.Value);
         }
 
-        var ordered = scopeUserId.HasValue
-            ? query.OrderBy(channel => channel.Position).ThenBy(channel => channel.Id)
-            : query.OrderBy(channel => channel.OwnerUserId).ThenBy(channel => channel.Position).ThenBy(channel => channel.Id);
-
-        var channels = ordered.ToList();
+        var channels = query.ToList();
         var ownerIds = channels.Select(ch => ch.OwnerUserId).Distinct().ToList();
         var owners = ownerIds.Count > 0
             ? _userRepository.TableNoTracking
@@ -364,7 +360,18 @@ public sealed class ConfigService : IConfigService
                 .ToDictionary(u => u.Id, u => u.Username)
             : new Dictionary<Guid, string>();
 
-        return channels
+        var orderedChannels = scopeUserId.HasValue
+            ? channels
+                .OrderByDescending(channel => channel.Enabled)
+                .ThenByDescending(channel => channel.UpdatedAt)
+                .ThenBy(channel => channel.Id)
+            : channels
+                .OrderBy(channel => owners.TryGetValue(channel.OwnerUserId, out var name) ? name : string.Empty, StringComparer.Ordinal)
+                .ThenByDescending(channel => channel.Enabled)
+                .ThenByDescending(channel => channel.UpdatedAt)
+                .ThenBy(channel => channel.Id);
+
+        return orderedChannels
             .Select(channel => MapToChannelDto(channel,
                 owners.TryGetValue(channel.OwnerUserId, out var name) ? name : string.Empty))
             .ToList();

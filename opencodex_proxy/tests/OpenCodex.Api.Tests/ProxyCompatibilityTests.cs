@@ -316,6 +316,62 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
+    public async Task WebSearchImport_PersistsDefaultKeyUsageLimitInReadback()
+    {
+        using var factory = new OpenCodexApiFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = false
+        });
+        var cookie = await LoginAndReadSessionCookie(client);
+
+        var importResponse = await SendJsonWithCookie(
+            client,
+            HttpMethod.Post,
+            "/web-search/import",
+            cookie,
+            new
+            {
+                enabled = true,
+                key_usage_limit = 456,
+                keys = new[]
+                {
+                    new
+                    {
+                        provider = "tavily",
+                        key = "tvly-limit-check-456",
+                        enabled = true,
+                        usage_count = 3,
+                        usage_limit = 80
+                    }
+                }
+            });
+        Assert.Equal(HttpStatusCode.OK, importResponse.StatusCode);
+
+        using (var importDocument = await JsonDocument.ParseAsync(await importResponse.Content.ReadAsStreamAsync()))
+        {
+            var data = importDocument.RootElement.GetProperty("Data");
+            Assert.Equal(456, data.GetProperty("default_key_usage_limit").GetInt32());
+            var importedKey = data.GetProperty("keys").EnumerateArray().Single();
+            Assert.Equal(80, importedKey.GetProperty("usage_limit").GetInt32());
+            Assert.Equal(3, importedKey.GetProperty("usage_count").GetInt32());
+        }
+
+        using var readRequest = new HttpRequestMessage(HttpMethod.Get, "/web-search");
+        readRequest.Headers.Add("Cookie", cookie);
+        var readResponse = await client.SendAsync(readRequest);
+        Assert.Equal(HttpStatusCode.OK, readResponse.StatusCode);
+
+        using var readDocument = await JsonDocument.ParseAsync(await readResponse.Content.ReadAsStreamAsync());
+        var readData = readDocument.RootElement.GetProperty("Data");
+        Assert.Equal(456, readData.GetProperty("default_key_usage_limit").GetInt32());
+        var readKey = readData.GetProperty("keys").EnumerateArray().Single();
+        Assert.Equal(80, readKey.GetProperty("usage_limit").GetInt32());
+        Assert.Equal(3, readKey.GetProperty("usage_count").GetInt32());
+    }
+
+    [Fact]
     public async Task ListModelsAsync_NormalizesArrayRootResponses()
     {
         var handler = new StaticJsonHandler(
