@@ -55,6 +55,12 @@ public interface IObservabilityService
         IReadOnlyDictionary<string, object?> filters);
 
     /// <summary>
+    /// 读取当前请求队列快照。
+    /// </summary>
+    /// <returns>当前正在处理请求的渠道聚合结果。</returns>
+    ApiOpResult<ActiveChannelQueueResponse> ReadActiveChannelQueue();
+
+    /// <summary>
     /// 清除全部请求日志及其关联详情和流式行记录。
     /// </summary>
     /// <returns>清除操作结果，载荷为已删除的记录总数。</returns>

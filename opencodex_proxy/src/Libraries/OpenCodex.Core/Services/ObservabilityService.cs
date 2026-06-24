@@ -143,6 +143,13 @@ public sealed class ObservabilityService : IObservabilityService
             ScopedFilters(filters, currentUsername, isSuperadmin))));
     }
 
+    public ApiOpResult<ActiveChannelQueueResponse> ReadActiveChannelQueue()
+    {
+        var (currentUsername, isSuperadmin) = CurrentScope();
+        var queue = QueryActiveChannelQueue(currentUsername, isSuperadmin);
+        return ApiOpResult<ActiveChannelQueueResponse>.Succeed(ActiveChannelQueueResponse.From(queue));
+    }
+
     public ApiOpResult<ClearLogsResponse> ClearLogs()
     {
         var currentUser = _workContext.RequireUser();
@@ -721,6 +728,43 @@ public sealed class ObservabilityService : IObservabilityService
             0,
             0,
             0);
+    }
+
+    private ActiveChannelQueueDto QueryActiveChannelQueue(string currentUsername, bool isSuperadmin)
+    {
+        var filters = ScopedFilters(
+            new Dictionary<string, object?>(StringComparer.Ordinal),
+            currentUsername,
+            isSuperadmin);
+        filters["request_status"] = ProxyRequestLifecycleStatus.Processing;
+
+        var logs = ApplyLogFilters(_logRepository.TableNoTracking, filters)
+            .Where(log => log.ChannelId.HasValue)
+            .ToList();
+
+        if (logs.Count == 0)
+        {
+            return new ActiveChannelQueueDto(
+                TimestampToIso(UnixTimeSeconds()),
+                []);
+        }
+
+        var channelNames = ReadChannelNames(logs.Select(log => log.ChannelId));
+        var channels = logs
+            .GroupBy(log => log.ChannelId!.Value)
+            .Select(group => new ActiveChannelQueueItemDto(
+                group.Key.ToString(),
+                channelNames.TryGetValue(group.Key, out var channelName) && !string.IsNullOrWhiteSpace(channelName)
+                    ? channelName
+                    : "已删除渠道",
+                group.Count()))
+            .OrderByDescending(item => item.ProcessingCount)
+            .ThenBy(item => item.ChannelName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return new ActiveChannelQueueDto(
+            TimestampToIso(UnixTimeSeconds()),
+            channels);
     }
 
     private static StatsSummaryDto ReadStatsSummary(

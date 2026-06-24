@@ -62,6 +62,62 @@
     </div>
 
     <div v-loading="initialChartLoading" class="dashboard-grid">
+      <div class="dashboard-card dashboard-card--wide dashboard-overview-card">
+        <div class="dashboard-overview-card__section">
+          <div class="dashboard-card__header">
+            <span>请求模型分布</span>
+          </div>
+          <div ref="modelChartRef" class="dashboard-card__chart dashboard-card__chart--overview" />
+        </div>
+
+        <div class="dashboard-overview-card__divider" />
+
+        <div class="dashboard-overview-card__section dashboard-overview-card__section--queue">
+          <div class="dashboard-card__header">
+            <span>请求队列</span>
+            <span class="dashboard-queue__status" :class="{ 'dashboard-queue__status--live': queueConnected }">
+              {{ queueStatusText }}
+            </span>
+          </div>
+
+          <div class="dashboard-queue">
+            <div v-if="queueLoading" class="dashboard-queue__empty">正在连接实时队列...</div>
+            <div v-else-if="queueTopItems.length === 0" class="dashboard-queue__empty">当前没有正在处理的渠道</div>
+            <template v-else>
+              <div
+                v-for="item in queueTopItems"
+                :key="item.channel_id"
+                class="dashboard-queue__item"
+              >
+                <span class="dashboard-queue__name">{{ item.channel_name }}</span>
+                <span class="dashboard-queue__count">{{ item.processing_count }}</span>
+              </div>
+
+              <div v-if="queueOverflowItems.length > 0" class="dashboard-queue__more">
+                <el-popover placement="bottom-end" :width="320" trigger="click">
+                  <template #reference>
+                    <el-button size="small" text class="dashboard-queue__more-button">
+                      查看更多 +{{ queueOverflowItems.length }}
+                    </el-button>
+                  </template>
+
+                  <div class="dashboard-queue-popover">
+                    <div
+                      v-for="item in queueOverflowItems"
+                      :key="`overflow-${item.channel_id}`"
+                      class="dashboard-queue__item dashboard-queue__item--popover"
+                    >
+                      <span class="dashboard-queue__name">{{ item.channel_name }}</span>
+                      <span class="dashboard-queue__count">{{ item.processing_count }}</span>
+                    </div>
+                  </div>
+                </el-popover>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+
       <!-- 消费趋势 -->
       <div class="dashboard-card">
         <div class="dashboard-card__header">
@@ -107,13 +163,6 @@
         <div ref="rpmChartRef" class="dashboard-card__chart" />
       </div>
 
-      <!-- 请求模型分布 -->
-      <div class="dashboard-card">
-        <div class="dashboard-card__header">
-          <span>请求模型分布</span>
-        </div>
-        <div ref="modelChartRef" class="dashboard-card__chart" />
-      </div>
     </div>
   </div>
 </template>
@@ -160,6 +209,9 @@ const loading = ref(false);
 const hasLoadedStats = ref(false);
 const costCurrency = ref("CNY");
 const tokenUnit = ref("K");
+const queueItems = ref([]);
+const queueConnected = ref(false);
+const queueLoading = ref(true);
 
 const statsData = reactive({
   range: "1h",
@@ -189,11 +241,19 @@ const rpmChart = shallowRef(null);
 const modelChart = shallowRef(null);
 
 let refreshTimer = null;
+let queueEventSource = null;
 
 const autoRefreshLabel = computed(() =>
   autoRefreshSeconds.value ? `${autoRefreshSeconds.value} 秒刷新` : "自动刷新"
 );
 const initialChartLoading = computed(() => loading.value && !hasLoadedStats.value);
+const queueTopItems = computed(() => queueItems.value.slice(0, 3));
+const queueOverflowItems = computed(() => queueItems.value.slice(3));
+const queueStatusText = computed(() => {
+  if (queueConnected.value) return "实时更新中";
+  if (queueLoading.value) return "连接中";
+  return "未连接";
+});
 const summaryCards = computed(() => {
   const summary = statsData.summary || defaultSummary();
   return [
@@ -331,6 +391,59 @@ function defaultSummary() {
     recent_1h_cost: 0,
     rpm: 0,
     tpm: 0
+  };
+}
+
+function applyQueuePayload(payload) {
+  const channels = Array.isArray(payload?.channels) ? payload.channels : [];
+  queueItems.value = channels
+    .map((item) => ({
+      channel_id: String(item?.channel_id || "").trim(),
+      channel_name: String(item?.channel_name || "").trim(),
+      processing_count: Number(item?.processing_count || 0)
+    }))
+    .filter((item) => item.channel_id.length > 0 && item.channel_name.length > 0 && item.processing_count > 0);
+  queueLoading.value = false;
+}
+
+function buildQueueStreamUrl() {
+  const base = import.meta.env.DEV ? import.meta.env.BASE_URL.replace(/\/$/, "") : "";
+  return `${base}/stats/active-channels/stream`;
+}
+
+function stopQueueStream() {
+  if (queueEventSource) {
+    queueEventSource.close();
+    queueEventSource = null;
+  }
+  queueConnected.value = false;
+}
+
+function startQueueStream() {
+  stopQueueStream();
+  if (!props.active) {
+    queueLoading.value = true;
+    return;
+  }
+
+  queueLoading.value = true;
+  const source = new EventSource(buildQueueStreamUrl(), { withCredentials: true });
+  queueEventSource = source;
+
+  source.addEventListener("queue", (event) => {
+    try {
+      applyQueuePayload(JSON.parse(event.data || "{}"));
+      queueConnected.value = true;
+    } catch {
+      queueConnected.value = false;
+    }
+  });
+
+  source.onerror = () => {
+    queueConnected.value = false;
+    if (queueEventSource === source) {
+      queueLoading.value = false;
+    }
   };
 }
 
@@ -607,7 +720,7 @@ function renderModelChart() {
     legend: {
       type: "scroll",
       orient: "vertical",
-      right: 8,
+      right: 0,
       top: 16,
       bottom: 16,
       textStyle: { fontSize: 11 }
@@ -615,7 +728,7 @@ function renderModelChart() {
     series: [{
       type: "pie",
       radius: ["40%", "70%"],
-      center: ["35%", "50%"],
+      center: ["32%", "50%"],
       avoidLabelOverlap: true,
       itemStyle: { borderRadius: 6, borderColor: "#fff", borderWidth: 2 },
       label: { show: false },
@@ -643,8 +756,10 @@ watch(() => props.active, (now) => {
   if (now) {
     fetchStats();
     startRefreshTimer();
+    startQueueStream();
   } else {
     stopRefreshTimer();
+    stopQueueStream();
   }
 });
 
@@ -654,11 +769,13 @@ onMounted(async () => {
   if (props.active) {
     fetchStats();
     startRefreshTimer();
+    startQueueStream();
   }
 });
 
 onBeforeUnmount(() => {
   stopRefreshTimer();
+  stopQueueStream();
   disposeAllCharts();
 });
 </script>
@@ -786,6 +903,31 @@ onBeforeUnmount(() => {
   background: var(--el-bg-color);
 }
 
+.dashboard-card--wide {
+  grid-column: 1 / -1;
+}
+
+.dashboard-overview-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) 1px minmax(280px, 0.9fr);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.dashboard-overview-card__section {
+  min-width: 0;
+}
+
+.dashboard-overview-card__section--queue {
+  display: flex;
+  flex-direction: column;
+}
+
+.dashboard-overview-card__divider {
+  width: 1px;
+  background: var(--el-border-color-lighter);
+}
+
 .dashboard-card__header {
   display: flex;
   align-items: center;
@@ -806,6 +948,90 @@ onBeforeUnmount(() => {
   height: 240px;
 }
 
+.dashboard-card__chart--overview {
+  height: 260px;
+}
+
+.dashboard-queue {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 260px;
+  padding-top: 4px;
+}
+
+.dashboard-queue__status {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.dashboard-queue__status--live {
+  color: var(--el-color-success);
+}
+
+.dashboard-queue__item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+.dashboard-queue__item--popover + .dashboard-queue__item--popover {
+  margin-top: 8px;
+}
+
+.dashboard-queue__name {
+  min-width: 0;
+  color: var(--el-text-color-primary);
+  font-size: 14px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-queue__count {
+  color: var(--el-color-primary);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.dashboard-queue__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 180px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  border: 1px dashed var(--el-border-color);
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+.dashboard-queue__more {
+  padding-top: 2px;
+}
+
+.dashboard-queue__more-button {
+  padding-right: 0;
+  padding-left: 0;
+  font-weight: 500;
+}
+
+.dashboard-queue-popover {
+  max-height: 280px;
+  overflow: auto;
+}
+
 @media (max-width: 900px) {
   .dashboard-toolbar {
     display: block;
@@ -818,6 +1044,14 @@ onBeforeUnmount(() => {
 
   .dashboard-grid {
     grid-template-columns: 1fr;
+  }
+
+  .dashboard-overview-card {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-overview-card__divider {
+    display: none;
   }
 
   .dashboard-summary-grid {

@@ -40,7 +40,13 @@
         style="width: 100%; margin-top: 16px"
         empty-text="暂无渠道"
       >
-        <el-table-column prop="id" label="ID" min-width="160" show-overflow-tooltip />
+        <el-table-column
+          v-if="props.isSuperadmin"
+          prop="owner_username"
+          label="所属用户"
+          min-width="130"
+          show-overflow-tooltip
+        />
         <el-table-column prop="name" label="名称" min-width="140" show-overflow-tooltip />
         <el-table-column prop="type" label="服务类型" width="110">
           <template #default="{ row }">
@@ -115,11 +121,6 @@
     <el-drawer v-model="channelDrawerVisible" :title="editingIndex === -1 ? '新增渠道' : '编辑渠道'" size="720px">
       <el-form label-position="top" :model="channelDraft">
         <el-row :gutter="12">
-          <el-col :span="12">
-            <el-form-item label="ID">
-              <el-input v-model="channelDraft.id" :disabled="editingIndex !== -1" />
-            </el-form-item>
-          </el-col>
           <el-col :span="12">
             <el-form-item label="名称">
               <el-input v-model="channelDraft.name" />
@@ -359,6 +360,7 @@ import {
 } from "@element-plus/icons-vue";
 const props = defineProps({
   api: { type: Function, required: true },
+  isSuperadmin: { type: Boolean, default: false },
 });
 const devApiPrefix = import.meta.env.DEV ? import.meta.env.BASE_URL.replace(/\/$/, "") : "";
 const configLoading = ref(false);
@@ -804,8 +806,9 @@ function buildChannelFromDraft() {
   if (!Number.isInteger(capacity) || capacity <= 0) {
     throw new Error("容量必须是正整数");
   }
+  const id = ensureChannelId(channelDraft.id, channelDraft.name);
   return {
-    id: channelDraft.id.trim(),
+    id,
     name: channelDraft.name.trim(),
     type: channelDraft.type,
     baseurl: channelDraft.baseurl.trim(),
@@ -852,6 +855,28 @@ function normalizeModels(models) {
       };
     })
     .filter((item) => item.model);
+}
+
+function ensureChannelId(id, name) {
+  const normalizedId = String(id || "").trim();
+  if (normalizedId) {
+    return normalizedId;
+  }
+
+  return `${slugifyChannelName(name) || "channel"}-${randomChannelSuffix()}`;
+}
+
+function slugifyChannelName(name) {
+  return String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 24);
+}
+
+function randomChannelSuffix() {
+  return Math.random().toString(36).slice(2, 8);
 }
 
 // --- Shared utils ---

@@ -12,6 +12,8 @@ const adminProxyRoutes = [
   "/logs",
   "/log-filter-options",
   "/stats",
+  "/stats/active-channels",
+  "/stats/active-channels/stream",
   "/web-search",
   "/channels",
   "/discover-models",

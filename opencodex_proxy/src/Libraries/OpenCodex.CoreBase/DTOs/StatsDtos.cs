@@ -173,6 +173,53 @@ public sealed class ModelDistributionDto(
 }
 
 /// <summary>
+/// 表示当前正在处理请求的渠道队列项。
+/// </summary>
+/// <param name="channelId">渠道标识。</param>
+/// <param name="channelName">渠道名称。</param>
+/// <param name="processingCount">当前处理中请求数。</param>
+public sealed class ActiveChannelQueueItemDto(
+    string channelId,
+    string channelName,
+    int processingCount)
+{
+    /// <summary>
+    /// 获取渠道标识。
+    /// </summary>
+    public string ChannelId { get; } = channelId;
+
+    /// <summary>
+    /// 获取渠道名称。
+    /// </summary>
+    public string ChannelName { get; } = channelName;
+
+    /// <summary>
+    /// 获取当前处理中请求数。
+    /// </summary>
+    public int ProcessingCount { get; } = processingCount;
+}
+
+/// <summary>
+/// 表示当前请求队列快照。
+/// </summary>
+/// <param name="generatedAt">快照生成时间。</param>
+/// <param name="channels">正在处理请求的渠道列表。</param>
+public sealed class ActiveChannelQueueDto(
+    string generatedAt,
+    IReadOnlyList<ActiveChannelQueueItemDto> channels)
+{
+    /// <summary>
+    /// 获取快照生成时间。
+    /// </summary>
+    public string GeneratedAt { get; } = generatedAt;
+
+    /// <summary>
+    /// 获取正在处理请求的渠道列表。
+    /// </summary>
+    public IReadOnlyList<ActiveChannelQueueItemDto> Channels { get; } = channels;
+}
+
+/// <summary>
 /// 表示选定范围内的请求、token 和成本统计。
 /// </summary>
 /// <param name="range">选定范围标签。</param>

@@ -961,6 +961,66 @@ public sealed class StatsResponse
 }
 
 /// <summary>
+/// 表示仪表盘请求队列响应。
+/// </summary>
+public sealed class ActiveChannelQueueResponse
+{
+    public ActiveChannelQueueResponse(
+        string generatedAt,
+        IReadOnlyList<ActiveChannelQueueItemResponse> channels)
+    {
+        GeneratedAt = generatedAt;
+        Channels = channels;
+    }
+
+    [JsonPropertyName("generated_at")]
+    public string GeneratedAt { get; }
+
+    [JsonPropertyName("channels")]
+    public IReadOnlyList<ActiveChannelQueueItemResponse> Channels { get; }
+
+    public static ActiveChannelQueueResponse From(ActiveChannelQueueDto queue)
+    {
+        return new ActiveChannelQueueResponse(
+            queue.GeneratedAt,
+            queue.Channels.Select(ActiveChannelQueueItemResponse.From).ToList());
+    }
+}
+
+/// <summary>
+/// 表示仪表盘请求队列中的单个渠道项。
+/// </summary>
+public sealed class ActiveChannelQueueItemResponse
+{
+    public ActiveChannelQueueItemResponse(
+        string channelId,
+        string channelName,
+        int processingCount)
+    {
+        ChannelId = channelId;
+        ChannelName = channelName;
+        ProcessingCount = processingCount;
+    }
+
+    [JsonPropertyName("channel_id")]
+    public string ChannelId { get; }
+
+    [JsonPropertyName("channel_name")]
+    public string ChannelName { get; }
+
+    [JsonPropertyName("processing_count")]
+    public int ProcessingCount { get; }
+
+    public static ActiveChannelQueueItemResponse From(ActiveChannelQueueItemDto item)
+    {
+        return new ActiveChannelQueueItemResponse(
+            item.ChannelId,
+            item.ChannelName,
+            item.ProcessingCount);
+    }
+}
+
+/// <summary>
 /// 表示后台观测统计汇总响应。
 /// </summary>
 public sealed class StatsSummaryResponse
