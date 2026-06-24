@@ -10,10 +10,10 @@ namespace OpenCodex.Data;
 /// <typeparam name="TEntity">实体类型</typeparam>
 public class EfRepository<TEntity> : IRepository<TEntity> where TEntity : BaseEntity
 {
-    private readonly OpenCodexDbContext _context;
+    private readonly IOpenCodexDbContext _context;
     private DbSet<TEntity>? _entities;
 
-    public EfRepository(OpenCodexDbContext context)
+    public EfRepository(IOpenCodexDbContext context)
     {
         _context = context;
     }
