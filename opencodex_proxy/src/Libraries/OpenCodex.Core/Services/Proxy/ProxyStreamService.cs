@@ -81,7 +81,6 @@ public sealed class ProxyStreamService : IProxyStreamService
     public async Task StreamAsync(ProxyStreamContext context)
     {
         context.UpstreamRequest["stream"] = true;
-        context.StreamWriter.PrepareSse();
 
         var ttftStarted = Stopwatch.GetTimestamp();
         StreamWriteMetrics? streamWriteMetrics = null;

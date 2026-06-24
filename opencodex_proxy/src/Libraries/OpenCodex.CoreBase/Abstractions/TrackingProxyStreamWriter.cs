@@ -13,8 +13,19 @@ public sealed class TrackingProxyStreamWriter : IProxyStreamWriter
 
     public void PrepareSse()
     {
+        if (IsPrepared)
+        {
+            return;
+        }
+
         _inner.PrepareSse();
+        IsPrepared = true;
     }
+
+    /// <summary>
+    /// SSE 响应头是否已准备（<see cref="PrepareSse"/> 是否已被调用）。
+    /// </summary>
+    public bool IsPrepared { get; private set; }
 
     public async Task<StreamWriteMetrics> WriteLinesAsync(
         IAsyncEnumerable<string> lines,
@@ -28,6 +39,11 @@ public sealed class TrackingProxyStreamWriter : IProxyStreamWriter
         {
             await foreach (var line in source.WithCancellation(token))
             {
+                if (!IsPrepared)
+                {
+                    PrepareSse();
+                }
+
                 HasWritten = true;
                 yield return line;
             }

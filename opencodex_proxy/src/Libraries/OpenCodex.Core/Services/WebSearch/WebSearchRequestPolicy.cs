@@ -7,7 +7,7 @@ public static class WebSearchRequestPolicy
 {
     public const string ToolName = "web_search";
 
-    private const int DefaultMaxWebSearchCalls = 5;
+    private const int DefaultMaxWebSearchCalls = 2;
 
     public static bool DeclaresWebSearchTool(IReadOnlyDictionary<string, object?> payload)
     {

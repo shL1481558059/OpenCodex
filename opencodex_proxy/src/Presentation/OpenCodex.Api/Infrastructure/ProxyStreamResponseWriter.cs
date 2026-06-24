@@ -46,6 +46,8 @@ public sealed class ProxyStreamResponseWriter : IProxyStreamWriter
         CancellationToken cancellationToken = default)
     {
         var metrics = new StreamWriteMetrics();
+        var sawCompleted = false;
+        var sawDone = false;
         await foreach (var line in lines.WithCancellation(cancellationToken))
         {
             int? elapsed = null;
@@ -90,7 +92,23 @@ public sealed class ProxyStreamResponseWriter : IProxyStreamWriter
                 metrics.CompletedEventMs = CaptureElapsed();
             }
 
+            if (!sawCompleted && line.Contains("response.completed", StringComparison.Ordinal))
+            {
+                sawCompleted = true;
+            }
+
+            if (!sawDone && line.Contains("data: [DONE]", StringComparison.Ordinal))
+            {
+                sawDone = true;
+            }
+
             await response.WriteAsync(line, cancellationToken);
+            await response.Body.FlushAsync(cancellationToken);
+        }
+
+        if (sawCompleted && !sawDone)
+        {
+            await response.WriteAsync("data: [DONE]\n\n", cancellationToken);
             await response.Body.FlushAsync(cancellationToken);
         }
 
