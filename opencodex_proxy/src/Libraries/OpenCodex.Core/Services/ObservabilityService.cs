@@ -200,7 +200,7 @@ public sealed class ObservabilityService : IObservabilityService
         var query = ApplyLogFilters(_logRepository.TableNoTracking, filters ?? new Dictionary<string, object?>());
         var total = query.Count();
         var logs = query
-            .OrderByDescending(log => log.Id)
+            .OrderByDescending(log => log.CreatedAt)
             .Skip(offset)
             .Take(parsedPageSize)
             .ToList();

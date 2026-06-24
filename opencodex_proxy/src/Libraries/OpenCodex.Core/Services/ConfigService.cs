@@ -80,6 +80,25 @@ public sealed class ConfigService : IConfigService
             : ApiOpResult<ConfigResponse>.Fail(merged.Code, merged.Description);
     }
 
+    public ApiOpResult ResetChannelHealth(Guid channelId)
+    {
+        if (channelId == Guid.Empty)
+        {
+            return ApiOpResult.Fail(400, "channel id is required");
+        }
+
+        var (currentUsername, isSuperadmin) = CurrentScope();
+        var channel = FindChannelInScope(channelId, currentUsername, isSuperadmin);
+        if (channel is null)
+        {
+            return ApiOpResult.Fail(404, "channel not found");
+        }
+
+        var ownerUsername = ResolveOwnerUsername(channel.OwnerUserId);
+        _channelCircuitBreaker.Reset(ownerUsername, channel.Id.ToString());
+        return ApiOpResult.Succeed();
+    }
+
     private int ResolveActiveRequests(ChannelDto channel)
     {
         return _channelCapacity.GetActiveRequests(channel.OwnerUsername, channel.Id.ToString());
@@ -351,6 +370,28 @@ public sealed class ConfigService : IConfigService
             .ToList();
     }
 
+    private Channel? FindChannelInScope(Guid channelId, string currentUsername, bool isSuperadmin)
+    {
+        var ownerUsername = OwnerScope(currentUsername, isSuperadmin);
+        var normalizedOwnerUsername = string.IsNullOrWhiteSpace(ownerUsername)
+            ? string.Empty
+            : ownerUsername.Trim();
+
+        var query = _channelRepository.TableNoTracking.Where(channel => channel.Id == channelId);
+        if (normalizedOwnerUsername.Length == 0)
+        {
+            return query.FirstOrDefault();
+        }
+
+        var ownerUser = _userRepository.TableNoTracking.FirstOrDefault(u => u.Username == normalizedOwnerUsername);
+        if (ownerUser is null)
+        {
+            return null;
+        }
+
+        return query.FirstOrDefault(channel => channel.OwnerUserId == ownerUser.Id);
+    }
+
     private static ChannelDto MapToChannelDto(Channel channel, string ownerUsername)
     {
         return new ChannelDto(
@@ -371,6 +412,14 @@ public sealed class ConfigService : IConfigService
             DeserializeObject(channel.CompatJson),
             DeserializeList(channel.ModelsJson),
             channel.Enabled);
+    }
+
+    private string ResolveOwnerUsername(Guid ownerUserId)
+    {
+        return _userRepository.TableNoTracking
+            .Where(user => user.Id == ownerUserId)
+            .Select(user => user.Username)
+            .FirstOrDefault() ?? string.Empty;
     }
 
     private static IReadOnlyDictionary<string, object?> DeserializeObject(string? raw)

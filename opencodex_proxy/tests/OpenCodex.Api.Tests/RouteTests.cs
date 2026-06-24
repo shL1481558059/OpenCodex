@@ -187,6 +187,71 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
+    public async Task ResetChannelHealthEndpoint_ClearsOpenCircuit()
+    {
+        using var factory = new OpenCodexApiFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = false
+        });
+        var cookie = await LoginAndReadSessionCookie(client, "admin", OpenCodexApiFactory.AdminPassword);
+
+        var config = await SendJsonWithCookie(
+            client,
+            HttpMethod.Post,
+            "/config",
+            cookie,
+            new
+            {
+                channels = new[]
+                {
+                    new
+                    {
+                        id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        name = "Chat",
+                        type = "chat",
+                        baseurl = "https://example.test/v1",
+                        apikey = "secret",
+                        auth_mode = "config",
+                        timeout_seconds = 30,
+                        retry_count = 0,
+                        priority = 2,
+                        capacity = 3,
+                        enabled = true,
+                        models = new[]
+                        {
+                            new { model = "public-model", upstream_model = "upstream-model" }
+                        }
+                    }
+                }
+            });
+        Assert.Equal(HttpStatusCode.OK, config.StatusCode);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var breaker = scope.ServiceProvider.GetRequiredService<IChannelCircuitBreakerService>();
+            breaker.RecordFailure("admin", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", new UpstreamException("down", ProxyHttpStatus.BadGateway));
+            breaker.RecordFailure("admin", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", new UpstreamException("down", ProxyHttpStatus.BadGateway));
+            breaker.RecordFailure("admin", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", new UpstreamException("down", ProxyHttpStatus.BadGateway));
+        }
+
+        var reset = await SendWithCookie(
+            client,
+            HttpMethod.Post,
+            "/channels/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/reset-health",
+            cookie);
+        Assert.Equal(HttpStatusCode.OK, reset.StatusCode);
+
+        var response = await SendWithCookie(client, HttpMethod.Get, "/config", cookie);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        var channel = document.RootElement.GetProperty("Data").GetProperty("channels")[0];
+        Assert.Equal("healthy", channel.GetProperty("health_status").GetString());
+    }
+
+    [Fact]
     public async Task ConfigSave_BackfillsHistoricalNullCapacityToThreeAndRejectsNewNullCapacity()
     {
         using var factory = new OpenCodexApiFactory();

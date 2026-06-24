@@ -141,6 +141,11 @@ public sealed class ChannelCircuitBreakerService : IChannelCircuitBreakerService
         }
     }
 
+    public void Reset(string ownerUsername, string channelId)
+    {
+        _entries.TryRemove(Key(ownerUsername, channelId), out _);
+    }
+
     private void Open(Entry entry, DateTimeOffset now)
     {
         entry.ConsecutiveFailures = _failureThreshold;

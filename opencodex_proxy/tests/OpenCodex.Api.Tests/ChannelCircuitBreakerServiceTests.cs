@@ -108,4 +108,23 @@ public sealed class ChannelCircuitBreakerServiceTests
         Assert.False(counted);
         Assert.Equal(ChannelHealthStatus.Healthy, service.GetHealthStatus("admin", "primary", enabled: true));
     }
+
+    [Fact]
+    public void Reset_ClearsOpenCircuitBackToHealthy()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var service = new ChannelCircuitBreakerService(
+            failureThreshold: 1,
+            openDuration: TimeSpan.FromSeconds(10),
+            halfOpenMaxProbeRequests: 1,
+            clock: () => now);
+
+        service.RecordFailure("admin", "primary", new UpstreamException("boom", ProxyHttpStatus.BadGateway));
+
+        Assert.Equal(ChannelHealthStatus.Open, service.GetHealthStatus("admin", "primary", enabled: true));
+
+        service.Reset("admin", "primary");
+
+        Assert.Equal(ChannelHealthStatus.Healthy, service.GetHealthStatus("admin", "primary", enabled: true));
+    }
 }
