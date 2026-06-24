@@ -46,4 +46,11 @@ public interface IChannelCircuitBreakerService
     /// <param name="exception">失败异常。</param>
     /// <returns>该失败是否计入熔断统计。</returns>
     bool RecordFailure(string ownerUsername, string channelId, Exception exception);
+
+    /// <summary>
+    /// 重置渠道当前的熔断状态。
+    /// </summary>
+    /// <param name="ownerUsername">渠道所属用户名。</param>
+    /// <param name="channelId">渠道标识符。</param>
+    void Reset(string ownerUsername, string channelId);
 }

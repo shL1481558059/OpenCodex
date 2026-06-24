@@ -29,4 +29,11 @@ public interface IConfigService
     /// <returns>导入后的通道配置结果。</returns>
     ApiOpResult<ConfigResponse> ImportConfig(
         IReadOnlyDictionary<string, object?> body);
+
+    /// <summary>
+    /// 重置指定渠道的运行时健康状态。
+    /// </summary>
+    /// <param name="channelId">渠道标识符。</param>
+    /// <returns>操作结果。</returns>
+    ApiOpResult ResetChannelHealth(Guid channelId);
 }

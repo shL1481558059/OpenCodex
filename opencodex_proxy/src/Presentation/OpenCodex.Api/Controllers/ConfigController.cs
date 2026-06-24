@@ -40,4 +40,12 @@ public sealed class ConfigController : AuthenticatedApiControllerBase
         var result = _config.ImportConfig(request.ToDictionary());
         return Api(result);
     }
+
+    [HttpPost("/channels/{channelId:guid}/reset-health")]
+    public IActionResult ResetChannelHealth(Guid channelId)
+    {
+        RequireUser();
+        var result = _config.ResetChannelHealth(channelId);
+        return Api(result);
+    }
 }

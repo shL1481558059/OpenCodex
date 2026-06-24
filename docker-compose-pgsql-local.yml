@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: ocxp-postgres-test
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: "123456"
+      POSTGRES_DB: opencodex
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d opencodex"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - ocxp-network
+
+  ocxp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ocxp-test
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8003:8080"
+    env_file:
+      - .env
+    environment:
+      - OPENCODEX_DB_PROVIDER=postgres
+      - OPENCODEX_DB_CONNECTION_STRING=Host=postgres;Port=5432;Database=opencodex;Username=admin;Password=123456
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - ocxp-network
+
+networks:
+  ocxp-network:
+    driver: bridge

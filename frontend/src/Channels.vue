@@ -96,6 +96,12 @@
                     <el-dropdown-item @click="copyChannel(row)">
                       <el-icon><DocumentCopy /></el-icon>复制
                     </el-dropdown-item>
+                    <el-dropdown-item
+                      :disabled="!canResetChannelHealth(row) || resetChannelHealthLoadingId === row.id"
+                      @click="confirmResetChannelHealth(row)"
+                    >
+                      <el-icon><Refresh /></el-icon>重置可用状态
+                    </el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
               </el-dropdown>
@@ -331,6 +337,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from "vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
+import { ElMessageBox } from "element-plus/es/components/message-box/index.mjs";
 import {
   applyChannelTestStreamEvent,
   createChannelTestState,
@@ -379,6 +386,7 @@ const discoveredModels = ref([]);
 const selectedDiscoveredModels = ref([]);
 const config = reactive({ channels: [] });
 const channelToggleSavingKeys = reactive(new Set());
+const resetChannelHealthLoadingId = ref("");
 
 const channels = computed(() => config.channels || []);
 const enabledChannelCount = computed(() => channels.value.filter((c) => c.enabled !== false).length);
@@ -547,6 +555,44 @@ function copyChannel(channel) {
   const cloned = JSON.parse(JSON.stringify(channel));
   cloned.id = newId;
   openChannelDrawer(cloned, -1);
+}
+
+function canResetChannelHealth(channel) {
+  return channel?.health_status === "open" || channel?.health_status === "half_open";
+}
+
+async function confirmResetChannelHealth(channel) {
+  if (!canResetChannelHealth(channel) || !channel?.id) {
+    return;
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `确认重置渠道“${channel.name || channel.id}”的可用状态吗？`,
+      "重置可用状态",
+      {
+        type: "warning",
+        confirmButtonText: "重置",
+        cancelButtonText: "取消"
+      }
+    );
+  } catch {
+    return;
+  }
+
+  resetChannelHealthLoadingId.value = channel.id;
+  try {
+    await props.api(`/channels/${channel.id}/reset-health`, {
+      method: "POST",
+      body: "{}"
+    });
+    ElMessage.success("已重置渠道可用状态");
+    await loadConfig();
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    resetChannelHealthLoadingId.value = "";
+  }
 }
 
 async function discoverModels() {
