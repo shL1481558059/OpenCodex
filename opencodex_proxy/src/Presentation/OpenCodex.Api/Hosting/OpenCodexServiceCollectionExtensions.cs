@@ -47,16 +47,36 @@ public static class OpenCodexServiceCollectionExtensions
 
     private static IServiceCollection AddOpenCodexServices(this IServiceCollection services)
     {
-        // DbContext 按 IOpenCodexRuntimeSettingsProvider 动态选择 provider,支持 SQLite/PostgreSQL 切换。
-        services.AddDbContext<OpenCodexDbContext>((serviceProvider, options) =>
+        services.AddDbContext<OpenCodexSqliteDbContext>((serviceProvider, options) =>
         {
             var settings = serviceProvider
                 .GetRequiredService<IOpenCodexRuntimeSettingsProvider>()
                 .GetSettings();
-            OpenCodexDbContextFactory.Configure(
+            OpenCodexDbContextFactory.ConfigureSqlite(
                 options,
-                settings.DatabaseProvider,
                 settings.ConnectionString);
+        });
+        services.AddDbContext<OpenCodexPostgresDbContext>((serviceProvider, options) =>
+        {
+            var settings = serviceProvider
+                .GetRequiredService<IOpenCodexRuntimeSettingsProvider>()
+                .GetSettings();
+            OpenCodexDbContextFactory.ConfigurePostgres(
+                options,
+                settings.ConnectionString);
+        });
+        services.AddScoped<IOpenCodexDbContext>(serviceProvider =>
+        {
+            var settings = serviceProvider
+                .GetRequiredService<IOpenCodexRuntimeSettingsProvider>()
+                .GetSettings();
+            return OpenCodexDbContextFactory.NormalizeProvider(settings.DatabaseProvider) switch
+            {
+                "sqlite" => serviceProvider.GetRequiredService<OpenCodexSqliteDbContext>(),
+                "postgres" => serviceProvider.GetRequiredService<OpenCodexPostgresDbContext>(),
+                _ => throw new InvalidOperationException(
+                    $"Unsupported database provider: '{settings.DatabaseProvider}'. Supported values: sqlite, postgres.")
+            };
         });
         services.AddScoped(typeof(IRepository<>), typeof(EfRepository<>));
 

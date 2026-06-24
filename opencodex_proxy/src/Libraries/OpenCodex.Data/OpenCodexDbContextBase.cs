@@ -1,11 +1,12 @@
 using Microsoft.EntityFrameworkCore;
 using OpenCodex.Core.Domain;
+using OpenCodex.CoreBase.Data;
 
 namespace OpenCodex.Data;
 
-public sealed class OpenCodexDbContext : DbContext
+public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
 {
-    public OpenCodexDbContext(DbContextOptions<OpenCodexDbContext> options)
+    protected OpenCodexDbContextBase(DbContextOptions options)
         : base(options)
     {
     }

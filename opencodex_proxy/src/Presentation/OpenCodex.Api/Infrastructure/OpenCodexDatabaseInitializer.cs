@@ -13,11 +13,7 @@ public static class OpenCodexDatabaseInitializer
     {
         using var scope = app.Services.CreateScope();
         var serviceProvider = scope.ServiceProvider;
-        var settings = scope.ServiceProvider
-            .GetRequiredService<IOpenCodexRuntimeSettingsProvider>()
-            .GetSettings();
-
-        using var context = OpenCodexDbContextFactory.Create(settings.DatabaseProvider, settings.ConnectionString);
+        var context = serviceProvider.GetRequiredService<IOpenCodexDbContext>();
         context.Database.Migrate();
         SeedDefaultModelPricing(serviceProvider.GetRequiredService<IRepository<ModelPricing>>());
     }

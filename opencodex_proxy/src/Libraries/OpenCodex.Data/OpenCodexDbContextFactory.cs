@@ -1,16 +1,47 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using OpenCodex.CoreBase.Data;
 
 namespace OpenCodex.Data;
 
 public static class OpenCodexDbContextFactory
 {
-    public static OpenCodexDbContext Create(string provider, string connectionString, System.Reflection.Assembly? migrationsAssembly = null)
+    public static IOpenCodexDbContext Create(
+        string provider,
+        string connectionString,
+        System.Reflection.Assembly? migrationsAssembly = null)
     {
-        var builder = new DbContextOptionsBuilder<OpenCodexDbContext>();
-        builder.ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning));
-        ConfigureProvider(builder, provider, connectionString, migrationsAssembly ?? typeof(OpenCodexDbContext).Assembly);
-        return new OpenCodexDbContext(builder.Options);
+        return NormalizeProvider(provider) switch
+        {
+            "sqlite" => CreateSqlite(connectionString, migrationsAssembly),
+            "postgres" => CreatePostgres(connectionString, migrationsAssembly),
+            _ => throw new InvalidOperationException(
+                $"Unsupported database provider: '{provider}'. Supported values: sqlite, postgres.")
+        };
+    }
+
+    public static OpenCodexSqliteDbContext CreateSqlite(
+        string connectionString,
+        System.Reflection.Assembly? migrationsAssembly = null)
+    {
+        var builder = new DbContextOptionsBuilder<OpenCodexSqliteDbContext>();
+        ConfigureSqlite(
+            builder,
+            connectionString,
+            migrationsAssembly ?? typeof(OpenCodexSqliteDbContext).Assembly);
+        return new OpenCodexSqliteDbContext(builder.Options);
+    }
+
+    public static OpenCodexPostgresDbContext CreatePostgres(
+        string connectionString,
+        System.Reflection.Assembly? migrationsAssembly = null)
+    {
+        var builder = new DbContextOptionsBuilder<OpenCodexPostgresDbContext>();
+        ConfigurePostgres(
+            builder,
+            connectionString,
+            migrationsAssembly ?? typeof(OpenCodexPostgresDbContext).Assembly);
+        return new OpenCodexPostgresDbContext(builder.Options);
     }
 
     /// <summary>
@@ -22,37 +53,64 @@ public static class OpenCodexDbContextFactory
         string connectionString,
         System.Reflection.Assembly? migrationsAssembly = null)
     {
-        builder.ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning));
-        ConfigureProvider(builder, provider, connectionString, migrationsAssembly ?? typeof(OpenCodexDbContext).Assembly);
-    }
-
-    private static void ConfigureProvider(
-        DbContextOptionsBuilder builder,
-        string provider,
-        string connectionString,
-        System.Reflection.Assembly migrationsAssembly)
-    {
-        var normalizedProvider = (provider ?? string.Empty).Trim().ToLowerInvariant();
-        var assemblyName = migrationsAssembly.GetName().Name;
-        switch (normalizedProvider)
+        switch (NormalizeProvider(provider))
         {
             case "sqlite":
-                EnsureSqliteDirectory(connectionString);
-                builder.UseSqlite(
+                ConfigureSqlite(
+                    builder,
                     connectionString,
-                    sqlite => sqlite.MigrationsAssembly(assemblyName));
+                    migrationsAssembly ?? typeof(OpenCodexSqliteDbContext).Assembly);
                 return;
             case "postgres":
-            case "postgresql":
-            case "pgsql":
-                builder.UseNpgsql(
+                ConfigurePostgres(
+                    builder,
                     connectionString,
-                    npgsql => npgsql.MigrationsAssembly(assemblyName));
+                    migrationsAssembly ?? typeof(OpenCodexPostgresDbContext).Assembly);
                 return;
             default:
                 throw new InvalidOperationException(
                     $"Unsupported database provider: '{provider}'. Supported values: sqlite, postgres.");
         }
+    }
+
+    public static void ConfigureSqlite(
+        DbContextOptionsBuilder builder,
+        string connectionString,
+        System.Reflection.Assembly? migrationsAssembly = null)
+    {
+        ConfigureWarnings(builder);
+        EnsureSqliteDirectory(connectionString);
+        var assemblyName = (migrationsAssembly ?? typeof(OpenCodexSqliteDbContext).Assembly).GetName().Name;
+        builder.UseSqlite(
+            connectionString,
+            sqlite => sqlite.MigrationsAssembly(assemblyName));
+    }
+
+    public static void ConfigurePostgres(
+        DbContextOptionsBuilder builder,
+        string connectionString,
+        System.Reflection.Assembly? migrationsAssembly = null)
+    {
+        ConfigureWarnings(builder);
+        var assemblyName = (migrationsAssembly ?? typeof(OpenCodexPostgresDbContext).Assembly).GetName().Name;
+        builder.UseNpgsql(
+            connectionString,
+            npgsql => npgsql.MigrationsAssembly(assemblyName));
+    }
+
+    public static string NormalizeProvider(string provider)
+    {
+        return (provider ?? string.Empty).Trim().ToLowerInvariant() switch
+        {
+            "sqlite" => "sqlite",
+            "postgres" or "postgresql" or "pgsql" => "postgres",
+            var value => value
+        };
+    }
+
+    private static void ConfigureWarnings(DbContextOptionsBuilder builder)
+    {
+        builder.ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning));
     }
 
     private static void EnsureSqliteDirectory(string connectionString)

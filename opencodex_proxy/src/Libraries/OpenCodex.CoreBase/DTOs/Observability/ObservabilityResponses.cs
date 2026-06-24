@@ -472,6 +472,7 @@ public sealed class LogDetailResponse
     /// <param name="ownerUsername">所属用户名。</param>
     /// <param name="apiKeyId">访问密钥标识。</param>
     /// <param name="apiKeyName">访问密钥显示名称。</param>
+    /// <param name="channelName">通道显示名称。</param>
     /// <param name="error">错误消息。</param>
     /// <param name="requestStatus">请求状态。</param>
     /// <param name="requestHeaders">请求头内容。</param>
@@ -508,6 +509,7 @@ public sealed class LogDetailResponse
         string? ownerUsername,
         Guid? apiKeyId,
         string? apiKeyName,
+        string? channelName,
         string? error,
         string requestStatus,
         string? requestHeaders,
@@ -544,6 +546,7 @@ public sealed class LogDetailResponse
         OwnerUsername = ownerUsername;
         ApiKeyId = apiKeyId;
         ApiKeyName = apiKeyName;
+        ChannelName = channelName;
         Error = error;
         RequestStatus = requestStatus;
         RequestHeaders = requestHeaders;
@@ -702,6 +705,12 @@ public sealed class LogDetailResponse
     public string? ApiKeyName { get; }
 
     /// <summary>
+    /// 获取通道显示名称。
+    /// </summary>
+    [JsonPropertyName("channel_name")]
+    public string? ChannelName { get; }
+
+    /// <summary>
     /// 获取错误消息。
     /// </summary>
     [JsonPropertyName("error")]
@@ -829,6 +838,7 @@ public sealed class LogDetailResponse
             logEvent.OwnerUsername,
             logEvent.ApiKeyId,
             logEvent.ApiKeyName,
+            logEvent.ChannelName,
             logEvent.Error,
             logEvent.RequestStatus,
             log.RequestHeaders,

@@ -53,22 +53,44 @@ npm --prefix frontend run dev -- --host 127.0.0.1 --port 5173
 
 生产环境必须把 `OPENCODEX_SECRET_KEY` 改成足够随机的值，不要使用示例默认值。`OPENCODEX_DATA_PROTECTION_KEYS_PATH` 必须指向持久化目录，否则容器重建后已有登录态会失效。
 
+
 ## 快速更新远程镜像
 
-推荐使用本地脚本更新服务器上的容器镜像：
+推荐使用本地脚本更新服务器上的容器镜像。
+
+脚本入口只保留仓库根目录一个：
 
 ```bash
-./scripts/update_remote_image.sh
+./update_remote_image.sh
+```
+
+### SQLite 版本部署
+
+```bash
+./update_remote_image.sh
+```
+
+或显式指定：
+
+```bash
+DB_TYPE=sqlite ./update_remote_image.sh
+```
+
+### PostgreSQL 版本部署
+
+```bash
+DB_TYPE=postgres ./update_remote_image.sh
 ```
 
 脚本默认会执行以下流程：
 
-1. 在本地使用 `docker buildx build --platform linux/amd64 --push` 构建 x86/amd64 镜像并推送到镜像仓库。管理台前端会在 Docker 构建阶段打包进镜像。
-2. 通过 SSH 登录远程服务器。
-3. 在远程部署目录中拉取已推送的新镜像；远程服务器不构建镜像。
-4. 备份并重写远程 `docker-compose.yml`，把服务统一为 `ocxp`。
-5. 移除旧容器 `opencodex-proxy` / `opencodex-proxy-8002`。
-6. 执行 `docker compose up -d --no-build --force-recreate --remove-orphans` 重建目标容器。
+1. 根据 `DB_TYPE` 选择对应的 docker-compose 配置文件（`docker-compose-sqlite.yml` 或 `docker-compose-pgsql.yml`）
+2. 在本地使用 `docker buildx build --platform linux/amd64 --push` 构建 x86/amd64 镜像并推送到镜像仓库。管理台前端会在 Docker 构建阶段打包进镜像。
+3. 通过 SSH 登录远程服务器。
+4. 上传选定的 docker-compose 配置文件到远程服务器（重命名为 `docker-compose.yml`）。
+5. 在远程部署目录中拉取已推送的新镜像；远程服务器不构建镜像。
+6. 移除旧容器 `opencodex-proxy` / `opencodex-proxy-8002`。
+7. 执行 `docker compose up -d --no-build --force-recreate --remove-orphans` 重建容器。
 
 常用环境变量覆盖：
 
@@ -79,12 +101,106 @@ SSH_KEY=/path/to/private-key.pem \
 REMOTE_DEPLOY_DIR=/www/wwwroot/ocxp \
 IMAGE_NAME=shl148155/opencodexp:ocxp \
 SERVICE_NAME=ocxp \
-./scripts/update_remote_image.sh
+DB_TYPE=postgres \
+./update_remote_image.sh
 ```
 
-不要把真实 SSH 私钥路径、私钥内容或生产 `.env` 写入仓库文档。未设置 `SSH_KEY` 时，脚本会使用本机 SSH agent 或 SSH config。
+**重要提示**：
+- 默认使用 SQLite（`DB_TYPE=sqlite`）
+- 切换到 PostgreSQL 时，首次部署会自动创建 PostgreSQL 容器和数据库
+- PostgreSQL 数据持久化到 `/www/wwwroot/ocxp/postgres-data`
+- 不要把真实 SSH 私钥路径、私钥内容或生产 `.env` 写入仓库文档
+- 未设置 `SSH_KEY` 时，脚本会使用本机 SSH agent 或 SSH config
 
-远程部署目录固定为 `/www/wwwroot/ocxp`。该目录下必须已经存在 `.env`，运行数据继续挂载到 `/www/wwwroot/ocxp/logs`。管理台静态文件随 Docker 镜像进入容器，不再同步到宿主机目录。脚本会备份并重写 `/www/wwwroot/ocxp/docker-compose.yml`，移除旧容器 `opencodex-proxy` / `opencodex-proxy-8002`，并启动新容器 `ocxp`。
+远程部署目录固定为 `/www/wwwroot/ocxp`。该目录下必须已经存在 `.env`，运行数据继续挂载到 `/www/wwwroot/ocxp/logs`。管理台静态文件随 Docker 镜像进入容器，不再同步到宿主机目录。
+
+### PostgreSQL 隔离验证部署
+
+用于不影响现网 `ocxp` 的隔离验证，例如部署到 `8001 + 独立目录 + 独立 PostgreSQL`：
+
+```bash
+IMAGE_NAME=shl148155/opencodexp:ocxp-8001-$(date +%Y%m%d%H%M%S) \
+REMOTE_DEPLOY_DIR=/www/wwwroot/ocxp-8001 \
+SERVICE_NAME=ocxp-8001 \
+POSTGRES_CONTAINER_NAME=ocxp-8001-postgres \
+APP_PORT_MAPPING=127.0.0.1:8001:8080 \
+NETWORK_NAME=ocxp-8001-network \
+OLD_SERVICE_NAMES='' \
+DB_TYPE=postgres \
+SSH_KEY=/Users/w/.ssh/LightsailDefaultKey-ap-northeast-2.pem \
+./update_remote_image.sh
+```
+
+说明：
+
+1. 该命令只会更新 `/www/wwwroot/ocxp-8001` 目录下的隔离环境，不会碰现网 `ocxp`
+2. 如果隔离 PostgreSQL 数据目录已经残留半迁移状态，重建前先清空 `/www/wwwroot/ocxp-8001/postgres-data`
+3. 验证完成后可通过 `http://127.0.0.1:8001/health` 检查服务状态
+
+## EF Core 双迁移命令
+
+当前项目已拆分为两套 provider-specific context 与迁移目录：
+
+- SQLite context：`OpenCodexSqliteDbContext`
+- PostgreSQL context：`OpenCodexPostgresDbContext`
+
+### 查看迁移列表
+
+```bash
+dotnet ef migrations list \
+  --context OpenCodexSqliteDbContext \
+  --project opencodex_proxy/src/Libraries/OpenCodex.Data/OpenCodex.Data.csproj \
+  --startup-project opencodex_proxy/src/Presentation/OpenCodex.Api/OpenCodex.Api.csproj
+```
+
+```bash
+dotnet ef migrations list \
+  --context OpenCodexPostgresDbContext \
+  --project opencodex_proxy/src/Libraries/OpenCodex.Data/OpenCodex.Data.csproj \
+  --startup-project opencodex_proxy/src/Presentation/OpenCodex.Api/OpenCodex.Api.csproj
+```
+
+### 新增 SQLite 迁移
+
+```bash
+dotnet ef migrations add <MigrationName> \
+  --context OpenCodexSqliteDbContext \
+  --output-dir Migrations/SqliteMigrations \
+  --project opencodex_proxy/src/Libraries/OpenCodex.Data/OpenCodex.Data.csproj \
+  --startup-project opencodex_proxy/src/Presentation/OpenCodex.Api/OpenCodex.Api.csproj
+```
+
+### 新增 PostgreSQL 迁移
+
+```bash
+dotnet ef migrations add <MigrationName> \
+  --context OpenCodexPostgresDbContext \
+  --output-dir Migrations/PostgresMigrations \
+  --project opencodex_proxy/src/Libraries/OpenCodex.Data/OpenCodex.Data.csproj \
+  --startup-project opencodex_proxy/src/Presentation/OpenCodex.Api/OpenCodex.Api.csproj
+```
+
+### 删除最近一次迁移
+
+```bash
+dotnet ef migrations remove \
+  --context OpenCodexSqliteDbContext \
+  --project opencodex_proxy/src/Libraries/OpenCodex.Data/OpenCodex.Data.csproj \
+  --startup-project opencodex_proxy/src/Presentation/OpenCodex.Api/OpenCodex.Api.csproj
+```
+
+```bash
+dotnet ef migrations remove \
+  --context OpenCodexPostgresDbContext \
+  --project opencodex_proxy/src/Libraries/OpenCodex.Data/OpenCodex.Data.csproj \
+  --startup-project opencodex_proxy/src/Presentation/OpenCodex.Api/OpenCodex.Api.csproj
+```
+
+注意：
+
+1. 不要再使用旧的 `OpenCodexDbContext` 名称，它已经被清理
+2. SQLite / PostgreSQL 迁移必须分别在各自 context 下生成，不能混用
+3. 运行时迁移由应用启动时自动执行，前提是数据库连接和 provider 配置正确
 
 ## 手动 x86/amd64 Docker 镜像
 
