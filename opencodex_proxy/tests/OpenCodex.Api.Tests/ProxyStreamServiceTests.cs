@@ -215,7 +215,105 @@ public sealed class ProxyStreamServiceTests
         Assert.NotNull(logs.LastContext.UpstreamResponse);
         var upstreamError = Assert.IsType<Dictionary<string, object?>>(logs.LastContext.UpstreamResponse!["error"]);
         var upstreamDetail = Assert.IsType<Dictionary<string, object?>>(upstreamError["error"]);
-        Assert.Equal("rate limit exceeded", upstreamDetail["message"]);
+       Assert.Equal("rate limit exceeded", upstreamDetail["message"]);
+   }
+
+    [Fact]
+    public async Task StreamAsync_UpstreamFailure_DoesNotPrepareSseBeforeUpstreamReturns()
+    {
+        var upstream = new FailingUpstreamClient(new UpstreamException(
+            "upstream returned HTTP 503",
+            ProxyHttpStatus.ServiceUnavailable,
+            channelId: "responses"));
+        var logs = new StubProxyLogService();
+        var service = new ProxyStreamService(upstream, logs, new StubWebSearchSimulator(false, []));
+        var writer = new CapturingProxyStreamWriter();
+        var channel = new Dictionary<string, object?>
+        {
+            ["id"] = "responses",
+            ["type"] = ProtocolConverter.Responses
+        };
+        var route = new ProxyRouteDto(
+            channel,
+            "public-model",
+            "upstream-model",
+            supportsImage: false,
+            matchedModelMapping: true);
+        var context = new ProxyStreamContext(
+            startedTimestamp: Stopwatch.GetTimestamp(),
+            requestLogId: Guid.NewGuid(),
+            requestId: "req_no_prepare",
+            ownerUsername: "admin",
+            apiKeyId: Guid.NewGuid(),
+            originalPayload: new Dictionary<string, object?>(),
+            payload: new Dictionary<string, object?>(),
+            upstreamRequest: new Dictionary<string, object?>(),
+            entryProtocol: ProtocolConverter.Responses,
+            route: route,
+            channelType: ProtocolConverter.Responses,
+            channelId: "responses",
+            ownerRole: "superadmin",
+            upstreamModel: "upstream-model",
+            requestModel: "public-model",
+            defaultTimeout: 120,
+            requestMetadata: new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
+            streamWriter: writer,
+            cancellationToken: CancellationToken.None);
+
+        await Assert.ThrowsAsync<UpstreamException>(() => service.StreamAsync(context));
+
+        Assert.False(writer.Prepared);
+        Assert.Empty(writer.Lines);
+    }
+
+    [Fact]
+    public async Task StreamAsync_PassThroughSuccess_PrepareSseDeferredUntilFirstLine()
+    {
+        var upstream = new SequencedUpstreamClient(
+        [
+            ("data: {\"type\":\"response.created\"}", 0),
+            ("", 0),
+            ("data: [DONE]", 0)
+        ]);
+        var logs = new StubProxyLogService();
+        var service = new ProxyStreamService(upstream, logs, new StubWebSearchSimulator(false, []));
+        var writer = new CapturingProxyStreamWriter();
+        var channel = new Dictionary<string, object?>
+        {
+            ["id"] = "responses",
+            ["type"] = ProtocolConverter.Responses
+        };
+        var route = new ProxyRouteDto(
+            channel,
+            "public-model",
+            "upstream-model",
+            supportsImage: false,
+            matchedModelMapping: true);
+        var context = new ProxyStreamContext(
+            startedTimestamp: Stopwatch.GetTimestamp(),
+            requestLogId: Guid.NewGuid(),
+            requestId: "req_deferred",
+            ownerUsername: "admin",
+            apiKeyId: Guid.NewGuid(),
+            originalPayload: new Dictionary<string, object?>(),
+            payload: new Dictionary<string, object?>(),
+            upstreamRequest: new Dictionary<string, object?>(),
+            entryProtocol: ProtocolConverter.Responses,
+            route: route,
+            channelType: ProtocolConverter.Responses,
+            channelId: "responses",
+            ownerRole: "superadmin",
+            upstreamModel: "upstream-model",
+            requestModel: "public-model",
+            defaultTimeout: 120,
+            requestMetadata: new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
+            streamWriter: writer,
+            cancellationToken: CancellationToken.None);
+
+        await service.StreamAsync(context);
+
+        Assert.True(writer.Prepared);
+        Assert.Equal(3, writer.Lines.Count);
     }
 
     [Fact]
@@ -622,6 +720,11 @@ public sealed class ProxyStreamServiceTests
             var metrics = new StreamWriteMetrics();
             await foreach (var line in lines.WithCancellation(cancellationToken))
             {
+                if (!Prepared)
+                {
+                    PrepareSse();
+                }
+
                 Lines.Add(line);
                 if (metrics.FirstSseEventMs is null && !string.IsNullOrWhiteSpace(line))
                 {
