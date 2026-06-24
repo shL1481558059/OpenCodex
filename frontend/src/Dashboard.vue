@@ -62,17 +62,15 @@
     </div>
 
     <div v-loading="initialChartLoading" class="dashboard-grid">
-      <div class="dashboard-card dashboard-card--wide dashboard-overview-card">
-        <div class="dashboard-overview-card__section">
+      <div class="dashboard-top-grid">
+        <div class="dashboard-card dashboard-top-grid__model">
           <div class="dashboard-card__header">
             <span>请求模型分布</span>
           </div>
-          <div ref="modelChartRef" class="dashboard-card__chart dashboard-card__chart--overview" />
+          <div ref="modelChartRef" class="dashboard-card__chart dashboard-card__chart--top" />
         </div>
 
-        <div class="dashboard-overview-card__divider" />
-
-        <div class="dashboard-overview-card__section dashboard-overview-card__section--queue">
+        <div class="dashboard-card dashboard-top-grid__queue">
           <div class="dashboard-card__header">
             <span>请求队列</span>
             <span class="dashboard-queue__status" :class="{ 'dashboard-queue__status--live': queueConnected }">
@@ -116,15 +114,14 @@
             </template>
           </div>
         </div>
-      </div>
 
-      <!-- 消费趋势 -->
-      <div class="dashboard-card">
-        <div class="dashboard-card__header">
-          <span>消费趋势</span>
-          <el-segmented v-model="costCurrency" :options="costCurrencyOptions" size="small" />
+        <div class="dashboard-card dashboard-top-grid__cost">
+          <div class="dashboard-card__header">
+            <span>消费趋势</span>
+            <el-segmented v-model="costCurrency" :options="costCurrencyOptions" size="small" />
+          </div>
+          <div ref="costChartRef" class="dashboard-card__chart dashboard-card__chart--top" />
         </div>
-        <div ref="costChartRef" class="dashboard-card__chart" />
       </div>
 
       <!-- Token 使用趋势 -->
@@ -242,6 +239,8 @@ const modelChart = shallowRef(null);
 
 let refreshTimer = null;
 let queueEventSource = null;
+let queueStaleTimer = null;
+const QUEUE_STALE_TIMEOUT_MS = 5000;
 
 const autoRefreshLabel = computed(() =>
   autoRefreshSeconds.value ? `${autoRefreshSeconds.value} 秒刷新` : "自动刷新"
@@ -406,27 +405,48 @@ function applyQueuePayload(payload) {
   queueLoading.value = false;
 }
 
+function resetQueueState(loadingState = false) {
+  queueItems.value = [];
+  queueConnected.value = false;
+  queueLoading.value = loadingState;
+}
+
+function stopQueueStaleTimer() {
+  if (queueStaleTimer !== null) {
+    clearTimeout(queueStaleTimer);
+    queueStaleTimer = null;
+  }
+}
+
+function scheduleQueueStaleTimer() {
+  stopQueueStaleTimer();
+  queueStaleTimer = window.setTimeout(() => {
+    resetQueueState(false);
+  }, QUEUE_STALE_TIMEOUT_MS);
+}
+
 function buildQueueStreamUrl() {
   const base = import.meta.env.DEV ? import.meta.env.BASE_URL.replace(/\/$/, "") : "";
   return `${base}/stats/active-channels/stream`;
 }
 
 function stopQueueStream() {
+  stopQueueStaleTimer();
   if (queueEventSource) {
     queueEventSource.close();
     queueEventSource = null;
   }
-  queueConnected.value = false;
+  resetQueueState(true);
 }
 
 function startQueueStream() {
   stopQueueStream();
   if (!props.active) {
-    queueLoading.value = true;
+    resetQueueState(true);
     return;
   }
 
-  queueLoading.value = true;
+  resetQueueState(true);
   const source = new EventSource(buildQueueStreamUrl(), { withCredentials: true });
   queueEventSource = source;
 
@@ -434,15 +454,17 @@ function startQueueStream() {
     try {
       applyQueuePayload(JSON.parse(event.data || "{}"));
       queueConnected.value = true;
+      scheduleQueueStaleTimer();
     } catch {
-      queueConnected.value = false;
+      stopQueueStaleTimer();
+      resetQueueState(false);
     }
   });
 
   source.onerror = () => {
-    queueConnected.value = false;
+    stopQueueStaleTimer();
     if (queueEventSource === source) {
-      queueLoading.value = false;
+      resetQueueState(false);
     }
   };
 }
@@ -903,29 +925,22 @@ onBeforeUnmount(() => {
   background: var(--el-bg-color);
 }
 
-.dashboard-card--wide {
-  grid-column: 1 / -1;
-}
-
-.dashboard-overview-card {
+.dashboard-top-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) 1px minmax(280px, 0.9fr);
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr);
   gap: 16px;
-  align-items: stretch;
 }
 
-.dashboard-overview-card__section {
+.dashboard-top-grid__model,
+.dashboard-top-grid__queue,
+.dashboard-top-grid__cost {
   min-width: 0;
 }
 
-.dashboard-overview-card__section--queue {
+.dashboard-top-grid__queue {
   display: flex;
   flex-direction: column;
-}
-
-.dashboard-overview-card__divider {
-  width: 1px;
-  background: var(--el-border-color-lighter);
 }
 
 .dashboard-card__header {
@@ -948,7 +963,7 @@ onBeforeUnmount(() => {
   height: 240px;
 }
 
-.dashboard-card__chart--overview {
+.dashboard-card__chart--top {
   height: 260px;
 }
 
@@ -1046,12 +1061,8 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr;
   }
 
-  .dashboard-overview-card {
+  .dashboard-top-grid {
     grid-template-columns: 1fr;
-  }
-
-  .dashboard-overview-card__divider {
-    display: none;
   }
 
   .dashboard-summary-grid {

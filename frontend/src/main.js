@@ -64,6 +64,7 @@ import "element-plus/es/components/main/style/css.mjs";
 import "element-plus/es/components/menu/style/css.mjs";
 import "element-plus/es/components/menu-item/style/css.mjs";
 import "element-plus/es/components/message/style/css.mjs";
+import "element-plus/es/components/message-box/style/css.mjs";
 import "element-plus/es/components/option/style/css.mjs";
 import "element-plus/es/components/pagination/style/css.mjs";
 import "element-plus/es/components/popconfirm/style/css.mjs";
