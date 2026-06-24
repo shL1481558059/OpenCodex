@@ -8,6 +8,7 @@ using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.Observability;
 using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
+using OpenCodex.CoreBase.Services.Proxy;
 
 namespace OpenCodex.Core.Services;
 
@@ -63,6 +64,7 @@ public sealed class ObservabilityService : IObservabilityService
     private readonly IRepository<AccessApiKey> _keyRepository;
     private readonly IRepository<User> _userRepository;
     private readonly IRepository<Channel> _channelRepository;
+    private readonly IChannelCapacityService _channelCapacity;
 
     public ObservabilityService(
         IOpenCodexRuntimeSettingsProvider settingsProvider,
@@ -72,7 +74,8 @@ public sealed class ObservabilityService : IObservabilityService
         IRepository<RequestLogStreamLine> streamLineRepository,
         IRepository<AccessApiKey> keyRepository,
         IRepository<User> userRepository,
-        IRepository<Channel> channelRepository)
+        IRepository<Channel> channelRepository,
+        IChannelCapacityService channelCapacity)
     {
         _settingsProvider = settingsProvider;
         _workContext = workContext;
@@ -82,6 +85,7 @@ public sealed class ObservabilityService : IObservabilityService
         _keyRepository = keyRepository;
         _userRepository = userRepository;
         _channelRepository = channelRepository;
+        _channelCapacity = channelCapacity;
     }
 
     public ApiOpResult<LogsPageResponse> ReadLogsPage(
@@ -732,39 +736,76 @@ public sealed class ObservabilityService : IObservabilityService
 
     private ActiveChannelQueueDto QueryActiveChannelQueue(string currentUsername, bool isSuperadmin)
     {
-        var filters = ScopedFilters(
-            new Dictionary<string, object?>(StringComparer.Ordinal),
-            currentUsername,
-            isSuperadmin);
-        filters["request_status"] = ProxyRequestLifecycleStatus.Processing;
-
-        var logs = ApplyLogFilters(_logRepository.TableNoTracking, filters)
-            .Where(log => log.ChannelId.HasValue)
+        var channels = ReadScopedChannels(currentUsername, isSuperadmin)
+            .Select(channel => new ActiveChannelQueueItemDto(
+                channel.Id.ToString(),
+                string.IsNullOrWhiteSpace(channel.Name) ? "未命名渠道" : channel.Name,
+                _channelCapacity.GetActiveRequests(channel.OwnerUsername, channel.Id.ToString())))
+            .Where(item => item.ProcessingCount > 0)
+            .OrderByDescending(item => item.ProcessingCount)
+            .ThenBy(item => item.ChannelName, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        if (logs.Count == 0)
+        if (channels.Count == 0)
         {
             return new ActiveChannelQueueDto(
                 TimestampToIso(UnixTimeSeconds()),
                 []);
         }
 
-        var channelNames = ReadChannelNames(logs.Select(log => log.ChannelId));
-        var channels = logs
-            .GroupBy(log => log.ChannelId!.Value)
-            .Select(group => new ActiveChannelQueueItemDto(
-                group.Key.ToString(),
-                channelNames.TryGetValue(group.Key, out var channelName) && !string.IsNullOrWhiteSpace(channelName)
-                    ? channelName
-                    : "已删除渠道",
-                group.Count()))
-            .OrderByDescending(item => item.ProcessingCount)
-            .ThenBy(item => item.ChannelName, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
         return new ActiveChannelQueueDto(
             TimestampToIso(UnixTimeSeconds()),
             channels);
+    }
+
+    private IReadOnlyList<ChannelDto> ReadScopedChannels(string currentUsername, bool isSuperadmin)
+    {
+        var query = _channelRepository.TableNoTracking;
+        if (!isSuperadmin)
+        {
+            var ownerUserId = _userRepository.TableNoTracking
+                .Where(user => user.Username == currentUsername)
+                .Select(user => (Guid?)user.Id)
+                .FirstOrDefault();
+            if (!ownerUserId.HasValue)
+            {
+                return [];
+            }
+
+            query = query.Where(channel => channel.OwnerUserId == ownerUserId.Value);
+        }
+
+        var channels = query.ToList();
+        if (channels.Count == 0)
+        {
+            return [];
+        }
+
+        var ownerIds = channels.Select(channel => channel.OwnerUserId).Distinct().ToList();
+        var ownerMap = _userRepository.TableNoTracking
+            .Where(user => ownerIds.Contains(user.Id))
+            .ToDictionary(user => user.Id, user => user.Username);
+
+        return channels
+            .Select(channel => new ChannelDto(
+                channel.Id,
+                channel.OwnerUserId,
+                ownerMap.TryGetValue(channel.OwnerUserId, out var ownerUsername) ? ownerUsername : string.Empty,
+                channel.Position,
+                channel.Name,
+                channel.Type,
+                channel.BaseUrl,
+                channel.ApiKey,
+                channel.AuthMode,
+                new Dictionary<string, object?>(),
+                channel.TimeoutSeconds,
+                channel.RetryCount,
+                channel.Priority,
+                channel.Capacity,
+                new Dictionary<string, object?>(),
+                [],
+                channel.Enabled))
+            .ToList();
     }
 
     private static StatsSummaryDto ReadStatsSummary(
