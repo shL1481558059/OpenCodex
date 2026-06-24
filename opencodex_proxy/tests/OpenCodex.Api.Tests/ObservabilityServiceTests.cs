@@ -1,4 +1,5 @@
 using OpenCodex.Core.Domain;
+using OpenCodex.Core.Services.Proxy;
 using Microsoft.EntityFrameworkCore;
 using OpenCodex.Core.Services;
 using OpenCodex.CoreBase.Abstractions;
@@ -7,6 +8,7 @@ using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs.Observability;
 using OpenCodex.CoreBase.Services;
+using OpenCodex.CoreBase.Services.Proxy;
 using OpenCodex.Data;
 using Xunit;
 
@@ -18,7 +20,9 @@ public sealed class ObservabilityServiceTests
     private static readonly Guid KeyId101 = Guid.Parse("22222222-2222-2222-2222-222222222201");
     private static readonly Guid ChannelId401 = Guid.Parse("44444444-4444-4444-4444-444444444401");
 
-    private static ObservabilityService CreateService(string dbPath)
+    private static ObservabilityService CreateService(
+        string dbPath,
+        IChannelCapacityService? channelCapacity = null)
     {
         var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         return new ObservabilityService(
@@ -29,7 +33,8 @@ public sealed class ObservabilityServiceTests
             new EfRepository<RequestLogStreamLine>(context),
             new EfRepository<AccessApiKey>(context),
             new EfRepository<User>(context),
-            new EfRepository<Channel>(context));
+            new EfRepository<Channel>(context),
+            channelCapacity ?? new ChannelCapacityService());
     }
 
     [Fact]
@@ -296,6 +301,106 @@ context.Users.Add(new User
         Assert.Equal(15, summary.Recent1hTokens);
         Assert.True(summary.Rpm > 0);
         Assert.True(summary.Tpm > 0);
+    }
+
+    [Fact]
+    public void ActiveChannelQueue_UsesRuntimeCapacityInsteadOfProcessingLogs()
+    {
+        var dbPath = Path.Combine(
+            Path.GetTempPath(),
+            "opencodex-api-tests",
+            $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        var channelId402 = Guid.Parse("44444444-4444-4444-4444-444444444402");
+
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            context.Users.Add(new User
+            {
+                Id = AdminUserId,
+                Username = "admin",
+                PasswordHash = "hash",
+                Role = "superadmin",
+                Enabled = true,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            context.Channels.AddRange(
+                new Channel
+                {
+                    Id = ChannelId401,
+                    OwnerUserId = AdminUserId,
+                    Position = 0,
+                    Name = "日志残留渠道",
+                    Type = "openai",
+                    BaseUrl = "https://example.com/a",
+                    ApiKey = "sk-a",
+                    AuthMode = "config",
+                    HeadersJson = "{}",
+                    TimeoutSeconds = 30,
+                    RetryCount = 0,
+                    Capacity = 3,
+                    CompatJson = "{}",
+                    ModelsJson = "[]",
+                    Enabled = true,
+                    CreatedAt = 1,
+                    UpdatedAt = 1
+                },
+                new Channel
+                {
+                    Id = channelId402,
+                    OwnerUserId = AdminUserId,
+                    Position = 1,
+                    Name = "实时占用渠道",
+                    Type = "openai",
+                    BaseUrl = "https://example.com/b",
+                    ApiKey = "sk-b",
+                    AuthMode = "config",
+                    HeadersJson = "{}",
+                    TimeoutSeconds = 30,
+                    RetryCount = 0,
+                    Capacity = 3,
+                    CompatJson = "{}",
+                    ModelsJson = "[]",
+                    Enabled = true,
+                    CreatedAt = 1,
+                    UpdatedAt = 1
+                });
+            context.RequestLogs.Add(new RequestLog
+            {
+                Id = Guid.Parse("33333333-3333-3333-3333-333333333341"),
+                RequestId = "req-stale-processing",
+                CreatedAt = 1_700_000_100,
+                Method = "POST",
+                Path = "/v1/responses",
+                Model = "gpt-test",
+                ChannelId = ChannelId401,
+                LifecycleStatus = ProxyRequestLifecycleStatus.Processing,
+                IsStream = true,
+                OwnerUserId = AdminUserId
+            });
+            context.SaveChanges();
+        }
+
+        var capacity = new ChannelCapacityService();
+        var runtimeChannel = new Dictionary<string, object?>
+        {
+            ["id"] = channelId402.ToString(),
+            ["capacity"] = 3
+        };
+        using var lease1 = capacity.TryAcquire("admin", runtimeChannel);
+        using var lease2 = capacity.TryAcquire("admin", runtimeChannel);
+
+        var service = CreateService(dbPath, capacity);
+
+        var queue = service.ReadActiveChannelQueue();
+
+        Assert.True(queue.Succeeded);
+        var item = Assert.Single(queue.Payload!.Channels);
+        Assert.Equal(channelId402.ToString(), item.ChannelId);
+        Assert.Equal("实时占用渠道", item.ChannelName);
+        Assert.Equal(2, item.ProcessingCount);
     }
 
     [Fact]
