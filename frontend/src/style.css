@@ -480,6 +480,59 @@ body {
   line-height: 1.6;
 }
 
+.channel-test-details {
+  margin-top: 12px;
+}
+
+.channel-test-detail-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.channel-test-detail-section {
+  min-width: 0;
+}
+
+.channel-test-detail-title {
+  margin-bottom: 6px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+
+.channel-test-json {
+  max-height: 260px;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-primary);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.bulk-test-summary {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 4px 0 12px;
+}
+
+.bulk-test-table {
+  width: 100%;
+}
+
+.bulk-test-output {
+  max-height: 96px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
 .created-key-alert {
   margin-top: 14px;
 }

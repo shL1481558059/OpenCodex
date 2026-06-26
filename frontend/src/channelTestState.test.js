@@ -63,3 +63,29 @@ test("只有收到 response.completed 后才应显示成功", () => {
   assert.equal(getChannelTestAlertTitle(state), "连接测试成功");
   assert.equal(getChannelTestAlertType(state), "success");
 });
+
+test("收到 channel_test.completed 后应保存可展示的响应详情", () => {
+  const state = createChannelTestState();
+
+  applyChannelTestStreamEvent(state, {
+    event: "channel_test.completed",
+    data: {
+      status_code: 200,
+      duration_ms: 123,
+      request_model: "public-model",
+      upstream_model: "upstream-model",
+      upstream_request: { model: "upstream-model", stream: true },
+      upstream_response: {
+        id: "resp_1",
+        model: "upstream-model",
+        output_text: "pong"
+      }
+    }
+  });
+
+  assert.equal(state.phase, "success");
+  assert.equal(state.duration_ms, 123);
+  assert.equal(state.details.status_code, 200);
+  assert.deepEqual(state.details.upstream_request, { model: "upstream-model", stream: true });
+  assert.equal(formatChannelTestResult(state), "pong");
+});
