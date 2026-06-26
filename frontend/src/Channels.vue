@@ -7,6 +7,9 @@
       </div>
       <div class="toolbar-actions">
         <el-button :icon="Refresh" @click="loadConfig">刷新</el-button>
+        <el-button :icon="Connection" :disabled="selectedChannels.length === 0" @click="openBulkChannelTest">
+          批量测试
+        </el-button>
         <el-button :icon="Download" @click="exportChannels">导出</el-button>
         <el-button :icon="Upload" @click="triggerImportChannels">导入</el-button>
         <input
@@ -21,25 +24,25 @@
     </div>
 
     <el-row :gutter="12">
-      <el-col :span="8">
+      <el-col :span="12">
         <el-statistic title="渠道总数" :value="channels.length" />
       </el-col>
-      <el-col :span="8">
+      <el-col :span="12">
         <el-statistic title="启用渠道" :value="enabledChannelCount" />
-      </el-col>
-      <el-col :span="8">
-        <el-statistic title="模型映射" :value="modelMappingCount" />
       </el-col>
     </el-row>
 
     <div class="table-area">
       <el-table
+        ref="channelTableRef"
         v-loading="configLoading"
         :data="channels"
         row-key="id"
         style="width: 100%; margin-top: 16px"
         empty-text="暂无渠道"
+        @selection-change="handleChannelSelectionChange"
       >
+        <el-table-column type="selection" width="48" />
         <el-table-column
           v-if="props.isSuperadmin"
           prop="owner_username"
@@ -230,12 +233,6 @@
         <el-button style="margin-top: 8px; margin-left: 8px" :loading="discoverLoading" @click="discoverModels">
           发现模型
         </el-button>
-        <el-alert v-if="discoveredModels.length" style="margin-top: 12px" type="info" :closable="false">
-          <el-checkbox-group v-model="selectedDiscoveredModels">
-            <el-checkbox v-for="model in discoveredModels" :key="model" :label="model" :value="model" />
-          </el-checkbox-group>
-          <el-button size="small" style="margin-top: 8px" @click="addSelectedModels">加入映射</el-button>
-        </el-alert>
 
         <el-divider content-position="left">兼容规则</el-divider>
         <el-row :gutter="12">
@@ -279,6 +276,152 @@
         </div>
       </template>
     </el-drawer>
+
+    <el-dialog v-model="discoverModelsVisible" title="发现模型" width="720px">
+      <el-table
+        ref="discoveredModelsTableRef"
+        :data="discoveredModelRows"
+        row-key="model"
+        max-height="420"
+        empty-text="未发现模型"
+        @selection-change="handleDiscoveredModelSelectionChange"
+      >
+        <el-table-column type="selection" width="48" :selectable="isDiscoveredModelSelectable" />
+        <el-table-column prop="model" label="模型" min-width="260" show-overflow-tooltip />
+        <el-table-column label="映射状态" width="120">
+          <template #default="{ row }">
+            <el-tag :type="row.exists ? 'info' : 'success'">
+              {{ row.exists ? "已存在" : "可添加" }}
+            </el-tag>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <template #footer>
+        <div class="drawer-footer">
+          <el-button @click="discoverModelsVisible = false">取消</el-button>
+          <el-button
+            type="primary"
+            :disabled="selectedDiscoveredModels.length === 0"
+            @click="addSelectedModels"
+          >
+            添加到模型映射
+          </el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- 批量测试 Dialog -->
+    <el-dialog
+      v-model="bulkTestVisible"
+      title="批量测试渠道"
+      width="960px"
+      :close-on-click-modal="!bulkTestRunning"
+      :before-close="handleBulkTestBeforeClose"
+    >
+      <el-form label-position="top" :model="bulkTestForm" class="channel-test-form">
+        <el-row :gutter="12">
+          <el-col :span="12">
+            <el-form-item label="提示词">
+              <el-input
+                v-model="bulkTestForm.prompt"
+                type="textarea"
+                :rows="3"
+                placeholder="请输入用于测试连接的提示词"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="6">
+            <el-form-item label="最大输出 Tokens">
+              <el-input-number
+                v-model="bulkTestForm.max_output_tokens"
+                :min="1"
+                :step="1"
+                step-strictly
+                class="full-width"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="6">
+            <el-form-item label="并发数">
+              <el-input-number
+                v-model="bulkTestForm.concurrency"
+                :min="1"
+                :max="10"
+                :step="1"
+                step-strictly
+                class="full-width"
+              />
+            </el-form-item>
+          </el-col>
+        </el-row>
+      </el-form>
+
+      <div class="bulk-test-summary">
+        <el-tag type="info">总数 {{ bulkTestSummary.total }}</el-tag>
+        <el-tag type="success">成功 {{ bulkTestSummary.success }}</el-tag>
+        <el-tag type="danger">失败 {{ bulkTestSummary.error }}</el-tag>
+        <el-tag type="warning">测试中 {{ bulkTestSummary.running }}</el-tag>
+        <el-tag type="info">等待 {{ bulkTestSummary.pending }}</el-tag>
+        <el-tag v-if="bulkTestSummary.cancelled" type="info">取消 {{ bulkTestSummary.cancelled }}</el-tag>
+      </div>
+
+      <el-table
+        :data="bulkTestRows"
+        row-key="key"
+        max-height="460"
+        class="bulk-test-table"
+        empty-text="暂无测试渠道"
+      >
+        <el-table-column prop="channel.name" label="渠道" min-width="150" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ row.channel.name || row.channel.id }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="channel.type" label="服务类型" width="110">
+          <template #default="{ row }">
+            <el-tag>{{ row.channel.type }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="model" label="模型" min-width="170" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ row.model || "-" }}
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag :type="bulkTestStatusTagType(row.status)">
+              {{ formatBulkTestStatus(row.status) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="耗时" width="100">
+          <template #default="{ row }">
+            {{ displayMs(row.result?.duration_ms) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="结果" min-width="260">
+          <template #default="{ row }">
+            <div class="bulk-test-output">{{ formatBulkTestResult(row) }}</div>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <template #footer>
+        <div class="drawer-footer">
+          <el-button @click="closeBulkTestDialog">关闭</el-button>
+          <el-button v-if="bulkTestRunning" type="warning" @click="cancelBulkChannelTest">取消测试</el-button>
+          <el-button
+            type="primary"
+            :loading="bulkTestRunning"
+            :disabled="bulkTestRows.length === 0"
+            @click="runBulkChannelTests"
+          >
+            {{ bulkTestRunButtonText }}
+          </el-button>
+        </div>
+      </template>
+    </el-dialog>
 
     <!-- 渠道测试 Dialog -->
     <el-dialog v-model="channelTestVisible" :title="channelTestTitle" width="640px">
@@ -325,6 +468,36 @@
         <div class="channel-test-output">{{ formatChannelTestResult(testResult) }}</div>
       </el-alert>
 
+      <el-collapse
+        v-if="hasChannelTestDetails(testResult)"
+        class="channel-test-details"
+      >
+        <el-collapse-item title="响应详情" name="details">
+          <div class="channel-test-detail-grid">
+            <div v-if="testResult.details" class="channel-test-detail-section">
+              <div class="channel-test-detail-title">测试信息</div>
+              <pre class="channel-test-json">{{ formatChannelTestJson(channelTestSummaryDetails(testResult)) }}</pre>
+            </div>
+            <div v-if="testResult.details?.upstream_response" class="channel-test-detail-section">
+              <div class="channel-test-detail-title">上游响应</div>
+              <pre class="channel-test-json">{{ formatChannelTestJson(testResult.details.upstream_response) }}</pre>
+            </div>
+            <div v-if="testResult.details?.error_response" class="channel-test-detail-section">
+              <div class="channel-test-detail-title">错误响应</div>
+              <pre class="channel-test-json">{{ formatChannelTestJson(testResult.details.error_response) }}</pre>
+            </div>
+            <div v-if="testResult.details?.upstream_request" class="channel-test-detail-section">
+              <div class="channel-test-detail-title">上游请求</div>
+              <pre class="channel-test-json">{{ formatChannelTestJson(testResult.details.upstream_request) }}</pre>
+            </div>
+            <div v-if="testResult.raw_events?.length" class="channel-test-detail-section">
+              <div class="channel-test-detail-title">原始事件</div>
+              <pre class="channel-test-json">{{ formatChannelTestJson(testResult.raw_events) }}</pre>
+            </div>
+          </div>
+        </el-collapse-item>
+      </el-collapse>
+
       <template #footer>
         <div class="drawer-footer">
           <el-button @click="channelTestVisible = false">关闭</el-button>
@@ -336,7 +509,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from "vue";
+import { ref, reactive, computed, nextTick, onMounted } from "vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
 import { ElMessageBox } from "element-plus/es/components/message-box/index.mjs";
 import {
@@ -384,18 +557,68 @@ const testResult = ref(null);
 const channelTestVisible = ref(false);
 const testingChannel = ref(null);
 const channelTestForm = reactive({ model: "", prompt: "你好" });
+const discoverModelsVisible = ref(false);
+const discoveredModelsTableRef = ref(null);
 const discoveredModels = ref([]);
 const selectedDiscoveredModels = ref([]);
 const config = reactive({ channels: [] });
+const channelTableRef = ref(null);
+const selectedChannels = ref([]);
+const bulkTestVisible = ref(false);
+const bulkTestRunning = ref(false);
+const bulkTestCancelRequested = ref(false);
+const bulkTestRows = ref([]);
+const bulkTestForm = reactive({
+  prompt: "你好",
+  max_output_tokens: 256,
+  concurrency: 3
+});
 const channelToggleSavingKeys = reactive(new Set());
 const resetChannelHealthLoadingId = ref("");
+const bulkTestAbortControllers = new Set();
 
 const channels = computed(() => config.channels || []);
 const enabledChannelCount = computed(() => channels.value.filter((c) => c.enabled !== false).length);
-const modelMappingCount = computed(() =>
-  channels.value.reduce((total, c) => total + normalizeModels(c.models).length, 0)
-);
 const channelTestModelOptions = computed(() => normalizeModels(testingChannel.value?.models).map((item) => item.model));
+const existingDiscoveredModelNames = computed(() => {
+  const names = new Set();
+  for (const item of normalizeModels(channelDraft.models)) {
+    if (item.model) names.add(item.model);
+    if (item.upstream_model) names.add(item.upstream_model);
+  }
+  return names;
+});
+const discoveredModelRows = computed(() =>
+  discoveredModels.value.map((model) => ({
+    model,
+    exists: existingDiscoveredModelNames.value.has(model)
+  }))
+);
+const bulkTestSummary = computed(() => {
+  const summary = {
+    total: bulkTestRows.value.length,
+    pending: 0,
+    running: 0,
+    success: 0,
+    error: 0,
+    cancelled: 0
+  };
+
+  for (const row of bulkTestRows.value) {
+    if (Object.prototype.hasOwnProperty.call(summary, row.status)) {
+      summary[row.status] += 1;
+    }
+  }
+
+  return summary;
+});
+const bulkTestRunButtonText = computed(() => {
+  if (bulkTestRunning.value) {
+    return "测试中";
+  }
+
+  return bulkTestRows.value.some((row) => row.status !== "pending") ? "重新测试" : "开始测试";
+});
 const channelTestTitle = computed(() => {
   const name = testingChannel.value?.name || testingChannel.value?.id || "";
   return name ? `测试连接 - ${name}` : "测试连接";
@@ -405,6 +628,9 @@ async function loadConfig() {
   try {
     const data = await props.api("/config");
     config.channels = Array.isArray(data.channels) ? data.channels : [];
+    selectedChannels.value = [];
+    await nextTick();
+    channelTableRef.value?.clearSelection();
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
@@ -494,6 +720,161 @@ function openChannelTest(channel) {
   channelTestForm.prompt = "你好";
   testResult.value = null;
   channelTestVisible.value = true;
+}
+
+function handleChannelSelectionChange(selection) {
+  selectedChannels.value = Array.isArray(selection) ? selection : [];
+}
+
+function openBulkChannelTest() {
+  if (selectedChannels.value.length === 0) {
+    ElMessage.warning("请先选择渠道");
+    return;
+  }
+
+  bulkTestRows.value = selectedChannels.value.map((channel, index) =>
+    createBulkTestRow(channel, index)
+  );
+  bulkTestCancelRequested.value = false;
+  bulkTestVisible.value = true;
+}
+
+async function runBulkChannelTests() {
+  if (bulkTestRunning.value || bulkTestRows.value.length === 0) {
+    return;
+  }
+
+  bulkTestCancelRequested.value = false;
+  resetBulkTestRows();
+  const runnableRows = bulkTestRows.value.filter((row) => row.status === "pending");
+  if (runnableRows.length === 0) {
+    return;
+  }
+
+  bulkTestRunning.value = true;
+  let nextIndex = 0;
+  const workerCount = Math.min(normalizeBulkConcurrency(), runnableRows.length);
+  const runNext = async () => {
+    while (!bulkTestCancelRequested.value) {
+      const row = runnableRows[nextIndex];
+      nextIndex += 1;
+      if (!row) {
+        return;
+      }
+      await runBulkChannelTestRow(row);
+    }
+  };
+
+  try {
+    await Promise.all(Array.from({ length: workerCount }, runNext));
+  } finally {
+    if (bulkTestCancelRequested.value) {
+      markPendingBulkRowsCancelled();
+    }
+    bulkTestAbortControllers.clear();
+    bulkTestRunning.value = false;
+  }
+}
+
+function cancelBulkChannelTest() {
+  bulkTestCancelRequested.value = true;
+  for (const controller of bulkTestAbortControllers) {
+    controller.abort();
+  }
+}
+
+function handleBulkTestBeforeClose(done) {
+  if (bulkTestRunning.value) {
+    cancelBulkChannelTest();
+  }
+  done();
+}
+
+function closeBulkTestDialog() {
+  if (bulkTestRunning.value) {
+    cancelBulkChannelTest();
+  }
+  bulkTestVisible.value = false;
+}
+
+function createBulkTestRow(channel, index) {
+  const copiedChannel = cloneChannelForTest(channel);
+  const model = normalizeModels(copiedChannel.models)[0]?.model || "";
+  return {
+    key: `${copiedChannel.id || "channel"}:${index}`,
+    channel: copiedChannel,
+    model,
+    status: "pending",
+    result: createChannelTestState()
+  };
+}
+
+function resetBulkTestRows() {
+  for (const row of bulkTestRows.value) {
+    row.result = createChannelTestState();
+    if (!row.model) {
+      row.status = "error";
+      row.result.phase = "error";
+      row.result.error = "缺少模型映射";
+      row.result.body = { error: "缺少模型映射" };
+      row.result.duration_ms = 0;
+      continue;
+    }
+
+    row.status = "pending";
+  }
+}
+
+async function runBulkChannelTestRow(row) {
+  row.status = "running";
+  row.result = createChannelTestState();
+  const controller = new AbortController();
+  const startedAt = performance.now();
+  bulkTestAbortControllers.add(controller);
+  try {
+    const payload = buildChannelTestPayload(row.channel);
+    payload.model = row.model;
+    payload.input = bulkTestForm.prompt || "你好";
+    payload.max_output_tokens = normalizeBulkMaxOutputTokens();
+    await streamChannelTest(
+      payload,
+      (event) => {
+        applyChannelTestStreamEvent(row.result, event);
+      },
+      { signal: controller.signal }
+    );
+    finalizeChannelTestResult(row.result);
+    row.result.duration_ms = Math.round(performance.now() - startedAt);
+    row.status = row.result.phase === "error" ? "error" : "success";
+  } catch (error) {
+    const aborted = isAbortError(error);
+    row.status = aborted ? "cancelled" : "error";
+    row.result = {
+      phase: "error",
+      error: aborted ? "已取消" : error.message,
+      duration_ms: Math.round(performance.now() - startedAt),
+      response: { output_text: "" },
+      details: null,
+      raw_events: row.result?.raw_events || [],
+      hasReceivedEvent: row.result?.hasReceivedEvent === true,
+      body: null
+    };
+  } finally {
+    bulkTestAbortControllers.delete(controller);
+  }
+}
+
+function markPendingBulkRowsCancelled() {
+  for (const row of bulkTestRows.value) {
+    if (row.status !== "pending") {
+      continue;
+    }
+
+    row.status = "cancelled";
+    row.result.phase = "error";
+    row.result.error = "已取消";
+    row.result.duration_ms = 0;
+  }
 }
 
 async function saveChannel() {
@@ -598,23 +979,26 @@ async function confirmResetChannelHealth(channel) {
 }
 
 async function discoverModels() {
-  if (!testingChannel.value && !channelDraft.id) {
-    ElMessage.warning("请先填写渠道 ID");
-    return;
-  }
   discoverLoading.value = true;
   discoveredModels.value = [];
   selectedDiscoveredModels.value = [];
   try {
-    const channel = testingChannel.value || buildChannelFromDraft();
+    const channel = buildChannelFromDraft();
     const payload = buildChannelTestPayload(channel);
     const data = await props.api("/discover-models", {
       method: "POST",
       body: JSON.stringify(payload)
     });
-    const models = data?.models || [];
+    const models = uniqueStringList(data?.models || []);
     discoveredModels.value = models;
-    selectedDiscoveredModels.value = models.slice();
+    if (models.length === 0) {
+      ElMessage.info("未发现模型");
+      return;
+    }
+
+    discoverModelsVisible.value = true;
+    await nextTick();
+    selectDefaultDiscoveredModels();
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
@@ -643,6 +1027,7 @@ async function testChannel() {
       error: error.message,
       duration_ms: Math.round(performance.now() - startedAt),
       response: { output_text: "" },
+      details: null,
       raw_events: [],
       hasReceivedEvent: false,
       body: null
@@ -653,13 +1038,37 @@ async function testChannel() {
 }
 
 function addSelectedModels() {
+  let addedCount = 0;
   for (const model of selectedDiscoveredModels.value) {
-    if (!channelDraft.models.some((m) => m.model === model)) {
+    if (!existingDiscoveredModelNames.value.has(model)) {
       channelDraft.models.push({ model, upstream_model: model, supports_image: false });
+      addedCount += 1;
     }
   }
-  discoveredModels.value = [];
+  if (addedCount > 0) {
+    ElMessage.success(`已添加 ${addedCount} 个模型`);
+  }
+  discoverModelsVisible.value = false;
   selectedDiscoveredModels.value = [];
+}
+
+function handleDiscoveredModelSelectionChange(rows) {
+  selectedDiscoveredModels.value = rows.map((row) => row.model);
+}
+
+function isDiscoveredModelSelectable(row) {
+  return !row.exists;
+}
+
+function selectDefaultDiscoveredModels() {
+  const table = discoveredModelsTableRef.value;
+  if (!table) return;
+  table.clearSelection();
+  for (const row of discoveredModelRows.value) {
+    if (!row.exists) {
+      table.toggleRowSelection(row, true);
+    }
+  }
 }
 
 function buildChannelTestPayload(channel) {
@@ -688,11 +1097,12 @@ function channelTestModelSuggestions(query, callback) {
   callback(buildSuggestions(channelTestModelOptions.value, query));
 }
 
-async function streamChannelTest(payload, onEvent) {
+async function streamChannelTest(payload, onEvent, options = {}) {
   const response = await fetch(`${devApiPrefix}/test-channel/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
+    signal: options.signal
   });
   if (!response.ok) {
     throw new Error(await response.text() || response.statusText);
@@ -888,6 +1298,19 @@ function buildSuggestions(values, query) {
     .map((value) => ({ value: String(value) }));
 }
 
+function uniqueStringList(values) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values || []) {
+    const text = String(value || "").trim();
+    if (text && !seen.has(text)) {
+      seen.add(text);
+      result.push(text);
+    }
+  }
+  return result;
+}
+
 function parseJsonText(text, label) {
   try { return JSON.parse(text || "{}"); } catch { throw new Error(`${label} 不是合法 JSON`); }
 }
@@ -928,10 +1351,108 @@ function displayMs(value) {
   return value === null || value === undefined ? "-" : `${value} ms`;
 }
 
+function formatBulkTestResult(row) {
+  switch (row.status) {
+    case "pending":
+      return "等待测试";
+    case "running":
+      return formatChannelTestResult(row.result);
+    case "cancelled":
+      return "已取消";
+    default:
+      return formatChannelTestResult(row.result);
+  }
+}
+
+function formatBulkTestStatus(status) {
+  switch (status) {
+    case "pending":
+      return "等待";
+    case "running":
+      return "测试中";
+    case "success":
+      return "成功";
+    case "error":
+      return "失败";
+    case "cancelled":
+      return "取消";
+    default:
+      return status || "-";
+  }
+}
+
+function bulkTestStatusTagType(status) {
+  switch (status) {
+    case "success":
+      return "success";
+    case "error":
+      return "danger";
+    case "running":
+      return "warning";
+    default:
+      return "info";
+  }
+}
+
+function hasChannelTestDetails(result) {
+  return Boolean(result?.details || result?.raw_events?.length);
+}
+
+function channelTestSummaryDetails(result) {
+  const details = result?.details || {};
+  return {
+    status_code: details.status_code,
+    duration_ms: details.duration_ms ?? result?.duration_ms,
+    request_model: details.request_model,
+    upstream_model: details.upstream_model,
+    channel_id: details.channel_id,
+    channel_type: details.channel_type,
+    error: details.error
+  };
+}
+
+function formatChannelTestJson(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 function formatCapacityStatus(channel) {
   const activeRequests = Number(channel?.active_requests ?? 0);
   const capacity = normalizeCapacityValue(channel?.capacity);
   return `${activeRequests} / ${capacity ?? "-"}`;
+}
+
+function normalizeBulkMaxOutputTokens() {
+  const value = Number(bulkTestForm.max_output_tokens);
+  return Number.isInteger(value) && value > 0 ? value : 256;
+}
+
+function normalizeBulkConcurrency() {
+  const value = Number(bulkTestForm.concurrency);
+  if (!Number.isInteger(value) || value <= 0) {
+    return 3;
+  }
+
+  return Math.min(value, 10);
+}
+
+function cloneChannelForTest(channel) {
+  return JSON.parse(JSON.stringify(channel || {}));
+}
+
+function isAbortError(error) {
+  return error?.name === "AbortError";
 }
 
 function formatHealthStatus(value) {

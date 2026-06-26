@@ -120,7 +120,25 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
                 _ => upstreamLines
             };
             metrics = await writer.WriteLinesAsync(
-                CaptureTestStreamAsync(observableLines, capture, cancellationToken),
+                AppendTestCompletedEventAsync(
+                    CaptureTestStreamAsync(observableLines, capture, cancellationToken),
+                    () =>
+                    {
+                        upstreamResponse = capture.UpstreamResponse ?? converted.UpstreamResponse;
+                        return BuildTestCompletedEvent(
+                            started,
+                            statusCode,
+                            compatibleRequest,
+                            upstreamResponse,
+                            null,
+                            errorResponse,
+                            originalModel,
+                            upstreamModel,
+                            channelId,
+                            channelType,
+                            error);
+                    },
+                    cancellationToken),
                 static line => line.Trim().Length > 0,
                 () => ElapsedMilliseconds(started),
                 cancellationToken);
@@ -134,6 +152,21 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
             await WriteSseEventAsync(
                 "channel_test.error",
                 errorResponse,
+                cancellationToken);
+            await WriteSseEventAsync(
+                "channel_test.completed",
+                BuildTestCompletedEvent(
+                    started,
+                    statusCode,
+                    compatibleRequest,
+                    upstreamResponse,
+                    null,
+                    errorResponse,
+                    originalModel,
+                    upstreamModel,
+                    channelId,
+                    channelType,
+                    error),
                 cancellationToken);
         }
         catch (ProxyException exception)
@@ -152,6 +185,21 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
             await WriteSseEventAsync(
                 "channel_test.error",
                 errorResponse,
+                cancellationToken);
+            await WriteSseEventAsync(
+                "channel_test.completed",
+                BuildTestCompletedEvent(
+                    started,
+                    statusCode,
+                    compatibleRequest,
+                    upstreamResponse,
+                    null,
+                    errorResponse,
+                    originalModel,
+                    upstreamModel,
+                    channelId,
+                    channelType,
+                    error),
                 cancellationToken);
         }
         finally
@@ -178,14 +226,8 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
 
         async Task WriteSseEventAsync(string eventName, object data, CancellationToken token)
         {
-            var lines = new[]
-            {
-                $"event: {eventName}\n",
-                $"data: {JsonSerializer.Serialize(data, StreamJsonOptions)}\n",
-                "\n"
-            };
             await writer.WriteLinesAsync(
-                Lines(lines, token),
+                Lines(SseEventLines(eventName, data), token),
                 static _ => false,
                 () => ElapsedMilliseconds(started),
                 token);
@@ -243,6 +285,30 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
             capture.Accept(line);
             yield return line;
         }
+    }
+
+    private static async IAsyncEnumerable<string> AppendTestCompletedEventAsync(
+        IAsyncEnumerable<string> lines,
+        Func<object> buildData,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await foreach (var line in lines.WithCancellation(cancellationToken))
+        {
+            yield return line;
+        }
+
+        foreach (var line in SseEventLines("channel_test.completed", buildData()))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return line;
+        }
+    }
+
+    private static IEnumerable<string> SseEventLines(string eventName, object data)
+    {
+        yield return $"event: {eventName}\n";
+        yield return $"data: {JsonSerializer.Serialize(data, StreamJsonOptions)}\n";
+        yield return "\n";
     }
 
     private static async IAsyncEnumerable<string> Lines(
@@ -510,6 +576,57 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
                 ["type"] = errorType
             }
         };
+    }
+
+    private static Dictionary<string, object?> BuildTestCompletedEvent(
+        long started,
+        int statusCode,
+        Dictionary<string, object?>? upstreamRequest,
+        Dictionary<string, object?>? upstreamResponse,
+        Dictionary<string, object?>? responsePayload,
+        object? errorResponse,
+        string? originalModel,
+        string? upstreamModel,
+        string? channelId,
+        string? channelType,
+        string? error)
+    {
+        var data = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["status_code"] = statusCode,
+            ["duration_ms"] = ElapsedMilliseconds(started),
+            ["request_model"] = originalModel,
+            ["upstream_model"] = upstreamModel,
+            ["channel_id"] = channelId,
+            ["channel_type"] = channelType
+        };
+
+        if (upstreamRequest is not null)
+        {
+            data["upstream_request"] = RedactObject(upstreamRequest);
+        }
+
+        if (upstreamResponse is not null)
+        {
+            data["upstream_response"] = RedactObject(upstreamResponse);
+        }
+
+        if (responsePayload is not null)
+        {
+            data["response"] = RedactObject(responsePayload);
+        }
+
+        if (errorResponse is not null)
+        {
+            data["error_response"] = errorResponse;
+        }
+
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            data["error"] = error;
+        }
+
+        return data;
     }
 
     private static ProxyRequestMetadata RedactRequestMetadata(ProxyRequestMetadata requestMetadata)

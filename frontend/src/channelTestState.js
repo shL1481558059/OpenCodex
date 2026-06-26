@@ -2,6 +2,7 @@ export function createChannelTestState() {
   return {
     phase: "connecting",
     response: { output_text: "" },
+    details: null,
     raw_events: [],
     hasReceivedEvent: false,
     error: "",
@@ -25,6 +26,11 @@ export function applyChannelTestStreamEvent(result, event) {
     return;
   }
 
+  if (event.event === "channel_test.completed") {
+    applyChannelTestDetails(result, event.data);
+    return;
+  }
+
   const data = event.data;
   if (!data || typeof data !== "object") return;
   if (data.type === "response.output_text.delta" && typeof data.delta === "string") {
@@ -41,6 +47,35 @@ export function applyChannelTestStreamEvent(result, event) {
       result.body = data.response;
     }
   }
+}
+
+function applyChannelTestDetails(result, data) {
+  if (!data || typeof data !== "object") return;
+  result.details = data;
+  if (Number.isFinite(data.duration_ms)) {
+    result.duration_ms = data.duration_ms;
+  }
+
+  if (data.upstream_response && typeof data.upstream_response === "object") {
+    result.response = {
+      ...data.upstream_response,
+      output_text: result.response.output_text || extractResponseText(data.upstream_response)
+    };
+  }
+
+  if (data.error_response) {
+    result.body = data.error_response;
+  }
+
+  const statusCode = Number(data.status_code || 0);
+  const errorMessage = extractErrorMessage(data.error_response) || extractErrorMessage(data);
+  if (statusCode >= 400 || errorMessage) {
+    result.phase = "error";
+    result.error = errorMessage || result.error || "上游请求失败";
+    return;
+  }
+
+  result.phase = "success";
 }
 
 export function finalizeChannelTestResult(result) {

@@ -103,6 +103,58 @@ var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-ch
     }
 
     [Fact]
+    public async Task TestChannelStreamEmitsDiagnosticDetailEvent()
+    {
+        var cookie = await LoginAndReadSessionCookie();
+
+        var (statusCode, body) = await SendStreamRequestWithCookie(
+            "/test-channel/stream",
+            cookie,
+            new
+            {
+                id = "detail-channel",
+                name = "Detail Channel",
+                type = ProtocolConverter.Responses,
+                baseurl = "https://upstream.example/v1",
+                apikey = SecretApiKey,
+                auth_mode = "config",
+                capacity = 3,
+                headers = new Dictionary<string, object?>
+                {
+                    ["Authorization"] = $"Bearer {SecretHeaderValue}",
+                    ["X-Normal"] = "visible"
+                },
+                models = new[]
+                {
+                    new
+                    {
+                        model = "public-model",
+                        upstream_model = "upstream-model",
+                        supports_image = false
+                    }
+                },
+                model = "public-model",
+                input = "你好",
+                max_output_tokens = 32
+            });
+
+        Assert.Equal(HttpStatusCode.OK, statusCode);
+        Assert.Contains("event: channel_test.completed", body, StringComparison.Ordinal);
+        Assert.True(
+            body.IndexOf("event: channel_test.completed", StringComparison.Ordinal)
+            < body.IndexOf("data: [DONE]", StringComparison.Ordinal));
+        Assert.Contains("\"status_code\":200", body, StringComparison.Ordinal);
+        Assert.Contains("\"request_model\":\"public-model\"", body, StringComparison.Ordinal);
+        Assert.Contains("\"upstream_model\":\"upstream-model\"", body, StringComparison.Ordinal);
+        Assert.Contains("\"upstream_response\"", body, StringComparison.Ordinal);
+        Assert.Contains("\"output_text\":\"pong\"", body, StringComparison.Ordinal);
+        Assert.Contains("\"upstream_request\"", body, StringComparison.Ordinal);
+        Assert.Contains("\"stream\":true", body, StringComparison.Ordinal);
+        Assert.DoesNotContain(SecretApiKey, body, StringComparison.Ordinal);
+        Assert.DoesNotContain(SecretHeaderValue, body, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task TestChannelStreamForChatChannelExtractsOutputText()
     {
         _factory.UpstreamClient = new ChatUpstreamClient();
