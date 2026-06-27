@@ -28,6 +28,7 @@ public sealed class ConfigService : IConfigService
     private readonly IWorkContext _workContext;
     private readonly IRepository<Channel> _channelRepository;
     private readonly IRepository<User> _userRepository;
+    private readonly IRepository<ChannelModelMapping> _channelModelMappings;
 
     public ConfigService(
         IOpenCodexRuntimeSettingsProvider settingsProvider,
@@ -35,7 +36,8 @@ public sealed class ConfigService : IConfigService
         IChannelCircuitBreakerService channelCircuitBreaker,
         IWorkContext workContext,
         IRepository<Channel> channelRepository,
-        IRepository<User> userRepository)
+        IRepository<User> userRepository,
+        IRepository<ChannelModelMapping> channelModelMappings)
     {
         _settingsProvider = settingsProvider;
         _channelCapacity = channelCapacity;
@@ -43,6 +45,7 @@ public sealed class ConfigService : IConfigService
         _workContext = workContext;
         _channelRepository = channelRepository;
         _userRepository = userRepository;
+        _channelModelMappings = channelModelMappings;
     }
 
     public ApiOpResult<ConfigResponse> ReadConfig()
@@ -321,12 +324,17 @@ public sealed class ConfigService : IConfigService
             foreach (var channel in toUpdate)
             {
                 _channelRepository.Update(channel);
+                SyncChannelModelMappings(channel);
             }
         }
 
         if (toInsert.Count > 0)
         {
             _channelRepository.Insert(toInsert);
+            foreach (var channel in toInsert)
+            {
+                SyncChannelModelMappings(channel);
+            }
         }
     }
 
@@ -563,6 +571,7 @@ public sealed class ConfigService : IConfigService
             : _channelRepository.Table.ToList();
         if (oldChannels.Count > 0)
         {
+            DeleteMappingsForChannels(oldChannels.Select(channel => channel.Id));
             _channelRepository.Delete(oldChannels);
         }
 
@@ -627,6 +636,75 @@ public sealed class ConfigService : IConfigService
         if (toInsert.Count > 0)
         {
             _channelRepository.Insert(toInsert);
+            foreach (var channel in toInsert)
+            {
+                SyncChannelModelMappings(channel);
+            }
+        }
+    }
+
+    private void SyncChannelModelMappings(Channel channel)
+    {
+        DeleteMappingsForChannels([channel.Id]);
+
+        var mappings = new List<ChannelModelMapping>();
+        var now = UnixTimeSeconds();
+        var position = 0;
+        foreach (var item in DeserializeList(channel.ModelsJson))
+        {
+            if (item is not IReadOnlyDictionary<string, object?> mapping)
+            {
+                continue;
+            }
+
+            var requestModel = JsonDictionaryValue.String(mapping, "model");
+            if (requestModel.Length == 0)
+            {
+                continue;
+            }
+
+            var upstreamModel = JsonDictionaryValue.String(mapping, "upstream_model");
+            if (upstreamModel.Length == 0)
+            {
+                upstreamModel = requestModel;
+            }
+
+            mappings.Add(new ChannelModelMapping
+            {
+                ChannelId = channel.Id,
+                Position = position++,
+                RequestModel = requestModel,
+                UpstreamModel = upstreamModel,
+                SupportsImage = JsonDictionaryValue.Get(mapping, "supports_image") is true,
+                ModelInfoId = ParseGuid(JsonDictionaryValue.Get(mapping, "model_info_id")),
+                PricingMode = NormalizePricingMode(JsonDictionaryValue.String(mapping, "pricing_mode")),
+                PricingPlanId = ParseGuid(JsonDictionaryValue.Get(mapping, "pricing_plan_id")),
+                Enabled = JsonDictionaryValue.Get(mapping, "enabled") is not false,
+                CreatedAt = now,
+                UpdatedAt = now
+            });
+        }
+
+        if (mappings.Count > 0)
+        {
+            _channelModelMappings.Insert(mappings);
+        }
+    }
+
+    private void DeleteMappingsForChannels(IEnumerable<Guid> channelIds)
+    {
+        var ids = channelIds.ToList();
+        if (ids.Count == 0)
+        {
+            return;
+        }
+
+        var oldMappings = _channelModelMappings.Table
+            .Where(mapping => ids.Contains(mapping.ChannelId))
+            .ToList();
+        if (oldMappings.Count > 0)
+        {
+            _channelModelMappings.Delete(oldMappings);
         }
     }
 
@@ -680,6 +758,31 @@ public sealed class ConfigService : IConfigService
         }
 
         return Convert.ToInt32(value, CultureInfo.InvariantCulture);
+    }
+
+    private static Guid? ParseGuid(object? value)
+    {
+        if (value is Guid guidValue && guidValue != Guid.Empty)
+        {
+            return guidValue;
+        }
+
+        var text = (value?.ToString() ?? string.Empty).Trim();
+        return Guid.TryParse(text, out var parsed) && parsed != Guid.Empty
+            ? parsed
+            : null;
+    }
+
+    private static string NormalizePricingMode(string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            ChannelModelPricingModes.InheritGlobal => normalized,
+            ChannelModelPricingModes.OverridePricing => normalized,
+            ChannelModelPricingModes.PrivateModel => normalized,
+            _ => ChannelModelPricingModes.InheritGlobal
+        };
     }
 
     private static bool IsPythonFalsy(object? value)

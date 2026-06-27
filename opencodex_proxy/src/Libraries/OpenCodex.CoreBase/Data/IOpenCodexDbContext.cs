@@ -20,6 +20,16 @@ public interface IOpenCodexDbContext : IDisposable, IAsyncDisposable
 
     DbSet<ModelPricing> ModelPricings { get; }
 
+    DbSet<ModelProvider> ModelProviders { get; }
+
+    DbSet<ModelInfo> ModelInfos { get; }
+
+    DbSet<ModelPricingPlan> ModelPricingPlans { get; }
+
+    DbSet<ModelPricingRule> ModelPricingRules { get; }
+
+    DbSet<ChannelModelMapping> ChannelModelMappings { get; }
+
     DbSet<RequestLog> RequestLogs { get; }
 
     DbSet<RequestLogDetail> RequestLogDetails { get; }

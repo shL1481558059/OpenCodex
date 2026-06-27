@@ -6,6 +6,7 @@ using OpenCodex.Core.Domain;
 using OpenCodex.Core.Persistence;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Data;
+using OpenCodex.CoreBase.Domain.Models;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.Services;
@@ -21,7 +22,7 @@ public sealed class ProxyLogService : IProxyLogService
     };
 
     private readonly IOpenCodexRuntimeSettingsProvider _settingsProvider;
-    private readonly IModelPricingService _pricing;
+    private readonly IModelCatalogService _catalog;
     private readonly IRepository<RequestLog> _logRepository;
     private readonly IRepository<RequestLogDetail> _detailRepository;
     private readonly IRepository<RequestLogStreamLine> _streamLineRepository;
@@ -29,14 +30,14 @@ public sealed class ProxyLogService : IProxyLogService
 
     public ProxyLogService(
         IOpenCodexRuntimeSettingsProvider settingsProvider,
-        IModelPricingService pricing,
+        IModelCatalogService catalog,
         IRepository<RequestLog> logRepository,
         IRepository<RequestLogDetail> detailRepository,
         IRepository<RequestLogStreamLine> streamLineRepository,
         IRepository<User> userRepository)
     {
         _settingsProvider = settingsProvider;
-        _pricing = pricing;
+        _catalog = catalog;
         _logRepository = logRepository;
         _detailRepository = detailRepository;
         _streamLineRepository = streamLineRepository;
@@ -93,7 +94,8 @@ public sealed class ProxyLogService : IProxyLogService
         log.ApiKeyId = context.ApiKeyId;
         log.Model = context.RequestModel ?? log.Model;
         log.UpstreamModel = context.UpstreamModel;
-        log.ChannelId = ParseChannelId(context.ChannelId);
+        var channelId = ParseChannelId(context.ChannelId);
+        log.ChannelId = channelId;
         log.IsStream = context.IsStream;
         log.LifecycleStatus = ProxyRequestLifecycleStatus.Processing;
         log.ProcessingStartedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
@@ -208,11 +210,22 @@ public sealed class ProxyLogService : IProxyLogService
         var ownerUsername = context.OwnerUsername.Length == 0
             ? DefaultOwnerUsername(settings)
             : context.OwnerUsername;
+        var channelId = ParseChannelId(context.ChannelId);
+        var pricing = _catalog.CalculateCost(
+            channelId,
+            context.RequestModel,
+            context.UpstreamModel,
+            responseModel,
+            new ModelUsageVector(
+                usage.InputTokens,
+                usage.OutputTokens,
+                usage.CacheWriteTokens,
+                usage.CacheReadTokens));
         log.OwnerUserId = ResolveOwnerUserId(ownerUsername);
         log.ApiKeyId = context.ApiKeyId;
         log.Model = context.RequestModel ?? log.Model;
         log.UpstreamModel = context.UpstreamModel;
-        log.ChannelId = ParseChannelId(context.ChannelId);
+        log.ChannelId = channelId;
         log.RequestType = context.RequestType;
         log.ParentRequestLogId = context.ParentRequestLogId;
         log.IsStream = context.IsStream;
@@ -221,12 +234,14 @@ public sealed class ProxyLogService : IProxyLogService
         log.StatusCode = context.StatusCode;
         log.InputTokens = usage.InputTokens;
         log.CachedTokens = usage.CachedTokens;
+        log.CacheWriteTokens = usage.CacheWriteTokens;
+        log.CacheReadTokens = usage.CacheReadTokens;
         log.OutputTokens = usage.OutputTokens;
-        log.Cost = _pricing.CalculateCost(
-            responseModel,
-            usage.InputTokens,
-            usage.CachedTokens,
-            usage.OutputTokens);
+        log.Cost = (double)pricing.Cost;
+        log.CostCurrency = pricing.Currency;
+        log.PricingModelInfoId = pricing.ModelInfoId;
+        log.PricingPlanId = pricing.PricingPlanId;
+        log.PricingSnapshotJson = pricing.SnapshotJson;
         log.Error = context.Error;
         log.LifecycleStatus = DetermineLifecycleStatus(context.StatusCode, context.Error);
         log.CompletedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
@@ -351,6 +366,18 @@ public sealed class ProxyLogService : IProxyLogService
             responseModel = context.UpstreamModel ?? context.RequestModel ?? string.Empty;
         }
 
+        var channelId = ParseChannelId(context.ChannelId);
+        var pricing = _catalog.CalculateCost(
+            channelId,
+            context.RequestModel,
+            context.UpstreamModel,
+            responseModel,
+            new ModelUsageVector(
+                usage.InputTokens,
+                usage.OutputTokens,
+                usage.CacheWriteTokens,
+                usage.CacheReadTokens));
+
         return WriteRequestLog(
             settings,
             new RequestLogWriteDto(
@@ -370,7 +397,7 @@ public sealed class ProxyLogService : IProxyLogService
                 context.WebSearchDetails is null ? null : JsonSerializer.Serialize(context.WebSearchDetails, JsonOptions),
                 context.RequestModel,
                 context.UpstreamModel,
-                ParseChannelId(context.ChannelId),
+                channelId,
                 context.RequestType,
                 context.ParentRequestLogId,
                 context.IsStream,
@@ -379,12 +406,14 @@ public sealed class ProxyLogService : IProxyLogService
                 context.StatusCode,
                 usage.InputTokens,
                 usage.CachedTokens,
+                usage.CacheWriteTokens,
+                usage.CacheReadTokens,
                 usage.OutputTokens,
-                _pricing.CalculateCost(
-                    responseModel,
-                    usage.InputTokens,
-                    usage.CachedTokens,
-                    usage.OutputTokens),
+                (double)pricing.Cost,
+                pricing.Currency,
+                pricing.ModelInfoId,
+                pricing.PricingPlanId,
+                pricing.SnapshotJson,
                 ownerUserId,
                 context.ApiKeyId,
                 context.Error,
@@ -408,18 +437,24 @@ public sealed class ProxyLogService : IProxyLogService
             "responses" => new UsageDto(
                 ToInt(JsonDictionaryValue.Get(usageObject, "input_tokens")),
                 CachedTokensFromNestedDetails(usageObject, "input_tokens_details"),
-                ToInt(JsonDictionaryValue.Get(usageObject, "output_tokens"))),
+                ToInt(JsonDictionaryValue.Get(usageObject, "output_tokens")),
+                0,
+                CachedTokensFromNestedDetails(usageObject, "input_tokens_details")),
             "messages" => new UsageDto(
                 ToInt(JsonDictionaryValue.Get(usageObject, "input_tokens"))
                     + ToInt(JsonDictionaryValue.Get(usageObject, "cache_creation_input_tokens"))
                     + ToInt(JsonDictionaryValue.Get(usageObject, "cache_read_input_tokens")),
                 ToInt(JsonDictionaryValue.Get(usageObject, "cache_creation_input_tokens"))
                     + ToInt(JsonDictionaryValue.Get(usageObject, "cache_read_input_tokens")),
-                ToInt(JsonDictionaryValue.Get(usageObject, "output_tokens"))),
+                ToInt(JsonDictionaryValue.Get(usageObject, "output_tokens")),
+                ToInt(JsonDictionaryValue.Get(usageObject, "cache_creation_input_tokens")),
+                ToInt(JsonDictionaryValue.Get(usageObject, "cache_read_input_tokens"))),
             "chat" => new UsageDto(
                 ToInt(JsonDictionaryValue.Get(usageObject, "prompt_tokens")),
                 ChatCachedTokens(usageObject),
-                ToInt(JsonDictionaryValue.Get(usageObject, "completion_tokens"))),
+                ToInt(JsonDictionaryValue.Get(usageObject, "completion_tokens")),
+                0,
+                ChatCachedTokens(usageObject)),
             _ => new UsageDto(0, 0, 0)
         };
     }
@@ -449,8 +484,14 @@ public sealed class ProxyLogService : IProxyLogService
             StatusCode = record.StatusCode,
             InputTokens = record.InputTokens,
             CachedTokens = record.CachedTokens,
+            CacheWriteTokens = record.CacheWriteTokens,
+            CacheReadTokens = record.CacheReadTokens,
             OutputTokens = record.OutputTokens,
             Cost = record.Cost,
+            CostCurrency = record.CostCurrency,
+            PricingModelInfoId = record.PricingModelInfoId,
+            PricingPlanId = record.PricingPlanId,
+            PricingSnapshotJson = record.PricingSnapshotJson,
             OwnerUserId = record.OwnerUserId,
             ApiKeyId = record.ApiKeyId,
             Error = record.Error

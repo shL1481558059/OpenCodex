@@ -2,49 +2,71 @@
   <div>
     <div class="toolbar">
       <div>
-        <h2>定价管理</h2>
-        <div class="text-muted">USD / 1M tokens</div>
+        <h2>模型信息</h2>
+        <div class="text-muted">全局模型目录与计费规则</div>
       </div>
       <div class="toolbar-actions">
         <el-input
           v-model="filters.query"
           clearable
-          placeholder="搜索模型、供应商"
-          style="width: 240px"
-          @keyup.enter="loadPrices"
-          @clear="loadPrices"
+          placeholder="搜索模型、名称、匹配键"
+          style="width: 260px"
+          @keyup.enter="loadModels"
+          @clear="loadModels"
         />
-        <el-select v-model="filters.enabled" clearable placeholder="状态" style="width: 120px" @change="loadPrices">
+        <el-select v-model="filters.scope" clearable placeholder="范围" style="width: 120px" @change="loadModels">
+          <el-option label="全局" value="global" />
+          <el-option label="渠道" value="channel" />
+        </el-select>
+        <el-select v-model="filters.enabled" clearable placeholder="状态" style="width: 120px" @change="loadModels">
           <el-option label="启用" :value="true" />
           <el-option label="停用" :value="false" />
         </el-select>
-        <el-button :icon="Search" @click="loadPrices">搜索</el-button>
-        <el-button :icon="Refresh" @click="loadPrices">刷新</el-button>
+        <el-button :icon="Search" @click="loadModels">搜索</el-button>
+        <el-button :icon="Refresh" @click="loadAll">刷新</el-button>
         <el-button :icon="Download" :loading="seedLoading" @click="seedDefaults">更新</el-button>
-        <el-button type="primary" :icon="Plus" @click="openPriceDialog()">新增定价</el-button>
+        <el-button type="primary" :icon="Plus" @click="openModelDialog()">新增模型</el-button>
       </div>
     </div>
 
+    <el-tabs v-model="activeProvider" class="provider-tabs">
+      <el-tab-pane label="全部" name="all" />
+      <el-tab-pane
+        v-for="provider in providers"
+        :key="provider.code"
+        :label="provider.name"
+        :name="provider.code"
+      />
+    </el-tabs>
+
     <div class="table-area">
       <el-table
-        v-loading="pricesLoading"
-        :data="pagedPrices"
+        v-loading="modelsLoading"
+        :data="pagedModels"
         row-key="id"
         style="width: 100%"
-        empty-text="暂无定价"
+        empty-text="暂无模型信息"
       >
-        <el-table-column prop="vendor" label="供应商" width="120" show-overflow-tooltip />
-        <el-table-column prop="model_id" label="模型 ID" min-width="210" show-overflow-tooltip />
-        <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip />
-        <el-table-column prop="match_pattern" label="匹配键" min-width="190" show-overflow-tooltip />
-        <el-table-column label="输入" width="110" align="right">
-          <template #default="{ row }">{{ formatPrice(row.input_price) }}</template>
+        <el-table-column prop="provider_name" label="供应商" width="120" show-overflow-tooltip />
+        <el-table-column prop="model_key" label="模型" min-width="190" show-overflow-tooltip />
+        <el-table-column prop="display_name" label="名称" min-width="170" show-overflow-tooltip />
+        <el-table-column label="匹配" min-width="220" show-overflow-tooltip>
+          <template #default="{ row }">
+            <el-tag size="small">{{ formatMatchType(row.match_type) }}</el-tag>
+            <span class="match-pattern">{{ row.match_pattern }}</span>
+          </template>
         </el-table-column>
-        <el-table-column label="缓存输入" width="110" align="right">
-          <template #default="{ row }">{{ row.cached_input_price == null ? "-" : formatPrice(row.cached_input_price) }}</template>
+        <el-table-column label="输入" width="120" align="right">
+          <template #default="{ row }">{{ pricingSummary(row, "input") }}</template>
         </el-table-column>
-        <el-table-column label="输出" width="110" align="right">
-          <template #default="{ row }">{{ formatPrice(row.output_price) }}</template>
+        <el-table-column label="输出" width="120" align="right">
+          <template #default="{ row }">{{ pricingSummary(row, "output") }}</template>
+        </el-table-column>
+        <el-table-column label="缓存写" width="120" align="right">
+          <template #default="{ row }">{{ pricingSummary(row, "cache_write") }}</template>
+        </el-table-column>
+        <el-table-column label="缓存读" width="120" align="right">
+          <template #default="{ row }">{{ pricingSummary(row, "cache_read") }}</template>
         </el-table-column>
         <el-table-column label="状态" width="90">
           <template #default="{ row }">
@@ -53,17 +75,14 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="source" label="来源" width="150" show-overflow-tooltip />
-        <el-table-column label="更新时间" width="180">
-          <template #default="{ row }">{{ formatTime(row.updated_at) || "-" }}</template>
-        </el-table-column>
+        <el-table-column prop="source" label="来源" width="140" show-overflow-tooltip />
         <el-table-column label="操作" width="210" align="center">
           <template #default="{ row }">
             <div class="inline-actions channel-table-actions">
-              <el-button size="small" :icon="Edit" @click="openPriceDialog(row)">编辑</el-button>
-              <el-popconfirm :title="`删除定价 ${row.model_id}？`" @confirm="deletePrice(row)">
+              <el-button size="small" :icon="Edit" @click="openModelDialog(row)">编辑</el-button>
+              <el-popconfirm :title="`停用模型 ${row.model_key}？`" @confirm="deleteModel(row)">
                 <template #reference>
-                  <el-button size="small" type="danger" :icon="Delete">删除</el-button>
+                  <el-button size="small" type="danger" :icon="Delete">停用</el-button>
                 </template>
               </el-popconfirm>
             </div>
@@ -77,60 +96,150 @@
           v-model:page-size="pageSize"
           layout="total, sizes, prev, pager, next"
           :page-sizes="[25, 50, 100]"
-          :total="prices.length"
+          :total="models.length"
         />
       </div>
     </div>
 
-    <el-dialog v-model="priceDialogVisible" :title="priceDraft.id ? '编辑定价' : '新增定价'" width="640px">
-      <el-form label-position="top" :model="priceDraft">
+    <el-dialog v-model="modelDialogVisible" :title="modelDraft.id ? '编辑模型' : '新增模型'" width="880px">
+      <el-form label-position="top" :model="modelDraft">
         <el-row :gutter="16">
-          <el-col :span="12">
-            <el-form-item label="模型 ID">
-              <el-input v-model="priceDraft.model_id" autocomplete="off" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
+          <el-col :span="8">
             <el-form-item label="供应商">
-              <el-input v-model="priceDraft.vendor" autocomplete="off" />
+              <el-select v-model="modelDraft.provider_code" class="full-width">
+                <el-option
+                  v-for="provider in providers"
+                  :key="provider.code"
+                  :label="provider.name"
+                  :value="provider.code"
+                />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="范围">
+              <el-select v-model="modelDraft.scope" class="full-width">
+                <el-option label="全局" value="global" />
+                <el-option label="渠道" value="channel" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="状态">
+              <el-switch v-model="modelDraft.enabled" />
             </el-form-item>
           </el-col>
         </el-row>
-        <el-form-item label="名称">
-          <el-input v-model="priceDraft.name" autocomplete="off" />
-        </el-form-item>
-        <el-form-item label="匹配键">
-          <el-input v-model="priceDraft.match_pattern" autocomplete="off" />
-        </el-form-item>
+
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="模型标识">
+              <el-input v-model="modelDraft.model_key" autocomplete="off" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="显示名称">
+              <el-input v-model="modelDraft.display_name" autocomplete="off" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
         <el-row :gutter="16">
           <el-col :span="8">
-            <el-form-item label="输入价格">
-              <el-input-number v-model="priceDraft.input_price" :min="0" :precision="6" :step="0.01" style="width: 100%" />
+            <el-form-item label="匹配类型">
+              <el-select v-model="modelDraft.match_type" class="full-width">
+                <el-option label="精确" value="exact" />
+                <el-option label="前缀" value="prefix" />
+                <el-option label="后缀" value="suffix" />
+                <el-option label="包含" value="contains" />
+              </el-select>
             </el-form-item>
           </el-col>
-          <el-col :span="8">
-            <el-form-item label="缓存输入价格">
-              <div class="input-with-action">
-                <el-input-number v-model="priceDraft.cached_input_price" :min="0" :precision="6" :step="0.01" style="width: 100%" />
-                <el-button @click="priceDraft.cached_input_price = null">置空</el-button>
-              </div>
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="输出价格">
-              <el-input-number v-model="priceDraft.output_price" :min="0" :precision="6" :step="0.01" style="width: 100%" />
+          <el-col :span="16">
+            <el-form-item label="匹配键">
+              <el-input v-model="modelDraft.match_pattern" autocomplete="off" />
             </el-form-item>
           </el-col>
         </el-row>
-        <el-form-item label="启用">
-          <el-switch v-model="priceDraft.enabled" />
+
+        <el-form-item v-if="modelDraft.scope === 'channel'" label="渠道 ID">
+          <el-input v-model="modelDraft.channel_id" autocomplete="off" />
         </el-form-item>
+
+        <el-form-item label="描述">
+          <el-input v-model="modelDraft.description" type="textarea" :rows="2" />
+        </el-form-item>
+
+        <el-row :gutter="16">
+          <el-col :span="8">
+            <el-form-item label="支持图片">
+              <el-switch v-model="modelDraft.capabilities.supports_image" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="上下文窗口">
+              <el-input-number
+                v-model="modelDraft.capabilities.context_window"
+                :min="0"
+                :step="8192"
+                class="full-width"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="币种">
+              <el-input v-model="modelDraft.pricing.currency" autocomplete="off" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-divider content-position="left">计费规则</el-divider>
+        <el-table :data="modelDraft.pricing.rules" border size="small" class="pricing-rule-table">
+          <el-table-column label="计费项" width="110">
+            <template #default="{ row }">{{ formatBillingItem(row.billing_item) }}</template>
+          </el-table-column>
+          <el-table-column label="模式" width="170">
+            <template #default="{ row }">
+              <el-select v-model="row.billing_mode" class="full-width">
+                <el-option label="按次" value="per_request" />
+                <el-option label="每百万 token" value="per_million_tokens" />
+                <el-option label="阶梯 token" value="tiered_tokens" />
+              </el-select>
+            </template>
+          </el-table-column>
+          <el-table-column label="单价" width="160">
+            <template #default="{ row }">
+              <el-input-number v-model="row.unit_price" :min="0" :precision="8" :step="0.01" class="full-width" />
+            </template>
+          </el-table-column>
+          <el-table-column label="阶梯">
+            <template #default="{ row }">
+              <el-input
+                v-model="row.tiers_text"
+                type="textarea"
+                :rows="2"
+                :disabled="row.billing_mode !== 'tiered_tokens'"
+              />
+            </template>
+          </el-table-column>
+          <el-table-column label="启用" width="80" align="center">
+            <template #default="{ row }">
+              <el-switch v-model="row.enabled" />
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <el-collapse class="advanced-collapse">
+          <el-collapse-item title="Catalog JSON" name="catalog">
+            <el-input v-model="catalogText" type="textarea" :rows="8" />
+          </el-collapse-item>
+        </el-collapse>
       </el-form>
 
       <template #footer>
         <div class="drawer-footer">
-          <el-button @click="priceDialogVisible = false">取消</el-button>
-          <el-button type="primary" :loading="priceSaving" @click="savePrice">保存</el-button>
+          <el-button @click="modelDialogVisible = false">取消</el-button>
+          <el-button type="primary" :loading="modelSaving" @click="saveModel">保存</el-button>
         </div>
       </template>
     </el-dialog>
@@ -138,7 +247,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
 import { Delete, Download, Edit, Plus, Refresh, Search } from "@element-plus/icons-vue";
 
@@ -146,91 +255,131 @@ const props = defineProps({
   api: { type: Function, required: true }
 });
 
-const prices = ref([]);
-const pricesLoading = ref(false);
+const providers = ref([]);
+const models = ref([]);
+const modelsLoading = ref(false);
 const seedLoading = ref(false);
-const priceDialogVisible = ref(false);
-const priceSaving = ref(false);
+const modelDialogVisible = ref(false);
+const modelSaving = ref(false);
+const activeProvider = ref("all");
 const page = ref(1);
 const pageSize = ref(25);
+const catalogText = ref("{}");
+const matchTypes = {
+  exact: "精确",
+  prefix: "前缀",
+  suffix: "后缀",
+  contains: "包含"
+};
+const billingItems = [
+  { value: "input", label: "输入" },
+  { value: "output", label: "输出" },
+  { value: "cache_write", label: "缓存写" },
+  { value: "cache_read", label: "缓存读" }
+];
 const filters = reactive({
   query: "",
+  scope: "global",
   enabled: null
 });
-const priceDraft = reactive(emptyPriceDraft());
+const modelDraft = reactive(emptyModelDraft());
 
-const pagedPrices = computed(() => {
+const pagedModels = computed(() => {
   const start = (page.value - 1) * pageSize.value;
-  return prices.value.slice(start, start + pageSize.value);
+  return models.value.slice(start, start + pageSize.value);
 });
 
-async function loadPrices() {
-  pricesLoading.value = true;
+watch(activeProvider, () => {
+  loadModels();
+});
+
+async function loadAll() {
+  await loadProviders();
+  await loadModels();
+}
+
+async function loadProviders() {
+  const data = await props.api("/model-providers?includeDisabled=true");
+  providers.value = Array.isArray(data.providers) ? data.providers : [];
+}
+
+async function loadModels() {
+  modelsLoading.value = true;
   try {
     const params = new URLSearchParams();
     if (filters.query.trim()) params.set("query", filters.query.trim());
+    if (activeProvider.value !== "all") params.set("provider", activeProvider.value);
+    if (filters.scope) params.set("scope", filters.scope);
     if (filters.enabled !== null && filters.enabled !== undefined) params.set("enabled", String(filters.enabled));
     const suffix = params.toString() ? `?${params.toString()}` : "";
-    const data = await props.api(`/pricing${suffix}`);
-    prices.value = Array.isArray(data.prices) ? data.prices : [];
+    const data = await props.api(`/model-infos${suffix}`);
+    models.value = Array.isArray(data.models) ? data.models : [];
     page.value = 1;
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
-    pricesLoading.value = false;
+    modelsLoading.value = false;
   }
 }
 
-function openPriceDialog(row = null) {
-  Object.assign(priceDraft, emptyPriceDraft(), row ? {
-    id: row.id,
-    model_id: row.model_id,
-    vendor: row.vendor,
-    name: row.name,
-    match_pattern: row.match_pattern,
-    input_price: Number(row.input_price || 0),
-    cached_input_price: row.cached_input_price == null ? null : Number(row.cached_input_price),
-    output_price: Number(row.output_price || 0),
-    enabled: row.enabled !== false
-  } : {});
-  priceDialogVisible.value = true;
+function openModelDialog(row = null) {
+  Object.assign(modelDraft, emptyModelDraft());
+  catalogText.value = "{}";
+  if (row) {
+    Object.assign(modelDraft, {
+      id: row.id,
+      scope: row.scope || "global",
+      provider_code: row.provider_code || providers.value[0]?.code || "",
+      channel_id: row.channel_id || null,
+      model_key: row.model_key || "",
+      display_name: row.display_name || "",
+      description: row.description || "",
+      match_type: row.match_type || "exact",
+      match_pattern: row.match_pattern || row.model_key || "",
+      enabled: row.enabled !== false,
+      capabilities: {
+        supports_image: row.capabilities?.supports_image === true,
+        context_window: Number(row.capabilities?.context_window || 0)
+      },
+      pricing: normalizePricing(row.pricing)
+    });
+    catalogText.value = JSON.stringify(row.catalog || {}, null, 2);
+  } else {
+    modelDraft.provider_code = activeProvider.value !== "all"
+      ? activeProvider.value
+      : providers.value[0]?.code || "";
+    modelDraft.pricing = normalizePricing(null);
+    catalogText.value = JSON.stringify(defaultCatalog(), null, 2);
+  }
+  modelDialogVisible.value = true;
 }
 
-async function savePrice() {
-  priceSaving.value = true;
+async function saveModel() {
+  modelSaving.value = true;
   try {
-    const body = JSON.stringify({
-      model_id: priceDraft.model_id,
-      vendor: priceDraft.vendor,
-      name: priceDraft.name,
-      match_pattern: priceDraft.match_pattern,
-      input_price: Number(priceDraft.input_price || 0),
-      cached_input_price: priceDraft.cached_input_price == null ? null : Number(priceDraft.cached_input_price),
-      output_price: Number(priceDraft.output_price || 0),
-      enabled: priceDraft.enabled
-    });
-    if (priceDraft.id) {
-      await props.api(`/pricing/${priceDraft.id}`, { method: "PATCH", body });
+    const body = JSON.stringify(buildModelPayload());
+    if (modelDraft.id) {
+      await props.api(`/model-infos/${modelDraft.id}`, { method: "PATCH", body });
     } else {
-      await props.api("/pricing", { method: "POST", body });
+      await props.api("/model-infos", { method: "POST", body });
     }
 
-    priceDialogVisible.value = false;
-    await loadPrices();
-    ElMessage.success("定价已保存");
+    modelDialogVisible.value = false;
+    await loadModels();
+    ElMessage.success("模型信息已保存");
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
-    priceSaving.value = false;
+    modelSaving.value = false;
   }
 }
 
 async function seedDefaults() {
   seedLoading.value = true;
   try {
-    const data = await props.api("/pricing/seed-defaults", { method: "POST", body: "{}" });
-    await loadPrices();
-    ElMessage.success(`已新增 ${data.inserted || 0} 条，更新 ${data.updated || 0} 条，跳过 ${data.skipped || 0} 条`);
+    const data = await props.api("/model-infos/seed-defaults", { method: "POST", body: "{}" });
+    await loadAll();
+    ElMessage.success(`供应商新增 ${data.providers_inserted || 0} 个，模型新增 ${data.models_inserted || 0} 个，更新 ${data.models_updated || 0} 个`);
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
@@ -238,41 +387,175 @@ async function seedDefaults() {
   }
 }
 
-async function deletePrice(row) {
+async function deleteModel(row) {
   try {
-    await props.api(`/pricing/${row.id}`, { method: "DELETE" });
-    await loadPrices();
-    ElMessage.success("定价已删除");
+    await props.api(`/model-infos/${row.id}`, { method: "DELETE" });
+    await loadModels();
+    ElMessage.success("模型已停用");
   } catch (error) {
     ElMessage.error(error.message);
   }
 }
 
-function emptyPriceDraft() {
+function buildModelPayload() {
+  const catalog = parseJson(catalogText.value || "{}", "Catalog JSON");
+  const rules = modelDraft.pricing.rules.map((rule) => ({
+    billing_item: rule.billing_item,
+    billing_mode: rule.billing_mode,
+    unit_price: Number(rule.unit_price || 0),
+    tiers: rule.billing_mode === "tiered_tokens"
+      ? parseTiers(rule.tiers_text)
+      : [],
+    enabled: rule.enabled !== false
+  }));
+  return {
+    scope: modelDraft.scope,
+    provider_code: modelDraft.provider_code,
+    channel_id: modelDraft.scope === "channel" ? modelDraft.channel_id : null,
+    model_key: modelDraft.model_key,
+    display_name: modelDraft.display_name,
+    description: modelDraft.description,
+    match_type: modelDraft.match_type,
+    match_pattern: modelDraft.match_pattern,
+    catalog,
+    capabilities: {
+      ...modelDraft.capabilities,
+      context_window: Number(modelDraft.capabilities.context_window || 0)
+    },
+    pricing: {
+      currency: modelDraft.pricing.currency || "USD",
+      enabled: modelDraft.pricing.enabled !== false,
+      rules
+    },
+    enabled: modelDraft.enabled !== false
+  };
+}
+
+function emptyModelDraft() {
   return {
     id: null,
-    model_id: "",
-    vendor: "",
-    name: "",
+    scope: "global",
+    provider_code: "",
+    channel_id: null,
+    model_key: "",
+    display_name: "",
+    description: "",
+    match_type: "exact",
     match_pattern: "",
-    input_price: 0,
-    cached_input_price: null,
-    output_price: 0,
+    catalog: {},
+    capabilities: {
+      supports_image: false,
+      context_window: 128000
+    },
+    pricing: normalizePricing(null),
     enabled: true
   };
+}
+
+function normalizePricing(pricing) {
+  const rulesByItem = new Map();
+  for (const rule of pricing?.rules || []) {
+    rulesByItem.set(rule.billing_item, normalizeRule(rule));
+  }
+  return {
+    currency: pricing?.currency || "USD",
+    enabled: pricing?.enabled !== false,
+    rules: billingItems.map((item) => rulesByItem.get(item.value) || defaultRule(item.value))
+  };
+}
+
+function normalizeRule(rule) {
+  return {
+    billing_item: rule.billing_item,
+    billing_mode: rule.billing_mode || "per_million_tokens",
+    unit_price: Number(rule.unit_price || 0),
+    tiers_text: JSON.stringify(rule.tiers || [], null, 2),
+    enabled: rule.enabled !== false
+  };
+}
+
+function defaultRule(item) {
+  return {
+    billing_item: item,
+    billing_mode: "per_million_tokens",
+    unit_price: 0,
+    tiers_text: "[]",
+    enabled: true
+  };
+}
+
+function pricingSummary(row, item) {
+  const rule = (row.pricing?.rules || []).find((entry) => entry.billing_item === item && entry.enabled !== false);
+  if (!rule) return "-";
+  if (rule.billing_mode === "tiered_tokens") return "阶梯";
+  if (rule.billing_mode === "per_request") return `${formatPrice(rule.unit_price)} / 次`;
+  return formatPrice(rule.unit_price);
+}
+
+function parseTiers(text) {
+  const value = parseJson(text || "[]", "阶梯");
+  if (!Array.isArray(value)) {
+    throw new Error("阶梯必须是 JSON 数组");
+  }
+  return value.map((tier) => ({
+    up_to: tier.up_to === null || tier.up_to === undefined || tier.up_to === "" ? null : Number(tier.up_to),
+    unit_price: Number(tier.unit_price || 0)
+  }));
+}
+
+function parseJson(text, label) {
+  try {
+    return JSON.parse(text || "{}");
+  } catch {
+    throw new Error(`${label} 不是合法 JSON`);
+  }
+}
+
+function defaultCatalog() {
+  return {
+    slug: modelDraft.model_key,
+    display_name: modelDraft.display_name || modelDraft.model_key,
+    visibility: "list",
+    supported_in_api: true
+  };
+}
+
+function formatMatchType(value) {
+  return matchTypes[value] || value || "-";
+}
+
+function formatBillingItem(value) {
+  return billingItems.find((item) => item.value === value)?.label || value || "-";
 }
 
 function formatPrice(value) {
   return Number(value || 0).toLocaleString(undefined, {
     minimumFractionDigits: 0,
-    maximumFractionDigits: 6
+    maximumFractionDigits: 8
   });
 }
 
-function formatTime(timestamp) {
-  if (!timestamp) return "";
-  return new Date(Number(timestamp) * 1000).toLocaleString();
+onMounted(() => loadAll());
+</script>
+
+<style scoped>
+.provider-tabs {
+  margin-bottom: 12px;
 }
 
-onMounted(() => loadPrices());
-</script>
+.match-pattern {
+  margin-left: 8px;
+}
+
+.pricing-rule-table {
+  margin-bottom: 16px;
+}
+
+.advanced-collapse {
+  margin-top: 16px;
+}
+
+.full-width {
+  width: 100%;
+}
+</style>

@@ -216,6 +216,35 @@
               <el-input v-model="row.upstream_model" />
             </template>
           </el-table-column>
+          <el-table-column label="模型信息" min-width="220">
+            <template #default="{ row }">
+              <el-select v-model="row.model_info_id" clearable filterable class="full-width">
+                <el-option
+                  v-for="model in modelInfoOptions"
+                  :key="model.id"
+                  :label="formatModelInfoLabel(model)"
+                  :value="model.id"
+                />
+              </el-select>
+            </template>
+          </el-table-column>
+          <el-table-column label="定价" width="150">
+            <template #default="{ row }">
+              <el-select v-model="row.pricing_mode" class="full-width">
+                <el-option label="继承全局" value="inherit_global" />
+                <el-option label="覆盖定价" value="override_pricing" />
+                <el-option label="渠道私有" value="private_model" />
+              </el-select>
+            </template>
+          </el-table-column>
+          <el-table-column label="定价计划" min-width="180">
+            <template #default="{ row }">
+              <el-input
+                v-model="row.pricing_plan_id"
+                :disabled="row.pricing_mode !== 'override_pricing'"
+              />
+            </template>
+          </el-table-column>
           <el-table-column label="支持图片" width="110" align="center">
             <template #default="{ row }">
               <el-switch v-model="row.supports_image" />
@@ -227,7 +256,7 @@
             </template>
           </el-table-column>
         </el-table>
-        <el-button style="margin-top: 8px" :icon="Plus" @click="channelDraft.models.push({ model: '', upstream_model: '', supports_image: false })">
+        <el-button style="margin-top: 8px" :icon="Plus" @click="channelDraft.models.push(defaultModelMapping())">
           添加模型
         </el-button>
         <el-button style="margin-top: 8px; margin-left: 8px" :loading="discoverLoading" @click="discoverModels">
@@ -561,6 +590,7 @@ const discoverModelsVisible = ref(false);
 const discoveredModelsTableRef = ref(null);
 const discoveredModels = ref([]);
 const selectedDiscoveredModels = ref([]);
+const modelInfoOptions = ref([]);
 const config = reactive({ channels: [] });
 const channelTableRef = ref(null);
 const selectedChannels = ref([]);
@@ -638,6 +668,18 @@ async function loadConfig() {
   }
 }
 
+async function loadModelInfoOptions(channelId = null) {
+  try {
+    const params = new URLSearchParams({ enabled: "true" });
+    if (channelId) params.set("channelId", channelId);
+    else params.set("scope", "global");
+    const data = await props.api(`/model-infos?${params.toString()}`);
+    modelInfoOptions.value = Array.isArray(data.models) ? data.models : [];
+  } catch {
+    modelInfoOptions.value = [];
+  }
+}
+
 const importChannelsInput = ref(null);
 
 function exportChannels() {
@@ -705,12 +747,13 @@ async function persistChannels(nextChannels) {
   config.channels = Array.isArray(data?.channels) ? data.channels : nextChannels;
 }
 
-function openChannelDrawer(channel = null, index = -1) {
+async function openChannelDrawer(channel = null, index = -1) {
   editingIndex.value = index;
   const draftSource = channel || defaultChannel(nextChannelPriority());
   assignChannelDraft(draftSource);
   headersText.value = formatJson(draftSource.headers || {});
   assignCompat(draftSource.compat || {});
+  await loadModelInfoOptions(channelDraft.id || null);
   channelDrawerVisible.value = true;
 }
 
@@ -1041,7 +1084,7 @@ function addSelectedModels() {
   let addedCount = 0;
   for (const model of selectedDiscoveredModels.value) {
     if (!existingDiscoveredModelNames.value.has(model)) {
-      channelDraft.models.push({ model, upstream_model: model, supports_image: false });
+      channelDraft.models.push(defaultModelMapping(model));
       addedCount += 1;
     }
   }
@@ -1261,10 +1304,44 @@ function normalizeModels(models) {
       return {
         model,
         upstream_model: String(item?.upstream_model || model).trim() || model,
-        supports_image: item?.supports_image === true
+        supports_image: item?.supports_image === true,
+        model_info_id: normalizeOptionalId(item?.model_info_id),
+        pricing_mode: normalizePricingMode(item?.pricing_mode),
+        pricing_plan_id: normalizeOptionalId(item?.pricing_plan_id),
+        enabled: item?.enabled !== false
       };
     })
     .filter((item) => item.model);
+}
+
+function defaultModelMapping(model = "") {
+  const normalized = String(model || "").trim();
+  return {
+    model: normalized,
+    upstream_model: normalized,
+    supports_image: false,
+    model_info_id: null,
+    pricing_mode: "inherit_global",
+    pricing_plan_id: null,
+    enabled: true
+  };
+}
+
+function normalizePricingMode(value) {
+  const normalized = String(value || "").trim();
+  return ["inherit_global", "override_pricing", "private_model"].includes(normalized)
+    ? normalized
+    : "inherit_global";
+}
+
+function normalizeOptionalId(value) {
+  const normalized = String(value || "").trim();
+  return normalized || null;
+}
+
+function formatModelInfoLabel(model) {
+  const provider = model.provider_name || model.provider_code || "";
+  return provider ? `${provider} / ${model.model_key}` : model.model_key;
 }
 
 function ensureChannelId(id, name) {
@@ -1511,5 +1588,7 @@ function isPlainObject(value) {
 }
 
 // Expose loadConfig so App can call it on init
-onMounted(() => loadConfig());
+onMounted(async () => {
+  await Promise.all([loadConfig(), loadModelInfoOptions()]);
+});
 </script>

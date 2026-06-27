@@ -3,6 +3,8 @@ using OpenCodex.Api.Infrastructure;
 using OpenCodex.Core.Protocols;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs.Proxy;
+using OpenCodex.CoreBase.DTOs.Models;
+using OpenCodex.CoreBase.Services;
 using OpenCodex.CoreBase.Services.Proxy;
 
 namespace OpenCodex.Api.Controllers;
@@ -13,17 +15,20 @@ public sealed class ProxyController : ApiControllerBase
     private readonly IProxyEndpointService _proxy;
     private readonly IProxyRequestService _requests;
     private readonly IProxyRouteService _routes;
+    private readonly IModelCatalogService _catalog;
 
     public ProxyController(
         IRequestBodyReader bodyReader,
         IProxyEndpointService proxy,
         IProxyRequestService requests,
-        IProxyRouteService routes)
+        IProxyRouteService routes,
+        IModelCatalogService catalog)
     {
         _bodyReader = bodyReader;
         _proxy = proxy;
         _requests = requests;
         _routes = routes;
+        _catalog = catalog;
     }
 
     [HttpGet("/models")]
@@ -32,27 +37,36 @@ public sealed class ProxyController : ApiControllerBase
     {
         var accessKey = _requests.AuthenticateAccessKey(AuthorizationHeader());
         var models = _routes.ListModelCapabilities(accessKey.OwnerUsername);
+        var catalogByModel = (_catalog.ListModels(null, null, "global", true, null).Payload?.Models ?? [])
+            .ToDictionary(model => model.ModelKey, StringComparer.OrdinalIgnoreCase);
         var openAiModels = models
             .Select(model => (object?)new Dictionary<string, object?>
             {
                 ["id"] = model.Model,
-                ["display_name"] =  model.Model,
+                ["display_name"] = catalogByModel.TryGetValue(model.Model, out var info)
+                    ? info.DisplayName
+                    : model.Model,
                 ["created_at"] = "2024-01-01T00:00:00Z",
                 ["type"] = "model"
             })
             .ToList();
-        // var codexModels = models
-        //     .Select(model => (object?)CodexModelCatalogItem(model))
-        //     .ToList();
+        var codexModels = models
+            .Select(model => (object?)CodexModelCatalogItem(
+                model,
+                catalogByModel.TryGetValue(model.Model, out var info) ? info : null))
+            .ToList();
 
-        return StatusCode(
-            StatusCodes.Status200OK,
-            new Dictionary<string, object?>
-            {
-                ["object"] = "list",
-                ["data"] = openAiModels,
-                //["models"] = codexModels
-            });
+        var payload = new Dictionary<string, object?>
+        {
+            ["object"] = "list",
+            ["data"] = openAiModels
+        };
+        if (IncludeCodexCatalog())
+        {
+            payload["models"] = codexModels;
+        }
+
+        return StatusCode(StatusCodes.Status200OK, payload);
     }
 
     [HttpPost("/responses")]
@@ -104,9 +118,34 @@ public sealed class ProxyController : ApiControllerBase
             : null;
     }
 
-    private static Dictionary<string, object?> CodexModelCatalogItem(ProxyModelCapabilityDto model)
+    private bool IncludeCodexCatalog()
     {
-        // 针对 GPT-5.5 扩展了潜在的多模态输入支持
+        return Request.Query.TryGetValue("codex_catalog", out var value)
+            && string.Equals(value.ToString(), "true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static Dictionary<string, object?> CodexModelCatalogItem(
+        ProxyModelCapabilityDto model,
+        ModelInfoResponse? info)
+    {
+        if (info is not null && info.Catalog.Count > 0)
+        {
+            var catalog = info.Catalog.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value,
+                StringComparer.Ordinal);
+            catalog["slug"] = model.Model;
+            catalog["display_name"] = info.DisplayName;
+            if (!catalog.ContainsKey("input_modalities"))
+            {
+                catalog["input_modalities"] = model.SupportsImage
+                    ? new List<object?> { "text", "image" }
+                    : new List<object?> { "text" };
+            }
+            catalog["supports_image_detail_original"] = model.SupportsImage;
+            return catalog;
+        }
+
         var inputModalities = model.SupportsImage
             ? new List<object?> { "text", "image", "audio", "video" }
             : new List<object?> { "text" };
@@ -115,8 +154,8 @@ public sealed class ProxyController : ApiControllerBase
         {
             ["slug"] = model.Model,
             ["display_name"] = model.Model,
-            ["description"] = $"GPT-5.5 architecture routed model: {model.Model}.",
-            ["default_reasoning_level"] = "fast", // 将默认推理级别调整为 fast（如果需要保持平衡可改回 medium）
+            ["description"] = $"OpenCodex routed model: {model.Model}.",
+            ["default_reasoning_level"] = "medium",
             ["supported_reasoning_levels"] = new List<object?>
             {
                 ReasoningLevel("low", "Quick responses with lighter reasoning"),
@@ -126,12 +165,12 @@ public sealed class ProxyController : ApiControllerBase
             },
             ["shell_type"] = "shell_command",
             ["visibility"] = "list",
-            ["minimal_client_version"] = "1.0.0", // 提升客户端版本要求
+            ["minimal_client_version"] = "1.0.0",
             ["supported_in_api"] = true,
             ["availability_nux"] = null,
             ["upgrade"] = null,
             ["priority"] = 100,
-            ["base_instructions"] = "You are an advanced GPT-5.5 coding agent. Help the user by inspecting the workspace, making focused changes, and reporting results clearly and efficiently.",
+            ["base_instructions"] = "You are an OpenCodex routed coding agent. Help the user by inspecting the workspace, making focused changes, and reporting results clearly and efficiently.",
             ["model_messages"] = new Dictionary<string, object?>
             {
                 ["instructions_template"] = "{{ personality }}",
@@ -142,7 +181,7 @@ public sealed class ProxyController : ApiControllerBase
                     ["personality_pragmatic"] = string.Empty
                 }
             },
-            ["support_verbosity"] = true, // 升级为支持冗长控制
+            ["support_verbosity"] = true,
             ["default_verbosity"] = "medium",
             ["apply_patch_tool_type"] = "freeform",
             ["web_search_tool_type"] = "text",
@@ -151,19 +190,19 @@ public sealed class ProxyController : ApiControllerBase
             ["truncation_policy"] = new Dictionary<string, object?>
             {
                 ["mode"] = "tokens",
-                ["limit"] = 256000 // 对应 GPT-5.5 的更大上下文截断限制
+                ["limit"] = 256000
             },
             ["supports_parallel_tool_calls"] = true,
-            ["context_window"] = 256000, // 提升上下文窗口至 256k
+            ["context_window"] = 256000,
             ["max_context_window"] = 256000,
             ["auto_compact_token_limit"] = null,
-            ["reasoning_summary_format"] = "text", // 启用推理摘要格式
+            ["reasoning_summary_format"] = "text",
             ["default_reasoning_summary"] = "short",
-            ["supports_reasoning_summaries"] = true, // GPT-5.5 原生支持推理过程摘要
-            ["additional_speed_tiers"] = new List<object?> { "fast" }, // 在速度层级中显式声明支持 fast
+            ["supports_reasoning_summaries"] = true,
+            ["additional_speed_tiers"] = new List<object?> { "fast" },
             ["service_tiers"] = new List<object?> { "standard", "pro" },
             ["available_in_plans"] = new List<object?> { "free","plus", "team", "enterprise" },
-            ["prefer_websockets"] = true, // 偏向 WebSockets 以实现低延迟输出
+            ["prefer_websockets"] = true,
             ["experimental_supported_tools"] = new List<object?> { "code_interpreter", "web_browser" },
             ["supports_search_tool"] = true
         };
