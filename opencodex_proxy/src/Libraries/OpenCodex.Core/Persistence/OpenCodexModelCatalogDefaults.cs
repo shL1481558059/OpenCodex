@@ -19,8 +19,7 @@ public static class OpenCodexModelCatalogDefaults
             new DefaultModelProvider("mistral", "Mistral", 80),
             new DefaultModelProvider("groq", "Groq", 90),
             new DefaultModelProvider("openrouter", "OpenRouter", 100),
-            new DefaultModelProvider("zhipu", "智谱", 110),
-            new DefaultModelProvider("unknown", "Unknown", 1000)
+            new DefaultModelProvider("zhipu", "智谱", 110)
         ];
     }
 

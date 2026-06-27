@@ -102,6 +102,9 @@
                     <el-dropdown-item @click="openChannelTest(row)">
                       <el-icon><Connection /></el-icon>测试连接
                     </el-dropdown-item>
+                    <el-dropdown-item @click="openChannelPricing(row)">
+                      <el-icon><Edit /></el-icon>定价管理
+                    </el-dropdown-item>
                     <el-dropdown-item @click="copyChannel(row)">
                       <el-icon><DocumentCopy /></el-icon>复制
                     </el-dropdown-item>
@@ -216,40 +219,6 @@
               <el-input v-model="row.upstream_model" />
             </template>
           </el-table-column>
-          <el-table-column label="模型信息" min-width="220">
-            <template #default="{ row }">
-              <el-select v-model="row.model_info_id" clearable filterable class="full-width">
-                <el-option
-                  v-for="model in modelInfoOptions"
-                  :key="model.id"
-                  :label="formatModelInfoLabel(model)"
-                  :value="model.id"
-                />
-              </el-select>
-            </template>
-          </el-table-column>
-          <el-table-column label="定价" width="150">
-            <template #default="{ row }">
-              <el-select v-model="row.pricing_mode" class="full-width">
-                <el-option label="继承全局" value="inherit_global" />
-                <el-option label="覆盖定价" value="override_pricing" />
-                <el-option label="渠道私有" value="private_model" />
-              </el-select>
-            </template>
-          </el-table-column>
-          <el-table-column label="定价计划" min-width="180">
-            <template #default="{ row }">
-              <el-input
-                v-model="row.pricing_plan_id"
-                :disabled="row.pricing_mode !== 'override_pricing'"
-              />
-            </template>
-          </el-table-column>
-          <el-table-column label="支持图片" width="110" align="center">
-            <template #default="{ row }">
-              <el-switch v-model="row.supports_image" />
-            </template>
-          </el-table-column>
           <el-table-column width="90">
             <template #default="{ $index }">
               <el-button type="danger" :icon="Delete" circle @click="channelDraft.models.splice($index, 1)" />
@@ -336,6 +305,211 @@
           >
             添加到模型映射
           </el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="channelPricingVisible" :title="channelPricingTitle" width="1080px">
+      <el-table
+        v-loading="channelPricingLoading"
+        :data="channelPricingRows"
+        row-key="upstream_model"
+        max-height="520"
+        empty-text="暂无上游模型"
+      >
+        <el-table-column prop="upstream_model" label="上游模型" min-width="190" show-overflow-tooltip />
+        <el-table-column label="状态" width="110">
+          <template #default="{ row }">
+            <el-tag :type="row.overridden ? 'warning' : 'info'">
+              {{ row.overridden ? "覆盖全局" : "继承全局" }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="模型信息" min-width="260" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ formatChannelPricingModel(row) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="输入" width="115" align="right">
+          <template #default="{ row }">{{ pricingRuleSummary(effectiveChannelPricingModel(row), "input") }}</template>
+        </el-table-column>
+        <el-table-column label="输出" width="115" align="right">
+          <template #default="{ row }">{{ pricingRuleSummary(effectiveChannelPricingModel(row), "output") }}</template>
+        </el-table-column>
+        <el-table-column label="缓存写" width="115" align="right">
+          <template #default="{ row }">{{ pricingRuleSummary(effectiveChannelPricingModel(row), "cache_write") }}</template>
+        </el-table-column>
+        <el-table-column label="缓存读" width="115" align="right">
+          <template #default="{ row }">{{ pricingRuleSummary(effectiveChannelPricingModel(row), "cache_read") }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="210" align="center">
+          <template #default="{ row }">
+            <div class="inline-actions channel-table-actions">
+              <el-button size="small" :icon="Edit" @click="openChannelPricingEditor(row)">编辑</el-button>
+              <el-popconfirm
+                v-if="row.overridden && row.override_model?.id"
+                title="恢复为全局配置？"
+                @confirm="restoreChannelPricing(row)"
+              >
+                <template #reference>
+                  <el-button
+                    size="small"
+                    :icon="Refresh"
+                    :loading="channelPricingRestoringId === row.override_model.id"
+                  >
+                    恢复默认
+                  </el-button>
+                </template>
+              </el-popconfirm>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <template #footer>
+        <div class="drawer-footer">
+          <el-button @click="channelPricingVisible = false">关闭</el-button>
+          <el-button :icon="Refresh" :loading="channelPricingLoading" @click="loadChannelPricingRows">刷新</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="channelPricingEditorVisible"
+      :title="channelPricingEditorTitle"
+      width="880px"
+      append-to-body
+    >
+      <el-form label-position="top" :model="channelPricingDraft">
+        <el-row :gutter="16">
+          <el-col :span="16">
+            <el-form-item label="供应商">
+              <el-select v-model="channelPricingDraft.provider_code" class="full-width">
+                <el-option
+                  v-for="provider in modelProviders"
+                  :key="provider.code"
+                  :label="provider.name"
+                  :value="provider.code"
+                />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="状态">
+              <el-switch v-model="channelPricingDraft.enabled" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="上游模型">
+              <el-input v-model="channelPricingDraft.upstream_model" disabled />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="模型标识">
+              <el-input v-model="channelPricingDraft.model_key" autocomplete="off" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="显示名称">
+              <el-input v-model="channelPricingDraft.display_name" autocomplete="off" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="匹配类型">
+              <el-select v-model="channelPricingDraft.match_type" class="full-width">
+                <el-option label="精确" value="exact" />
+                <el-option label="前缀" value="prefix" />
+                <el-option label="后缀" value="suffix" />
+                <el-option label="包含" value="contains" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-form-item label="匹配键">
+          <el-input v-model="channelPricingDraft.match_pattern" autocomplete="off" />
+        </el-form-item>
+
+        <el-form-item label="描述">
+          <el-input v-model="channelPricingDraft.description" type="textarea" :rows="2" />
+        </el-form-item>
+
+        <el-row :gutter="16">
+          <el-col :span="8">
+            <el-form-item label="支持图片">
+              <el-switch v-model="channelPricingDraft.capabilities.supports_image" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="上下文窗口">
+              <el-input-number
+                v-model="channelPricingDraft.capabilities.context_window"
+                :min="0"
+                :step="8192"
+                class="full-width"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="币种">
+              <el-input v-model="channelPricingDraft.pricing.currency" autocomplete="off" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-divider content-position="left">计费规则</el-divider>
+        <el-table :data="channelPricingDraft.pricing.rules" border size="small" class="pricing-rule-table">
+          <el-table-column label="计费项" width="110">
+            <template #default="{ row }">{{ formatBillingItem(row.billing_item) }}</template>
+          </el-table-column>
+          <el-table-column label="模式" width="170">
+            <template #default="{ row }">
+              <el-select v-model="row.billing_mode" class="full-width">
+                <el-option label="按次" value="per_request" />
+                <el-option label="每百万 token" value="per_million_tokens" />
+                <el-option label="阶梯 token" value="tiered_tokens" />
+              </el-select>
+            </template>
+          </el-table-column>
+          <el-table-column label="单价" width="160">
+            <template #default="{ row }">
+              <el-input-number v-model="row.unit_price" :min="0" :precision="8" :step="0.01" class="full-width" />
+            </template>
+          </el-table-column>
+          <el-table-column label="阶梯">
+            <template #default="{ row }">
+              <el-input
+                v-model="row.tiers_text"
+                type="textarea"
+                :rows="2"
+                :disabled="row.billing_mode !== 'tiered_tokens'"
+              />
+            </template>
+          </el-table-column>
+          <el-table-column label="启用" width="80" align="center">
+            <template #default="{ row }">
+              <el-switch v-model="row.enabled" />
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <el-collapse class="advanced-collapse">
+          <el-collapse-item title="Catalog JSON" name="catalog">
+            <el-input v-model="channelPricingCatalogText" type="textarea" :rows="8" />
+          </el-collapse-item>
+        </el-collapse>
+      </el-form>
+
+      <template #footer>
+        <div class="drawer-footer">
+          <el-button @click="channelPricingEditorVisible = false">取消</el-button>
+          <el-button type="primary" :loading="channelPricingSaving" @click="saveChannelPricing">保存</el-button>
         </div>
       </template>
     </el-dialog>
@@ -590,7 +764,22 @@ const discoverModelsVisible = ref(false);
 const discoveredModelsTableRef = ref(null);
 const discoveredModels = ref([]);
 const selectedDiscoveredModels = ref([]);
-const modelInfoOptions = ref([]);
+const modelProviders = ref([]);
+const billingItems = [
+  { value: "input", label: "输入" },
+  { value: "output", label: "输出" },
+  { value: "cache_write", label: "缓存写" },
+  { value: "cache_read", label: "缓存读" }
+];
+const channelPricingVisible = ref(false);
+const channelPricingEditorVisible = ref(false);
+const channelPricingLoading = ref(false);
+const channelPricingSaving = ref(false);
+const channelPricingRestoringId = ref("");
+const channelPricingRows = ref([]);
+const channelPricingChannel = ref(null);
+const channelPricingCatalogText = ref("{}");
+const channelPricingDraft = reactive(emptyChannelPricingDraft());
 const config = reactive({ channels: [] });
 const channelTableRef = ref(null);
 const selectedChannels = ref([]);
@@ -653,6 +842,14 @@ const channelTestTitle = computed(() => {
   const name = testingChannel.value?.name || testingChannel.value?.id || "";
   return name ? `测试连接 - ${name}` : "测试连接";
 });
+const channelPricingTitle = computed(() => {
+  const channel = channelPricingChannel.value;
+  return channel ? `定价管理 - ${channel.name || channel.id}` : "定价管理";
+});
+const channelPricingEditorTitle = computed(() => {
+  const model = channelPricingDraft.upstream_model || "";
+  return model ? `编辑定价 - ${model}` : "编辑定价";
+});
 async function loadConfig() {
   configLoading.value = true;
   try {
@@ -668,15 +865,16 @@ async function loadConfig() {
   }
 }
 
-async function loadModelInfoOptions(channelId = null) {
+async function loadModelProviders() {
+  if (modelProviders.value.length > 0) {
+    return;
+  }
+
   try {
-    const params = new URLSearchParams({ enabled: "true" });
-    if (channelId) params.set("channelId", channelId);
-    else params.set("scope", "global");
-    const data = await props.api(`/model-infos?${params.toString()}`);
-    modelInfoOptions.value = Array.isArray(data.models) ? data.models : [];
+    const data = await props.api("/model-providers");
+    modelProviders.value = Array.isArray(data.providers) ? data.providers : [];
   } catch {
-    modelInfoOptions.value = [];
+    modelProviders.value = [];
   }
 }
 
@@ -753,7 +951,6 @@ async function openChannelDrawer(channel = null, index = -1) {
   assignChannelDraft(draftSource);
   headersText.value = formatJson(draftSource.headers || {});
   assignCompat(draftSource.compat || {});
-  await loadModelInfoOptions(channelDraft.id || null);
   channelDrawerVisible.value = true;
 }
 
@@ -1019,6 +1216,241 @@ async function confirmResetChannelHealth(channel) {
   } finally {
     resetChannelHealthLoadingId.value = "";
   }
+}
+
+async function openChannelPricing(channel) {
+  if (!channel?.id) {
+    ElMessage.error("渠道 ID 不能为空");
+    return;
+  }
+
+  channelPricingChannel.value = channel;
+  channelPricingRows.value = [];
+  channelPricingVisible.value = true;
+  await loadModelProviders();
+  await loadChannelPricingRows();
+}
+
+async function loadChannelPricingRows() {
+  const channelId = channelPricingChannel.value?.id;
+  if (!channelId) {
+    return;
+  }
+
+  channelPricingLoading.value = true;
+  try {
+    const data = await props.api(`/channels/${channelId}/model-infos`);
+    channelPricingRows.value = Array.isArray(data.models) ? data.models : [];
+  } catch (error) {
+    ElMessage.error(error.message);
+    channelPricingRows.value = [];
+  } finally {
+    channelPricingLoading.value = false;
+  }
+}
+
+function openChannelPricingEditor(row) {
+  const model = effectiveChannelPricingModel(row);
+  Object.assign(channelPricingDraft, emptyChannelPricingDraft());
+  channelPricingDraft.upstream_model = row.upstream_model || "";
+  channelPricingDraft.provider_code = model?.provider_code || modelProviders.value[0]?.code || "";
+  channelPricingDraft.model_key = model?.model_key || row.upstream_model || "";
+  channelPricingDraft.display_name = model?.display_name || row.upstream_model || "";
+  channelPricingDraft.description = model?.description || "";
+  channelPricingDraft.match_type = model?.match_type || "exact";
+  channelPricingDraft.match_pattern = model?.match_pattern || row.upstream_model || "";
+  channelPricingDraft.enabled = model?.enabled !== false;
+  channelPricingDraft.capabilities = {
+    supports_image: model?.capabilities?.supports_image === true,
+    context_window: Number(model?.capabilities?.context_window || 0)
+  };
+  channelPricingDraft.pricing = normalizeChannelPricing(model?.pricing || null);
+  channelPricingCatalogText.value = JSON.stringify(model?.catalog || defaultChannelPricingCatalog(row.upstream_model), null, 2);
+  channelPricingEditorVisible.value = true;
+}
+
+async function saveChannelPricing() {
+  const channelId = channelPricingChannel.value?.id;
+  if (!channelId) {
+    ElMessage.error("渠道 ID 不能为空");
+    return;
+  }
+
+  channelPricingSaving.value = true;
+  try {
+    await props.api(`/channels/${channelId}/model-infos`, {
+      method: "PUT",
+      body: JSON.stringify(buildChannelPricingPayload())
+    });
+    channelPricingEditorVisible.value = false;
+    await loadChannelPricingRows();
+    ElMessage.success("渠道模型定价已保存");
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    channelPricingSaving.value = false;
+  }
+}
+
+async function restoreChannelPricing(row) {
+  const channelId = channelPricingChannel.value?.id;
+  const overrideId = row?.override_model?.id;
+  if (!channelId || !overrideId) {
+    return;
+  }
+
+  channelPricingRestoringId.value = overrideId;
+  try {
+    await props.api(`/channels/${channelId}/model-infos/${overrideId}`, { method: "DELETE" });
+    await loadChannelPricingRows();
+    ElMessage.success("已恢复全局配置");
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    channelPricingRestoringId.value = "";
+  }
+}
+
+function buildChannelPricingPayload() {
+  const catalog = parseJsonText(channelPricingCatalogText.value || "{}", "Catalog JSON");
+  if (!isPlainObject(catalog)) {
+    throw new Error("Catalog JSON 必须是 JSON 对象");
+  }
+
+  return {
+    upstream_model: channelPricingDraft.upstream_model,
+    provider_code: channelPricingDraft.provider_code,
+    model_key: channelPricingDraft.model_key,
+    display_name: channelPricingDraft.display_name,
+    description: channelPricingDraft.description,
+    match_type: channelPricingDraft.match_type,
+    match_pattern: channelPricingDraft.match_pattern,
+    catalog,
+    capabilities: {
+      ...channelPricingDraft.capabilities,
+      context_window: Number(channelPricingDraft.capabilities.context_window || 0)
+    },
+    pricing: {
+      currency: channelPricingDraft.pricing.currency || "USD",
+      enabled: channelPricingDraft.pricing.enabled !== false,
+      rules: channelPricingDraft.pricing.rules.map((rule) => ({
+        billing_item: rule.billing_item,
+        billing_mode: rule.billing_mode,
+        unit_price: Number(rule.unit_price || 0),
+        tiers: rule.billing_mode === "tiered_tokens" ? parsePricingTiers(rule.tiers_text) : [],
+        enabled: rule.enabled !== false
+      }))
+    },
+    enabled: channelPricingDraft.enabled !== false
+  };
+}
+
+function effectiveChannelPricingModel(row) {
+  return row?.override_model || row?.global_model || null;
+}
+
+function formatChannelPricingModel(row) {
+  const model = effectiveChannelPricingModel(row);
+  if (!model) {
+    return "-";
+  }
+
+  const provider = model.provider_name || model.provider_code || "";
+  const name = model.display_name && model.display_name !== model.model_key
+    ? `${model.model_key} / ${model.display_name}`
+    : model.model_key;
+  return provider ? `${provider} / ${name}` : name;
+}
+
+function pricingRuleSummary(model, item) {
+  const rule = (model?.pricing?.rules || []).find((entry) => entry.billing_item === item && entry.enabled !== false);
+  if (!rule) return "-";
+  if (rule.billing_mode === "tiered_tokens") return "阶梯";
+  if (rule.billing_mode === "per_request") return `${formatPrice(rule.unit_price)} / 次`;
+  return formatPrice(rule.unit_price);
+}
+
+function normalizeChannelPricing(pricing) {
+  const rulesByItem = new Map();
+  for (const rule of pricing?.rules || []) {
+    rulesByItem.set(rule.billing_item, normalizePricingRule(rule));
+  }
+
+  return {
+    currency: pricing?.currency || "USD",
+    enabled: pricing?.enabled !== false,
+    rules: billingItems.map((item) => rulesByItem.get(item.value) || defaultPricingRule(item.value))
+  };
+}
+
+function normalizePricingRule(rule) {
+  return {
+    billing_item: rule.billing_item,
+    billing_mode: rule.billing_mode || "per_million_tokens",
+    unit_price: Number(rule.unit_price || 0),
+    tiers_text: JSON.stringify(rule.tiers || [], null, 2),
+    enabled: rule.enabled !== false
+  };
+}
+
+function defaultPricingRule(item) {
+  return {
+    billing_item: item,
+    billing_mode: "per_million_tokens",
+    unit_price: 0,
+    tiers_text: "[]",
+    enabled: true
+  };
+}
+
+function parsePricingTiers(text) {
+  const value = parseJsonText(text || "[]", "阶梯");
+  if (!Array.isArray(value)) {
+    throw new Error("阶梯必须是 JSON 数组");
+  }
+
+  return value.map((tier) => ({
+    up_to: tier.up_to === null || tier.up_to === undefined || tier.up_to === "" ? null : Number(tier.up_to),
+    unit_price: Number(tier.unit_price || 0)
+  }));
+}
+
+function defaultChannelPricingCatalog(upstreamModel) {
+  const model = String(upstreamModel || "").trim();
+  return {
+    slug: model,
+    display_name: model,
+    visibility: "list",
+    supported_in_api: true
+  };
+}
+
+function emptyChannelPricingDraft() {
+  return {
+    upstream_model: "",
+    provider_code: "",
+    model_key: "",
+    display_name: "",
+    description: "",
+    match_type: "exact",
+    match_pattern: "",
+    catalog: {},
+    capabilities: {
+      supports_image: false,
+      context_window: 128000
+    },
+    pricing: normalizeChannelPricing(null),
+    enabled: true
+  };
+}
+
+function formatBillingItem(value) {
+  return billingItems.find((item) => item.value === value)?.label || value || "-";
+}
+
+function formatPrice(value) {
+  const number = Number(value || 0);
+  return Number.isInteger(number) ? String(number) : String(Number(number.toFixed(8)));
 }
 
 async function discoverModels() {
@@ -1303,12 +1735,7 @@ function normalizeModels(models) {
       const model = String(item?.model || "").trim();
       return {
         model,
-        upstream_model: String(item?.upstream_model || model).trim() || model,
-        supports_image: item?.supports_image === true,
-        model_info_id: normalizeOptionalId(item?.model_info_id),
-        pricing_mode: normalizePricingMode(item?.pricing_mode),
-        pricing_plan_id: normalizeOptionalId(item?.pricing_plan_id),
-        enabled: item?.enabled !== false
+        upstream_model: String(item?.upstream_model || model).trim() || model
       };
     })
     .filter((item) => item.model);
@@ -1318,30 +1745,8 @@ function defaultModelMapping(model = "") {
   const normalized = String(model || "").trim();
   return {
     model: normalized,
-    upstream_model: normalized,
-    supports_image: false,
-    model_info_id: null,
-    pricing_mode: "inherit_global",
-    pricing_plan_id: null,
-    enabled: true
+    upstream_model: normalized
   };
-}
-
-function normalizePricingMode(value) {
-  const normalized = String(value || "").trim();
-  return ["inherit_global", "override_pricing", "private_model"].includes(normalized)
-    ? normalized
-    : "inherit_global";
-}
-
-function normalizeOptionalId(value) {
-  const normalized = String(value || "").trim();
-  return normalized || null;
-}
-
-function formatModelInfoLabel(model) {
-  const provider = model.provider_name || model.provider_code || "";
-  return provider ? `${provider} / ${model.model_key}` : model.model_key;
 }
 
 function ensureChannelId(id, name) {
@@ -1589,6 +1994,16 @@ function isPlainObject(value) {
 
 // Expose loadConfig so App can call it on init
 onMounted(async () => {
-  await Promise.all([loadConfig(), loadModelInfoOptions()]);
+  await loadConfig();
 });
 </script>
+
+<style scoped>
+.pricing-rule-table {
+  margin-top: 8px;
+}
+
+.advanced-collapse {
+  margin-top: 12px;
+}
+</style>

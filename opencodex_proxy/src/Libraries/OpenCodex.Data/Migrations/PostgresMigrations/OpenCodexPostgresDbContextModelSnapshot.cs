@@ -146,6 +146,79 @@ namespace OpenCodex.Data.Migrations.PostgresMigrations
                     b.ToTable("Channels", (string)null);
                 });
 
+            modelBuilder.Entity("OpenCodex.Core.Domain.ChannelModelInfo", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("CapabilitiesJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("CatalogJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("ChannelId")
+                        .HasColumnType("uuid");
+
+                    b.Property<double>("CreatedAt")
+                        .HasColumnType("double precision");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("MatchPattern")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("MatchType")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ModelKey")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("ProviderId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<double>("UpdatedAt")
+                        .HasColumnType("double precision");
+
+                    b.Property<string>("UpstreamModel")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Enabled");
+
+                    b.HasIndex("MatchPattern");
+
+                    b.HasIndex("MatchType");
+
+                    b.HasIndex("ProviderId");
+
+                    b.HasIndex("ChannelId", "UpstreamModel")
+                        .IsUnique();
+
+                    b.ToTable("ChannelModelInfos", (string)null);
+                });
+
             modelBuilder.Entity("OpenCodex.Core.Domain.ChannelModelMapping", b =>
                 {
                     b.Property<Guid>("Id")
@@ -346,6 +419,9 @@ namespace OpenCodex.Data.Migrations.PostgresMigrations
                     b.Property<Guid?>("ChannelId")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid?>("ChannelModelInfoId")
+                        .HasColumnType("uuid");
+
                     b.Property<double>("CreatedAt")
                         .HasColumnType("double precision");
 
@@ -356,7 +432,7 @@ namespace OpenCodex.Data.Migrations.PostgresMigrations
                     b.Property<bool>("Enabled")
                         .HasColumnType("boolean");
 
-                    b.Property<Guid>("ModelInfoId")
+                    b.Property<Guid?>("ModelInfoId")
                         .HasColumnType("uuid");
 
                     b.Property<string>("Source")
@@ -369,6 +445,8 @@ namespace OpenCodex.Data.Migrations.PostgresMigrations
                     b.HasKey("Id");
 
                     b.HasIndex("ChannelId");
+
+                    b.HasIndex("ChannelModelInfoId");
 
                     b.HasIndex("Enabled");
 

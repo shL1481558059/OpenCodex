@@ -215,36 +215,6 @@ public sealed class ModelMappingRequest
     public string UpstreamModel { get; set; } = string.Empty;
 
     /// <summary>
-    /// 获取或设置指示模型是否支持图片输入的值。
-    /// </summary>
-    [JsonPropertyName("supports_image")]
-    public bool SupportsImage { get; set; }
-
-    /// <summary>
-    /// 获取或设置绑定的模型信息标识符。
-    /// </summary>
-    [JsonPropertyName("model_info_id")]
-    public Guid? ModelInfoId { get; set; }
-
-    /// <summary>
-    /// 获取或设置渠道模型定价模式。
-    /// </summary>
-    [JsonPropertyName("pricing_mode")]
-    public string? PricingMode { get; set; }
-
-    /// <summary>
-    /// 获取或设置渠道覆盖定价计划标识符。
-    /// </summary>
-    [JsonPropertyName("pricing_plan_id")]
-    public Guid? PricingPlanId { get; set; }
-
-    /// <summary>
-    /// 获取或设置指示该模型映射是否启用的值。
-    /// </summary>
-    [JsonPropertyName("enabled")]
-    public bool? Enabled { get; set; }
-
-    /// <summary>
     /// 将模型映射请求转换为可持久化的字典结构。
     /// </summary>
     /// <returns>模型映射字典。</returns>
@@ -253,28 +223,8 @@ public sealed class ModelMappingRequest
         var mapping = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
             ["model"] = Model,
-            ["upstream_model"] = UpstreamModel,
-            ["supports_image"] = SupportsImage
+            ["upstream_model"] = UpstreamModel
         };
-        if (ModelInfoId.HasValue)
-        {
-            mapping["model_info_id"] = ModelInfoId.Value;
-        }
-
-        if (!string.IsNullOrWhiteSpace(PricingMode))
-        {
-            mapping["pricing_mode"] = PricingMode;
-        }
-
-        if (PricingPlanId.HasValue)
-        {
-            mapping["pricing_plan_id"] = PricingPlanId.Value;
-        }
-
-        if (Enabled.HasValue)
-        {
-            mapping["enabled"] = Enabled.Value;
-        }
 
         return mapping;
     }

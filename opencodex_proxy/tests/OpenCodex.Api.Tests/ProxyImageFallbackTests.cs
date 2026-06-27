@@ -488,6 +488,50 @@ var logs = context.RequestLogs.OrderBy(item => item.Id).ToList();
                 }
             });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        if (includeVisionModel)
+        {
+            await EnsureVisionModelInfoAsync(client, cookie);
+        }
+    }
+
+    private static async Task EnsureVisionModelInfoAsync(HttpClient client, string cookie)
+    {
+        var seed = await SendJsonWithCookie(
+            client,
+            HttpMethod.Post,
+            "/model-infos/seed-defaults",
+            cookie,
+            new { });
+        Assert.Equal(HttpStatusCode.OK, seed.StatusCode);
+
+        var response = await SendJsonWithCookie(
+            client,
+            HttpMethod.Post,
+            "/model-infos",
+            cookie,
+            new
+            {
+                provider_code = "openai",
+                model_key = "vision-upstream",
+                display_name = "Vision Upstream",
+                match_type = "exact",
+                match_pattern = "vision-upstream",
+                catalog = new
+                {
+                    slug = "vision-upstream",
+                    display_name = "Vision Upstream",
+                    visibility = "list",
+                    supported_in_api = true
+                },
+                capabilities = new
+                {
+                    supports_image = true,
+                    context_window = 128000
+                },
+                enabled = true
+            });
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
     }
 
     private static async Task<string> CreateApiKeyAsync(HttpClient client, string cookie, string name)

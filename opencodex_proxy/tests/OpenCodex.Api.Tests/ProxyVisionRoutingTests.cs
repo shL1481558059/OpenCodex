@@ -3,9 +3,12 @@ using Microsoft.EntityFrameworkCore;
 using OpenCodex.Core.Config;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Protocols;
+using OpenCodex.Core.Services;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Data;
+using OpenCodex.CoreBase.Domain;
+using OpenCodex.CoreBase.Services;
 using OpenCodex.Data;
 using Xunit;
 
@@ -14,27 +17,27 @@ namespace OpenCodex.Api.Tests;
 public sealed class ProxyVisionRoutingTests
 {
     [Fact]
-    public void ValidateModelMappings_DefaultsSupportsImageToFalse()
+    public void NormalizeModelMappingsKeepsOnlyRequestAndUpstreamModel()
     {
         var config = ConfigNormalizer.Normalize(new Dictionary<string, object?>
         {
             ["channels"] = new List<object?>
             {
-                ChannelConfig("chat", "admin", [ModelConfig("text-model", "text-upstream")])
+                ChannelConfig("chat", "admin", [ModelConfig("text-model", "text-upstream", supportsImage: true)])
             }
         });
-
-        ConfigValidator.Validate(config);
 
         var channels = Assert.IsType<List<object?>>(config["channels"]);
         var channel = Assert.IsType<Dictionary<string, object?>>(channels[0]);
         var models = Assert.IsType<List<object?>>(channel["models"]);
         var mapping = Assert.IsType<Dictionary<string, object?>>(models[0]);
-        Assert.False(Assert.IsType<bool>(mapping["supports_image"]));
+        Assert.Equal(["model", "upstream_model"], mapping.Keys.OrderBy(key => key, StringComparer.Ordinal).ToArray());
+        Assert.Equal("text-model", mapping["model"]);
+        Assert.Equal("text-upstream", mapping["upstream_model"]);
     }
 
     [Fact]
-    public void ValidateModelMappings_RejectsNonBooleanSupportsImage()
+    public void ValidateModelMappingsIgnoresLegacySupportsImageField()
     {
         var config = ConfigNormalizer.Normalize(new Dictionary<string, object?>
         {
@@ -47,8 +50,7 @@ public sealed class ProxyVisionRoutingTests
             }
         });
 
-        var exception = Assert.Throws<ConfigException>(() => ConfigValidator.Validate(config));
-        Assert.Contains("supports_image must be a boolean", exception.Message);
+        ConfigValidator.Validate(config);
     }
 
     [Fact]
@@ -358,9 +360,20 @@ context.Channels.AddRange(channels);
         }
 
         var routeContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var catalog = new ModelCatalogService(
+            new EfRepository<ModelProvider>(routeContext),
+            new EfRepository<ModelInfo>(routeContext),
+            new EfRepository<ChannelModelInfo>(routeContext),
+            new EfRepository<ModelPricingPlan>(routeContext),
+            new EfRepository<ModelPricingRule>(routeContext),
+            new EfRepository<ChannelModelMapping>(routeContext),
+            new EfRepository<Channel>(routeContext),
+            new EfRepository<ModelPricing>(routeContext),
+            new TestWorkContext(AdminUserId, "admin", "superadmin"));
         return new ProxyRouteService(
             new EfRepository<OpenCodex.Core.Domain.Channel>(routeContext),
-            new EfRepository<OpenCodex.Core.Domain.User>(routeContext));
+            new EfRepository<OpenCodex.Core.Domain.User>(routeContext),
+            catalog);
     }
 
     private static readonly Guid AdminUserId = Guid.Parse("77777777-7777-7777-7777-777777777701");
@@ -448,6 +461,34 @@ context.Channels.AddRange(channels);
         public OpenCodexRuntimeSettings GetSettings()
         {
             return new OpenCodexRuntimeSettings("sqlite", $"Data Source={_dbPath}", "admin", "password", 120);
+        }
+    }
+
+    private sealed class TestWorkContext : IWorkContext
+    {
+        private readonly SessionUser _user;
+
+        public TestWorkContext(Guid userId, string username, string role)
+        {
+            _user = new SessionUser(userId, username, role, true);
+        }
+
+        public SessionUser? CurrentUser => _user;
+
+        public bool IsSignedIn => true;
+
+        public bool IsSuperadmin => _user.Role == "superadmin";
+
+        public SessionUser RequireUser()
+        {
+            return _user;
+        }
+
+        public SessionUser RequireSuperadmin()
+        {
+            return IsSuperadmin
+                ? _user
+                : throw new UnauthorizedAccessException("superadmin required");
         }
     }
 }

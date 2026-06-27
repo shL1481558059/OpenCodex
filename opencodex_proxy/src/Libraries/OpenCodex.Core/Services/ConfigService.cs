@@ -675,11 +675,11 @@ public sealed class ConfigService : IConfigService
                 Position = position++,
                 RequestModel = requestModel,
                 UpstreamModel = upstreamModel,
-                SupportsImage = JsonDictionaryValue.Get(mapping, "supports_image") is true,
-                ModelInfoId = ParseGuid(JsonDictionaryValue.Get(mapping, "model_info_id")),
-                PricingMode = NormalizePricingMode(JsonDictionaryValue.String(mapping, "pricing_mode")),
-                PricingPlanId = ParseGuid(JsonDictionaryValue.Get(mapping, "pricing_plan_id")),
-                Enabled = JsonDictionaryValue.Get(mapping, "enabled") is not false,
+                SupportsImage = false,
+                ModelInfoId = null,
+                PricingMode = ChannelModelPricingModes.InheritGlobal,
+                PricingPlanId = null,
+                Enabled = true,
                 CreatedAt = now,
                 UpdatedAt = now
             });
@@ -758,31 +758,6 @@ public sealed class ConfigService : IConfigService
         }
 
         return Convert.ToInt32(value, CultureInfo.InvariantCulture);
-    }
-
-    private static Guid? ParseGuid(object? value)
-    {
-        if (value is Guid guidValue && guidValue != Guid.Empty)
-        {
-            return guidValue;
-        }
-
-        var text = (value?.ToString() ?? string.Empty).Trim();
-        return Guid.TryParse(text, out var parsed) && parsed != Guid.Empty
-            ? parsed
-            : null;
-    }
-
-    private static string NormalizePricingMode(string? value)
-    {
-        var normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
-        return normalized switch
-        {
-            ChannelModelPricingModes.InheritGlobal => normalized,
-            ChannelModelPricingModes.OverridePricing => normalized,
-            ChannelModelPricingModes.PrivateModel => normalized,
-            _ => ChannelModelPricingModes.InheritGlobal
-        };
     }
 
     private static bool IsPythonFalsy(object? value)

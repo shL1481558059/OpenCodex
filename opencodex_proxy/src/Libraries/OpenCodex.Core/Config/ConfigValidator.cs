@@ -156,15 +156,6 @@ public static class ConfigValidator
                 mapping["upstream_model"] = model;
             }
 
-            if (!mapping.TryGetValue("supports_image", out var supportsImage))
-            {
-                mapping["supports_image"] = false;
-            }
-            else if (supportsImage is not bool)
-            {
-                throw new ConfigException($"channel {channelId} models[{index + 1}].supports_image must be a boolean");
-            }
-
             if (!seen.Add(model))
             {
                 throw new ConfigException($"channel {channelId} duplicated model mapping: {model}");
