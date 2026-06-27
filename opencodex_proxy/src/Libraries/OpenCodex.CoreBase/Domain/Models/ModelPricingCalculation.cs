@@ -35,6 +35,7 @@ public sealed class ModelPricingCalculationResult
         decimal cost,
         string currency,
         Guid? modelInfoId,
+        Guid? channelModelInfoId,
         Guid? pricingPlanId,
         string? providerCode,
         string? modelKey,
@@ -46,6 +47,7 @@ public sealed class ModelPricingCalculationResult
         Cost = cost;
         Currency = currency;
         ModelInfoId = modelInfoId;
+        ChannelModelInfoId = channelModelInfoId;
         PricingPlanId = pricingPlanId;
         ProviderCode = providerCode;
         ModelKey = modelKey;
@@ -60,6 +62,8 @@ public sealed class ModelPricingCalculationResult
     public string Currency { get; }
 
     public Guid? ModelInfoId { get; }
+
+    public Guid? ChannelModelInfoId { get; }
 
     public Guid? PricingPlanId { get; }
 
@@ -83,6 +87,7 @@ public sealed class ModelPricingSnapshot
         string currency,
         decimal cost,
         Guid? modelInfoId,
+        Guid? channelModelInfoId,
         Guid? pricingPlanId,
         string? providerCode,
         string? modelKey,
@@ -94,6 +99,7 @@ public sealed class ModelPricingSnapshot
         Currency = currency;
         Cost = cost;
         ModelInfoId = modelInfoId;
+        ChannelModelInfoId = channelModelInfoId;
         PricingPlanId = pricingPlanId;
         ProviderCode = providerCode;
         ModelKey = modelKey;
@@ -113,6 +119,9 @@ public sealed class ModelPricingSnapshot
 
     [JsonPropertyName("model_info_id")]
     public Guid? ModelInfoId { get; }
+
+    [JsonPropertyName("channel_model_info_id")]
+    public Guid? ChannelModelInfoId { get; }
 
     [JsonPropertyName("pricing_plan_id")]
     public Guid? PricingPlanId { get; }

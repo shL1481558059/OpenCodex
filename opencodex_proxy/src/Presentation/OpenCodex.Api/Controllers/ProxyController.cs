@@ -37,7 +37,7 @@ public sealed class ProxyController : ApiControllerBase
     {
         var accessKey = _requests.AuthenticateAccessKey(AuthorizationHeader());
         var models = _routes.ListModelCapabilities(accessKey.OwnerUsername);
-        var catalogByModel = (_catalog.ListModels(null, null, "global", true, null).Payload?.Models ?? [])
+        var catalogByModel = (_catalog.ListModels(null, null, true).Payload?.Models ?? [])
             .ToDictionary(model => model.ModelKey, StringComparer.OrdinalIgnoreCase);
         var openAiModels = models
             .Select(model => (object?)new Dictionary<string, object?>

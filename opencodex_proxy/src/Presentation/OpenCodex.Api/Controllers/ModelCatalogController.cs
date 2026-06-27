@@ -24,16 +24,21 @@ public sealed class ModelCatalogController : AuthenticatedApiControllerBase
         return Api(_catalog.ListProviders(includeDisabled));
     }
 
+    [HttpPost("/model-providers")]
+    public IActionResult CreateProvider(ModelProviderUpsertRequest request)
+    {
+        RequireSuperadmin();
+        return Api(_catalog.CreateProvider(request), StatusCodes.Status201Created);
+    }
+
     [HttpGet("/model-infos")]
     public IActionResult Models(
         [FromQuery] string? query,
         [FromQuery] string? provider,
-        [FromQuery] string? scope,
-        [FromQuery] bool? enabled,
-        [FromQuery] Guid? channelId)
+        [FromQuery] bool? enabled)
     {
         RequireUser();
-        return Api(_catalog.ListModels(query, provider, scope, enabled, channelId));
+        return Api(_catalog.ListModels(query, provider, enabled));
     }
 
     [HttpPost("/model-infos")]
@@ -55,6 +60,27 @@ public sealed class ModelCatalogController : AuthenticatedApiControllerBase
     {
         RequireSuperadmin();
         return Api(_catalog.DeleteModel(id));
+    }
+
+    [HttpGet("/channels/{channelId:guid}/model-infos")]
+    public IActionResult ChannelModels(Guid channelId)
+    {
+        RequireUser();
+        return Api(_catalog.ListChannelModelInfos(channelId));
+    }
+
+    [HttpPut("/channels/{channelId:guid}/model-infos")]
+    public IActionResult UpsertChannelModel(Guid channelId, ChannelModelInfoUpsertRequest request)
+    {
+        RequireUser();
+        return Api(_catalog.UpsertChannelModelInfo(channelId, request));
+    }
+
+    [HttpDelete("/channels/{channelId:guid}/model-infos/{id:guid}")]
+    public IActionResult RestoreChannelModel(Guid channelId, Guid id)
+    {
+        RequireUser();
+        return Api(_catalog.RestoreChannelModelInfo(channelId, id));
     }
 
     [HttpPost("/model-infos/seed-defaults")]

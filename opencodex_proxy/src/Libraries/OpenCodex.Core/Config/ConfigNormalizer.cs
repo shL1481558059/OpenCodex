@@ -52,9 +52,9 @@ public static class ConfigNormalizer
 
                 mapping["model"] = model;
                 mapping["upstream_model"] = upstreamModel;
-                if (!mapping.ContainsKey("supports_image"))
+                foreach (var key in mapping.Keys.Where(key => key is not "model" and not "upstream_model").ToList())
                 {
-                    mapping["supports_image"] = false;
+                    mapping.Remove(key);
                 }
             }
         }

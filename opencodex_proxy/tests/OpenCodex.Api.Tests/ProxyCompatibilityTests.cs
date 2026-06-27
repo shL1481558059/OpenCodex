@@ -247,7 +247,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
-    public async Task ConfigEndpoint_PreservesSupportsImageAndModelsEndpointReportsPerModelCapability()
+    public async Task ConfigEndpointStripsLegacySupportsImageAndModelsEndpointListsMappings()
     {
         var cookie = await LoginAndReadSessionCookie();
         var config = await SendJsonWithCookie(
@@ -290,8 +290,8 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                 .GetProperty("models")
                 .EnumerateArray()
                 .ToArray();
-            Assert.False(models[0].GetProperty("supports_image").GetBoolean());
-            Assert.True(models[1].GetProperty("supports_image").GetBoolean());
+            Assert.False(models[0].TryGetProperty("supports_image", out _));
+            Assert.False(models[1].TryGetProperty("supports_image", out _));
         }
 
         var createdKey = await SendJsonWithCookie(

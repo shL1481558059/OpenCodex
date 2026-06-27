@@ -5,7 +5,9 @@ using OpenCodex.Core.Services;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Data;
+using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.Domain.Proxy;
+using OpenCodex.CoreBase.Services;
 using OpenCodex.Data;
 using Xunit;
 
@@ -226,10 +228,13 @@ var completed = context.RequestLogs
         var catalog = new ModelCatalogService(
             new EfRepository<ModelProvider>(context),
             new EfRepository<ModelInfo>(context),
+            new EfRepository<ChannelModelInfo>(context),
             new EfRepository<ModelPricingPlan>(context),
             new EfRepository<ModelPricingRule>(context),
             new EfRepository<ChannelModelMapping>(context),
-            new EfRepository<ModelPricing>(context));
+            new EfRepository<Channel>(context),
+            new EfRepository<ModelPricing>(context),
+            new TestWorkContext(Guid.Parse("55555555-5555-5555-5555-555555555599"), "admin", "superadmin"));
         return new ProxyLogService(
             settingsProvider,
             catalog,
@@ -237,6 +242,34 @@ var completed = context.RequestLogs
             new EfRepository<RequestLogDetail>(context),
             new EfRepository<RequestLogStreamLine>(context),
             new EfRepository<User>(context));
+    }
+
+    private sealed class TestWorkContext : IWorkContext
+    {
+        private readonly SessionUser _user;
+
+        public TestWorkContext(Guid userId, string username, string role)
+        {
+            _user = new SessionUser(userId, username, role, true);
+        }
+
+        public SessionUser? CurrentUser => _user;
+
+        public bool IsSignedIn => true;
+
+        public bool IsSuperadmin => _user.Role == "superadmin";
+
+        public SessionUser RequireUser()
+        {
+            return _user;
+        }
+
+        public SessionUser RequireSuperadmin()
+        {
+            return IsSuperadmin
+                ? _user
+                : throw new UnauthorizedAccessException("superadmin required");
+        }
     }
 
     private static void EnsureAdminUser(string dbPath)

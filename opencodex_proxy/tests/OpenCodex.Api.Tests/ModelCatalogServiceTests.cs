@@ -2,7 +2,10 @@ using Microsoft.EntityFrameworkCore;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Services;
 using OpenCodex.CoreBase.Data;
+using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.Domain.Models;
+using OpenCodex.CoreBase.DTOs.Models;
+using OpenCodex.CoreBase.Services;
 using OpenCodex.Data;
 using Xunit;
 
@@ -10,6 +13,62 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class ModelCatalogServiceTests
 {
+    [Fact]
+    public void CreateProviderCreatesManualProvider()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+        }
+
+        var service = CreateService(dbPath);
+        var result = service.CreateProvider(new ModelProviderUpsertRequest
+        {
+            Code = "Custom.AI",
+            Name = "Custom AI",
+            SortOrder = 321,
+            Enabled = true
+        });
+
+        Assert.True(result.Succeeded);
+        Assert.NotNull(result.Payload);
+        Assert.Equal("custom.ai", result.Payload.Provider.Code);
+        Assert.Equal("Custom AI", result.Payload.Provider.Name);
+        Assert.Equal(ModelCatalogSources.Manual, result.Payload.Provider.Source);
+
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            var provider = context.ModelProviders.Single(item => item.Code == "custom.ai");
+            Assert.Equal("Custom AI", provider.Name);
+            Assert.Equal(321, provider.SortOrder);
+            Assert.True(provider.Enabled);
+            Assert.Equal(ModelCatalogSources.Manual, provider.Source);
+        }
+    }
+
+    [Fact]
+    public void CreateProviderRejectsDuplicateCode()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            AddProvider(context, "custom", "Custom", ModelCatalogSources.Manual, 1);
+        }
+
+        var service = CreateService(dbPath);
+        var result = service.CreateProvider(new ModelProviderUpsertRequest
+        {
+            Code = "CUSTOM",
+            Name = "Other Custom",
+            Enabled = true
+        });
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(400, result.Code);
+    }
+
     [Fact]
     public void SeedDefaultsIncludesZhipuGlm52WithCnyPricing()
     {
@@ -26,6 +85,7 @@ public sealed class ModelCatalogServiceTests
         {
             var provider = context.ModelProviders.Single(item => item.Code == "zhipu");
             Assert.Equal("智谱", provider.Name);
+            Assert.DoesNotContain(context.ModelProviders, item => item.Code == "unknown");
 
             var model = context.ModelInfos.Single(item => item.ModelKey == "glm-5.2");
             Assert.Equal(provider.Id, model.ProviderId);
@@ -43,6 +103,26 @@ public sealed class ModelCatalogServiceTests
             Assert.Equal(28m, rules[ModelBillingItems.Output].UnitPrice);
             Assert.Equal(0m, rules[ModelBillingItems.CacheWrite].UnitPrice);
             Assert.Equal(2m, rules[ModelBillingItems.CacheRead].UnitPrice);
+        }
+    }
+
+    [Fact]
+    public void SeedDefaultsDisablesRemovedSystemDefaultProviders()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            AddProvider(context, "unknown", "Unknown", ModelCatalogSources.SystemDefault, 1000);
+        }
+
+        var service = CreateService(dbPath);
+        service.SeedDefaults();
+
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            var provider = context.ModelProviders.Single(item => item.Code == "unknown");
+            Assert.False(provider.Enabled);
         }
     }
 
@@ -154,7 +234,7 @@ public sealed class ModelCatalogServiceTests
     }
 
     [Fact]
-    public void CalculateCostUsesChannelMappingByUpstreamModel()
+    public void CalculateCostUsesChannelModelInfoByUpstreamModel()
     {
         var dbPath = CreateDbPath();
         var channelId = Guid.NewGuid();
@@ -163,28 +243,15 @@ public sealed class ModelCatalogServiceTests
             context.Database.Migrate();
             var provider = AddProvider(context);
             AddModel(context, provider.Id, "upstream-model", ModelMatchTypes.Exact, "upstream-model", 1m);
-            var channelModel = AddModel(
+            AddChannelModel(
                 context,
+                channelId,
                 provider.Id,
+                "upstream-model",
                 "channel-upstream-model",
                 ModelMatchTypes.Exact,
                 "upstream-model",
-                9m,
-                ModelInfoScopes.Channel,
-                channelId);
-            context.ChannelModelMappings.Add(new ChannelModelMapping
-            {
-                ChannelId = channelId,
-                Position = 0,
-                RequestModel = "request-alias",
-                UpstreamModel = "upstream-model",
-                SupportsImage = false,
-                ModelInfoId = channelModel.Id,
-                PricingMode = ChannelModelPricingModes.InheritGlobal,
-                Enabled = true,
-                CreatedAt = 1,
-                UpdatedAt = 1
-            });
+                9m);
             context.SaveChanges();
         }
 
@@ -192,8 +259,10 @@ public sealed class ModelCatalogServiceTests
         var result = service.CalculateCost(channelId, "request-alias", "upstream-model", "response-model", Tokens(1_000_000));
 
         Assert.Equal(9m, result.Cost);
-        Assert.Equal("channel_mapping_model", result.Resolution);
+        Assert.Equal("channel_model_override", result.Resolution);
         Assert.Equal("channel-upstream-model", result.ModelKey);
+        Assert.Null(result.ModelInfoId);
+        Assert.NotNull(result.ChannelModelInfoId);
     }
 
     [Fact]
@@ -216,7 +285,7 @@ public sealed class ModelCatalogServiceTests
     }
 
     [Fact]
-    public void CalculateCostUsesChannelPricingOverride()
+    public void CalculateCostIgnoresLegacyChannelMappingPricingFields()
     {
         var dbPath = CreateDbPath();
         var channelId = Guid.NewGuid();
@@ -246,8 +315,77 @@ public sealed class ModelCatalogServiceTests
         var service = CreateService(dbPath);
         var result = service.CalculateCost(channelId, "model-a", "model-a", null, Tokens(1_000_000));
 
-        Assert.Equal(9m, result.Cost);
-        Assert.Equal("channel_mapping_pricing_override", result.Resolution);
+        Assert.Equal(1m, result.Cost);
+        Assert.Equal("global_model_match", result.Resolution);
+    }
+
+    [Fact]
+    public void ChannelModelInfoManagementOverridesAndRestoresGlobalPricing()
+    {
+        var dbPath = CreateDbPath();
+        var channelId = Guid.NewGuid();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddChannel(context, channelId, "test-channel", "upstream-model");
+            AddModel(context, provider.Id, "global-model", ModelMatchTypes.Exact, "upstream-model", 1m);
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+        var listed = service.ListChannelModelInfos(channelId);
+
+        Assert.True(listed.Succeeded);
+        var item = Assert.Single(listed.Payload!.Models);
+        Assert.False(item.Overridden);
+        Assert.Equal("global-model", item.GlobalModel?.ModelKey);
+
+        var saved = service.UpsertChannelModelInfo(channelId, new ChannelModelInfoUpsertRequest
+        {
+            UpstreamModel = "upstream-model",
+            ProviderCode = "test",
+            ModelKey = "channel-model",
+            DisplayName = "Channel Model",
+            MatchType = ModelMatchTypes.Exact,
+            MatchPattern = "upstream-model",
+            Capabilities = new Dictionary<string, object?> { ["supports_image"] = true },
+            Pricing = new ModelPricingPlanRequest
+            {
+                Currency = "USD",
+                Rules =
+                [
+                    new ModelPricingRuleRequest
+                    {
+                        BillingItem = ModelBillingItems.Input,
+                        BillingMode = ModelBillingModes.PerMillionTokens,
+                        UnitPrice = 7m,
+                        Enabled = true
+                    }
+                ]
+            }
+        });
+
+        Assert.True(saved.Succeeded);
+        var overrideCost = service.CalculateCost(channelId, "request-model", "upstream-model", null, Tokens(1_000_000));
+        Assert.Equal(7m, overrideCost.Cost);
+        Assert.Equal("channel_model_override", overrideCost.Resolution);
+
+        listed = service.ListChannelModelInfos(channelId);
+        item = Assert.Single(listed.Payload!.Models);
+        Assert.True(item.Overridden);
+        Assert.Equal("channel-model", item.OverrideModel?.ModelKey);
+
+        var restored = service.RestoreChannelModelInfo(channelId, saved.Payload!.Model.Id);
+
+        Assert.True(restored.Succeeded);
+        var globalCost = service.CalculateCost(channelId, "request-model", "upstream-model", null, Tokens(1_000_000));
+        Assert.Equal(1m, globalCost.Cost);
+        Assert.Equal("global_model_match", globalCost.Resolution);
+
+        listed = service.ListChannelModelInfos(channelId);
+        item = Assert.Single(listed.Payload!.Models);
+        Assert.False(item.Overridden);
     }
 
     [Fact]
@@ -311,6 +449,52 @@ public sealed class ModelCatalogServiceTests
         return provider;
     }
 
+    private static Channel AddChannel(
+        IOpenCodexDbContext context,
+        Guid channelId,
+        string name,
+        string upstreamModel)
+    {
+        var channel = new Channel
+        {
+            Id = channelId,
+            OwnerUserId = TestUserId,
+            Position = 0,
+            Priority = 0,
+            Name = name,
+            Type = "chat",
+            BaseUrl = "https://example.test/v1",
+            ApiKey = "secret",
+            AuthMode = "config",
+            HeadersJson = "{}",
+            TimeoutSeconds = 120,
+            RetryCount = 0,
+            Capacity = 3,
+            CompatJson = "{}",
+            ModelsJson = "[{\"model\":\"request-model\",\"upstream_model\":\"" + upstreamModel + "\"}]",
+            Enabled = true,
+            CreatedAt = 1,
+            UpdatedAt = 1
+        };
+        context.Channels.Add(channel);
+        context.ChannelModelMappings.Add(new ChannelModelMapping
+        {
+            ChannelId = channelId,
+            Position = 0,
+            RequestModel = "request-model",
+            UpstreamModel = upstreamModel,
+            SupportsImage = false,
+            ModelInfoId = null,
+            PricingMode = ChannelModelPricingModes.InheritGlobal,
+            PricingPlanId = null,
+            Enabled = true,
+            CreatedAt = 1,
+            UpdatedAt = 1
+        });
+        context.SaveChanges();
+        return channel;
+    }
+
     private static ModelInfo AddModel(
         IOpenCodexDbContext context,
         Guid providerId,
@@ -344,6 +528,39 @@ public sealed class ModelCatalogServiceTests
         return model;
     }
 
+    private static ChannelModelInfo AddChannelModel(
+        IOpenCodexDbContext context,
+        Guid channelId,
+        Guid providerId,
+        string upstreamModel,
+        string modelKey,
+        string matchType,
+        string matchPattern,
+        decimal inputPrice)
+    {
+        var model = new ChannelModelInfo
+        {
+            ChannelId = channelId,
+            UpstreamModel = upstreamModel,
+            ProviderId = providerId,
+            ModelKey = modelKey,
+            DisplayName = modelKey,
+            Description = string.Empty,
+            MatchType = matchType,
+            MatchPattern = matchPattern,
+            CatalogJson = "{}",
+            CapabilitiesJson = "{}",
+            Enabled = true,
+            Source = "test",
+            CreatedAt = 1,
+            UpdatedAt = 1
+        };
+        context.ChannelModelInfos.Add(model);
+        context.SaveChanges();
+        AddChannelPlan(context, model.Id, channelId, inputPrice);
+        return model;
+    }
+
     private static ModelPricingPlan AddPlan(
         IOpenCodexDbContext context,
         Guid modelInfoId,
@@ -353,6 +570,30 @@ public sealed class ModelCatalogServiceTests
         var plan = new ModelPricingPlan
         {
             ModelInfoId = modelInfoId,
+            ChannelId = channelId,
+            Currency = "USD",
+            Enabled = true,
+            Source = "test",
+            CreatedAt = 1,
+            UpdatedAt = 1
+        };
+        context.ModelPricingPlans.Add(plan);
+        context.SaveChanges();
+        context.ModelPricingRules.Add(Rule(plan.Id, ModelBillingItems.Input, inputPrice));
+        context.SaveChanges();
+        return plan;
+    }
+
+    private static ModelPricingPlan AddChannelPlan(
+        IOpenCodexDbContext context,
+        Guid channelModelInfoId,
+        Guid channelId,
+        decimal inputPrice)
+    {
+        var plan = new ModelPricingPlan
+        {
+            ModelInfoId = null,
+            ChannelModelInfoId = channelModelInfoId,
             ChannelId = channelId,
             Currency = "USD",
             Enabled = true,
@@ -386,10 +627,43 @@ public sealed class ModelCatalogServiceTests
         return new ModelCatalogService(
             new EfRepository<ModelProvider>(context),
             new EfRepository<ModelInfo>(context),
+            new EfRepository<ChannelModelInfo>(context),
             new EfRepository<ModelPricingPlan>(context),
             new EfRepository<ModelPricingRule>(context),
             new EfRepository<ChannelModelMapping>(context),
-            new EfRepository<ModelPricing>(context));
+            new EfRepository<Channel>(context),
+            new EfRepository<ModelPricing>(context),
+            new TestWorkContext(TestUserId, "admin", "superadmin"));
+    }
+
+    private static readonly Guid TestUserId = Guid.Parse("99999999-9999-9999-9999-999999999901");
+
+    private sealed class TestWorkContext : IWorkContext
+    {
+        private readonly SessionUser _user;
+
+        public TestWorkContext(Guid userId, string username, string role)
+        {
+            _user = new SessionUser(userId, username, role, true);
+        }
+
+        public SessionUser? CurrentUser => _user;
+
+        public bool IsSignedIn => true;
+
+        public bool IsSuperadmin => _user.Role == "superadmin";
+
+        public SessionUser RequireUser()
+        {
+            return _user;
+        }
+
+        public SessionUser RequireSuperadmin()
+        {
+            return IsSuperadmin
+                ? _user
+                : throw new UnauthorizedAccessException("superadmin required");
+        }
     }
 
     private static string CreateDbPath()

@@ -90,7 +90,8 @@ public sealed class ModelPricingPlanResponse
 {
     public ModelPricingPlanResponse(
         Guid id,
-        Guid modelInfoId,
+        Guid? modelInfoId,
+        Guid? channelModelInfoId,
         Guid? channelId,
         string currency,
         bool enabled,
@@ -101,6 +102,7 @@ public sealed class ModelPricingPlanResponse
     {
         Id = id;
         ModelInfoId = modelInfoId;
+        ChannelModelInfoId = channelModelInfoId;
         ChannelId = channelId;
         Currency = currency;
         Enabled = enabled;
@@ -114,7 +116,10 @@ public sealed class ModelPricingPlanResponse
     public Guid Id { get; }
 
     [JsonPropertyName("model_info_id")]
-    public Guid ModelInfoId { get; }
+    public Guid? ModelInfoId { get; }
+
+    [JsonPropertyName("channel_model_info_id")]
+    public Guid? ChannelModelInfoId { get; }
 
     [JsonPropertyName("channel_id")]
     public Guid? ChannelId { get; }
@@ -266,6 +271,174 @@ public sealed class ModelInfoResponsePayload
 
     [JsonPropertyName("model")]
     public ModelInfoResponse Model { get; }
+}
+
+public sealed class ChannelModelInfoResponse
+{
+    public ChannelModelInfoResponse(
+        Guid id,
+        Guid channelId,
+        string upstreamModel,
+        Guid providerId,
+        string providerCode,
+        string providerName,
+        string modelKey,
+        string displayName,
+        string description,
+        string matchType,
+        string matchPattern,
+        IReadOnlyDictionary<string, object?> catalog,
+        IReadOnlyDictionary<string, object?> capabilities,
+        bool enabled,
+        string source,
+        ModelPricingPlanResponse? pricing,
+        double createdAt,
+        double updatedAt)
+    {
+        Id = id;
+        ChannelId = channelId;
+        UpstreamModel = upstreamModel;
+        ProviderId = providerId;
+        ProviderCode = providerCode;
+        ProviderName = providerName;
+        ModelKey = modelKey;
+        DisplayName = displayName;
+        Description = description;
+        MatchType = matchType;
+        MatchPattern = matchPattern;
+        Catalog = catalog;
+        Capabilities = capabilities;
+        Enabled = enabled;
+        Source = source;
+        Pricing = pricing;
+        CreatedAt = createdAt;
+        UpdatedAt = updatedAt;
+    }
+
+    [JsonPropertyName("id")]
+    public Guid Id { get; }
+
+    [JsonPropertyName("channel_id")]
+    public Guid ChannelId { get; }
+
+    [JsonPropertyName("upstream_model")]
+    public string UpstreamModel { get; }
+
+    [JsonPropertyName("provider_id")]
+    public Guid ProviderId { get; }
+
+    [JsonPropertyName("provider_code")]
+    public string ProviderCode { get; }
+
+    [JsonPropertyName("provider_name")]
+    public string ProviderName { get; }
+
+    [JsonPropertyName("model_key")]
+    public string ModelKey { get; }
+
+    [JsonPropertyName("display_name")]
+    public string DisplayName { get; }
+
+    [JsonPropertyName("description")]
+    public string Description { get; }
+
+    [JsonPropertyName("match_type")]
+    public string MatchType { get; }
+
+    [JsonPropertyName("match_pattern")]
+    public string MatchPattern { get; }
+
+    [JsonPropertyName("catalog")]
+    public IReadOnlyDictionary<string, object?> Catalog { get; }
+
+    [JsonPropertyName("capabilities")]
+    public IReadOnlyDictionary<string, object?> Capabilities { get; }
+
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; }
+
+    [JsonPropertyName("source")]
+    public string Source { get; }
+
+    [JsonPropertyName("pricing")]
+    public ModelPricingPlanResponse? Pricing { get; }
+
+    [JsonPropertyName("created_at")]
+    public double CreatedAt { get; }
+
+    [JsonPropertyName("updated_at")]
+    public double UpdatedAt { get; }
+}
+
+public sealed class ChannelModelInfoListItemResponse
+{
+    public ChannelModelInfoListItemResponse(
+        string upstreamModel,
+        bool overridden,
+        ModelInfoResponse? globalModel,
+        ChannelModelInfoResponse? overrideModel)
+    {
+        UpstreamModel = upstreamModel;
+        Overridden = overridden;
+        GlobalModel = globalModel;
+        OverrideModel = overrideModel;
+    }
+
+    [JsonPropertyName("upstream_model")]
+    public string UpstreamModel { get; }
+
+    [JsonPropertyName("overridden")]
+    public bool Overridden { get; }
+
+    [JsonPropertyName("global_model")]
+    public ModelInfoResponse? GlobalModel { get; }
+
+    [JsonPropertyName("override_model")]
+    public ChannelModelInfoResponse? OverrideModel { get; }
+}
+
+public sealed class ChannelModelInfoListResponse
+{
+    public ChannelModelInfoListResponse(
+        Guid channelId,
+        string channelName,
+        IReadOnlyList<ChannelModelInfoListItemResponse> models)
+    {
+        ChannelId = channelId;
+        ChannelName = channelName;
+        Models = models;
+    }
+
+    [JsonPropertyName("channel_id")]
+    public Guid ChannelId { get; }
+
+    [JsonPropertyName("channel_name")]
+    public string ChannelName { get; }
+
+    [JsonPropertyName("models")]
+    public IReadOnlyList<ChannelModelInfoListItemResponse> Models { get; }
+}
+
+public sealed class ChannelModelInfoResponsePayload
+{
+    public ChannelModelInfoResponsePayload(ChannelModelInfoResponse model)
+    {
+        Model = model;
+    }
+
+    [JsonPropertyName("model")]
+    public ChannelModelInfoResponse Model { get; }
+}
+
+public sealed class ModelProviderResponsePayload
+{
+    public ModelProviderResponsePayload(ModelProviderResponse provider)
+    {
+        Provider = provider;
+    }
+
+    [JsonPropertyName("provider")]
+    public ModelProviderResponse Provider { get; }
 }
 
 public sealed class SeedModelCatalogResponse

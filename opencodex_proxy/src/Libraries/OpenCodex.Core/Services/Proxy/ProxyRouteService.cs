@@ -3,9 +3,11 @@ using OpenCodex.Core.Domain;
 using OpenCodex.Core.Config;
 using OpenCodex.Core.Errors;
 using OpenCodex.Core.Persistence;
+using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.Proxy;
+using OpenCodex.CoreBase.Services;
 using OpenCodex.CoreBase.Services.Proxy;
 
 namespace OpenCodex.Core.Services.Proxy;
@@ -14,13 +16,16 @@ public sealed class ProxyRouteService : IProxyRouteService
 {
     private readonly IRepository<Channel> _channelRepository;
     private readonly IRepository<User> _userRepository;
+    private readonly IModelCatalogService _catalog;
 
     public ProxyRouteService(
         IRepository<Channel> channelRepository,
-        IRepository<User> userRepository)
+        IRepository<User> userRepository,
+        IModelCatalogService catalog)
     {
         _channelRepository = channelRepository;
         _userRepository = userRepository;
+        _catalog = catalog;
     }
 
     public ProxyRouteDto ChooseRoute(
@@ -168,7 +173,7 @@ public sealed class ProxyRouteService : IProxyRouteService
         return false;
     }
 
-    private static List<ModelRouteCandidate> ListMatchedRouteCandidates(
+    private List<ModelRouteCandidate> ListMatchedRouteCandidates(
         IReadOnlyList<Dictionary<string, object?>> channels,
         string normalizedModel)
     {
@@ -200,7 +205,7 @@ public sealed class ProxyRouteService : IProxyRouteService
         return candidates;
     }
 
-    private static ModelRouteCandidate? FindImageRouteInChannel(
+    private ModelRouteCandidate? FindImageRouteInChannel(
         Dictionary<string, object?> channel)
     {
         if (!channel.TryGetValue("models", out var modelsValue)
@@ -213,7 +218,7 @@ public sealed class ProxyRouteService : IProxyRouteService
         foreach (var mappingValue in models)
         {
             if (!ConfigValue.TryAsObject(mappingValue, out var mapping)
-                || !MappingSupportsImage(mapping))
+                || !MappingSupportsImage(channel, mapping))
             {
                 continue;
             }
@@ -228,7 +233,7 @@ public sealed class ProxyRouteService : IProxyRouteService
         return best;
     }
 
-    private static ModelRouteCandidate? FindImageRoute(
+    private ModelRouteCandidate? FindImageRoute(
         IReadOnlyList<Dictionary<string, object?>> channels,
         Dictionary<string, object?>? skipChannel = null)
     {
@@ -255,7 +260,7 @@ public sealed class ProxyRouteService : IProxyRouteService
         return best;
     }
 
-    private static ModelRouteCandidate ToCandidate(
+    private ModelRouteCandidate ToCandidate(
         Dictionary<string, object?> channel,
         IReadOnlyDictionary<string, object?> mapping,
         string fallbackModel)
@@ -280,14 +285,41 @@ public sealed class ProxyRouteService : IProxyRouteService
             channel,
             model,
             upstreamModel,
-            MappingSupportsImage(mapping),
+            MappingSupportsImage(channel, mapping, upstreamModel),
             PriorityValue(channel),
             PositionValue(channel));
     }
 
-    private static bool MappingSupportsImage(IReadOnlyDictionary<string, object?> mapping)
+    private bool MappingSupportsImage(
+        IReadOnlyDictionary<string, object?> channel,
+        IReadOnlyDictionary<string, object?> mapping,
+        string? upstreamModel = null)
     {
-        return mapping.TryGetValue("supports_image", out var value) && value is true;
+        var legacyMappingValue = mapping.TryGetValue("supports_image", out var value) && value is true;
+        var actualUpstreamModel = string.IsNullOrWhiteSpace(upstreamModel)
+            ? JsonDictionaryValue.String(mapping, "upstream_model")
+            : upstreamModel;
+        if (string.IsNullOrWhiteSpace(actualUpstreamModel))
+        {
+            actualUpstreamModel = JsonDictionaryValue.String(mapping, "model");
+        }
+
+        return _catalog.SupportsImage(ParseChannelId(channel), actualUpstreamModel, legacyMappingValue);
+    }
+
+    private static Guid? ParseChannelId(IReadOnlyDictionary<string, object?> channel)
+    {
+        if (!channel.TryGetValue("id", out var value))
+        {
+            return null;
+        }
+
+        if (value is Guid guidValue)
+        {
+            return guidValue;
+        }
+
+        return Guid.TryParse(value?.ToString(), out var parsed) ? parsed : null;
     }
 
     private static int PriorityValue(IReadOnlyDictionary<string, object?> channel)

@@ -2,7 +2,9 @@ namespace OpenCodex.Core.Domain;
 
 public sealed class ModelPricingPlan : BaseEntity<Guid>
 {
-    public Guid ModelInfoId { get; set; }
+    public Guid? ModelInfoId { get; set; }
+
+    public Guid? ChannelModelInfoId { get; set; }
 
     public Guid? ChannelId { get; set; }
 

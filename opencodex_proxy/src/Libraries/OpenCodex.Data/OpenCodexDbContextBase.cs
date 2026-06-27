@@ -27,6 +27,8 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
 
     public DbSet<ModelInfo> ModelInfos => Set<ModelInfo>();
 
+    public DbSet<ChannelModelInfo> ChannelModelInfos => Set<ChannelModelInfo>();
+
     public DbSet<ModelPricingPlan> ModelPricingPlans => Set<ModelPricingPlan>();
 
     public DbSet<ModelPricingRule> ModelPricingRules => Set<ModelPricingRule>();
@@ -163,6 +165,25 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         infos.HasIndex(info => info.MatchPattern);
         infos.HasIndex(info => info.MatchType);
 
+        var channelInfos = modelBuilder.Entity<ChannelModelInfo>();
+        channelInfos.ToTable("ChannelModelInfos");
+        channelInfos.HasKey(info => info.Id);
+        channelInfos.Property(info => info.Id).ValueGeneratedOnAdd();
+        channelInfos.Property(info => info.UpstreamModel).IsRequired();
+        channelInfos.Property(info => info.ModelKey).IsRequired();
+        channelInfos.Property(info => info.DisplayName).IsRequired();
+        channelInfos.Property(info => info.Description).IsRequired();
+        channelInfos.Property(info => info.MatchType).IsRequired();
+        channelInfos.Property(info => info.MatchPattern).IsRequired();
+        channelInfos.Property(info => info.CatalogJson).IsRequired();
+        channelInfos.Property(info => info.CapabilitiesJson).IsRequired();
+        channelInfos.Property(info => info.Source).IsRequired();
+        channelInfos.HasIndex(info => new { info.ChannelId, info.UpstreamModel }).IsUnique();
+        channelInfos.HasIndex(info => info.ProviderId);
+        channelInfos.HasIndex(info => info.Enabled);
+        channelInfos.HasIndex(info => info.MatchPattern);
+        channelInfos.HasIndex(info => info.MatchType);
+
         var plans = modelBuilder.Entity<ModelPricingPlan>();
         plans.ToTable("ModelPricingPlans");
         plans.HasKey(plan => plan.Id);
@@ -170,6 +191,7 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         plans.Property(plan => plan.Currency).IsRequired();
         plans.Property(plan => plan.Source).IsRequired();
         plans.HasIndex(plan => plan.ModelInfoId);
+        plans.HasIndex(plan => plan.ChannelModelInfoId);
         plans.HasIndex(plan => plan.ChannelId);
         plans.HasIndex(plan => plan.Enabled);
 

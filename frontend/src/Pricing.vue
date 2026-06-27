@@ -14,10 +14,6 @@
           @keyup.enter="loadModels"
           @clear="loadModels"
         />
-        <el-select v-model="filters.scope" clearable placeholder="范围" style="width: 120px" @change="loadModels">
-          <el-option label="全局" value="global" />
-          <el-option label="渠道" value="channel" />
-        </el-select>
         <el-select v-model="filters.enabled" clearable placeholder="状态" style="width: 120px" @change="loadModels">
           <el-option label="启用" :value="true" />
           <el-option label="停用" :value="false" />
@@ -25,6 +21,7 @@
         <el-button :icon="Search" @click="loadModels">搜索</el-button>
         <el-button :icon="Refresh" @click="loadAll">刷新</el-button>
         <el-button :icon="Download" :loading="seedLoading" @click="seedDefaults">更新</el-button>
+        <el-button :icon="Plus" @click="openProviderDialog">新增供应商</el-button>
         <el-button type="primary" :icon="Plus" @click="openModelDialog()">新增模型</el-button>
       </div>
     </div>
@@ -104,7 +101,7 @@
     <el-dialog v-model="modelDialogVisible" :title="modelDraft.id ? '编辑模型' : '新增模型'" width="880px">
       <el-form label-position="top" :model="modelDraft">
         <el-row :gutter="16">
-          <el-col :span="8">
+          <el-col :span="16">
             <el-form-item label="供应商">
               <el-select v-model="modelDraft.provider_code" class="full-width">
                 <el-option
@@ -113,14 +110,6 @@
                   :label="provider.name"
                   :value="provider.code"
                 />
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="范围">
-              <el-select v-model="modelDraft.scope" class="full-width">
-                <el-option label="全局" value="global" />
-                <el-option label="渠道" value="channel" />
               </el-select>
             </el-form-item>
           </el-col>
@@ -161,10 +150,6 @@
             </el-form-item>
           </el-col>
         </el-row>
-
-        <el-form-item v-if="modelDraft.scope === 'channel'" label="渠道 ID">
-          <el-input v-model="modelDraft.channel_id" autocomplete="off" />
-        </el-form-item>
 
         <el-form-item label="描述">
           <el-input v-model="modelDraft.description" type="textarea" :rows="2" />
@@ -243,6 +228,36 @@
         </div>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="providerDialogVisible" title="新增供应商" width="480px">
+      <el-form label-position="top" :model="providerDraft">
+        <el-form-item label="供应商编码">
+          <el-input v-model="providerDraft.code" autocomplete="off" placeholder="例如 custom-ai" />
+        </el-form-item>
+        <el-form-item label="显示名称">
+          <el-input v-model="providerDraft.name" autocomplete="off" placeholder="例如 Custom AI" />
+        </el-form-item>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="排序">
+              <el-input-number v-model="providerDraft.sort_order" :min="0" :step="10" class="full-width" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="状态">
+              <el-switch v-model="providerDraft.enabled" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+      </el-form>
+
+      <template #footer>
+        <div class="drawer-footer">
+          <el-button @click="providerDialogVisible = false">取消</el-button>
+          <el-button type="primary" :loading="providerSaving" @click="saveProvider">保存</el-button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -261,6 +276,8 @@ const modelsLoading = ref(false);
 const seedLoading = ref(false);
 const modelDialogVisible = ref(false);
 const modelSaving = ref(false);
+const providerDialogVisible = ref(false);
+const providerSaving = ref(false);
 const activeProvider = ref("all");
 const page = ref(1);
 const pageSize = ref(25);
@@ -279,10 +296,10 @@ const billingItems = [
 ];
 const filters = reactive({
   query: "",
-  scope: "global",
   enabled: null
 });
 const modelDraft = reactive(emptyModelDraft());
+const providerDraft = reactive(emptyProviderDraft());
 
 const pagedModels = computed(() => {
   const start = (page.value - 1) * pageSize.value;
@@ -299,8 +316,11 @@ async function loadAll() {
 }
 
 async function loadProviders() {
-  const data = await props.api("/model-providers?includeDisabled=true");
+  const data = await props.api("/model-providers");
   providers.value = Array.isArray(data.providers) ? data.providers : [];
+  if (activeProvider.value !== "all" && !providers.value.some((provider) => provider.code === activeProvider.value)) {
+    activeProvider.value = "all";
+  }
 }
 
 async function loadModels() {
@@ -309,7 +329,6 @@ async function loadModels() {
     const params = new URLSearchParams();
     if (filters.query.trim()) params.set("query", filters.query.trim());
     if (activeProvider.value !== "all") params.set("provider", activeProvider.value);
-    if (filters.scope) params.set("scope", filters.scope);
     if (filters.enabled !== null && filters.enabled !== undefined) params.set("enabled", String(filters.enabled));
     const suffix = params.toString() ? `?${params.toString()}` : "";
     const data = await props.api(`/model-infos${suffix}`);
@@ -328,9 +347,7 @@ function openModelDialog(row = null) {
   if (row) {
     Object.assign(modelDraft, {
       id: row.id,
-      scope: row.scope || "global",
       provider_code: row.provider_code || providers.value[0]?.code || "",
-      channel_id: row.channel_id || null,
       model_key: row.model_key || "",
       display_name: row.display_name || "",
       description: row.description || "",
@@ -352,6 +369,45 @@ function openModelDialog(row = null) {
     catalogText.value = JSON.stringify(defaultCatalog(), null, 2);
   }
   modelDialogVisible.value = true;
+}
+
+function openProviderDialog() {
+  Object.assign(providerDraft, emptyProviderDraft());
+  providerDialogVisible.value = true;
+}
+
+async function saveProvider() {
+  providerSaving.value = true;
+  try {
+    const code = normalizeProviderCode(providerDraft.code);
+    const name = providerDraft.name.trim();
+    if (!code) throw new Error("供应商编码不能为空");
+    if (!/^[a-z0-9._-]+$/.test(code)) throw new Error("供应商编码仅支持字母、数字、点、下划线和连字符");
+    if (!name) throw new Error("显示名称不能为空");
+
+    const data = await props.api("/model-providers", {
+      method: "POST",
+      body: JSON.stringify({
+        code,
+        name,
+        enabled: providerDraft.enabled !== false,
+        sort_order: Number(providerDraft.sort_order || 0)
+      })
+    });
+    providerDialogVisible.value = false;
+    await loadProviders();
+    const createdCode = data.provider?.code || code;
+    if (activeProvider.value === createdCode) {
+      await loadModels();
+    } else {
+      activeProvider.value = createdCode;
+    }
+    ElMessage.success("供应商已新增");
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    providerSaving.value = false;
+  }
 }
 
 async function saveModel() {
@@ -409,9 +465,7 @@ function buildModelPayload() {
     enabled: rule.enabled !== false
   }));
   return {
-    scope: modelDraft.scope,
     provider_code: modelDraft.provider_code,
-    channel_id: modelDraft.scope === "channel" ? modelDraft.channel_id : null,
     model_key: modelDraft.model_key,
     display_name: modelDraft.display_name,
     description: modelDraft.description,
@@ -434,9 +488,7 @@ function buildModelPayload() {
 function emptyModelDraft() {
   return {
     id: null,
-    scope: "global",
     provider_code: "",
-    channel_id: null,
     model_key: "",
     display_name: "",
     description: "",
@@ -450,6 +502,24 @@ function emptyModelDraft() {
     pricing: normalizePricing(null),
     enabled: true
   };
+}
+
+function emptyProviderDraft() {
+  return {
+    code: "",
+    name: "",
+    sort_order: nextProviderSortOrder(),
+    enabled: true
+  };
+}
+
+function nextProviderSortOrder() {
+  const maxSort = providers.value.reduce((max, provider) => Math.max(max, Number(provider.sort_order || 0)), 0);
+  return maxSort + 10;
+}
+
+function normalizeProviderCode(value) {
+  return String(value || "").trim().toLowerCase();
 }
 
 function normalizePricing(pricing) {
