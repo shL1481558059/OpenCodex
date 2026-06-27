@@ -23,6 +23,16 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
 
     public DbSet<ModelPricing> ModelPricings => Set<ModelPricing>();
 
+    public DbSet<ModelProvider> ModelProviders => Set<ModelProvider>();
+
+    public DbSet<ModelInfo> ModelInfos => Set<ModelInfo>();
+
+    public DbSet<ModelPricingPlan> ModelPricingPlans => Set<ModelPricingPlan>();
+
+    public DbSet<ModelPricingRule> ModelPricingRules => Set<ModelPricingRule>();
+
+    public DbSet<ChannelModelMapping> ChannelModelMappings => Set<ChannelModelMapping>();
+
     public DbSet<RequestLog> RequestLogs => Set<RequestLog>();
 
     public DbSet<RequestLogDetail> RequestLogDetails => Set<RequestLogDetail>();
@@ -36,6 +46,7 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         ConfigureAccessApiKeys(modelBuilder);
         ConfigureWebSearch(modelBuilder);
         ConfigureModelPricings(modelBuilder);
+        ConfigureModelCatalog(modelBuilder);
         ConfigureRequestLogs(modelBuilder);
     }
 
@@ -118,6 +129,76 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         entity.HasIndex(pricing => pricing.MatchPattern);
     }
 
+    private static void ConfigureModelCatalog(ModelBuilder modelBuilder)
+    {
+        var providers = modelBuilder.Entity<ModelProvider>();
+        providers.ToTable("ModelProviders");
+        providers.HasKey(provider => provider.Id);
+        providers.Property(provider => provider.Id).ValueGeneratedOnAdd();
+        providers.Property(provider => provider.Code).IsRequired();
+        providers.Property(provider => provider.Name).IsRequired();
+        providers.Property(provider => provider.Source).IsRequired();
+        providers.HasIndex(provider => provider.Code).IsUnique();
+        providers.HasIndex(provider => provider.Enabled);
+        providers.HasIndex(provider => provider.SortOrder);
+
+        var infos = modelBuilder.Entity<ModelInfo>();
+        infos.ToTable("ModelInfos");
+        infos.HasKey(info => info.Id);
+        infos.Property(info => info.Id).ValueGeneratedOnAdd();
+        infos.Property(info => info.Scope).IsRequired();
+        infos.Property(info => info.ModelKey).IsRequired();
+        infos.Property(info => info.DisplayName).IsRequired();
+        infos.Property(info => info.Description).IsRequired();
+        infos.Property(info => info.MatchType).IsRequired();
+        infos.Property(info => info.MatchPattern).IsRequired();
+        infos.Property(info => info.CatalogJson).IsRequired();
+        infos.Property(info => info.CapabilitiesJson).IsRequired();
+        infos.Property(info => info.Source).IsRequired();
+        infos.HasIndex(info => new { info.Scope, info.ProviderId, info.ModelKey });
+        infos.HasIndex(info => new { info.Scope, info.ChannelId, info.ModelKey });
+        infos.HasIndex(info => info.ProviderId);
+        infos.HasIndex(info => info.ChannelId);
+        infos.HasIndex(info => info.Enabled);
+        infos.HasIndex(info => info.MatchPattern);
+        infos.HasIndex(info => info.MatchType);
+
+        var plans = modelBuilder.Entity<ModelPricingPlan>();
+        plans.ToTable("ModelPricingPlans");
+        plans.HasKey(plan => plan.Id);
+        plans.Property(plan => plan.Id).ValueGeneratedOnAdd();
+        plans.Property(plan => plan.Currency).IsRequired();
+        plans.Property(plan => plan.Source).IsRequired();
+        plans.HasIndex(plan => plan.ModelInfoId);
+        plans.HasIndex(plan => plan.ChannelId);
+        plans.HasIndex(plan => plan.Enabled);
+
+        var rules = modelBuilder.Entity<ModelPricingRule>();
+        rules.ToTable("ModelPricingRules");
+        rules.HasKey(rule => rule.Id);
+        rules.Property(rule => rule.Id).ValueGeneratedOnAdd();
+        rules.Property(rule => rule.BillingItem).IsRequired();
+        rules.Property(rule => rule.BillingMode).IsRequired();
+        rules.Property(rule => rule.UnitPrice).HasPrecision(18, 8);
+        rules.Property(rule => rule.TiersJson).IsRequired();
+        rules.HasIndex(rule => rule.PricingPlanId);
+        rules.HasIndex(rule => rule.BillingItem);
+        rules.HasIndex(rule => rule.Enabled);
+
+        var mappings = modelBuilder.Entity<ChannelModelMapping>();
+        mappings.ToTable("ChannelModelMappings");
+        mappings.HasKey(mapping => mapping.Id);
+        mappings.Property(mapping => mapping.Id).ValueGeneratedOnAdd();
+        mappings.Property(mapping => mapping.RequestModel).IsRequired();
+        mappings.Property(mapping => mapping.UpstreamModel).IsRequired();
+        mappings.Property(mapping => mapping.PricingMode).IsRequired();
+        mappings.HasIndex(mapping => new { mapping.ChannelId, mapping.Position });
+        mappings.HasIndex(mapping => new { mapping.ChannelId, mapping.RequestModel });
+        mappings.HasIndex(mapping => mapping.ModelInfoId);
+        mappings.HasIndex(mapping => mapping.PricingPlanId);
+        mappings.HasIndex(mapping => mapping.Enabled);
+    }
+
     private static void ConfigureRequestLogs(ModelBuilder modelBuilder)
     {
         var logs = modelBuilder.Entity<RequestLog>();
@@ -128,6 +209,8 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         logs.HasIndex(log => log.Model);
         logs.HasIndex(log => log.UpstreamModel);
         logs.HasIndex(log => log.ChannelId);
+        logs.HasIndex(log => log.PricingModelInfoId);
+        logs.HasIndex(log => log.PricingPlanId);
         logs.HasIndex(log => log.RequestType);
         logs.HasIndex(log => log.LifecycleStatus);
         logs.HasIndex(log => log.ParentRequestLogId);

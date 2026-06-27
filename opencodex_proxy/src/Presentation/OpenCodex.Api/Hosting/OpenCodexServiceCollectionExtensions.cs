@@ -115,6 +115,7 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<IUserService, UserService>();
         services.AddScoped<IApiKeyService, ApiKeyService>();
         services.AddScoped<IModelPricingService, ModelPricingService>();
+        services.AddScoped<IModelCatalogService, ModelCatalogService>();
         services.AddScoped<IObservabilityService, ObservabilityService>();
         services.AddScoped<IWebSearchService, WebSearchService>();
         services.AddScoped<IProxyAccessService, ProxyAccessService>();

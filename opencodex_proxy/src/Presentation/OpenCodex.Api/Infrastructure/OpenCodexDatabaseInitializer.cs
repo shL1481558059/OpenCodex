@@ -4,6 +4,7 @@ using OpenCodex.Core.Domain;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.Core.Persistence;
+using OpenCodex.CoreBase.Services;
 
 namespace OpenCodex.Api.Infrastructure;
 
@@ -16,6 +17,7 @@ public static class OpenCodexDatabaseInitializer
         var context = serviceProvider.GetRequiredService<IOpenCodexDbContext>();
         context.Database.Migrate();
         SeedDefaultModelPricing(serviceProvider.GetRequiredService<IRepository<ModelPricing>>());
+        serviceProvider.GetRequiredService<IModelCatalogService>().SeedDefaults();
     }
 
     private static void SeedDefaultModelPricing(IRepository<ModelPricing> pricingRepository)

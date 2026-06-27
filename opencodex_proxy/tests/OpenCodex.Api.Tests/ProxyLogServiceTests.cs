@@ -223,10 +223,16 @@ var completed = context.RequestLogs
     {
         var settingsProvider = new TestSettingsProvider(dbPath);
         var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
-        var pricing = new ModelPricingService(new EfRepository<ModelPricing>(context));
+        var catalog = new ModelCatalogService(
+            new EfRepository<ModelProvider>(context),
+            new EfRepository<ModelInfo>(context),
+            new EfRepository<ModelPricingPlan>(context),
+            new EfRepository<ModelPricingRule>(context),
+            new EfRepository<ChannelModelMapping>(context),
+            new EfRepository<ModelPricing>(context));
         return new ProxyLogService(
             settingsProvider,
-            pricing,
+            catalog,
             new EfRepository<RequestLog>(context),
             new EfRepository<RequestLogDetail>(context),
             new EfRepository<RequestLogStreamLine>(context),

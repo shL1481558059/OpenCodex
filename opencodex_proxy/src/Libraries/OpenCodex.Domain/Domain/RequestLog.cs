@@ -40,9 +40,21 @@ public sealed class RequestLog : BaseEntity<Guid>
 
     public int CachedTokens { get; set; }
 
+    public int CacheWriteTokens { get; set; }
+
+    public int CacheReadTokens { get; set; }
+
     public int OutputTokens { get; set; }
 
     public double Cost { get; set; }
+
+    public string CostCurrency { get; set; } = "USD";
+
+    public Guid? PricingModelInfoId { get; set; }
+
+    public Guid? PricingPlanId { get; set; }
+
+    public string? PricingSnapshotJson { get; set; }
 
     public Guid OwnerUserId { get; set; }
 

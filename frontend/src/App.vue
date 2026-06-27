@@ -137,7 +137,7 @@ const menuItems = [
   { index: "api-keys", label: "API Key 管理", icon: Key },
   { index: "users", label: "用户管理", icon: User, superadminOnly: true },
   { index: "web-search", label: "Web Search 模拟", icon: Search, superadminOnly: true },
-  { index: "pricing", label: "定价管理", icon: Money, superadminOnly: true },
+  { index: "pricing", label: "模型信息", icon: Money, superadminOnly: true },
   { index: "logs", label: "请求日志", icon: Tickets }
 ];
 

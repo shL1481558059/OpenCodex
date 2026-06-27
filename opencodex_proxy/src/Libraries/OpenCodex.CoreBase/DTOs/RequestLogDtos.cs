@@ -58,8 +58,14 @@ public sealed class RequestLogWriteDto(
     int statusCode,
     int inputTokens,
     int cachedTokens,
+    int cacheWriteTokens,
+    int cacheReadTokens,
     int outputTokens,
     double cost,
+    string costCurrency,
+    Guid? pricingModelInfoId,
+    Guid? pricingPlanId,
+    string? pricingSnapshotJson,
     Guid ownerUserId,
     Guid? apiKeyId,
     string? error,
@@ -193,6 +199,16 @@ public sealed class RequestLogWriteDto(
     public int CachedTokens { get; } = cachedTokens;
 
     /// <summary>
+    /// 获取缓存写入 token 数。
+    /// </summary>
+    public int CacheWriteTokens { get; } = cacheWriteTokens;
+
+    /// <summary>
+    /// 获取缓存读取 token 数。
+    /// </summary>
+    public int CacheReadTokens { get; } = cacheReadTokens;
+
+    /// <summary>
     /// 获取输出 token 数。
     /// </summary>
     public int OutputTokens { get; } = outputTokens;
@@ -201,6 +217,26 @@ public sealed class RequestLogWriteDto(
     /// 获取计算得到的请求成本。
     /// </summary>
     public double Cost { get; } = cost;
+
+    /// <summary>
+    /// 获取成本币种。
+    /// </summary>
+    public string CostCurrency { get; } = costCurrency;
+
+    /// <summary>
+    /// 获取计费命中的模型信息标识符。
+    /// </summary>
+    public Guid? PricingModelInfoId { get; } = pricingModelInfoId;
+
+    /// <summary>
+    /// 获取计费命中的定价计划标识符。
+    /// </summary>
+    public Guid? PricingPlanId { get; } = pricingPlanId;
+
+    /// <summary>
+    /// 获取请求完成时的定价快照。
+    /// </summary>
+    public string? PricingSnapshotJson { get; } = pricingSnapshotJson;
 
     /// <summary>
     /// 获取拥有该请求的用户名。
@@ -730,7 +766,9 @@ public sealed class RequestLogPageDto(
 public sealed class UsageDto(
     int inputTokens,
     int cachedTokens,
-    int outputTokens)
+    int outputTokens,
+    int cacheWriteTokens = 0,
+    int cacheReadTokens = 0)
 {
     /// <summary>
     /// 获取输入 token 数。
@@ -741,6 +779,16 @@ public sealed class UsageDto(
     /// 获取缓存输入 token 数。
     /// </summary>
     public int CachedTokens { get; } = cachedTokens;
+
+    /// <summary>
+    /// 获取缓存写入 token 数。
+    /// </summary>
+    public int CacheWriteTokens { get; } = cacheWriteTokens;
+
+    /// <summary>
+    /// 获取缓存读取 token 数。
+    /// </summary>
+    public int CacheReadTokens { get; } = cacheReadTokens;
 
     /// <summary>
     /// 获取输出 token 数。
