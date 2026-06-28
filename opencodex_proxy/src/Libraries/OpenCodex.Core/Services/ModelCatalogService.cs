@@ -1008,7 +1008,27 @@ public sealed class ModelCatalogService : IModelCatalogService
             UpdatedAt = now
         };
         _plans.Insert(plan);
-        _rules.Insert(DefaultRules(plan.Id, source.InputPrice, source.OutputPrice, source.CacheWritePrice, source.CacheReadPrice));
+
+        if (source.CustomRules is not null && source.CustomRules.Count > 0)
+        {
+            _rules.Insert(source.CustomRules.Select(rule => new ModelPricingRule
+            {
+                PricingPlanId = plan.Id,
+                BillingItem = rule.BillingItem,
+                BillingMode = rule.BillingMode,
+                UnitPrice = 0m,
+                TiersJson = JsonSerializer.Serialize(rule.Tiers.Select(tier => new PricingTier
+                {
+                    UpTo = tier.UpTo,
+                    UnitPrice = tier.UnitPrice
+                }).ToList()),
+                Enabled = true
+            }).ToList());
+        }
+        else
+        {
+            _rules.Insert(DefaultRules(plan.Id, source.InputPrice, source.OutputPrice, source.CacheWritePrice, source.CacheReadPrice));
+        }
     }
 
     private void ReplacePricing(ModelInfo model, ModelPricing source, double now)
