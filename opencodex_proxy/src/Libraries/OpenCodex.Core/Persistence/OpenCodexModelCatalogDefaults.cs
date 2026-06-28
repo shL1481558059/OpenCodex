@@ -41,6 +41,8 @@ public static class OpenCodexModelCatalogDefaults
             Default("groq", "llama-3.3-70b-versatile", "Llama 3.3 70B Versatile", "llama-3.3-70b-versatile", false, 131072, 0.59m, 0.79m, 0.59m, 0.15m),
             Default("openrouter", "openrouter/auto", "OpenRouter Auto", "openrouter/auto", true, 128000, 0m, 0m, 0m, 0m),
             Default("zhipu", "glm-5.2", "GLM-5.2", "glm-5.2", false, 1_000_000, 8m, 28m, 0m, 2m, currency: "CNY"),
+            Default("zhipu", "glm-5.1", "GLM-5.1", "glm-5.1", false, 200000, 6m, 24m, 0m, 1.3m, currency: "CNY",
+                customRules: TieredRules(32000, 6m, 24m, 0m, 1.3m, 8m, 28m, 0m, 2m)),
             Default("zhipu", "glm-4.5", "GLM-4.5", "glm-4.5", true, 128000, 0.5m, 2m, 0.5m, 0.125m, currency: "CNY")
         ];
     }
@@ -104,7 +106,8 @@ public static class OpenCodexModelCatalogDefaults
         decimal outputPrice,
         decimal cacheWritePrice,
         decimal cacheReadPrice,
-        string currency = "USD")
+        string currency = "USD",
+        IReadOnlyList<DefaultPricingRule>? customRules = null)
     {
         return new DefaultModelInfo(
             providerCode,
@@ -119,7 +122,38 @@ public static class OpenCodexModelCatalogDefaults
             inputPrice,
             outputPrice,
             cacheWritePrice,
-            cacheReadPrice);
+            cacheReadPrice,
+            customRules);
+    }
+
+    private static IReadOnlyList<DefaultPricingRule> TieredRules(
+        long tierBoundary,
+        decimal inputPrice1, decimal outputPrice1, decimal cacheWritePrice1, decimal cacheReadPrice1,
+        decimal inputPrice2, decimal outputPrice2, decimal cacheWritePrice2, decimal cacheReadPrice2)
+    {
+        return
+        [
+            new DefaultPricingRule(ModelBillingItems.Input, ModelBillingModes.TieredTokens,
+            [
+                new DefaultPricingTier(tierBoundary, inputPrice1),
+                new DefaultPricingTier(null, inputPrice2)
+            ]),
+            new DefaultPricingRule(ModelBillingItems.Output, ModelBillingModes.TieredTokens,
+            [
+                new DefaultPricingTier(tierBoundary, outputPrice1),
+                new DefaultPricingTier(null, outputPrice2)
+            ]),
+            new DefaultPricingRule(ModelBillingItems.CacheWrite, ModelBillingModes.TieredTokens,
+            [
+                new DefaultPricingTier(tierBoundary, cacheWritePrice1),
+                new DefaultPricingTier(null, cacheWritePrice2)
+            ]),
+            new DefaultPricingRule(ModelBillingItems.CacheRead, ModelBillingModes.TieredTokens,
+            [
+                new DefaultPricingTier(tierBoundary, cacheReadPrice1),
+                new DefaultPricingTier(null, cacheReadPrice2)
+            ])
+        ];
     }
 }
 
@@ -139,6 +173,35 @@ public sealed class DefaultModelProvider
     public int SortOrder { get; }
 }
 
+public sealed class DefaultPricingTier
+{
+    public DefaultPricingTier(long? upTo, decimal unitPrice)
+    {
+        UpTo = upTo;
+        UnitPrice = unitPrice;
+    }
+
+    public long? UpTo { get; }
+
+    public decimal UnitPrice { get; }
+}
+
+public sealed class DefaultPricingRule
+{
+    public DefaultPricingRule(string billingItem, string billingMode, IReadOnlyList<DefaultPricingTier> tiers)
+    {
+        BillingItem = billingItem;
+        BillingMode = billingMode;
+        Tiers = tiers;
+    }
+
+    public string BillingItem { get; }
+
+    public string BillingMode { get; }
+
+    public IReadOnlyList<DefaultPricingTier> Tiers { get; }
+}
+
 public sealed class DefaultModelInfo
 {
     public DefaultModelInfo(
@@ -154,7 +217,8 @@ public sealed class DefaultModelInfo
         decimal inputPrice,
         decimal outputPrice,
         decimal cacheWritePrice,
-        decimal cacheReadPrice)
+        decimal cacheReadPrice,
+        IReadOnlyList<DefaultPricingRule>? customRules = null)
     {
         ProviderCode = providerCode;
         ModelKey = modelKey;
@@ -169,6 +233,7 @@ public sealed class DefaultModelInfo
         OutputPrice = outputPrice;
         CacheWritePrice = cacheWritePrice;
         CacheReadPrice = cacheReadPrice;
+        CustomRules = customRules;
     }
 
     public string ProviderCode { get; }
@@ -196,4 +261,6 @@ public sealed class DefaultModelInfo
     public decimal CacheWritePrice { get; }
 
     public decimal CacheReadPrice { get; }
+
+    public IReadOnlyList<DefaultPricingRule>? CustomRules { get; }
 }
