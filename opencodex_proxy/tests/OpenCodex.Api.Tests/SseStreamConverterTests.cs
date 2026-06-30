@@ -1,3 +1,4 @@
+using OpenCodex.Core.Services.Proxy;
 using System.Text;
 using System.Text.Json;
 using OpenCodex.Core.Protocols;
@@ -1319,5 +1320,366 @@ public sealed class SseStreamConverterTests
     {
         var fmt = new TextFormatInfo { Type = "json_schema", SchemaName = "my_field" };
         Assert.Equal("my_field", SseStreamConverter.ExtractFirstSchemaField(fmt));
+    }
+
+    // ── ExtractTextFormat unit tests ──────────────────────
+
+    [Fact]
+    public void ExtractTextFormat_WithJsonSchemaFormat_ReturnsTextFormatInfo()
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["text"] = new Dictionary<string, object?>
+            {
+                ["format"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "json_schema",
+                    ["name"] = "codex_output_schema",
+                    ["schema"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object?>
+                        {
+                            ["title"] = new Dictionary<string, object?> { ["type"] = "string" }
+                        },
+                        ["required"] = new List<object?> { "title" }
+                    }
+                }
+            }
+        };
+        var result = ProtocolConverter.ExtractTextFormat(payload);
+        Assert.NotNull(result);
+        Assert.Equal("json_schema", result!.Type);
+        Assert.Equal("codex_output_schema", result.SchemaName);
+        Assert.NotNull(result.Schema);
+    }
+
+    [Fact]
+    public void ExtractTextFormat_WithoutTextFormat_ReturnsNull()
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["model"] = "gpt-5",
+            ["input"] = new List<object?>()
+        };
+        Assert.Null(ProtocolConverter.ExtractTextFormat(payload));
+    }
+
+    [Fact]
+    public void ExtractTextFormat_WithNonJsonSchemaType_ReturnsNull()
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["text"] = new Dictionary<string, object?>
+            {
+                ["format"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "text"
+                }
+            }
+        };
+        Assert.Null(ProtocolConverter.ExtractTextFormat(payload));
+    }
+
+    // ── ProtocolConverter.ConvertResponse with json_schema ──────
+
+    [Fact]
+    public void ConvertResponse_MessagesToResponses_WithJsonSchema_WrapsPlainText()
+    {
+        var upstream = new Dictionary<string, object?>
+        {
+            ["id"] = "msg_test",
+            ["type"] = "message",
+            ["role"] = "assistant",
+            ["model"] = "deepseek-v4",
+            ["content"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "text",
+                    ["text"] = "查找 BrightBook 向量检查逻辑"
+                }
+            },
+            ["stop_reason"] = "end_turn",
+            ["usage"] = new Dictionary<string, object?>
+            {
+                ["input_tokens"] = 100,
+                ["output_tokens"] = 10
+            }
+        };
+
+        var textFormat = new TextFormatInfo
+        {
+            Type = "json_schema",
+            SchemaName = "codex_output_schema",
+            Schema = new Dictionary<string, object?>
+            {
+                ["type"] = "object",
+                ["properties"] = new Dictionary<string, object?>
+                {
+                    ["title"] = new Dictionary<string, object?> { ["type"] = "string" }
+                },
+                ["required"] = new List<object?> { "title" }
+            }
+        };
+
+        var result = ProtocolConverter.ConvertResponse(
+            upstream,
+            ProtocolConverter.Responses,
+            ProtocolConverter.Messages,
+            "deepseek-v4",
+            textFormat);
+
+        Assert.Equal("response", result["object"] as string);
+        var output = result["output"] as List<object?>;
+        Assert.NotNull(output);
+        var messageItem = output!.OfType<Dictionary<string, object?>>()
+            .FirstOrDefault(i => i.TryGetValue("type", out var t) && "message".Equals(t));
+        Assert.NotNull(messageItem);
+        var content = messageItem!["content"] as List<object?>;
+        Assert.NotNull(content);
+        var outputText = content!.OfType<Dictionary<string, object?>>().First();
+        var text = outputText["text"]?.ToString() ?? "";
+        Assert.StartsWith("{", text);
+        var parsed = JsonSerializer.Deserialize<Dictionary<string, string>>(text);
+        Assert.NotNull(parsed);
+        Assert.Equal("查找 BrightBook 向量检查逻辑", parsed!["title"]);
+    }
+
+    [Fact]
+    public void ConvertResponse_ChatToResponses_WithJsonSchema_WrapsPlainText()
+    {
+        var upstream = new Dictionary<string, object?>
+        {
+            ["id"] = "chatcmpl-test",
+            ["object"] = "chat.completion",
+            ["created"] = 1700000000L,
+            ["model"] = "deepseek-v4",
+            ["choices"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["index"] = 0,
+                    ["message"] = new Dictionary<string, object?>
+                    {
+                        ["role"] = "assistant",
+                        ["content"] = "Fix the bug now"
+                    },
+                    ["finish_reason"] = "stop"
+                }
+            },
+            ["usage"] = new Dictionary<string, object?>
+            {
+                ["prompt_tokens"] = 10,
+                ["completion_tokens"] = 5
+            }
+        };
+
+        var textFormat = new TextFormatInfo
+        {
+            Type = "json_schema",
+            SchemaName = "codex_output_schema",
+            Schema = new Dictionary<string, object?>
+            {
+                ["type"] = "object",
+                ["properties"] = new Dictionary<string, object?>
+                {
+                    ["title"] = new Dictionary<string, object?> { ["type"] = "string" }
+                },
+                ["required"] = new List<object?> { "title" }
+            }
+        };
+
+        var result = ProtocolConverter.ConvertResponse(
+            upstream,
+            ProtocolConverter.Responses,
+            ProtocolConverter.Chat,
+            "deepseek-v4",
+            textFormat);
+
+        var output = result["output"] as List<object?>;
+        Assert.NotNull(output);
+        var messageItem = output!.OfType<Dictionary<string, object?>>()
+            .FirstOrDefault(i => i.TryGetValue("type", out var t) && "message".Equals(t));
+        Assert.NotNull(messageItem);
+        var content = messageItem!["content"] as List<object?>;
+        var outputText = content!.OfType<Dictionary<string, object?>>().First();
+        var text = outputText["text"]?.ToString() ?? "";
+        Assert.StartsWith("{", text);
+        var parsed = JsonSerializer.Deserialize<Dictionary<string, string>>(text);
+        Assert.NotNull(parsed);
+        Assert.Equal("Fix the bug now", parsed!["title"]);
+    }
+
+    [Fact]
+    public void ConvertResponse_MessagesToResponses_WithoutTextFormat_DoesNotWrap()
+    {
+        var upstream = new Dictionary<string, object?>
+        {
+            ["id"] = "msg_test2",
+            ["type"] = "message",
+            ["role"] = "assistant",
+            ["model"] = "deepseek-v4",
+            ["content"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "text",
+                    ["text"] = "plain text output"
+                }
+            },
+            ["stop_reason"] = "end_turn",
+            ["usage"] = new Dictionary<string, object?>
+            {
+                ["input_tokens"] = 50,
+                ["output_tokens"] = 5
+            }
+        };
+
+        var result = ProtocolConverter.ConvertResponse(
+            upstream,
+            ProtocolConverter.Responses,
+            ProtocolConverter.Messages,
+            "deepseek-v4",
+            textFormat: null);
+
+        var output = result["output"] as List<object?>;
+        Assert.NotNull(output);
+        var messageItem = output!.OfType<Dictionary<string, object?>>()
+            .FirstOrDefault(i => i.TryGetValue("type", out var t) && "message".Equals(t));
+        Assert.NotNull(messageItem);
+        var content = messageItem!["content"] as List<object?>;
+        var outputText = content!.OfType<Dictionary<string, object?>>().First();
+    }
+
+
+    // ── WebSearch Streaming: TextFormat propagation to SSE events ──
+
+    [Fact]
+    public async Task ChatToResponses_WithJsonSchemaTextFormat_WrapsTextInDoneEvent()
+    {
+        var textFormat = new TextFormatInfo
+        {
+            Type = "json_schema",
+            SchemaName = "title",
+            Schema = new Dictionary<string, object?>
+            {
+                ["type"] = "object",
+                ["properties"] = new Dictionary<string, object?>
+                {
+                    ["title"] = new Dictionary<string, object?> { ["type"] = "string" }
+                },
+                ["required"] = new List<object?> { "title" }
+            }
+        };
+        var result = new ConvertedStreamResult { TextFormat = textFormat };
+
+        var lines = SseLines(
+            SseBlock(ChatChunk(content: "Hello World")),
+            SseBlock(ChatChunk(finishReason: "stop",
+                usage: new Dictionary<string, object?> { ["prompt_tokens"] = 1, ["completion_tokens"] = 1 })),
+            SseBlock("[DONE]"));
+
+        var events = await CollectAsync(
+            SseStreamConverter.ChatToResponsesEvents(lines, "deepseek-v4", result, CancellationToken.None));
+        var parsed = ParseEvents(events);
+
+        var done = ByType(parsed, "response.output_text.done");
+        Assert.NotNull(done);
+        var text = done!["text"]?.ToString() ?? "";
+        // 纯文本应该被 WrapTextForJsonSchema 包裹为 {"title":"Hello World"}
+        Assert.StartsWith("{", text);
+        Assert.Contains("\"title\"", text);
+        Assert.Contains("Hello World", text);
+    }
+
+    [Fact]
+    public async Task MessagesToResponses_WithJsonSchemaTextFormat_WrapsTextInDoneEvent()
+    {
+        var textFormat = new TextFormatInfo
+        {
+            Type = "json_schema",
+            SchemaName = "title",
+            Schema = new Dictionary<string, object?>
+            {
+                ["type"] = "object",
+                ["properties"] = new Dictionary<string, object?>
+                {
+                    ["title"] = new Dictionary<string, object?> { ["type"] = "string" }
+                },
+                ["required"] = new List<object?> { "title" }
+            }
+        };
+        var result = new ConvertedStreamResult { TextFormat = textFormat };
+
+        var lines = SseLines(
+            SseBlock("""{"type":"message_start","message":{"id":"msg_1","model":"claude-v4","usage":{"input_tokens":100,"output_tokens":0}}}""", "message_start"),
+            SseBlock("""{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}""", "content_block_start"),
+            SseBlock("""{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"My Title"}}""", "content_block_delta"),
+            SseBlock("""{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":8}}""", "message_delta"),
+            SseBlock("""{"type":"message_stop"}""", "message_stop"));
+
+        var events = await CollectAsync(
+            SseStreamConverter.MessagesToResponsesEvents(lines, "claude-v4", result, CancellationToken.None));
+        var parsed = ParseEvents(events);
+
+        var done = ByType(parsed, "response.output_text.done");
+        Assert.NotNull(done);
+        var text = done!["text"]?.ToString() ?? "";
+        Assert.StartsWith("{", text);
+        Assert.Contains("\"title\"", text);
+        Assert.Contains("My Title", text);
+    }
+
+    [Fact]
+    public async Task ChatToResponses_WithoutTextFormat_DoesNotWrapText()
+    {
+        var result = new ConvertedStreamResult { TextFormat = null };
+
+        var lines = SseLines(
+            SseBlock(ChatChunk(content: "Plain text")),
+            SseBlock(ChatChunk(finishReason: "stop",
+                usage: new Dictionary<string, object?> { ["prompt_tokens"] = 1, ["completion_tokens"] = 1 })),
+            SseBlock("[DONE]"));
+
+        var events = await CollectAsync(
+            SseStreamConverter.ChatToResponsesEvents(lines, "deepseek-v4", result, CancellationToken.None));
+        var parsed = ParseEvents(events);
+
+        var done = ByType(parsed, "response.output_text.done");
+        Assert.NotNull(done);
+        var text = done!["text"]?.ToString() ?? "";
+        // 没有 TextFormat 时不应该包裹
+        Assert.Equal("Plain text", text);
+    }
+
+    [Fact]
+    public void ExtractTextFormat_MovedToProtocolConverter_StillWorks()
+    {
+        var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["text"] = new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["format"] = new Dictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["type"] = "json_schema",
+                    ["name"] = "my_schema",
+                    ["schema"] = new Dictionary<string, object?>(StringComparer.Ordinal)
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object?>(StringComparer.Ordinal)
+                        {
+                            ["title"] = new Dictionary<string, object?> { ["type"] = "string" }
+                        }
+                    }
+                }
+            }
+        };
+
+        var tfResult = ProtocolConverter.ExtractTextFormat(payload);
+        Assert.NotNull(tfResult);
+        Assert.Equal("json_schema", tfResult!.Type);
+        Assert.Equal("my_schema", tfResult.SchemaName);
+        Assert.NotNull(tfResult.Schema);
     }
 }
