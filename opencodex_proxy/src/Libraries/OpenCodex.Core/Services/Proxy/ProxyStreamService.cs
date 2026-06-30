@@ -219,7 +219,8 @@ public sealed class ProxyStreamService : IProxyStreamService
                         upstreamResponse,
                         context.EntryProtocol,
                         context.ChannelType,
-                        context.Route.OriginalModel);
+                        context.Route.OriginalModel,
+                        converted.TextFormat);
             }
         }
         catch (Exception exception)
