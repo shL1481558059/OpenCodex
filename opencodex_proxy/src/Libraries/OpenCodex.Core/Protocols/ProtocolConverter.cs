@@ -151,7 +151,8 @@ public static partial class ProtocolConverter
         Dictionary<string, object?> payload,
         string sourceProtocol,
         string targetProtocol,
-        string? originalModel)
+        string? originalModel,
+        TextFormatInfo? textFormat = null)
     {
         ArgumentNullException.ThrowIfNull(payload);
 
@@ -167,6 +168,61 @@ public static partial class ProtocolConverter
         }
 
         var canonical = ToCanonicalResponse(payload, targetProtocol, originalModel);
-        return FromCanonicalResponse(canonical, sourceProtocol);
+        var result = FromCanonicalResponse(canonical, sourceProtocol);
+
+        if (textFormat is { Type: "json_schema" } && targetProtocol == Responses)
+        {
+            result = ApplyJsonSchemaTextFormat(result, textFormat);
+        }
+
+        return result;
+    }
+
+    private static Dictionary<string, object?> ApplyJsonSchemaTextFormat(
+        Dictionary<string, object?> responsePayload,
+        TextFormatInfo textFormat)
+    {
+        if (!responsePayload.TryGetValue("output", out var outputObj) || outputObj is not List<object?> output)
+        {
+            return responsePayload;
+        }
+
+        for (var i = 0; i < output.Count; i++)
+        {
+            if (output[i] is not Dictionary<string, object?> item || GetString(item, "type") != "message")
+            {
+                continue;
+            }
+
+            if (!item.TryGetValue("content", out var contentObj) || contentObj is not List<object?> content)
+            {
+                continue;
+            }
+
+            for (var j = 0; j < content.Count; j++)
+            {
+                if (content[j] is not Dictionary<string, object?> part || GetString(part, "type") != "output_text")
+                {
+                    continue;
+                }
+
+                var text = GetString(part, "text");
+                if (text is null || text.Length == 0)
+                {
+                    continue;
+                }
+
+                var wrapped = SseStreamConverter.WrapTextForJsonSchema(text, textFormat);
+                if (!ReferenceEquals(wrapped, text))
+                {
+                    content[j] = new Dictionary<string, object?>(part, StringComparer.Ordinal)
+                    {
+                        ["text"] = wrapped
+                    };
+                }
+            }
+        }
+
+        return responsePayload;
     }
 }

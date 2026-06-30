@@ -75,11 +75,13 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
                     upstreamRequest,
                     context.DefaultTimeout,
                     context.CancellationToken);
+                var textFormat = ProxyStreamService.ExtractTextFormat(context.OriginalPayload);
                 responsePayload = ProtocolConverter.ConvertResponse(
                     upstreamResponse,
                     context.EntryProtocol,
                     context.ChannelType,
-                    context.Route.OriginalModel);
+                    context.Route.OriginalModel,
+                    textFormat);
             }
 
             return new ProxyNonStreamResult(statusCode, responsePayload);

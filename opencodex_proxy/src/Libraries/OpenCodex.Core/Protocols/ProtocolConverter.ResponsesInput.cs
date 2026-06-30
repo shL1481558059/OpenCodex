@@ -138,9 +138,23 @@ public static partial class ProtocolConverter
             }
 
             var reasoningContent = StringifyContent(GetValue(message, "reasoning_content") ?? string.Empty).Trim();
+            var anthropicThinkingEncrypted = GetString(message, "anthropic_thinking_encrypted") ?? string.Empty;
             if (role == "assistant" && !string.IsNullOrEmpty(reasoningContent))
             {
-                inputItems.Add(ResponsesReasoningItem(reasoningContent));
+                // Prefer encoded thinking blocks (with signatures) over plain text
+                if (!string.IsNullOrEmpty(anthropicThinkingEncrypted)
+                    && anthropicThinkingEncrypted.StartsWith(AnthropicThinkingPrefix, StringComparison.Ordinal))
+                {
+                    inputItems.Add(Obj(
+                        ("type", "reasoning"),
+                        ("summary", new List<object?> { Obj(("type", "summary_text"), ("text", reasoningContent)) }),
+                        ("encrypted_content", anthropicThinkingEncrypted),
+                        ("status", "completed")));
+                }
+                else
+                {
+                    inputItems.Add(ResponsesReasoningItem(reasoningContent));
+                }
             }
 
             if (role == "tool")

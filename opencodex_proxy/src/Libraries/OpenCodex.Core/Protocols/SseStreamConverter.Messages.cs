@@ -262,6 +262,12 @@ public static partial class SseStreamConverter
                                 });
                         }
                     }
+                    else if (blockType == "redacted_thinking")
+                    {
+                        // Track redacted_thinking blocks for encoding; they appear in
+                        // multi-turn history and must be preserved with their signature.
+                    }
+
                     else if (blockType == "tool_use")
                     {
                         var toolName = StringValue(block, "name", string.Empty);
@@ -687,12 +693,17 @@ public static partial class SseStreamConverter
         string fallbackText)
     {
         var thinkingBlocks = contentBlocks.Values
-            .Where(block => StringValue(block, "type", string.Empty) == "thinking")
+            .Where(block =>
+            {
+                var t = StringValue(block, "type", string.Empty);
+                return t == "thinking" || t == "redacted_thinking";
+            })
             .Select(block =>
             {
                 var cleaned = new Dictionary<string, object?>(StringComparer.Ordinal);
                 if (block.TryGetValue("type", out var type)) cleaned["type"] = type;
                 if (block.TryGetValue("thinking", out var thinking)) cleaned["thinking"] = thinking;
+                if (block.TryGetValue("data", out var data)) cleaned["data"] = data;
                 if (block.TryGetValue("signature", out var signature)) cleaned["signature"] = signature;
                 return (object?)cleaned;
             })
