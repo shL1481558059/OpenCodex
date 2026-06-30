@@ -419,6 +419,49 @@ body {
   width: min(420px, 100%);
 }
 
+.setup-card .el-form {
+  display: grid;
+  gap: 2px;
+}
+
+.setup-alert,
+.settings-alert {
+  margin-bottom: 18px;
+}
+
+.settings-form {
+  width: min(720px, 100%);
+}
+
+.settings-form .el-segmented {
+  max-width: 360px;
+  width: 100%;
+}
+
+.settings-form .el-input-number,
+.setup-card .el-input-number {
+  width: 100%;
+}
+
+.settings-meta {
+  margin: 8px 0 20px;
+}
+
+.settings-meta code {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-primary);
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
 .json-view {
   margin: 0;
   padding: 12px;

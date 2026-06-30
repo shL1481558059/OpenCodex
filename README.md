@@ -95,6 +95,19 @@ docker run --rm \
 
 完整部署步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)。
 
+## Tauri 桌面包
+
+桌面版使用 Tauri 承载窗口，并把 .NET 后端作为 sidecar 启动。首次打开会进入初始化页，创建超级管理员并选择仅本地访问或局域网访问。
+
+```bash
+npm install
+npm --prefix frontend install
+npm run desktop:prepare
+npm run desktop:build
+```
+
+`desktop:prepare` 会构建前端、复制管理台静态文件到 Tauri resources，并按当前平台发布 self-contained .NET sidecar。`desktop:build` 需要本机已安装 Rust/Cargo。
+
 ## Codex CLI
 
 Codex CLI 会通过 `/v1/responses` 使用 `stream=true` 和工具调用。代理会合成 Responses SSE，并按渠道服务类型自动转换到上游协议；入口协议和渠道服务类型不一致时不需要额外配置。

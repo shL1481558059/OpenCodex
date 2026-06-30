@@ -163,7 +163,7 @@ public static partial class ProtocolConverter
             }
 
             var converted = new Dictionary<string, object?>(StringComparer.Ordinal);
-            foreach (var key in new[] { "role", "content", "tool_calls", "tool_call_id", "name", "reasoning_content" })
+            foreach (var key in new[] { "role", "content", "tool_calls", "tool_call_id", "name", "reasoning_content", "anthropic_thinking_encrypted" })
             {
                 if (message.TryGetValue(key, out var value))
                 {
@@ -205,6 +205,14 @@ public static partial class ProtocolConverter
         MergeInto(result, ObjectValue(canonical, "params"));
         DropResponsesOnlyParamsForMessages(result);
 
+        // Read internal marker injected by ChannelCompatRequestRewriter
+        var preserveThinkingHistory = IsTruthy(GetValue(result, "_ocxp_preserve_thinking_history"));
+        result.Remove("_ocxp_preserve_thinking_history");
+
+        // If the upstream already has a thinking param, respect it
+        var alreadyHasThinking = TryAsObject(GetValue(result, "thinking"), out _);
+        var injectedThinkingBlocks = false;
+
         var systemParts = new List<string>();
         var outputMessages = ListValue(result, "messages");
         foreach (var item in ListValue(canonical, "messages"))
@@ -240,6 +248,21 @@ public static partial class ProtocolConverter
                 continue;
             }
 
+            if (role == "assistant" && preserveThinkingHistory)
+            {
+                var anthropicThinkingEncrypted = GetString(message, "anthropic_thinking_encrypted") ?? string.Empty;
+                if (!string.IsNullOrEmpty(anthropicThinkingEncrypted)
+                    && TryDecodeAnthropicThinkingBlocks(anthropicThinkingEncrypted, out var decodedBlocks)
+                    && decodedBlocks.Count > 0)
+                {
+                    var content = CanonicalMessageToAnthropicContent(message);
+                    content.InsertRange(0, decodedBlocks);
+                    outputMessages.Add(Obj(("role", role), ("content", content)));
+                    injectedThinkingBlocks = true;
+                    continue;
+                }
+            }
+
             outputMessages.Add(Obj(
                 ("role", role),
                 ("content", CanonicalMessageToAnthropicContent(message))));
@@ -267,8 +290,23 @@ public static partial class ProtocolConverter
             result.Remove("max_output_tokens");
         }
 
+        // Auto-inject thinking param when preserve_thinking_history is enabled
+        // and we injected thinking blocks into assistant messages
+        if (preserveThinkingHistory && !alreadyHasThinking && injectedThinkingBlocks)
+        {
+            var budgetTokens = ToInt(GetValue(result, "_ocxp_thinking_budget_tokens"));
+            result.Remove("_ocxp_thinking_budget_tokens");
+            if (budgetTokens <= 0)
+            {
+                budgetTokens = 10000;
+            }
+
+            result["thinking"] = Obj(("type", "enabled"), ("budget_tokens", budgetTokens));
+        }
+
         return result;
     }
+
 
     private static List<object?> CanonicalMessageToAnthropicContent(Dictionary<string, object?> message)
     {

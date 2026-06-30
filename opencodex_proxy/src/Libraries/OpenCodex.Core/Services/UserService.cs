@@ -79,7 +79,8 @@ public sealed class UserService : IUserService
 
             if (command.Password is not null)
             {
-                if (string.Equals(username, settings.AdminUsername, StringComparison.Ordinal))
+                if (HasEnvironmentSuperadmin(settings) &&
+                    string.Equals(username, settings.AdminUsername, StringComparison.Ordinal))
                 {
                     return ValidationFailure("environment superadmin password is managed by env");
                 }
@@ -183,12 +184,13 @@ public sealed class UserService : IUserService
     {
         username = NormalizeUsername(username);
         var protectedUsername = NormalizeUsername(_settingsProvider.GetSettings().AdminUsername);
+        var environmentSuperadminConfigured = HasEnvironmentSuperadmin(_settingsProvider.GetSettings());
         if (username.Length == 0)
         {
             throw new ArgumentException("username is required", nameof(username));
         }
 
-        if (protectedUsername.Length > 0 && username == protectedUsername && !enabled)
+        if (environmentSuperadminConfigured && protectedUsername.Length > 0 && username == protectedUsername && !enabled)
         {
             throw new InvalidOperationException("cannot disable the environment superadmin");
         }
@@ -254,6 +256,11 @@ public sealed class UserService : IUserService
     private static string NormalizeUsername(string? value)
     {
         return (value ?? string.Empty).Trim();
+    }
+
+    private static bool HasEnvironmentSuperadmin(OpenCodexRuntimeSettings settings)
+    {
+        return settings.AdminPassword.Length > 0;
     }
 
     private static double UnixTimeSeconds()

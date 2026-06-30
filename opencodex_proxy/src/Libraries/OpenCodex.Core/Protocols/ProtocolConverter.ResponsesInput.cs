@@ -57,9 +57,16 @@ public static partial class ProtocolConverter
         if (itemType == "reasoning")
         {
             var reasoning = ResponsesReasoningToText(inputItem);
-            return string.IsNullOrEmpty(reasoning)
-                ? []
-                : [Obj(("role", "assistant"), ("content", string.Empty), ("reasoning_content", reasoning))];
+            if (string.IsNullOrEmpty(reasoning))
+            {
+                return [];
+            }
+
+            var msg = Obj(("role", "assistant"), ("content", string.Empty), ("reasoning_content", reasoning));
+            var encryptedContent = StringifyContent(GetValue(inputItem, "encrypted_content") ?? string.Empty).Trim();
+            if (!string.IsNullOrEmpty(encryptedContent) && encryptedContent.StartsWith(AnthropicThinkingPrefix, StringComparison.Ordinal))
+                msg["anthropic_thinking_encrypted"] = encryptedContent;
+            return [msg];
         }
 
         if (itemType == "web_search_call")

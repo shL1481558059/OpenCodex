@@ -247,7 +247,7 @@
               </el-tag>
             </el-descriptions-item>
             <el-descriptions-item label="请求类型">
-              <el-tag :type="selectedLog.request_type === 'ocr' ? 'warning' : 'info'">
+              <el-tag :type="requestTypeTagType(selectedLog.request_type)">
                 {{ formatRequestType(selectedLog.request_type) }}
               </el-tag>
             </el-descriptions-item>
@@ -282,7 +282,15 @@
               查看同请求 OCR 子日志
             </el-button>
             <el-button
-              v-if="selectedLog.request_type === 'ocr' && selectedLog.request_id"
+              v-if="selectedLog.request_type === 'main' && selectedLog.request_id"
+              size="small"
+              plain
+              @click="openRelatedLogs(selectedLog.request_id, 'attempt')"
+            >
+              查看渠道尝试记录
+            </el-button>
+            <el-button
+              v-if="(selectedLog.request_type === 'ocr' || selectedLog.request_type === 'attempt') && selectedLog.request_id"
               size="small"
               plain
               @click="openRelatedLogs(selectedLog.request_id, 'main')"
@@ -395,7 +403,7 @@ const filterOptions = reactive({
   paths: [],
   status_codes: [],
   request_statuses: ["queued", "processing", "success", "failed"],
-  request_types: ["main", "ocr"]
+  request_types: ["main", "ocr", "attempt"]
 });
 
 const filterOptionFieldMap = {
@@ -814,7 +822,15 @@ function formatLogCell(row, column) {
 }
 
 function formatRequestType(value) {
-  return value === "ocr" ? "OCR" : value === "main" ? "主请求" : value || "";
+  if (value === "ocr") return "OCR";
+  if (value === "attempt") return "渠道尝试";
+  return value === "main" ? "主请求" : value || "";
+}
+
+function requestTypeTagType(value) {
+  if (value === "ocr") return "warning";
+  if (value === "attempt") return "danger";
+  return "info";
 }
 
 function formatRequestStatus(value) {

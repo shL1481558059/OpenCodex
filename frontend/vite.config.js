@@ -4,6 +4,8 @@ import vue from "@vitejs/plugin-vue";
 const backend = process.env.VITE_BACKEND_ORIGIN || "https://localhost:8443";
 const adminProxyRoutes = [
   "/session",
+  "/setup/status",
+  "/setup",
   "/login",
   "/logout",
   "/users",
@@ -14,6 +16,7 @@ const adminProxyRoutes = [
   "/stats",
   "/stats/active-channels",
   "/stats/active-channels/stream",
+  "/system-settings",
   "/web-search",
   "/model-providers",
   "/model-infos",

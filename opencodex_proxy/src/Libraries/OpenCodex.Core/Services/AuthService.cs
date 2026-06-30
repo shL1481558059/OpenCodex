@@ -24,6 +24,58 @@ public sealed class AuthService : IAuthService
         _settingsProvider = settingsProvider;
     }
 
+    public ApiOpResult<SetupStateResponse> GetSetupState()
+    {
+        var settings = _settingsProvider.GetSettings();
+        var hasUsers = _userRepository.TableNoTracking.Any();
+        var environmentSuperadminConfigured = HasEnvironmentSuperadmin(settings);
+        return ApiOpResult<SetupStateResponse>.Succeed(new SetupStateResponse(
+            !hasUsers && !environmentSuperadminConfigured,
+            hasUsers,
+            environmentSuperadminConfigured));
+    }
+
+    public ApiOpResult<SessionResponse> Initialize(string? username, string? password)
+    {
+        var state = GetSetupState().Payload;
+        if (state is null || !state.SetupRequired)
+        {
+            return ApiOpResult<SessionResponse>.Fail(409, "setup is not available");
+        }
+
+        var normalizedUsername = NormalizeUsername(username);
+        if (normalizedUsername.Length == 0)
+        {
+            return ApiOpResult<SessionResponse>.Fail(400, "username is required");
+        }
+
+        var normalizedPassword = (password ?? string.Empty).Trim();
+        if (normalizedPassword.Length == 0)
+        {
+            return ApiOpResult<SessionResponse>.Fail(400, "password is required");
+        }
+
+        if (_userRepository.TableNoTracking.Any())
+        {
+            return ApiOpResult<SessionResponse>.Fail(409, "setup is not available");
+        }
+
+        var now = UnixTimeSeconds();
+        var user = new User
+        {
+            Username = normalizedUsername,
+            PasswordHash = OpenCodexSecurity.HashPassword(normalizedPassword),
+            Role = "superadmin",
+            Enabled = true,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+        _userRepository.Insert(user);
+
+        return ApiOpResult<SessionResponse>.Succeed(
+            SessionResponse.From(user.Id, user.Username, user.Role, user.Enabled));
+    }
+
     public ApiOpResult<SessionResponse> Login(string? username, string? password)
     {
         EnsureConfiguredSuperadmin();
@@ -49,7 +101,7 @@ public sealed class AuthService : IAuthService
     private void EnsureConfiguredSuperadmin()
     {
         var settings = _settingsProvider.GetSettings();
-        if (settings.AdminPassword.Length == 0)
+        if (!HasEnvironmentSuperadmin(settings))
         {
             return;
         }
@@ -106,6 +158,11 @@ public sealed class AuthService : IAuthService
     private static string NormalizeUsername(string? value)
     {
         return (value ?? string.Empty).Trim();
+    }
+
+    private static bool HasEnvironmentSuperadmin(OpenCodexRuntimeSettings settings)
+    {
+        return settings.AdminPassword.Length > 0;
     }
 
     private static double UnixTimeSeconds()

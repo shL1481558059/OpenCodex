@@ -3,6 +3,13 @@
     <el-empty description="正在加载管理台" />
   </div>
 
+  <Setup
+    v-else-if="needsSetup"
+    :api="api"
+    :initial-settings="setupSettings"
+    @setup-complete="handleSetupComplete"
+  />
+
   <Login v-else-if="!authenticated" :api="api" @login="handleLogin" />
 
   <div v-else class="app-page">
@@ -70,6 +77,9 @@
             <section v-if="isSuperadmin && activeTab === 'pricing'">
               <Pricing :api="api" />
             </section>
+            <section v-if="isSuperadmin && activeTab === 'system-settings'">
+              <SystemSettings :api="api" />
+            </section>
             <section v-if="activeTab === 'logs'">
               <Logs :api="api" :is-superadmin="isSuperadmin" :active="activeTab === 'logs'" />
             </section>
@@ -106,22 +116,27 @@ import {
   Key,
   Money,
   Search,
+  Setting,
   SwitchButton,
   Tickets,
   User
 } from "@element-plus/icons-vue";
 const Dashboard = defineAsyncComponent(() => import("./Dashboard.vue"));
+const Setup = defineAsyncComponent(() => import("./Setup.vue"));
 const Login = defineAsyncComponent(() => import("./Login.vue"));
 const Channels = defineAsyncComponent(() => import("./Channels.vue"));
 const AccessKeys = defineAsyncComponent(() => import("./AccessKeys.vue"));
 const Users = defineAsyncComponent(() => import("./Users.vue"));
 const WebSearch = defineAsyncComponent(() => import("./WebSearch.vue"));
 const Pricing = defineAsyncComponent(() => import("./Pricing.vue"));
+const SystemSettings = defineAsyncComponent(() => import("./SystemSettings.vue"));
 const Logs = defineAsyncComponent(() => import("./Logs.vue"));
 
 const activeTab = ref("dashboard");
 const authenticated = ref(false);
 const loadingSession = ref(true);
+const needsSetup = ref(false);
+const setupSettings = ref(null);
 const currentUser = ref(null);
 const menuCollapsed = ref(false);
 const mobileMenuVisible = ref(false);
@@ -138,6 +153,7 @@ const menuItems = [
   { index: "users", label: "用户管理", icon: User, superadminOnly: true },
   { index: "web-search", label: "Web Search 模拟", icon: Search, superadminOnly: true },
   { index: "pricing", label: "模型信息", icon: Money, superadminOnly: true },
+  { index: "system-settings", label: "系统设置", icon: Setting, superadminOnly: true },
   { index: "logs", label: "请求日志", icon: Tickets }
 ];
 
@@ -167,17 +183,24 @@ async function api(url, options = {}) {
 // --- Auth ---
 
 async function checkSession() {
-  loadingSession.value = true;
-  try {
-    const data = await api("/session");
-    setAuthenticatedUser(data);
-  } finally {
-    loadingSession.value = false;
-  }
+  const data = await api("/session");
+  setAuthenticatedUser(data);
+}
+
+async function loadSetupStatus() {
+  const data = await api("/setup/status");
+  needsSetup.value = data.setup_required === true;
+  setupSettings.value = data.system_settings || null;
 }
 
 function handleLogin(data) {
   setAuthenticatedUser(data);
+  activeTab.value = "dashboard";
+}
+
+function handleSetupComplete(data) {
+  needsSetup.value = false;
+  setAuthenticatedUser(data.session);
   activeTab.value = "dashboard";
 }
 
@@ -204,12 +227,20 @@ function setAuthenticatedUser(data) {
 }
 
 function ensureAllowedActiveTab() {
-  if (!isSuperadmin.value && ["users", "web-search", "pricing"].includes(activeTab.value)) {
+  if (!isSuperadmin.value && ["users", "web-search", "pricing", "system-settings"].includes(activeTab.value)) {
     activeTab.value = "dashboard";
   }
 }
 
 onMounted(async () => {
-  await checkSession();
+  loadingSession.value = true;
+  try {
+    await loadSetupStatus();
+    if (!needsSetup.value) {
+      await checkSession();
+    }
+  } finally {
+    loadingSession.value = false;
+  }
 });
 </script>

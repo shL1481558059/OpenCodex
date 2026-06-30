@@ -141,7 +141,9 @@ public static partial class ProtocolConverter
         string? originalModel)
     {
         var textParts = new List<string>();
+        var reasoningParts = new List<string>();
         var toolCalls = new List<object?>();
+        var thinkingBlocks = new List<object?>();
         foreach (var contentItem in ListValue(payload, "content"))
         {
             if (!TryAsObject(contentItem, out var block))
@@ -149,11 +151,34 @@ public static partial class ProtocolConverter
                 continue;
             }
 
-            if (GetString(block, "type") == "text")
+            var blockType = GetString(block, "type");
+            if (blockType == "thinking")
+            {
+                var thinking = StringifyContent(GetValue(block, "thinking") ?? string.Empty);
+                if (!string.IsNullOrEmpty(thinking))
+                {
+                    reasoningParts.Add(thinking);
+                }
+
+                var cleaned = new Dictionary<string, object?>(StringComparer.Ordinal);
+                cleaned["type"] = "thinking";
+                cleaned["thinking"] = thinking;
+                if (block.TryGetValue("signature", out var sig)) cleaned["signature"] = sig;
+                thinkingBlocks.Add(cleaned);
+            }
+            else if (blockType == "redacted_thinking")
+            {
+                var cleaned = new Dictionary<string, object?>(StringComparer.Ordinal);
+                cleaned["type"] = "redacted_thinking";
+                if (block.TryGetValue("data", out var data)) cleaned["data"] = data;
+                if (block.TryGetValue("signature", out var sig)) cleaned["signature"] = sig;
+                thinkingBlocks.Add(cleaned);
+            }
+            else if (blockType == "text")
             {
                 textParts.Add(Convert.ToString(GetValue(block, "text")) ?? string.Empty);
             }
-            else if (GetString(block, "type") == "tool_use")
+            else if (blockType == "tool_use")
             {
                 toolCalls.Add(Obj(
                     ("id", GetValue(block, "id") ?? NewId("call")),
@@ -162,11 +187,18 @@ public static partial class ProtocolConverter
             }
         }
 
+        var reasoning = string.Concat(reasoningParts);
+        var encodedThinking = thinkingBlocks.Count > 0 && thinkingBlocks.Any(b => (b as Dictionary<string, object?>)?.ContainsKey("signature") == true)
+            ? EncodeAnthropicThinkingBlocks(thinkingBlocks)
+            : null;
+
         return Obj(
             ("id", GetValue(payload, "id") ?? NewId("msg")),
             ("model", originalModel ?? GetValue(payload, "model")),
             ("created", Now()),
             ("text", string.Concat(textParts)),
+            ("reasoning", reasoning),
+            ("anthropic_thinking_encrypted", encodedThinking),
             ("tool_calls", toolCalls),
             ("finish_reason", GetValue(payload, "stop_reason") ?? "stop"),
             ("usage", MessagesUsageToCanonical(ObjectValue(payload, "usage"))),
@@ -179,12 +211,18 @@ public static partial class ProtocolConverter
         var reasoning = StringifyContent(GetValue(canonical, "reasoning") ?? string.Empty);
         if (!string.IsNullOrEmpty(reasoning))
         {
+            // Use encoded thinking blocks as encrypted_content when available (preserves Anthropic signatures)
+            var thinkingEncrypted = GetValue(canonical, "anthropic_thinking_encrypted") as string;
+            var encryptedContent = !string.IsNullOrEmpty(thinkingEncrypted)
+                ? thinkingEncrypted
+                : reasoning;
+
             output.Add(Obj(
                 ("id", NewId("rs")),
                 ("type", "reasoning"),
                 ("status", "completed"),
                 ("summary", new List<object?> { Obj(("type", "summary_text"), ("text", reasoning)) }),
-                ("encrypted_content", reasoning)));
+                ("encrypted_content", encryptedContent)));
         }
 
         var text = StringifyContent(GetValue(canonical, "text") ?? string.Empty);
@@ -242,6 +280,18 @@ public static partial class ProtocolConverter
         var message = Obj(
             ("role", "assistant"),
             ("content", IsTruthy(GetValue(canonical, "text")) ? GetValue(canonical, "text") : null));
+
+        var chatReasoning = StringifyContent(GetValue(canonical, "reasoning") ?? string.Empty);
+        if (!string.IsNullOrEmpty(chatReasoning))
+        {
+            message["reasoning_content"] = chatReasoning;
+        }
+
+        var thinkingEncrypted = GetValue(canonical, "anthropic_thinking_encrypted") as string;
+        if (!string.IsNullOrEmpty(thinkingEncrypted))
+        {
+            message["anthropic_thinking_encrypted"] = thinkingEncrypted;
+        }
 
         var canonicalToolCalls = ListValue(canonical, "tool_calls");
         if (canonicalToolCalls.Count > 0)

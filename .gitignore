@@ -22,3 +22,9 @@ TestResults/
 *.tar
 *.tar.gz
 *.zip
+
+# Tauri
+src-tauri/target/
+src-tauri/resources/
+src-tauri/binaries/publish/
+src-tauri/binaries/opencodex-api-*

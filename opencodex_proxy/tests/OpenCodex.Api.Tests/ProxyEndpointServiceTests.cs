@@ -198,6 +198,66 @@ public sealed class ProxyEndpointServiceTests
     }
 
     [Fact]
+    public async Task ProxyAsync_NonStreamRetryableFailure_WritesAttemptChildLogs()
+    {
+        var capacity = new ChannelCapacityService();
+        var primary = CreateChannel("primary", priority: 0, capacity: 1);
+        var secondary = CreateChannel("secondary", priority: 1, capacity: 1);
+        var logs = new StubProxyLogService();
+        var nonStreams = new StubProxyNonStreamService(context =>
+        {
+            if (context.ChannelId == "primary")
+            {
+                throw new UpstreamException("primary unavailable", ProxyHttpStatus.BadGateway);
+            }
+
+            return Task.FromResult(new ProxyNonStreamResult(200, new { ok = true }));
+        });
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService(
+            [
+                CreateRoute(primary, "shared-model", "upstream-primary"),
+                CreateRoute(secondary, "shared-model", "upstream-secondary")
+            ]),
+            nonStreams: nonStreams,
+            logs: logs);
+
+        var result = await service.ProxyAsync(CreateChatContext("shared-model"));
+
+        Assert.Equal(200, result.StatusCode);
+        var attemptLogs = logs.WrittenLogs
+            .Where(item => item.RequestType == ProxyRequestTypes.Attempt)
+            .ToList();
+        Assert.Collection(
+            attemptLogs,
+            first =>
+            {
+                Assert.Equal(logs.QueuedLogId, first.ParentRequestLogId);
+                Assert.Equal("primary", first.ChannelId);
+                Assert.Equal(ProxyHttpStatus.BadGateway, first.StatusCode);
+                Assert.Equal("primary unavailable", first.Error);
+                var details = Assert.IsType<Dictionary<string, object?>>(first.ResponsePayload);
+                Assert.Equal(1, Assert.IsType<int>(details["route_attempt_number"]));
+                Assert.Equal(0, Assert.IsType<int>(details["route_retry_number"]));
+                Assert.True(Assert.IsType<bool>(details["failover_eligible"]));
+                Assert.Equal("failed", Assert.IsType<string>(details["outcome"]));
+            },
+            second =>
+            {
+                Assert.Equal(logs.QueuedLogId, second.ParentRequestLogId);
+                Assert.Equal("secondary", second.ChannelId);
+                Assert.Equal(ProxyHttpStatus.Ok, second.StatusCode);
+                Assert.Null(second.Error);
+                var details = Assert.IsType<Dictionary<string, object?>>(second.ResponsePayload);
+                Assert.Equal(2, Assert.IsType<int>(details["route_attempt_number"]));
+                Assert.Equal(1, Assert.IsType<int>(details["route_retry_number"]));
+                Assert.False(Assert.IsType<bool>(details["failover_eligible"]));
+                Assert.Equal("success", Assert.IsType<string>(details["outcome"]));
+            });
+    }
+
+    [Fact]
     public async Task ProxyAsync_NonStreamUpstreamBadRequest_FailsOverToNextChannel()
     {
         var capacity = new ChannelCapacityService();
@@ -770,10 +830,11 @@ public sealed class ProxyEndpointServiceTests
         IChannelCircuitBreakerService? breaker = null,
         IChannelAffinityService? affinity = null,
         IProxyNonStreamService? nonStreams = null,
-        IProxyStreamService? streams = null)
+        IProxyStreamService? streams = null,
+        IProxyLogService? logs = null)
     {
         return new ProxyEndpointService(
-            new StubProxyLogService(),
+            logs ?? new StubProxyLogService(),
             new StubProxyRequestService(),
             routes,
             capacity,
@@ -1032,9 +1093,13 @@ public sealed class ProxyEndpointServiceTests
 
     private sealed class StubProxyLogService : IProxyLogService
     {
+        public Guid QueuedLogId { get; } = Guid.Parse("11111111-1111-1111-1111-111111111111");
+
+        public List<ProxyLogContext> WrittenLogs { get; } = [];
+
         public Guid CreateQueuedLog(ProxyRequestLogQueuedContext context)
         {
-            return Guid.NewGuid();
+            return QueuedLogId;
         }
 
         public void MarkProcessing(Guid requestLogId, ProxyRequestLogProcessingContext context)
@@ -1047,7 +1112,8 @@ public sealed class ProxyEndpointServiceTests
 
         public Guid WriteLog(ProxyLogContext context, ProxyRequestMetadata request)
         {
-            return Guid.Empty;
+            WrittenLogs.Add(context);
+            return Guid.NewGuid();
         }
 
         public Guid WriteLog(ProxyRequestLogContext context)

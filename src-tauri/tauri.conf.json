@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OpenCodex",
+  "version": "0.1.0",
+  "identifier": "me.shldev.opencodex",
+  "build": {
+    "beforeDevCommand": "npm run desktop:prepare",
+    "beforeBuildCommand": "npm run desktop:prepare",
+    "devUrl": "http://127.0.0.1:5173/admin/",
+    "frontendDist": "../frontend/dist/admin"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "resources": [
+      "resources/**/*"
+    ],
+    "externalBin": [
+      "binaries/opencodex-api"
+    ]
+  }
+}

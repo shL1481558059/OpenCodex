@@ -31,6 +31,14 @@ public static class OpenCodexApplicationBuilderExtensions
         app.UseAuthentication();
         app.UseAuthorization();
         app.MapControllers();
+        app.MapMethods("/admin/", ["GET", "HEAD"], (IWebHostEnvironment environment) =>
+        {
+            var webRoot = environment.WebRootPath ?? Path.Combine(environment.ContentRootPath, "wwwroot");
+            var indexPath = Path.Combine(webRoot, "admin", "index.html");
+            return File.Exists(indexPath)
+                ? Results.File(indexPath, "text/html")
+                : Results.NotFound();
+        });
         app.MapMethods(
             "/admin/api/{**path}",
             ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"],

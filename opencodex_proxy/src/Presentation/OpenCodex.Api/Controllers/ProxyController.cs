@@ -31,43 +31,43 @@ public sealed class ProxyController : ApiControllerBase
         _catalog = catalog;
     }
 
-    [HttpGet("/models")]
-    [HttpGet("/v1/models")]
-    public IActionResult Models()
-    {
-        var accessKey = _requests.AuthenticateAccessKey(AuthorizationHeader());
-        var models = _routes.ListModelCapabilities(accessKey.OwnerUsername);
-        var catalogByModel = (_catalog.ListModels(null, null, true).Payload?.Models ?? [])
-            .ToDictionary(model => model.ModelKey, StringComparer.OrdinalIgnoreCase);
-        var openAiModels = models
-            .Select(model => (object?)new Dictionary<string, object?>
-            {
-                ["id"] = model.Model,
-                ["display_name"] = catalogByModel.TryGetValue(model.Model, out var info)
-                    ? info.DisplayName
-                    : model.Model,
-                ["created_at"] = "2024-01-01T00:00:00Z",
-                ["type"] = "model"
-            })
-            .ToList();
-        var codexModels = models
-            .Select(model => (object?)CodexModelCatalogItem(
-                model,
-                catalogByModel.TryGetValue(model.Model, out var info) ? info : null))
-            .ToList();
-
-        var payload = new Dictionary<string, object?>
-        {
-            ["object"] = "list",
-            ["data"] = openAiModels
-        };
-        if (IncludeCodexCatalog())
-        {
-            payload["models"] = codexModels;
-        }
-
-        return StatusCode(StatusCodes.Status200OK, payload);
-    }
+    // [HttpGet("/models")]
+    // [HttpGet("/v1/models")]
+    // public IActionResult Models()
+    // {
+    //     var accessKey = _requests.AuthenticateAccessKey(AuthorizationHeader());
+    //     var models = _routes.ListModelCapabilities(accessKey.OwnerUsername);
+    //     var catalogByModel = (_catalog.ListModels(null, null, true).Payload?.Models ?? [])
+    //         .ToDictionary(model => model.ModelKey, StringComparer.OrdinalIgnoreCase);
+    //     var openAiModels = models
+    //         .Select(model => (object?)new Dictionary<string, object?>
+    //         {
+    //             ["id"] = model.Model,
+    //             ["display_name"] = catalogByModel.TryGetValue(model.Model, out var info)
+    //                 ? info.DisplayName
+    //                 : model.Model,
+    //             ["created_at"] = "2024-01-01T00:00:00Z",
+    //             ["type"] = "model"
+    //         })
+    //         .ToList();
+    //     var codexModels = models
+    //         .Select(model => (object?)CodexModelCatalogItem(
+    //             model,
+    //             catalogByModel.TryGetValue(model.Model, out var info) ? info : null))
+    //         .ToList();
+    //
+    //     var payload = new Dictionary<string, object?>
+    //     {
+    //         ["object"] = "list",
+    //         ["data"] = openAiModels
+    //     };
+    //     if (IncludeCodexCatalog())
+    //     {
+    //         payload["models"] = codexModels;
+    //     }
+    //
+    //     return StatusCode(StatusCodes.Status200OK, payload);
+    // }
 
     [HttpPost("/responses")]
     [HttpPost("/v1/responses")]

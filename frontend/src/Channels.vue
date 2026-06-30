@@ -127,6 +127,27 @@
     <el-drawer v-model="channelDrawerVisible" :title="editingIndex === -1 ? '新增渠道' : '编辑渠道'" size="720px">
       <el-form label-position="top" :model="channelDraft">
         <el-row :gutter="12">
+          <el-col v-if="supportsApplyPatchPromptCompat(channelDraft.type)" :span="24">
+            <el-form-item label="兼容 apply_patch 提示词">
+              <el-switch
+                v-model="compatTexts.enable_apply_patch_prompt_compat"
+                active-text="开启"
+                inactive-text="关闭"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col v-if="channelDraft.type === 'messages'" :span="24">
+            <el-form-item label="保留思考历史 (preserve_thinking_history)">
+              <el-switch
+                v-model="compatTexts.preserve_thinking_history"
+                active-text="开启"
+                inactive-text="关闭"
+              />
+              <div class="text-muted" style="margin-top: 4px; font-size: 12px">
+                开启后会将对端 Anthropic thinking blocks（含签名）编码到 encrypted_content 字段，并在回传时恢复，确保交错思考上下文不丢失
+              </div>
+            </el-form-item>
+          </el-col>
           <el-col :span="12">
             <el-form-item label="名称">
               <el-input v-model="channelDraft.name" />
@@ -748,6 +769,8 @@ const editingIndex = ref(-1);
 const channelDraft = reactive(defaultChannel());
 const headersText = ref("{}");
 const compatTexts = reactive({
+  enable_apply_patch_prompt_compat: false,
+  preserve_thinking_history: false,
   rename_params: "",
   drop_params: "",
   drop_tool_types: "",
@@ -1669,6 +1692,8 @@ function assignChannelDraft(channel) {
 
 function assignCompat(compat) {
   Object.assign(compatTexts, {
+    enable_apply_patch_prompt_compat: compat.enable_apply_patch_prompt_compat === true,
+    preserve_thinking_history: compat.preserve_thinking_history === true,
     rename_params: formatAssignmentMap(compat.rename_params || {}),
     drop_params: formatStringList(compat.drop_params || []),
     drop_tool_types: formatStringList(compat.drop_tool_types || []),
@@ -1712,6 +1737,12 @@ function buildChannelFromDraft() {
 
 function buildCompat() {
   const compat = {
+    enable_apply_patch_prompt_compat: supportsApplyPatchPromptCompat(channelDraft.type)
+      ? compatTexts.enable_apply_patch_prompt_compat === true
+      : false,
+    preserve_thinking_history: channelDraft.type === 'messages'
+      ? compatTexts.preserve_thinking_history === true
+      : false,
     rename_params: parseAssignmentMap(compatTexts.rename_params, false),
     drop_params: parseStringList(compatTexts.drop_params),
     drop_tool_types: parseStringList(compatTexts.drop_tool_types),
@@ -1726,6 +1757,10 @@ function buildCompat() {
     }
   }
   return compat;
+}
+
+function supportsApplyPatchPromptCompat(channelType) {
+  return channelType === "chat" || channelType === "messages";
 }
 
 function normalizeModels(models) {

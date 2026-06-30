@@ -8,4 +8,6 @@ public static class ProxyRequestTypes
     public const string Main = "main";
 
     public const string Ocr = "ocr";
+
+    public const string Attempt = "attempt";
 }

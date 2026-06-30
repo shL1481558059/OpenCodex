@@ -120,6 +120,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 stickyKey);
 
             ProxyException? lastFailoverException = null;
+            var routeAttemptNumber = 0;
             foreach (var candidate in candidates)
             {
                 var candidateChannelId = JsonDictionaryValue.String(candidate.Route.Channel, "id");
@@ -156,6 +157,11 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 }
 
                 TrackingProxyStreamWriter? trackingWriter = null;
+                routeAttemptNumber++;
+                var attemptStarted = Stopwatch.GetTimestamp();
+                string? attemptChannelType = null;
+                string? attemptUpstreamModel = null;
+                Dictionary<string, object?>? attemptUpstreamRequest = null;
                 try
                 {
                     if (!string.IsNullOrEmpty(stickyKey))
@@ -170,6 +176,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                     channelType = JsonDictionaryValue.String(route.Channel, "type");
                     channelId = candidateChannelId;
                     upstreamModel = route.UpstreamModel;
+                    attemptChannelType = channelType;
+                    attemptUpstreamModel = upstreamModel;
                     route = ApplyResponsesPassthroughHeaders(route, context.EntryProtocol, channelType, requestMetadata);
 
                     effectivePayload = payload;
@@ -199,6 +207,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         context.EntryProtocol,
                         channelType,
                         route.UpstreamModel);
+                    attemptUpstreamRequest = upstreamRequest;
 
                     if (requestLogId.HasValue)
                     {
@@ -244,6 +253,25 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                                 trackingWriter,
                                 context.CancellationToken));
 
+                        WriteChannelAttemptLog(
+                            requestLogId,
+                            requestId,
+                            ownerUsername,
+                            apiKeyId,
+                            payload,
+                            attemptUpstreamRequest,
+                            requestModel,
+                            attemptUpstreamModel,
+                            candidate.Route.Channel,
+                            candidateChannelId,
+                            attemptChannelType,
+                            isStream,
+                            routeAttemptNumber,
+                            attemptStarted,
+                            ProxyHttpStatus.Ok,
+                            error: null,
+                            failoverEligible: false,
+                            requestMetadata);
                         _channelCircuitBreaker.RecordSuccess(ownerUsername, candidateChannelId);
                         streamResponseStarted = trackingWriter.HasWritten;
                         return new ProxyEndpointResult(200, Payload: null, IsEmpty: true);
@@ -276,6 +304,25 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         throw failureException;
                     }
 
+                    WriteChannelAttemptLog(
+                        requestLogId,
+                        requestId,
+                        ownerUsername,
+                        apiKeyId,
+                        payload,
+                        attemptUpstreamRequest,
+                        requestModel,
+                        attemptUpstreamModel,
+                        candidate.Route.Channel,
+                        candidateChannelId,
+                        attemptChannelType,
+                        isStream,
+                        routeAttemptNumber,
+                        attemptStarted,
+                        result.StatusCode,
+                        error: null,
+                        failoverEligible: false,
+                        requestMetadata);
                     _channelCircuitBreaker.RecordSuccess(ownerUsername, candidateChannelId);
                     return new ProxyEndpointResult(result.StatusCode, result.Payload, IsEmpty: false);
                 }
@@ -290,8 +337,28 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                     if (isStream)
                     {
                         streamResponseStarted = trackingWriter?.HasWritten == true;
-                        if (!streamResponseStarted
-                            && ProxyFailoverPolicy.CanFailover(exception))
+                        var failoverEligible = !streamResponseStarted
+                            && ProxyFailoverPolicy.CanFailover(exception);
+                        WriteChannelAttemptLog(
+                            requestLogId,
+                            requestId,
+                            ownerUsername,
+                            apiKeyId,
+                            payload,
+                            attemptUpstreamRequest,
+                            requestModel,
+                            attemptUpstreamModel,
+                            candidate.Route.Channel,
+                            candidateChannelId,
+                            attemptChannelType,
+                            isStream,
+                            routeAttemptNumber,
+                            attemptStarted,
+                            exception.StatusCode,
+                            exception.Message,
+                            failoverEligible,
+                            requestMetadata);
+                        if (failoverEligible)
                         {
                             lastFailoverException = exception;
                             continue;
@@ -300,7 +367,27 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         throw;
                     }
 
-                    if (ProxyFailoverPolicy.CanFailover(exception))
+                    var canFailover = ProxyFailoverPolicy.CanFailover(exception);
+                    WriteChannelAttemptLog(
+                        requestLogId,
+                        requestId,
+                        ownerUsername,
+                        apiKeyId,
+                        payload,
+                        attemptUpstreamRequest,
+                        requestModel,
+                        attemptUpstreamModel,
+                        candidate.Route.Channel,
+                        candidateChannelId,
+                        attemptChannelType,
+                        isStream,
+                        routeAttemptNumber,
+                        attemptStarted,
+                        exception.StatusCode,
+                        exception.Message,
+                        canFailover,
+                        requestMetadata);
+                    if (canFailover)
                     {
                         lastFailoverException = exception;
                         continue;
@@ -412,6 +499,76 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         return orderedCandidates
             .Select(item => new OrderedRouteCandidate(item.Candidate))
             .ToList();
+    }
+
+    private void WriteChannelAttemptLog(
+        Guid? parentRequestLogId,
+        string requestId,
+        string ownerUsername,
+        Guid? apiKeyId,
+        Dictionary<string, object?>? payload,
+        Dictionary<string, object?>? upstreamRequest,
+        string? requestModel,
+        string? upstreamModel,
+        IReadOnlyDictionary<string, object?> channel,
+        string? channelId,
+        string? channelType,
+        bool isStream,
+        int routeAttemptNumber,
+        long attemptStarted,
+        int statusCode,
+        string? error,
+        bool failoverEligible,
+        ProxyRequestMetadata requestMetadata)
+    {
+        if (!parentRequestLogId.HasValue)
+        {
+            return;
+        }
+
+        var attemptDetails = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["kind"] = "channel_attempt",
+            ["route_attempt_number"] = routeAttemptNumber,
+            ["route_retry_number"] = Math.Max(0, routeAttemptNumber - 1),
+            ["channel_id"] = channelId,
+            ["channel_name"] = JsonDictionaryValue.String(channel, "name"),
+            ["channel_type"] = channelType,
+            ["upstream_model"] = upstreamModel,
+            ["configured_retry_count"] = JsonDictionaryValue.Get(channel, "retry_count"),
+            ["status_code"] = statusCode,
+            ["outcome"] = statusCode >= 400 || !string.IsNullOrWhiteSpace(error) ? "failed" : "success",
+            ["failover_eligible"] = failoverEligible,
+            ["duration_ms"] = ElapsedMilliseconds(attemptStarted)
+        };
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            attemptDetails["error"] = error;
+        }
+
+        _logs.WriteLog(
+            new ProxyLogContext(
+                requestId,
+                ownerUsername,
+                apiKeyId,
+                payload,
+                upstreamRequest,
+                UpstreamResponse: null,
+                ResponsePayload: attemptDetails,
+                ErrorResponse: null,
+                requestModel,
+                upstreamModel,
+                channelId,
+                channelType,
+                isStream,
+                TtftMs: null,
+                statusCode,
+                ElapsedMilliseconds(attemptStarted),
+                error,
+                WebSearchDetails: null,
+                RequestType: ProxyRequestTypes.Attempt,
+                ParentRequestLogId: parentRequestLogId),
+            requestMetadata);
     }
 
     internal static ProxyRouteDto ApplyResponsesPassthroughHeaders(
