@@ -1013,4 +1013,311 @@ public sealed class SseStreamConverterTests
         var done = ByType(parsed, "response.function_call_arguments.done");
         Assert.NotNull(done);
     }
+
+    // ── JSON Schema text.format wrapping ──────────────────
+
+    [Fact]
+    public async Task Messages_JsonSchemaFormat_WrapsPlainTextInSchemaStructure()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"message_start","message":{"id":"msg_1","model":"deepseek-v4","usage":{"input_tokens":100,"output_tokens":0}}}""", "message_start"),
+            SseBlock("""{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}""", "content_block_start"),
+            SseBlock("""{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"查找 BrightBook 向量检查逻辑"}}""", "content_block_delta"),
+            SseBlock("""{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":8}}""", "message_delta"),
+            SseBlock("""{"type":"message_stop"}""", "message_stop"));
+
+        var result = new ConvertedStreamResult
+        {
+            TextFormat = new TextFormatInfo
+            {
+                Type = "json_schema",
+                SchemaName = "codex_output_schema",
+                Schema = new Dictionary<string, object?>
+                {
+                    ["type"] = "object",
+                    ["properties"] = new Dictionary<string, object?>
+                    {
+                        ["title"] = new Dictionary<string, object?> { ["type"] = "string" }
+                    },
+                    ["required"] = new List<object?> { "title" }
+                }
+            }
+        };
+        var events = await CollectAsync(
+            SseStreamConverter.MessagesToResponsesEvents(lines, "deepseek-v4", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var completed = ByType(parsed, "response.completed");
+        Assert.NotNull(completed);
+        var response = Assert.IsType<Dictionary<string, object?>>(completed!["response"]);
+        var output = Assert.IsType<List<object?>>(response["output"]);
+        var messageItem = Assert.IsType<Dictionary<string, object?>>(output.First(i => i is Dictionary<string, object?> d && d.TryGetValue("type", out var t) && "message".Equals(t))!);
+        var contentParts = Assert.IsType<List<object?>>(messageItem["content"]);
+        var outputText = Assert.IsType<Dictionary<string, object?>>(contentParts[0]!);
+        // Text should be wrapped in JSON: {"title":"查找 BrightBook 向量检查逻辑"}
+        var textValue = outputText["text"]?.ToString() ?? "";
+        Assert.StartsWith("{", textValue);
+        Assert.Contains("查找 BrightBook 向量检查逻辑", textValue, StringComparison.Ordinal);
+        var parsedText = JsonSerializer.Deserialize<Dictionary<string, string>>(textValue);
+        Assert.NotNull(parsedText);
+        Assert.Equal("查找 BrightBook 向量检查逻辑", parsedText!["title"]);
+    }
+
+    [Fact]
+    public async Task Chat_JsonSchemaFormat_WrapsPlainTextInSchemaStructure()
+    {
+        var lines = SseLines(
+            SseBlock(ChatChunk(content: "Fix login bug")),
+            SseBlock(ChatChunk(finishReason: "stop",
+                usage: new Dictionary<string, object?> { ["prompt_tokens"] = 5, ["completion_tokens"] = 2 })),
+            SseBlock("[DONE]"));
+
+        var result = new ConvertedStreamResult
+        {
+            TextFormat = new TextFormatInfo
+            {
+                Type = "json_schema",
+                SchemaName = "codex_output_schema",
+                Schema = new Dictionary<string, object?>
+                {
+                    ["type"] = "object",
+                    ["properties"] = new Dictionary<string, object?>
+                    {
+                        ["title"] = new Dictionary<string, object?> { ["type"] = "string" }
+                    },
+                    ["required"] = new List<object?> { "title" }
+                }
+            }
+        };
+        var events = await CollectAsync(
+            SseStreamConverter.ChatToResponsesEvents(lines, "deepseek-v4", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var completed = ByType(parsed, "response.completed");
+        Assert.NotNull(completed);
+        var response = Assert.IsType<Dictionary<string, object?>>(completed!["response"]);
+        var output = Assert.IsType<List<object?>>(response["output"]);
+        var messageItem = Assert.IsType<Dictionary<string, object?>>(output[0]!);
+        var contentParts = Assert.IsType<List<object?>>(messageItem["content"]);
+        var outputText = Assert.IsType<Dictionary<string, object?>>(contentParts[0]!);
+        var textValue = outputText["text"]?.ToString() ?? "";
+        var parsedText = JsonSerializer.Deserialize<Dictionary<string, string>>(textValue);
+        Assert.NotNull(parsedText);
+        Assert.Equal("Fix login bug", parsedText!["title"]);
+    }
+
+    [Fact]
+    public async Task Messages_JsonSchemaFormat_PreservesAlreadyValidJson()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"message_start","message":{"id":"msg_1","model":"gpt-5","usage":{"input_tokens":100,"output_tokens":0}}}""", "message_start"),
+            SseBlock("""{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}""", "content_block_start"),
+            SseBlock("""{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"{\"title\": \"Fix login bug\"}"}}""", "content_block_delta"),
+            SseBlock("""{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}""", "message_delta"),
+            SseBlock("""{"type":"message_stop"}""", "message_stop"));
+
+        var result = new ConvertedStreamResult
+        {
+            TextFormat = new TextFormatInfo
+            {
+                Type = "json_schema",
+                SchemaName = "codex_output_schema",
+                Schema = new Dictionary<string, object?>
+                {
+                    ["type"] = "object",
+                    ["properties"] = new Dictionary<string, object?>
+                    {
+                        ["title"] = new Dictionary<string, object?> { ["type"] = "string" }
+                    },
+                    ["required"] = new List<object?> { "title" }
+                }
+            }
+        };
+        var events = await CollectAsync(
+            SseStreamConverter.MessagesToResponsesEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var completed = ByType(parsed, "response.completed");
+        Assert.NotNull(completed);
+        var response = Assert.IsType<Dictionary<string, object?>>(completed!["response"]);
+        var output = Assert.IsType<List<object?>>(response["output"]);
+        var messageItem = Assert.IsType<Dictionary<string, object?>>(output.First(i => i is Dictionary<string, object?> d && d.TryGetValue("type", out var t) && "message".Equals(t))!);
+        var contentParts = Assert.IsType<List<object?>>(messageItem["content"]);
+        var outputText = Assert.IsType<Dictionary<string, object?>>(contentParts[0]!);
+        // Already valid JSON — should NOT be double-wrapped
+        Assert.Equal("""{"title": "Fix login bug"}""", outputText["text"]?.ToString());
+    }
+
+    [Fact]
+    public async Task Messages_NoTextFormat_DoesNotWrapPlainText()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"message_start","message":{"id":"msg_1","model":"deepseek-v4","usage":{"input_tokens":100,"output_tokens":0}}}""", "message_start"),
+            SseBlock("""{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}""", "content_block_start"),
+            SseBlock("""{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"纯文本输出"}}""", "content_block_delta"),
+            SseBlock("""{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}""", "message_delta"),
+            SseBlock("""{"type":"message_stop"}""", "message_stop"));
+
+        var result = new ConvertedStreamResult(); // No TextFormat
+        var events = await CollectAsync(
+            SseStreamConverter.MessagesToResponsesEvents(lines, "deepseek-v4", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var completed = ByType(parsed, "response.completed");
+        Assert.NotNull(completed);
+        var response = Assert.IsType<Dictionary<string, object?>>(completed!["response"]);
+        var output = Assert.IsType<List<object?>>(response["output"]);
+        var messageItem = Assert.IsType<Dictionary<string, object?>>(output[0]!);
+        var contentParts = Assert.IsType<List<object?>>(messageItem["content"]);
+        var outputText = Assert.IsType<Dictionary<string, object?>>(contentParts[0]!);
+        // No TextFormat — plain text should remain as-is
+        Assert.Equal("纯文本输出", outputText["text"]?.ToString());
+    }
+
+    // ── WrapTextForJsonSchema unit tests ──────────────────
+
+    [Fact]
+    public void WrapTextForJsonSchema_ValidJsonObject_ReturnsAsIs()
+    {
+        var fmt = new TextFormatInfo
+        {
+            Type = "json_schema",
+            SchemaName = "codex_output_schema",
+            Schema = new Dictionary<string, object?>
+            {
+                ["properties"] = new Dictionary<string, object?> { ["title"] = new Dictionary<string, object?>() },
+                ["required"] = new List<object?> { "title" }
+            }
+        };
+        var result = SseStreamConverter.WrapTextForJsonSchema("""{"title": "hello"}""", fmt);
+        Assert.Equal("""{"title": "hello"}""", result);
+    }
+
+    [Fact]
+    public void WrapTextForJsonSchema_ValidJsonArray_ReturnsAsIs()
+    {
+        var fmt = new TextFormatInfo
+        {
+            Type = "json_schema",
+            SchemaName = "codex_output_schema",
+            Schema = new Dictionary<string, object?>
+            {
+                ["properties"] = new Dictionary<string, object?> { ["items"] = new Dictionary<string, object?>() },
+                ["required"] = new List<object?> { "items" }
+            }
+        };
+        var result = SseStreamConverter.WrapTextForJsonSchema("[1,2,3]", fmt);
+        Assert.Equal("[1,2,3]", result);
+    }
+
+    [Fact]
+    public void WrapTextForJsonSchema_PlainText_WrapsInSchemaStructure()
+    {
+        var fmt = new TextFormatInfo
+        {
+            Type = "json_schema",
+            SchemaName = "codex_output_schema",
+            Schema = new Dictionary<string, object?>
+            {
+                ["properties"] = new Dictionary<string, object?>
+                {
+                    ["title"] = new Dictionary<string, object?> { ["type"] = "string" }
+                },
+                ["required"] = new List<object?> { "title" }
+            }
+        };
+        var result = SseStreamConverter.WrapTextForJsonSchema("Fix login bug", fmt);
+        var parsed = JsonSerializer.Deserialize<Dictionary<string, string>>(result);
+        Assert.NotNull(parsed);
+        Assert.Equal("Fix login bug", parsed!["title"]);
+    }
+
+    [Fact]
+    public void WrapTextForJsonSchema_InvalidJson_WrapsInSchemaStructure()
+    {
+        var fmt = new TextFormatInfo
+        {
+            Type = "json_schema",
+            SchemaName = "codex_output_schema",
+            Schema = new Dictionary<string, object?>
+            {
+                ["properties"] = new Dictionary<string, object?>
+                {
+                    ["description"] = new Dictionary<string, object?> { ["type"] = "string" }
+                },
+                ["required"] = new List<object?> { "description" }
+            }
+        };
+        // Starts with { but is invalid JSON — should wrap
+        var result = SseStreamConverter.WrapTextForJsonSchema("{broken json", fmt);
+        var parsed = JsonSerializer.Deserialize<Dictionary<string, string>>(result);
+        Assert.NotNull(parsed);
+        Assert.Equal("{broken json", parsed!["description"]);
+    }
+
+    [Fact]
+    public void WrapTextForJsonSchema_EmptyText_ReturnsAsIs()
+    {
+        var fmt = new TextFormatInfo { Type = "json_schema" };
+        Assert.Equal("", SseStreamConverter.WrapTextForJsonSchema("", fmt));
+        Assert.Null(SseStreamConverter.WrapTextForJsonSchema(null!, fmt));
+    }
+
+    [Fact]
+    public void WrapTextForJsonSchema_UsesFirstRequiredField()
+    {
+        var fmt = new TextFormatInfo
+        {
+            Type = "json_schema",
+            Schema = new Dictionary<string, object?>
+            {
+                ["properties"] = new Dictionary<string, object?>
+                {
+                    ["name"] = new Dictionary<string, object?>(),
+                    ["value"] = new Dictionary<string, object?>()
+                },
+                ["required"] = new List<object?> { "name", "value" }
+            }
+        };
+        var result = SseStreamConverter.WrapTextForJsonSchema("test value", fmt);
+        var parsed = JsonSerializer.Deserialize<Dictionary<string, string>>(result);
+        Assert.NotNull(parsed);
+        Assert.Equal("test value", parsed!["name"]);
+        Assert.False(parsed.ContainsKey("value"));
+    }
+
+    [Fact]
+    public void WrapTextForJsonSchema_NoRequiredFields_UsesFirstProperty()
+    {
+        var fmt = new TextFormatInfo
+        {
+            Type = "json_schema",
+            Schema = new Dictionary<string, object?>
+            {
+                ["properties"] = new Dictionary<string, object?>
+                {
+                    ["label"] = new Dictionary<string, object?>(),
+                    ["detail"] = new Dictionary<string, object?>()
+                }
+            }
+        };
+        var result = SseStreamConverter.WrapTextForJsonSchema("some text", fmt);
+        var parsed = JsonSerializer.Deserialize<Dictionary<string, string>>(result);
+        Assert.NotNull(parsed);
+        Assert.Equal("some text", parsed!["label"]);
+    }
+
+    [Fact]
+    public void ExtractFirstSchemaField_DefaultIsTitle()
+    {
+        var fmt = new TextFormatInfo { Type = "json_schema" };
+        Assert.Equal("title", SseStreamConverter.ExtractFirstSchemaField(fmt));
+    }
+
+    [Fact]
+    public void ExtractFirstSchemaField_UseSchemaNameWhenNoSchema()
+    {
+        var fmt = new TextFormatInfo { Type = "json_schema", SchemaName = "my_field" };
+        Assert.Equal("my_field", SseStreamConverter.ExtractFirstSchemaField(fmt));
+    }
 }

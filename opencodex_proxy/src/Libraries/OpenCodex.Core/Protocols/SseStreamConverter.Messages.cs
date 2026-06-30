@@ -354,6 +354,14 @@ public static partial class SseStreamConverter
                             ["delta"] = thinking
                         });
                 }
+                else if (deltaType == "signature_delta")
+                {
+                    var signature = StringValue(delta, "signature", string.Empty);
+                    if (signature.Length > 0 && contentBlocks.TryGetValue(index, out var sigBlock))
+                    {
+                        sigBlock["signature"] = $"{StringValue(sigBlock, "signature", string.Empty)}{signature}";
+                    }
+                }
                 else if (deltaType == "text_delta")
                 {
                     var text = StringValue(delta, "text", string.Empty);
@@ -501,6 +509,10 @@ public static partial class SseStreamConverter
         var output = new List<object?>();
         var combinedReasoning = string.Concat(reasoningParts);
         var combinedText = string.Concat(textParts);
+        if (result.TextFormat is { Type: "json_schema" } && combinedText.Length > 0)
+        {
+            combinedText = WrapTextForJsonSchema(combinedText, result.TextFormat);
+        }
         if (combinedReasoning.Length > 0)
         {
             var reasoningItem = new Dictionary<string, object?>
@@ -516,7 +528,7 @@ public static partial class SseStreamConverter
                         ["text"] = combinedReasoning
                     }
                 },
-                ["encrypted_content"] = combinedReasoning
+                ["encrypted_content"] = BuildThinkingEncryptedContent(contentBlocks, combinedReasoning)
             };
             output.Add(reasoningItem);
             yield return Emit(
@@ -668,5 +680,29 @@ public static partial class SseStreamConverter
                     ["truncation"] = "disabled"
                 }
             });
+    }
+
+    private static string BuildThinkingEncryptedContent(
+        SortedDictionary<int, Dictionary<string, object?>> contentBlocks,
+        string fallbackText)
+    {
+        var thinkingBlocks = contentBlocks.Values
+            .Where(block => StringValue(block, "type", string.Empty) == "thinking")
+            .Select(block =>
+            {
+                var cleaned = new Dictionary<string, object?>(StringComparer.Ordinal);
+                if (block.TryGetValue("type", out var type)) cleaned["type"] = type;
+                if (block.TryGetValue("thinking", out var thinking)) cleaned["thinking"] = thinking;
+                if (block.TryGetValue("signature", out var signature)) cleaned["signature"] = signature;
+                return (object?)cleaned;
+            })
+            .ToList();
+
+        if (thinkingBlocks.Count > 0 && thinkingBlocks.Any(b => (b as Dictionary<string, object?>)?.ContainsKey("signature") == true))
+        {
+            return ProtocolConverter.EncodeAnthropicThinkingBlocks(thinkingBlocks);
+        }
+
+        return fallbackText;
     }
 }

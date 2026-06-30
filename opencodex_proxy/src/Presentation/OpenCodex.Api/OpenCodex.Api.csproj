@@ -18,4 +18,11 @@
     <ProjectReference Include="..\..\Libraries\OpenCodex.CoreBase\OpenCodex.CoreBase.csproj" />
     <ProjectReference Include="..\..\Libraries\OpenCodex.Data\OpenCodex.Data.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\..\..\..\frontend\dist\admin\**\*">
+      <Link>wwwroot\admin\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
 </Project>

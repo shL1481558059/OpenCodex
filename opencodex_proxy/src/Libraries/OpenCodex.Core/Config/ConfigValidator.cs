@@ -207,6 +207,12 @@ public static class ConfigValidator
                 throw new ConfigException($"{label}.{field} must be a list");
             }
         }
+
+        var enableApplyPatchPromptCompat = GetValue(compat, "enable_apply_patch_prompt_compat", false);
+        if (enableApplyPatchPromptCompat is not bool)
+        {
+            throw new ConfigException($"{label}.enable_apply_patch_prompt_compat must be a boolean");
+        }
     }
 
     private static object? GetValue(IReadOnlyDictionary<string, object?> dictionary, string key, object? defaultValue)

@@ -163,7 +163,10 @@ public sealed class ProxyStreamService : IProxyStreamService
             else
             {
                 Console.Error.WriteLine($"[OCXP-DEBUG] [{context.RequestId}] StreamAsync: CONVERSION path, creating IAsyncEnumerables...");
-                var converted = new ConvertedStreamResult();
+                var converted = new ConvertedStreamResult
+                {
+                    TextFormat = ExtractTextFormat(context.OriginalPayload)
+                };
                 var visibleModel = VisibleModel(context);
                 var streamLines = _upstream.StreamJsonAsync(
                     context.Route.Channel,
@@ -634,6 +637,39 @@ public sealed class ProxyStreamService : IProxyStreamService
         };
     }
 
+
+    internal static TextFormatInfo? ExtractTextFormat(Dictionary<string, object?> payload)
+    {
+        if (!payload.TryGetValue("text", out var textObj) || textObj is not Dictionary<string, object?> text)
+        {
+            return null;
+        }
+
+        if (!text.TryGetValue("format", out var formatObj) || formatObj is not Dictionary<string, object?> format)
+        {
+            return null;
+        }
+
+        var type = format.TryGetValue("type", out var typeVal) ? typeVal?.ToString() : null;
+        if (type != "json_schema")
+        {
+            return null;
+        }
+
+        var name = format.TryGetValue("name", out var nameVal) ? nameVal?.ToString() : null;
+        Dictionary<string, object?>? schema = null;
+        if (format.TryGetValue("schema", out var schemaObj) && schemaObj is Dictionary<string, object?> schemaDict)
+        {
+            schema = schemaDict;
+        }
+
+        return new TextFormatInfo
+        {
+            Type = type,
+            SchemaName = name,
+            Schema = schema
+        };
+    }
     private sealed class StreamLogCaptureState
     {
         public string? CurrentEventName { get; set; }

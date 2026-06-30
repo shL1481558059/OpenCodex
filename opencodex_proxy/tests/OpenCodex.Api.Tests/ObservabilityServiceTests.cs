@@ -228,6 +228,126 @@ context.Users.Add(new User
     }
 
     [Fact]
+    public void LogsAndStatsExcludeAttemptLogsByDefault()
+    {
+        var dbPath = Path.Combine(
+            Path.GetTempPath(),
+            "opencodex-api-tests",
+            $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        var mainLogId = Guid.Parse("33333333-3333-3333-3333-333333333351");
+        var attemptLogId = Guid.Parse("33333333-3333-3333-3333-333333333352");
+
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            context.Users.Add(new User
+            {
+                Id = AdminUserId,
+                Username = "admin",
+                PasswordHash = "hash",
+                Role = "superadmin",
+                Enabled = true,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            context.RequestLogs.AddRange(
+                new RequestLog
+                {
+                    Id = mainLogId,
+                    RequestId = "req-attempt-filter",
+                    CreatedAt = 1_700_001_000,
+                    Method = "POST",
+                    Path = "/v1/responses",
+                    Model = "gpt-test",
+                    RequestType = ProxyRequestTypes.Main,
+                    LifecycleStatus = ProxyRequestLifecycleStatus.Success,
+                    IsStream = false,
+                    StatusCode = 200,
+                    OwnerUserId = AdminUserId,
+                    InputTokens = 10,
+                    OutputTokens = 5,
+                    Cost = 0.01
+                },
+                new RequestLog
+                {
+                    Id = attemptLogId,
+                    RequestId = "req-attempt-filter",
+                    CreatedAt = 1_700_001_001,
+                    Method = "POST",
+                    Path = "/v1/responses",
+                    Model = "gpt-test",
+                    RequestType = ProxyRequestTypes.Attempt,
+                    ParentRequestLogId = mainLogId,
+                    LifecycleStatus = ProxyRequestLifecycleStatus.Failed,
+                    IsStream = false,
+                    StatusCode = 502,
+                    Error = "primary unavailable",
+                    OwnerUserId = AdminUserId,
+                    InputTokens = 999,
+                    OutputTokens = 999,
+                    Cost = 99
+                });
+            context.RequestLogDetails.Add(new RequestLogDetail
+            {
+                RequestLogId = attemptLogId,
+                ResponseBody = "{\"route_attempt_number\":1,\"route_retry_number\":0}"
+            });
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+
+        var defaultLogs = service.ReadLogsPage(1, 20, new Dictionary<string, object?>());
+        Assert.True(defaultLogs.Succeeded);
+        var defaultLog = Assert.Single(defaultLogs.Payload!.Events);
+        Assert.Equal(mainLogId, defaultLog.Id);
+
+        var defaultStats = service.ReadStats(
+            "custom",
+            1_700_000_900,
+            1_700_001_100,
+            new Dictionary<string, object?>());
+        Assert.True(defaultStats.Succeeded);
+        Assert.Equal(1, defaultStats.Payload!.Summary.RequestCount);
+        Assert.Equal(15, defaultStats.Payload.Summary.TotalTokens);
+
+        var attemptLogs = service.ReadLogsPage(1, 20, new Dictionary<string, object?>
+        {
+            ["request_type"] = ProxyRequestTypes.Attempt
+        });
+        Assert.True(attemptLogs.Succeeded);
+        var attemptLog = Assert.Single(attemptLogs.Payload!.Events);
+        Assert.Equal(attemptLogId, attemptLog.Id);
+        Assert.Equal(mainLogId, attemptLog.ParentRequestLogId);
+
+        var attemptStats = service.ReadStats(
+            "custom",
+            1_700_000_900,
+            1_700_001_100,
+            new Dictionary<string, object?>
+            {
+                ["request_type"] = ProxyRequestTypes.Attempt
+            });
+        Assert.True(attemptStats.Succeeded);
+        Assert.Equal(1, attemptStats.Payload!.Summary.RequestCount);
+        Assert.Equal(1_998, attemptStats.Payload.Summary.TotalTokens);
+
+        var detail = service.ReadLogById(attemptLogId);
+        Assert.True(detail.Succeeded);
+        Assert.Equal(ProxyRequestTypes.Attempt, detail.Payload!.RequestType);
+        Assert.Contains("\"route_attempt_number\":1", detail.Payload.ResponseBody, StringComparison.Ordinal);
+
+        var requestTypeOptions = service.ReadLogFilterOption(
+            "request_type",
+            null,
+            new Dictionary<string, object?>());
+        Assert.True(requestTypeOptions.Succeeded);
+        var options = Assert.IsType<List<string>>(requestTypeOptions.Payload!["request_types"]);
+        Assert.Contains(ProxyRequestTypes.Attempt, options);
+    }
+
+    [Fact]
     public void StatsUsesCurrentTimeForRecentMetricsWhenCustomEndIsInFuture()
     {
         var dbPath = Path.Combine(

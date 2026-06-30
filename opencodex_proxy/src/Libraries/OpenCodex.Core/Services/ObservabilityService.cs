@@ -22,6 +22,13 @@ public sealed class ObservabilityService : IObservabilityService
         "failed"
     };
 
+    private static readonly IReadOnlyList<string> RequestTypeValues =
+    [
+        ProxyRequestTypes.Main,
+        ProxyRequestTypes.Ocr,
+        ProxyRequestTypes.Attempt
+    ];
+
     private static readonly IReadOnlyDictionary<string, (string OptionKey, string OptionType)> LogFilterFields =
         new Dictionary<string, (string OptionKey, string OptionType)>(StringComparer.Ordinal)
         {
@@ -240,7 +247,10 @@ public sealed class ObservabilityService : IObservabilityService
             return null;
         }
 
-        var query = ApplyLogFilters(_logRepository.TableNoTracking, filters ?? new Dictionary<string, object?>());
+        var query = ApplyLogFilters(
+            _logRepository.TableNoTracking,
+            filters ?? new Dictionary<string, object?>(),
+            excludeAttemptsByDefault: false);
         var log = query.FirstOrDefault(item => item.Id == guidId);
         if (log is null)
         {
@@ -274,7 +284,7 @@ public sealed class ObservabilityService : IObservabilityService
         {
             return new Dictionary<string, object>(StringComparer.Ordinal)
             {
-                ["request_types"] = new List<string> { ProxyRequestTypes.Main, ProxyRequestTypes.Ocr }
+                ["request_types"] = RequestTypeValues.ToList()
             };
         }
 
@@ -364,8 +374,10 @@ public sealed class ObservabilityService : IObservabilityService
 
     private IQueryable<RequestLog> ApplyLogFilters(
         IQueryable<RequestLog> query,
-        IReadOnlyDictionary<string, object?> filters)
+        IReadOnlyDictionary<string, object?> filters,
+        bool excludeAttemptsByDefault = true)
     {
+        var hasRequestTypeFilter = false;
         foreach (var (field, value) in filters)
         {
             if (IsEmptyLogFilterValue(value))
@@ -373,7 +385,17 @@ public sealed class ObservabilityService : IObservabilityService
                 continue;
             }
 
+            if (field == "request_type")
+            {
+                hasRequestTypeFilter = true;
+            }
+
             query = ApplyLogFilter(query, field, value);
+        }
+
+        if (excludeAttemptsByDefault && !hasRequestTypeFilter)
+        {
+            query = query.Where(log => log.RequestType == null || log.RequestType != ProxyRequestTypes.Attempt);
         }
 
         return query;
@@ -474,7 +496,7 @@ public sealed class ObservabilityService : IObservabilityService
             ["channel_ids"] = new List<SelectOption<Guid>>(),
             ["owner_usernames"] = new List<string>(),
             ["paths"] = new List<string>(),
-            ["request_types"] = new List<string> { ProxyRequestTypes.Main, ProxyRequestTypes.Ocr },
+            ["request_types"] = RequestTypeValues.ToList(),
             ["status_codes"] = new List<int>(),
             ["api_key_ids"] = new List<LogApiKeyFilterOption>(),
             ["request_statuses"] = RequestStatusValues.ToList()

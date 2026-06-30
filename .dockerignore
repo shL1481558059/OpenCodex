@@ -20,6 +20,12 @@ logs
 frontend/node_modules
 frontend/dist
 
+# Tauri
+src-tauri/target
+src-tauri/resources
+src-tauri/binaries/publish
+src-tauri/binaries/opencodex-api-*
+
 # .NET 构建产物
 opencodex_proxy/**/bin/
 opencodex_proxy/**/obj/
@@ -41,4 +47,3 @@ docs/
 
 # 其他
 .playwright-cli
-

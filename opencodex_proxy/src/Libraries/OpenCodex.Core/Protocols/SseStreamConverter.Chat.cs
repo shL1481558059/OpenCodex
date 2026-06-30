@@ -432,6 +432,10 @@ public static partial class SseStreamConverter
         }
 
         var combinedText = string.Concat(textParts);
+        if (result.TextFormat is { Type: "json_schema" } && combinedText.Length > 0)
+        {
+            combinedText = WrapTextForJsonSchema(combinedText, result.TextFormat);
+        }
         var combinedReasoning = string.Concat(reasoningParts);
         var reconstructedToolCalls = new List<object?>();
         foreach (var (index, aggregate) in toolCalls.ToList())

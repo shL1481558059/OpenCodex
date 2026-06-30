@@ -71,6 +71,14 @@ public static class ChannelCompatRequestRewriter
             throw new BadRequestException($"upstream does not support parameter(s): {string.Join(", ", unsupported)}");
         }
 
+
+        // 7. preserve_thinking_history: inject internal marker for Messages protocol conversion
+        var preserveThinkingHistory = JsonDictionaryValue.Get(compat, "preserve_thinking_history") is true;
+        if (preserveThinkingHistory)
+        {
+            result["_ocxp_preserve_thinking_history"] = true;
+            details.Add("preserve_thinking_history:true");
+        }
         return new ChannelCompatRewriteResult(result, details);
     }
 

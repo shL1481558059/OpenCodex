@@ -143,6 +143,8 @@ public static partial class ProtocolConverter
                 continue;
             }
 
+            tool = RewriteApplyPatchToolDescription(tool);
+
             result.Add(Obj(
                 ("type", "function"),
                 ("function", Obj(
@@ -163,6 +165,8 @@ public static partial class ProtocolConverter
             {
                 continue;
             }
+
+            tool = RewriteApplyPatchToolDescription(tool);
 
             result.Add(Obj(
                 ("name", GetValue(tool, "name")),
@@ -294,7 +298,43 @@ public static partial class ProtocolConverter
                 : GetValue(tool, "description") ?? $"Wrapped Responses tool: {toolType}"),
             ("parameters", parameters),
             ("native_type", toolType),
+            ("compat", GetValue(tool, "compat") ?? new Dictionary<string, object?>()),
             ("raw", DeepCopy(tool)));
+    }
+
+    private static Dictionary<string, object?> RewriteApplyPatchToolDescription(Dictionary<string, object?> tool)
+    {
+        var nativeType = GetString(tool, "native_type") ?? string.Empty;
+        if (nativeType != "apply_patch")
+        {
+            return tool;
+        }
+
+        var compat = ObjectValue(tool, "compat");
+        if (!IsTruthy(GetValue(compat, "enable_apply_patch_prompt_compat")))
+        {
+            return tool;
+        }
+
+        var rewritten = new Dictionary<string, object?>(tool, StringComparer.Ordinal);
+        rewritten["description"] = string.Join("\n", new[]
+        {
+            "Apply file edits using patch text only.",
+            "Return only the patch payload for this tool call. Do not add explanations, Markdown code fences, or JSON wrappers.",
+            "The patch must start with '*** Begin Patch' and end with '*** End Patch'.",
+            "Supported operations:",
+            "- '*** Add File: <path>' followed by '+' lines.",
+            "- '*** Update File: <path>' followed by at least one '@@' block with context, '+' and '-' lines.",
+            "- '*** Delete File: <path>'.",
+            "Minimal example:",
+            "*** Begin Patch",
+            "*** Update File: src/example.txt",
+            "@@",
+            "-old line",
+            "+new line",
+            "*** End Patch"
+        });
+        return rewritten;
     }
 
     private static List<object?> DedupeCanonicalTools(List<object?> tools)
