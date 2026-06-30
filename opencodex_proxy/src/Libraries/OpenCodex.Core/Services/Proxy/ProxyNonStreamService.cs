@@ -33,11 +33,12 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
         Dictionary<string, object?>? responsePayload = null;
         Dictionary<string, object?>? webSearchDetails = null;
         object? errorResponse = null;
-        var statusCode = ProxyHttpStatus.Ok;
-        string? error = null;
+       var statusCode = ProxyHttpStatus.Ok;
+       string? error = null;
+        var textFormat = ProtocolConverter.ExtractTextFormat(context.OriginalPayload);
 
-        try
-        {
+       try
+       {
             if (_webSearch.CanSimulate(
                 context.EntryProtocol,
                 context.ChannelType,
@@ -54,8 +55,8 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
                         context.DefaultTimeout,
                         context.CancellationToken);
                     upstreamRequest = simulation.FinalUpstreamRequest;
-                    upstreamResponse = simulation.FinalUpstreamResponse;
-                    responsePayload = simulation.ResponsePayload;
+                   upstreamResponse = simulation.FinalUpstreamResponse;
+                   responsePayload = simulation.ResponsePayload;
                     webSearchDetails = simulation.Details;
                 }
                 catch (WebSearchSimulationUpstreamException exception)
@@ -75,7 +76,6 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
                     upstreamRequest,
                     context.DefaultTimeout,
                     context.CancellationToken);
-                var textFormat = ProxyStreamService.ExtractTextFormat(context.OriginalPayload);
                 responsePayload = ProtocolConverter.ConvertResponse(
                     upstreamResponse,
                     context.EntryProtocol,

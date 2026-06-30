@@ -48,6 +48,39 @@ public static partial class ProtocolConverter
                                                   The opening and closing tags must each be on their own line. Do not translate the tags. The client will not recognize the plan without these tags.
                                                   """;
 
+    internal static TextFormatInfo? ExtractTextFormat(Dictionary<string, object?> payload)
+    {
+        if (!payload.TryGetValue("text", out var textObj) || textObj is not Dictionary<string, object?> text)
+        {
+            return null;
+        }
+
+        if (!text.TryGetValue("format", out var formatObj) || formatObj is not Dictionary<string, object?> format)
+        {
+            return null;
+        }
+
+        var type = format.TryGetValue("type", out var typeVal) ? typeVal?.ToString() : null;
+        if (type != "json_schema")
+        {
+            return null;
+        }
+
+        var name = format.TryGetValue("name", out var nameVal) ? nameVal?.ToString() : null;
+        Dictionary<string, object?>? schema = null;
+        if (format.TryGetValue("schema", out var schemaObj) && schemaObj is Dictionary<string, object?> schemaDict)
+        {
+            schema = schemaDict;
+        }
+
+        return new TextFormatInfo
+        {
+            Type = type,
+            SchemaName = name,
+            Schema = schema
+        };
+    }
+
     private static bool IsResponsesToolCallLike(Dictionary<string, object?> item)
     {
         var type = GetString(item, "type");
@@ -170,7 +203,7 @@ public static partial class ProtocolConverter
         var canonical = ToCanonicalResponse(payload, targetProtocol, originalModel);
         var result = FromCanonicalResponse(canonical, sourceProtocol);
 
-        if (textFormat is { Type: "json_schema" } && targetProtocol == Responses)
+        if (textFormat is { Type: "json_schema" } && sourceProtocol == Responses)
         {
             result = ApplyJsonSchemaTextFormat(result, textFormat);
         }
@@ -178,7 +211,7 @@ public static partial class ProtocolConverter
         return result;
     }
 
-    private static Dictionary<string, object?> ApplyJsonSchemaTextFormat(
+    internal static Dictionary<string, object?> ApplyJsonSchemaTextFormat(
         Dictionary<string, object?> responsePayload,
         TextFormatInfo textFormat)
     {

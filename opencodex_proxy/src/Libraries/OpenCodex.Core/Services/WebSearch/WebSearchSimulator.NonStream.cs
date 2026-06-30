@@ -19,6 +19,7 @@ public sealed partial class WebSearchSimulator
         var protocol = StringValue(channel, "type");
         var requestPayload = DeepCopyObject(upstreamRequest);
         requestPayload["stream"] = false;
+        var textFormat = ProtocolConverter.ExtractTextFormat(payload);
         var webResults = new List<WebSearchToolResult>();
         var upstreamCalls = new List<Dictionary<string, object?>>();
         var webLimit = WebSearchRequestPolicy.MaxWebSearchCalls(payload);
@@ -60,7 +61,8 @@ public sealed partial class WebSearchSimulator
                     upstreamResponse,
                     ProtocolConverter.Responses,
                     protocol,
-                    originalModel);
+                    originalModel,
+                    textFormat);
                 if (webResults.Count > 0)
                 {
                     responsePayload = WebSearchResponsePayload.PrependWebSearchItems(
@@ -132,7 +134,8 @@ public sealed partial class WebSearchSimulator
                     upstreamResponse,
                     ProtocolConverter.Responses,
                     protocol,
-                    originalModel);
+                    originalModel,
+                    textFormat);
                 responsePayload = WebSearchResponsePayload.ReplaceOrPrependWebSearchItems(responsePayload, webResults);
                 responsePayload = WebSearchResponsePayload.AddSourceAnnotations(responsePayload, webResults);
                 return new WebSearchSimulationResult(
@@ -173,7 +176,8 @@ public sealed partial class WebSearchSimulator
                     upstreamResponse,
                     ProtocolConverter.Responses,
                     protocol,
-                    originalModel);
+                    originalModel,
+                    textFormat);
                 responsePayload = WebSearchResponsePayload.PrependWebSearchItems(
                     responsePayload,
                     webResults,
@@ -191,7 +195,8 @@ public sealed partial class WebSearchSimulator
             upstreamResponse,
             ProtocolConverter.Responses,
             protocol,
-            originalModel);
+            originalModel,
+            textFormat);
         fallbackResponse = WebSearchResponsePayload.PrependWebSearchItems(
             fallbackResponse,
             webResults,
