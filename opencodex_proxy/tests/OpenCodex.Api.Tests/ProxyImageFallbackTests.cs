@@ -463,27 +463,21 @@ public sealed class ProxyImageFallbackTests
         var response = await SendJsonWithCookie(
             client,
             HttpMethod.Post,
-            "/config",
+            "/channels",
             cookie,
             new
             {
-                channels = new[]
-                {
-                    new
-                    {
-                        id = "primary",
-                        name = "Primary",
-                        type = "responses",
-                        baseurl = "https://example.test/v1",
-                        apikey = "secret",
-                        auth_mode = "config",
-                        timeout_seconds = 30,
-                        retry_count = 0,
-                        capacity = 3,
-                        enabled = true,
-                        models = models.ToArray()
-                    }
-                }
+                id = "primary",
+                name = "Primary",
+                type = "responses",
+                baseurl = "https://example.test/v1",
+                apikey = "secret",
+                auth_mode = "config",
+                timeout_seconds = 30,
+                retry_count = 0,
+                capacity = 3,
+                enabled = true,
+                models = models.ToArray()
             });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 

@@ -57,17 +57,51 @@ public sealed class ConfigService : IConfigService
             ResolveHealthStatus));
     }
 
-    public ApiOpResult<ConfigResponse> SaveConfig(
-        IReadOnlyDictionary<string, object?> body)
+    public ApiOpResult<ConfigResponse> CreateChannel(ChannelRequest request)
     {
         var (currentUsername, isSuperadmin) = CurrentScope();
-        var saved = SaveChannels(body, currentUsername, isSuperadmin);
+        var saved = SaveSingleChannel(null, request, currentUsername, isSuperadmin);
         return saved.Succeeded
             ? ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
                 ReadChannels(currentUsername, isSuperadmin),
                 ResolveActiveRequests,
                 ResolveHealthStatus))
             : ApiOpResult<ConfigResponse>.Fail(saved.Code, saved.Description);
+    }
+
+    public ApiOpResult<ConfigResponse> UpdateChannel(Guid channelId, ChannelRequest request)
+    {
+        var (currentUsername, isSuperadmin) = CurrentScope();
+        var saved = SaveSingleChannel(channelId, request, currentUsername, isSuperadmin);
+        return saved.Succeeded
+            ? ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
+                ReadChannels(currentUsername, isSuperadmin),
+                ResolveActiveRequests,
+                ResolveHealthStatus))
+            : ApiOpResult<ConfigResponse>.Fail(saved.Code, saved.Description);
+    }
+
+    public ApiOpResult<ConfigResponse> DeleteChannel(Guid channelId)
+    {
+        if (channelId == Guid.Empty)
+        {
+            return ApiOpResult<ConfigResponse>.Fail(400, "channel id is required");
+        }
+
+        var (currentUsername, isSuperadmin) = CurrentScope();
+        var channel = FindChannelInScope(channelId, currentUsername, isSuperadmin);
+        if (channel is null)
+        {
+            return ApiOpResult<ConfigResponse>.Fail(404, "channel not found");
+        }
+
+        DeleteMappingsForChannels([channel.Id]);
+        _channelRepository.Delete(channel);
+
+        return ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
+            ReadChannels(currentUsername, isSuperadmin),
+            ResolveActiveRequests,
+            ResolveHealthStatus));
     }
 
     public ApiOpResult<ConfigResponse> ImportConfig(
@@ -127,8 +161,9 @@ public sealed class ConfigService : IConfigService
         return (currentUser.Username, currentUser.Role == "superadmin");
     }
 
-    private ApiOpResult SaveChannels(
-        IReadOnlyDictionary<string, object?> body,
+    private ApiOpResult SaveSingleChannel(
+        Guid? channelId,
+        ChannelRequest request,
         string currentUsername,
         bool isSuperadmin)
     {
@@ -136,33 +171,157 @@ public sealed class ConfigService : IConfigService
         {
             var ownerUsername = OwnerScope(currentUsername, isSuperadmin);
             var settings = _settingsProvider.GetSettings();
-            var normalized = ConfigNormalizer.Normalize(WithEffectiveOwner(
-                body,
-                ownerUsername,
-                settings.AdminUsername));
-            ConfigValidator.Validate(normalized, settings.DefaultTimeout);
-            var channels = JsonDictionaryValue.List(normalized, "channels")
-                .Select(item => item as IReadOnlyDictionary<string, object?>)
-                .ToList();
-            if (channels.Any(item => item is null))
+            var channel = request.ToDictionary();
+            if (channelId.HasValue)
             {
-                return ValidationFailure("each channel must be an object");
+                channel["id"] = channelId.Value.ToString();
+            }
+            else if (string.IsNullOrWhiteSpace(JsonDictionaryValue.String(channel, "id")))
+            {
+                channel["id"] = Guid.NewGuid().ToString();
             }
 
-            ReplaceChannels(
-                settings,
-                channels.Cast<IReadOnlyDictionary<string, object?>>(),
-                ownerUsername);
+            var explicitOwner = JsonDictionaryValue.String(channel, "owner_username");
+            channel["owner_username"] = ownerUsername ?? (explicitOwner.Length == 0 ? settings.AdminUsername : explicitOwner);
+            if (channel["owner_username"] is string owner && owner.Trim().Length == 0)
+            {
+                channel["owner_username"] = settings.AdminUsername;
+            }
+
+            var normalized = ConfigNormalizer.Normalize(new Dictionary<string, object?>
+            {
+                ["channels"] = new List<object?> { channel }
+            });
+            var validated = JsonDictionaryValue.List(normalized, "channels")
+                .Select(item => item as IReadOnlyDictionary<string, object?>)
+                .FirstOrDefault();
+            if (validated is null)
+            {
+                return ValidationFailure("channel must be an object");
+            }
+
+            ConfigValidator.ValidateChannel(validated, settings.DefaultTimeout);
+
+            var now = UnixTimeSeconds();
+            if (channelId.HasValue)
+            {
+                var existing = FindChannelInScope(channelId.Value, currentUsername, isSuperadmin);
+                if (existing is null)
+                {
+                    return ApiOpResult.Fail(404, "channel not found");
+                }
+
+                var nextName = JsonDictionaryValue.String(validated, "name");
+                var duplicatedNameChannel = _channelRepository.TableNoTracking.FirstOrDefault(candidate =>
+                    candidate.OwnerUserId == existing.OwnerUserId
+                    && candidate.Id != existing.Id
+                    && candidate.Name == nextName);
+                if (duplicatedNameChannel is not null)
+                {
+                    return ValidationFailure($"duplicated channel name: {nextName}");
+                }
+
+                existing.Name = nextName;
+                existing.Type = JsonDictionaryValue.String(validated, "type");
+                existing.BaseUrl = JsonDictionaryValue.String(validated, "baseurl");
+                existing.ApiKey = JsonDictionaryValue.String(validated, "apikey");
+                existing.AuthMode = StringOrDefault(validated, "auth_mode", "config");
+                existing.HeadersJson = JsonSerializer.Serialize(
+                    JsonDictionaryValue.Get(validated, "headers") ?? new Dictionary<string, object?>(),
+                    JsonOptions);
+                existing.TimeoutSeconds = TimeoutValue(
+                    JsonDictionaryValue.Get(validated, "timeout_seconds"),
+                    settings.DefaultTimeout);
+                existing.RetryCount = RetryCountValue(validated);
+                existing.Priority = PriorityValue(validated, existing.Priority);
+                existing.Capacity = CapacityValue(validated, null, (existing.OwnerUserId, existing.Id), existing.Capacity);
+                existing.CompatJson = JsonSerializer.Serialize(
+                    JsonDictionaryValue.Get(validated, "compat") ?? new Dictionary<string, object?>(),
+                    JsonOptions);
+                existing.ModelsJson = JsonSerializer.Serialize(
+                    JsonDictionaryValue.Get(validated, "models") ?? new List<object?>(),
+                    JsonOptions);
+                existing.Enabled = JsonDictionaryValue.Get(validated, "enabled") is not false;
+                existing.UpdatedAt = now;
+                _channelRepository.Update(existing);
+                SyncChannelModelMappings(existing);
+                return ApiOpResult.Succeed();
+            }
+
+            var channelOwnerUsername = NormalizeUsername(JsonDictionaryValue.Get(validated, "owner_username"));
+            if (channelOwnerUsername.Length == 0)
+            {
+                channelOwnerUsername = NormalizeUsername(settings.AdminUsername);
+            }
+
+            var channelOwnerUser = _userRepository.TableNoTracking
+                .FirstOrDefault(u => u.Username == channelOwnerUsername);
+            if (channelOwnerUser is null)
+            {
+                return ValidationFailure($"owner user not found: {channelOwnerUsername}");
+            }
+
+            var idText = JsonDictionaryValue.String(validated, "id");
+            var parsedId = Guid.TryParse(idText, out var channelGuid) && channelGuid != Guid.Empty
+                ? channelGuid
+                : Guid.NewGuid();
+            var duplicatedChannel = _channelRepository.TableNoTracking
+                .FirstOrDefault(existing => existing.OwnerUserId == channelOwnerUser.Id && existing.Id == parsedId);
+            if (duplicatedChannel is not null)
+            {
+                return ValidationFailure($"duplicated channel id: {parsedId}");
+            }
+
+            var channelName = JsonDictionaryValue.String(validated, "name");
+            var duplicatedName = _channelRepository.TableNoTracking
+                .FirstOrDefault(existing => existing.OwnerUserId == channelOwnerUser.Id && existing.Name == channelName);
+            if (duplicatedName is not null)
+            {
+                return ValidationFailure($"duplicated channel name: {channelName}");
+            }
+
+            var newChannel = new Channel
+            {
+                Id = parsedId,
+                OwnerUserId = channelOwnerUser.Id,
+                Position = 15,
+                Name = channelName,
+                Type = JsonDictionaryValue.String(validated, "type"),
+                BaseUrl = JsonDictionaryValue.String(validated, "baseurl"),
+                ApiKey = JsonDictionaryValue.String(validated, "apikey"),
+                AuthMode = StringOrDefault(validated, "auth_mode", "config"),
+                HeadersJson = JsonSerializer.Serialize(
+                    JsonDictionaryValue.Get(validated, "headers") ?? new Dictionary<string, object?>(),
+                    JsonOptions),
+                TimeoutSeconds = TimeoutValue(
+                    JsonDictionaryValue.Get(validated, "timeout_seconds"),
+                    settings.DefaultTimeout),
+                RetryCount = RetryCountValue(validated),
+                Priority = PriorityValue(validated, 15),
+                Capacity = CapacityValue(validated, null, (channelOwnerUser.Id, Guid.Empty), 3),
+                CompatJson = JsonSerializer.Serialize(
+                    JsonDictionaryValue.Get(validated, "compat") ?? new Dictionary<string, object?>(),
+                    JsonOptions),
+                ModelsJson = JsonSerializer.Serialize(
+                    JsonDictionaryValue.Get(validated, "models") ?? new List<object?>(),
+                    JsonOptions),
+                Enabled = JsonDictionaryValue.Get(validated, "enabled") is not false,
+                CreatedAt = now,
+                UpdatedAt = now
+            };
+
+            _channelRepository.Insert(newChannel);
+            SyncChannelModelMappings(newChannel);
             return ApiOpResult.Succeed();
         }
         catch (ConfigException exception)
         {
             return ValidationFailure(exception.Message);
         }
-       catch (ArgumentException exception)
-       {
-           return ValidationFailure(exception.Message);
-       }
+        catch (ArgumentException exception)
+        {
+            return ValidationFailure(exception.Message);
+        }
     }
 
     private ApiOpResult MergeChannels(
@@ -526,121 +685,6 @@ public sealed class ConfigService : IConfigService
     private static ApiOpResult ValidationFailure(string message)
     {
         return ApiOpResult.Fail(400, message);
-    }
-
-    private void ReplaceChannels(
-        OpenCodexRuntimeSettings settings,
-        IEnumerable<IReadOnlyDictionary<string, object?>> channels,
-        string? ownerUsername)
-    {
-        var normalizedDefaultOwner = NormalizeUsername(settings.AdminUsername);
-        if (normalizedDefaultOwner.Length == 0)
-        {
-            normalizedDefaultOwner = "admin";
-        }
-
-        var normalizedOwner = ownerUsername is null ? null : NormalizeUsername(ownerUsername);
-
-        // 解析 owner username -> userId
-        Guid? scopeUserId = null;
-        Guid defaultOwnerUserId = Guid.Empty;
-        var defaultOwner = _userRepository.TableNoTracking.FirstOrDefault(u => u.Username == normalizedDefaultOwner);
-        if (defaultOwner is not null)
-        {
-            defaultOwnerUserId = defaultOwner.Id;
-        }
-        if (normalizedOwner is not null)
-        {
-            var scopeUser = _userRepository.TableNoTracking.FirstOrDefault(u => u.Username == normalizedOwner);
-            scopeUserId = scopeUser?.Id ?? Guid.Empty;
-        }
-
-        // 匹配键:(ownerUserId, Guid id) 保留 CreatedAt/Capacity
-        var existingCreated = _channelRepository.TableNoTracking
-            .ToDictionary(
-                channel => (channel.OwnerUserId, channel.Id),
-                channel => channel.CreatedAt);
-        var existingCapacities = _channelRepository.TableNoTracking
-            .ToDictionary(
-                channel => (channel.OwnerUserId, channel.Id),
-                channel => channel.Capacity);
-
-        // 删除旧 channel(按 scope)
-        var oldChannels = scopeUserId.HasValue && scopeUserId.Value != Guid.Empty
-            ? _channelRepository.Table.Where(channel => channel.OwnerUserId == scopeUserId.Value).ToList()
-            : _channelRepository.Table.ToList();
-        if (oldChannels.Count > 0)
-        {
-            DeleteMappingsForChannels(oldChannels.Select(channel => channel.Id));
-            _channelRepository.Delete(oldChannels);
-        }
-
-        var now = UnixTimeSeconds();
-        var position = 0;
-        var toInsert = new List<Channel>();
-        foreach (var channel in channels)
-        {
-            var channelOwnerUsername = normalizedOwner
-                ?? NormalizeUsername(JsonDictionaryValue.Get(channel, "owner_username"));
-            if (channelOwnerUsername.Length == 0)
-            {
-                channelOwnerUsername = normalizedDefaultOwner;
-            }
-
-            // owner username -> userId
-            var channelOwnerUser = _userRepository.TableNoTracking
-                .FirstOrDefault(u => u.Username == channelOwnerUsername);
-            var channelOwnerUserId = channelOwnerUser?.Id ?? defaultOwnerUserId;
-
-            var idText = JsonDictionaryValue.String(channel, "id");
-            var channelId = Guid.TryParse(idText, out var parsedId) && parsedId != Guid.Empty
-                ? parsedId
-                : Guid.NewGuid();
-            var key = (channelOwnerUserId, channelId);
-            var createdAt = existingCreated.TryGetValue(key, out var existingCreatedAt)
-                ? existingCreatedAt
-                : now;
-            var capacity = CapacityValue(channel, existingCapacities, key);
-            toInsert.Add(new Channel
-            {
-                Id = channelId,
-                OwnerUserId = channelOwnerUserId,
-                Position = position,
-                Name = JsonDictionaryValue.String(channel, "name"),
-                Type = JsonDictionaryValue.String(channel, "type"),
-                BaseUrl = JsonDictionaryValue.String(channel, "baseurl"),
-                ApiKey = JsonDictionaryValue.String(channel, "apikey"),
-                AuthMode = StringOrDefault(channel, "auth_mode", "config"),
-                HeadersJson = JsonSerializer.Serialize(
-                    JsonDictionaryValue.Get(channel, "headers") ?? new Dictionary<string, object?>(),
-                    JsonOptions),
-                TimeoutSeconds = TimeoutValue(
-                    JsonDictionaryValue.Get(channel, "timeout_seconds"),
-                    settings.DefaultTimeout),
-                RetryCount = RetryCountValue(channel),
-                Priority = PriorityValue(channel, position),
-                Capacity = capacity,
-                CompatJson = JsonSerializer.Serialize(
-                    JsonDictionaryValue.Get(channel, "compat") ?? new Dictionary<string, object?>(),
-                    JsonOptions),
-                ModelsJson = JsonSerializer.Serialize(
-                    JsonDictionaryValue.Get(channel, "models") ?? new List<object?>(),
-                    JsonOptions),
-                Enabled = JsonDictionaryValue.Get(channel, "enabled") is not false,
-                CreatedAt = createdAt,
-                UpdatedAt = now
-            });
-            position++;
-        }
-
-        if (toInsert.Count > 0)
-        {
-            _channelRepository.Insert(toInsert);
-            foreach (var channel in toInsert)
-            {
-                SyncChannelModelMappings(channel);
-            }
-        }
     }
 
     private void SyncChannelModelMappings(Channel channel)

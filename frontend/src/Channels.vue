@@ -948,24 +948,16 @@ async function handleImportChannelsFile(event) {
   }
 }
 
-async function saveConfig(nextChannels) {
-  saveLoading.value = true;
-  try {
-    await persistChannels(nextChannels);
-    ElMessage.success("渠道配置已保存并生效");
-  } catch (error) {
-    ElMessage.error(error.message);
-  } finally {
-    saveLoading.value = false;
+async function persistChannel(channel, method = "POST") {
+  const channelId = channel?.id ? `/${channel.id}` : "";
+  if (method !== "POST" && !channelId) {
+    throw new Error("渠道 id 不存在");
   }
-}
-
-async function persistChannels(nextChannels) {
-  const data = await props.api("/config", {
-    method: "POST",
-    body: JSON.stringify({ channels: nextChannels })
+  const data = await props.api(`/channels${method === "POST" ? "" : channelId}`, {
+    method,
+    body: JSON.stringify(channel)
   });
-  config.channels = Array.isArray(data?.channels) ? data.channels : nextChannels;
+  config.channels = Array.isArray(data?.channels) ? data.channels : config.channels;
 }
 
 async function openChannelDrawer(channel = null, index = -1) {
@@ -1141,25 +1133,33 @@ function markPendingBulkRowsCancelled() {
 }
 
 async function saveChannel() {
+  saveLoading.value = true;
   try {
     const channel = buildChannelFromDraft();
-    const nextChannels = channels.value.slice();
     if (editingIndex.value === -1) {
-      nextChannels.push(channel);
+      await persistChannel(channel, "POST");
     } else {
-      nextChannels.splice(editingIndex.value, 1, channel);
+      await persistChannel(channel, "PUT");
     }
-    await saveConfig(nextChannels);
     channelDrawerVisible.value = false;
+    ElMessage.success("渠道配置已保存并生效");
   } catch (error) {
     ElMessage.error(error.message);
+  } finally {
+    saveLoading.value = false;
   }
 }
 
 async function deleteChannel(index) {
-  const nextChannels = channels.value.slice();
-  nextChannels.splice(index, 1);
-  await saveConfig(nextChannels);
+  const channel = channels.value[index];
+  if (!channel?.id) {
+    throw new Error("渠道 id 不存在");
+  }
+  const data = await props.api(`/channels/${channel.id}`, {
+    method: "DELETE"
+  });
+  config.channels = Array.isArray(data?.channels) ? data.channels : channels.value.filter((_, i) => i !== index);
+  ElMessage.success("渠道已删除");
 }
 
 async function toggleChannelEnabled(channel, index, enabled) {
@@ -1177,7 +1177,7 @@ async function toggleChannelEnabled(channel, index, enabled) {
 
   config.channels = nextChannels;
   try {
-    await persistChannels(nextChannels);
+    await persistChannel({ ...channel, enabled: nextEnabled }, "PUT");
     ElMessage.success(nextEnabled ? "渠道已启用" : "渠道已停用");
   } catch (error) {
     config.channels = previousChannels;
@@ -1663,6 +1663,7 @@ function parseSseChunk(chunk) {
 
 function defaultChannel(priority = 0) {
   return {
+    owner_username: "",
     id: "",
     name: "",
     type: "chat",
@@ -1718,6 +1719,7 @@ function buildChannelFromDraft() {
   }
   const id = ensureChannelId(channelDraft.id, channelDraft.name);
   return {
+    owner_username: channelDraft.owner_username || undefined,
     id,
     name: channelDraft.name.trim(),
     type: channelDraft.type,

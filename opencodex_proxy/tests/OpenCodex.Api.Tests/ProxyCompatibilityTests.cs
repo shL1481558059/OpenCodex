@@ -48,33 +48,27 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         var config = await SendJsonWithCookie(
             client,
             HttpMethod.Post,
-            "/config",
+            "/channels",
             cookie,
             new
             {
-                channels = new[]
+                id = "responses",
+                name = "Responses",
+                type = "responses",
+                baseurl = "https://example.test/v1",
+                apikey = "secret",
+                auth_mode = "config",
+                timeout_seconds = 30,
+                retry_count = 0,
+                capacity = 3,
+                enabled = true,
+                models = new[]
                 {
-                    new
-                    {
-                        id = "responses",
-                        name = "Responses",
-                        type = "responses",
-                        baseurl = "https://example.test/v1",
-                        apikey = "secret",
-                        auth_mode = "config",
-                        timeout_seconds = 30,
-                        retry_count = 0,
-                        capacity = 3,
-                        enabled = true,
-                        models = new[]
-                        {
-                            new { model = "public-model", upstream_model = "upstream-model", supports_image = false }
-                        },
-                        compat = new
-                        {
-                            drop_tool_types = new[] { "image_generation", "image_generation_call" }
-                        }
-                    }
+                    new { model = "public-model", upstream_model = "upstream-model", supports_image = false }
+                },
+                compat = new
+                {
+                    drop_tool_types = new[] { "image_generation", "image_generation_call" }
                 }
             });
         Assert.Equal(HttpStatusCode.OK, config.StatusCode);
