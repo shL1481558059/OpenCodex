@@ -76,35 +76,24 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         });
         var cookie = await LoginAndReadSessionCookie(client, "admin", OpenCodexApiFactory.AdminPassword);
 
-        var config = await SendJsonWithCookie(
-            client,
-            HttpMethod.Post,
-            "/config",
-            cookie,
-            new
+        var config = await CreateChannelAsync(client, cookie, new
+        {
+            id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            name = "Chat",
+            type = "chat",
+            baseurl = "https://example.test/v1",
+            apikey = "secret",
+            auth_mode = "config",
+            timeout_seconds = 30,
+            retry_count = 0,
+            priority = 2,
+            capacity = 3,
+            enabled = true,
+            models = new[]
             {
-                channels = new[]
-                {
-                    new
-                    {
-                        id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                        name = "Chat",
-                        type = "chat",
-                        baseurl = "https://example.test/v1",
-                        apikey = "secret",
-                        auth_mode = "config",
-                        timeout_seconds = 30,
-                        retry_count = 0,
-                        priority = 2,
-                        capacity = 3,
-                        enabled = true,
-                        models = new[]
-                        {
-                            new { model = "public-model", upstream_model = "upstream-model" }
-                        }
-                    }
-                }
-            });
+                new { model = "public-model", upstream_model = "upstream-model" }
+            }
+        });
         Assert.Equal(HttpStatusCode.OK, config.StatusCode);
 
         using var scope = factory.Services.CreateScope();
@@ -139,35 +128,24 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         });
         var cookie = await LoginAndReadSessionCookie(client, "admin", OpenCodexApiFactory.AdminPassword);
 
-        var config = await SendJsonWithCookie(
-            client,
-            HttpMethod.Post,
-            "/config",
-            cookie,
-            new
+        var config = await CreateChannelAsync(client, cookie, new
+        {
+            id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            name = "Chat",
+            type = "chat",
+            baseurl = "https://example.test/v1",
+            apikey = "secret",
+            auth_mode = "config",
+            timeout_seconds = 30,
+            retry_count = 0,
+            priority = 2,
+            capacity = 3,
+            enabled = true,
+            models = new[]
             {
-                channels = new[]
-                {
-                    new
-                    {
-                        id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                        name = "Chat",
-                        type = "chat",
-                        baseurl = "https://example.test/v1",
-                        apikey = "secret",
-                        auth_mode = "config",
-                        timeout_seconds = 30,
-                        retry_count = 0,
-                        priority = 2,
-                        capacity = 3,
-                        enabled = true,
-                        models = new[]
-                        {
-                            new { model = "public-model", upstream_model = "upstream-model" }
-                        }
-                    }
-                }
-            });
+                new { model = "public-model", upstream_model = "upstream-model" }
+            }
+        });
         Assert.Equal(HttpStatusCode.OK, config.StatusCode);
 
         using (var scope = factory.Services.CreateScope())
@@ -197,35 +175,24 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         });
         var cookie = await LoginAndReadSessionCookie(client, "admin", OpenCodexApiFactory.AdminPassword);
 
-        var config = await SendJsonWithCookie(
-            client,
-            HttpMethod.Post,
-            "/config",
-            cookie,
-            new
+        var config = await CreateChannelAsync(client, cookie, new
+        {
+            id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            name = "Chat",
+            type = "chat",
+            baseurl = "https://example.test/v1",
+            apikey = "secret",
+            auth_mode = "config",
+            timeout_seconds = 30,
+            retry_count = 0,
+            priority = 2,
+            capacity = 3,
+            enabled = true,
+            models = new[]
             {
-                channels = new[]
-                {
-                    new
-                    {
-                        id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                        name = "Chat",
-                        type = "chat",
-                        baseurl = "https://example.test/v1",
-                        apikey = "secret",
-                        auth_mode = "config",
-                        timeout_seconds = 30,
-                        retry_count = 0,
-                        priority = 2,
-                        capacity = 3,
-                        enabled = true,
-                        models = new[]
-                        {
-                            new { model = "public-model", upstream_model = "upstream-model" }
-                        }
-                    }
-                }
-            });
+                new { model = "public-model", upstream_model = "upstream-model" }
+            }
+        });
         Assert.Equal(HttpStatusCode.OK, config.StatusCode);
 
         using (var scope = factory.Services.CreateScope())
@@ -252,6 +219,249 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
+    public async Task UpdateChannel_OnlyTouchesTargetChannel()
+    {
+        using var factory = new OpenCodexApiFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = false
+        });
+        var cookie = await LoginAndReadSessionCookie(client, "admin", OpenCodexApiFactory.AdminPassword);
+        var firstId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var secondId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+
+        var firstCreate = await SendJsonWithCookie(
+            client,
+            HttpMethod.Post,
+            "/channels",
+            cookie,
+            new
+            {
+                id = firstId,
+                name = "First",
+                type = "chat",
+                baseurl = "https://example.test/v1",
+                apikey = "secret",
+                auth_mode = "config",
+                timeout_seconds = 30,
+                retry_count = 0,
+                priority = 2,
+                capacity = 3,
+                enabled = true,
+                models = new[]
+                {
+                    new { model = "first-model", upstream_model = "first-upstream" }
+                }
+            });
+        Assert.Equal(HttpStatusCode.OK, firstCreate.StatusCode);
+
+        var secondCreate = await SendJsonWithCookie(
+            client,
+            HttpMethod.Post,
+            "/channels",
+            cookie,
+            new
+            {
+                id = secondId,
+                name = "Second",
+                type = "chat",
+                baseurl = "https://example.test/v1",
+                apikey = "secret",
+                auth_mode = "config",
+                timeout_seconds = 30,
+                retry_count = 0,
+                priority = 3,
+                capacity = 3,
+                enabled = true,
+                models = new[]
+                {
+                    new { model = "second-model", upstream_model = "second-upstream" }
+                }
+            });
+        Assert.Equal(HttpStatusCode.OK, secondCreate.StatusCode);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var configuration = scope.ServiceProvider.GetRequiredService<IConfiguration>();
+            var connectionString = configuration["OPENCODEX_DB_CONNECTION_STRING"] ?? throw new InvalidOperationException("Missing test DB connection string");
+            using var context = OpenCodex.Data.OpenCodexDbContextFactory.Create("sqlite", connectionString);
+            context.Database.Migrate();
+
+            var firstChannel = await context.Channels.SingleAsync(channel => channel.Id == firstId);
+            var secondChannel = await context.Channels.SingleAsync(channel => channel.Id == secondId);
+            firstChannel.UpdatedAt = 100;
+            secondChannel.UpdatedAt = 200;
+            await context.SaveChangesAsync();
+        }
+
+        var update = await SendJsonWithCookie(
+            client,
+            HttpMethod.Put,
+            $"/channels/{firstId}",
+            cookie,
+            new
+            {
+                id = secondId,
+                name = "First Updated",
+                type = "chat",
+                baseurl = "https://example.test/v1",
+                apikey = "secret",
+                auth_mode = "config",
+                timeout_seconds = 45,
+                retry_count = 1,
+                priority = 5,
+                capacity = 3,
+                enabled = false,
+                models = new[]
+                {
+                    new { model = "first-model", upstream_model = "first-upstream" }
+                }
+            });
+        Assert.Equal(HttpStatusCode.OK, update.StatusCode);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var configuration = scope.ServiceProvider.GetRequiredService<IConfiguration>();
+            var connectionString = configuration["OPENCODEX_DB_CONNECTION_STRING"] ?? throw new InvalidOperationException("Missing test DB connection string");
+            using var context = OpenCodex.Data.OpenCodexDbContextFactory.Create("sqlite", connectionString);
+            context.Database.Migrate();
+
+            var channels = await context.Channels.OrderBy(channel => channel.Name).ToListAsync();
+            Assert.Equal(2, channels.Count);
+
+            var updatedChannel = channels.Single(channel => channel.Id == firstId);
+            var untouchedChannel = channels.Single(channel => channel.Id == secondId);
+
+            Assert.Equal("First Updated", updatedChannel.Name);
+            Assert.False(updatedChannel.Enabled);
+            Assert.True(updatedChannel.UpdatedAt > 200);
+            Assert.Equal(200, untouchedChannel.UpdatedAt);
+        }
+    }
+
+    [Fact]
+    public async Task CreateChannel_RejectsDuplicateNameForSameOwner()
+    {
+        using var factory = new OpenCodexApiFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = false
+        });
+        var cookie = await LoginAndReadSessionCookie(client, "admin", OpenCodexApiFactory.AdminPassword);
+
+        var first = await CreateChannelAsync(client, cookie, new
+        {
+            id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            name = "Duplicated",
+            type = "chat",
+            baseurl = "https://example.test/v1",
+            apikey = "secret",
+            auth_mode = "config",
+            timeout_seconds = 30,
+            retry_count = 0,
+            priority = 1,
+            capacity = 3,
+            enabled = true,
+            models = new[] { new { model = "m1", upstream_model = "u1" } }
+        });
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+
+        var second = await CreateChannelAsync(client, cookie, new
+        {
+            id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            name = "Duplicated",
+            type = "chat",
+            baseurl = "https://example.test/v1",
+            apikey = "secret",
+            auth_mode = "config",
+            timeout_seconds = 30,
+            retry_count = 0,
+            priority = 2,
+            capacity = 3,
+            enabled = true,
+            models = new[] { new { model = "m2", upstream_model = "u2" } }
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, second.StatusCode);
+    }
+
+    [Fact]
+    public async Task UpdateChannel_UsesPathIdAndKeepsOwner()
+    {
+        using var factory = new OpenCodexApiFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = false
+        });
+        var adminCookie = await LoginAndReadSessionCookie(client, "admin", OpenCodexApiFactory.AdminPassword);
+
+        var createdUser = await SendJsonWithCookie(
+            client,
+            HttpMethod.Post,
+            "/users",
+            adminCookie,
+            new
+            {
+                username = "worker",
+                password = "worker-password",
+                enabled = true
+            });
+        Assert.Equal(HttpStatusCode.Created, createdUser.StatusCode);
+
+        var workerCookie = await LoginAndReadSessionCookie(client, "worker", "worker-password");
+        var create = await CreateChannelAsync(client, workerCookie, new
+        {
+            id = "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            name = "Worker Channel",
+            type = "chat",
+            baseurl = "https://example.test/v1",
+            apikey = "secret",
+            auth_mode = "config",
+            timeout_seconds = 30,
+            retry_count = 0,
+            priority = 1,
+            capacity = 3,
+            enabled = true,
+            models = new[] { new { model = "m1", upstream_model = "u1" } }
+        });
+        Assert.Equal(HttpStatusCode.OK, create.StatusCode);
+
+        var update = await SendJsonWithCookie(
+            client,
+            HttpMethod.Put,
+            "/channels/cccccccc-cccc-cccc-cccc-cccccccccccc",
+            adminCookie,
+            new
+            {
+                id = "dddddddd-dddd-dddd-dddd-dddddddddddd",
+                owner_username = "admin",
+                name = "Worker Channel Updated",
+                type = "chat",
+                baseurl = "https://example.test/v2",
+                apikey = "secret-2",
+                auth_mode = "config",
+                timeout_seconds = 45,
+                retry_count = 1,
+                priority = 5,
+                capacity = 4,
+                enabled = false,
+                models = new[] { new { model = "m1", upstream_model = "u1" } }
+            });
+        Assert.Equal(HttpStatusCode.OK, update.StatusCode);
+
+        var config = await SendWithCookie(client, HttpMethod.Get, "/config", adminCookie);
+        Assert.Equal(HttpStatusCode.OK, config.StatusCode);
+        using var document = await JsonDocument.ParseAsync(await config.Content.ReadAsStreamAsync());
+        var channels = document.RootElement.GetProperty("Data").GetProperty("channels");
+        var channel = channels.EnumerateArray().Single(item => item.GetProperty("id").GetString() == "cccccccc-cccc-cccc-cccc-cccccccccccc");
+        Assert.Equal("worker", channel.GetProperty("owner_username").GetString());
+        Assert.Equal("Worker Channel Updated", channel.GetProperty("name").GetString());
+        Assert.False(channel.GetProperty("enabled").GetBoolean());
+    }
+
+    [Fact]
     public async Task ConfigSave_BackfillsHistoricalNullCapacityToThreeAndRejectsNewNullCapacity()
     {
         using var factory = new OpenCodexApiFactory();
@@ -262,95 +472,73 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         });
         var cookie = await LoginAndReadSessionCookie(client, "admin", OpenCodexApiFactory.AdminPassword);
 
-        var initialSave = await SendJsonWithCookie(
-            client,
-            HttpMethod.Post,
-            "/config",
-            cookie,
-            new
+        const string legacyChannelId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaabbbb";
+        var initialSave = await CreateChannelAsync(client, cookie, new
+        {
+            id = legacyChannelId,
+            name = "Legacy",
+            type = "chat",
+            baseurl = "https://example.test/v1",
+            apikey = "secret",
+            auth_mode = "config",
+            timeout_seconds = 30,
+            retry_count = 0,
+            priority = 0,
+            enabled = true,
+            models = new[]
             {
-                channels = new[]
-                {
-                    new
-                    {
-                        id = "legacy-null-capacity",
-                        name = "Legacy",
-                        type = "chat",
-                        baseurl = "https://example.test/v1",
-                        apikey = "secret",
-                        auth_mode = "config",
-                        timeout_seconds = 30,
-                        retry_count = 0,
-                        priority = 0,
-                        enabled = true,
-                        models = new[]
-                        {
-                            new { model = "legacy-model", upstream_model = "legacy-upstream" }
-                        }
-                    }
-                }
-            });
+                new { model = "legacy-model", upstream_model = "legacy-upstream" }
+            }
+        });
         Assert.Equal(HttpStatusCode.BadRequest, initialSave.StatusCode);
 
-        await SeedHistoricalNullCapacityChannel(factory.Services);
+        await SeedHistoricalNullCapacityChannel(factory.Services, legacyChannelId);
 
         var rejectMissingCapacityForHistoricalChannel = await SendJsonWithCookie(
             client,
-            HttpMethod.Post,
-            "/config",
+            HttpMethod.Put,
+            $"/channels/{legacyChannelId}",
             cookie,
             new
             {
-                channels = new[]
+                id = legacyChannelId,
+                name = "Legacy Updated",
+                type = "chat",
+                baseurl = "https://example.test/v1",
+                apikey = "secret",
+                auth_mode = "config",
+                timeout_seconds = 45,
+                retry_count = 1,
+                priority = 0,
+                enabled = true,
+                models = new[]
                 {
-                    new
-                    {
-                        id = "legacy-null-capacity",
-                        name = "Legacy Updated",
-                        type = "chat",
-                        baseurl = "https://example.test/v1",
-                        apikey = "secret",
-                        auth_mode = "config",
-                        timeout_seconds = 45,
-                        retry_count = 1,
-                        priority = 0,
-                        enabled = true,
-                        models = new[]
-                        {
-                            new { model = "legacy-model", upstream_model = "legacy-upstream" }
-                        }
-                    }
+                    new { model = "legacy-model", upstream_model = "legacy-upstream" }
                 }
             });
         Assert.Equal(HttpStatusCode.BadRequest, rejectMissingCapacityForHistoricalChannel.StatusCode);
 
         var preserveBackfilledCapacity = await SendJsonWithCookie(
             client,
-            HttpMethod.Post,
-            "/config",
+            HttpMethod.Put,
+            $"/channels/{legacyChannelId}",
             cookie,
             new
             {
-                channels = new[]
+                id = legacyChannelId,
+                name = "Legacy Updated",
+                type = "chat",
+                baseurl = "https://example.test/v1",
+                apikey = "secret",
+                auth_mode = "config",
+                timeout_seconds = 45,
+                retry_count = 1,
+                priority = 0,
+                capacity = 3,
+                enabled = true,
+                models = new[]
                 {
-                    new
-                    {
-                        id = "legacy-null-capacity",
-                        name = "Legacy Updated",
-                        type = "chat",
-                        baseurl = "https://example.test/v1",
-                        apikey = "secret",
-                        auth_mode = "config",
-                        timeout_seconds = 45,
-                        retry_count = 1,
-                        priority = 0,
-                        capacity = 3,
-                        enabled = true,
-                        models = new[]
-                        {
-                            new { model = "legacy-model", upstream_model = "legacy-upstream" }
-                        }
-                    }
+                    new { model = "legacy-model", upstream_model = "legacy-upstream" }
                 }
             });
         Assert.Equal(HttpStatusCode.OK, preserveBackfilledCapacity.StatusCode);
@@ -599,6 +787,14 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         return SendJsonWithCookie(_client, method, requestUri, cookie, body);
     }
 
+    private static Task<HttpResponseMessage> CreateChannelAsync(
+        HttpClient client,
+        string cookie,
+        object body)
+    {
+        return SendJsonWithCookie(client, HttpMethod.Post, "/channels", cookie, body);
+    }
+
     private static Task<HttpResponseMessage> SendJsonWithCookie(
         HttpClient client,
         HttpMethod method,
@@ -666,7 +862,7 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         return element.GetInt64();
     }
 
-    private static async Task SeedHistoricalNullCapacityChannel(IServiceProvider services)
+    private static async Task SeedHistoricalNullCapacityChannel(IServiceProvider services, string channelId)
     {
         using var scope = services.CreateScope();
         var configuration = scope.ServiceProvider.GetRequiredService<IConfiguration>();
@@ -676,7 +872,7 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         context.Channels.Add(new OpenCodex.Core.Domain.Channel
         {
             OwnerUserId = Guid.NewGuid(),
-            Id = Guid.NewGuid(),
+            Id = Guid.Parse(channelId),
             Position = 0,
             Priority = 0,
             Name = "Legacy",

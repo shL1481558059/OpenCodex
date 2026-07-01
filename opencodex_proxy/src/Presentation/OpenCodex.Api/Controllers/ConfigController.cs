@@ -25,11 +25,27 @@ public sealed class ConfigController : AuthenticatedApiControllerBase
         return Api(result);
     }
 
-    [HttpPost("/config")]
-    public IActionResult SaveConfig(ConfigSaveRequest request)
+    [HttpPost("/channels")]
+    public IActionResult CreateChannel(ChannelRequest request)
     {
         RequireUser();
-        var result = _config.SaveConfig(request.ToDictionary());
+        var result = _config.CreateChannel(request);
+        return Api(result);
+    }
+
+    [HttpPut("/channels/{channelId:guid}")]
+    public IActionResult UpdateChannel(Guid channelId, ChannelRequest request)
+    {
+        RequireUser();
+        var result = _config.UpdateChannel(channelId, request);
+        return Api(result);
+    }
+
+    [HttpDelete("/channels/{channelId:guid}")]
+    public IActionResult DeleteChannel(Guid channelId)
+    {
+        RequireUser();
+        var result = _config.DeleteChannel(channelId);
         return Api(result);
     }
 
