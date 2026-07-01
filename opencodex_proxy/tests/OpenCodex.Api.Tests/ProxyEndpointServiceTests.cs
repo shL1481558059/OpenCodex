@@ -208,7 +208,17 @@ public sealed class ProxyEndpointServiceTests
         {
             if (context.ChannelId == "primary")
             {
-                throw new UpstreamException("primary unavailable", ProxyHttpStatus.BadGateway);
+                throw new UpstreamException(
+                    "primary unavailable",
+                    ProxyHttpStatus.BadGateway,
+                    body: new Dictionary<string, object?>
+                    {
+                        ["error"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "rate_limit_exceeded",
+                            ["message"] = "primary unavailable"
+                        }
+                    });
             }
 
             return Task.FromResult(new ProxyNonStreamResult(200, new { ok = true }));
@@ -242,6 +252,9 @@ public sealed class ProxyEndpointServiceTests
                 Assert.Equal(0, Assert.IsType<int>(details["route_retry_number"]));
                 Assert.True(Assert.IsType<bool>(details["failover_eligible"]));
                 Assert.Equal("failed", Assert.IsType<string>(details["outcome"]));
+                Assert.NotNull(first.UpstreamResponse);
+                var upstreamError = Assert.IsType<Dictionary<string, object?>>(first.UpstreamResponse);
+                Assert.Equal("error", Assert.Single(upstreamError).Key);
             },
             second =>
             {
@@ -249,6 +262,7 @@ public sealed class ProxyEndpointServiceTests
                 Assert.Equal("secondary", second.ChannelId);
                 Assert.Equal(ProxyHttpStatus.Ok, second.StatusCode);
                 Assert.Null(second.Error);
+                Assert.Null(second.UpstreamResponse);
                 var details = Assert.IsType<Dictionary<string, object?>>(second.ResponsePayload);
                 Assert.Equal(2, Assert.IsType<int>(details["route_attempt_number"]));
                 Assert.Equal(1, Assert.IsType<int>(details["route_retry_number"]));

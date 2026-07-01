@@ -158,6 +158,7 @@ public sealed class ChannelCircuitBreakerService : IChannelCircuitBreakerService
     {
         return exception is UpstreamException upstream
             && upstream.StatusCode is ProxyHttpStatus.BadRequest
+                or ProxyHttpStatus.Forbidden
                 or ProxyHttpStatus.TooManyRequests
                 or ProxyHttpStatus.InternalServerError
                 or ProxyHttpStatus.BadGateway

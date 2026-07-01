@@ -7,7 +7,8 @@ internal static class ProxyFailoverPolicy
     public static bool CanFailover(Exception exception)
     {
         if (exception is UpstreamException upstreamException
-            && upstreamException.StatusCode == ProxyHttpStatus.BadRequest)
+            && upstreamException.StatusCode is ProxyHttpStatus.BadRequest
+                or ProxyHttpStatus.Forbidden)
         {
             return true;
         }
@@ -21,6 +22,6 @@ internal static class ProxyFailoverPolicy
             or ProxyHttpStatus.BadGateway
             or ProxyHttpStatus.GatewayTimeout
             or ProxyHttpStatus.InternalServerError
-            or 503;
+            or ProxyHttpStatus.ServiceUnavailable;
     }
 }

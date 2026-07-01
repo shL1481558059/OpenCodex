@@ -162,9 +162,9 @@
           :show-overflow-tooltip="column.showOverflowTooltip"
         >
           <template #default="{ row }">
-            <el-tag v-if="column.key === 'request_status'" :type="requestStatusTagType(row.request_status)">
-              {{ formatRequestStatus(row.request_status) }}
-            </el-tag>
+           <el-tag v-if="column.key === 'request_status'" :type="requestStatusTagType(resolveDisplayStatus(row))">
+             {{ formatRequestStatus(resolveDisplayStatus(row)) }}
+          </el-tag>
             <div v-else-if="column.key === 'created_at'" class="log-cell-stack">
               <div class="log-cell-stack__line">
                 <span class="log-cell-stack__label">创建:</span>
@@ -242,9 +242,9 @@
           <el-descriptions :column="2" border>
             <el-descriptions-item label="请求 ID">{{ selectedLog.request_id }}</el-descriptions-item>
             <el-descriptions-item label="请求状态">
-              <el-tag :type="requestStatusTagType(selectedLog.request_status)">
-                {{ formatRequestStatus(selectedLog.request_status) }}
-              </el-tag>
+            <el-tag :type="requestStatusTagType(resolveDisplayStatus(selectedLog))">
+               {{ formatRequestStatus(resolveDisplayStatus(selectedLog)) }}
+            </el-tag>
             </el-descriptions-item>
             <el-descriptions-item label="请求类型">
               <el-tag :type="requestTypeTagType(selectedLog.request_type)">
@@ -263,6 +263,12 @@
             <el-descriptions-item label="上游模型">{{ selectedLog.upstream_model }}</el-descriptions-item>
             <el-descriptions-item label="渠道">{{ formatChannelName(selectedLog) || "-" }}</el-descriptions-item>
             <el-descriptions-item label="状态码">{{ selectedLog.status_code }}</el-descriptions-item>
+            <el-descriptions-item v-if="selectedLog.request_type === 'main' && (selectedLog.attempt_count || 0) > 0" label="渠道尝试">
+              共 {{ selectedLog.attempt_count }} 次
+              <span v-if="(selectedLog.failed_attempt_count || 0) > 0" class="log-retry-hint">
+                （失败 {{ selectedLog.failed_attempt_count }} 次）
+              </span>
+            </el-descriptions-item>
             <el-descriptions-item label="成本">{{ formatCost(selectedLog.cost) }}</el-descriptions-item>
             <el-descriptions-item label="创建时间">{{ formatTimeOrDash(selectedLog.created_at) }}</el-descriptions-item>
             <el-descriptions-item label="开始处理">{{ formatTimeOrDash(selectedLog.processing_started_at) }}</el-descriptions-item>
@@ -839,6 +845,7 @@ function formatRequestStatus(value) {
     case "processing": return "处理中";
     case "success": return "成功";
     case "failed": return "失败";
+    case "success_with_retry": return "成功（重试）";
     default: return value || "-";
   }
 }
@@ -849,8 +856,14 @@ function requestStatusTagType(value) {
     case "processing": return "warning";
     case "success": return "success";
     case "failed": return "danger";
+    case "success_with_retry": return "warning";
     default: return "info";
   }
+}
+
+// 状态列优先展示带重试语义的展示状态，无则回退到原始 request_status。
+function resolveDisplayStatus(row) {
+  return row.display_request_status || row.request_status;
 }
 
 function formatApiKeyName(row) {

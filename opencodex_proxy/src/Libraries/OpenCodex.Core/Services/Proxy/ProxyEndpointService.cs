@@ -271,6 +271,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                             ProxyHttpStatus.Ok,
                             error: null,
                             failoverEligible: false,
+                            upstreamResponse: null,
                             requestMetadata);
                         _channelCircuitBreaker.RecordSuccess(ownerUsername, candidateChannelId);
                         streamResponseStarted = trackingWriter.HasWritten;
@@ -322,6 +323,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         result.StatusCode,
                         error: null,
                         failoverEligible: false,
+                        upstreamResponse: null,
                         requestMetadata);
                     _channelCircuitBreaker.RecordSuccess(ownerUsername, candidateChannelId);
                     return new ProxyEndpointResult(result.StatusCode, result.Payload, IsEmpty: false);
@@ -334,6 +336,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         _channelCircuitBreaker.ReleaseHalfOpenProbe(ownerUsername, candidateChannelId);
                     }
 
+                    var upstreamErrorResponse = UpstreamErrorBody(exception);
                     if (isStream)
                     {
                         streamResponseStarted = trackingWriter?.HasWritten == true;
@@ -357,6 +360,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                             exception.StatusCode,
                             exception.Message,
                             failoverEligible,
+                            upstreamErrorResponse,
                             requestMetadata);
                         if (failoverEligible)
                         {
@@ -386,6 +390,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         exception.StatusCode,
                         exception.Message,
                         canFailover,
+                        upstreamErrorResponse,
                         requestMetadata);
                     if (canFailover)
                     {
@@ -395,11 +400,35 @@ public sealed class ProxyEndpointService : IProxyEndpointService
 
                     throw;
                 }
-                catch
+                catch (Exception exception)
                 {
                     if (halfOpenProbeAcquired)
                     {
                         _channelCircuitBreaker.ReleaseHalfOpenProbe(ownerUsername, candidateChannelId);
+                    }
+
+                    if (exception is not OperationCanceledException)
+                    {
+                        WriteChannelAttemptLog(
+                            requestLogId,
+                            requestId,
+                            ownerUsername,
+                            apiKeyId,
+                            payload,
+                            attemptUpstreamRequest,
+                            requestModel,
+                            attemptUpstreamModel,
+                            candidate.Route.Channel,
+                            candidateChannelId,
+                            attemptChannelType,
+                            isStream,
+                            routeAttemptNumber,
+                            attemptStarted,
+                            ProxyHttpStatus.InternalServerError,
+                            exception.Message,
+                            failoverEligible: false,
+                            upstreamResponse: null,
+                            requestMetadata);
                     }
 
                     throw;
@@ -519,6 +548,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         int statusCode,
         string? error,
         bool failoverEligible,
+        Dictionary<string, object?>? upstreamResponse,
         ProxyRequestMetadata requestMetadata)
     {
         if (!parentRequestLogId.HasValue)
@@ -553,7 +583,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 apiKeyId,
                 payload,
                 upstreamRequest,
-                UpstreamResponse: null,
+                upstreamResponse,
                 ResponsePayload: attemptDetails,
                 ErrorResponse: null,
                 requestModel,

@@ -223,8 +223,12 @@ public sealed class ObservabilityService : IObservabilityService
             .Take(parsedPageSize)
             .ToList();
         var ownerMap = BuildOwnerMap(logs);
+        var attemptStats = BuildAttemptStats(logs);
         var events = logs
-            .Select(log => MapRequestLogEvent(log, ownerMap.TryGetValue(log.OwnerUserId, out var name) ? name : string.Empty))
+            .Select(log => MapRequestLogEvent(
+                log,
+                ownerMap.TryGetValue(log.OwnerUserId, out var name) ? name : string.Empty,
+                attemptStats.TryGetValue(log.Id, out var stats) ? stats : (AttemptCount: 0, FailedAttemptCount: 0)))
             .ToList();
 
         return new RequestLogPageDto(events, total, parsedPage, parsedPageSize);
@@ -891,8 +895,12 @@ public sealed class ObservabilityService : IObservabilityService
             || (log.LifecycleStatus is null && log.StatusCode < 400 && string.IsNullOrEmpty(log.Error));
     }
 
-    private static RequestLogEventDto MapRequestLogEvent(RequestLog log, string ownerUsername)
+    private static RequestLogEventDto MapRequestLogEvent(
+        RequestLog log,
+        string ownerUsername,
+        (int AttemptCount, int FailedAttemptCount) attemptStats)
     {
+        var (attemptCount, failedAttemptCount) = attemptStats;
         return new RequestLogEventDto(
             log.Id,
             log.RequestId,
@@ -918,7 +926,36 @@ public sealed class ObservabilityService : IObservabilityService
             ownerUsername,
             log.ApiKeyId,
             log.Error,
-            NormalizeRequestStatus(log.LifecycleStatus, log.StatusCode, log.Error));
+            NormalizeRequestStatus(log.LifecycleStatus, log.StatusCode, log.Error),
+            attemptCount,
+            failedAttemptCount);
+    }
+
+    private Dictionary<Guid, (int AttemptCount, int FailedAttemptCount)> BuildAttemptStats(
+        IReadOnlyList<RequestLog> logs)
+    {
+        var parentIds = logs
+            .Where(log => log.RequestType == ProxyRequestTypes.Main)
+            .Select(log => log.Id)
+            .ToList();
+        if (parentIds.Count == 0)
+        {
+            return new Dictionary<Guid, (int, int)>();
+        }
+
+        return _logRepository.TableNoTracking
+            .Where(log => log.RequestType == ProxyRequestTypes.Attempt && parentIds.Contains(log.ParentRequestLogId!.Value))
+            .GroupBy(log => log.ParentRequestLogId!.Value)
+            .Select(group => new
+            {
+                ParentId = group.Key,
+                AttemptCount = group.Count(),
+                FailedAttemptCount = group.Count(log =>
+                    log.LifecycleStatus == ProxyRequestLifecycleStatus.Failed
+                    || (log.StatusCode.HasValue && log.StatusCode.Value >= 400)
+                    || !string.IsNullOrEmpty(log.Error))
+            })
+            .ToDictionary(item => item.ParentId, item => (item.AttemptCount, item.FailedAttemptCount));
     }
 
     private static RequestLogDto MapRequestLog(
