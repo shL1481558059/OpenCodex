@@ -559,7 +559,8 @@ public sealed class ProxyEndpointServiceTests
         var writer = new RecordingProxyStreamWriter();
         var result = await service.ProxyAsync(CreateChatContext(payload, writer));
 
-        Assert.Equal(503, result.StatusCode);
+        // UpstreamException 统一返回 502 给客户端，不暴露上游状态码
+        Assert.Equal(502, result.StatusCode);
         Assert.False(result.IsEmpty);
         Assert.False(writer.PrepareSseCalled);
         Assert.Equal(["primary", "secondary"], attempts);
@@ -609,7 +610,7 @@ public sealed class ProxyEndpointServiceTests
     }
 
     [Fact]
-    public async Task ProxyAsync_StreamAllCandidatesFailWith429_DoesNotPrepareSseAndReturns429()
+    public async Task ProxyAsync_StreamAllCandidatesFailWith429_DoesNotPrepareSseAndReturns502()
     {
         var capacity = new ChannelCapacityService();
         var primary = CreateChannel("primary", priority: 0, capacity: 1);
@@ -634,7 +635,8 @@ public sealed class ProxyEndpointServiceTests
         var writer = new RecordingProxyStreamWriter();
         var result = await service.ProxyAsync(CreateChatContext(payload, writer));
 
-        Assert.Equal(429, result.StatusCode);
+        // UpstreamException 统一返回 502 给客户端，不暴露上游状态码
+        Assert.Equal(502, result.StatusCode);
         Assert.False(result.IsEmpty);
         Assert.False(writer.PrepareSseCalled);
         Assert.Equal(["primary", "secondary"], attempts);

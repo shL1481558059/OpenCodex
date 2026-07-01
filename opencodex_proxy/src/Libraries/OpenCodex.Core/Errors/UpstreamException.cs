@@ -21,25 +21,13 @@ public sealed class UpstreamException : ProxyException
 
     public override object ToResponse()
     {
-        var error = new Dictionary<string, object?>
-        {
-            ["message"] = Message,
-            ["type"] = ErrorType
-        };
-
-        if (!string.IsNullOrEmpty(ChannelId))
-        {
-            error["channel_id"] = ChannelId;
-        }
-
-        if (Body is not null)
-        {
-            error["upstream"] = Body;
-        }
-
         return new
         {
-            error
+            error = new Dictionary<string, object?>
+            {
+                ["message"] = "An upstream error occurred. Please try again later.",
+                ["type"] = ErrorType
+            }
         };
     }
 }

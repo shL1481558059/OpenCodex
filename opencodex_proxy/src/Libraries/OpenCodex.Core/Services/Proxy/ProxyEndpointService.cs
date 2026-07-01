@@ -454,7 +454,11 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 throw;
             }
 
-            statusCode = exception.StatusCode;
+            // UpstreamException 携带上游原始状态码和错误细节，仅供日志记录；
+            // 返回给客户端时统一使用 502，避免暴露上游/渠道内部信息。
+            statusCode = exception is UpstreamException
+                ? ProxyHttpStatus.BadGateway
+                : exception.StatusCode;
             error = exception.Message;
             errorResponse = exception.ToResponse();
             upstreamResponse = UpstreamErrorBody(exception);

@@ -61,6 +61,14 @@ public interface IObservabilityService
     ApiOpResult<ActiveChannelQueueResponse> ReadActiveChannelQueue();
 
     /// <summary>
+    /// 读取最近错误请求的摘要列表。
+    /// </summary>
+    /// <param name="limit">返回条数上限。</param>
+    /// <returns>最近错误请求摘要列表结果。</returns>
+    ApiOpResult<IReadOnlyList<RecentErrorItemResponse>> ReadRecentErrors(
+        int limit);
+
+    /// <summary>
     /// 清除全部请求日志及其关联详情和流式行记录。
     /// </summary>
     /// <returns>清除操作结果，载荷为已删除的记录总数。</returns>

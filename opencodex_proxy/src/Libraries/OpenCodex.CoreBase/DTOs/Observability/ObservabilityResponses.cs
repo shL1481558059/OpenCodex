@@ -915,6 +915,7 @@ public sealed class StatsResponse
     /// <param name="summary">统计汇总。</param>
     /// <param name="points">统计时间点列表。</param>
     /// <param name="modelDistribution">模型分布列表。</param>
+    /// <param name="errorDistribution">错误分布列表。</param>
     public StatsResponse(
         string range,
         string start,
@@ -923,7 +924,8 @@ public sealed class StatsResponse
         double currencyRate,
         StatsSummaryResponse summary,
         IReadOnlyList<StatsPointResponse> points,
-        IReadOnlyList<StatsModelDistributionResponse> modelDistribution)
+        IReadOnlyList<StatsModelDistributionResponse> modelDistribution,
+        IReadOnlyList<ErrorDistributionResponse> errorDistribution)
     {
         Range = range;
         Start = start;
@@ -933,6 +935,7 @@ public sealed class StatsResponse
         Summary = summary;
         Points = points;
         ModelDistribution = modelDistribution;
+        ErrorDistribution = errorDistribution;
     }
 
     /// <summary>
@@ -984,6 +987,12 @@ public sealed class StatsResponse
     public IReadOnlyList<StatsModelDistributionResponse> ModelDistribution { get; }
 
     /// <summary>
+    /// 获取错误分布列表。
+    /// </summary>
+    [JsonPropertyName("error_distribution")]
+    public IReadOnlyList<ErrorDistributionResponse> ErrorDistribution { get; }
+
+    /// <summary>
     /// 根据统计数据创建响应对象。
     /// </summary>
     /// <param name="stats">统计数据。</param>
@@ -998,7 +1007,8 @@ public sealed class StatsResponse
             stats.CurrencyRate,
             StatsSummaryResponse.From(stats.Summary),
             stats.Points.Select(StatsPointResponse.From).ToList(),
-            stats.ModelDistribution.Select(StatsModelDistributionResponse.From).ToList());
+            stats.ModelDistribution.Select(StatsModelDistributionResponse.From).ToList(),
+            stats.ErrorDistribution.Select(ErrorDistributionResponse.From).ToList());
     }
 }
 
@@ -1382,4 +1392,86 @@ public sealed class ClearLogsResponse
     /// </summary>
     [JsonPropertyName("deleted_stream_lines")]
     public int DeletedStreamLines { get; }
+}
+
+/// <summary>
+/// 表示按渠道和状态码分组的错误分布响应项。
+/// </summary>
+public sealed class ErrorDistributionResponse
+{
+    public ErrorDistributionResponse(string channelId, string channelName, int statusCode, int count)
+    {
+        ChannelId = channelId;
+        ChannelName = channelName;
+        StatusCode = statusCode;
+        Count = count;
+    }
+
+    [JsonPropertyName("channel_id")]
+    public string ChannelId { get; }
+
+    [JsonPropertyName("channel_name")]
+    public string ChannelName { get; }
+
+    [JsonPropertyName("status_code")]
+    public int StatusCode { get; }
+
+    [JsonPropertyName("count")]
+    public int Count { get; }
+
+    public static ErrorDistributionResponse From(ErrorDistributionDto item)
+    {
+        return new ErrorDistributionResponse(item.ChannelId, item.ChannelName, item.StatusCode, item.Count);
+    }
+}
+
+/// <summary>
+/// 表示最近错误请求的摘要项响应。
+/// </summary>
+public sealed class RecentErrorItemResponse
+{
+    public RecentErrorItemResponse(
+        Guid id,
+        double? createdAt,
+        string? model,
+        string? channelName,
+        int? statusCode,
+        string? error)
+    {
+        Id = id;
+        CreatedAt = createdAt;
+        Model = model;
+        ChannelName = channelName;
+        StatusCode = statusCode;
+        Error = error;
+    }
+
+    [JsonPropertyName("id")]
+    public Guid Id { get; }
+
+    [JsonPropertyName("created_at")]
+    public double? CreatedAt { get; }
+
+    [JsonPropertyName("model")]
+    public string? Model { get; }
+
+    [JsonPropertyName("channel_name")]
+    public string? ChannelName { get; }
+
+    [JsonPropertyName("status_code")]
+    public int? StatusCode { get; }
+
+    [JsonPropertyName("error")]
+    public string? Error { get; }
+
+    public static RecentErrorItemResponse From(RecentErrorItemDto item)
+    {
+        return new RecentErrorItemResponse(
+            item.Id,
+            item.CreatedAt,
+            item.Model,
+            item.ChannelName,
+            item.StatusCode,
+            item.Error);
+    }
 }
