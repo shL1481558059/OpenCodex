@@ -291,7 +291,8 @@ context.Users.Add(new User
             context.RequestLogDetails.Add(new RequestLogDetail
             {
                 RequestLogId = attemptLogId,
-                ResponseBody = "{\"route_attempt_number\":1,\"route_retry_number\":0}"
+                ResponseBody = "{\"route_attempt_number\":1,\"route_retry_number\":0}",
+                UpstreamResponseBody = "{\"error\":{\"type\":\"rate_limit_exceeded\",\"message\":\"primary unavailable\"}}"
             });
             context.SaveChanges();
         }
@@ -302,6 +303,10 @@ context.Users.Add(new User
         Assert.True(defaultLogs.Succeeded);
         var defaultLog = Assert.Single(defaultLogs.Payload!.Events);
         Assert.Equal(mainLogId, defaultLog.Id);
+        Assert.Equal("success", defaultLog.RequestStatus);
+        Assert.Equal("success_with_retry", defaultLog.DisplayRequestStatus);
+        Assert.Equal(1, defaultLog.AttemptCount);
+        Assert.Equal(1, defaultLog.FailedAttemptCount);
 
         var defaultStats = service.ReadStats(
             "custom",
@@ -337,6 +342,7 @@ context.Users.Add(new User
         Assert.True(detail.Succeeded);
         Assert.Equal(ProxyRequestTypes.Attempt, detail.Payload!.RequestType);
         Assert.Contains("\"route_attempt_number\":1", detail.Payload.ResponseBody, StringComparison.Ordinal);
+        Assert.Contains("\"rate_limit_exceeded\"", detail.Payload.UpstreamResponseBody, StringComparison.Ordinal);
 
         var requestTypeOptions = service.ReadLogFilterOption(
             "request_type",

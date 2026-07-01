@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using OpenCodex.CoreBase.DTOs;
+using OpenCodex.CoreBase.Domain.Proxy;
 
 namespace OpenCodex.CoreBase.DTOs.Observability;
 
@@ -156,9 +157,12 @@ public sealed class LogEventResponse
         string? ownerUsername,
         Guid? apiKeyId,
         string? apiKeyName,
-        string? channelName,
-        string? error,
-        string requestStatus)
+       string? channelName,
+       string? error,
+        string requestStatus,
+        string displayRequestStatus,
+        int attemptCount,
+        int failedAttemptCount)
     {
         Id = id;
         RequestId = requestId;
@@ -187,6 +191,9 @@ public sealed class LogEventResponse
         ChannelName = channelName;
         Error = error;
         RequestStatus = requestStatus;
+        DisplayRequestStatus = displayRequestStatus;
+        AttemptCount = attemptCount;
+        FailedAttemptCount = failedAttemptCount;
     }
 
     /// <summary>
@@ -352,6 +359,24 @@ public sealed class LogEventResponse
     public string RequestStatus { get; }
 
     /// <summary>
+    /// 获取用于展示的请求状态（如 success_with_retry）。
+    /// </summary>
+    [JsonPropertyName("display_request_status")]
+    public string DisplayRequestStatus { get; }
+
+    /// <summary>
+    /// 获取该主请求下的渠道尝试次数。
+    /// </summary>
+    [JsonPropertyName("attempt_count")]
+    public int AttemptCount { get; }
+
+    /// <summary>
+    /// 获取该主请求下失败的渠道尝试次数。
+    /// </summary>
+    [JsonPropertyName("failed_attempt_count")]
+    public int FailedAttemptCount { get; }
+
+    /// <summary>
     /// 根据日志事件数据创建响应对象。
     /// </summary>
     /// <param name="log">日志事件数据。</param>
@@ -388,7 +413,24 @@ public sealed class LogEventResponse
             ReadApiKeyName(log.ApiKeyId, apiKeyNames),
             ReadChannelName(log.ChannelId, channelNames),
             log.Error,
-            log.RequestStatus);
+            log.RequestStatus,
+            ResolveDisplayRequestStatus(log.RequestStatus, log.AttemptCount, log.FailedAttemptCount),
+            log.AttemptCount,
+            log.FailedAttemptCount);
+    }
+
+    private static string ResolveDisplayRequestStatus(
+        string requestStatus,
+        int attemptCount,
+        int failedAttemptCount)
+    {
+        if (requestStatus == ProxyRequestLifecycleStatus.Success
+            && failedAttemptCount > 0)
+        {
+            return "success_with_retry";
+        }
+
+        return requestStatus;
     }
 
     private static string? ReadApiKeyName(

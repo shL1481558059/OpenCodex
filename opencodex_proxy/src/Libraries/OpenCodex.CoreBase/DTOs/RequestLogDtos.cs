@@ -595,7 +595,9 @@ public sealed class RequestLogEventDto(
     string ownerUsername,
     Guid? apiKeyId,
     string? error,
-    string requestStatus)
+    string requestStatus,
+    int attemptCount = 0,
+    int failedAttemptCount = 0)
 {
     /// <summary>
     /// 获取请求日志的数据库标识符。
@@ -721,6 +723,16 @@ public sealed class RequestLogEventDto(
     /// 获取标准化后的请求状态。
     /// </summary>
     public string RequestStatus { get; } = requestStatus;
+
+    /// <summary>
+    /// 获取该主请求下的渠道尝试次数（仅对 main 日志有意义）。
+    /// </summary>
+    public int AttemptCount { get; } = attemptCount;
+
+    /// <summary>
+    /// 获取该主请求下失败的渠道尝试次数（仅对 main 日志有意义）。
+    /// </summary>
+    public int FailedAttemptCount { get; } = failedAttemptCount;
 }
 
 /// <summary>

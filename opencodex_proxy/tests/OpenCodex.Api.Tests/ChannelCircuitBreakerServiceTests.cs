@@ -110,6 +110,47 @@ public sealed class ChannelCircuitBreakerServiceTests
     }
 
     [Fact]
+    public void RecordFailure_UpstreamForbidden_CountsAndOpensCircuit()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var service = new ChannelCircuitBreakerService(
+            failureThreshold: 1,
+            openDuration: TimeSpan.FromSeconds(30),
+            halfOpenMaxProbeRequests: 1,
+            clock: () => now);
+
+        var counted = service.RecordFailure(
+            "admin",
+            "primary",
+            new UpstreamException("upstream returned HTTP 403", ProxyHttpStatus.Forbidden));
+
+        Assert.True(counted);
+        Assert.Equal(
+            ChannelHealthStatus.Open,
+            service.GetHealthStatus("admin", "primary", enabled: true));
+    }
+
+    [Fact]
+    public void RecordFailure_UpstreamUnauthorized_DoesNotCount()
+    {
+        var service = new ChannelCircuitBreakerService(
+            failureThreshold: 1,
+            openDuration: TimeSpan.FromSeconds(30),
+            halfOpenMaxProbeRequests: 1,
+            clock: () => DateTimeOffset.UtcNow);
+
+        var counted = service.RecordFailure(
+            "admin",
+            "primary",
+            new UpstreamException("upstream returned HTTP 401", ProxyHttpStatus.Unauthorized));
+
+        Assert.False(counted);
+        Assert.Equal(
+            ChannelHealthStatus.Healthy,
+            service.GetHealthStatus("admin", "primary", enabled: true));
+    }
+
+    [Fact]
     public void Reset_ClearsOpenCircuitBackToHealthy()
     {
         var now = DateTimeOffset.UtcNow;
