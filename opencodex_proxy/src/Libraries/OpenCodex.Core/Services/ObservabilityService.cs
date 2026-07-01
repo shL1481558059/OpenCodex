@@ -161,6 +161,65 @@ public sealed class ObservabilityService : IObservabilityService
         return ApiOpResult<ActiveChannelQueueResponse>.Succeed(ActiveChannelQueueResponse.From(queue));
     }
 
+    public ApiOpResult<IReadOnlyList<RecentErrorItemResponse>> ReadRecentErrors(int limit)
+    {
+        var (currentUsername, isSuperadmin) = CurrentScope();
+        var items = QueryRecentErrors(limit, currentUsername, isSuperadmin);
+        return ApiOpResult<IReadOnlyList<RecentErrorItemResponse>>.Succeed(
+            items.Select(RecentErrorItemResponse.From).ToList());
+    }
+
+    private List<RecentErrorItemDto> QueryRecentErrors(
+        int limit,
+        string currentUsername,
+        bool isSuperadmin)
+    {
+        var query = _logRepository.TableNoTracking
+            .Where(log => log.RequestType == null || log.RequestType != ProxyRequestTypes.Attempt);
+
+        if (!isSuperadmin)
+        {
+            var userId = _userRepository.TableNoTracking
+                .FirstOrDefault(u => u.Username == currentUsername)?.Id;
+            if (userId == Guid.Empty) return [];
+            query = query.Where(log => log.OwnerUserId == userId.Value);
+        }
+
+        var errorLogs = query
+            .Where(log =>
+                log.LifecycleStatus == ProxyRequestLifecycleStatus.Failed
+                || (log.LifecycleStatus == null && (log.StatusCode >= 400 || !string.IsNullOrEmpty(log.Error))))
+            .OrderByDescending(log => log.CreatedAt)
+            .Take(limit)
+            .ToList();
+
+        if (errorLogs.Count == 0)
+        {
+            return [];
+        }
+
+        var channelIdTexts = errorLogs
+            .Select(log => log.ChannelId?.ToString())
+            .Where(value => !string.IsNullOrWhiteSpace(value));
+        var channelNames = ReadChannelNames(channelIdTexts);
+
+        return errorLogs.Select(log =>
+        {
+            var channelName = log.ChannelId.HasValue
+                && channelNames.TryGetValue(log.ChannelId.Value, out var name)
+                ? name
+                : null;
+            return new RecentErrorItemDto(
+                log.Id,
+                log.CreatedAt,
+                log.Model,
+                channelName,
+                log.StatusCode,
+                log.Error);
+        }).ToList();
+    }
+
+
     public ApiOpResult<ClearLogsResponse> ClearLogs()
     {
         var currentUser = _workContext.RequireUser();
@@ -359,6 +418,7 @@ public sealed class ObservabilityService : IObservabilityService
         }
 
         var modelDistribution = ReadModelDistribution(logs);
+        var errorDistribution = ReadErrorDistribution(logs);
         var summary = ReadStatsSummary(
             logs,
             resolved.StartTs,
@@ -373,7 +433,8 @@ public sealed class ObservabilityService : IObservabilityService
             PricingDefaults.UsdCnyRate,
             summary,
             points,
-            modelDistribution);
+            modelDistribution,
+            errorDistribution);
     }
 
     private IQueryable<RequestLog> ApplyLogFilters(
@@ -740,6 +801,7 @@ public sealed class ObservabilityService : IObservabilityService
             PricingDefaults.UsdCnyRate,
             EmptyStatsSummary(),
             [],
+            [],
             []);
     }
 
@@ -886,6 +948,43 @@ public sealed class ObservabilityService : IObservabilityService
             .Select(group => new ModelDistributionDto(group.Key!, group.Count()))
             .OrderByDescending(item => item.Count)
             .Take(20)
+            .ToList();
+    }
+
+    private List<ErrorDistributionDto> ReadErrorDistribution(IReadOnlyList<RequestLog> logs)
+    {
+        var errorLogs = logs.Where(log => !IsSuccessfulLog(log)).ToList();
+        if (errorLogs.Count == 0)
+        {
+            return [];
+        }
+
+        var channelIdTexts = errorLogs
+            .Select(log => log.ChannelId?.ToString())
+            .Where(value => !string.IsNullOrWhiteSpace(value));
+        var channelNames = ReadChannelNames(channelIdTexts);
+
+        return errorLogs
+            .GroupBy(log => new
+            {
+                ChannelId = log.ChannelId?.ToString() ?? "",
+                StatusCode = log.StatusCode ?? 0
+            })
+            .Select(group =>
+            {
+                var channelId = group.Key.ChannelId;
+                var channelName = Guid.TryParse(channelId, out var parsed)
+                    && channelNames.TryGetValue(parsed, out var name)
+                    ? name
+                    : "未知渠道";
+                return new ErrorDistributionDto(
+                    channelId,
+                    channelName,
+                    group.Key.StatusCode,
+                    group.Count());
+            })
+            .OrderByDescending(item => item.Count)
+            .Take(30)
             .ToList();
     }
 

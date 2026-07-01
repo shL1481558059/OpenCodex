@@ -115,13 +115,48 @@
           </div>
         </div>
 
-        <div class="dashboard-card dashboard-top-grid__cost">
+        <div class="dashboard-card dashboard-top-grid__error-dist">
           <div class="dashboard-card__header">
-            <span>消费趋势</span>
-            <el-segmented v-model="costCurrency" :options="costCurrencyOptions" size="small" />
+            <span>错误分布</span>
           </div>
-          <div ref="costChartRef" class="dashboard-card__chart dashboard-card__chart--top" />
+          <div ref="errorDistChartRef" class="dashboard-card__chart dashboard-card__chart--top" />
         </div>
+
+        <div class="dashboard-card dashboard-top-grid__recent-errors">
+          <div class="dashboard-card__header">
+            <span>请求错误</span>
+            <span class="dashboard-queue__status" :class="{ 'dashboard-queue__status--live': errorsConnected }">
+              {{ errorsStatusText }}
+            </span>
+          </div>
+          <div class="dashboard-errors">
+            <div v-if="errorsLoading" class="dashboard-queue__empty">正在获取错误日志...</div>
+            <div v-else-if="recentErrors.length === 0" class="dashboard-queue__empty">暂无错误请求</div>
+            <template v-else>
+              <div
+                v-for="item in recentErrors"
+                :key="item.id"
+                class="dashboard-errors__item"
+                @click="openErrorDetail(item)"
+              >
+                <div class="dashboard-errors__main">
+                  <span class="dashboard-errors__model">{{ item.model || 'unknown' }}</span>
+                  <span class="dashboard-errors__code" :class="errorStatusCodeClass(item.status_code)">{{ item.status_code || 'N/A' }}</span>
+                </div>
+                <div class="dashboard-errors__error">{{ item.error || '无错误信息' }}</div>
+                <div class="dashboard-errors__meta">{{ formatErrorTime(item.created_at) }}</div>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <div class="dashboard-card dashboard-cost-card">
+        <div class="dashboard-card__header">
+          <span>消费趋势</span>
+          <el-segmented v-model="costCurrency" :options="costCurrencyOptions" size="small" />
+        </div>
+        <div ref="costChartRef" class="dashboard-card__chart" />
       </div>
 
       <!-- Token 使用趋势 -->
@@ -161,19 +196,52 @@
       </div>
 
     </div>
+
+    <el-dialog v-model="errorDetailVisible" title="错误详情" width="800px" @closed="resetErrorDetail">
+      <div v-loading="errorDetailLoading">
+        <el-alert v-if="errorDetailError" :title="errorDetailError" type="error" :closable="false" />
+        <template v-if="errorDetail">
+          <el-descriptions :column="2" border size="small">
+            <el-descriptions-item label="请求ID">{{ errorDetail.request_id || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="状态码">{{ errorDetail.status_code || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="模型">{{ errorDetail.model || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="上游模型">{{ errorDetail.upstream_model || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="渠道">{{ errorDetail.channel_name || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="用户">{{ errorDetail.owner_username || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="耗时">{{ errorDetail.duration_ms != null ? `${errorDetail.duration_ms} ms` : '-' }}</el-descriptions-item>
+            <el-descriptions-item label="创建时间">{{ formatErrorTime(errorDetail.created_at) }}</el-descriptions-item>
+          </el-descriptions>
+
+          <div v-if="errorDetail.error" class="error-detail__section">
+            <div class="error-detail__label">错误信息</div>
+            <pre class="error-detail__body">{{ errorDetail.error }}</pre>
+          </div>
+
+          <div v-if="errorDetail.upstream_response_body" class="error-detail__section">
+            <div class="error-detail__label">上游响应体</div>
+            <pre class="error-detail__body">{{ errorDetail.upstream_response_body }}</pre>
+          </div>
+
+          <div v-if="errorDetail.response_body" class="error-detail__section">
+            <div class="error-detail__label">下游响应体</div>
+            <pre class="error-detail__body">{{ errorDetail.response_body }}</pre>
+          </div>
+        </template>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick, shallowRef } from "vue";
-import { LineChart, PieChart } from "echarts/charts";
+import { LineChart, PieChart, BarChart } from "echarts/charts";
 import { GridComponent, LegendComponent, TooltipComponent } from "echarts/components";
 import { init, use } from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
 import { Box, Check, Coin, DataLine, Lightning, Refresh, Timer } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
 
-use([LineChart, PieChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
+use([LineChart, PieChart, BarChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
 const props = defineProps({
   api: { type: Function, required: true },
@@ -210,6 +278,16 @@ const queueItems = ref([]);
 const queueConnected = ref(false);
 const queueLoading = ref(true);
 
+const recentErrors = ref([]);
+const errorsConnected = ref(false);
+const errorsLoading = ref(true);
+
+const errorDetailVisible = ref(false);
+const errorDetailLoading = ref(false);
+const errorDetailError = ref("");
+const errorDetail = ref(null);
+let errorDetailRequestToken = 0;
+
 const statsData = reactive({
   range: "1h",
   start: "",
@@ -218,7 +296,8 @@ const statsData = reactive({
   currency_rate: 7.25,
   summary: defaultSummary(),
   points: [],
-  model_distribution: []
+  model_distribution: [],
+  error_distribution: []
 });
 
 // Chart refs
@@ -228,6 +307,7 @@ const ttftChartRef = ref(null);
 const cacheChartRef = ref(null);
 const rpmChartRef = ref(null);
 const modelChartRef = ref(null);
+const errorDistChartRef = ref(null);
 
 // ECharts instances
 const costChart = shallowRef(null);
@@ -236,11 +316,15 @@ const ttftChart = shallowRef(null);
 const cacheChart = shallowRef(null);
 const rpmChart = shallowRef(null);
 const modelChart = shallowRef(null);
+const errorDistChart = shallowRef(null);
 
 let refreshTimer = null;
 let queueEventSource = null;
 let queueStaleTimer = null;
+let errorsEventSource = null;
+let errorsStaleTimer = null;
 const QUEUE_STALE_TIMEOUT_MS = 5000;
+const ERRORS_STALE_TIMEOUT_MS = 15000;
 
 const autoRefreshLabel = computed(() =>
   autoRefreshSeconds.value ? `${autoRefreshSeconds.value} 秒刷新` : "自动刷新"
@@ -251,6 +335,11 @@ const queueOverflowItems = computed(() => queueItems.value.slice(3));
 const queueStatusText = computed(() => {
   if (queueConnected.value) return "实时更新中";
   if (queueLoading.value) return "连接中";
+  return "未连接";
+});
+const errorsStatusText = computed(() => {
+  if (errorsConnected.value) return "实时更新中";
+  if (errorsLoading.value) return "获取中";
   return "未连接";
 });
 const summaryCards = computed(() => {
@@ -312,6 +401,7 @@ async function fetchStats() {
     statsData.summary = { ...defaultSummary(), ...(data.summary || {}) };
     statsData.points = data.points || [];
     statsData.model_distribution = data.model_distribution || [];
+    statsData.error_distribution = data.error_distribution || [];
     hasLoadedStats.value = true;
     renderAllCharts();
   } catch (err) {
@@ -469,6 +559,131 @@ function startQueueStream() {
   };
 }
 
+// --- Recent errors SSE stream ---
+function applyErrorsPayload(items) {
+  const list = Array.isArray(items) ? items : [];
+  recentErrors.value = list.map((item) => ({
+    id: String(item?.id || ""),
+    created_at: Number(item?.created_at || 0),
+    model: String(item?.model || "").trim(),
+    channel_name: String(item?.channel_name || "").trim(),
+    status_code: item?.status_code ?? null,
+    error: String(item?.error || "").trim()
+  }));
+  errorsLoading.value = false;
+}
+
+function resetErrorsState(loadingState = false) {
+  recentErrors.value = [];
+  errorsConnected.value = false;
+  errorsLoading.value = loadingState;
+}
+
+function stopErrorsStaleTimer() {
+  if (errorsStaleTimer !== null) {
+    clearTimeout(errorsStaleTimer);
+    errorsStaleTimer = null;
+  }
+}
+
+function scheduleErrorsStaleTimer() {
+  stopErrorsStaleTimer();
+  errorsStaleTimer = window.setTimeout(() => {
+    errorsConnected.value = false;
+  }, ERRORS_STALE_TIMEOUT_MS);
+}
+
+function buildErrorsStreamUrl() {
+  const base = import.meta.env.DEV ? import.meta.env.BASE_URL.replace(/\/$/, "") : "";
+  return `${base}/stats/recent-errors/stream`;
+}
+
+function stopErrorsStream() {
+  stopErrorsStaleTimer();
+  if (errorsEventSource) {
+    errorsEventSource.close();
+    errorsEventSource = null;
+  }
+  resetErrorsState(true);
+}
+
+function startErrorsStream() {
+  stopErrorsStream();
+  if (!props.active) {
+    resetErrorsState(true);
+    return;
+  }
+
+  resetErrorsState(true);
+  const source = new EventSource(buildErrorsStreamUrl(), { withCredentials: true });
+  errorsEventSource = source;
+
+  source.addEventListener("errors", (event) => {
+    try {
+      applyErrorsPayload(JSON.parse(event.data || "[]"));
+      errorsConnected.value = true;
+      scheduleErrorsStaleTimer();
+    } catch {
+      stopErrorsStaleTimer();
+      errorsConnected.value = false;
+    }
+  });
+
+  source.onerror = () => {
+    stopErrorsStaleTimer();
+    if (errorsEventSource === source) {
+      errorsConnected.value = false;
+    }
+  };
+}
+
+// --- Error detail dialog ---
+async function openErrorDetail(item) {
+  errorDetailVisible.value = true;
+  errorDetailLoading.value = true;
+  errorDetailError.value = "";
+  errorDetail.value = null;
+  const token = ++errorDetailRequestToken;
+  try {
+    const detail = await props.api(`/logs/${item.id}`);
+    if (token === errorDetailRequestToken) errorDetail.value = detail;
+  } catch (err) {
+    if (token === errorDetailRequestToken) {
+      errorDetailError.value = err.message || "获取详情失败";
+      ElMessage.error(err.message || "获取详情失败");
+    }
+  } finally {
+    if (token === errorDetailRequestToken) errorDetailLoading.value = false;
+  }
+}
+
+function resetErrorDetail() {
+  errorDetailRequestToken += 1;
+  errorDetail.value = null;
+  errorDetailError.value = "";
+  errorDetailLoading.value = false;
+}
+
+function formatErrorTime(createdAt) {
+  if (!createdAt) return "-";
+  const date = new Date(createdAt * 1000);
+  if (Number.isNaN(date.getTime())) return "-";
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const dateStr = `${date.getMonth() + 1}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  const diffMs = now.getTime() - date.getTime();
+  if (diffMs < 60_000) return `${Math.floor(diffMs / 1000)} 秒前`;
+  if (diffMs < 3_600_000) return `${Math.floor(diffMs / 60_000)} 分钟前`;
+  return dateStr;
+}
+
+function errorStatusCodeClass(code) {
+  if (!code) return "";
+  if (code >= 500) return "dashboard-errors__code--5xx";
+  if (code >= 400) return "dashboard-errors__code--4xx";
+  return "";
+}
+
 function formatInteger(value) {
   return Math.round(Number(value || 0)).toLocaleString();
 }
@@ -517,6 +732,7 @@ function initAllCharts() {
   cacheChart.value = initChart(cacheChartRef.value);
   rpmChart.value = initChart(rpmChartRef.value);
   modelChart.value = initChart(modelChartRef.value);
+  errorDistChart.value = initChart(errorDistChartRef.value);
 }
 
 function disposeAllCharts() {
@@ -526,12 +742,14 @@ function disposeAllCharts() {
   disposeChart(cacheChart.value);
   disposeChart(rpmChart.value);
   disposeChart(modelChart.value);
+  disposeChart(errorDistChart.value);
   costChart.value = null;
   tokenChart.value = null;
   ttftChart.value = null;
   cacheChart.value = null;
   rpmChart.value = null;
   modelChart.value = null;
+  errorDistChart.value = null;
 }
 
 // --- Chart rendering ---
@@ -760,6 +978,64 @@ function renderModelChart() {
   }, true);
 }
 
+function renderErrorDistChart() {
+  if (!errorDistChart.value) return;
+  const dist = statsData.error_distribution || [];
+  if (dist.length === 0) {
+    errorDistChart.value.setOption({
+      animation: false,
+      title: {
+        text: "暂无错误数据",
+        left: "center",
+        top: "center",
+        textStyle: { fontSize: 13, color: "#909399", fontWeight: "normal" }
+      }
+    }, true);
+    return;
+  }
+
+  const channelNames = [...new Set(dist.map(d => d.channel_name || "未知渠道"))];
+  const statusCodes = [...new Set(dist.map(d => d.status_code || d.status_code))].sort((a, b) => a - b);
+  const palette = ["#F56C6C", "#E6A23C", "#909399", "#FEB019", "#7B61FF", "#5470C6", "#91CC75"];
+  const series = statusCodes.map((code, idx) => ({
+    name: String(code),
+    type: "bar",
+    stack: "total",
+    barMaxWidth: 32,
+    itemStyle: { color: palette[idx % palette.length] },
+    data: channelNames.map(name => {
+      const item = dist.find(d => (d.channel_name || "未知渠道") === name && (d.status_code || d.status_code) === code);
+      return item ? (item.Count || item.count || 0) : 0;
+    })
+  }));
+
+  errorDistChart.value.setOption({
+    animation: false,
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "shadow" }
+    },
+    legend: {
+      top: 0,
+      right: 0,
+      textStyle: { fontSize: 11 }
+    },
+    grid: { top: 36, right: 16, bottom: 28, left: 56 },
+    xAxis: {
+      type: "category",
+      data: channelNames,
+      axisLabel: { fontSize: 10, rotate: channelNames.length > 3 ? 20 : 0 },
+      axisTick: { show: false }
+    },
+    yAxis: {
+      type: "value",
+      axisLabel: { fontSize: 11 },
+      splitLine: { lineStyle: { type: "dashed", opacity: 0.4 } }
+    },
+    series
+  }, true);
+}
+
 function renderAllCharts() {
   renderCostChart();
   renderTokenChart();
@@ -767,6 +1043,7 @@ function renderAllCharts() {
   renderCacheChart();
   renderRpmChart();
   renderModelChart();
+  renderErrorDistChart();
 }
 
 // --- Watch currency / unit switches ---
@@ -779,9 +1056,11 @@ watch(() => props.active, (now) => {
     fetchStats();
     startRefreshTimer();
     startQueueStream();
+    startErrorsStream();
   } else {
     stopRefreshTimer();
     stopQueueStream();
+    stopErrorsStream();
   }
 });
 
@@ -792,12 +1071,14 @@ onMounted(async () => {
     fetchStats();
     startRefreshTimer();
     startQueueStream();
+    startErrorsStream();
   }
 });
 
 onBeforeUnmount(() => {
   stopRefreshTimer();
   stopQueueStream();
+  stopErrorsStream();
   disposeAllCharts();
 });
 </script>
@@ -928,19 +1209,29 @@ onBeforeUnmount(() => {
 .dashboard-top-grid {
   display: grid;
   grid-column: 1 / -1;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
   gap: 16px;
 }
 
 .dashboard-top-grid__model,
 .dashboard-top-grid__queue,
-.dashboard-top-grid__cost {
+.dashboard-top-grid__error-dist,
+.dashboard-top-grid__recent-errors {
   min-width: 0;
 }
 
 .dashboard-top-grid__queue {
   display: flex;
   flex-direction: column;
+}
+
+.dashboard-top-grid__recent-errors {
+  display: flex;
+  flex-direction: column;
+}
+
+.dashboard-cost-card {
+  grid-column: 1 / -1;
 }
 
 .dashboard-card__header {
@@ -1047,6 +1338,110 @@ onBeforeUnmount(() => {
   overflow: auto;
 }
 
+.dashboard-errors {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 260px;
+  padding-top: 4px;
+  overflow-y: auto;
+}
+
+.dashboard-errors__item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  background: #fbfcfe;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.dashboard-errors__item:hover {
+  border-color: var(--el-color-danger-light-5);
+  background: #fff5f5;
+}
+
+.dashboard-errors__main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dashboard-errors__model {
+  min-width: 0;
+  color: var(--el-text-color-primary);
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-errors__code {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--el-color-info);
+}
+
+.dashboard-errors__code--4xx {
+  background: #e6a23c;
+}
+
+.dashboard-errors__code--5xx {
+  background: #f56c6c;
+}
+
+.dashboard-errors__error {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-errors__meta {
+  color: var(--el-text-color-placeholder);
+  font-size: 11px;
+}
+
+.error-detail__section {
+  margin-top: 16px;
+}
+
+.error-detail__label {
+  margin-bottom: 6px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.error-detail__body {
+  max-height: 320px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  background: #f8f9fb;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-y: auto;
+}
+
 @media (max-width: 900px) {
   .dashboard-toolbar {
     display: block;
@@ -1073,6 +1468,10 @@ onBeforeUnmount(() => {
 @media (min-width: 901px) and (max-width: 1400px) {
   .dashboard-summary-grid {
     grid-template-columns: repeat(2, minmax(240px, 1fr));
+  }
+
+  .dashboard-top-grid {
+    grid-template-columns: 1fr 1fr;
   }
 }
 </style>

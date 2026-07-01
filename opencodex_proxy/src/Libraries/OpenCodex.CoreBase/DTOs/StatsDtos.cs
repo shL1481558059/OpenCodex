@@ -230,6 +230,7 @@ public sealed class ActiveChannelQueueDto(
 /// <param name="summary">聚合统计摘要。</param>
 /// <param name="points">按时间桶聚合的统计点。</param>
 /// <param name="modelDistribution">选定范围内的模型分布。</param>
+/// <param name="errorDistribution">选定范围内的错误分布。</param>
 public sealed class StatsDto(
     string range,
     string start,
@@ -238,7 +239,8 @@ public sealed class StatsDto(
     double currencyRate,
     StatsSummaryDto summary,
     IReadOnlyList<StatsPointDto> points,
-    IReadOnlyList<ModelDistributionDto> modelDistribution)
+    IReadOnlyList<ModelDistributionDto> modelDistribution,
+    IReadOnlyList<ErrorDistributionDto> errorDistribution)
 {
     /// <summary>
     /// 获取选定范围标签。
@@ -279,4 +281,91 @@ public sealed class StatsDto(
     /// 获取选定范围内的模型分布。
     /// </summary>
     public IReadOnlyList<ModelDistributionDto> ModelDistribution { get; } = modelDistribution;
+
+    /// <summary>
+    /// 获取选定范围内的错误分布。
+    /// </summary>
+    public IReadOnlyList<ErrorDistributionDto> ErrorDistribution { get; } = errorDistribution;
+}
+
+/// <summary>
+/// 表示按渠道和状态码分组的错误分布项。
+/// </summary>
+/// <param name="channelId">渠道标识。</param>
+/// <param name="channelName">渠道名称。</param>
+/// <param name="statusCode">HTTP 状态码。</param>
+/// <param name="count">该组合的错误请求数。</param>
+public sealed class ErrorDistributionDto(
+    string channelId,
+    string channelName,
+    int statusCode,
+    int count)
+{
+    /// <summary>
+    /// 获取渠道标识。
+    /// </summary>
+    public string ChannelId { get; } = channelId;
+
+    /// <summary>
+    /// 获取渠道名称。
+    /// </summary>
+    public string ChannelName { get; } = channelName;
+
+    /// <summary>
+    /// 获取 HTTP 状态码。
+    /// </summary>
+    public int StatusCode { get; } = statusCode;
+
+    /// <summary>
+    /// 获取该组合的错误请求数。
+    /// </summary>
+    public int Count { get; } = count;
+}
+
+/// <summary>
+/// 表示最近错误请求的摘要项。
+/// </summary>
+/// <param name="id">日志标识。</param>
+/// <param name="createdAt">创建时间戳。</param>
+/// <param name="model">请求模型。</param>
+/// <param name="channelName">渠道名称。</param>
+/// <param name="statusCode">HTTP 状态码。</param>
+/// <param name="error">错误消息。</param>
+public sealed class RecentErrorItemDto(
+    Guid id,
+    double? createdAt,
+    string? model,
+    string? channelName,
+    int? statusCode,
+    string? error)
+{
+    /// <summary>
+    /// 获取日志标识。
+    /// </summary>
+    public Guid Id { get; } = id;
+
+    /// <summary>
+    /// 获取创建时间戳。
+    /// </summary>
+    public double? CreatedAt { get; } = createdAt;
+
+    /// <summary>
+    /// 获取请求模型。
+    /// </summary>
+    public string? Model { get; } = model;
+
+    /// <summary>
+    /// 获取渠道名称。
+    /// </summary>
+    public string? ChannelName { get; } = channelName;
+
+    /// <summary>
+    /// 获取 HTTP 状态码。
+    /// </summary>
+    public int? StatusCode { get; } = statusCode;
+
+    /// <summary>
+    /// 获取错误消息。
+    /// </summary>
+    public string? Error { get; } = error;
 }

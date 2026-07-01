@@ -202,6 +202,34 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         }
     }
 
+    [HttpGet("/stats/recent-errors/stream")]
+    public async Task RecentErrorsStream()
+    {
+        RequireUser();
+        ProxyStreamResponseWriter.PrepareSse(Response);
+
+        while (!HttpContext.RequestAborted.IsCancellationRequested)
+        {
+            var result = _observability.ReadRecentErrors(5);
+            var payload = result.Payload ?? [];
+            var data = JsonSerializer.Serialize(payload);
+
+            await Response.WriteAsync($"event: errors\n", HttpContext.RequestAborted);
+            await Response.WriteAsync($"data: {data}\n\n", HttpContext.RequestAborted);
+            await Response.Body.FlushAsync(HttpContext.RequestAborted);
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5), HttpContext.RequestAborted);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+    }
+
+
     private static Dictionary<string, object?> BuildLogFilters(
         string? requestId,
         string? model,

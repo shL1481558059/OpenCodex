@@ -32,15 +32,23 @@ public sealed class ProxyErrorMiddleware
                 throw;
             }
 
+            // UpstreamException 携带上游原始状态码，返回给客户端时统一使用 502，
+            // 避免暴露上游/渠道内部信息。
+            var clientStatusCode = exception is UpstreamException
+                ? ProxyHttpStatus.BadGateway
+                : exception.StatusCode;
+
             context.Response.Clear();
-            context.Response.StatusCode = exception.StatusCode;
+            context.Response.StatusCode = clientStatusCode;
             context.Response.ContentType = "application/json";
 
             var response = IsProxyCompatibilityEndpoint(context)
                 ? exception.ToResponse()
                 : ApiOpResult.Fail(
-                    exception.StatusCode,
-                    exception.Message);
+                    clientStatusCode,
+                    exception is UpstreamException
+                        ? "An upstream error occurred. Please try again later."
+                        : exception.Message);
 
             await context.Response.WriteAsync(
                 JsonSerializer.Serialize(response, JsonOptions),
