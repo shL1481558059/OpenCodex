@@ -1186,7 +1186,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
         await using (var db = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
-            await db.Database.EnsureCreatedAsync();
+            db.Database.Migrate();
             db.WebSearchSettings.Add(new WebSearchSettings
             {
                 Enabled = true,
@@ -1306,7 +1306,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
         await using (var db = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
-            await db.Database.EnsureCreatedAsync();
+            db.Database.Migrate();
             db.WebSearchSettings.Add(new WebSearchSettings
             {
                 Enabled = true,
@@ -1826,7 +1826,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
         await using (var db = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
-            await db.Database.EnsureCreatedAsync();
+            db.Database.Migrate();
             db.WebSearchSettings.Add(new WebSearchSettings
             {
                 Enabled = true,
@@ -1906,7 +1906,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
         await using (var db = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
-            await db.Database.EnsureCreatedAsync();
+            db.Database.Migrate();
             db.WebSearchSettings.Add(new WebSearchSettings
             {
                 Enabled = true,
@@ -2019,7 +2019,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
         await using (var db = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
-            await db.Database.EnsureCreatedAsync();
+            db.Database.Migrate();
             db.WebSearchSettings.Add(new WebSearchSettings
             {
                 Enabled = true,
@@ -2158,7 +2158,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
         await using (var db = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
-            await db.Database.EnsureCreatedAsync();
+            db.Database.Migrate();
             db.WebSearchSettings.Add(new WebSearchSettings
             {
                 Enabled = true,
@@ -2824,7 +2824,6 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
         await using var db = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         db.Database.Migrate();
-await db.Database.EnsureCreatedAsync();
         db.WebSearchSettings.Add(new WebSearchSettings
         {
             Enabled = true,
