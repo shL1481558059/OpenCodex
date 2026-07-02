@@ -76,6 +76,7 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         entity.Property(channel => channel.ApiKey).IsRequired();
         entity.Property(channel => channel.AuthMode).IsRequired();
         entity.Property(channel => channel.HeadersJson).IsRequired();
+        entity.Property(channel => channel.CircuitBreakDurationSeconds).IsRequired();
         entity.Property(channel => channel.Capacity).IsRequired();
         entity.Property(channel => channel.CompatJson).IsRequired();
         entity.Property(channel => channel.ModelsJson).IsRequired();

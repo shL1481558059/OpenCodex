@@ -34,6 +34,7 @@ public static class OpenCodexMappingConfig
                 source.AuthMode,
                 DeserializeObject(source.HeadersJson),
                 source.TimeoutSeconds,
+                source.CircuitBreakDurationSeconds,
                 source.RetryCount,
                 source.Priority,
                 source.Capacity,

@@ -746,3 +746,14 @@ body {
   flex-shrink: 0;
   white-space: nowrap;
 }
+
+.form-label-with-tip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.form-label-tip {
+  color: var(--el-color-warning);
+  cursor: help;
+}

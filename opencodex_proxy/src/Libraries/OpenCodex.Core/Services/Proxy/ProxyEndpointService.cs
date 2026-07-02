@@ -125,10 +125,14 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             {
                 var candidateChannelId = JsonDictionaryValue.String(candidate.Route.Channel, "id");
                 var candidateEnabled = !candidate.Route.Channel.TryGetValue("enabled", out var enabledValue) || enabledValue is true;
+                var candidateCircuitBreakDuration = TimeSpan.FromSeconds(Math.Max(
+                    0,
+                    IntValue(candidate.Route.Channel, "circuit_break_duration_seconds", 0)));
                 var healthStatus = _channelCircuitBreaker.GetHealthStatus(
                     ownerUsername,
                     candidateChannelId,
-                    candidateEnabled);
+                    candidateEnabled,
+                    candidateCircuitBreakDuration);
                 if (healthStatus == ChannelHealthStatus.Open)
                 {
                     continue;
@@ -139,7 +143,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 {
                     halfOpenProbeAcquired = _channelCircuitBreaker.TryAcquireHalfOpenProbe(
                         ownerUsername,
-                        candidateChannelId);
+                        candidateChannelId,
+                        candidateCircuitBreakDuration);
                     if (!halfOpenProbeAcquired)
                     {
                         continue;
@@ -151,7 +156,10 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 {
                     if (halfOpenProbeAcquired)
                     {
-                        _channelCircuitBreaker.ReleaseHalfOpenProbe(ownerUsername, candidateChannelId);
+                        _channelCircuitBreaker.ReleaseHalfOpenProbe(
+                            ownerUsername,
+                            candidateChannelId,
+                            candidateCircuitBreakDuration);
                     }
                     continue;
                 }
@@ -332,10 +340,17 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 }
                 catch (ProxyException exception)
                 {
-                    var counted = _channelCircuitBreaker.RecordFailure(ownerUsername, candidateChannelId, exception);
+                    var counted = _channelCircuitBreaker.RecordFailure(
+                        ownerUsername,
+                        candidateChannelId,
+                        exception,
+                        candidateCircuitBreakDuration);
                     if (halfOpenProbeAcquired && !counted)
                     {
-                        _channelCircuitBreaker.ReleaseHalfOpenProbe(ownerUsername, candidateChannelId);
+                        _channelCircuitBreaker.ReleaseHalfOpenProbe(
+                            ownerUsername,
+                            candidateChannelId,
+                            candidateCircuitBreakDuration);
                     }
 
                     var upstreamErrorResponse = UpstreamErrorBody(exception);
@@ -406,7 +421,10 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 {
                     if (halfOpenProbeAcquired)
                     {
-                        _channelCircuitBreaker.ReleaseHalfOpenProbe(ownerUsername, candidateChannelId);
+                        _channelCircuitBreaker.ReleaseHalfOpenProbe(
+                            ownerUsername,
+                            candidateChannelId,
+                            candidateCircuitBreakDuration);
                     }
 
                     if (exception is not OperationCanceledException)
@@ -764,6 +782,24 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             short priority => priority,
             byte priority => priority,
             _ => 0
+        };
+    }
+
+    private static int IntValue(IReadOnlyDictionary<string, object?> dictionary, string key, int fallback)
+    {
+        if (!dictionary.TryGetValue(key, out var value)
+            || value is null)
+        {
+            return fallback;
+        }
+
+        return value switch
+        {
+            int intValue => intValue,
+            long longValue => (int)longValue,
+            short shortValue => shortValue,
+            byte byteValue => byteValue,
+            _ => fallback
         };
     }
 

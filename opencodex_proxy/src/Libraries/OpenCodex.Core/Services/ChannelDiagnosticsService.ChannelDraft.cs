@@ -16,6 +16,7 @@ public sealed partial class ChannelDiagnosticsService
         "auth_mode",
         "headers",
         "timeout_seconds",
+        "circuit_break_duration_seconds",
         "retry_count",
         "priority",
         "capacity",

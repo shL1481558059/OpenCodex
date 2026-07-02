@@ -43,11 +43,17 @@ public sealed class ChannelCircuitBreakerService : IChannelCircuitBreakerService
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
     }
 
-    public ChannelHealthStatus GetHealthStatus(string ownerUsername, string channelId, bool enabled)
+    public ChannelHealthStatus GetHealthStatus(string ownerUsername, string channelId, bool enabled, TimeSpan? openDurationOverride = null)
     {
         if (!enabled)
         {
             return ChannelHealthStatus.Disabled;
+        }
+
+        if (EffectiveOpenDuration(openDurationOverride) <= TimeSpan.Zero)
+        {
+            _entries.TryRemove(Key(ownerUsername, channelId), out _);
+            return ChannelHealthStatus.Healthy;
         }
 
         if (!_entries.TryGetValue(Key(ownerUsername, channelId), out var entry))
@@ -57,16 +63,21 @@ public sealed class ChannelCircuitBreakerService : IChannelCircuitBreakerService
 
         lock (entry.Sync)
         {
-            return RefreshState(entry, _clock());
+            return RefreshState(entry, _clock(), EffectiveOpenDuration(openDurationOverride));
         }
     }
 
-    public bool TryAcquireHalfOpenProbe(string ownerUsername, string channelId)
+    public bool TryAcquireHalfOpenProbe(string ownerUsername, string channelId, TimeSpan? openDurationOverride = null)
     {
+        if (EffectiveOpenDuration(openDurationOverride) <= TimeSpan.Zero)
+        {
+            return false;
+        }
+
         var entry = _entries.GetOrAdd(Key(ownerUsername, channelId), static _ => new Entry());
         lock (entry.Sync)
         {
-            if (RefreshState(entry, _clock()) != ChannelHealthStatus.HalfOpen)
+            if (RefreshState(entry, _clock(), EffectiveOpenDuration(openDurationOverride)) != ChannelHealthStatus.HalfOpen)
             {
                 return false;
             }
@@ -81,8 +92,14 @@ public sealed class ChannelCircuitBreakerService : IChannelCircuitBreakerService
         }
     }
 
-    public void ReleaseHalfOpenProbe(string ownerUsername, string channelId)
+    public void ReleaseHalfOpenProbe(string ownerUsername, string channelId, TimeSpan? openDurationOverride = null)
     {
+        if (EffectiveOpenDuration(openDurationOverride) <= TimeSpan.Zero)
+        {
+            _entries.TryRemove(Key(ownerUsername, channelId), out _);
+            return;
+        }
+
         if (!_entries.TryGetValue(Key(ownerUsername, channelId), out var entry))
         {
             return;
@@ -90,7 +107,7 @@ public sealed class ChannelCircuitBreakerService : IChannelCircuitBreakerService
 
         lock (entry.Sync)
         {
-            if (RefreshState(entry, _clock()) != ChannelHealthStatus.HalfOpen)
+            if (RefreshState(entry, _clock(), EffectiveOpenDuration(openDurationOverride)) != ChannelHealthStatus.HalfOpen)
             {
                 return;
             }
@@ -107,34 +124,41 @@ public sealed class ChannelCircuitBreakerService : IChannelCircuitBreakerService
         _entries.TryRemove(Key(ownerUsername, channelId), out _);
     }
 
-    public bool RecordFailure(string ownerUsername, string channelId, Exception exception)
+    public bool RecordFailure(string ownerUsername, string channelId, Exception exception, TimeSpan? openDurationOverride = null)
     {
         if (!ShouldCountFailure(exception))
         {
             return false;
         }
 
+        var effectiveOpenDuration = EffectiveOpenDuration(openDurationOverride);
+        if (effectiveOpenDuration <= TimeSpan.Zero)
+        {
+            _entries.TryRemove(Key(ownerUsername, channelId), out _);
+            return true;
+        }
+
         var now = _clock();
         var entry = _entries.GetOrAdd(Key(ownerUsername, channelId), static _ => new Entry());
         lock (entry.Sync)
         {
-            var state = RefreshState(entry, now);
+            var state = RefreshState(entry, now, effectiveOpenDuration);
             if (state == ChannelHealthStatus.HalfOpen)
             {
-                Open(entry, now);
+                Open(entry, now, effectiveOpenDuration);
                 return true;
             }
 
             if (state == ChannelHealthStatus.Open)
             {
-                Open(entry, now);
+                Open(entry, now, effectiveOpenDuration);
                 return true;
             }
 
             entry.ConsecutiveFailures++;
             if (entry.ConsecutiveFailures >= _failureThreshold)
             {
-                Open(entry, now);
+                Open(entry, now, effectiveOpenDuration);
             }
 
             return true;
@@ -146,12 +170,22 @@ public sealed class ChannelCircuitBreakerService : IChannelCircuitBreakerService
         _entries.TryRemove(Key(ownerUsername, channelId), out _);
     }
 
-    private void Open(Entry entry, DateTimeOffset now)
+    private void Open(Entry entry, DateTimeOffset now, TimeSpan openDuration)
     {
         entry.ConsecutiveFailures = _failureThreshold;
         entry.HalfOpenProbeRequests = 0;
-        entry.OpenedUntil = now + _openDuration;
+        entry.OpenedUntil = now + openDuration;
         entry.State = CircuitState.Open;
+    }
+
+    private TimeSpan EffectiveOpenDuration(TimeSpan? openDurationOverride)
+    {
+        if (!openDurationOverride.HasValue)
+        {
+            return _openDuration;
+        }
+
+        return openDurationOverride.Value;
     }
 
     private static bool ShouldCountFailure(Exception exception)
@@ -171,8 +205,17 @@ public sealed class ChannelCircuitBreakerService : IChannelCircuitBreakerService
         return $"{ownerUsername.Trim()}\n{channelId}";
     }
 
-    private static ChannelHealthStatus RefreshState(Entry entry, DateTimeOffset now)
+    private static ChannelHealthStatus RefreshState(Entry entry, DateTimeOffset now, TimeSpan openDuration)
     {
+        if (openDuration <= TimeSpan.Zero)
+        {
+            entry.ConsecutiveFailures = 0;
+            entry.HalfOpenProbeRequests = 0;
+            entry.OpenedUntil = null;
+            entry.State = CircuitState.Closed;
+            return ChannelHealthStatus.Healthy;
+        }
+
         if (entry.State == CircuitState.Open
             && entry.OpenedUntil is { } openedUntil
             && openedUntil > now)

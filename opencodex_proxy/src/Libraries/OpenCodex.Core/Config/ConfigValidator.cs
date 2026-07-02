@@ -78,6 +78,12 @@ public static class ConfigValidator
             throw new ConfigException($"channel {channelId} timeout_seconds must be positive");
         }
 
+        var circuitBreakDuration = GetValue(channel, "circuit_break_duration_seconds", 0);
+        if (circuitBreakDuration is not int circuitBreakDurationSeconds || circuitBreakDurationSeconds < 0)
+        {
+            throw new ConfigException($"channel {channelId} circuit_break_duration_seconds must be a non-negative integer");
+        }
+
         var retryCount = GetValue(channel, "retry_count", OpenCodexConfig.DefaultRetryCount);
         if (retryCount is not int retryCountValue || retryCountValue < 0)
         {

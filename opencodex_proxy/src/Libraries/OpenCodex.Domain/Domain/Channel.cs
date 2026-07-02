@@ -22,6 +22,8 @@ public sealed class Channel : BaseEntity<Guid>
 
     public int TimeoutSeconds { get; set; }
 
+    public int CircuitBreakDurationSeconds { get; set; }
+
     public int RetryCount { get; set; }
 
     public int Capacity { get; set; }

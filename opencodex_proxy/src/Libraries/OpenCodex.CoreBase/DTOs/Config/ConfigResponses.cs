@@ -58,6 +58,7 @@ public sealed class ChannelResponse
     /// <param name="authMode">上游请求使用的认证模式。</param>
     /// <param name="headers">应用到上游请求的附加请求头。</param>
     /// <param name="timeoutSeconds">上游请求超时时间，单位为秒。</param>
+    /// <param name="circuitBreakDurationSeconds">渠道熔断开启后的持续时间，单位为秒；0 表示不标记熔断状态。</param>
     /// <param name="retryCount">重试次数。</param>
     /// <param name="priority">渠道优先级；值越小优先级越高。</param>
     /// <param name="capacity">渠道允许的主请求并发上限；为空表示不限。</param>
@@ -76,6 +77,7 @@ public sealed class ChannelResponse
         string authMode,
         IReadOnlyDictionary<string, object?> headers,
         int timeoutSeconds,
+        int circuitBreakDurationSeconds,
         int retryCount,
         int priority,
         int? capacity,
@@ -94,6 +96,7 @@ public sealed class ChannelResponse
         AuthMode = authMode;
         Headers = headers;
         TimeoutSeconds = timeoutSeconds;
+        CircuitBreakDurationSeconds = circuitBreakDurationSeconds;
         RetryCount = retryCount;
         Priority = priority;
         Capacity = capacity;
@@ -157,6 +160,12 @@ public sealed class ChannelResponse
     /// </summary>
     [JsonPropertyName("timeout_seconds")]
     public int TimeoutSeconds { get; }
+
+    /// <summary>
+    /// 获取渠道熔断开启后的持续时间，单位为秒；0 表示不标记熔断状态。
+    /// </summary>
+    [JsonPropertyName("circuit_break_duration_seconds")]
+    public int CircuitBreakDurationSeconds { get; }
 
     /// <summary>
     /// 获取上游请求重试次数。
@@ -224,6 +233,7 @@ public sealed class ChannelResponse
             channel.AuthMode,
             channel.Headers,
             channel.TimeoutSeconds,
+            channel.CircuitBreakDurationSeconds,
             channel.RetryCount,
             channel.Priority,
             channel.Capacity,

@@ -88,6 +88,9 @@ namespace OpenCodex.Data.Migrations.SqliteMigrations
                     b.Property<int>("Capacity")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int>("CircuitBreakDurationSeconds")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("CompatJson")
                         .IsRequired()
                         .HasColumnType("TEXT");

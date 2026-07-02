@@ -146,7 +146,8 @@ public sealed class ConfigService : IConfigService
         return _channelCircuitBreaker.GetHealthStatus(
             channel.OwnerUsername,
             channel.Id.ToString(),
-            channel.Enabled) switch
+            channel.Enabled,
+            TimeSpan.FromSeconds(channel.CircuitBreakDurationSeconds)) switch
         {
             ChannelHealthStatus.Disabled => "disabled",
             ChannelHealthStatus.Open => "open",
@@ -232,6 +233,7 @@ public sealed class ConfigService : IConfigService
                 existing.TimeoutSeconds = TimeoutValue(
                     JsonDictionaryValue.Get(validated, "timeout_seconds"),
                     settings.DefaultTimeout);
+                existing.CircuitBreakDurationSeconds = CircuitBreakDurationSecondsValue(validated);
                 existing.RetryCount = RetryCountValue(validated);
                 existing.Priority = PriorityValue(validated, existing.Priority);
                 existing.Capacity = CapacityValue(validated, null, (existing.OwnerUserId, existing.Id), existing.Capacity);
@@ -296,6 +298,7 @@ public sealed class ConfigService : IConfigService
                 TimeoutSeconds = TimeoutValue(
                     JsonDictionaryValue.Get(validated, "timeout_seconds"),
                     settings.DefaultTimeout),
+                CircuitBreakDurationSeconds = CircuitBreakDurationSecondsValue(validated),
                 RetryCount = RetryCountValue(validated),
                 Priority = PriorityValue(validated, 15),
                 Capacity = CapacityValue(validated, null, (channelOwnerUser.Id, Guid.Empty), 3),
@@ -431,6 +434,7 @@ public sealed class ConfigService : IConfigService
                 existing.TimeoutSeconds = TimeoutValue(
                     JsonDictionaryValue.Get(channel, "timeout_seconds"),
                     settings.DefaultTimeout);
+                existing.CircuitBreakDurationSeconds = CircuitBreakDurationSecondsValue(channel);
                 existing.RetryCount = RetryCountValue(channel);
                 existing.Priority = PriorityValue(channel, existing.Priority);
                 existing.Capacity = CapacityValue(channel, null, (existing.OwnerUserId, existing.Id), existing.Capacity);
@@ -462,6 +466,7 @@ public sealed class ConfigService : IConfigService
                     TimeoutSeconds = TimeoutValue(
                         JsonDictionaryValue.Get(channel, "timeout_seconds"),
                         settings.DefaultTimeout),
+                    CircuitBreakDurationSeconds = CircuitBreakDurationSecondsValue(channel),
                     RetryCount = RetryCountValue(channel),
                     Priority = PriorityValue(channel, nextPosition - 1),
                     Capacity = CapacityValue(channel, null, (channelOwnerUserId, Guid.Empty)),
@@ -580,6 +585,7 @@ public sealed class ConfigService : IConfigService
             channel.AuthMode,
             DeserializeObject(channel.HeadersJson),
             channel.TimeoutSeconds,
+            channel.CircuitBreakDurationSeconds,
             channel.RetryCount,
             channel.Priority,
             channel.Capacity,
@@ -775,6 +781,13 @@ public sealed class ConfigService : IConfigService
     {
         return Convert.ToInt32(
             channel.TryGetValue("retry_count", out var value) ? value : OpenCodexConfig.DefaultRetryCount,
+            CultureInfo.InvariantCulture);
+    }
+
+    private static int CircuitBreakDurationSecondsValue(IReadOnlyDictionary<string, object?> channel)
+    {
+        return Convert.ToInt32(
+            channel.TryGetValue("circuit_break_duration_seconds", out var value) ? value : 0,
             CultureInfo.InvariantCulture);
     }
 

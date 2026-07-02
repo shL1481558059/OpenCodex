@@ -168,4 +168,26 @@ public sealed class ChannelCircuitBreakerServiceTests
 
         Assert.Equal(ChannelHealthStatus.Healthy, service.GetHealthStatus("admin", "primary", enabled: true));
     }
+
+    [Fact]
+    public void RecordFailure_ZeroDuration_DoesNotMarkCircuitOpen()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var service = new ChannelCircuitBreakerService(
+            failureThreshold: 1,
+            openDuration: TimeSpan.FromSeconds(10),
+            halfOpenMaxProbeRequests: 1,
+            clock: () => now);
+
+        var counted = service.RecordFailure(
+            "admin",
+            "primary",
+            new UpstreamException("boom", ProxyHttpStatus.BadGateway),
+            TimeSpan.Zero);
+
+        Assert.True(counted);
+        Assert.Equal(
+            ChannelHealthStatus.Healthy,
+            service.GetHealthStatus("admin", "primary", enabled: true, TimeSpan.Zero));
+    }
 }
