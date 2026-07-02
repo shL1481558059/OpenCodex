@@ -4,7 +4,8 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const target = `${process.platform}-${process.arch}`;
+const requestedTarget = (process.env.OPENCODEX_DESKTOP_TARGET || "").trim();
+const target = requestedTarget || `${process.platform}-${process.arch}`;
 
 const targets = {
   "darwin-arm64": {
@@ -47,7 +48,9 @@ const targets = {
 
 const selected = targets[target];
 if (!selected) {
-  throw new Error(`Unsupported desktop target: ${target}`);
+  throw new Error(
+    `Unsupported desktop target: ${target}. Supported values: ${Object.keys(targets).join(", ")}`
+  );
 }
 
 const binariesDir = path.join(rootDir, "src-tauri", "binaries");
@@ -99,7 +102,9 @@ if (process.platform !== "win32") {
   chmodSync(sidecarPath, 0o755);
 }
 
-console.log(`Prepared Tauri sidecar: ${path.relative(rootDir, sidecarPath)}`);
+console.log(
+  `Prepared Tauri sidecar for ${target} (${selected.triple} / ${selected.rid}): ${path.relative(rootDir, sidecarPath)}`
+);
 
 function run(command, args) {
   const result = spawnSync(command, args, {

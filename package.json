@@ -4,7 +4,8 @@
     "dev": "npm --prefix frontend run dev",
     "desktop:prepare": "node scripts/prepare_tauri_sidecar.mjs",
     "desktop:dev": "tauri dev",
-    "desktop:build": "tauri build"
+    "desktop:build": "tauri build",
+    "tauri": "tauri"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.3"
