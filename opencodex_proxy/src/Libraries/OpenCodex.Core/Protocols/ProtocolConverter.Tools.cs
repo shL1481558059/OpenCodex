@@ -303,7 +303,7 @@ public static partial class ProtocolConverter
         return Obj(
             ("name", name),
             ("description", toolType == "apply_patch"
-                ? "Apply file edits using patch text. The patch must start with '*** Begin Patch' and end with '*** End Patch'. Use '*** Add File: <path>' with '+' lines, '*** Update File: <path>' with '@@' context blocks and '+'/'-' lines, or '*** Delete File: <path>'."
+                ? "Apply file edits using patch text. The patch must start with '*** Begin Patch' and end with '*** End Patch'. Use '*** Add File: <path>' with '+' lines, '*** Update File: <path>' with '@@' context blocks and '+'/'-' lines, or '*** Delete File: <path>'. Use `grep -n` to verify exact content before editing."
                 : GetValue(tool, "description") ?? $"Wrapped Responses tool: {toolType}"),
             ("parameters", parameters),
             ("native_type", toolType),
@@ -333,10 +333,11 @@ public static partial class ProtocolConverter
             "The patch must start with '*** Begin Patch' and end with '*** End Patch'.",
             "Do not use unified diff headers such as '---', '+++', or '***************'.",
             "The '@@' line must contain only '@@'. Never add line numbers like '-1,4 +1,8 @@'.",
+            "Before editing, use `grep -n` or `rg -n` to verify exact file content and line numbers; never edit based on remembered line numbers.",
             "Supported operations:",
             "- '*** Add File: <path>' followed by '+' lines.",
             "- '*** Update File: <path>' followed by at least one '@@' block with context, '+' and '-' lines.",
-            "- '*** Delete File: <path>'.",
+            "- '*** Delete File: <path>'",
             "Correct add-file example:",
             "*** Begin Patch",
             "*** Add File: src/example.txt",
