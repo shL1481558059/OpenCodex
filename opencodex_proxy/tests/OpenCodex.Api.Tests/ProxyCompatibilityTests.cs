@@ -694,6 +694,112 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
+    public void ConvertRequest_ResponsesNativeApplyPatchTool_UsesPatchSchemaForChat()
+    {
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = "patch this",
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "apply_patch"
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Chat,
+            "upstream");
+
+        var tools = Assert.IsType<List<object?>>(request["tools"]);
+        var wrapper = Assert.IsType<Dictionary<string, object?>>(Assert.Single(tools));
+        Assert.Equal("function", wrapper["type"]);
+        var function = Assert.IsType<Dictionary<string, object?>>(wrapper["function"]);
+        Assert.Equal("apply_patch", function["name"]);
+
+        var parameters = Assert.IsType<Dictionary<string, object?>>(function["parameters"]);
+        var properties = Assert.IsType<Dictionary<string, object?>>(parameters["properties"]);
+        var patchProperty = Assert.IsType<Dictionary<string, object?>>(properties["patch"]);
+        Assert.Equal("string", patchProperty["type"]);
+        var required = Assert.IsType<List<object?>>(parameters["required"]);
+        Assert.Equal(["patch"], required.Select(item => Assert.IsType<string>(item)).ToArray());
+    }
+
+    [Fact]
+    public void ConvertRequest_ResponsesApplyPatchToolChoice_MapsToChatFunctionChoice()
+    {
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = "patch this",
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "apply_patch"
+                    }
+                },
+                ["tool_choice"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "apply_patch"
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Chat,
+            "upstream");
+
+        var toolChoice = Assert.IsType<Dictionary<string, object?>>(request["tool_choice"]);
+        Assert.Equal("function", toolChoice["type"]);
+        var function = Assert.IsType<Dictionary<string, object?>>(toolChoice["function"]);
+        Assert.Equal("apply_patch", function["name"]);
+    }
+
+    [Fact]
+    public void ConvertRequest_ResponsesLegacyApplyPatchFunctionTool_RemainsFunctionForChat()
+    {
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = "patch this",
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "function",
+                        ["name"] = "apply_patch_update_file",
+                        ["description"] = "Update a file with structured JSON.",
+                        ["parameters"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object?>
+                            {
+                                ["path"] = new Dictionary<string, object?> { ["type"] = "string" }
+                            },
+                            ["required"] = new List<object?> { "path" }
+                        }
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Chat,
+            "upstream");
+
+        var tools = Assert.IsType<List<object?>>(request["tools"]);
+        var wrapper = Assert.IsType<Dictionary<string, object?>>(Assert.Single(tools));
+        Assert.Equal("function", wrapper["type"]);
+        var function = Assert.IsType<Dictionary<string, object?>>(wrapper["function"]);
+        Assert.Equal("apply_patch_update_file", function["name"]);
+        var parameters = Assert.IsType<Dictionary<string, object?>>(function["parameters"]);
+        var properties = Assert.IsType<Dictionary<string, object?>>(parameters["properties"]);
+        Assert.True(properties.ContainsKey("path"));
+        Assert.False(properties.ContainsKey("patch"));
+    }
+
+    [Fact]
     public void ConvertRequest_ResponsesWebSearchTool_ConvertsForMessages()
     {
         var request = ProtocolConverter.ConvertRequest(

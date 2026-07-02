@@ -402,6 +402,13 @@ public static partial class ProtocolConverter
 
         if (TryAsObject(toolChoice, out var toolChoiceObject))
         {
+            if (IsApplyPatchToolChoice(toolChoiceObject))
+            {
+                return Obj(
+                    ("type", "function"),
+                    ("function", Obj(("name", "apply_patch"))));
+            }
+
             var function = ObjectValue(toolChoiceObject, "function");
             if (HasNonNullValue(function, "name"))
             {
@@ -421,5 +428,28 @@ public static partial class ProtocolConverter
         }
 
         return toolChoice;
+    }
+
+    private static bool IsApplyPatchToolChoice(Dictionary<string, object?> toolChoiceObject)
+    {
+        var type = GetString(toolChoiceObject, "type") ?? string.Empty;
+        if (type == "apply_patch")
+        {
+            return true;
+        }
+
+        if (type != "custom")
+        {
+            return false;
+        }
+
+        var name = GetString(toolChoiceObject, "name");
+        if (string.IsNullOrEmpty(name))
+        {
+            name = GetString(ObjectValue(toolChoiceObject, "custom"), "name");
+        }
+
+        return !string.IsNullOrEmpty(name)
+            && IsApplyPatchName(name.Replace("-", "_", StringComparison.Ordinal));
     }
 }
