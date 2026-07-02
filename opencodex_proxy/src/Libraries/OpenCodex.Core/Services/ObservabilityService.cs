@@ -887,6 +887,7 @@ public sealed class ObservabilityService : IObservabilityService
                 channel.AuthMode,
                 new Dictionary<string, object?>(),
                 channel.TimeoutSeconds,
+                channel.CircuitBreakDurationSeconds,
                 channel.RetryCount,
                 channel.Priority,
                 channel.Capacity,

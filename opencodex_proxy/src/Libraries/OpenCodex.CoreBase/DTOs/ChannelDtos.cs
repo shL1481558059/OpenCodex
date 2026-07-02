@@ -15,6 +15,7 @@ public sealed class ChannelDto(
     string authMode,
     IReadOnlyDictionary<string, object?> headers,
     int timeoutSeconds,
+    int circuitBreakDurationSeconds,
     int retryCount,
     int priority,
     int? capacity,
@@ -43,6 +44,8 @@ public sealed class ChannelDto(
     public IReadOnlyDictionary<string, object?> Headers { get; } = headers;
 
     public int TimeoutSeconds { get; } = timeoutSeconds;
+
+    public int CircuitBreakDurationSeconds { get; } = circuitBreakDurationSeconds;
 
     public int RetryCount { get; } = retryCount;
 

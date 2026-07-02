@@ -127,8 +127,24 @@
     <el-drawer v-model="channelDrawerVisible" :title="editingIndex === -1 ? '新增渠道' : '编辑渠道'" size="720px">
       <el-form label-position="top" :model="channelDraft">
         <el-row :gutter="12">
+          <el-col :span="12">
+            <el-form-item>
+              <template #label>
+                <span>启用</span>
+              </template>
+              <el-switch v-model="channelDraft.enabled" />
+            </el-form-item>
+          </el-col>
           <el-col v-if="supportsApplyPatchPromptCompat(channelDraft.type)" :span="24">
-            <el-form-item label="兼容 apply_patch 提示词">
+            <el-form-item>
+              <template #label>
+                <span class="form-label-with-tip">
+                  <span>兼容 apply_patch 提示词</span>
+                  <el-tooltip content="将补丁类提示词改写为上游更容易接受的格式，降低 apply_patch 指令被拒绝的概率。" placement="top">
+                    <el-icon class="form-label-tip"><Warning /></el-icon>
+                  </el-tooltip>
+                </span>
+              </template>
               <el-switch
                 v-model="compatTexts.enable_apply_patch_prompt_compat"
                 active-text="开启"
@@ -137,7 +153,15 @@
             </el-form-item>
           </el-col>
           <el-col v-if="channelDraft.type === 'messages'" :span="24">
-            <el-form-item label="保留思考历史 (preserve_thinking_history)">
+            <el-form-item>
+              <template #label>
+                <span class="form-label-with-tip">
+                  <span>保留思考历史 (preserve_thinking_history)</span>
+                  <el-tooltip content="透传并恢复思考相关内容，尽量保持多轮请求中的推理上下文连续。" placement="top">
+                    <el-icon class="form-label-tip"><Warning /></el-icon>
+                  </el-tooltip>
+                </span>
+              </template>
               <el-switch
                 v-model="compatTexts.preserve_thinking_history"
                 active-text="开启"
@@ -186,6 +210,20 @@
             </el-form-item>
           </el-col>
           <el-col :span="12">
+            <el-form-item label="熔断时间（秒）">
+              <el-input-number
+                v-model="channelDraft.circuit_break_duration_seconds"
+                :min="0"
+                :step="1"
+                step-strictly
+                class="full-width"
+              />
+              <div class="text-muted" style="margin-top: 4px; font-size: 12px">
+                0 表示不标记熔断状态
+              </div>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
             <el-form-item label="重试次数">
               <el-input-number
                 v-model="channelDraft.retry_count"
@@ -216,11 +254,6 @@
                 step-strictly
                 class="full-width"
               />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="启用">
-              <el-switch v-model="channelDraft.enabled" />
             </el-form-item>
           </el-col>
         </el-row>
@@ -259,32 +292,80 @@
         <el-divider content-position="left">兼容规则</el-divider>
         <el-row :gutter="12">
           <el-col :span="12">
-            <el-form-item label="rename_params">
+            <el-form-item>
+              <template #label>
+                <span class="form-label-with-tip">
+                  <span>rename_params</span>
+                  <el-tooltip content="将请求参数名重命名后再发给上游。每行一个 from=to 映射。" placement="top">
+                    <el-icon class="form-label-tip"><Warning /></el-icon>
+                  </el-tooltip>
+                </span>
+              </template>
               <el-input v-model="compatTexts.rename_params" type="textarea" :rows="4" placeholder="from=to" />
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="drop_params">
+            <el-form-item>
+              <template #label>
+                <span class="form-label-with-tip">
+                  <span>drop_params</span>
+                  <el-tooltip content="丢弃指定请求参数，避免把上游不支持或不需要的参数发出去。每行一个参数名。" placement="top">
+                    <el-icon class="form-label-tip"><Warning /></el-icon>
+                  </el-tooltip>
+                </span>
+              </template>
               <el-input v-model="compatTexts.drop_params" type="textarea" :rows="4" placeholder="每行一个参数" />
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="drop_tool_types">
+            <el-form-item>
+              <template #label>
+                <span class="form-label-with-tip">
+                  <span>drop_tool_types</span>
+                  <el-tooltip content="丢弃指定工具类型，防止向不兼容的上游传递对应工具定义。每行一个工具类型。" placement="top">
+                    <el-icon class="form-label-tip"><Warning /></el-icon>
+                  </el-tooltip>
+                </span>
+              </template>
               <el-input v-model="compatTexts.drop_tool_types" type="textarea" :rows="4" placeholder="image_generation&#10;image_generation_call" />
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="force_params">
+            <el-form-item>
+              <template #label>
+                <span class="form-label-with-tip">
+                  <span>force_params</span>
+                  <el-tooltip content="强制覆盖请求参数，即使调用方已传值也会被这里的配置替换。每行一个 name=value。" placement="top">
+                    <el-icon class="form-label-tip"><Warning /></el-icon>
+                  </el-tooltip>
+                </span>
+              </template>
               <el-input v-model="compatTexts.force_params" type="textarea" :rows="4" placeholder='name={"type":"text"}' />
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="default_params">
+            <el-form-item>
+              <template #label>
+                <span class="form-label-with-tip">
+                  <span>default_params</span>
+                  <el-tooltip content="为缺失参数补默认值；只有调用方未传该参数时才会生效。每行一个 name=value。" placement="top">
+                    <el-icon class="form-label-tip"><Warning /></el-icon>
+                  </el-tooltip>
+                </span>
+              </template>
               <el-input v-model="compatTexts.default_params" type="textarea" :rows="4" placeholder="temperature=0.2" />
             </el-form-item>
           </el-col>
           <el-col :span="24">
-            <el-form-item label="unsupported_params">
+            <el-form-item>
+              <template #label>
+                <span class="form-label-with-tip">
+                  <span>unsupported_params</span>
+                  <el-tooltip content="声明上游不支持的参数，命中后可提前过滤或提示，避免请求直接失败。每行一个参数名。" placement="top">
+                    <el-icon class="form-label-tip"><Warning /></el-icon>
+                  </el-tooltip>
+                </span>
+              </template>
               <el-input v-model="compatTexts.unsupported_params" type="textarea" :rows="3" placeholder="每行一个参数" />
             </el-form-item>
           </el-col>
@@ -772,6 +853,7 @@ import {
   Plus,
   Refresh,
   Upload,
+  Warning,
 } from "@element-plus/icons-vue";
 const props = defineProps({
   api: { type: Function, required: true },
@@ -1732,6 +1814,7 @@ function defaultChannel(priority = 0) {
     auth_mode: "config",
     headers: {},
     timeout_seconds: 120,
+    circuit_break_duration_seconds: 0,
     retry_count: 3,
     priority,
     capacity: 3,
@@ -1744,6 +1827,7 @@ function defaultChannel(priority = 0) {
 function assignChannelDraft(channel) {
   Object.assign(channelDraft, defaultChannel(normalizePriorityValue(channel.priority)), channel, {
     headers: channel.headers || {},
+    circuit_break_duration_seconds: Number(channel.circuit_break_duration_seconds ?? 0),
     priority: normalizePriorityValue(channel.priority),
     capacity: normalizeCapacityValue(channel.capacity),
     compat: channel.compat || {},
@@ -1788,6 +1872,7 @@ function buildChannelFromDraft() {
     auth_mode: channelDraft.auth_mode,
     headers,
     timeout_seconds: Number(channelDraft.timeout_seconds || 120),
+    circuit_break_duration_seconds: Number(channelDraft.circuit_break_duration_seconds ?? 0),
     retry_count: Number(channelDraft.retry_count ?? 3),
     priority,
     capacity,

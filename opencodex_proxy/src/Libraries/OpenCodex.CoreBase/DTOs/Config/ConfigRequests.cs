@@ -89,6 +89,12 @@ public sealed class ChannelRequest
     public int? TimeoutSeconds { get; set; }
 
     /// <summary>
+    /// 获取或设置渠道熔断开启后的持续时间，单位为秒；0 表示不标记熔断状态。
+    /// </summary>
+    [JsonPropertyName("circuit_break_duration_seconds")]
+    public int? CircuitBreakDurationSeconds { get; set; }
+
+    /// <summary>
     /// 获取或设置上游请求重试次数。
     /// </summary>
     [JsonPropertyName("retry_count")]
@@ -154,6 +160,11 @@ public sealed class ChannelRequest
         if (TimeoutSeconds.HasValue)
         {
             channel["timeout_seconds"] = TimeoutSeconds.Value;
+        }
+
+        if (CircuitBreakDurationSeconds.HasValue)
+        {
+            channel["circuit_break_duration_seconds"] = CircuitBreakDurationSeconds.Value;
         }
 
         if (RetryCount.HasValue)
