@@ -4,13 +4,13 @@ namespace OpenCodex.Core.Protocols;
 
 public static partial class ProtocolConverter
 {
-    private static Dictionary<string, object?> ToCanonicalRequest(Dictionary<string, object?> payload, string protocol)
+    private static Dictionary<string, object?> ToCanonicalRequest(Dictionary<string, object?> payload, string protocol, IReadOnlyDictionary<string, object?>? compat)
     {
         return protocol switch
         {
-            Responses => ResponsesRequestToCanonical(payload),
-            Chat => ChatRequestToCanonical(payload),
-            Messages => MessagesRequestToCanonical(payload),
+            Responses => ResponsesRequestToCanonical(payload, compat),
+            Chat => ChatRequestToCanonical(payload, compat),
+            Messages => MessagesRequestToCanonical(payload, compat),
             _ => throw new BadRequestException($"unsupported source protocol: {protocol}")
         };
     }
@@ -26,7 +26,7 @@ public static partial class ProtocolConverter
         };
     }
 
-    private static Dictionary<string, object?> ResponsesRequestToCanonical(Dictionary<string, object?> payload)
+    private static Dictionary<string, object?> ResponsesRequestToCanonical(Dictionary<string, object?> payload, IReadOnlyDictionary<string, object?>? compat)
     {
         var messages = new List<object?>();
         var instructions = GetValue(payload, "instructions");
@@ -63,12 +63,12 @@ public static partial class ProtocolConverter
         return Obj(
             ("model", GetValue(payload, "model")),
             ("messages", messages),
-            ("tools", ResponsesToolsToCanonical(GetValue(payload, "tools"))),
+            ("tools", ResponsesToolsToCanonical(GetValue(payload, "tools"), compat)),
             ("tool_choice", GetValue(payload, "tool_choice")),
             ("params", CopyCommonRequestParams(payload, Responses)));
     }
 
-    private static Dictionary<string, object?> ChatRequestToCanonical(Dictionary<string, object?> payload)
+    private static Dictionary<string, object?> ChatRequestToCanonical(Dictionary<string, object?> payload, IReadOnlyDictionary<string, object?>? compat)
     {
         var messages = new List<object?>();
         foreach (var item in ListValue(payload, "messages"))
@@ -82,12 +82,12 @@ public static partial class ProtocolConverter
         return Obj(
             ("model", GetValue(payload, "model")),
             ("messages", messages),
-            ("tools", ChatToolsToCanonical(GetValue(payload, "tools"))),
+            ("tools", ChatToolsToCanonical(GetValue(payload, "tools"), compat)),
             ("tool_choice", GetValue(payload, "tool_choice")),
             ("params", CopyCommonRequestParams(payload, Chat)));
     }
 
-    private static Dictionary<string, object?> MessagesRequestToCanonical(Dictionary<string, object?> payload)
+    private static Dictionary<string, object?> MessagesRequestToCanonical(Dictionary<string, object?> payload, IReadOnlyDictionary<string, object?>? compat)
     {
         var messages = new List<object?>();
         var system = GetValue(payload, "system");
