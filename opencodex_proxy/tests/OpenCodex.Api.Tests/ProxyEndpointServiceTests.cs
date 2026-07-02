@@ -654,6 +654,8 @@ public sealed class ProxyEndpointServiceTests
             clock: () => now);
         var primary = CreateChannel("primary", priority: 0, capacity: 1);
         var secondary = CreateChannel("secondary", priority: 1, capacity: 1);
+        primary["circuit_break_duration_seconds"] = 30;
+        secondary["circuit_break_duration_seconds"] = 30;
         breaker.RecordFailure("admin", "primary", new UpstreamException("down", ProxyHttpStatus.BadGateway));
 
         var attempts = new List<string>();
