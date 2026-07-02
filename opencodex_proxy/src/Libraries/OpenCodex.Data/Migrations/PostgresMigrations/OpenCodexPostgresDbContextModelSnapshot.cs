@@ -92,6 +92,9 @@ namespace OpenCodex.Data.Migrations.PostgresMigrations
 
                     b.Property<int>("Capacity")
                         .HasColumnType("integer");
+                    
+                    b.Property<int>("CircuitBreakDurationSeconds")
+                        .HasColumnType("integer");
 
                     b.Property<string>("CompatJson")
                         .IsRequired()
