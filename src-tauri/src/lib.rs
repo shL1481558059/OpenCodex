@@ -137,7 +137,7 @@ fn start_backend(app: &AppHandle, state: &BackendState) -> Result<DesktopSetting
 
 fn stop_backend(state: &BackendState) {
     if let Ok(mut guard) = state.child.lock() {
-        if let Some(mut child) = guard.take() {
+        if let Some(child) = guard.take() {
             let _ = child.kill();
         }
     }
