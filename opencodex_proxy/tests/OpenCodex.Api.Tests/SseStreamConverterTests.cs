@@ -89,6 +89,37 @@ public sealed class SseStreamConverterTests
         return JsonSerializer.Serialize(payload, JsonOpts);
     }
 
+    private static Dictionary<string, object?> ChatToolCall(
+        int index,
+        string? id = null,
+        string? name = null,
+        string? arguments = null)
+    {
+        var function = new Dictionary<string, object?>();
+        if (name is not null) function["name"] = name;
+        if (arguments is not null) function["arguments"] = arguments;
+
+        var toolCall = new Dictionary<string, object?>
+        {
+            ["index"] = index,
+            ["function"] = function
+        };
+        if (id is not null) toolCall["id"] = id;
+        if (id is not null || name is not null) toolCall["type"] = "function";
+        return toolCall;
+    }
+
+    private static IReadOnlyList<string> SplitEvery(string value, int size)
+    {
+        var parts = new List<string>();
+        for (var index = 0; index < value.Length; index += size)
+        {
+            parts.Add(value.Substring(index, Math.Min(size, value.Length - index)));
+        }
+
+        return parts;
+    }
+
     private static Dictionary<string, object?> ParseJsonEvent(string sseLine)
     {
         var idx = sseLine.IndexOf("data: ", StringComparison.Ordinal);
@@ -922,8 +953,155 @@ public sealed class SseStreamConverterTests
         var deltas = AllByType(parsed, "response.custom_tool_call_input.delta").ToList();
         Assert.NotEmpty(deltas);
         Assert.DoesNotContain(parsed, entry => (string?)entry["type"] == "response.function_call_arguments.delta");
-        Assert.Contains(deltas, delta => delta["delta"]?.ToString()?.Contains("*** Begin Patch", StringComparison.Ordinal) is true);
-        Assert.Contains(deltas, delta => delta["delta"]?.ToString()?.Contains("*** End Patch", StringComparison.Ordinal) is true);
+        var streamedInput = string.Concat(deltas.Select(delta => delta["delta"]?.ToString()));
+        Assert.Equal("*** Begin Patch\n*** Add File: data.json\n+new\n*** End Patch", streamedInput);
+
+        var done = ByType(parsed, "response.custom_tool_call_input.done");
+        Assert.NotNull(done);
+        Assert.Equal(streamedInput, done!["input"]?.ToString());
+        Assert.DoesNotContain(parsed, entry => (string?)entry["type"] == "response.function_call_arguments.done");
+    }
+
+    [Fact]
+    public async Task Chat_ApplyPatchTool_StreamsCustomToolCallInputDeltasAndDone()
+    {
+        const string patch = "*** Begin Patch\n*** Add File: data.json\n+new\n*** End Patch";
+        var argumentsJson = JsonSerializer.Serialize(new { patch });
+        var blocks = new List<string>
+        {
+            SseBlock(ChatChunk(toolCalls: new List<object?>
+            {
+                ChatToolCall(0, id: "call_patch", name: "apply_patch")
+            }))
+        };
+        foreach (var fragment in SplitEvery(argumentsJson, 14))
+        {
+            blocks.Add(SseBlock(ChatChunk(toolCalls: new List<object?>
+            {
+                ChatToolCall(0, arguments: fragment)
+            })));
+        }
+
+        blocks.Add(SseBlock(ChatChunk(finishReason: "tool_calls")));
+        blocks.Add(SseBlock("[DONE]"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.ChatToResponsesEvents(SseLines(blocks.ToArray()), "gpt-5", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var addedIndex = parsed.FindIndex(entry => (string?)entry["type"] == "response.output_item.added"
+            && entry["item"] is Dictionary<string, object?> item
+            && (string?)item["type"] == "custom_tool_call");
+        var firstDeltaIndex = parsed.FindIndex(entry => (string?)entry["type"] == "response.custom_tool_call_input.delta");
+        var doneIndex = parsed.FindIndex(entry => (string?)entry["type"] == "response.custom_tool_call_input.done");
+        var outputDoneIndex = parsed.FindIndex(entry => (string?)entry["type"] == "response.output_item.done"
+            && entry["item"] is Dictionary<string, object?> item
+            && (string?)item["type"] == "custom_tool_call");
+        var completedIndex = parsed.FindIndex(entry => (string?)entry["type"] == "response.completed");
+
+        Assert.True(addedIndex >= 0);
+        Assert.True(firstDeltaIndex > addedIndex);
+        Assert.True(doneIndex > firstDeltaIndex);
+        Assert.True(outputDoneIndex > doneIndex);
+        Assert.True(completedIndex > outputDoneIndex);
+
+        var deltas = AllByType(parsed, "response.custom_tool_call_input.delta").ToList();
+        Assert.True(deltas.Count > 1);
+        var streamedInput = string.Concat(deltas.Select(delta => delta["delta"]?.ToString()));
+        Assert.Equal(patch, streamedInput);
+        Assert.DoesNotContain("\"patch\"", streamedInput, StringComparison.Ordinal);
+        Assert.DoesNotContain("OPENCODEX_PATCH", streamedInput, StringComparison.Ordinal);
+
+        var done = ByType(parsed, "response.custom_tool_call_input.done");
+        Assert.NotNull(done);
+        Assert.Equal(patch, done!["input"]?.ToString());
+        Assert.DoesNotContain(parsed, entry => (string?)entry["type"] == "response.function_call_arguments.delta");
+        Assert.DoesNotContain(parsed, entry => (string?)entry["type"] == "response.function_call_arguments.done");
+    }
+
+    [Fact]
+    public async Task Chat_ApplyPatchTool_DecodesEscapedPatchDeltas()
+    {
+        const string patch = "*** Begin Patch\r\n*** Add File: unicode.txt\r\n+quote \"ok\" and slash \\ and snow 雪\r\n*** End Patch";
+        var argumentsJson = JsonSerializer.Serialize(new { patch });
+        var blocks = new List<string>
+        {
+            SseBlock(ChatChunk(toolCalls: new List<object?>
+            {
+                ChatToolCall(0, id: "call_patch", name: "apply_patch")
+            }))
+        };
+        foreach (var fragment in SplitEvery(argumentsJson, 5))
+        {
+            blocks.Add(SseBlock(ChatChunk(toolCalls: new List<object?>
+            {
+                ChatToolCall(0, arguments: fragment)
+            })));
+        }
+
+        blocks.Add(SseBlock(ChatChunk(finishReason: "tool_calls")));
+        blocks.Add(SseBlock("[DONE]"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.ChatToResponsesEvents(SseLines(blocks.ToArray()), "gpt-5", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var deltas = AllByType(parsed, "response.custom_tool_call_input.delta").ToList();
+        Assert.NotEmpty(deltas);
+        Assert.Equal(patch, string.Concat(deltas.Select(delta => delta["delta"]?.ToString())));
+
+        var done = ByType(parsed, "response.custom_tool_call_input.done");
+        Assert.NotNull(done);
+        Assert.Equal(patch, done!["input"]?.ToString());
+    }
+
+    [Fact]
+    public async Task Chat_MixedApplyPatchAndFunctionTools_StreamCorrectEventTypesAndOutputIndexes()
+    {
+        const string patch = "*** Begin Patch\n*** Add File: data.json\n+new\n*** End Patch";
+        var patchArguments = JsonSerializer.Serialize(new { patch });
+        const string searchArguments = "{\"query\":\"test\"}";
+        var lines = SseLines(
+            SseBlock(ChatChunk(toolCalls: new List<object?>
+            {
+                ChatToolCall(0, id: "call_patch", name: "apply_patch", arguments: patchArguments[..20]),
+                ChatToolCall(1, id: "call_search", name: "web_search", arguments: searchArguments[..10])
+            })),
+            SseBlock(ChatChunk(toolCalls: new List<object?>
+            {
+                ChatToolCall(0, arguments: patchArguments[20..]),
+                ChatToolCall(1, arguments: searchArguments[10..])
+            })),
+            SseBlock(ChatChunk(finishReason: "tool_calls")),
+            SseBlock("[DONE]"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.ChatToResponsesEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var customAdded = AllByType(parsed, "response.output_item.added")
+            .Single(entry => entry["item"] is Dictionary<string, object?> item
+                && (string?)item["type"] == "custom_tool_call");
+        var functionAdded = AllByType(parsed, "response.output_item.added")
+            .Single(entry => entry["item"] is Dictionary<string, object?> item
+                && (string?)item["type"] == "function_call");
+
+        Assert.Equal(0, customAdded["output_index"]);
+        Assert.Equal(1, functionAdded["output_index"]);
+        Assert.NotEmpty(AllByType(parsed, "response.custom_tool_call_input.delta"));
+        Assert.NotNull(ByType(parsed, "response.custom_tool_call_input.done"));
+        Assert.NotEmpty(AllByType(parsed, "response.function_call_arguments.delta"));
+        Assert.NotNull(ByType(parsed, "response.function_call_arguments.done"));
+
+        var completed = ByType(parsed, "response.completed");
+        Assert.NotNull(completed);
+        var output = Assert.IsType<List<object?>>(Assert.IsType<Dictionary<string, object?>>(completed!["response"])["output"]);
+        Assert.Equal(
+            ["custom_tool_call", "function_call"],
+            output.Select(item => Assert.IsType<string>(Assert.IsType<Dictionary<string, object?>>(item)["type"])).ToArray());
     }
     // ── response.completed P2 fields ──────────────────────────
 

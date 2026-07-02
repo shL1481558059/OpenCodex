@@ -640,6 +640,19 @@ public static partial class SseStreamConverter
                             : aggregate.Arguments
                     });
             }
+            else if (functionItemType == "custom_tool_call")
+            {
+                yield return Emit(
+                    "response.custom_tool_call_input.done",
+                    new Dictionary<string, object?>
+                    {
+                        ["item_id"] = itemId,
+                        ["output_index"] = outputIndex,
+                        ["input"] = functionItem.TryGetValue("input", out var itemInput)
+                            ? itemInput
+                            : state.DecodedInputBuilder?.ToString() ?? string.Empty
+                    });
+            }
 
             yield return Emit(
                 "response.output_item.done",

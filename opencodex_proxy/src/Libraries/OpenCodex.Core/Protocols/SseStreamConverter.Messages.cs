@@ -657,6 +657,20 @@ public static partial class SseStreamConverter
                             : arguments
                     });
             }
+            else if (functionItem.TryGetValue("type", out functionItemType)
+                && string.Equals(functionItemType?.ToString(), "custom_tool_call", StringComparison.Ordinal))
+            {
+                yield return Emit(
+                    "response.custom_tool_call_input.done",
+                    new Dictionary<string, object?>
+                    {
+                        ["item_id"] = itemId,
+                        ["output_index"] = outputIndex,
+                        ["input"] = functionItem.TryGetValue("input", out var itemInput)
+                            ? itemInput
+                            : state.DecodedInputBuilder?.ToString() ?? string.Empty
+                    });
+            }
             yield return Emit(
                 "response.output_item.done",
                 new Dictionary<string, object?>
