@@ -1,8 +1,12 @@
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 #nullable disable
 
 namespace OpenCodex.Data.Migrations.PostgresMigrations
 {
+    
+    [DbContext(typeof(OpenCodexPostgresDbContext))]
+    [Migration("20260702000000_ChannelCircuitBreakDuration")]
     /// <inheritdoc />
     public partial class ChannelCircuitBreakDuration : Migration
     {
