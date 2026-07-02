@@ -303,7 +303,7 @@ public static partial class ProtocolConverter
         return Obj(
             ("name", name),
             ("description", toolType == "apply_patch"
-                ? "Apply file edits using patch text. The patch must start with '*** Begin Patch' and end with '*** End Patch'. Use '*** Add File: <path>' with '+' lines, '*** Update File: <path>' with '@@' context blocks and '+'/'-' lines, or '*** Delete File: <path>'. Use `grep -n` to verify exact content before editing."
+                ? "Apply file edits using patch text. The patch must start with '*** Begin Patch' and end with '*** End Patch'. Use '*** Add File: <path>' with '+' lines, '*** Update File: <path>' with '@@' context blocks and '+'/'-' lines, or '*** Delete File: <path>'. Use `grep -n` to verify exact content before editing. Context lines must match the file exactly, including leading whitespace; copy actual lines, do not retype from memory. If a patch fails to apply, re-read the exact file content before retrying."
                 : GetValue(tool, "description") ?? $"Wrapped Responses tool: {toolType}"),
             ("parameters", parameters),
             ("native_type", toolType),
@@ -334,6 +334,8 @@ public static partial class ProtocolConverter
             "Do not use unified diff headers such as '---', '+++', or '***************'.",
             "The '@@' line must contain only '@@'. Never add line numbers like '-1,4 +1,8 @@'.",
             "Before editing, use `grep -n` or `rg -n` to verify exact file content and line numbers; never edit based on remembered line numbers.",
+            "Context lines in '@@' blocks must match the file exactly, character-for-character, including leading whitespace (spaces vs tabs). Copy actual lines from the file, do not retype from memory.",
+            "If a patch fails to apply, re-read the exact file content with `grep -n` or `sed -n` before retrying; do not guess what the file looks like.",
             "Supported operations:",
             "- '*** Add File: <path>' followed by '+' lines.",
             "- '*** Update File: <path>' followed by at least one '@@' block with context, '+' and '-' lines.",
