@@ -160,25 +160,27 @@ public static partial class ProtocolConverter
                 && targetProtocol is Chat or Messages);
     }
 
-    public static Dictionary<string, object?> ConvertRequest(
-        Dictionary<string, object?> payload,
-        string sourceProtocol,
-        string targetProtocol,
-        string upstreamModel)
-    {
-        ArgumentNullException.ThrowIfNull(payload);
+       public static Dictionary<string, object?> ConvertRequest(
+           Dictionary<string, object?> payload,
+           string sourceProtocol,
+           string targetProtocol,
+            string upstreamModel,
+            IReadOnlyDictionary<string, object?>? compat = null)
+       {
+           ArgumentNullException.ThrowIfNull(payload);
 
-        var converted = AsObject(DeepCopy(payload));
-        converted["model"] = upstreamModel;
-        if (sourceProtocol == targetProtocol)
-        {
-            SanitizeRequestToolSchemas(converted, targetProtocol);
-            return converted;
-        }
+           var converted = AsObject(DeepCopy(payload));
+           converted["model"] = upstreamModel;
+           if (sourceProtocol == targetProtocol)
+           {
+               SanitizeRequestToolSchemas(converted, targetProtocol);
+               return converted;
+           }
 
-        var canonical = ToCanonicalRequest(converted, sourceProtocol);
-        return FromCanonicalRequest(canonical, targetProtocol);
-    }
+            var canonical = ToCanonicalRequest(converted, sourceProtocol, compat);
+            var result = FromCanonicalRequest(canonical, targetProtocol);
+            return result;
+       }
 
     public static Dictionary<string, object?> ConvertResponse(
         Dictionary<string, object?> payload,

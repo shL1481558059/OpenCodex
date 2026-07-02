@@ -2,18 +2,18 @@ namespace OpenCodex.Core.Protocols;
 
 public static partial class ProtocolConverter
 {
-    private static List<object?> ResponsesToolsToCanonical(object? tools)
+    private static List<object?> ResponsesToolsToCanonical(object? tools, IReadOnlyDictionary<string, object?>? compat = null)
     {
         var result = new List<object?>();
         foreach (var item in AsOptionalList(tools))
         {
-            result.AddRange(ResponsesToolToCanonicalItems(item));
+            result.AddRange(ResponsesToolToCanonicalItems(item, compat));
         }
 
         return DedupeCanonicalTools(result);
     }
 
-    private static List<object?> ChatToolsToCanonical(object? tools)
+    private static List<object?> ChatToolsToCanonical(object? tools, IReadOnlyDictionary<string, object?>? compat = null)
     {
         var result = new List<object?>();
         foreach (var item in AsOptionalList(tools))
@@ -24,26 +24,35 @@ public static partial class ProtocolConverter
             }
 
             var function = GetString(tool, "type") == "function" ? ObjectValue(tool, "function") : tool;
+            var rawName = Convert.ToString(GetValue(function, "name")) ?? string.Empty;
+            var normalizedName = rawName.Replace("-", "_", StringComparison.Ordinal);
+            var nativeType = IsApplyPatchName(normalizedName) ? "apply_patch" : "function";
             var entry = Obj(
-                ("name", GetValue(function, "name")),
+                ("name", rawName),
                 ("description", GetValue(function, "description") ?? string.Empty),
                 ("parameters", GetValue(function, "parameters") ?? new Dictionary<string, object?>()),
-                ("native_type", "function"));
-            if (GetValue(function, "name") is string name)
+                ("native_type", nativeType));
+            if (rawName.Length > 0)
             {
-                if (name.Contains(LegacyNamespaceSeparator, StringComparison.Ordinal))
+                if (rawName.Contains(LegacyNamespaceSeparator, StringComparison.Ordinal))
                 {
-                    entry["name"] = NamespaceNameToChat(name);
-                    entry["namespace"] = name[..name.LastIndexOf(LegacyNamespaceSeparator, StringComparison.Ordinal)];
+                    entry["name"] = NamespaceNameToChat(rawName);
+                    entry["namespace"] = rawName[..rawName.LastIndexOf(LegacyNamespaceSeparator, StringComparison.Ordinal)];
                 }
                 else
                 {
-                    var (namespaceName, _) = NamespaceCallParts(name);
+                    var (namespaceName, _) = NamespaceCallParts(rawName);
                     if (!string.IsNullOrEmpty(namespaceName))
                     {
                         entry["namespace"] = namespaceName;
                     }
                 }
+            }
+
+            if (nativeType == "apply_patch" && compat is not null)
+            {
+                entry["compat"] = new Dictionary<string, object?>(compat, StringComparer.Ordinal);
+                entry = RewriteApplyPatchToolDescription(entry);
             }
 
             result.Add(entry);
@@ -177,7 +186,7 @@ public static partial class ProtocolConverter
         return result;
     }
 
-    private static List<object?> ResponsesToolToCanonicalItems(object? item)
+    private static List<object?> ResponsesToolToCanonicalItems(object? item, IReadOnlyDictionary<string, object?>? compat = null)
     {
         if (!TryAsObject(item, out var tool))
         {
@@ -192,7 +201,7 @@ public static partial class ProtocolConverter
             var result = new List<object?>();
             foreach (var nested in ListValue(tool, "tools"))
             {
-                foreach (var nestedItem in ResponsesToolToCanonicalItems(nested))
+                foreach (var nestedItem in ResponsesToolToCanonicalItems(nested, compat))
                 {
                     if (!TryAsObject(nestedItem, out var nestedTool))
                     {
@@ -245,13 +254,13 @@ public static partial class ProtocolConverter
 
         if (toolType == "custom" && IsApplyPatchName(toolName.Replace("-", "_", StringComparison.Ordinal)))
         {
-            return [WrapNativeTool("apply_patch", tool)];
+            return [WrapNativeTool("apply_patch", tool, compat)];
         }
 
-        return [WrapNativeTool(toolType, tool)];
+        return [WrapNativeTool(toolType, tool, compat)];
     }
 
-    private static Dictionary<string, object?> WrapNativeTool(string toolType, Dictionary<string, object?> tool)
+    private static Dictionary<string, object?> WrapNativeTool(string toolType, Dictionary<string, object?> tool, IReadOnlyDictionary<string, object?>? compat = null)
     {
         var name = Convert.ToString(GetValue(tool, "name"));
         if (string.IsNullOrEmpty(name))
@@ -294,11 +303,11 @@ public static partial class ProtocolConverter
         return Obj(
             ("name", name),
             ("description", toolType == "apply_patch"
-                ? "Apply a patch to files. Provide the complete patch text in the `patch` field."
+                ? "Apply file edits using patch text. The patch must start with '*** Begin Patch' and end with '*** End Patch'. Use '*** Add File: <path>' with '+' lines, '*** Update File: <path>' with '@@' context blocks and '+'/'-' lines, or '*** Delete File: <path>'."
                 : GetValue(tool, "description") ?? $"Wrapped Responses tool: {toolType}"),
             ("parameters", parameters),
             ("native_type", toolType),
-            ("compat", GetValue(tool, "compat") ?? new Dictionary<string, object?>()),
+            ("compat", compat ?? GetValue(tool, "compat") ?? new Dictionary<string, object?>()),
             ("raw", DeepCopy(tool)));
     }
 
@@ -323,6 +332,7 @@ public static partial class ProtocolConverter
             "Return only the patch payload for this tool call. Do not add explanations, Markdown code fences, JSON wrappers, or command arrays.",
             "The patch must start with '*** Begin Patch' and end with '*** End Patch'.",
             "Do not use unified diff headers such as '---', '+++', or '***************'.",
+            "The '@@' line must contain only '@@'. Never add line numbers like '-1,4 +1,8 @@'.",
             "Supported operations:",
             "- '*** Add File: <path>' followed by '+' lines.",
             "- '*** Update File: <path>' followed by at least one '@@' block with context, '+' and '-' lines.",

@@ -252,6 +252,9 @@
         <el-button style="margin-top: 8px; margin-left: 8px" :loading="discoverLoading" @click="discoverModels">
           发现模型
         </el-button>
+        <el-button style="margin-top: 8px; margin-left: 8px" @click="openBatchEdit">
+          批量编辑
+        </el-button>
 
         <el-divider content-position="left">兼容规则</el-divider>
         <el-row :gutter="12">
@@ -326,6 +329,21 @@
           >
             添加到模型映射
           </el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="batchEditVisible" title="批量编辑模型映射" width="640px">
+      <el-input
+        v-model="batchEditText"
+        type="textarea"
+        :rows="16"
+        placeholder="每行一个映射，格式：请求模型,上游模型&#10;例如：&#10;gpt-4o,gpt-4o-2024-08-06&#10;claude-3-5-sonnet,claude-3-5-sonnet-20241022"
+      />
+      <template #footer>
+        <div class="drawer-footer">
+          <el-button @click="batchEditVisible = false">取消</el-button>
+          <el-button type="primary" @click="applyBatchEdit">确定</el-button>
         </div>
       </template>
     </el-dialog>
@@ -787,6 +805,10 @@ const discoverModelsVisible = ref(false);
 const discoveredModelsTableRef = ref(null);
 const discoveredModels = ref([]);
 const selectedDiscoveredModels = ref([]);
+
+const batchEditVisible = ref(false);
+const batchEditText = ref("");
+
 const modelProviders = ref([]);
 const billingItems = [
   { value: "input", label: "输入" },
@@ -1549,6 +1571,44 @@ function addSelectedModels() {
   discoverModelsVisible.value = false;
   selectedDiscoveredModels.value = [];
 }
+
+function openBatchEdit() {
+  batchEditText.value = channelDraft.models
+    .filter((m) => m.model)
+    .map((m) => `${m.model},${m.upstream_model || m.model}`)
+    .join("\n");
+  batchEditVisible.value = true;
+}
+
+function applyBatchEdit() {
+  const lines = batchEditText.value.split("\n");
+  const newModels = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    const commaIdx = trimmed.indexOf(",");
+    if (commaIdx === -1) {
+      ElMessage.warning(`格式错误（缺少逗号），已跳过：${trimmed}`);
+      continue;
+    }
+
+    const model = trimmed.slice(0, commaIdx).trim();
+    const upstream = trimmed.slice(commaIdx + 1).trim();
+
+    if (!model) continue;
+
+    newModels.push({
+      model,
+      upstream_model: upstream || model
+    });
+  }
+
+  channelDraft.models = newModels;
+  batchEditVisible.value = false;
+  ElMessage.success(`已更新 ${newModels.length} 条模型映射`);
+}
+
 
 function handleDiscoveredModelSelectionChange(rows) {
   selectedDiscoveredModels.value = rows.map((row) => row.model);
