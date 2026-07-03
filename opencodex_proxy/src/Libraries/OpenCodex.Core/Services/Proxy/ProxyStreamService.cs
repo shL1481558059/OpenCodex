@@ -178,27 +178,73 @@ public sealed class ProxyStreamService : IProxyStreamService
                     streamLineCaptures,
                     "upstream",
                     context.CancellationToken);
-                // 方案A: 直接调用内部重载，消除外层 await foreach 包装
-                var convertedLines = context.ChannelType == ProtocolConverter.Chat
-                    ? SseStreamConverter.ChatToResponsesEvents(
-                        capturedStreamLines,
-                        visibleModel,
-                        converted,
-                        SkipToolNames: null,
-                        SkipResponseCreated: false,
-                        InitialSequenceNumber: 0,
-                        InitialOutputIndex: 0,
-                        context.CancellationToken)
-                    : SseStreamConverter.MessagesToResponsesEvents(
-                        capturedStreamLines,
-                        visibleModel,
-                        converted,
-                        SkipToolNames: null,
-                        SkipResponseCreated: false,
-                        InitialSequenceNumber: 0,
-                        InitialOutputIndex: 0,
-                        context.CancellationToken);
-                Console.Error.WriteLine($"[OCXP-DEBUG] [{context.RequestId}] StreamAsync: CONVERSION enumerables created, starting WriteLinesAsync loop...");
+               // 方案A: 直接调用内部重载，消除外层 await foreach 包装
+                // 按 (入口协议, 上游协议) 派发到对应流式转换器；下游事件格式取决于入口协议。
+                IAsyncEnumerable<string> convertedLines;
+                switch ((context.EntryProtocol, context.ChannelType))
+                {
+                    case (ProtocolConverter.Responses, ProtocolConverter.Chat):
+                        convertedLines = SseStreamConverter.ChatToResponsesEvents(
+                            capturedStreamLines,
+                            visibleModel,
+                            converted,
+                            SkipToolNames: null,
+                            SkipResponseCreated: false,
+                            InitialSequenceNumber: 0,
+                            InitialOutputIndex: 0,
+                            context.CancellationToken);
+                        break;
+                    case (ProtocolConverter.Responses, ProtocolConverter.Messages):
+                        convertedLines = SseStreamConverter.MessagesToResponsesEvents(
+                            capturedStreamLines,
+                            visibleModel,
+                            converted,
+                            SkipToolNames: null,
+                            SkipResponseCreated: false,
+                            InitialSequenceNumber: 0,
+                            InitialOutputIndex: 0,
+                            context.CancellationToken);
+                        break;
+                   case (ProtocolConverter.Messages, ProtocolConverter.Chat):
+                       convertedLines = SseStreamConverter.ChatToMessagesEvents(
+                           capturedStreamLines,
+                           visibleModel,
+                           converted,
+                           SkipToolNames: null,
+                           SkipMessageStart: false,
+                           context.CancellationToken);
+                       break;
+                   case (ProtocolConverter.Chat, ProtocolConverter.Messages):
+                       convertedLines = SseStreamConverter.MessagesToChatEvents(
+                           capturedStreamLines,
+                           visibleModel,
+                           converted,
+                           SkipToolNames: null,
+                           context.CancellationToken);
+                       break;
+                   case (ProtocolConverter.Chat, ProtocolConverter.Responses):
+                       convertedLines = SseStreamConverter.ResponsesToChatEvents(
+                           capturedStreamLines,
+                           visibleModel,
+                           converted,
+                           SkipToolNames: null,
+                           context.CancellationToken);
+                       break;
+                    case (ProtocolConverter.Messages, ProtocolConverter.Responses):
+                       convertedLines = SseStreamConverter.ResponsesToMessagesEvents(
+                           capturedStreamLines,
+                           visibleModel,
+                           converted,
+                           SkipToolNames: null,
+                           SkipMessageStart: false,
+                           context.CancellationToken);
+                       break;
+                   default:
+                       // 理论上不可达：SupportsStreamingConversion 已在上游拦截未实现方向。
+                       throw new BadRequestException(
+                           $"streaming conversion not implemented for {context.EntryProtocol} to {context.ChannelType}");
+                }
+               Console.Error.WriteLine($"[OCXP-DEBUG] [{context.RequestId}] StreamAsync: CONVERSION enumerables created, starting WriteLinesAsync loop...");
                 var writeLoopStart = Stopwatch.GetTimestamp();
                 streamWriteMetrics = await context.StreamWriter.WriteLinesAsync(
                     CaptureLoggableStreamLines(

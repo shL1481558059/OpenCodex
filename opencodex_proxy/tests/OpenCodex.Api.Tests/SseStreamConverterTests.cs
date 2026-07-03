@@ -1857,7 +1857,784 @@ public sealed class SseStreamConverterTests
         var tfResult = ProtocolConverter.ExtractTextFormat(payload);
         Assert.NotNull(tfResult);
         Assert.Equal("json_schema", tfResult!.Type);
-        Assert.Equal("my_schema", tfResult.SchemaName);
-        Assert.NotNull(tfResult.Schema);
+       Assert.Equal("my_schema", tfResult.SchemaName);
+       Assert.NotNull(tfResult.Schema);
+   }
+
+    // ── Chat → Messages ─────────────────────────────────────
+
+    [Fact]
+    public async Task ChatToMessages_EmitsMessageStartBeforeContent()
+    {
+        var lines = SseLines(
+            SseBlock(ChatChunk(content: "Hi")),
+            SseBlock(ChatChunk(finishReason: "stop")),
+            SseBlock("[DONE]"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.ChatToMessagesEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var types = parsed.Select(e => e.TryGetValue("type", out var t) ? t?.ToString() : null).ToList();
+
+        var startIdx = types.IndexOf("message_start");
+        var deltaIdx = types.IndexOf("content_block_delta");
+        var stopIdx = types.IndexOf("message_stop");
+        Assert.True(startIdx >= 0, "missing message_start");
+        Assert.True(deltaIdx > startIdx, "content_block_delta must come after message_start");
+        Assert.True(stopIdx > deltaIdx, "message_stop must come last");
+
+        var messageStart = ByType(parsed, "message_start");
+        Assert.NotNull(messageStart);
+        var message = messageStart!["message"] as Dictionary<string, object?>;
+        Assert.NotNull(message);
+        Assert.Equal("assistant", message!["role"]?.ToString());
+        Assert.Equal("gpt-5", message["model"]?.ToString());
+    }
+
+    [Fact]
+    public async Task ChatToMessages_TextDelta_EmitsTextBlockDeltas()
+    {
+        var lines = SseLines(
+            SseBlock(ChatChunk(content: "Hello")),
+            SseBlock(ChatChunk(content: " world")),
+            SseBlock(ChatChunk(finishReason: "stop")),
+            SseBlock("[DONE]"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.ChatToMessagesEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var start = ByType(parsed, "content_block_start");
+        Assert.NotNull(start);
+        Assert.Equal("text", (start!["content_block"] as Dictionary<string, object?>)?["type"]?.ToString());
+
+        var deltas = AllByType(parsed, "content_block_delta").ToList();
+        Assert.Equal(2, deltas.Count);
+        var first = deltas[0]["delta"] as Dictionary<string, object?>;
+        Assert.Equal("text_delta", first!["type"]?.ToString());
+        Assert.Equal("Hello", first["text"]?.ToString());
+
+        var stops = AllByType(parsed, "content_block_stop").ToList();
+        Assert.Single(stops);
+    }
+
+    [Fact]
+    public async Task ChatToMessages_ReasoningContent_EmitsThinkingBlockWithoutSignature()
+    {
+        var lines = SseLines(
+            SseBlock(ChatChunk(reasoningContent: "Thinking...")),
+            SseBlock(ChatChunk(reasoningContent: " more")),
+            SseBlock(ChatChunk(content: "Answer")),
+            SseBlock(ChatChunk(finishReason: "stop")),
+            SseBlock("[DONE]"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.ChatToMessagesEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var starts = AllByType(parsed, "content_block_start").ToList();
+        // thinking 块在前 (index 0)，text 块在后 (index 1)
+        Assert.Equal(2, starts.Count);
+        var firstBlock = starts[0]["content_block"] as Dictionary<string, object?>;
+        Assert.Equal("thinking", firstBlock!["type"]?.ToString());
+        var secondBlock = starts[1]["content_block"] as Dictionary<string, object?>;
+        Assert.Equal("text", secondBlock!["type"]?.ToString());
+
+        // 不应出现 signature_delta（上游 Chat 无签名，不伪造）
+        Assert.Null(AllByType(parsed, "content_block_delta")
+            .FirstOrDefault(d => (d["delta"] as Dictionary<string, object?>)?["type"]?.ToString() == "signature_delta"));
+    }
+
+    [Fact]
+    public async Task ChatToMessages_ToolCall_EmitsToolUseBlockWithInputJsonDelta()
+    {
+        var toolCall = ChatToolCall(0, "call_1", "get_weather", "{\"city\":");
+        var lines = SseLines(
+            SseBlock(ChatChunk(toolCalls: new List<object?> { toolCall })),
+            // 同一 index 的后续 arguments 片段
+            SseBlock(ChatChunk(toolCalls: new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["index"] = 0,
+                    ["function"] = new Dictionary<string, object?> { ["arguments"] = "\"SF\"}" }
+                }
+            })),
+            SseBlock(ChatChunk(finishReason: "tool_calls")),
+            SseBlock("[DONE]"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.ChatToMessagesEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var toolStart = AllByType(parsed, "content_block_start")
+            .FirstOrDefault(e => (e["content_block"] as Dictionary<string, object?>)?["type"]?.ToString() == "tool_use");
+        Assert.NotNull(toolStart);
+        var block = toolStart!["content_block"] as Dictionary<string, object?>;
+        Assert.Equal("get_weather", block!["name"]?.ToString());
+        Assert.Equal("call_1", block["id"]?.ToString());
+
+        var inputDeltas = AllByType(parsed, "content_block_delta")
+            .Where(d => (d["delta"] as Dictionary<string, object?>)?["type"]?.ToString() == "input_json_delta")
+            .ToList();
+        Assert.Equal(2, inputDeltas.Count);
+        var combined = string.Concat(inputDeltas
+            .Select(d => ((d["delta"] as Dictionary<string, object?>) ?? new Dictionary<string, object?>())
+                .TryGetValue("partial_json", out var pj) ? pj?.ToString() : string.Empty));
+        Assert.Equal("{\"city\":\"SF\"}", combined);
+
+        var messageDelta = ByType(parsed, "message_delta");
+        Assert.NotNull(messageDelta);
+        Assert.Equal("tool_use", (messageDelta!["delta"] as Dictionary<string, object?>)?["stop_reason"]?.ToString());
+    }
+
+    [Fact]
+    public async Task ChatToMessages_FinishReason_MapsStopReason()
+    {
+        foreach (var (finish, expected) in new[] { ("stop", "end_turn"), ("length", "max_tokens") })
+        {
+            var lines = SseLines(
+                SseBlock(ChatChunk(content: "x")),
+                SseBlock(ChatChunk(finishReason: finish)),
+                SseBlock("[DONE]"));
+
+            var result = new ConvertedStreamResult();
+            var events = await CollectAsync(
+                SseStreamConverter.ChatToMessagesEvents(lines, "gpt-5", result, CancellationToken.None));
+            var parsed = ParseEvents(events);
+            var messageDelta = ByType(parsed, "message_delta");
+            Assert.NotNull(messageDelta);
+            Assert.Equal(expected, (messageDelta!["delta"] as Dictionary<string, object?>)?["stop_reason"]?.ToString());
+        }
+    }
+
+    [Fact]
+    public async Task ChatToMessages_UpstreamResponseIsChatCompletion()
+    {
+        var lines = SseLines(
+            SseBlock(ChatChunk(content: "Hi", usage: new Dictionary<string, object?>
+            {
+                ["prompt_tokens"] = 3,
+                ["completion_tokens"] = 2
+            })),
+            SseBlock(ChatChunk(finishReason: "stop",
+                usage: new Dictionary<string, object?>
+                {
+                    ["prompt_tokens"] = 3,
+                    ["completion_tokens"] = 2
+                })),
+            SseBlock("[DONE]"));
+
+        var result = new ConvertedStreamResult();
+        await CollectAsync(SseStreamConverter.ChatToMessagesEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        Assert.NotNull(result.UpstreamResponse);
+        var upstream = result.UpstreamResponse!;
+        Assert.Equal("chat.completion", upstream["object"]?.ToString());
+        var choices = upstream["choices"] as List<object?>;
+        Assert.NotNull(choices);
+        var message = (choices![0] as Dictionary<string, object?>)?["message"] as Dictionary<string, object?>;
+       Assert.NotNull(message);
+       Assert.Equal("Hi", message!["content"]?.ToString());
+   }
+
+   // ── Messages → Chat ─────────────────────────────────────
+
+  private static List<Dictionary<string, object?>> ParseChatChunks(List<string> events)
+  {
+      var chunks = new List<Dictionary<string, object?>>();
+      foreach (var line in events)
+      {
+          if (line.Contains("data:", StringComparison.Ordinal) && !line.Contains("[DONE]", StringComparison.Ordinal))
+          {
+              chunks.Add(ParseJsonEvent(line));
+          }
+      }
+
+      return chunks;
+  }
+
+    private static Dictionary<string, object?>? FirstChoice(Dictionary<string, object?> chunk)
+    {
+        if (chunk.TryGetValue("choices", out var value) && value is List<object?> list && list.Count > 0)
+        {
+            return list[0] as Dictionary<string, object?>;
+        }
+
+        return null;
+    }
+
+   private static Dictionary<string, object?>? ChunkByNonEmptyDeltaContent(
+        List<Dictionary<string, object?>> chunks)
+    {
+        return chunks.FirstOrDefault(c =>
+        {
+            if (c.TryGetValue("choices", out var choicesObj) && choicesObj is List<object?> choicesInner)
+            {
+                var choice = choicesInner.FirstOrDefault() as Dictionary<string, object?>;
+                return choice?.TryGetValue("delta", out var delta) == true
+                    && delta is Dictionary<string, object?> d
+                    && d.TryGetValue("content", out var content)
+                    && !string.IsNullOrEmpty(content?.ToString());
+            }
+
+            return false;
+        });
+    }
+
+    [Fact]
+    public async Task MessagesToChat_TextDelta_EmitsRoleThenContentThenFinish()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"message_start","message":{"id":"msg_1","model":"claude-3","usage":{"input_tokens":3,"output_tokens":0}}}""", "message_start"),
+            SseBlock("""{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}""", "content_block_start"),
+            SseBlock("""{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}""", "content_block_delta"),
+            SseBlock("""{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}""", "content_block_delta"),
+            SseBlock("""{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}""", "message_delta"),
+            SseBlock("""{"type":"message_stop"}""", "message_stop"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.MessagesToChatEvents(lines, "claude-3", result, CancellationToken.None));
+
+        Assert.Contains("[DONE]", events[^1]);
+        var chunks = ParseChatChunks(events);
+        var first = chunks[0];
+        var choice0 = (first["choices"] as List<object?>)?[0] as Dictionary<string, object?>;
+        Assert.Equal("assistant", (choice0!["delta"] as Dictionary<string, object?>)?["role"]?.ToString());
+
+        var contentChunks = chunks
+            .Where(c => (FirstChoice(c)?["delta"] as Dictionary<string, object?>)?.ContainsKey("content") == true)
+            .Select(c => (FirstChoice(c)?["delta"] as Dictionary<string, object?>)?["content"]?.ToString() ?? string.Empty)
+            .ToList();
+        Assert.Equal(["Hello", " world"], contentChunks);
+
+        var finishChunk = chunks.FirstOrDefault(c =>
+            FirstChoice(c)?["finish_reason"]?.ToString() == "stop");
+        Assert.NotNull(finishChunk);
+
+        var usageChunk = chunks.FirstOrDefault(c => c.ContainsKey("usage") && c["usage"] is not null);
+        Assert.NotNull(usageChunk);
+        var usage = usageChunk!["usage"] as Dictionary<string, object?>;
+        Assert.Equal(3, Convert.ToInt32(usage!["prompt_tokens"]));
+        Assert.Equal(2, Convert.ToInt32(usage["completion_tokens"]));
+        Assert.Equal(5, Convert.ToInt32(usage["total_tokens"]));
+    }
+
+    [Fact]
+    public async Task MessagesToChat_Thinking_EmitsReasoningContent()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"message_start","message":{"id":"msg_1","model":"claude-3","usage":{"input_tokens":1,"output_tokens":0}}}""", "message_start"),
+            SseBlock("""{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}""", "content_block_start"),
+            SseBlock("""{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Hmm"}}""", "content_block_delta"),
+            SseBlock("""{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}""", "message_delta"),
+            SseBlock("""{"type":"message_stop"}""", "message_stop"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.MessagesToChatEvents(lines, "claude-3", result, CancellationToken.None));
+
+        var chunks = ParseChatChunks(events);
+        var reasoningChunk = chunks.FirstOrDefault(c =>
+            (((c["choices"] as List<object?>)?[0] as Dictionary<string, object?>)?["delta"] as Dictionary<string, object?>)?.ContainsKey("reasoning_content") == true);
+        Assert.NotNull(reasoningChunk);
+        var delta = (reasoningChunk!["choices"] as List<object?>)?[0] as Dictionary<string, object?>;
+        Assert.Equal("Hmm", (delta!["delta"] as Dictionary<string, object?>)?["reasoning_content"]?.ToString());
+    }
+
+    [Fact]
+    public async Task MessagesToChat_ToolUse_EmitsToolCallStartThenArgumentDeltas()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"message_start","message":{"id":"msg_1","model":"claude-3","usage":{"input_tokens":5,"output_tokens":0}}}""", "message_start"),
+            SseBlock("""{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{}}}""", "content_block_start"),
+            SseBlock("""{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"city\":"}}""", "content_block_delta"),
+            SseBlock("""{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"SF\"}"}}""", "content_block_delta"),
+            SseBlock("""{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5}}""", "message_delta"),
+            SseBlock("""{"type":"message_stop"}""", "message_stop"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.MessagesToChatEvents(lines, "claude-3", result, CancellationToken.None));
+
+        var chunks = ParseChatChunks(events);
+
+        var startChunk = chunks.FirstOrDefault(c =>
+        {
+            var d = FirstChoice(c)?["delta"] as Dictionary<string, object?>;
+            if (d?.TryGetValue("tool_calls", out var tc) != true || tc is not List<object?> list || list.Count == 0)
+            {
+                return false;
+            }
+
+            return (list[0] as Dictionary<string, object?>)?.ContainsKey("id") == true;
+        });
+        Assert.NotNull(startChunk);
+        var startCall = ((FirstChoice(startChunk!)?["delta"] as Dictionary<string, object?>)?["tool_calls"] as List<object?>)?[0] as Dictionary<string, object?>;
+        Assert.Equal("toolu_1", startCall!["id"]?.ToString());
+        Assert.Equal("function", startCall["type"]?.ToString());
+        Assert.Equal("get_weather", (startCall["function"] as Dictionary<string, object?>)?["name"]?.ToString());
+
+       // arguments 增量 chunk
+       var argChunks = chunks
+           .Where(c =>
+           {
+                var d = FirstChoice(c)?["delta"] as Dictionary<string, object?>;
+                if (d?.TryGetValue("tool_calls", out var tc) != true || tc is not List<object?> list || list.Count == 0)
+               {
+                   return false;
+               }
+
+               var item = list[0] as Dictionary<string, object?>;
+               return item?.ContainsKey("id") == false; // arguments-only chunks 没有 id
+           })
+           .Select(c =>
+           {
+                var d = FirstChoice(c)!["delta"] as Dictionary<string, object?>;
+               var tc = d!["tool_calls"] as List<object?>;
+               var item = tc![0] as Dictionary<string, object?>;
+               return ((item!["function"] as Dictionary<string, object?>)?["arguments"]?.ToString()) ?? string.Empty;
+           })
+           .ToList();
+       Assert.Equal(["{\"city\":", "\"SF\"}"], argChunks);
+
+       // finish_reason 映射
+       var finishChunk = chunks.FirstOrDefault(c =>
+            FirstChoice(c)?["finish_reason"]?.ToString() == "tool_calls");
+       Assert.NotNull(finishChunk);
+   }
+
+    [Fact]
+    public async Task MessagesToChat_StopReason_MapsFinishReason()
+    {
+       foreach (var (stop, expected) in new[] { ("end_turn", "stop"), ("max_tokens", "length") })
+       {
+           var lines = SseLines(
+               SseBlock("""{"type":"message_start","message":{"id":"msg_1","model":"claude-3","usage":{"input_tokens":1,"output_tokens":0}}}""", "message_start"),
+               SseBlock("""{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}""", "content_block_start"),
+               SseBlock("""{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"x"}}""", "content_block_delta"),
+                SseBlock("""{"type":"message_delta","delta":{"stop_reason":"PLACEHOLDER"},"usage":{"output_tokens":1}}""".Replace("PLACEHOLDER", stop), "message_delta"),
+               SseBlock("""{"type":"message_stop"}""", "message_stop"));
+
+            var result = new ConvertedStreamResult();
+            var events = await CollectAsync(
+                SseStreamConverter.MessagesToChatEvents(lines, "claude-3", result, CancellationToken.None));
+           var chunks = ParseChatChunks(events);
+           var finishChunk = chunks.FirstOrDefault(c =>
+                FirstChoice(c)?["finish_reason"]?.ToString() == expected);
+           Assert.NotNull(finishChunk);
+        }
+    }
+
+    [Fact]
+    public async Task MessagesToChat_UpstreamResponseIsMessagesFormat()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"message_start","message":{"id":"msg_1","model":"claude-3","usage":{"input_tokens":1,"output_tokens":0}}}""", "message_start"),
+            SseBlock("""{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}""", "content_block_start"),
+            SseBlock("""{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}""", "content_block_delta"),
+            SseBlock("""{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}""", "message_delta"),
+            SseBlock("""{"type":"message_stop"}""", "message_stop"));
+
+        var result = new ConvertedStreamResult();
+        await CollectAsync(SseStreamConverter.MessagesToChatEvents(lines, "claude-3", result, CancellationToken.None));
+
+        Assert.NotNull(result.UpstreamResponse);
+        var upstream = result.UpstreamResponse!;
+        Assert.Equal("message", upstream["type"]?.ToString());
+        var content = upstream["content"] as List<object?>;
+        Assert.NotNull(content);
+        var textBlock = content![0] as Dictionary<string, object?>;
+        Assert.Equal("text", textBlock!["type"]?.ToString());
+       Assert.Equal("Hi", textBlock["text"]?.ToString());
+   }
+
+    // ── Responses → Chat ────────────────────────────────────
+
+    [Fact]
+    public async Task ResponsesToChat_TextDelta_EmitsContentAndFinish()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"response.created","response":{"id":"resp_1","model":"gpt-5","created_at":1700000000,"status":"in_progress"}}""", "response.created"),
+            SseBlock("""{"type":"response.output_text.delta","delta":"Hello","output_index":0,"item_id":"msg_1"}""", "response.output_text.delta"),
+            SseBlock("""{"type":"response.output_text.delta","delta":" world","output_index":0,"item_id":"msg_1"}""", "response.output_text.delta"),
+            SseBlock("""{"type":"response.completed","response":{"id":"resp_1","status":"completed","model":"gpt-5","output":[],"usage":{"input_tokens":3,"output_tokens":2}}}""", "response.completed"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.ResponsesToChatEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        Assert.Contains("[DONE]", events[^1]);
+        var chunks = ParseChatChunks(events);
+        Assert.Equal("assistant", (FirstChoice(chunks[0])?["delta"] as Dictionary<string, object?>)?["role"]?.ToString());
+
+        var contentChunks = chunks
+            .Where(c => (FirstChoice(c)?["delta"] as Dictionary<string, object?>)?.ContainsKey("content") == true)
+            .Select(c => (FirstChoice(c)?["delta"] as Dictionary<string, object?>)?["content"]?.ToString() ?? string.Empty)
+            .ToList();
+        Assert.Equal(["Hello", " world"], contentChunks);
+
+        Assert.NotNull(chunks.FirstOrDefault(c => FirstChoice(c)?["finish_reason"]?.ToString() == "stop"));
+        var usageChunk = chunks.FirstOrDefault(c => c.ContainsKey("usage") && c["usage"] is not null);
+        Assert.NotNull(usageChunk);
+        var usage = usageChunk!["usage"] as Dictionary<string, object?>;
+        Assert.Equal(3, Convert.ToInt32(usage!["prompt_tokens"]));
+        Assert.Equal(2, Convert.ToInt32(usage["completion_tokens"]));
+        Assert.Equal(5, Convert.ToInt32(usage["total_tokens"]));
+    }
+
+    [Fact]
+    public async Task ResponsesToChat_Reasoning_EmitsReasoningContent()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"response.created","response":{"id":"resp_1","model":"gpt-5","created_at":1700000000,"status":"in_progress"}}""", "response.created"),
+            SseBlock("""{"type":"response.reasoning_summary_text.delta","delta":"Hmm","item_id":"rs_1","output_index":0}""", "response.reasoning_summary_text.delta"),
+            SseBlock("""{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}""", "response.completed"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.ResponsesToChatEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        var chunks = ParseChatChunks(events);
+        var reasoningChunk = chunks.FirstOrDefault(c =>
+            (FirstChoice(c)?["delta"] as Dictionary<string, object?>)?.ContainsKey("reasoning_content") == true);
+        Assert.NotNull(reasoningChunk);
+        Assert.Equal("Hmm", (FirstChoice(reasoningChunk!)!["delta"] as Dictionary<string, object?>)?["reasoning_content"]?.ToString());
+    }
+
+    [Fact]
+    public async Task ResponsesToChat_FunctionCall_EmitsToolCallStartAndArgumentDeltas()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"response.created","response":{"id":"resp_1","model":"gpt-5","created_at":1700000000,"status":"in_progress"}}""", "response.created"),
+            SseBlock("""{"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","status":"in_progress","call_id":"call_1","name":"get_weather","arguments":""}}""", "response.output_item.added"),
+            SseBlock("""{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{\"city\":"}""", "response.function_call_arguments.delta"),
+            SseBlock("""{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"\"SF\"}"}""", "response.function_call_arguments.delta"),
+            SseBlock("""{"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","status":"completed","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"SF\"}"}}""", "response.output_item.done"),
+            SseBlock("""{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}""", "response.completed"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.ResponsesToChatEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        var chunks = ParseChatChunks(events);
+        var startChunk = chunks.FirstOrDefault(c =>
+        {
+            var d = FirstChoice(c)?["delta"] as Dictionary<string, object?>;
+            if (d?.TryGetValue("tool_calls", out var tc) != true || tc is not List<object?> list || list.Count == 0)
+            {
+                return false;
+            }
+
+            return (list[0] as Dictionary<string, object?>)?.ContainsKey("id") == true;
+        });
+        Assert.NotNull(startChunk);
+        var startCall = ((FirstChoice(startChunk!)?["delta"] as Dictionary<string, object?>)?["tool_calls"] as List<object?>)?[0] as Dictionary<string, object?>;
+        Assert.Equal("call_1", startCall!["id"]?.ToString());
+        Assert.Equal("get_weather", (startCall["function"] as Dictionary<string, object?>)?["name"]?.ToString());
+
+        var argChunks = chunks
+            .Where(c =>
+            {
+                var d = FirstChoice(c)?["delta"] as Dictionary<string, object?>;
+                if (d?.TryGetValue("tool_calls", out var tc) != true || tc is not List<object?> list || list.Count == 0)
+                {
+                    return false;
+                }
+
+                var item = list[0] as Dictionary<string, object?>;
+                return item?.ContainsKey("id") == false;
+            })
+            .Select(c =>
+            {
+                var d = FirstChoice(c)!["delta"] as Dictionary<string, object?>;
+                var tc = d!["tool_calls"] as List<object?>;
+                var item = tc![0] as Dictionary<string, object?>;
+                return ((item!["function"] as Dictionary<string, object?>)?["arguments"]?.ToString()) ?? string.Empty;
+            })
+            .ToList();
+        Assert.Equal(["{\"city\":", "\"SF\"}"], argChunks);
+    }
+
+    [Fact]
+    public async Task ResponsesToChat_CustomToolCall_EmitsStartAndDoneArguments()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"response.created","response":{"id":"resp_1","model":"gpt-5","created_at":1700000000,"status":"in_progress"}}""", "response.created"),
+            SseBlock("""{"type":"response.output_item.added","output_index":0,"item":{"id":"ct_1","type":"custom_tool_call","status":"in_progress","call_id":"call_2","name":"apply_patch","input":{}}}""", "response.output_item.added"),
+            SseBlock("""{"type":"response.custom_tool_call_input.delta","item_id":"ct_1","output_index":0,"delta":"@@ patch @@"}""", "response.custom_tool_call_input.delta"),
+            SseBlock("""{"type":"response.output_item.done","output_index":0,"item":{"id":"ct_1","type":"custom_tool_call","status":"completed","call_id":"call_2","name":"apply_patch","input":{"patch":"@@ patch @@"}}}""", "response.output_item.done"),
+            SseBlock("""{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}""", "response.completed"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.ResponsesToChatEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        var chunks = ParseChatChunks(events);
+        var startChunk = chunks.FirstOrDefault(c =>
+        {
+            var d = FirstChoice(c)?["delta"] as Dictionary<string, object?>;
+            if (d?.TryGetValue("tool_calls", out var tc) != true || tc is not List<object?> list || list.Count == 0)
+            {
+                return false;
+            }
+            return (list[0] as Dictionary<string, object?>)?.ContainsKey("id") == true;
+        });
+        Assert.NotNull(startChunk);
+        var startCall = ((FirstChoice(startChunk!)?["delta"] as Dictionary<string, object?>)?["tool_calls"] as List<object?>)?[0] as Dictionary<string, object?>;
+        Assert.Equal("apply_patch", (startCall!["function"] as Dictionary<string, object?>)?["name"]?.ToString());
+
+        // custom 一次性 arguments delta（合法 JSON）
+        var argChunks = chunks
+            .Where(c =>
+            {
+                var d = FirstChoice(c)?["delta"] as Dictionary<string, object?>;
+                if (d?.TryGetValue("tool_calls", out var tc) != true || tc is not List<object?> list || list.Count == 0)
+                {
+                    return false;
+                }
+                var item = list[0] as Dictionary<string, object?>;
+                return item?.ContainsKey("id") == false;
+            })
+            .Select(c => ((FirstChoice(c)!["delta"] as Dictionary<string, object?>)!["tool_calls"] is List<object?> tl && tl[0] is Dictionary<string, object?> it
+                ? ((it["function"] as Dictionary<string, object?>)?["arguments"]?.ToString()) : null) ?? string.Empty)
+            .ToList();
+        Assert.Single(argChunks);
+        // 应是合法 JSON 对象
+        using var doc = JsonDocument.Parse(argChunks[0]);
+        Assert.Equal(JsonValueKind.Object, doc.RootElement.ValueKind);
+        Assert.Equal("@@ patch @@", doc.RootElement.GetProperty("patch").GetString());
+    }
+
+    [Fact]
+    public async Task ResponsesToChat_Status_MapsFinishReason()
+    {
+        foreach (var (status, expected) in new[] { ("completed", "stop"), ("incomplete", "length") })
+        {
+            var lines = SseLines(
+                SseBlock("""{"type":"response.created","response":{"id":"resp_1","model":"gpt-5","created_at":1700000000,"status":"in_progress"}}""", "response.created"),
+               SseBlock("""{"type":"response.output_text.delta","delta":"x","output_index":0,"item_id":"msg_1"}""", "response.output_text.delta"),
+                SseBlock("""{"type":"response.completed","response":{"status":"STATUS","usage":{"input_tokens":1,"output_tokens":2}}}""".Replace("STATUS", status), "response.completed"));
+
+            var result = new ConvertedStreamResult();
+            var events = await CollectAsync(
+                SseStreamConverter.ResponsesToChatEvents(lines, "gpt-5", result, CancellationToken.None));
+            var chunks = ParseChatChunks(events);
+            Assert.NotNull(chunks.FirstOrDefault(c => FirstChoice(c)?["finish_reason"]?.ToString() == expected));
+        }
+    }
+
+    [Fact]
+    public async Task ResponsesToChat_UpstreamResponseIsResponsesFormat()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"response.created","response":{"id":"resp_1","model":"gpt-5","created_at":1700000000,"status":"in_progress"}}""", "response.created"),
+            SseBlock("""{"type":"response.output_text.delta","delta":"Hi","output_index":0,"item_id":"msg_1"}""", "response.output_text.delta"),
+            SseBlock("""{"type":"response.completed","response":{"id":"resp_1","status":"completed","model":"gpt-5","output":[],"usage":{"input_tokens":1,"output_tokens":2}}}""", "response.completed"));
+
+        var result = new ConvertedStreamResult();
+        await CollectAsync(SseStreamConverter.ResponsesToChatEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        Assert.NotNull(result.UpstreamResponse);
+        var upstream = result.UpstreamResponse!;
+        Assert.Equal("response", upstream["object"]?.ToString());
+        var output = upstream["output"] as List<object?>;
+        Assert.NotNull(output);
+        var messageItem = output!.OfType<Dictionary<string, object?>>().FirstOrDefault(o => o.TryGetValue("type", out var t) && t?.ToString() == "message");
+        Assert.NotNull(messageItem);
+        var content = messageItem!["content"] as List<object?>;
+        Assert.NotNull(content);
+       Assert.Equal("Hi", ((content![0] as Dictionary<string, object?>)?["text"]?.ToString()));
+   }
+
+    // ── Responses → Messages ────────────────────────────────
+
+    [Fact]
+    public async Task ResponsesToMessages_TextDelta_EmitsMessageStartAndTextBlock()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"response.created","response":{"id":"resp_1","model":"gpt-5","created_at":1700000000,"status":"in_progress"}}""", "response.created"),
+            SseBlock("""{"type":"response.output_text.delta","delta":"Hello","output_index":0,"item_id":"msg_1"}""", "response.output_text.delta"),
+            SseBlock("""{"type":"response.output_text.delta","delta":" world","output_index":0,"item_id":"msg_1"}""", "response.output_text.delta"),
+            SseBlock("""{"type":"response.completed","response":{"id":"resp_1","status":"completed","model":"gpt-5","output":[],"usage":{"input_tokens":3,"output_tokens":2}}}""", "response.completed"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.ResponsesToMessagesEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var startIdx = parsed.FindIndex(e => e.TryGetValue("type", out var t) && t?.ToString() == "message_start");
+        var deltaIdx = parsed.FindIndex(e => e.TryGetValue("type", out var t) && t?.ToString() == "content_block_delta");
+        var stopIdx = parsed.FindIndex(e => e.TryGetValue("type", out var t) && t?.ToString() == "message_stop");
+        Assert.True(startIdx >= 0 && deltaIdx > startIdx && stopIdx > deltaIdx);
+
+        var messageStart = ByType(parsed, "message_start");
+        Assert.NotNull(messageStart);
+        Assert.Equal("gpt-5", ((messageStart!["message"] as Dictionary<string, object?>)?["model"]?.ToString()));
+
+        var textDeltas = AllByType(parsed, "content_block_delta")
+            .Where(d => (d["delta"] as Dictionary<string, object?>)?["type"]?.ToString() == "text_delta")
+            .Select(d => (d["delta"] as Dictionary<string, object?>)?["text"]?.ToString())
+            .ToList();
+        Assert.Equal(["Hello", " world"], textDeltas);
+
+        var messageDelta = ByType(parsed, "message_delta");
+        Assert.NotNull(messageDelta);
+        Assert.Equal("end_turn", (messageDelta!["delta"] as Dictionary<string, object?>)?["stop_reason"]?.ToString());
+    }
+
+    [Fact]
+    public async Task ResponsesToMessages_Reasoning_EmitsThinkingBlockWithoutSignature()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"response.created","response":{"id":"resp_1","model":"gpt-5","created_at":1700000000,"status":"in_progress"}}""", "response.created"),
+            SseBlock("""{"type":"response.reasoning_summary_text.delta","delta":"Hmm","item_id":"rs_1","output_index":0}""", "response.reasoning_summary_text.delta"),
+            SseBlock("""{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}""", "response.completed"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.ResponsesToMessagesEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var thinkingStart = AllByType(parsed, "content_block_start")
+            .FirstOrDefault(e => (e["content_block"] as Dictionary<string, object?>)?["type"]?.ToString() == "thinking");
+        Assert.NotNull(thinkingStart);
+
+        var thinkingDeltas = AllByType(parsed, "content_block_delta")
+            .Where(d => (d["delta"] as Dictionary<string, object?>)?["type"]?.ToString() == "thinking_delta")
+            .Select(d => (d["delta"] as Dictionary<string, object?>)?["thinking"]?.ToString())
+            .ToList();
+        Assert.Equal(["Hmm"], thinkingDeltas);
+
+        Assert.Null(AllByType(parsed, "content_block_delta")
+            .FirstOrDefault(d => (d["delta"] as Dictionary<string, object?>)?["type"]?.ToString() == "signature_delta"));
+    }
+
+    [Fact]
+    public async Task ResponsesToMessages_FunctionCall_EmitsToolUseAndInputJsonDelta()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"response.created","response":{"id":"resp_1","model":"gpt-5","created_at":1700000000,"status":"in_progress"}}""", "response.created"),
+            SseBlock("""{"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","status":"in_progress","call_id":"call_1","name":"get_weather","arguments":""}}""", "response.output_item.added"),
+            SseBlock("""{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{\"city\":"}""", "response.function_call_arguments.delta"),
+            SseBlock("""{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"\"SF\"}"}""", "response.function_call_arguments.delta"),
+            SseBlock("""{"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","status":"completed","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"SF\"}"}}""", "response.output_item.done"),
+            SseBlock("""{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}""", "response.completed"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.ResponsesToMessagesEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var toolStart = AllByType(parsed, "content_block_start")
+            .FirstOrDefault(e => (e["content_block"] as Dictionary<string, object?>)?["type"]?.ToString() == "tool_use");
+        Assert.NotNull(toolStart);
+        var block = toolStart!["content_block"] as Dictionary<string, object?>;
+        Assert.Equal("get_weather", block!["name"]?.ToString());
+        Assert.Equal("call_1", block["id"]?.ToString());
+
+        var inputDeltas = AllByType(parsed, "content_block_delta")
+            .Where(d => (d["delta"] as Dictionary<string, object?>)?["type"]?.ToString() == "input_json_delta")
+            .Select(d => (d["delta"] as Dictionary<string, object?>)?["partial_json"]?.ToString())
+            .ToList();
+        Assert.Equal(["{\"city\":", "\"SF\"}"], inputDeltas);
+
+        var messageDelta = ByType(parsed, "message_delta");
+        Assert.NotNull(messageDelta);
+        Assert.Equal("tool_use", (messageDelta!["delta"] as Dictionary<string, object?>)?["stop_reason"]?.ToString());
+    }
+
+    [Fact]
+    public async Task ResponsesToMessages_CustomToolCall_EmitsToolUseAndDoneInputJson()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"response.created","response":{"id":"resp_1","model":"gpt-5","created_at":1700000000,"status":"in_progress"}}""", "response.created"),
+            SseBlock("""{"type":"response.output_item.added","output_index":0,"item":{"id":"ct_1","type":"custom_tool_call","status":"in_progress","call_id":"call_2","name":"apply_patch","input":{}}}""", "response.output_item.added"),
+            SseBlock("""{"type":"response.custom_tool_call_input.delta","item_id":"ct_1","output_index":0,"delta":"@@ patch @@"}""", "response.custom_tool_call_input.delta"),
+            SseBlock("""{"type":"response.output_item.done","output_index":0,"item":{"id":"ct_1","type":"custom_tool_call","status":"completed","call_id":"call_2","name":"apply_patch","input":{"patch":"@@ patch @@"}}}""", "response.output_item.done"),
+            SseBlock("""{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}""", "response.completed"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.ResponsesToMessagesEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var toolStart = AllByType(parsed, "content_block_start")
+            .FirstOrDefault(e => (e["content_block"] as Dictionary<string, object?>)?["type"]?.ToString() == "tool_use");
+        Assert.NotNull(toolStart);
+        Assert.Equal("apply_patch", (toolStart!["content_block"] as Dictionary<string, object?>)?["name"]?.ToString());
+
+        var inputDeltas = AllByType(parsed, "content_block_delta")
+            .Where(d => (d["delta"] as Dictionary<string, object?>)?["type"]?.ToString() == "input_json_delta")
+            .Select(d => (d["delta"] as Dictionary<string, object?>)?["partial_json"]?.ToString())
+            .ToList();
+        Assert.Single(inputDeltas);
+        Assert.Contains("\"patch\":\"@@ patch @@\"", inputDeltas[0]);
+
+        var messageDelta = ByType(parsed, "message_delta");
+        Assert.Equal("tool_use", (messageDelta!["delta"] as Dictionary<string, object?>)?["stop_reason"]?.ToString());
+    }
+
+    [Fact]
+    public async Task ResponsesToMessages_Status_MapsStopReason()
+    {
+        foreach (var (status, expected) in new[] { ("incomplete", "max_tokens"), ("completed", "end_turn") })
+        {
+            var lines = SseLines(
+                SseBlock("""{"type":"response.created","response":{"id":"resp_1","model":"gpt-5","created_at":1700000000,"status":"in_progress"}}""", "response.created"),
+                SseBlock("""{"type":"response.output_text.delta","delta":"x","output_index":0,"item_id":"msg_1"}""", "response.output_text.delta"),
+                SseBlock("""{"type":"response.completed","response":{"status":"STATUS","usage":{"input_tokens":1,"output_tokens":2}}}""".Replace("STATUS", status), "response.completed"));
+
+            var result = new ConvertedStreamResult();
+            var events = await CollectAsync(
+                SseStreamConverter.ResponsesToMessagesEvents(lines, "gpt-5", result, CancellationToken.None));
+            var parsed = ParseEvents(events);
+            var messageDelta = ByType(parsed, "message_delta");
+            Assert.NotNull(messageDelta);
+            Assert.Equal(expected, (messageDelta!["delta"] as Dictionary<string, object?>)?["stop_reason"]?.ToString());
+        }
+    }
+
+    [Fact]
+    public async Task ResponsesToMessages_UpstreamResponseIsResponsesFormat()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"response.created","response":{"id":"resp_1","model":"gpt-5","created_at":1700000000,"status":"in_progress"}}""", "response.created"),
+            SseBlock("""{"type":"response.output_text.delta","delta":"Hi","output_index":0,"item_id":"msg_1"}""", "response.output_text.delta"),
+            SseBlock("""{"type":"response.completed","response":{"id":"resp_1","status":"completed","model":"gpt-5","output":[],"usage":{"input_tokens":1,"output_tokens":2}}}""", "response.completed"));
+
+        var result = new ConvertedStreamResult();
+        await CollectAsync(SseStreamConverter.ResponsesToMessagesEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        Assert.NotNull(result.UpstreamResponse);
+        var upstream = result.UpstreamResponse!;
+        Assert.Equal("response", upstream["object"]?.ToString());
+        var output = upstream["output"] as List<object?>;
+        Assert.NotNull(output);
+        var messageItem = output!.OfType<Dictionary<string, object?>>().FirstOrDefault(o => o.TryGetValue("type", out var t) && t?.ToString() == "message");
+        Assert.NotNull(messageItem);
+        var content = messageItem!["content"] as List<object?>;
+       Assert.Equal("Hi", ((content![0] as Dictionary<string, object?>)?["text"]?.ToString()));
+   }
+
+    [Theory]
+    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Responses)]
+    [InlineData(ProtocolConverter.Chat, ProtocolConverter.Chat)]
+    [InlineData(ProtocolConverter.Messages, ProtocolConverter.Messages)]
+    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Chat)]
+    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Messages)]
+    [InlineData(ProtocolConverter.Chat, ProtocolConverter.Responses)]
+    [InlineData(ProtocolConverter.Chat, ProtocolConverter.Messages)]
+    [InlineData(ProtocolConverter.Messages, ProtocolConverter.Responses)]
+    [InlineData(ProtocolConverter.Messages, ProtocolConverter.Chat)]
+    public void SupportsStreamingConversion_AllDirectionsAreSupported(string source, string target)
+    {
+        Assert.True(ProtocolConverter.SupportsStreamingConversion(source, target));
     }
 }
