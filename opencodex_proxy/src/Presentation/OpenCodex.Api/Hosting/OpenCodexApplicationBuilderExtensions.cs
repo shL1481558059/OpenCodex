@@ -1,4 +1,5 @@
 using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Primitives;
 using OpenCodex.Api.Errors;
 using OpenCodex.Api.Infrastructure;
 
@@ -10,13 +11,10 @@ public static class OpenCodexApplicationBuilderExtensions
     {
         OpenCodexDatabaseInitializer.Initialize(app);
 
-        // 桌面端单文件发布时，SDK 的 .staticwebassets.endpoints.json 清单不会随 exe 拷贝，
-        // 导致默认 WebRootFileProvider 找不到 wwwroot。这里用 PhysicalFileProvider
-        // 直接指向物理 wwwroot 目录，保证 UseStaticFiles 和 MapFallbackToFile 正常工作。
-        var webRoot = app.Environment.WebRootPath ?? Path.Combine(app.Environment.ContentRootPath, "wwwroot");
-        if (!app.Environment.IsDevelopment() && Directory.Exists(webRoot))
+        var fileProvider = ResolveStaticFileProvider(app);
+        if (fileProvider is not null)
         {
-            app.Environment.WebRootFileProvider = new PhysicalFileProvider(webRoot);
+            app.Environment.WebRootFileProvider = fileProvider;
         }
 
         if (app.Environment.IsDevelopment())
@@ -37,7 +35,18 @@ public static class OpenCodexApplicationBuilderExtensions
 
             await next();
         });
-        app.UseStaticFiles();
+
+        // 显式传入 PhysicalFileProvider，不依赖 WebRootFileProvider 间接传递，
+        // 确保单文件发布场景下也能从物理 wwwroot 目录服务静态资源。
+        if (fileProvider is not null && !app.Environment.IsDevelopment())
+        {
+            app.UseStaticFiles(new StaticFileOptions { FileProvider = fileProvider });
+        }
+        else
+        {
+            app.UseStaticFiles();
+        }
+
         app.UseAuthentication();
         app.UseAuthorization();
         app.MapControllers();
@@ -56,5 +65,32 @@ public static class OpenCodexApplicationBuilderExtensions
         app.MapFallbackToFile("/admin/{**path:nonfile}", "admin/index.html");
 
         return app;
+    }
+
+    private static IFileProvider? ResolveStaticFileProvider(WebApplication app)
+    {
+        if (app.Environment.IsDevelopment())
+        {
+            return null;
+        }
+
+        // 多候选：优先 WebRootPath，其次 ContentRootPath/wwwroot，最后 BaseDirectory/wwwroot
+        var candidates = new List<string?>();
+        if (!string.IsNullOrEmpty(app.Environment.WebRootPath))
+        {
+            candidates.Add(app.Environment.WebRootPath);
+        }
+        candidates.Add(Path.Combine(app.Environment.ContentRootPath, "wwwroot"));
+        candidates.Add(Path.Combine(AppContext.BaseDirectory, "wwwroot"));
+
+        foreach (var candidate in candidates)
+        {
+            if (candidate is not null && Directory.Exists(candidate))
+            {
+                return new PhysicalFileProvider(candidate);
+            }
+        }
+
+        return null;
     }
 }
