@@ -22,12 +22,15 @@ public sealed class ObservabilityServiceTests
 
     private static ObservabilityService CreateService(
         string dbPath,
-        IChannelCapacityService? channelCapacity = null)
+        IChannelCapacityService? channelCapacity = null,
+        Guid? currentUserId = null,
+        string currentUsername = "admin",
+        string currentRole = "superadmin")
     {
         var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         return new ObservabilityService(
             new TestSettingsProvider(dbPath),
-            new TestWorkContext(AdminUserId, "admin", "superadmin"),
+            new TestWorkContext(currentUserId ?? AdminUserId, currentUsername, currentRole),
             new EfRepository<RequestLog>(context),
             new EfRepository<RequestLogDetail>(context),
             new EfRepository<RequestLogStreamLine>(context),
@@ -527,6 +530,48 @@ context.Users.Add(new User
         Assert.Equal(channelId402.ToString(), item.ChannelId);
         Assert.Equal("实时占用渠道", item.ChannelName);
         Assert.Equal(2, item.ProcessingCount);
+    }
+
+    [Fact]
+    public void RecentErrors_ReturnsEmptyForMissingScopedUser()
+    {
+        var dbPath = Path.Combine(
+            Path.GetTempPath(),
+            "opencodex-api-tests",
+            $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            context.RequestLogs.Add(new RequestLog
+            {
+                Id = Guid.Parse("33333333-3333-3333-3333-333333333343"),
+                RequestId = "req-error-missing-user",
+                CreatedAt = 1_700_000_300,
+                Method = "POST",
+                Path = "/v1/responses",
+                Model = "gpt-5",
+                UpstreamModel = "gpt-5-upstream",
+                LifecycleStatus = ProxyRequestLifecycleStatus.Failed,
+                IsStream = true,
+                StatusCode = 500,
+                Error = "upstream failed",
+                OwnerUserId = AdminUserId
+            });
+            context.SaveChanges();
+        }
+
+        var service = CreateService(
+            dbPath,
+            currentUserId: Guid.Parse("99999999-9999-9999-9999-999999999999"),
+            currentUsername: "missing-user",
+            currentRole: "user");
+
+        var errors = service.ReadRecentErrors(5);
+
+        Assert.True(errors.Succeeded);
+        Assert.Empty(errors.Payload!);
     }
 
     [Fact]

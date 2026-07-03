@@ -180,9 +180,11 @@ public sealed class ObservabilityService : IObservabilityService
         if (!isSuperadmin)
         {
             var userId = _userRepository.TableNoTracking
-                .FirstOrDefault(u => u.Username == currentUsername)?.Id;
+                .Where(u => u.Username == currentUsername)
+                .Select(u => u.Id)
+                .FirstOrDefault();
             if (userId == Guid.Empty) return [];
-            query = query.Where(log => log.OwnerUserId == userId.Value);
+            query = query.Where(log => log.OwnerUserId == userId);
         }
 
         var errorLogs = query
