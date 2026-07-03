@@ -153,12 +153,25 @@ public static partial class ProtocolConverter
             ?? new Dictionary<string, object?>();
     }
 
-    public static bool SupportsStreamingConversion(string sourceProtocol, string targetProtocol)
-    {
-        return sourceProtocol == targetProtocol
-            || (sourceProtocol == Responses
-                && targetProtocol is Chat or Messages);
-    }
+   public static bool SupportsStreamingConversion(string sourceProtocol, string targetProtocol)
+   {
+        if (sourceProtocol == targetProtocol)
+        {
+            return true;
+        }
+
+        // 仅放行已实现流式转换器的跨协议方向；新增方向时在此登记。
+       return (sourceProtocol, targetProtocol) switch
+       {
+           (Responses, Chat) => true,
+           (Responses, Messages) => true,
+           (Messages, Chat) => true,
+           (Chat, Messages) => true,
+           (Chat, Responses) => true,
+           (Messages, Responses) => true,
+           _ => false
+       };
+   }
 
        public static Dictionary<string, object?> ConvertRequest(
            Dictionary<string, object?> payload,
