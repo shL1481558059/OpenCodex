@@ -18,9 +18,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "resources": [
-      "resources/**/*"
-    ],
+    "resources": {
+      "resources/": ""
+    },
     "externalBin": [
       "binaries/opencodex-api"
     ]
