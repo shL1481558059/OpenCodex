@@ -173,15 +173,44 @@ public sealed class ModelDistributionDto(
 }
 
 /// <summary>
+/// 表示当前正在处理请求的模型对队列项。
+/// </summary>
+/// <param name="model">请求模型。</param>
+/// <param name="upstreamModel">上游模型。</param>
+/// <param name="processingCount">当前处理中请求数。</param>
+public sealed class ActiveChannelQueueModelDto(
+    string? model,
+    string? upstreamModel,
+    int processingCount)
+{
+    /// <summary>
+    /// 获取请求模型。
+    /// </summary>
+    public string? Model { get; } = model;
+
+    /// <summary>
+    /// 获取上游模型。
+    /// </summary>
+    public string? UpstreamModel { get; } = upstreamModel;
+
+    /// <summary>
+    /// 获取当前处理中请求数。
+    /// </summary>
+    public int ProcessingCount { get; } = processingCount;
+}
+
+/// <summary>
 /// 表示当前正在处理请求的渠道队列项。
 /// </summary>
 /// <param name="channelId">渠道标识。</param>
 /// <param name="channelName">渠道名称。</param>
 /// <param name="processingCount">当前处理中请求数。</param>
+/// <param name="models">按请求模型和上游模型聚合后的处理中请求数。</param>
 public sealed class ActiveChannelQueueItemDto(
     string channelId,
     string channelName,
-    int processingCount)
+    int processingCount,
+    IReadOnlyList<ActiveChannelQueueModelDto> models)
 {
     /// <summary>
     /// 获取渠道标识。
@@ -197,6 +226,11 @@ public sealed class ActiveChannelQueueItemDto(
     /// 获取当前处理中请求数。
     /// </summary>
     public int ProcessingCount { get; } = processingCount;
+
+    /// <summary>
+    /// 获取按请求模型和上游模型聚合后的处理中请求数。
+    /// </summary>
+    public IReadOnlyList<ActiveChannelQueueModelDto> Models { get; } = models;
 }
 
 /// <summary>
@@ -328,6 +362,7 @@ public sealed class ErrorDistributionDto(
 /// <param name="id">日志标识。</param>
 /// <param name="createdAt">创建时间戳。</param>
 /// <param name="model">请求模型。</param>
+/// <param name="upstreamModel">上游模型。</param>
 /// <param name="channelName">渠道名称。</param>
 /// <param name="statusCode">HTTP 状态码。</param>
 /// <param name="error">错误消息。</param>
@@ -335,6 +370,7 @@ public sealed class RecentErrorItemDto(
     Guid id,
     double? createdAt,
     string? model,
+    string? upstreamModel,
     string? channelName,
     int? statusCode,
     string? error)
@@ -353,6 +389,11 @@ public sealed class RecentErrorItemDto(
     /// 获取请求模型。
     /// </summary>
     public string? Model { get; } = model;
+
+    /// <summary>
+    /// 获取上游模型。
+    /// </summary>
+    public string? UpstreamModel { get; } = upstreamModel;
 
     /// <summary>
     /// 获取渠道名称。

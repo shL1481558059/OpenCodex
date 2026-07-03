@@ -10,6 +10,9 @@
         <el-button :icon="Connection" :disabled="selectedChannels.length === 0" @click="openBulkChannelTest">
           批量测试
         </el-button>
+        <el-button :icon="Edit" :disabled="selectedChannels.length === 0" @click="openBulkChannelEdit">
+          批量编辑
+        </el-button>
         <el-button :icon="Download" @click="exportChannels">导出</el-button>
         <el-button :icon="Upload" @click="triggerImportChannels">导入</el-button>
         <input
@@ -33,94 +36,241 @@
     </el-row>
 
     <div class="table-area">
-      <el-table
-        ref="channelTableRef"
-        v-loading="configLoading"
-        :data="channels"
-        row-key="id"
-        style="width: 100%; margin-top: 16px"
-        empty-text="暂无渠道"
-        @selection-change="handleChannelSelectionChange"
-      >
-        <el-table-column type="selection" width="48" />
-        <el-table-column
-          v-if="props.isSuperadmin"
-          prop="owner_username"
-          label="所属用户"
-          min-width="130"
-          show-overflow-tooltip
-        />
-        <el-table-column prop="name" label="名称" min-width="140" show-overflow-tooltip />
-        <el-table-column prop="type" label="服务类型" width="110">
-          <template #default="{ row }">
-            <el-tag>{{ row.type }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="baseurl" label="Base URL" min-width="220" show-overflow-tooltip />
-        <el-table-column prop="priority" label="优先级" width="90" />
-        <el-table-column label="容量状态" width="140">
-          <template #default="{ row }">{{ formatCapacityStatus(row) }}</template>
-        </el-table-column>
-        <el-table-column label="健康状态" width="120">
-          <template #default="{ row }">
-            <el-tag :type="healthStatusTagType(row.health_status)">{{ formatHealthStatus(row.health_status) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="100">
-          <template #default="{ row, $index }">
-            <el-switch
-              :model-value="row.enabled !== false"
-              :loading="isChannelToggleSaving(row, $index)"
-              :disabled="configLoading"
-              :width="56"
-              inline-prompt
-              active-text="启用"
-              inactive-text="停用"
-              @change="toggleChannelEnabled(row, $index, $event)"
+      <el-tabs v-model="channelView" class="channel-view-tabs" @tab-change="handleChannelViewChange">
+        <el-tab-pane label="原始列表" name="raw">
+          <el-table
+            ref="channelTableRef"
+            v-loading="configLoading"
+            :data="channels"
+            row-key="id"
+            class="channel-raw-table"
+            empty-text="暂无渠道"
+            @selection-change="handleChannelSelectionChange"
+          >
+            <el-table-column type="selection" width="48" />
+            <el-table-column
+              v-if="props.isSuperadmin"
+              prop="owner_username"
+              label="所属用户"
+              min-width="130"
+              show-overflow-tooltip
             />
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="240" min-width="240" align="center">
-          <template #default="{ row, $index }">
-            <div class="channel-action-buttons">
-              <el-button size="small" :icon="Edit" class="action-btn" @click="openChannelDrawer(row, $index)">
-                编辑
-              </el-button>
-              <el-popconfirm title="删除这个渠道？" @confirm="deleteChannel($index)">
-                <template #reference>
-                  <el-button size="small" type="danger" :icon="Delete" class="action-btn">
-                    删除
+            <el-table-column prop="group_name" label="分组" width="120" show-overflow-tooltip>
+              <template #default="{ row }">
+                <el-tag v-if="normalizeGroupNameText(row.group_name)" effect="plain" type="info">
+                  {{ normalizeGroupNameText(row.group_name) }}
+                </el-tag>
+                <span v-else class="text-muted">未分组</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="name" label="名称" min-width="140" show-overflow-tooltip />
+            <el-table-column prop="type" label="服务类型" width="110">
+              <template #default="{ row }">
+                <el-tag>{{ row.type }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="baseurl" label="Base URL" min-width="220" show-overflow-tooltip />
+            <el-table-column prop="priority" label="优先级" width="90" />
+            <el-table-column label="容量状态" width="140">
+              <template #default="{ row }">{{ formatCapacityStatus(row) }}</template>
+            </el-table-column>
+            <el-table-column label="健康状态" width="120">
+              <template #default="{ row }">
+                <el-tag :type="healthStatusTagType(row.health_status)">{{ formatHealthStatus(row.health_status) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="100">
+              <template #default="{ row, $index }">
+                <el-switch
+                  :model-value="row.enabled !== false"
+                  :loading="isChannelToggleSaving(row, $index)"
+                  :disabled="configLoading"
+                  :width="56"
+                  inline-prompt
+                  active-text="启用"
+                  inactive-text="停用"
+                  @change="toggleChannelEnabled(row, $index, $event)"
+                />
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="240" min-width="240" align="center">
+              <template #default="{ row, $index }">
+                <div class="channel-action-buttons">
+                  <el-button size="small" :icon="Edit" class="action-btn" @click="openChannelDrawer(row, $index)">
+                    编辑
                   </el-button>
-                </template>
-              </el-popconfirm>
-              <el-dropdown trigger="click">
-                <el-button size="small" :icon="MoreFilled" class="action-btn">
-                  更多
-                </el-button>
-                <template #dropdown>
-                  <el-dropdown-menu>
-                    <el-dropdown-item @click="openChannelTest(row)">
-                      <el-icon><Connection /></el-icon>测试连接
-                    </el-dropdown-item>
-                    <el-dropdown-item @click="openChannelPricing(row)">
-                      <el-icon><Edit /></el-icon>定价管理
-                    </el-dropdown-item>
-                    <el-dropdown-item @click="copyChannel(row)">
-                      <el-icon><DocumentCopy /></el-icon>复制
-                    </el-dropdown-item>
-                    <el-dropdown-item
-                      :disabled="!canResetChannelHealth(row) || resetChannelHealthLoadingId === row.id"
-                      @click="confirmResetChannelHealth(row)"
-                    >
-                      <el-icon><Refresh /></el-icon>重置可用状态
-                    </el-dropdown-item>
-                  </el-dropdown-menu>
-                </template>
-              </el-dropdown>
-            </div>
-          </template>
-        </el-table-column>
-      </el-table>
+                  <el-popconfirm title="删除这个渠道？" @confirm="deleteChannel($index)">
+                    <template #reference>
+                      <el-button size="small" type="danger" :icon="Delete" class="action-btn">
+                        删除
+                      </el-button>
+                    </template>
+                  </el-popconfirm>
+                  <el-dropdown trigger="click">
+                    <el-button size="small" :icon="MoreFilled" class="action-btn">
+                      更多
+                    </el-button>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item @click="openChannelTest(row)">
+                          <el-icon><Connection /></el-icon>测试连接
+                        </el-dropdown-item>
+                        <el-dropdown-item @click="openChannelPricing(row)">
+                          <el-icon><Edit /></el-icon>定价管理
+                        </el-dropdown-item>
+                        <el-dropdown-item @click="copyChannel(row)">
+                          <el-icon><DocumentCopy /></el-icon>复制
+                        </el-dropdown-item>
+                        <el-dropdown-item
+                          :disabled="!canResetChannelHealth(row) || resetChannelHealthLoadingId === row.id"
+                          @click="confirmResetChannelHealth(row)"
+                        >
+                          <el-icon><Refresh /></el-icon>重置可用状态
+                        </el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+                </div>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-tab-pane>
+
+        <el-tab-pane label="归并视图" name="grouped">
+          <div v-loading="configLoading" class="channel-grouped-view">
+            <el-empty v-if="groupedChannelSections.length === 0" description="暂无渠道" />
+            <template v-else>
+              <section
+                v-for="section in groupedChannelSections"
+                :key="section.key"
+                class="channel-group-section"
+              >
+                <div class="channel-group-header">
+                  <div class="channel-group-title">
+                    <span>{{ section.label }}</span>
+                    <el-tag size="small" effect="plain">{{ section.channelCount }} 个渠道</el-tag>
+                    <el-tag size="small" type="success" effect="plain">启用 {{ section.enabledCount }}</el-tag>
+                  </div>
+                  <div class="channel-group-meta">{{ section.baseUrlGroups.length }} 个 Base URL</div>
+                </div>
+
+                <div
+                  v-for="baseGroup in section.baseUrlGroups"
+                  :key="baseGroup.key"
+                  class="base-url-section"
+                >
+                  <div class="base-url-header">
+                    <div class="base-url-main">
+                      <strong :title="baseGroup.baseurl">{{ baseGroup.baseurl || "未设置 Base URL" }}</strong>
+                      <div class="base-url-types">
+                        <el-tag
+                          v-for="type in baseGroup.types"
+                          :key="type"
+                          size="small"
+                          effect="plain"
+                        >
+                          {{ type }}
+                        </el-tag>
+                      </div>
+                    </div>
+                    <div class="base-url-stats">
+                      <span>{{ baseGroup.channels.length }} 渠道</span>
+                      <span>{{ baseGroup.keyVariants }} Key</span>
+                      <span>{{ baseGroup.modelCount }} 模型</span>
+                      <span>启用 {{ baseGroup.enabledCount }}</span>
+                    </div>
+                  </div>
+
+                  <el-table
+                    :data="baseGroup.channels"
+                    row-key="id"
+                    size="small"
+                    class="channel-group-table"
+                    empty-text="暂无渠道"
+                    @selection-change="(selection) => handleGroupedSelectionChange(baseGroup.channels, selection)"
+                  >
+                    <el-table-column type="selection" width="44" />
+                    <el-table-column prop="name" label="名称" min-width="150" show-overflow-tooltip />
+                    <el-table-column prop="type" label="服务类型" width="110">
+                      <template #default="{ row }">
+                        <el-tag size="small">{{ row.type }}</el-tag>
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="模型" width="80">
+                      <template #default="{ row }">{{ normalizeModels(row.models).length }}</template>
+                    </el-table-column>
+                    <el-table-column prop="priority" label="优先级" width="80" />
+                    <el-table-column label="容量" width="90">
+                      <template #default="{ row }">{{ formatCapacityStatus(row) }}</template>
+                    </el-table-column>
+                    <el-table-column label="健康" width="110">
+                      <template #default="{ row }">
+                        <el-tag size="small" :type="healthStatusTagType(row.health_status)">
+                          {{ formatHealthStatus(row.health_status) }}
+                        </el-tag>
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="状态" width="100">
+                      <template #default="{ row }">
+                        <el-switch
+                          :model-value="row.enabled !== false"
+                          :loading="isChannelToggleSaving(row, channelIndexById(row.id))"
+                          :disabled="configLoading"
+                          :width="56"
+                          inline-prompt
+                          active-text="启用"
+                          inactive-text="停用"
+                          @change="toggleChannelEnabled(row, channelIndexById(row.id), $event)"
+                        />
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="操作" width="220" min-width="220" align="center">
+                      <template #default="{ row }">
+                        <div class="channel-action-buttons">
+                          <el-button size="small" :icon="Edit" class="action-btn" @click="openChannelDrawer(row, channelIndexById(row.id))">
+                            编辑
+                          </el-button>
+                          <el-popconfirm title="删除这个渠道？" @confirm="deleteChannelById(row.id)">
+                            <template #reference>
+                              <el-button size="small" type="danger" :icon="Delete" class="action-btn">
+                                删除
+                              </el-button>
+                            </template>
+                          </el-popconfirm>
+                          <el-dropdown trigger="click">
+                            <el-button size="small" :icon="MoreFilled" class="action-btn">
+                              更多
+                            </el-button>
+                            <template #dropdown>
+                              <el-dropdown-menu>
+                                <el-dropdown-item @click="openChannelTest(row)">
+                                  <el-icon><Connection /></el-icon>测试连接
+                                </el-dropdown-item>
+                                <el-dropdown-item @click="openChannelPricing(row)">
+                                  <el-icon><Edit /></el-icon>定价管理
+                                </el-dropdown-item>
+                                <el-dropdown-item @click="copyChannel(row)">
+                                  <el-icon><DocumentCopy /></el-icon>复制
+                                </el-dropdown-item>
+                                <el-dropdown-item
+                                  :disabled="!canResetChannelHealth(row) || resetChannelHealthLoadingId === row.id"
+                                  @click="confirmResetChannelHealth(row)"
+                                >
+                                  <el-icon><Refresh /></el-icon>重置可用状态
+                                </el-dropdown-item>
+                              </el-dropdown-menu>
+                            </template>
+                          </el-dropdown>
+                        </div>
+                      </template>
+                    </el-table-column>
+                  </el-table>
+                </div>
+              </section>
+            </template>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
     </div>
 
     <!-- 渠道编辑 Drawer -->
@@ -175,6 +325,11 @@
           <el-col :span="12">
             <el-form-item label="名称">
               <el-input v-model="channelDraft.name" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="分组">
+              <el-input v-model="channelDraft.group_name" placeholder="未分组" />
             </el-form-item>
           </el-col>
           <el-col :span="12">
@@ -634,6 +789,99 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="bulkEditVisible" title="批量编辑渠道" width="640px">
+      <el-alert
+        class="bulk-edit-alert"
+        type="info"
+        :title="`将修改 ${selectedChannels.length} 个渠道`"
+        show-icon
+        :closable="false"
+      />
+      <div class="bulk-edit-grid">
+        <div class="bulk-edit-row">
+          <el-checkbox v-model="bulkEditFields.group_name">分组</el-checkbox>
+          <el-input
+            v-model="bulkEditDraft.group_name"
+            :disabled="!bulkEditFields.group_name"
+            placeholder="未分组"
+          />
+        </div>
+        <div class="bulk-edit-row">
+          <el-checkbox v-model="bulkEditFields.enabled">启用状态</el-checkbox>
+          <el-switch
+            v-model="bulkEditDraft.enabled"
+            :disabled="!bulkEditFields.enabled"
+            inline-prompt
+            active-text="启用"
+            inactive-text="停用"
+            :width="56"
+          />
+        </div>
+        <div class="bulk-edit-row">
+          <el-checkbox v-model="bulkEditFields.priority">优先级</el-checkbox>
+          <el-input-number
+            v-model="bulkEditDraft.priority"
+            :disabled="!bulkEditFields.priority"
+            :min="0"
+            :step="1"
+            step-strictly
+            class="full-width"
+          />
+        </div>
+        <div class="bulk-edit-row">
+          <el-checkbox v-model="bulkEditFields.capacity">容量</el-checkbox>
+          <el-input-number
+            v-model="bulkEditDraft.capacity"
+            :disabled="!bulkEditFields.capacity"
+            :min="1"
+            :step="1"
+            step-strictly
+            class="full-width"
+          />
+        </div>
+        <div class="bulk-edit-row">
+          <el-checkbox v-model="bulkEditFields.timeout_seconds">超时秒数</el-checkbox>
+          <el-input-number
+            v-model="bulkEditDraft.timeout_seconds"
+            :disabled="!bulkEditFields.timeout_seconds"
+            :min="1"
+            :step="1"
+            step-strictly
+            class="full-width"
+          />
+        </div>
+        <div class="bulk-edit-row">
+          <el-checkbox v-model="bulkEditFields.retry_count">重试次数</el-checkbox>
+          <el-input-number
+            v-model="bulkEditDraft.retry_count"
+            :disabled="!bulkEditFields.retry_count"
+            :min="0"
+            :step="1"
+            step-strictly
+            class="full-width"
+          />
+        </div>
+        <div class="bulk-edit-row">
+          <el-checkbox v-model="bulkEditFields.circuit_break_duration_seconds">熔断时间</el-checkbox>
+          <el-input-number
+            v-model="bulkEditDraft.circuit_break_duration_seconds"
+            :disabled="!bulkEditFields.circuit_break_duration_seconds"
+            :min="0"
+            :step="1"
+            step-strictly
+            class="full-width"
+          />
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="drawer-footer">
+          <el-button @click="bulkEditVisible = false">取消</el-button>
+          <el-button type="primary" :loading="bulkEditSaving" @click="applyBulkChannelEdit">应用修改</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
     <!-- 批量测试 Dialog -->
     <el-dialog
       v-model="bulkTestVisible"
@@ -910,6 +1158,11 @@ const channelPricingDraft = reactive(emptyChannelPricingDraft());
 const config = reactive({ channels: [] });
 const channelTableRef = ref(null);
 const selectedChannels = ref([]);
+const channelView = ref("raw");
+const bulkEditVisible = ref(false);
+const bulkEditSaving = ref(false);
+const bulkEditFields = reactive(defaultBulkEditFields());
+const bulkEditDraft = reactive(defaultBulkEditDraft());
 const bulkTestVisible = ref(false);
 const bulkTestRunning = ref(false);
 const bulkTestCancelRequested = ref(false);
@@ -925,6 +1178,7 @@ const bulkTestAbortControllers = new Set();
 
 const channels = computed(() => config.channels || []);
 const enabledChannelCount = computed(() => channels.value.filter((c) => c.enabled !== false).length);
+const groupedChannelSections = computed(() => buildGroupedChannelSections(channels.value));
 const channelTestModelOptions = computed(() => normalizeModels(testingChannel.value?.models).map((item) => item.model));
 const existingDiscoveredModelNames = computed(() => {
   const names = new Set();
@@ -1083,6 +1337,61 @@ function openChannelTest(channel) {
 
 function handleChannelSelectionChange(selection) {
   selectedChannels.value = Array.isArray(selection) ? selection : [];
+}
+
+async function handleChannelViewChange() {
+  selectedChannels.value = [];
+  await nextTick();
+  channelTableRef.value?.clearSelection();
+}
+
+function handleGroupedSelectionChange(groupRows, selection) {
+  const groupIds = new Set((groupRows || []).map((row) => row.id));
+  const selectedInGroup = Array.isArray(selection) ? selection : [];
+  selectedChannels.value = [
+    ...selectedChannels.value.filter((row) => !groupIds.has(row.id)),
+    ...selectedInGroup
+  ];
+}
+
+function openBulkChannelEdit() {
+  if (selectedChannels.value.length === 0) {
+    ElMessage.warning("请先选择渠道");
+    return;
+  }
+
+  resetBulkEditState();
+  bulkEditVisible.value = true;
+}
+
+async function applyBulkChannelEdit() {
+  bulkEditSaving.value = true;
+  try {
+    const patch = buildBulkChannelPatch();
+    const channelIds = uniqueStringList(selectedChannels.value.map((channel) => channel.id))
+      .filter(Boolean);
+    if (channelIds.length === 0) {
+      throw new Error("请选择有效渠道");
+    }
+
+    const data = await props.api("/channels/batch", {
+      method: "PATCH",
+      body: JSON.stringify({
+        channel_ids: channelIds,
+        patch
+      })
+    });
+    config.channels = Array.isArray(data?.channels) ? data.channels : config.channels;
+    selectedChannels.value = [];
+    await nextTick();
+    channelTableRef.value?.clearSelection();
+    bulkEditVisible.value = false;
+    ElMessage.success(`已更新 ${channelIds.length} 个渠道`);
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    bulkEditSaving.value = false;
+  }
 }
 
 function openBulkChannelTest() {
@@ -1266,6 +1575,15 @@ async function deleteChannel(index) {
   ElMessage.success("渠道已删除");
 }
 
+async function deleteChannelById(channelId) {
+  const index = channelIndexById(channelId);
+  if (index < 0) {
+    throw new Error("渠道 id 不存在");
+  }
+
+  await deleteChannel(index);
+}
+
 async function toggleChannelEnabled(channel, index, enabled) {
   const key = channelToggleKey(channel, index);
   if (channelToggleSavingKeys.has(key)) {
@@ -1276,7 +1594,7 @@ async function toggleChannelEnabled(channel, index, enabled) {
   const nextEnabled = enabled === true;
   const previousChannels = channels.value;
   const nextChannels = previousChannels.map((item, itemIndex) =>
-    itemIndex === index ? { ...item, enabled: nextEnabled } : item
+    itemIndex === index || (channel?.id && item.id === channel.id) ? { ...item, enabled: nextEnabled } : item
   );
 
   config.channels = nextChannels;
@@ -1299,6 +1617,9 @@ function channelToggleKey(channel, index) {
   return channel?.id || `index:${index}`;
 }
 
+function channelIndexById(channelId) {
+  return channels.value.findIndex((channel) => channel.id === channelId);
+}
 
 function copyChannel(channel) {
   const newId = `${channel.id || 'channel'}-copy-${Date.now()}`;
@@ -1801,6 +2122,202 @@ function parseSseChunk(chunk) {
   }
 }
 
+function buildGroupedChannelSections(sourceChannels) {
+  const sections = new Map();
+  for (const channel of sourceChannels || []) {
+    const groupName = normalizeGroupNameText(channel.group_name);
+    const groupKey = groupName || "__ungrouped";
+    const baseurl = normalizeBaseUrlText(channel.baseurl);
+    const baseKey = baseurl || "__empty_baseurl";
+
+    if (!sections.has(groupKey)) {
+      sections.set(groupKey, {
+        key: groupKey,
+        label: groupName || "未分组",
+        baseMap: new Map()
+      });
+    }
+
+    const section = sections.get(groupKey);
+    if (!section.baseMap.has(baseKey)) {
+      section.baseMap.set(baseKey, {
+        key: `${groupKey}:${baseKey}`,
+        baseurl,
+        channels: []
+      });
+    }
+
+    section.baseMap.get(baseKey).channels.push(channel);
+  }
+
+  return Array.from(sections.values())
+    .map((section) => {
+      const baseUrlGroups = Array.from(section.baseMap.values())
+        .map((group) => {
+          const groupChannels = [...group.channels].sort(compareChannelsInGroup);
+          return {
+            ...group,
+            channels: groupChannels,
+            types: uniqueStringList(groupChannels.map((channel) => channel.type)).sort(compareChannelType),
+            keyVariants: countDistinctNonEmpty(groupChannels.map((channel) => channel.apikey)),
+            modelCount: groupChannels.reduce((sum, channel) => sum + normalizeModels(channel.models).length, 0),
+            enabledCount: groupChannels.filter((channel) => channel.enabled !== false).length
+          };
+        })
+        .sort((left, right) =>
+          right.channels.length - left.channels.length
+          || left.baseurl.localeCompare(right.baseurl)
+        );
+
+      const channelCount = baseUrlGroups.reduce((sum, group) => sum + group.channels.length, 0);
+      const enabledCount = baseUrlGroups.reduce((sum, group) => sum + group.enabledCount, 0);
+      return {
+        key: section.key,
+        label: section.label,
+        baseUrlGroups,
+        channelCount,
+        enabledCount
+      };
+    })
+    .sort(compareGroupedSections);
+}
+
+function compareGroupedSections(left, right) {
+  if (left.key === "__ungrouped" && right.key !== "__ungrouped") return 1;
+  if (right.key === "__ungrouped" && left.key !== "__ungrouped") return -1;
+  return left.label.localeCompare(right.label);
+}
+
+function compareChannelsInGroup(left, right) {
+  const enabledOrder = Number(right.enabled !== false) - Number(left.enabled !== false);
+  if (enabledOrder !== 0) return enabledOrder;
+  const priorityOrder = normalizePriorityValue(left.priority) - normalizePriorityValue(right.priority);
+  if (priorityOrder !== 0) return priorityOrder;
+  return String(left.name || "").localeCompare(String(right.name || ""));
+}
+
+function compareChannelType(left, right) {
+  const order = { responses: 0, messages: 1, chat: 2 };
+  return (order[left] ?? 99) - (order[right] ?? 99) || String(left).localeCompare(String(right));
+}
+
+function countDistinctNonEmpty(values) {
+  const items = new Set();
+  for (const value of values || []) {
+    const text = String(value || "").trim();
+    if (text) {
+      items.add(text);
+    }
+  }
+  return items.size;
+}
+
+function normalizeGroupNameText(value) {
+  return String(value || "").trim();
+}
+
+function normalizeBaseUrlText(value) {
+  return String(value || "").trim();
+}
+
+function defaultBulkEditFields() {
+  return {
+    group_name: false,
+    enabled: false,
+    priority: false,
+    capacity: false,
+    timeout_seconds: false,
+    retry_count: false,
+    circuit_break_duration_seconds: false
+  };
+}
+
+function defaultBulkEditDraft() {
+  return {
+    group_name: "",
+    enabled: true,
+    priority: 0,
+    capacity: 3,
+    timeout_seconds: 120,
+    retry_count: 3,
+    circuit_break_duration_seconds: 0
+  };
+}
+
+function resetBulkEditState() {
+  Object.assign(bulkEditFields, defaultBulkEditFields());
+  Object.assign(bulkEditDraft, {
+    group_name: commonSelectedValue((channel) => normalizeGroupNameText(channel.group_name), ""),
+    enabled: commonSelectedValue((channel) => channel.enabled !== false, true),
+    priority: commonSelectedValue((channel) => normalizePriorityValue(channel.priority), 0),
+    capacity: commonSelectedValue((channel) => normalizeCapacityValue(channel.capacity) || 3, 3),
+    timeout_seconds: commonSelectedValue((channel) => Number(channel.timeout_seconds || 120), 120),
+    retry_count: commonSelectedValue((channel) => Number(channel.retry_count ?? 3), 3),
+    circuit_break_duration_seconds: commonSelectedValue(
+      (channel) => Number(channel.circuit_break_duration_seconds ?? 0),
+      0
+    )
+  });
+}
+
+function commonSelectedValue(readValue, fallback) {
+  const rows = selectedChannels.value;
+  if (rows.length === 0) {
+    return fallback;
+  }
+
+  const first = readValue(rows[0]);
+  return rows.every((row) => Object.is(readValue(row), first)) ? first : fallback;
+}
+
+function buildBulkChannelPatch() {
+  const patch = {};
+  if (bulkEditFields.group_name) {
+    patch.group_name = normalizeGroupNameText(bulkEditDraft.group_name);
+  }
+  if (bulkEditFields.enabled) {
+    patch.enabled = bulkEditDraft.enabled === true;
+  }
+  addBulkIntegerPatch(patch, bulkEditFields.priority, "priority", bulkEditDraft.priority, "优先级", 0);
+  addBulkIntegerPatch(patch, bulkEditFields.capacity, "capacity", bulkEditDraft.capacity, "容量", 1);
+  addBulkIntegerPatch(
+    patch,
+    bulkEditFields.timeout_seconds,
+    "timeout_seconds",
+    bulkEditDraft.timeout_seconds,
+    "超时秒数",
+    1
+  );
+  addBulkIntegerPatch(patch, bulkEditFields.retry_count, "retry_count", bulkEditDraft.retry_count, "重试次数", 0);
+  addBulkIntegerPatch(
+    patch,
+    bulkEditFields.circuit_break_duration_seconds,
+    "circuit_break_duration_seconds",
+    bulkEditDraft.circuit_break_duration_seconds,
+    "熔断时间",
+    0
+  );
+
+  if (Object.keys(patch).length === 0) {
+    throw new Error("请选择要修改的字段");
+  }
+
+  return patch;
+}
+
+function addBulkIntegerPatch(patch, enabled, key, value, label, min) {
+  if (!enabled) {
+    return;
+  }
+
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < min) {
+    throw new Error(`${label}必须是大于等于 ${min} 的整数`);
+  }
+
+  patch[key] = number;
+}
+
 // --- Channel helpers ---
 
 function defaultChannel(priority = 0) {
@@ -1808,6 +2325,7 @@ function defaultChannel(priority = 0) {
     owner_username: "",
     id: "",
     name: "",
+    group_name: "",
     type: "chat",
     baseurl: "",
     apikey: "",
@@ -1866,6 +2384,7 @@ function buildChannelFromDraft() {
     owner_username: channelDraft.owner_username || undefined,
     id,
     name: channelDraft.name.trim(),
+    group_name: normalizeGroupNameText(channelDraft.group_name),
     type: channelDraft.type,
     baseurl: channelDraft.baseurl.trim(),
     apikey: channelDraft.apikey,
@@ -2181,11 +2700,168 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.channel-view-tabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.channel-view-tabs :deep(.el-tabs__content) {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.channel-view-tabs :deep(.el-tab-pane) {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.channel-raw-table {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+
+.channel-grouped-view {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 2px 2px 12px;
+}
+
+.channel-group-section + .channel-group-section {
+  margin-top: 14px;
+}
+
+.channel-group-header,
+.base-url-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.channel-group-header {
+  min-height: 40px;
+  padding: 0 2px 8px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.channel-group-title,
+.base-url-types,
+.base-url-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.channel-group-title {
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.channel-group-meta,
+.base-url-stats {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.base-url-section {
+  padding: 10px 0 12px;
+  border-bottom: 1px solid var(--el-border-color-extra-light);
+}
+
+.base-url-header {
+  margin-bottom: 8px;
+  padding: 0 2px;
+}
+
+.base-url-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.base-url-main strong {
+  min-width: 0;
+  max-width: min(680px, 58vw);
+  overflow: hidden;
+  color: var(--el-text-color-primary);
+  font-size: 13px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-group-table {
+  width: 100%;
+}
+
+.bulk-edit-alert {
+  margin-bottom: 14px;
+}
+
+.bulk-edit-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+
+.bulk-edit-row {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.bulk-edit-row :deep(.el-checkbox) {
+  margin-right: 0;
+  min-width: 0;
+}
+
 .pricing-rule-table {
   margin-top: 8px;
 }
 
 .advanced-collapse {
   margin-top: 12px;
+}
+
+@media (max-width: 900px) {
+  .channel-view-tabs,
+  .channel-view-tabs :deep(.el-tabs__content),
+  .channel-view-tabs :deep(.el-tab-pane),
+  .channel-raw-table,
+  .channel-grouped-view {
+    flex: none;
+    min-height: 0;
+  }
+
+  .channel-grouped-view {
+    overflow: visible;
+  }
+
+  .channel-group-header,
+  .base-url-header,
+  .base-url-main {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .base-url-main strong {
+    max-width: 100%;
+  }
+
+  .bulk-edit-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

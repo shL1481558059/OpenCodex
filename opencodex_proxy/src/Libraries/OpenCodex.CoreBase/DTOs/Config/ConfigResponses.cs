@@ -52,6 +52,7 @@ public sealed class ChannelResponse
     /// <param name="ownerUsername">拥有该通道的用户名。</param>
     /// <param name="id">通道标识符。</param>
     /// <param name="name">通道显示名称。</param>
+    /// <param name="groupName">通道分组名称。</param>
     /// <param name="type">上游提供方类型。</param>
     /// <param name="baseUrl">上游基础 URL。</param>
     /// <param name="apiKey">上游 API 密钥。</param>
@@ -71,6 +72,7 @@ public sealed class ChannelResponse
         string ownerUsername,
         Guid id,
         string name,
+        string groupName,
         string type,
         string baseUrl,
         string apiKey,
@@ -90,6 +92,7 @@ public sealed class ChannelResponse
         OwnerUsername = ownerUsername;
         Id = id;
         Name = name;
+        GroupName = groupName;
         Type = type;
         BaseUrl = baseUrl;
         ApiKey = apiKey;
@@ -124,6 +127,12 @@ public sealed class ChannelResponse
     /// </summary>
     [JsonPropertyName("name")]
     public string Name { get; }
+
+    /// <summary>
+    /// 获取通道分组名称。
+    /// </summary>
+    [JsonPropertyName("group_name")]
+    public string GroupName { get; }
 
     /// <summary>
     /// 获取上游提供方类型。
@@ -227,6 +236,7 @@ public sealed class ChannelResponse
             channel.OwnerUsername,
             channel.Id,
             channel.Name,
+            channel.GroupName,
             channel.Type,
             channel.BaseUrl,
             channel.ApiKey,

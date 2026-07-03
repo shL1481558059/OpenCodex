@@ -106,6 +106,10 @@ namespace OpenCodex.Data.Migrations.PostgresMigrations
                     b.Property<bool>("Enabled")
                         .HasColumnType("boolean");
 
+                    b.Property<string>("GroupName")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<string>("HeadersJson")
                         .IsRequired()
                         .HasColumnType("text");

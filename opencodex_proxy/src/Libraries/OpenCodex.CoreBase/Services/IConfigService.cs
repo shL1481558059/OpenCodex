@@ -27,6 +27,12 @@ public interface IConfigService
     ApiOpResult<ConfigResponse> UpdateChannel(Guid channelId, ChannelRequest request);
 
     /// <summary>
+    /// 批量更新通道的低风险字段。
+    /// </summary>
+    /// <param name="request">批量更新请求。</param>
+    ApiOpResult<ConfigResponse> BatchUpdateChannels(ChannelBatchUpdateRequest request);
+
+    /// <summary>
     /// 删除单个渠道。
     /// </summary>
     /// <param name="channelId">渠道标识符。</param>

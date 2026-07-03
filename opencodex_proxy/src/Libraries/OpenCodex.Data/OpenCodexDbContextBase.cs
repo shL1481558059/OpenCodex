@@ -71,6 +71,7 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         entity.HasKey(channel => channel.Id);
         entity.Property(channel => channel.Id).ValueGeneratedOnAdd();
         entity.Property(channel => channel.Name).IsRequired();
+        entity.Property(channel => channel.GroupName).IsRequired();
         entity.Property(channel => channel.Type).IsRequired();
         entity.Property(channel => channel.BaseUrl).IsRequired();
         entity.Property(channel => channel.ApiKey).IsRequired();

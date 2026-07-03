@@ -28,6 +28,7 @@ public static class OpenCodexMappingConfig
                 string.Empty,
                 source.Position,
                 source.Name,
+                source.GroupName,
                 source.Type,
                 source.BaseUrl,
                 source.ApiKey,

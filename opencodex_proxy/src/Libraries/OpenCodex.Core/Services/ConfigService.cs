@@ -81,6 +81,18 @@ public sealed class ConfigService : IConfigService
             : ApiOpResult<ConfigResponse>.Fail(saved.Code, saved.Description);
     }
 
+    public ApiOpResult<ConfigResponse> BatchUpdateChannels(ChannelBatchUpdateRequest request)
+    {
+        var (currentUsername, isSuperadmin) = CurrentScope();
+        var updated = PatchChannels(request, currentUsername, isSuperadmin);
+        return updated.Succeeded
+            ? ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
+                ReadChannels(currentUsername, isSuperadmin),
+                ResolveActiveRequests,
+                ResolveHealthStatus))
+            : ApiOpResult<ConfigResponse>.Fail(updated.Code, updated.Description);
+    }
+
     public ApiOpResult<ConfigResponse> DeleteChannel(Guid channelId)
     {
         if (channelId == Guid.Empty)
@@ -223,6 +235,7 @@ public sealed class ConfigService : IConfigService
                 }
 
                 existing.Name = nextName;
+                existing.GroupName = GroupNameValue(validated, existing.GroupName);
                 existing.Type = JsonDictionaryValue.String(validated, "type");
                 existing.BaseUrl = JsonDictionaryValue.String(validated, "baseurl");
                 existing.ApiKey = JsonDictionaryValue.String(validated, "apikey");
@@ -288,6 +301,7 @@ public sealed class ConfigService : IConfigService
                 OwnerUserId = channelOwnerUser.Id,
                 Position = 15,
                 Name = channelName,
+                GroupName = GroupNameValue(validated),
                 Type = JsonDictionaryValue.String(validated, "type"),
                 BaseUrl = JsonDictionaryValue.String(validated, "baseurl"),
                 ApiKey = JsonDictionaryValue.String(validated, "apikey"),
@@ -325,6 +339,162 @@ public sealed class ConfigService : IConfigService
         {
             return ValidationFailure(exception.Message);
         }
+    }
+
+    private ApiOpResult PatchChannels(
+        ChannelBatchUpdateRequest request,
+        string currentUsername,
+        bool isSuperadmin)
+    {
+        if (request is null)
+        {
+            return ApiOpResult.Fail(400, "request body is required");
+        }
+
+        var ids = (request.ChannelIds ?? [])
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+        {
+            return ApiOpResult.Fail(400, "channel_ids is required");
+        }
+
+        var patch = request.Patch;
+        if (patch is null)
+        {
+            return ApiOpResult.Fail(400, "patch is required");
+        }
+
+        var changes = 0;
+        var groupName = string.Empty;
+        if (patch.GroupName is not null)
+        {
+            groupName = NormalizeGroupName(patch.GroupName);
+            changes++;
+        }
+
+        if (patch.Enabled.HasValue)
+        {
+            changes++;
+        }
+
+        if (patch.Priority.HasValue)
+        {
+            if (patch.Priority.Value < 0)
+            {
+                return ApiOpResult.Fail(400, "priority must be a non-negative integer");
+            }
+            changes++;
+        }
+
+        if (patch.Capacity.HasValue)
+        {
+            if (patch.Capacity.Value <= 0)
+            {
+                return ApiOpResult.Fail(400, "capacity must be a positive integer");
+            }
+            changes++;
+        }
+
+        if (patch.TimeoutSeconds.HasValue)
+        {
+            if (patch.TimeoutSeconds.Value <= 0)
+            {
+                return ApiOpResult.Fail(400, "timeout_seconds must be positive");
+            }
+            changes++;
+        }
+
+        if (patch.RetryCount.HasValue)
+        {
+            if (patch.RetryCount.Value < 0)
+            {
+                return ApiOpResult.Fail(400, "retry_count must be a non-negative integer");
+            }
+            changes++;
+        }
+
+        if (patch.CircuitBreakDurationSeconds.HasValue)
+        {
+            if (patch.CircuitBreakDurationSeconds.Value < 0)
+            {
+                return ApiOpResult.Fail(400, "circuit_break_duration_seconds must be a non-negative integer");
+            }
+            changes++;
+        }
+
+        if (changes == 0)
+        {
+            return ApiOpResult.Fail(400, "patch must include at least one supported field");
+        }
+
+        var ownerUsername = OwnerScope(currentUsername, isSuperadmin);
+        var normalizedOwnerUsername = string.IsNullOrWhiteSpace(ownerUsername)
+            ? string.Empty
+            : ownerUsername.Trim();
+
+        var query = _channelRepository.Table.Where(channel => ids.Contains(channel.Id));
+        if (normalizedOwnerUsername.Length > 0)
+        {
+            var ownerUser = _userRepository.TableNoTracking.FirstOrDefault(user => user.Username == normalizedOwnerUsername);
+            if (ownerUser is null)
+            {
+                return ApiOpResult.Fail(404, "channel not found");
+            }
+
+            query = query.Where(channel => channel.OwnerUserId == ownerUser.Id);
+        }
+
+        var channels = query.ToList();
+        if (channels.Count != ids.Count)
+        {
+            return ApiOpResult.Fail(404, "one or more channels not found");
+        }
+
+        var now = UnixTimeSeconds();
+        foreach (var channel in channels)
+        {
+            if (patch.GroupName is not null)
+            {
+                channel.GroupName = groupName;
+            }
+
+            if (patch.Enabled.HasValue)
+            {
+                channel.Enabled = patch.Enabled.Value;
+            }
+
+            if (patch.Priority.HasValue)
+            {
+                channel.Priority = patch.Priority.Value;
+            }
+
+            if (patch.Capacity.HasValue)
+            {
+                channel.Capacity = patch.Capacity.Value;
+            }
+
+            if (patch.TimeoutSeconds.HasValue)
+            {
+                channel.TimeoutSeconds = patch.TimeoutSeconds.Value;
+            }
+
+            if (patch.RetryCount.HasValue)
+            {
+                channel.RetryCount = patch.RetryCount.Value;
+            }
+
+            if (patch.CircuitBreakDurationSeconds.HasValue)
+            {
+                channel.CircuitBreakDurationSeconds = patch.CircuitBreakDurationSeconds.Value;
+            }
+
+            channel.UpdatedAt = now;
+        }
+
+        _channelRepository.SaveChanges();
+        return ApiOpResult.Succeed();
     }
 
     private ApiOpResult MergeChannels(
@@ -425,6 +595,7 @@ public sealed class ConfigService : IConfigService
             if (existingByName.TryGetValue(matchKey, out var existing))
             {
                 existing.Type = JsonDictionaryValue.String(channel, "type");
+                existing.GroupName = GroupNameValue(channel, existing.GroupName);
                 existing.BaseUrl = JsonDictionaryValue.String(channel, "baseurl");
                 existing.ApiKey = JsonDictionaryValue.String(channel, "apikey");
                 existing.AuthMode = StringOrDefault(channel, "auth_mode", "config");
@@ -456,6 +627,7 @@ public sealed class ConfigService : IConfigService
                     OwnerUserId = channelOwnerUserId,
                     Position = nextPosition++,
                     Name = channelName,
+                    GroupName = GroupNameValue(channel),
                     Type = JsonDictionaryValue.String(channel, "type"),
                     BaseUrl = JsonDictionaryValue.String(channel, "baseurl"),
                     ApiKey = JsonDictionaryValue.String(channel, "apikey"),
@@ -579,6 +751,7 @@ public sealed class ConfigService : IConfigService
             ownerUsername,
             channel.Position,
             channel.Name,
+            channel.GroupName,
             channel.Type,
             channel.BaseUrl,
             channel.ApiKey,
@@ -661,6 +834,18 @@ public sealed class ConfigService : IConfigService
     private static string? OwnerScope(string currentUsername, bool isSuperadmin)
     {
         return isSuperadmin ? null : currentUsername;
+    }
+
+    private static string GroupNameValue(IReadOnlyDictionary<string, object?> channel, string fallback = "")
+    {
+        return channel.ContainsKey("group_name")
+            ? NormalizeGroupName(JsonDictionaryValue.String(channel, "group_name"))
+            : fallback;
+    }
+
+    private static string NormalizeGroupName(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
     }
 
     private static Dictionary<string, object?> WithEffectiveOwner(

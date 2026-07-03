@@ -9,6 +9,7 @@ public sealed class ChannelDto(
     string ownerUsername,
     int position,
     string name,
+    string groupName,
     string type,
     string baseUrl,
     string apiKey,
@@ -32,6 +33,8 @@ public sealed class ChannelDto(
     public int Position { get; } = position;
 
     public string Name { get; } = name;
+
+    public string GroupName { get; } = groupName;
 
     public string Type { get; } = type;
 

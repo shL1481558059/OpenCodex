@@ -87,7 +87,38 @@
                 :key="item.channel_id"
                 class="dashboard-queue__item"
               >
-                <span class="dashboard-queue__name">{{ item.channel_name }}</span>
+                <div class="dashboard-queue__content">
+                  <span class="dashboard-queue__name">{{ item.channel_name }}</span>
+                  <div v-if="item.models.length > 0" class="dashboard-queue__models">
+                    <div
+                      v-for="model in visibleQueueModels(item)"
+                      :key="queueModelKey(model)"
+                      class="dashboard-queue__model"
+                    >
+                      <span class="dashboard-queue__model-name">{{ formatModelPair(model) }}</span>
+                      <span class="dashboard-queue__model-count">{{ model.processing_count }}</span>
+                    </div>
+                    <div v-if="queueModelOverflowCount(item) > 0" class="dashboard-queue__model-more">
+                      <el-popover placement="right" :width="360" trigger="click">
+                        <template #reference>
+                          <el-button size="small" text class="dashboard-queue__model-more-button">
+                            +{{ queueModelOverflowCount(item) }} 个模型
+                          </el-button>
+                        </template>
+                        <div class="dashboard-queue-model-popover">
+                          <div
+                            v-for="model in hiddenQueueModels(item)"
+                            :key="`hidden-${queueModelKey(model)}`"
+                            class="dashboard-queue__model dashboard-queue__model--popover"
+                          >
+                            <span class="dashboard-queue__model-name">{{ formatModelPair(model) }}</span>
+                            <span class="dashboard-queue__model-count">{{ model.processing_count }}</span>
+                          </div>
+                        </div>
+                      </el-popover>
+                    </div>
+                  </div>
+                </div>
                 <span class="dashboard-queue__count">{{ item.processing_count }}</span>
               </div>
 
@@ -105,7 +136,38 @@
                       :key="`overflow-${item.channel_id}`"
                       class="dashboard-queue__item dashboard-queue__item--popover"
                     >
-                      <span class="dashboard-queue__name">{{ item.channel_name }}</span>
+                      <div class="dashboard-queue__content">
+                        <span class="dashboard-queue__name">{{ item.channel_name }}</span>
+                        <div v-if="item.models.length > 0" class="dashboard-queue__models">
+                          <div
+                            v-for="model in visibleQueueModels(item)"
+                            :key="queueModelKey(model)"
+                            class="dashboard-queue__model"
+                          >
+                            <span class="dashboard-queue__model-name">{{ formatModelPair(model) }}</span>
+                            <span class="dashboard-queue__model-count">{{ model.processing_count }}</span>
+                          </div>
+                          <div v-if="queueModelOverflowCount(item) > 0" class="dashboard-queue__model-more">
+                            <el-popover placement="right" :width="360" trigger="click">
+                              <template #reference>
+                                <el-button size="small" text class="dashboard-queue__model-more-button">
+                                  +{{ queueModelOverflowCount(item) }} 个模型
+                                </el-button>
+                              </template>
+                              <div class="dashboard-queue-model-popover">
+                                <div
+                                  v-for="model in hiddenQueueModels(item)"
+                                  :key="`hidden-overflow-${queueModelKey(model)}`"
+                                  class="dashboard-queue__model dashboard-queue__model--popover"
+                                >
+                                  <span class="dashboard-queue__model-name">{{ formatModelPair(model) }}</span>
+                                  <span class="dashboard-queue__model-count">{{ model.processing_count }}</span>
+                                </div>
+                              </div>
+                            </el-popover>
+                          </div>
+                        </div>
+                      </div>
                       <span class="dashboard-queue__count">{{ item.processing_count }}</span>
                     </div>
                   </div>
@@ -140,7 +202,7 @@
                 @click="openErrorDetail(item)"
               >
                 <div class="dashboard-errors__main">
-                  <span class="dashboard-errors__model">{{ item.model || 'unknown' }}</span>
+                  <span class="dashboard-errors__model">{{ formatModelPair(item) }}</span>
                   <span class="dashboard-errors__code" :class="errorStatusCodeClass(item.status_code)">{{ item.status_code || 'N/A' }}</span>
                 </div>
                 <div class="dashboard-errors__error">{{ item.error || '无错误信息' }}</div>
@@ -325,6 +387,7 @@ let errorsEventSource = null;
 let errorsStaleTimer = null;
 const QUEUE_STALE_TIMEOUT_MS = 5000;
 const ERRORS_STALE_TIMEOUT_MS = 15000;
+const QUEUE_VISIBLE_MODEL_LIMIT = 2;
 
 const autoRefreshLabel = computed(() =>
   autoRefreshSeconds.value ? `${autoRefreshSeconds.value} 秒刷新` : "自动刷新"
@@ -489,10 +552,44 @@ function applyQueuePayload(payload) {
     .map((item) => ({
       channel_id: String(item?.channel_id || "").trim(),
       channel_name: String(item?.channel_name || "").trim(),
-      processing_count: Number(item?.processing_count || 0)
+      processing_count: Number(item?.processing_count || 0),
+      models: normalizeQueueModels(item?.models)
     }))
     .filter((item) => item.channel_id.length > 0 && item.channel_name.length > 0 && item.processing_count > 0);
   queueLoading.value = false;
+}
+
+function normalizeQueueModels(models) {
+  const list = Array.isArray(models) ? models : [];
+  return list
+    .map((item) => ({
+      model: String(item?.model || "").trim(),
+      upstream_model: String(item?.upstream_model || "").trim(),
+      processing_count: Number(item?.processing_count || 0)
+    }))
+    .filter((item) => item.processing_count > 0);
+}
+
+function visibleQueueModels(item) {
+  return Array.isArray(item?.models) ? item.models.slice(0, QUEUE_VISIBLE_MODEL_LIMIT) : [];
+}
+
+function hiddenQueueModels(item) {
+  return Array.isArray(item?.models) ? item.models.slice(QUEUE_VISIBLE_MODEL_LIMIT) : [];
+}
+
+function queueModelOverflowCount(item) {
+  return Math.max(0, (Array.isArray(item?.models) ? item.models.length : 0) - QUEUE_VISIBLE_MODEL_LIMIT);
+}
+
+function queueModelKey(model) {
+  return `${model?.model || "-"}\n${model?.upstream_model || "-"}`;
+}
+
+function formatModelPair(item) {
+  const model = String(item?.model || "").trim() || "-";
+  const upstreamModel = String(item?.upstream_model || "").trim() || "-";
+  return `${model} / ${upstreamModel}`;
 }
 
 function resetQueueState(loadingState = false) {
@@ -566,6 +663,7 @@ function applyErrorsPayload(items) {
     id: String(item?.id || ""),
     created_at: Number(item?.created_at || 0),
     model: String(item?.model || "").trim(),
+    upstream_model: String(item?.upstream_model || "").trim(),
     channel_name: String(item?.channel_name || "").trim(),
     status_code: item?.status_code ?? null,
     error: String(item?.error || "").trim()
@@ -1280,10 +1378,10 @@ onBeforeUnmount(() => {
 .dashboard-queue__item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
+  align-items: start;
   gap: 12px;
   min-height: 44px;
-  padding: 0 12px;
+  padding: 10px 12px;
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 8px;
   background: #fbfcfe;
@@ -1291,6 +1389,13 @@ onBeforeUnmount(() => {
 
 .dashboard-queue__item--popover + .dashboard-queue__item--popover {
   margin-top: 8px;
+}
+
+.dashboard-queue__content {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
 }
 
 .dashboard-queue__name {
@@ -1301,6 +1406,66 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.dashboard-queue__models {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.dashboard-queue__model {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.dashboard-queue__model-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-queue__model-count {
+  color: var(--el-color-primary);
+  font-weight: 600;
+}
+
+.dashboard-queue__model-more {
+  color: var(--el-text-color-placeholder);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.dashboard-queue__model-more-button {
+  height: auto;
+  min-height: 0;
+  padding: 0;
+  color: var(--el-text-color-placeholder);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.dashboard-queue-model-popover {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.dashboard-queue__model--popover {
+  padding: 6px 8px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  background: #fbfcfe;
 }
 
 .dashboard-queue__count {
@@ -1373,6 +1538,7 @@ onBeforeUnmount(() => {
 }
 
 .dashboard-errors__model {
+  flex: 1;
   min-width: 0;
   color: var(--el-text-color-primary);
   font-size: 13px;
