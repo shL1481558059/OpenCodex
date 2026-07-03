@@ -53,6 +53,12 @@ public sealed class ChannelRequest
     public string? Name { get; set; }
 
     /// <summary>
+    /// 获取或设置通道分组名称。
+    /// </summary>
+    [JsonPropertyName("group_name")]
+    public string? GroupName { get; set; }
+
+    /// <summary>
     /// 获取或设置上游提供方类型。
     /// </summary>
     [JsonPropertyName("type")]
@@ -147,6 +153,7 @@ public sealed class ChannelRequest
 
         Add(channel, "id", Id);
         Add(channel, "name", Name);
+        Add(channel, "group_name", GroupName);
         Add(channel, "type", Type);
         Add(channel, "baseurl", BaseUrl);
         Add(channel, "apikey", ApiKey);
@@ -206,6 +213,51 @@ public sealed class ChannelRequest
             channel[key] = value;
         }
     }
+}
+
+/// <summary>
+/// 表示批量更新通道请求。
+/// </summary>
+public sealed class ChannelBatchUpdateRequest
+{
+    /// <summary>
+    /// 获取或设置要更新的通道标识符列表。
+    /// </summary>
+    [JsonPropertyName("channel_ids")]
+    public List<Guid> ChannelIds { get; set; } = [];
+
+    /// <summary>
+    /// 获取或设置批量更新的字段补丁。
+    /// </summary>
+    [JsonPropertyName("patch")]
+    public ChannelBatchUpdatePatch? Patch { get; set; }
+}
+
+/// <summary>
+/// 表示批量更新通道时允许修改的低风险字段。
+/// </summary>
+public sealed class ChannelBatchUpdatePatch
+{
+    [JsonPropertyName("group_name")]
+    public string? GroupName { get; set; }
+
+    [JsonPropertyName("enabled")]
+    public bool? Enabled { get; set; }
+
+    [JsonPropertyName("priority")]
+    public int? Priority { get; set; }
+
+    [JsonPropertyName("capacity")]
+    public int? Capacity { get; set; }
+
+    [JsonPropertyName("timeout_seconds")]
+    public int? TimeoutSeconds { get; set; }
+
+    [JsonPropertyName("retry_count")]
+    public int? RetryCount { get; set; }
+
+    [JsonPropertyName("circuit_break_duration_seconds")]
+    public int? CircuitBreakDurationSeconds { get; set; }
 }
 
 /// <summary>

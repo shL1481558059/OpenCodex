@@ -101,6 +101,10 @@ namespace OpenCodex.Data.Migrations.SqliteMigrations
                     b.Property<bool>("Enabled")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("GroupName")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("HeadersJson")
                         .IsRequired()
                         .HasColumnType("TEXT");

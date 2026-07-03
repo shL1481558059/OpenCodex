@@ -343,6 +343,160 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
+    public async Task UpdateChannel_PreservesExistingGroupWhenRequestOmitsGroupName()
+    {
+        using var factory = new OpenCodexApiFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = false
+        });
+        var cookie = await LoginAndReadSessionCookie(client, "admin", OpenCodexApiFactory.AdminPassword);
+        var channelId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+
+        var create = await CreateChannelAsync(client, cookie, new
+        {
+            id = channelId,
+            name = "Grouped",
+            group_name = "Primary",
+            type = "chat",
+            baseurl = "https://example.test/v1",
+            apikey = "secret",
+            auth_mode = "config",
+            timeout_seconds = 30,
+            retry_count = 0,
+            priority = 2,
+            capacity = 3,
+            enabled = true,
+            models = new[]
+            {
+                new { model = "grouped-model", upstream_model = "grouped-upstream" }
+            }
+        });
+        Assert.Equal(HttpStatusCode.OK, create.StatusCode);
+
+        var update = await SendJsonWithCookie(
+            client,
+            HttpMethod.Put,
+            $"/channels/{channelId}",
+            cookie,
+            new
+            {
+                id = channelId,
+                name = "Grouped Updated",
+                type = "chat",
+                baseurl = "https://example.test/v1",
+                apikey = "secret",
+                auth_mode = "config",
+                timeout_seconds = 45,
+                retry_count = 1,
+                priority = 3,
+                capacity = 4,
+                enabled = true,
+                models = new[]
+                {
+                    new { model = "grouped-model", upstream_model = "grouped-upstream" }
+                }
+            });
+        Assert.Equal(HttpStatusCode.OK, update.StatusCode);
+
+        using var document = await JsonDocument.ParseAsync(await update.Content.ReadAsStreamAsync());
+        var channel = document.RootElement.GetProperty("Data").GetProperty("channels")[0];
+        Assert.Equal("Grouped Updated", channel.GetProperty("name").GetString());
+        Assert.Equal("Primary", channel.GetProperty("group_name").GetString());
+    }
+
+    [Fact]
+    public async Task BatchUpdateChannels_PatchesOnlySelectedChannels()
+    {
+        using var factory = new OpenCodexApiFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = false
+        });
+        var cookie = await LoginAndReadSessionCookie(client, "admin", OpenCodexApiFactory.AdminPassword);
+        var firstId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var secondId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+
+        var firstCreate = await CreateChannelAsync(client, cookie, new
+        {
+            id = firstId,
+            name = "Batch First",
+            type = "chat",
+            baseurl = "https://example.test/v1",
+            apikey = "secret",
+            auth_mode = "config",
+            timeout_seconds = 30,
+            retry_count = 0,
+            priority = 2,
+            capacity = 3,
+            enabled = true,
+            models = new[] { new { model = "first-model", upstream_model = "first-upstream" } }
+        });
+        Assert.Equal(HttpStatusCode.OK, firstCreate.StatusCode);
+
+        var secondCreate = await CreateChannelAsync(client, cookie, new
+        {
+            id = secondId,
+            name = "Batch Second",
+            group_name = "Unchanged",
+            type = "responses",
+            baseurl = "https://example.test/v2",
+            apikey = "secret-2",
+            auth_mode = "config",
+            timeout_seconds = 60,
+            retry_count = 2,
+            priority = 4,
+            capacity = 5,
+            enabled = true,
+            models = new[] { new { model = "second-model", upstream_model = "second-upstream" } }
+        });
+        Assert.Equal(HttpStatusCode.OK, secondCreate.StatusCode);
+
+        var batch = await SendJsonWithCookie(
+            client,
+            HttpMethod.Patch,
+            "/channels/batch",
+            cookie,
+            new
+            {
+                channel_ids = new[] { firstId },
+                patch = new
+                {
+                    group_name = "Base URL A",
+                    enabled = false,
+                    priority = 9,
+                    capacity = 6,
+                    timeout_seconds = 90,
+                    retry_count = 1,
+                    circuit_break_duration_seconds = 30
+                }
+            });
+        Assert.Equal(HttpStatusCode.OK, batch.StatusCode);
+
+        using var document = await JsonDocument.ParseAsync(await batch.Content.ReadAsStreamAsync());
+        var channels = document.RootElement.GetProperty("Data").GetProperty("channels").EnumerateArray().ToList();
+        var first = channels.Single(item => item.GetProperty("id").GetString() == firstId.ToString());
+        var second = channels.Single(item => item.GetProperty("id").GetString() == secondId.ToString());
+
+        Assert.Equal("Base URL A", first.GetProperty("group_name").GetString());
+        Assert.False(first.GetProperty("enabled").GetBoolean());
+        Assert.Equal(9, first.GetProperty("priority").GetInt32());
+        Assert.Equal(6, first.GetProperty("capacity").GetInt32());
+        Assert.Equal(90, first.GetProperty("timeout_seconds").GetInt32());
+        Assert.Equal(1, first.GetProperty("retry_count").GetInt32());
+        Assert.Equal(30, first.GetProperty("circuit_break_duration_seconds").GetInt32());
+
+        Assert.Equal("Unchanged", second.GetProperty("group_name").GetString());
+        Assert.True(second.GetProperty("enabled").GetBoolean());
+        Assert.Equal(4, second.GetProperty("priority").GetInt32());
+        Assert.Equal(5, second.GetProperty("capacity").GetInt32());
+        Assert.Equal(60, second.GetProperty("timeout_seconds").GetInt32());
+        Assert.Equal(2, second.GetProperty("retry_count").GetInt32());
+    }
+
+    [Fact]
     public async Task CreateChannel_RejectsDuplicateNameForSameOwner()
     {
         using var factory = new OpenCodexApiFactory();

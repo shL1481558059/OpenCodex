@@ -1047,11 +1047,13 @@ public sealed class ActiveChannelQueueItemResponse
     public ActiveChannelQueueItemResponse(
         string channelId,
         string channelName,
-        int processingCount)
+        int processingCount,
+        IReadOnlyList<ActiveChannelQueueModelResponse> models)
     {
         ChannelId = channelId;
         ChannelName = channelName;
         ProcessingCount = processingCount;
+        Models = models;
     }
 
     [JsonPropertyName("channel_id")]
@@ -1063,11 +1065,48 @@ public sealed class ActiveChannelQueueItemResponse
     [JsonPropertyName("processing_count")]
     public int ProcessingCount { get; }
 
+    [JsonPropertyName("models")]
+    public IReadOnlyList<ActiveChannelQueueModelResponse> Models { get; }
+
     public static ActiveChannelQueueItemResponse From(ActiveChannelQueueItemDto item)
     {
         return new ActiveChannelQueueItemResponse(
             item.ChannelId,
             item.ChannelName,
+            item.ProcessingCount,
+            item.Models.Select(ActiveChannelQueueModelResponse.From).ToList());
+    }
+}
+
+/// <summary>
+/// 表示仪表盘请求队列中的单个模型对项。
+/// </summary>
+public sealed class ActiveChannelQueueModelResponse
+{
+    public ActiveChannelQueueModelResponse(
+        string? model,
+        string? upstreamModel,
+        int processingCount)
+    {
+        Model = model;
+        UpstreamModel = upstreamModel;
+        ProcessingCount = processingCount;
+    }
+
+    [JsonPropertyName("model")]
+    public string? Model { get; }
+
+    [JsonPropertyName("upstream_model")]
+    public string? UpstreamModel { get; }
+
+    [JsonPropertyName("processing_count")]
+    public int ProcessingCount { get; }
+
+    public static ActiveChannelQueueModelResponse From(ActiveChannelQueueModelDto item)
+    {
+        return new ActiveChannelQueueModelResponse(
+            item.Model,
+            item.UpstreamModel,
             item.ProcessingCount);
     }
 }
@@ -1434,6 +1473,7 @@ public sealed class RecentErrorItemResponse
         Guid id,
         double? createdAt,
         string? model,
+        string? upstreamModel,
         string? channelName,
         int? statusCode,
         string? error)
@@ -1441,6 +1481,7 @@ public sealed class RecentErrorItemResponse
         Id = id;
         CreatedAt = createdAt;
         Model = model;
+        UpstreamModel = upstreamModel;
         ChannelName = channelName;
         StatusCode = statusCode;
         Error = error;
@@ -1454,6 +1495,9 @@ public sealed class RecentErrorItemResponse
 
     [JsonPropertyName("model")]
     public string? Model { get; }
+
+    [JsonPropertyName("upstream_model")]
+    public string? UpstreamModel { get; }
 
     [JsonPropertyName("channel_name")]
     public string? ChannelName { get; }
@@ -1470,6 +1514,7 @@ public sealed class RecentErrorItemResponse
             item.Id,
             item.CreatedAt,
             item.Model,
+            item.UpstreamModel,
             item.ChannelName,
             item.StatusCode,
             item.Error);

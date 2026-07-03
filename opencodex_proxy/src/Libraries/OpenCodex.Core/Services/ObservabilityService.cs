@@ -215,6 +215,7 @@ public sealed class ObservabilityService : IObservabilityService
                 log.Id,
                 log.CreatedAt,
                 log.Model,
+                log.UpstreamModel,
                 channelName,
                 log.StatusCode,
                 log.Error);
@@ -827,10 +828,23 @@ public sealed class ObservabilityService : IObservabilityService
     private ActiveChannelQueueDto QueryActiveChannelQueue(string currentUsername, bool isSuperadmin)
     {
         var channels = ReadScopedChannels(currentUsername, isSuperadmin)
-            .Select(channel => new ActiveChannelQueueItemDto(
-                channel.Id.ToString(),
-                string.IsNullOrWhiteSpace(channel.Name) ? "未命名渠道" : channel.Name,
-                _channelCapacity.GetActiveRequests(channel.OwnerUsername, channel.Id.ToString())))
+            .Select(channel =>
+            {
+                var channelId = channel.Id.ToString();
+                var models = _channelCapacity
+                    .GetActiveModelUsages(channel.OwnerUsername, channelId)
+                    .Select(model => new ActiveChannelQueueModelDto(
+                        model.Model,
+                        model.UpstreamModel,
+                        model.ActiveRequests))
+                    .ToList();
+
+                return new ActiveChannelQueueItemDto(
+                    channelId,
+                    string.IsNullOrWhiteSpace(channel.Name) ? "未命名渠道" : channel.Name,
+                    _channelCapacity.GetActiveRequests(channel.OwnerUsername, channelId),
+                    models);
+            })
             .Where(item => item.ProcessingCount > 0)
             .OrderByDescending(item => item.ProcessingCount)
             .ThenBy(item => item.ChannelName, StringComparer.OrdinalIgnoreCase)
@@ -883,6 +897,7 @@ public sealed class ObservabilityService : IObservabilityService
                 ownerMap.TryGetValue(channel.OwnerUserId, out var ownerUsername) ? ownerUsername : string.Empty,
                 channel.Position,
                 channel.Name,
+                channel.GroupName,
                 channel.Type,
                 channel.BaseUrl,
                 channel.ApiKey,

@@ -41,6 +41,14 @@ public sealed class ConfigController : AuthenticatedApiControllerBase
         return Api(result);
     }
 
+    [HttpPatch("/channels/batch")]
+    public IActionResult BatchUpdateChannels(ChannelBatchUpdateRequest request)
+    {
+        RequireUser();
+        var result = _config.BatchUpdateChannels(request);
+        return Api(result);
+    }
+
     [HttpDelete("/channels/{channelId:guid}")]
     public IActionResult DeleteChannel(Guid channelId)
     {

@@ -151,7 +151,11 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                     }
                 }
 
-                using var capacityLease = _channelCapacity.TryAcquire(ownerUsername, candidate.Route.Channel);
+                using var capacityLease = _channelCapacity.TryAcquire(
+                    ownerUsername,
+                    candidate.Route.Channel,
+                    candidate.Route.OriginalModel,
+                    candidate.Route.UpstreamModel);
                 if (capacityLease is null)
                 {
                     if (halfOpenProbeAcquired)

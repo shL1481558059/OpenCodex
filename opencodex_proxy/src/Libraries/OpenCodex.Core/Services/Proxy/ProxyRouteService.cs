@@ -421,6 +421,7 @@ public sealed class ProxyRouteService : IProxyRouteService
             ownerUsername,
             channel.Position,
             channel.Name,
+            channel.GroupName,
             channel.Type,
             channel.BaseUrl,
             channel.ApiKey,

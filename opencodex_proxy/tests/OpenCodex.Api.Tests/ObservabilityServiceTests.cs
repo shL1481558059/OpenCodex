@@ -518,8 +518,9 @@ context.Users.Add(new User
             ["id"] = channelId402.ToString(),
             ["capacity"] = 3
         };
-        using var lease1 = capacity.TryAcquire("admin", runtimeChannel);
-        using var lease2 = capacity.TryAcquire("admin", runtimeChannel);
+        using var lease1 = capacity.TryAcquire("admin", runtimeChannel, "gpt-5", "gpt-5-upstream");
+        using var lease2 = capacity.TryAcquire("admin", runtimeChannel, "gpt-5", "gpt-5-upstream");
+        using var lease3 = capacity.TryAcquire("admin", runtimeChannel, "gpt-4.1", "gpt-4.1-upstream");
 
         var service = CreateService(dbPath, capacity);
 
@@ -529,7 +530,93 @@ context.Users.Add(new User
         var item = Assert.Single(queue.Payload!.Channels);
         Assert.Equal(channelId402.ToString(), item.ChannelId);
         Assert.Equal("实时占用渠道", item.ChannelName);
-        Assert.Equal(2, item.ProcessingCount);
+        Assert.Equal(3, item.ProcessingCount);
+        Assert.Collection(
+            item.Models,
+            model =>
+            {
+                Assert.Equal("gpt-5", model.Model);
+                Assert.Equal("gpt-5-upstream", model.UpstreamModel);
+                Assert.Equal(2, model.ProcessingCount);
+            },
+            model =>
+            {
+                Assert.Equal("gpt-4.1", model.Model);
+                Assert.Equal("gpt-4.1-upstream", model.UpstreamModel);
+                Assert.Equal(1, model.ProcessingCount);
+            });
+    }
+
+    [Fact]
+    public void RecentErrors_ExposeRequestAndUpstreamModels()
+    {
+        var dbPath = Path.Combine(
+            Path.GetTempPath(),
+            "opencodex-api-tests",
+            $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            context.Users.Add(new User
+            {
+                Id = AdminUserId,
+                Username = "admin",
+                PasswordHash = "hash",
+                Role = "superadmin",
+                Enabled = true,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            context.Channels.Add(new Channel
+            {
+                Id = ChannelId401,
+                OwnerUserId = AdminUserId,
+                Position = 0,
+                Name = "错误渠道",
+                Type = "openai",
+                BaseUrl = "https://example.com/a",
+                ApiKey = "sk-a",
+                AuthMode = "config",
+                HeadersJson = "{}",
+                TimeoutSeconds = 30,
+                RetryCount = 0,
+                Capacity = 3,
+                CompatJson = "{}",
+                ModelsJson = "[]",
+                Enabled = true,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            context.RequestLogs.Add(new RequestLog
+            {
+                Id = Guid.Parse("33333333-3333-3333-3333-333333333342"),
+                RequestId = "req-error-models",
+                CreatedAt = 1_700_000_200,
+                Method = "POST",
+                Path = "/v1/responses",
+                Model = "gpt-5",
+                UpstreamModel = "gpt-5-upstream",
+                ChannelId = ChannelId401,
+                LifecycleStatus = ProxyRequestLifecycleStatus.Failed,
+                IsStream = true,
+                StatusCode = 500,
+                Error = "upstream failed",
+                OwnerUserId = AdminUserId
+            });
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+
+        var errors = service.ReadRecentErrors(5);
+
+        Assert.True(errors.Succeeded);
+        var item = Assert.Single(errors.Payload!);
+        Assert.Equal("gpt-5", item.Model);
+        Assert.Equal("gpt-5-upstream", item.UpstreamModel);
+        Assert.Equal("错误渠道", item.ChannelName);
     }
 
     [Fact]
