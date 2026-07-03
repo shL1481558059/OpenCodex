@@ -3,6 +3,16 @@
     <el-empty description="正在加载管理台" />
   </div>
 
+  <div v-else-if="initError" class="login-wrap">
+    <el-card class="login-card" shadow="never">
+      <template #header>
+        <strong>初始化失败</strong>
+      </template>
+      <el-alert type="error" :title="initError" show-icon :closable="false" />
+      <el-button type="primary" class="full-width" style="margin-top: 16px" @click="initApp">重试</el-button>
+    </el-card>
+  </div>
+
   <Setup
     v-else-if="needsSetup"
     :api="api"
@@ -137,6 +147,7 @@ const authenticated = ref(false);
 const loadingSession = ref(true);
 const needsSetup = ref(false);
 const setupSettings = ref(null);
+const initError = ref(null);
 const currentUser = ref(null);
 const menuCollapsed = ref(false);
 const mobileMenuVisible = ref(false);
@@ -233,14 +244,21 @@ function ensureAllowedActiveTab() {
 }
 
 onMounted(async () => {
+  initApp();
+});
+
+async function initApp() {
   loadingSession.value = true;
+  initError.value = null;
   try {
     await loadSetupStatus();
     if (!needsSetup.value) {
       await checkSession();
     }
+  } catch (error) {
+    initError.value = error?.message || String(error);
   } finally {
     loadingSession.value = false;
   }
-});
+  }
 </script>

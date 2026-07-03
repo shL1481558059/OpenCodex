@@ -147,9 +147,10 @@ fn open_admin_window(app: &AppHandle, port: u16) -> Result<(), String> {
     let url = tauri::Url::parse(&admin_url(port)).map_err(|error| error.to_string())?;
     WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
         .title("OpenCodex")
-        .inner_size(1280.0, 820.0)
-        .min_inner_size(960.0, 640.0)
-        .build()
+       .inner_size(1280.0, 820.0)
+       .min_inner_size(960.0, 640.0)
+        .devtools(true)
+       .build()
         .map_err(|error| error.to_string())?;
     Ok(())
 }
