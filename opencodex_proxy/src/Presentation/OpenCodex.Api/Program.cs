@@ -1,9 +1,13 @@
 using OpenCodex.Api.Hosting;
 
+var contentRoot = ResolveContentRoot();
+var webRoot = contentRoot is null ? null : Path.Combine(contentRoot, "wwwroot");
+
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 {
     Args = args,
-    ContentRootPath = ResolveContentRoot()
+    ContentRootPath = contentRoot,
+    WebRootPath = webRoot
 });
 
 builder
