@@ -200,7 +200,8 @@ public static partial class ProtocolConverter
         string sourceProtocol,
         string targetProtocol,
         string? originalModel,
-        TextFormatInfo? textFormat = null)
+        TextFormatInfo? textFormat = null,
+        IReadOnlyDictionary<string, ResponsesToolCallMapping>? toolCallMappings = null)
     {
         ArgumentNullException.ThrowIfNull(payload);
 
@@ -215,7 +216,7 @@ public static partial class ProtocolConverter
             return converted;
         }
 
-        var canonical = ToCanonicalResponse(payload, targetProtocol, originalModel);
+        var canonical = ToCanonicalResponse(payload, targetProtocol, originalModel, toolCallMappings);
         var result = FromCanonicalResponse(canonical, sourceProtocol);
 
         if (textFormat is { Type: "json_schema" } && sourceProtocol == Responses)

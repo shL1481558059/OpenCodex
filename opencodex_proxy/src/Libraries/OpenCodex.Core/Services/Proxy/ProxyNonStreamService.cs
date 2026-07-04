@@ -36,6 +36,10 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
        var statusCode = ProxyHttpStatus.Ok;
        string? error = null;
         var textFormat = ProtocolConverter.ExtractTextFormat(context.OriginalPayload);
+        var toolCallMappings = context.EntryProtocol == ProtocolConverter.Responses
+            && context.ChannelType == ProtocolConverter.Chat
+            ? ProtocolConverter.BuildResponsesToolCallMappings(context.Payload)
+            : null;
 
        try
        {
@@ -81,7 +85,8 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
                     context.EntryProtocol,
                     context.ChannelType,
                     context.Route.OriginalModel,
-                    textFormat);
+                    textFormat,
+                    toolCallMappings);
             }
 
             return new ProxyNonStreamResult(statusCode, responsePayload);

@@ -267,6 +267,55 @@ public sealed class ProxyStreamServiceTests
     }
 
     [Fact]
+    public async Task StreamAsync_ConvertedUpstreamFailure_DoesNotPrepareSseBeforeUpstreamReturns()
+    {
+        var upstream = new FailingUpstreamClient(new UpstreamException(
+            "upstream returned HTTP 406",
+            406,
+            channelId: "chat"));
+        var logs = new StubProxyLogService();
+        var service = new ProxyStreamService(upstream, logs, new StubWebSearchSimulator(false, []));
+        var writer = new CapturingProxyStreamWriter();
+        var channel = new Dictionary<string, object?>
+        {
+            ["id"] = "chat",
+            ["type"] = ProtocolConverter.Chat
+        };
+        var route = new ProxyRouteDto(
+            channel,
+            "public-model",
+            "upstream-model",
+            supportsImage: false,
+            matchedModelMapping: true);
+        var context = new ProxyStreamContext(
+            startedTimestamp: Stopwatch.GetTimestamp(),
+            requestLogId: Guid.NewGuid(),
+            requestId: "req_converted_no_prepare",
+            ownerUsername: "admin",
+            apiKeyId: Guid.NewGuid(),
+            originalPayload: new Dictionary<string, object?>(),
+            payload: new Dictionary<string, object?>(),
+            upstreamRequest: new Dictionary<string, object?>(),
+            entryProtocol: ProtocolConverter.Responses,
+            route: route,
+            channelType: ProtocolConverter.Chat,
+            channelId: "chat",
+            ownerRole: "superadmin",
+            upstreamModel: "upstream-model",
+            requestModel: "public-model",
+            defaultTimeout: 120,
+            requestMetadata: new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
+            streamWriter: writer,
+            cancellationToken: CancellationToken.None);
+
+        var exception = await Assert.ThrowsAsync<UpstreamException>(() => service.StreamAsync(context));
+
+        Assert.Equal(406, exception.StatusCode);
+        Assert.False(writer.Prepared);
+        Assert.Empty(writer.Lines);
+    }
+
+    [Fact]
     public async Task StreamAsync_PassThroughSuccess_PrepareSseDeferredUntilFirstLine()
     {
         var upstream = new SequencedUpstreamClient(

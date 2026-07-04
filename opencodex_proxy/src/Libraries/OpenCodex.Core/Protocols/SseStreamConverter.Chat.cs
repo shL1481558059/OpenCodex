@@ -56,6 +56,7 @@ public static partial class SseStreamConverter
         var toolCalls = new SortedDictionary<int, ToolCallAggregate>();
         var toolStreamStates = new Dictionary<int, ToolStreamState>();
         var outputByIndex = new SortedDictionary<int, Dictionary<string, object?>>();
+        var toolCallMappings = result.ToolCallMappings;
 
         string Emit(string eventName, Dictionary<string, object?> payload)
         {
@@ -363,7 +364,7 @@ public static partial class SseStreamConverter
                     }
 
                     var state = EnsureToolStreamState(index);
-                    state.CallKind = ProtocolConverter.GetResponsesToolCallKind(aggregate.Name);
+                    state.CallKind = ProtocolConverter.GetResponsesToolCallKind(aggregate.Name, toolCallMappings);
                     state.ApplyPatchDecoder ??= state.CallKind == ResponsesToolCallKind.CustomTool
                         ? new ApplyPatchJsonDeltaDecoder()
                         : null;
@@ -378,15 +379,11 @@ public static partial class SseStreamConverter
                             new Dictionary<string, object?>
                             {
                                 ["output_index"] = state.OutputIndex,
-                                ["item"] = new Dictionary<string, object?>
-                                {
-                                    ["id"] = state.ItemId,
-                                    ["type"] = state.CallKind == ResponsesToolCallKind.CustomTool ? "custom_tool_call" : "function_call",
-                                    ["status"] = "in_progress",
-                                    ["call_id"] = aggregate.Id,
-                                    ["name"] = aggregate.Name,
-                                    [state.CallKind == ResponsesToolCallKind.CustomTool ? "input" : "arguments"] = string.Empty
-                                }
+                                ["item"] = ProtocolConverter.ResponsesToolCallStartedItem(
+                                    aggregate.Id,
+                                    aggregate.Name,
+                                    state.ItemId ?? $"fc_{Guid.NewGuid():N}",
+                                    toolCallMappings)
                             });
                     }
 
@@ -414,6 +411,12 @@ public static partial class SseStreamConverter
                                 ["output_index"] = state.OutputIndex,
                                 ["delta"] = decodedDelta
                             });
+                        continue;
+                    }
+
+                    if (state.CallKind == ResponsesToolCallKind.NativeTool)
+                    {
+                        state.StreamedArgumentsLength = aggregate.Arguments.Length;
                         continue;
                     }
 
@@ -598,31 +601,23 @@ public static partial class SseStreamConverter
                 aggregate.Id,
                 aggregate.Name,
                 aggregate.Arguments,
-                itemId: itemId);
+                itemId: itemId,
+                mappings: toolCallMappings);
             var functionItemType = functionItem.TryGetValue("type", out var itemType)
                 ? itemType?.ToString()
                 : null;
-            if (!state.ItemAdded && (functionItemType == "function_call" || functionItemType == "custom_tool_call"))
+            if (!state.ItemAdded && !string.IsNullOrEmpty(functionItemType))
             {
                 yield return Emit(
                     "response.output_item.added",
                     new Dictionary<string, object?>
                     {
                         ["output_index"] = outputIndex,
-                        ["item"] = new Dictionary<string, object?>
-                        {
-                            ["id"] = itemId,
-                            ["type"] = functionItemType,
-                            ["status"] = "in_progress",
-                            ["call_id"] = aggregate.Id,
-                            ["name"] = functionItem.TryGetValue("name", out var itemName)
-                                ? itemName
-                                : aggregate.Name,
-                            ["namespace"] = functionItem.TryGetValue("namespace", out var itemNamespace)
-                                ? itemNamespace
-                                : null,
-                            [functionItemType == "custom_tool_call" ? "input" : "arguments"] = string.Empty
-                        }
+                        ["item"] = ProtocolConverter.ResponsesToolCallStartedItem(
+                            aggregate.Id,
+                            aggregate.Name,
+                            itemId,
+                            toolCallMappings)
                     });
             }
 

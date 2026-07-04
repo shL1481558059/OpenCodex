@@ -1570,6 +1570,147 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Assert.DoesNotContain("\"cmd\"", input, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void ConvertResponse_ChatToolSearchWithRequestMapping_ReturnsNativeToolCall()
+    {
+        var toolMappings = ProtocolConverter.BuildResponsesToolCallMappings(new Dictionary<string, object?>
+        {
+            ["tools"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "tool_search",
+                    ["execution"] = "client",
+                    ["description"] = "Search deferred tools.",
+                    ["parameters"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object?>
+                        {
+                            ["query"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "string"
+                            }
+                        },
+                        ["required"] = new List<object?> { "query" }
+                    }
+                }
+            }
+        });
+
+        var response = ProtocolConverter.ConvertResponse(
+            new Dictionary<string, object?>
+            {
+                ["id"] = "chatcmpl_tool_search",
+                ["model"] = "upstream",
+                ["choices"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["message"] = new Dictionary<string, object?>
+                        {
+                            ["role"] = "assistant",
+                            ["content"] = string.Empty,
+                            ["tool_calls"] = new List<object?>
+                            {
+                                new Dictionary<string, object?>
+                                {
+                                    ["id"] = "call_search",
+                                    ["type"] = "function",
+                                    ["function"] = new Dictionary<string, object?>
+                                    {
+                                        ["name"] = "tool_search",
+                                        ["arguments"] = JsonSerializer.Serialize(new
+                                        {
+                                            query = "browser",
+                                            limit = 3
+                                        })
+                                    }
+                                }
+                            }
+                        },
+                        ["finish_reason"] = "tool_calls"
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Chat,
+            "local",
+            toolCallMappings: toolMappings);
+
+        var output = Assert.IsType<List<object?>>(response["output"]);
+        var item = Assert.IsType<Dictionary<string, object?>>(Assert.Single(output));
+        Assert.Equal("tool_search_call", item["type"]);
+        Assert.Equal("tool_search", item["name"]);
+        Assert.Equal("call_search", item["call_id"]);
+
+        var input = JsonSerializer.Deserialize<Dictionary<string, object?>>(Assert.IsType<string>(item["input"]));
+        Assert.NotNull(input);
+        Assert.Equal("browser", input!["query"]?.ToString());
+        Assert.Equal(3, Assert.IsType<JsonElement>(input["limit"]!).GetInt32());
+    }
+
+    [Fact]
+    public void ConvertResponse_ChatWebSearchWithRequestMapping_RemainsFunctionCall()
+    {
+        var toolMappings = ProtocolConverter.BuildResponsesToolCallMappings(new Dictionary<string, object?>
+        {
+            ["tools"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "web_search"
+                }
+            }
+        });
+
+        var response = ProtocolConverter.ConvertResponse(
+            new Dictionary<string, object?>
+            {
+                ["id"] = "chatcmpl_web_search",
+                ["model"] = "upstream",
+                ["choices"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["message"] = new Dictionary<string, object?>
+                        {
+                            ["role"] = "assistant",
+                            ["content"] = string.Empty,
+                            ["tool_calls"] = new List<object?>
+                            {
+                                new Dictionary<string, object?>
+                                {
+                                    ["id"] = "call_web",
+                                    ["type"] = "function",
+                                    ["function"] = new Dictionary<string, object?>
+                                    {
+                                        ["name"] = "web_search",
+                                        ["arguments"] = JsonSerializer.Serialize(new
+                                        {
+                                            query = "OpenAI"
+                                        })
+                                    }
+                                }
+                            }
+                        },
+                        ["finish_reason"] = "tool_calls"
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Chat,
+            "local",
+            toolCallMappings: toolMappings);
+
+        var output = Assert.IsType<List<object?>>(response["output"]);
+        var item = Assert.IsType<Dictionary<string, object?>>(Assert.Single(output));
+        Assert.Equal("function_call", item["type"]);
+        Assert.Equal("web_search", item["name"]);
+        Assert.True(item.ContainsKey("arguments"));
+        Assert.False(item.ContainsKey("input"));
+    }
+
 
     [Fact]
     public void ConvertResponse_ChatApplyPatchToolCall_ReturnsCustomToolCallInputToClient()

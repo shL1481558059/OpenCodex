@@ -8,6 +8,8 @@ public sealed class ConvertedStreamResult
 {
     public Dictionary<string, object?>? UpstreamResponse { get; set; }
 
+    internal IReadOnlyDictionary<string, ResponsesToolCallMapping>? ToolCallMappings { get; set; }
+
     /// <summary>
     /// 原始 Responses API 请求中的 text.format 配置（用于 json_schema 结构化输出兼容）。
     /// 当上游 channel 不支持 Responses API 的 text.format 时，
