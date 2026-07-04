@@ -1103,6 +1103,73 @@ public sealed class SseStreamConverterTests
             ["custom_tool_call", "function_call"],
             output.Select(item => Assert.IsType<string>(Assert.IsType<Dictionary<string, object?>>(item)["type"])).ToArray());
     }
+
+    [Fact]
+    public async Task Chat_ToolSearchWithRequestMapping_StreamsNativeToolCall()
+    {
+        const string arguments = "{\"query\":\"browser\",\"limit\":3}";
+        var lines = SseLines(
+            SseBlock(ChatChunk(toolCalls: new List<object?>
+            {
+                ChatToolCall(0, id: "call_tool_search", name: "tool_search", arguments: arguments[..12])
+            })),
+            SseBlock(ChatChunk(toolCalls: new List<object?>
+            {
+                ChatToolCall(0, arguments: arguments[12..])
+            })),
+            SseBlock(ChatChunk(finishReason: "tool_calls")),
+            SseBlock("[DONE]"));
+
+        var result = new ConvertedStreamResult
+        {
+            ToolCallMappings = ProtocolConverter.BuildResponsesToolCallMappings(new Dictionary<string, object?>
+            {
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "tool_search",
+                        ["execution"] = "client",
+                        ["parameters"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object?>
+                            {
+                                ["query"] = new Dictionary<string, object?> { ["type"] = "string" }
+                            },
+                            ["required"] = new List<object?> { "query" }
+                        }
+                    }
+                }
+            })
+        };
+
+        var events = await CollectAsync(
+            SseStreamConverter.ChatToResponsesEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var added = Assert.Single(AllByType(parsed, "response.output_item.added"));
+        var addedItem = Assert.IsType<Dictionary<string, object?>>(added["item"]);
+        Assert.Equal("tool_search_call", addedItem["type"]);
+        Assert.Equal("tool_search", addedItem["name"]);
+        Assert.Equal("call_tool_search", addedItem["call_id"]);
+
+        Assert.DoesNotContain(parsed, entry => (string?)entry["type"] == "response.function_call_arguments.delta");
+        Assert.DoesNotContain(parsed, entry => (string?)entry["type"] == "response.custom_tool_call_input.delta");
+
+        var done = ByType(parsed, "response.output_item.done");
+        Assert.NotNull(done);
+        var doneItem = Assert.IsType<Dictionary<string, object?>>(done!["item"]);
+        Assert.Equal("tool_search_call", doneItem["type"]);
+        Assert.Equal(arguments, doneItem["input"]);
+
+        var completed = ByType(parsed, "response.completed");
+        Assert.NotNull(completed);
+        var output = Assert.IsType<List<object?>>(Assert.IsType<Dictionary<string, object?>>(completed!["response"])["output"]);
+        var outputItem = Assert.IsType<Dictionary<string, object?>>(Assert.Single(output));
+        Assert.Equal("tool_search_call", outputItem["type"]);
+        Assert.Equal(arguments, outputItem["input"]);
+    }
     // ── response.completed P2 fields ──────────────────────────
 
     [Fact]

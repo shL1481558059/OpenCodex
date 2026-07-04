@@ -7,12 +7,13 @@ public static partial class ProtocolConverter
     private static Dictionary<string, object?> ToCanonicalResponse(
         Dictionary<string, object?> payload,
         string protocol,
-        string? originalModel)
+        string? originalModel,
+        IReadOnlyDictionary<string, ResponsesToolCallMapping>? toolCallMappings)
     {
         return protocol switch
         {
             Responses => ResponsesResponseToCanonical(payload, originalModel),
-            Chat => ChatResponseToCanonical(payload, originalModel),
+            Chat => ChatResponseToCanonical(payload, originalModel, toolCallMappings),
             Messages => MessagesResponseToCanonical(payload, originalModel),
             _ => throw new BadRequestException($"unsupported upstream protocol: {protocol}")
         };
@@ -100,7 +101,8 @@ public static partial class ProtocolConverter
 
     private static Dictionary<string, object?> ChatResponseToCanonical(
         Dictionary<string, object?> payload,
-        string? originalModel)
+        string? originalModel,
+        IReadOnlyDictionary<string, ResponsesToolCallMapping>? toolCallMappings)
     {
         var choice = FirstObject(ListValue(payload, "choices")) ?? new Dictionary<string, object?>(StringComparer.Ordinal);
         var message = ObjectValue(choice, "message");
@@ -115,12 +117,28 @@ public static partial class ProtocolConverter
 
             var function = ObjectValue(toolCall, "function");
             var toolName = GetString(function, "name");
-            var (namespaceName, _) = NamespaceCallParts(toolName);
-            toolCalls.Add(Obj(
+            var shape = ResolveResponsesToolCallShape(toolName, toolCallMappings);
+            var responseName = string.IsNullOrEmpty(shape.Name)
+                ? toolName
+                : shape.Name;
+            var (namespaceName, _) = NamespaceCallParts(responseName, shape.Namespace);
+            var canonicalToolCall = Obj(
                 ("id", GetValue(toolCall, "id") ?? NewId("call")),
-                ("name", toolName),
+                ("name", responseName),
                 ("namespace", namespaceName),
-                ("arguments", GetValue(function, "arguments") ?? "{}")));
+                ("arguments", GetValue(function, "arguments") ?? "{}"));
+            if (shape.Kind != ResponsesToolCallKind.Function)
+            {
+                canonicalToolCall["native_type"] = shape.Kind == ResponsesToolCallKind.CustomTool
+                    ? "custom"
+                    : shape.ItemType == "custom_tool_call"
+                        ? "custom"
+                        : shape.ItemType.EndsWith("_call", StringComparison.Ordinal)
+                        ? shape.ItemType[..^"_call".Length]
+                        : shape.ItemType;
+            }
+
+            toolCalls.Add(canonicalToolCall);
         }
 
         return Obj(
@@ -254,7 +272,8 @@ public static partial class ProtocolConverter
                 GetValue(toolCall, "id"),
                 GetValue(toolCall, "name"),
                 GetValue(toolCall, "arguments") ?? "{}",
-                GetValue(toolCall, "namespace")));
+                GetValue(toolCall, "namespace"),
+                mappings: CanonicalToolCallMappings(toolCall)));
         }
 
         var finishReason = GetString(canonical, "finish_reason") ?? "stop";
@@ -324,6 +343,29 @@ public static partial class ProtocolConverter
                     ("finish_reason", GetValue(canonical, "finish_reason") ?? "stop"))
             }),
             ("usage", CanonicalUsageToChat(ObjectValue(canonical, "usage"))));
+    }
+
+    private static IReadOnlyDictionary<string, ResponsesToolCallMapping>? CanonicalToolCallMappings(
+        Dictionary<string, object?> toolCall)
+    {
+        var nativeType = GetString(toolCall, "native_type");
+        var responsesName = Convert.ToString(GetValue(toolCall, "name")) ?? string.Empty;
+        if (string.IsNullOrEmpty(nativeType) || string.IsNullOrEmpty(responsesName))
+        {
+            return null;
+        }
+
+        var chatName = NamespaceNameToChat(responsesName);
+        return new Dictionary<string, ResponsesToolCallMapping>(StringComparer.Ordinal)
+        {
+            [chatName] = new ResponsesToolCallMapping
+            {
+                ChatName = chatName,
+                NativeType = nativeType,
+                ResponsesName = responsesName,
+                Namespace = GetString(toolCall, "namespace")
+            }
+        };
     }
 
     private static Dictionary<string, object?> CanonicalToMessagesResponse(Dictionary<string, object?> canonical)

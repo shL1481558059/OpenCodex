@@ -165,7 +165,11 @@ public sealed class ProxyStreamService : IProxyStreamService
                 Console.Error.WriteLine($"[OCXP-DEBUG] [{context.RequestId}] StreamAsync: CONVERSION path, creating IAsyncEnumerables...");
                 var converted = new ConvertedStreamResult
                 {
-                    TextFormat = ProtocolConverter.ExtractTextFormat(context.OriginalPayload)
+                    TextFormat = ProtocolConverter.ExtractTextFormat(context.OriginalPayload),
+                    ToolCallMappings = context.EntryProtocol == ProtocolConverter.Responses
+                        && context.ChannelType == ProtocolConverter.Chat
+                        ? ProtocolConverter.BuildResponsesToolCallMappings(context.Payload)
+                        : null
                 };
                 var visibleModel = VisibleModel(context);
                 var streamLines = _upstream.StreamJsonAsync(
@@ -178,6 +182,9 @@ public sealed class ProxyStreamService : IProxyStreamService
                     streamLineCaptures,
                     "upstream",
                     context.CancellationToken);
+                var confirmedStreamLines = await ConfirmUpstreamStreamStartedAsync(
+                    capturedStreamLines,
+                    context.CancellationToken);
                // 方案A: 直接调用内部重载，消除外层 await foreach 包装
                 // 按 (入口协议, 上游协议) 派发到对应流式转换器；下游事件格式取决于入口协议。
                 IAsyncEnumerable<string> convertedLines;
@@ -185,7 +192,7 @@ public sealed class ProxyStreamService : IProxyStreamService
                 {
                     case (ProtocolConverter.Responses, ProtocolConverter.Chat):
                         convertedLines = SseStreamConverter.ChatToResponsesEvents(
-                            capturedStreamLines,
+                            confirmedStreamLines,
                             visibleModel,
                             converted,
                             SkipToolNames: null,
@@ -196,7 +203,7 @@ public sealed class ProxyStreamService : IProxyStreamService
                         break;
                     case (ProtocolConverter.Responses, ProtocolConverter.Messages):
                         convertedLines = SseStreamConverter.MessagesToResponsesEvents(
-                            capturedStreamLines,
+                            confirmedStreamLines,
                             visibleModel,
                             converted,
                             SkipToolNames: null,
@@ -207,7 +214,7 @@ public sealed class ProxyStreamService : IProxyStreamService
                         break;
                    case (ProtocolConverter.Messages, ProtocolConverter.Chat):
                        convertedLines = SseStreamConverter.ChatToMessagesEvents(
-                           capturedStreamLines,
+                           confirmedStreamLines,
                            visibleModel,
                            converted,
                            SkipToolNames: null,
@@ -216,7 +223,7 @@ public sealed class ProxyStreamService : IProxyStreamService
                        break;
                    case (ProtocolConverter.Chat, ProtocolConverter.Messages):
                        convertedLines = SseStreamConverter.MessagesToChatEvents(
-                           capturedStreamLines,
+                           confirmedStreamLines,
                            visibleModel,
                            converted,
                            SkipToolNames: null,
@@ -224,7 +231,7 @@ public sealed class ProxyStreamService : IProxyStreamService
                        break;
                    case (ProtocolConverter.Chat, ProtocolConverter.Responses):
                        convertedLines = SseStreamConverter.ResponsesToChatEvents(
-                           capturedStreamLines,
+                           confirmedStreamLines,
                            visibleModel,
                            converted,
                            SkipToolNames: null,
@@ -232,7 +239,7 @@ public sealed class ProxyStreamService : IProxyStreamService
                        break;
                     case (ProtocolConverter.Messages, ProtocolConverter.Responses):
                        convertedLines = SseStreamConverter.ResponsesToMessagesEvents(
-                           capturedStreamLines,
+                           confirmedStreamLines,
                            visibleModel,
                            converted,
                            SkipToolNames: null,
@@ -266,7 +273,8 @@ public sealed class ProxyStreamService : IProxyStreamService
                         context.EntryProtocol,
                         context.ChannelType,
                         context.Route.OriginalModel,
-                        converted.TextFormat);
+                        converted.TextFormat,
+                        converted.ToolCallMappings);
             }
         }
         catch (Exception exception)
@@ -321,6 +329,64 @@ public sealed class ProxyStreamService : IProxyStreamService
         return (int)Math.Round(
             Stopwatch.GetElapsedTime(started).TotalMilliseconds,
             MidpointRounding.AwayFromZero);
+    }
+
+    private static async Task<IAsyncEnumerable<string>> ConfirmUpstreamStreamStartedAsync(
+        IAsyncEnumerable<string> lines,
+        CancellationToken cancellationToken)
+    {
+        var enumerator = lines.GetAsyncEnumerator(cancellationToken);
+        bool hasFirstLine;
+        try
+        {
+            hasFirstLine = await enumerator.MoveNextAsync();
+        }
+        catch
+        {
+            await enumerator.DisposeAsync();
+            throw;
+        }
+
+        if (!hasFirstLine)
+        {
+            await enumerator.DisposeAsync();
+            return EmptyStreamLines(cancellationToken);
+        }
+
+        return ReplayPrimedStreamLines(
+            enumerator.Current,
+            enumerator,
+            cancellationToken);
+    }
+
+    private static async IAsyncEnumerable<string> EmptyStreamLines(
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        await Task.CompletedTask;
+        yield break;
+    }
+
+    private static async IAsyncEnumerable<string> ReplayPrimedStreamLines(
+        string firstLine,
+        IAsyncEnumerator<string> enumerator,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return firstLine;
+
+            while (await enumerator.MoveNextAsync())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return enumerator.Current;
+            }
+        }
+        finally
+        {
+            await enumerator.DisposeAsync();
+        }
     }
 
     private static Dictionary<string, object?>? UpstreamErrorBody(ProxyException exception)

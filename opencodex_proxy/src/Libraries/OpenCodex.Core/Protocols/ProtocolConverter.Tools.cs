@@ -2,6 +2,43 @@ namespace OpenCodex.Core.Protocols;
 
 public static partial class ProtocolConverter
 {
+    internal static IReadOnlyDictionary<string, ResponsesToolCallMapping> BuildResponsesToolCallMappings(
+        Dictionary<string, object?> payload)
+    {
+        var result = new Dictionary<string, ResponsesToolCallMapping>(StringComparer.Ordinal);
+        foreach (var item in ResponsesToolsToCanonical(GetValue(payload, "tools")))
+        {
+            if (!TryAsObject(item, out var tool))
+            {
+                continue;
+            }
+
+            var nativeType = (GetString(tool, "native_type") ?? "function")
+                .Replace("-", "_", StringComparison.Ordinal);
+            if (nativeType is "function" or "web_search")
+            {
+                continue;
+            }
+
+            var responsesName = Convert.ToString(GetValue(tool, "name")) ?? string.Empty;
+            if (responsesName.Length == 0)
+            {
+                continue;
+            }
+
+            var chatName = NamespaceNameToChat(responsesName);
+            result[chatName] = new ResponsesToolCallMapping
+            {
+                ChatName = chatName,
+                NativeType = nativeType,
+                ResponsesName = responsesName,
+                Namespace = GetString(tool, "namespace")
+            };
+        }
+
+        return result;
+    }
+
     private static List<object?> ResponsesToolsToCanonical(object? tools, IReadOnlyDictionary<string, object?>? compat = null)
     {
         var result = new List<object?>();
