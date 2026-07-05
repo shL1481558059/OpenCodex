@@ -2,8 +2,8 @@
   <div>
     <div class="toolbar">
       <div>
-        <h2>Web Search 模拟</h2>
-        <div class="text-muted">仅在 Responses 请求显式声明 web_search 工具且模型主动调用时启用</div>
+        <h2>Web Search</h2>
+        <div class="text-muted">配置 web_search 工具的代理处理方式</div>
       </div>
       <div class="toolbar-actions">
         <el-button :icon="Refresh" :loading="webSearchLoading" :disabled="webSearchSaving" @click="loadWebSearch">刷新</el-button>
@@ -23,9 +23,8 @@
     <el-row :gutter="12">
       <el-col :span="8">
         <el-statistic
-          title="全局开关"
-          :value="webSearchConfig.enabled ? 1 : 0"
-          :formatter="formatWebSearchEnabled"
+          title="当前模式"
+          :value="formatWebSearchMode(webSearchConfig.mode)"
         />
       </el-col>
       <el-col :span="8">
@@ -37,12 +36,12 @@
     </el-row>
 
     <div class="web-search-control-row">
-      <span>启用 Web Search 模拟</span>
-      <el-switch
-        v-model="webSearchConfig.enabled"
-        :loading="webSearchSaving"
-        :disabled="webSearchLoading"
-        @change="handleWebSearchEnabledChange"
+      <span>处理方式</span>
+      <el-segmented
+        v-model="webSearchConfig.mode"
+        :options="webSearchModeOptions"
+        :disabled="webSearchLoading || webSearchSaving"
+        @change="handleWebSearchModeChange"
       />
     </div>
 
@@ -194,6 +193,12 @@ import { ElMessage } from "element-plus/es/components/message/index.mjs";
 import { Delete, Download, Edit, Plus, Refresh, Upload } from "@element-plus/icons-vue";
 
 const WEB_SEARCH_PROVIDER_LABELS = { tavily: "Tavily" };
+const WEB_SEARCH_MODES = new Set(["simulate", "convert", "disabled"]);
+const WEB_SEARCH_MODE_LABELS = {
+  simulate: "模拟",
+  convert: "转换",
+  disabled: "关闭"
+};
 
 const props = defineProps({
   api: { type: Function, required: true },
@@ -207,6 +212,11 @@ const webSearchKeyEditingIndex = ref(-1);
 const webSearchConfig = reactive(defaultWebSearchConfig());
 const webSearchKeyDraft = reactive(defaultWebSearchKeyDraft());
 
+const webSearchModeOptions = [
+  { label: "模拟", value: "simulate" },
+  { label: "转换", value: "convert" },
+  { label: "关闭", value: "disabled" }
+];
 const webSearchProviderOptions = computed(() =>
   normalizeWebSearchProviders(webSearchConfig.providers).map((provider) => ({
     value: provider,
@@ -238,7 +248,7 @@ function exportWebSearch() {
   const payload = {
     exported_at: new Date().toISOString(),
     type: "web_search",
-    enabled: webSearchConfig.enabled,
+    mode: normalizeWebSearchMode(webSearchConfig.mode),
     key_usage_limit: webSearchConfig.default_key_usage_limit,
     keys: webSearchConfig.keys.map((k) => ({
       provider: k.provider,
@@ -275,8 +285,12 @@ async function handleImportWebSearchFile(event) {
       ElMessage.error("导入文件格式不正确：缺少 keys 数组");
       return;
     }
+    if (!parsed.mode) {
+      ElMessage.error("导入文件格式不正确：缺少 mode");
+      return;
+    }
     const payload = {
-      enabled: parsed.enabled ?? webSearchConfig.enabled,
+      mode: normalizeWebSearchMode(parsed.mode),
       key_usage_limit: parsed.key_usage_limit ?? webSearchConfig.default_key_usage_limit,
       keys: parsed.keys
     };
@@ -291,7 +305,7 @@ async function handleImportWebSearchFile(event) {
   }
 }
 
-async function persistWebSearchConfig(successMessage = "Web Search 模拟配置已生效") {
+async function persistWebSearchConfig(successMessage = "Web Search 配置已生效") {
   webSearchSaving.value = true;
   try {
     const payload = buildWebSearchPayload();
@@ -309,8 +323,8 @@ async function persistWebSearchConfig(successMessage = "Web Search 模拟配置�
   }
 }
 
-async function handleWebSearchEnabledChange() {
-  await persistWebSearchConfig(webSearchConfig.enabled ? "Web Search 模拟已启用" : "Web Search 模拟已停用");
+async function handleWebSearchModeChange() {
+  await persistWebSearchConfig(`Web Search 已切换为${formatWebSearchMode(webSearchConfig.mode)}模式`);
 }
 
 function openWebSearchKeyDrawer(key = null, index = -1) {
@@ -364,7 +378,7 @@ async function testWebSearchKey(row) {
 // --- Web Search helpers ---
 
 function defaultWebSearchConfig() {
-  return { enabled: false, providers: ["tavily"], default_key_usage_limit: 1000, keys: [] };
+  return { mode: "convert", providers: ["tavily"], default_key_usage_limit: 1000, keys: [] };
 }
 
 function defaultWebSearchKey() {
@@ -429,7 +443,7 @@ function buildWebSearchKeyFromDraft() {
 
 function assignWebSearchConfig(data) {
   Object.assign(webSearchConfig, defaultWebSearchConfig(), data || {}, {
-    enabled: data?.enabled === true,
+    mode: normalizeWebSearchMode(data?.mode),
     providers: normalizeWebSearchProviders(data?.providers),
     default_key_usage_limit: normalizePositiveInteger(data?.default_key_usage_limit || data?.key_usage_limit, 1000),
     keys: normalizeWebSearchKeys(data?.keys || [])
@@ -457,8 +471,13 @@ function formatWebSearchProvider(provider) {
   return WEB_SEARCH_PROVIDER_LABELS[normalized] || provider || "tavily";
 }
 
-function formatWebSearchEnabled(value) {
-  return Number(value) === 1 ? "启用" : "停用";
+function normalizeWebSearchMode(mode) {
+  const normalized = String(mode || "convert").trim().toLowerCase();
+  return WEB_SEARCH_MODES.has(normalized) ? normalized : "convert";
+}
+
+function formatWebSearchMode(mode) {
+  return WEB_SEARCH_MODE_LABELS[normalizeWebSearchMode(mode)] || "转换";
 }
 
 function defaultWebSearchKeyUsageLimit() {
@@ -500,7 +519,7 @@ function buildWebSearchPayload() {
   });
   const emptyIndex = keys.findIndex((item) => !item.key);
   if (emptyIndex !== -1) throw new Error(`第 ${emptyIndex + 1} 个 Web Search Key 不能为空`);
-  return { enabled: webSearchConfig.enabled === true, keys };
+  return { mode: normalizeWebSearchMode(webSearchConfig.mode), keys };
 }
 
 function formatWebSearchTestResult(result) {

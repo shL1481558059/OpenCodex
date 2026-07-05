@@ -152,6 +152,37 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Assert.True(payload.ContainsKey("tool_choice"));
         Assert.True(payload.ContainsKey("include"));
     }
+
+    [Fact]
+    public void WebSearchRequestPolicy_DisabledMode_RemovesWebSearchOnly()
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["tools"] = new List<object?>
+            {
+                new Dictionary<string, object?> { ["type"] = "web_search" },
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "function",
+                    ["name"] = "keep_tool",
+                    ["parameters"] = new Dictionary<string, object?>()
+                }
+            },
+            ["tool_choice"] = new Dictionary<string, object?> { ["type"] = "web_search" },
+            ["include"] = new List<object?> { "web_search_call.action.sources", "message.output_text" }
+        };
+
+        var result = WebSearchRequestPolicy.ApplyMode(payload, WebSearchModes.Disabled);
+
+        Assert.False(result.ContainsKey("tool_choice"));
+        var tools = Assert.IsType<List<object?>>(result["tools"]);
+        var tool = Assert.IsType<Dictionary<string, object?>>(Assert.Single(tools));
+        Assert.Equal("keep_tool", tool["name"]);
+        var include = Assert.IsType<List<object?>>(result["include"]);
+        Assert.Equal(["message.output_text"], include.Select(item => item?.ToString() ?? string.Empty).ToArray());
+        Assert.Equal(2, Assert.IsType<List<object?>>(payload["tools"]).Count);
+    }
+
     [Fact]
     public async Task WebSearchImport_PersistsDefaultKeyUsageLimitInReadback()
     {
@@ -170,7 +201,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             cookie,
             new
             {
-                enabled = true,
+                mode = "simulate",
                 key_usage_limit = 456,
                 keys = new[]
                 {
@@ -189,6 +220,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         using (var importDocument = await JsonDocument.ParseAsync(await importResponse.Content.ReadAsStreamAsync()))
         {
             var data = importDocument.RootElement.GetProperty("Data");
+            Assert.Equal("simulate", data.GetProperty("mode").GetString());
             Assert.Equal(456, data.GetProperty("default_key_usage_limit").GetInt32());
             var importedKey = data.GetProperty("keys").EnumerateArray().Single();
             Assert.Equal(80, importedKey.GetProperty("usage_limit").GetInt32());
@@ -202,6 +234,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
 
         using var readDocument = await JsonDocument.ParseAsync(await readResponse.Content.ReadAsStreamAsync());
         var readData = readDocument.RootElement.GetProperty("Data");
+        Assert.Equal("simulate", readData.GetProperty("mode").GetString());
         Assert.Equal(456, readData.GetProperty("default_key_usage_limit").GetInt32());
         var readKey = readData.GetProperty("keys").EnumerateArray().Single();
         Assert.Equal(80, readKey.GetProperty("usage_limit").GetInt32());
@@ -1189,7 +1222,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             db.Database.Migrate();
             db.WebSearchSettings.Add(new WebSearchSettings
             {
-                Enabled = true,
+                Mode = WebSearchModes.Simulate,
                 KeyUsageLimit = 5,
                 CreatedAt = 1,
                 UpdatedAt = 1
@@ -1309,7 +1342,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             db.Database.Migrate();
             db.WebSearchSettings.Add(new WebSearchSettings
             {
-                Enabled = true,
+                Mode = WebSearchModes.Simulate,
                 KeyUsageLimit = 5,
                 CreatedAt = 1,
                 UpdatedAt = 1
@@ -1970,7 +2003,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             db.Database.Migrate();
             db.WebSearchSettings.Add(new WebSearchSettings
             {
-                Enabled = true,
+                Mode = WebSearchModes.Simulate,
                 KeyUsageLimit = 5,
                 CreatedAt = 1,
                 UpdatedAt = 1
@@ -2050,7 +2083,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             db.Database.Migrate();
             db.WebSearchSettings.Add(new WebSearchSettings
             {
-                Enabled = true,
+                Mode = WebSearchModes.Simulate,
                 KeyUsageLimit = 5,
                 CreatedAt = 1,
                 UpdatedAt = 1
@@ -2163,7 +2196,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             db.Database.Migrate();
             db.WebSearchSettings.Add(new WebSearchSettings
             {
-                Enabled = true,
+                Mode = WebSearchModes.Simulate,
                 KeyUsageLimit = 5,
                 CreatedAt = 1,
                 UpdatedAt = 1
@@ -2302,7 +2335,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             db.Database.Migrate();
             db.WebSearchSettings.Add(new WebSearchSettings
             {
-                Enabled = true,
+                Mode = WebSearchModes.Simulate,
                 KeyUsageLimit = 5,
                 CreatedAt = 1,
                 UpdatedAt = 1
@@ -2967,7 +3000,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         db.Database.Migrate();
         db.WebSearchSettings.Add(new WebSearchSettings
         {
-            Enabled = true,
+            Mode = WebSearchModes.Simulate,
             KeyUsageLimit = 5,
             CreatedAt = 1,
             UpdatedAt = 1

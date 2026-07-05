@@ -820,11 +820,12 @@ namespace OpenCodex.Data.Migrations.SqliteMigrations
                     b.Property<double>("CreatedAt")
                         .HasColumnType("REAL");
 
-                    b.Property<bool>("Enabled")
-                        .HasColumnType("INTEGER");
-
                     b.Property<int>("KeyUsageLimit")
                         .HasColumnType("INTEGER");
+
+                    b.Property<string>("Mode")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
 
                     b.Property<double>("UpdatedAt")
                         .HasColumnType("REAL");

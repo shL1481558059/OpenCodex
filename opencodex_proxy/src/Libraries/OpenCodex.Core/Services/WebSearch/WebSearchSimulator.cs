@@ -40,7 +40,14 @@ public sealed partial class WebSearchSimulator : IWebSearchSimulator
             && channelType is ProtocolConverter.Chat or ProtocolConverter.Messages
             && string.Equals(ownerRole, "superadmin", StringComparison.Ordinal)
             && WebSearchRequestPolicy.DeclaresWebSearchTool(payload)
-            && WebSearchEnabled();
+            && CurrentMode() == WebSearchModes.Simulate;
+    }
+
+    public string CurrentMode()
+    {
+        var mode = _settingsRepository.TableNoTracking.FirstOrDefault()?.Mode ?? WebSearchModes.Convert;
+        mode = mode.Trim().ToLowerInvariant();
+        return WebSearchModes.IsValid(mode) ? mode : WebSearchModes.Convert;
     }
 
     private async Task<Dictionary<string, object?>> PostUpstream(
@@ -61,11 +68,6 @@ public sealed partial class WebSearchSimulator : IWebSearchSimulator
             details["upstream_error"] = exception.Message;
             throw new WebSearchSimulationUpstreamException(exception, requestPayload, details);
         }
-    }
-
-    private bool WebSearchEnabled()
-    {
-        return _settingsRepository.TableNoTracking.FirstOrDefault()?.Enabled ?? false;
     }
 
     private TavilyKeyDto? ReserveTavilyKey()

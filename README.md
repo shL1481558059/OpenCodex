@@ -61,7 +61,11 @@ TZ=Asia/Shanghai
 
 - 超级管理员可以查看和管理所有用户、所有渠道、所有访问 API Key 元数据和所有请求日志。
 - 普通用户只能查看和管理自己的渠道、自己的访问 API Key 和自己的请求日志。
-- Web Search 模拟只对超级管理员开放：普通用户不能配置，普通用户的 `/v1/responses` 请求即使声明 `web_search` 也不会触发本地 Tavily 模拟。
+- Web Search 处理模式只对超级管理员开放配置：
+  - `模拟`：拦截上游 `web_search` 工具调用，并使用代理配置的 Tavily Key 执行。
+  - `转换`：默认模式，像 `apply_patch` 工具和 Responses 自定义工具一样转换给上游。
+  - `关闭`：移除请求里的 `web_search` 工具及相关 `tool_choice` / `include`。
+  普通用户不能配置，且只有 `模拟` 模式会触发本地 Tavily 调用。
 
 调用 `/v1/responses`、`/v1/chat/completions`、`/v1/messages` 必须携带管理接口创建的访问 API Key：
 

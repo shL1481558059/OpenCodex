@@ -3,9 +3,11 @@ using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
+using OpenCodex.CoreBase.Domain.WebSearch;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.Proxy;
 using OpenCodex.CoreBase.Services.Proxy;
+using OpenCodex.CoreBase.Services.WebSearch;
 using Xunit;
 
 namespace OpenCodex.Api.Tests;
@@ -849,7 +851,8 @@ public sealed class ProxyEndpointServiceTests
         IChannelAffinityService? affinity = null,
         IProxyNonStreamService? nonStreams = null,
         IProxyStreamService? streams = null,
-        IProxyLogService? logs = null)
+        IProxyLogService? logs = null,
+        IWebSearchSimulator? webSearch = null)
     {
         return new ProxyEndpointService(
             logs ?? new StubProxyLogService(),
@@ -861,7 +864,8 @@ public sealed class ProxyEndpointServiceTests
             new StubProxyImageFallbackService(),
             nonStreams ?? new StubProxyNonStreamService(_ =>
                 Task.FromResult(new ProxyNonStreamResult(200, new { ok = true }))),
-            streams ?? new StubProxyStreamService(_ => Task.CompletedTask));
+            streams ?? new StubProxyStreamService(_ => Task.CompletedTask),
+            webSearch ?? new StubWebSearchSimulator());
     }
 
     private static ProxyEndpointContext CreateChatContext(string model)
@@ -1066,6 +1070,47 @@ public sealed class ProxyEndpointServiceTests
         {
             LastContext = context;
             return _handler(context);
+        }
+    }
+
+    private sealed class StubWebSearchSimulator : IWebSearchSimulator
+    {
+        public string CurrentMode()
+        {
+            return WebSearchModes.Convert;
+        }
+
+        public bool CanSimulate(
+            string entryProtocol,
+            string channelType,
+            string ownerRole,
+            IReadOnlyDictionary<string, object?> payload)
+        {
+            return false;
+        }
+
+        public Task<WebSearchSimulationResult> RunAsync(
+            IReadOnlyDictionary<string, object?> channel,
+            Dictionary<string, object?> upstreamRequest,
+            Dictionary<string, object?> payload,
+            string? originalModel,
+            int defaultTimeout,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public IAsyncEnumerable<string> RunChatStreamAsync(
+            IReadOnlyDictionary<string, object?> channel,
+            Dictionary<string, object?> upstreamRequest,
+            Dictionary<string, object?> payload,
+            string? originalModel,
+            int defaultTimeout,
+            WebSearchStreamResult result,
+            Func<IAsyncEnumerable<string>, string, IAsyncEnumerable<string>>? streamCapture,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
         }
     }
 
