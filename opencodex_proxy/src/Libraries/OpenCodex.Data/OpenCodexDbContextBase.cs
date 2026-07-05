@@ -106,6 +106,7 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         settings.ToTable("WebSearchSettings");
         settings.HasKey(item => item.Id);
         settings.Property(item => item.Id).ValueGeneratedOnAdd();
+        settings.Property(item => item.Mode).IsRequired();
 
         var keys = modelBuilder.Entity<TavilyKey>();
         keys.ToTable("TavilyKeys");

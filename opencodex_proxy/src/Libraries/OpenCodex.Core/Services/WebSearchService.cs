@@ -3,6 +3,7 @@ using OpenCodex.Core.Config;
 using OpenCodex.Core.Domain;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Data;
+using OpenCodex.CoreBase.Domain.WebSearch;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.WebSearch;
 using OpenCodex.CoreBase.Results;
@@ -107,7 +108,7 @@ public sealed class WebSearchService : IWebSearchService
             .ToList();
 
         return new WebSearchConfigDto(
-            webSearchSettings?.Enabled ?? false,
+            ParseWebSearchMode(webSearchSettings?.Mode),
             WebSearchProviders.Order(StringComparer.Ordinal).ToList(),
             webSearchSettings?.KeyUsageLimit ?? DefaultWebSearchKeyUsageLimit,
             keys);
@@ -148,7 +149,7 @@ public sealed class WebSearchService : IWebSearchService
             _settingsRepository.Insert(settings);
         }
 
-        settings.Enabled = JsonDictionaryValue.Get(config, "enabled") is true;
+        settings.Mode = ParseWebSearchMode(JsonDictionaryValue.Get(config, "mode"));
         settings.KeyUsageLimit = defaultKeyUsageLimit;
         settings.UpdatedAt = now;
         _settingsRepository.Update(settings);
@@ -195,7 +196,7 @@ public sealed class WebSearchService : IWebSearchService
             _settingsRepository.Insert(settings);
         }
 
-        settings.Enabled = JsonDictionaryValue.Get(config, "enabled") is true;
+        settings.Mode = ParseWebSearchMode(JsonDictionaryValue.Get(config, "mode"));
         settings.KeyUsageLimit = defaultKeyUsageLimit;
         settings.UpdatedAt = now;
         _settingsRepository.Update(settings);
@@ -394,6 +395,19 @@ public sealed class WebSearchService : IWebSearchService
         }
 
         return provider;
+    }
+
+    private static string ParseWebSearchMode(object? value)
+    {
+        var mode = (IsPythonFalsy(value) ? WebSearchModes.Convert : value?.ToString() ?? WebSearchModes.Convert)
+            .Trim()
+            .ToLowerInvariant();
+        if (!WebSearchModes.IsValid(mode))
+        {
+            throw new ArgumentException("web search mode must be one of: simulate, convert, disabled");
+        }
+
+        return mode;
     }
 
     private static string WebSearchApiKey(IReadOnlyDictionary<string, object?> item)

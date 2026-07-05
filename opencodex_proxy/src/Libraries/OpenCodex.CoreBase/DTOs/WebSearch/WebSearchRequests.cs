@@ -8,10 +8,10 @@ namespace OpenCodex.CoreBase.DTOs.WebSearch;
 public sealed class WebSearchConfigRequest
 {
     /// <summary>
-    /// 获取或设置联网搜索是否启用。
+    /// 获取或设置 Web 搜索处理模式。
     /// </summary>
-    [JsonPropertyName("enabled")]
-    public bool Enabled { get; set; }
+    [JsonPropertyName("mode")]
+    public string Mode { get; set; } = string.Empty;
 
     /// <summary>
     /// 获取或设置搜索密钥的默认使用次数上限。
@@ -33,7 +33,7 @@ public sealed class WebSearchConfigRequest
     {
         var config = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
-            ["enabled"] = Enabled,
+            ["mode"] = Mode,
             ["keys"] = (Keys ?? [])
                 .Select(key => key is null ? null : (object?)key.ToDictionary())
                 .ToList()

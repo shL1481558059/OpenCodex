@@ -899,6 +899,11 @@ public sealed class ProxyStreamServiceTests
 
         public bool StreamCalled { get; private set; }
 
+        public string CurrentMode()
+        {
+            return _canSimulate ? WebSearchModes.Simulate : WebSearchModes.Convert;
+        }
+
         public bool CanSimulate(
             string entryProtocol,
             string channelType,

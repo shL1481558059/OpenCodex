@@ -8,6 +8,12 @@ namespace OpenCodex.CoreBase.Services.WebSearch;
 public interface IWebSearchSimulator
 {
     /// <summary>
+    /// 读取当前 Web 搜索处理模式。
+    /// </summary>
+    /// <returns>当前 Web 搜索处理模式。</returns>
+    string CurrentMode();
+
+    /// <summary>
     /// 判断当前请求是否可以执行联网搜索模拟。
     /// </summary>
     /// <param name="entryProtocol">入口协议名称。</param>

@@ -1,10 +1,12 @@
 using System.Diagnostics;
 using OpenCodex.Core.Errors;
 using OpenCodex.Core.Protocols;
+using OpenCodex.Core.Services.WebSearch;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs.Proxy;
 using OpenCodex.CoreBase.Services.Proxy;
+using OpenCodex.CoreBase.Services.WebSearch;
 
 namespace OpenCodex.Core.Services.Proxy;
 
@@ -37,6 +39,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
     private readonly IProxyImageFallbackService _imageFallback;
     private readonly IProxyNonStreamService _nonStreams;
     private readonly IProxyStreamService _streams;
+    private readonly IWebSearchSimulator _webSearch;
 
     public ProxyEndpointService(
         IProxyLogService logs,
@@ -47,7 +50,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         IChannelAffinityService channelAffinity,
         IProxyImageFallbackService imageFallback,
         IProxyNonStreamService nonStreams,
-        IProxyStreamService streams)
+        IProxyStreamService streams,
+        IWebSearchSimulator webSearch)
     {
         _logs = logs;
         _requests = requests;
@@ -58,6 +62,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         _imageFallback = imageFallback;
         _nonStreams = nonStreams;
         _streams = streams;
+        _webSearch = webSearch;
     }
 
     public async Task<ProxyEndpointResult> ProxyAsync(ProxyEndpointContext context)
@@ -209,6 +214,10 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                             context.CancellationToken));
                         effectivePayload = fallback.Payload;
                     }
+
+                    effectivePayload = WebSearchRequestPolicy.ApplyMode(
+                        effectivePayload,
+                        _webSearch.CurrentMode());
 
                     var channelCompat = JsonDictionaryValue.Object(route.Channel, "compat", WebSearchPayload.DeepCopyObject);
                     effectivePayload = ChannelCompatRequestRewriter.Apply(

@@ -12,27 +12,27 @@ public sealed class WebSearchConfigResponse
     /// <summary>
     /// 初始化后台联网搜索配置响应。
     /// </summary>
-    /// <param name="enabled">联网搜索是否启用。</param>
+    /// <param name="mode">Web 搜索处理模式。</param>
     /// <param name="providers">可用搜索提供方列表。</param>
     /// <param name="defaultKeyUsageLimit">默认密钥使用次数上限。</param>
     /// <param name="keys">密钥响应列表。</param>
     public WebSearchConfigResponse(
-        bool enabled,
+        string mode,
         IReadOnlyList<string> providers,
         int defaultKeyUsageLimit,
         IReadOnlyList<TavilyKeyResponse> keys)
     {
-        Enabled = enabled;
+        Mode = mode;
         Providers = providers;
         DefaultKeyUsageLimit = defaultKeyUsageLimit;
         Keys = keys;
     }
 
     /// <summary>
-    /// 获取联网搜索是否启用。
+    /// 获取 Web 搜索处理模式。
     /// </summary>
-    [JsonPropertyName("enabled")]
-    public bool Enabled { get; }
+    [JsonPropertyName("mode")]
+    public string Mode { get; }
 
     /// <summary>
     /// 获取可用搜索提供方列表。
@@ -60,7 +60,7 @@ public sealed class WebSearchConfigResponse
     public static WebSearchConfigResponse From(WebSearchConfigDto config)
     {
         return new WebSearchConfigResponse(
-            config.Enabled,
+            config.Mode,
             config.Providers,
             config.DefaultKeyUsageLimit,
             config.Keys.Select(TavilyKeyResponse.From).ToList());
