@@ -13,7 +13,7 @@ public interface IChannelCapacityService
     /// <param name="requestModel">请求模型。</param>
     /// <param name="upstreamModel">上游模型。</param>
     /// <returns>成功时返回可释放的占位对象；容量已满时返回 <see langword="null"/>。</returns>
-    IChannelCapacityLease? TryAcquire(
+    Task<IChannelCapacityLease?> TryAcquireAsync(
         string ownerUsername,
         IReadOnlyDictionary<string, object?> channel,
         string? requestModel = null,

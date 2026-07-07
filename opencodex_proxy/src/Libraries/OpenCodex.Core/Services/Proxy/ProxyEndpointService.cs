@@ -92,7 +92,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
 
         try
         {
-            var accessKey = _requests.AuthenticateAccessKey(context.AuthorizationHeader);
+            var accessKey = await _requests.AuthenticateAccessKeyAsync(context.AuthorizationHeader);
             ownerUsername = accessKey.OwnerUsername;
             ownerRole = accessKey.User.Role;
             apiKeyId = accessKey.Id;
@@ -118,7 +118,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 requestMetadata.Path,
                 requestMetadata.ClientIp,
                 requestMetadata.Headers));
-            var candidates = OrderCandidates(
+            var candidates = await OrderCandidatesAsync(
                 ownerUsername,
                 requestModel,
                 requestContainsImages,
@@ -156,7 +156,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                     }
                 }
 
-                using var capacityLease = _channelCapacity.TryAcquire(
+                using var capacityLease = await _channelCapacity.TryAcquireAsync(
                     ownerUsername,
                     candidate.Route.Channel,
                     candidate.Route.OriginalModel,
@@ -183,7 +183,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 {
                     if (!string.IsNullOrEmpty(stickyKey))
                     {
-                        _channelAffinity.Remember(
+                        await _channelAffinity.RememberAsync(
                             ownerUsername,
                             stickyKey,
                             candidateChannelId);
@@ -276,7 +276,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                                 trackingWriter,
                                 context.CancellationToken));
 
-                        WriteChannelAttemptLog(
+                        await WriteChannelAttemptLogAsync(
                             requestLogId,
                             requestId,
                             ownerUsername,
@@ -328,7 +328,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         throw failureException;
                     }
 
-                    WriteChannelAttemptLog(
+                    await WriteChannelAttemptLogAsync(
                         requestLogId,
                         requestId,
                         ownerUsername,
@@ -372,7 +372,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         streamResponseStarted = trackingWriter?.HasWritten == true;
                         var failoverEligible = !streamResponseStarted
                             && ProxyFailoverPolicy.CanFailover(exception);
-                        WriteChannelAttemptLog(
+                        await WriteChannelAttemptLogAsync(
                             requestLogId,
                             requestId,
                             ownerUsername,
@@ -402,7 +402,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                     }
 
                     var canFailover = ProxyFailoverPolicy.CanFailover(exception);
-                    WriteChannelAttemptLog(
+                    await WriteChannelAttemptLogAsync(
                         requestLogId,
                         requestId,
                         ownerUsername,
@@ -442,7 +442,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
 
                     if (exception is not OperationCanceledException)
                     {
-                        WriteChannelAttemptLog(
+                        await WriteChannelAttemptLogAsync(
                             requestLogId,
                             requestId,
                             ownerUsername,
@@ -522,26 +522,26 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         WebSearchDetails: null);
                 if (requestLogId.HasValue)
                 {
-                    _logs.CompleteLog(requestLogId.Value, logContext, requestMetadata);
+                    await _logs.CompleteLogAsync(requestLogId.Value, logContext, requestMetadata);
                 }
                 else
                 {
-                    _logs.WriteLog(logContext, requestMetadata);
+                    await _logs.WriteLogAsync(logContext, requestMetadata);
                 }
             }
         }
     }
 
-    private IReadOnlyList<OrderedRouteCandidate> OrderCandidates(
+    private async Task<IReadOnlyList<OrderedRouteCandidate>> OrderCandidatesAsync(
         string ownerUsername,
         string? requestModel,
         bool requestContainsImages,
         string? stickyKey)
     {
-        var candidates = _routes.ListRouteCandidates(ownerUsername, requestModel, requestContainsImages);
+        var candidates = await _routes.ListRouteCandidatesAsync(ownerUsername, requestModel, requestContainsImages);
         var preferredChannelId = string.IsNullOrEmpty(stickyKey)
             ? null
-            : _channelAffinity.GetPreferredChannelId(ownerUsername, stickyKey);
+            : await _channelAffinity.GetPreferredChannelIdAsync(ownerUsername, stickyKey);
         var orderedCandidates = candidates
             .Select((candidate, index) => new
             {
@@ -567,7 +567,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             .ToList();
     }
 
-    private void WriteChannelAttemptLog(
+    private async Task WriteChannelAttemptLogAsync(
         Guid? parentRequestLogId,
         string requestId,
         string ownerUsername,
@@ -613,7 +613,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             attemptDetails["error"] = error;
         }
 
-        _logs.WriteLog(
+        await _logs.WriteLogAsync(
             new ProxyLogContext(
                 requestId,
                 ownerUsername,

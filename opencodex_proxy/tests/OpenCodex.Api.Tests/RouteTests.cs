@@ -99,7 +99,7 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
 
         using var scope = factory.Services.CreateScope();
         var channelCapacity = scope.ServiceProvider.GetRequiredService<IChannelCapacityService>();
-        using var lease = channelCapacity.TryAcquire(
+        using var lease = await channelCapacity.TryAcquireAsync(
             "admin",
             new Dictionary<string, object?>
             {

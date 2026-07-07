@@ -20,7 +20,7 @@ public sealed class ProxyEndpointServiceTests
         var capacity = new ChannelCapacityService();
         var busyChannel = CreateChannel("busy", priority: 1);
         var idleChannel = CreateChannel("idle", priority: 1);
-        using var busyLease = capacity.TryAcquire("admin", busyChannel);
+        using var busyLease = await capacity.TryAcquireAsync("admin", busyChannel);
 
         var nonStreams = new StubProxyNonStreamService(_ =>
             Task.FromResult(new ProxyNonStreamResult(200, new { ok = true })));
@@ -49,8 +49,8 @@ public sealed class ProxyEndpointServiceTests
         var capacity = new ChannelCapacityService();
         var primary = CreateChannel("primary", priority: 0, capacity: 1);
         var secondary = CreateChannel("secondary", priority: 1, capacity: 1);
-        using var primaryLease = capacity.TryAcquire("admin", primary);
-        using var secondaryLease = capacity.TryAcquire("admin", secondary);
+        using var primaryLease = await capacity.TryAcquireAsync("admin", primary);
+        using var secondaryLease = await capacity.TryAcquireAsync("admin", secondary);
 
         var service = CreateService(
             capacity,
@@ -75,7 +75,7 @@ public sealed class ProxyEndpointServiceTests
         var first = CreateChannel("first", priority: 1);
         var second = CreateChannel("second", priority: 1);
         // 预置亲和映射：该 sticky key 此前命中 "second"。
-        affinity.Remember("admin", "cache-key-1", "second");
+        await affinity.RememberAsync("admin", "cache-key-1", "second");
 
         var nonStreams = new StubProxyNonStreamService(_ =>
             Task.FromResult(new ProxyNonStreamResult(200, new { ok = true })));
@@ -105,8 +105,8 @@ public sealed class ProxyEndpointServiceTests
         var preferred = CreateChannel("preferred", priority: 1, capacity: 1);
         var fallback = CreateChannel("fallback", priority: 1);
         // 偏好渠道已被占满，软粘应回退到其他渠道而非报 429。
-        using var preferredLease = capacity.TryAcquire("admin", preferred);
-        affinity.Remember("admin", "cache-key-2", "preferred");
+        using var preferredLease = await capacity.TryAcquireAsync("admin", preferred);
+        await affinity.RememberAsync("admin", "cache-key-2", "preferred");
 
         var nonStreams = new StubProxyNonStreamService(_ =>
             Task.FromResult(new ProxyNonStreamResult(200, new { ok = true })));
@@ -127,7 +127,7 @@ public sealed class ProxyEndpointServiceTests
         Assert.NotNull(nonStreams.LastContext);
         Assert.Equal("fallback", nonStreams.LastContext!.ChannelId);
         // 回退后亲和映射应更新为实际命中的渠道。
-        Assert.Equal("fallback", affinity.GetPreferredChannelId("admin", "cache-key-2"));
+        Assert.Equal("fallback", await affinity.GetPreferredChannelIdAsync("admin", "cache-key-2"));
     }
 
     [Fact]
@@ -975,32 +975,32 @@ public sealed class ProxyEndpointServiceTests
             _candidates = candidates;
         }
 
-        public ProxyRouteDto ChooseRoute(string ownerUsername, string? model, bool requestContainsImages = false)
+        public Task<ProxyRouteDto> ChooseRouteAsync(string ownerUsername, string? model, bool requestContainsImages = false)
         {
-            return _candidates[0];
+            return Task.FromResult(_candidates[0]);
         }
 
-        public IReadOnlyList<ProxyRouteDto> ListRouteCandidates(
+        public Task<IReadOnlyList<ProxyRouteDto>> ListRouteCandidatesAsync(
             string ownerUsername,
             string? model,
             bool requestContainsImages = false)
         {
-            return _candidates;
+            return Task.FromResult(_candidates);
         }
 
-        public ProxyRouteDto? ChooseOcrRoute(string ownerUsername, string? model)
+        public Task<ProxyRouteDto?> ChooseOcrRouteAsync(string ownerUsername, string? model)
         {
-            return null;
+            return Task.FromResult<ProxyRouteDto?>(null);
         }
 
-        public IReadOnlyList<string> ListModels(string ownerUsername)
+        public Task<IReadOnlyList<string>> ListModelsAsync(string ownerUsername)
         {
-            return [];
+            return Task.FromResult<IReadOnlyList<string>>([]);
         }
 
-        public IReadOnlyList<ProxyModelCapabilityDto> ListModelCapabilities(string ownerUsername)
+        public Task<IReadOnlyList<ProxyModelCapabilityDto>> ListModelCapabilitiesAsync(string ownerUsername)
         {
-            return [];
+            return Task.FromResult<IReadOnlyList<ProxyModelCapabilityDto>>([]);
         }
     }
 
@@ -1011,9 +1011,9 @@ public sealed class ProxyEndpointServiceTests
             return new ProxyRequestState("req-1", "admin", 120);
         }
 
-        public AuthenticatedAccessApiKeyDto AuthenticateAccessKey(string? authorizationHeader)
+        public Task<AuthenticatedAccessApiKeyDto> AuthenticateAccessKeyAsync(string? authorizationHeader)
         {
-            return new AuthenticatedAccessApiKeyDto(
+            return Task.FromResult(new AuthenticatedAccessApiKeyDto(
                 Guid.NewGuid(),
                 Guid.NewGuid(),
                 "admin",
@@ -1025,7 +1025,7 @@ public sealed class ProxyEndpointServiceTests
                 0,
                 0,
                 null,
-                new AccessApiKeyUserDto(Guid.NewGuid(), "admin", "superadmin", true));
+                new AccessApiKeyUserDto(Guid.NewGuid(), "admin", "superadmin", true)));
         }
     }
 
@@ -1169,19 +1169,20 @@ public sealed class ProxyEndpointServiceTests
         {
         }
 
-        public void CompleteLog(Guid requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
+        public Task CompleteLogAsync(Guid requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
         {
+            return Task.CompletedTask;
         }
 
-        public Guid WriteLog(ProxyLogContext context, ProxyRequestMetadata request)
+        public Task<Guid> WriteLogAsync(ProxyLogContext context, ProxyRequestMetadata request)
         {
             WrittenLogs.Add(context);
-            return Guid.NewGuid();
+            return Task.FromResult(Guid.NewGuid());
         }
 
-        public Guid WriteLog(ProxyRequestLogContext context)
+        public Task<Guid> WriteLogAsync(ProxyRequestLogContext context)
         {
-            return Guid.Empty;
+            return Task.FromResult(Guid.Empty);
         }
     }
 
