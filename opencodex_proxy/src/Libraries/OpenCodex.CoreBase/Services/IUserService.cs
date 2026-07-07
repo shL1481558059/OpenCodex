@@ -29,7 +29,7 @@ public interface IUserService
     /// <param name="username">要更新的用户名。</param>
     /// <param name="command">更新用户命令。</param>
     /// <returns>更新后的用户结果。</returns>
-    ApiOpResult<UserResponsePayload> UpdateUser(
+    Task<ApiOpResult<UserResponsePayload>> UpdateUserAsync(
         string username,
         UserUpdateCommand command);
 
@@ -38,6 +38,6 @@ public interface IUserService
     /// </summary>
     /// <param name="username">要删除的用户名。</param>
     /// <returns>删除操作结果。</returns>
-    ApiOpResult<DeleteUserResponse> DeleteUser(
+    Task<ApiOpResult<DeleteUserResponse>> DeleteUserAsync(
         string username);
 }

@@ -33,10 +33,10 @@ public sealed class ProxyController : ApiControllerBase
 
     [HttpGet("/models")]
     [HttpGet("/v1/models")]
-    public IActionResult Models()
+    public async Task<IActionResult> Models()
     {
-        var accessKey = _requests.AuthenticateAccessKey(AuthorizationHeader());
-        var models = _routes.ListModelCapabilities(accessKey.OwnerUsername);
+        var accessKey = await _requests.AuthenticateAccessKeyAsync(AuthorizationHeader());
+        var models = await _routes.ListModelCapabilitiesAsync(accessKey.OwnerUsername);
         var catalogByModel = (_catalog.ListModels(null, null, true).Payload?.Models ?? [])
             .ToDictionary(model => model.ModelKey, StringComparer.OrdinalIgnoreCase);
         var openAiModels = models

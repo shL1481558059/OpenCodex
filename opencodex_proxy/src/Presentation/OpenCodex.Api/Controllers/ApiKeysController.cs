@@ -34,26 +34,26 @@ public sealed class ApiKeysController : AuthenticatedApiControllerBase
     }
 
     [HttpPatch("/api-keys/{keyId:guid}")]
-    public IActionResult UpdateApiKey(Guid keyId, ApiKeyUpdateRequest request)
+    public async Task<IActionResult> UpdateApiKey(Guid keyId, ApiKeyUpdateRequest request)
     {
         RequireUser();
-        var result = _apiKeys.UpdateKey(keyId, request.ToCommand());
+        var result = await _apiKeys.UpdateKeyAsync(keyId, request.ToCommand());
         return Api(result);
     }
 
     [HttpDelete("/api-keys/{keyId:guid}")]
-    public IActionResult DeleteApiKey(Guid keyId)
+    public async Task<IActionResult> DeleteApiKey(Guid keyId)
     {
         RequireUser();
-        var result = _apiKeys.DeleteKey(keyId);
+        var result = await _apiKeys.DeleteKeyAsync(keyId);
         return Api(result);
     }
 
     [HttpPost("/api-keys/import")]
-    public IActionResult ImportApiKeys(ApiKeyImportRequest request)
+    public async Task<IActionResult> ImportApiKeys(ApiKeyImportRequest request)
     {
         RequireUser();
-        var result = _apiKeys.ImportKeys(request.ToCommand());
+        var result = await _apiKeys.ImportKeysAsync(request.ToCommand());
         return Api(result);
     }
 }

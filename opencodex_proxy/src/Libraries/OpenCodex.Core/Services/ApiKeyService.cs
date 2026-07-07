@@ -1,6 +1,7 @@
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Persistence;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Caching;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.ApiKeys;
@@ -15,15 +16,18 @@ public sealed class ApiKeyService : IApiKeyService
     private readonly IWorkContext _workContext;
     private readonly IRepository<AccessApiKey> _keyRepository;
     private readonly IRepository<User> _userRepository;
+    private readonly ICacheService _cache;
 
     public ApiKeyService(
         IWorkContext workContext,
         IRepository<AccessApiKey> keyRepository,
-        IRepository<User> userRepository)
+        IRepository<User> userRepository,
+        ICacheService cache)
     {
         _workContext = workContext;
         _keyRepository = keyRepository;
         _userRepository = userRepository;
+        _cache = cache;
     }
 
     public ApiOpResult<ApiKeysResponse> ListKeys(
@@ -126,7 +130,7 @@ public sealed class ApiKeyService : IApiKeyService
         }
     }
 
-    public ApiOpResult<ApiKeyResponsePayload> UpdateKey(
+    public async Task<ApiOpResult<ApiKeyResponsePayload>> UpdateKeyAsync(
         Guid keyId,
         ApiKeyUpdateCommand command)
     {
@@ -148,6 +152,9 @@ public sealed class ApiKeyService : IApiKeyService
             existing.UpdatedAt = UnixTimeSeconds();
             _keyRepository.Update(existing);
 
+            // 仅改 Enabled,KeyHash 不变;失效该 hash 的鉴权快照,使下次请求重新回源。
+            await _cache.RemoveAsync(CacheKeys.AuthApiKey(existing.KeyHash));
+
             var owner = _userRepository.TableNoTracking.FirstOrDefault(u => u.Id == existing.OwnerUserId);
             return ApiOpResult<ApiKeyResponsePayload>.Succeed(
                 ApiKeyResponsePayload.From(MapToDto(existing, owner?.Username ?? string.Empty)));
@@ -158,7 +165,7 @@ public sealed class ApiKeyService : IApiKeyService
         }
     }
 
-    public ApiOpResult<DeleteApiKeyResponse> DeleteKey(
+    public async Task<ApiOpResult<DeleteApiKeyResponse>> DeleteKeyAsync(
         Guid keyId)
     {
         try
@@ -175,7 +182,12 @@ public sealed class ApiKeyService : IApiKeyService
 
             var existing = query.FirstOrDefault()
                 ?? throw new InvalidOperationException("api key not found");
+            var hashToRemove = existing.KeyHash;
             _keyRepository.Delete(existing);
+
+            // 删除后失效该 hash 的鉴权快照,防止缓存仍判定该 key 有效。
+            await _cache.RemoveAsync(CacheKeys.AuthApiKey(hashToRemove));
+
             return ApiOpResult<DeleteApiKeyResponse>.Succeed(new DeleteApiKeyResponse(true));
         }
         catch (InvalidOperationException exception)
@@ -184,7 +196,7 @@ public sealed class ApiKeyService : IApiKeyService
         }
     }
 
-    public ApiOpResult<ApiKeysResponse> ImportKeys(
+    public async Task<ApiOpResult<ApiKeysResponse>> ImportKeysAsync(
         ApiKeyImportCommand command)
     {
         try
@@ -217,6 +229,8 @@ public sealed class ApiKeyService : IApiKeyService
 
             var toInsert = new List<AccessApiKey>();
             var toUpdate = new List<AccessApiKey>();
+            // 被更新 key 的旧/新 hash 集合,更新完成后批量失效。
+            var hashesToInvalidate = new HashSet<string>(StringComparer.Ordinal);
             foreach (var item in command.Items)
             {
                 if (string.IsNullOrWhiteSpace(item.Name))
@@ -248,7 +262,10 @@ public sealed class ApiKeyService : IApiKeyService
                 var matchKey = (ownerUserId, item.Name);
                 if (existingByName.TryGetValue(matchKey, out var existing))
                 {
+                    // 重新 hash 前,先记下旧 hash;更新后旧、新两个 hash 的鉴权快照都要失效。
+                    hashesToInvalidate.Add(existing.KeyHash);
                     existing.KeyHash = OpenCodexSecurity.HashAccessApiKey(item.Key);
+                    hashesToInvalidate.Add(existing.KeyHash);
                     existing.KeyPlaintext = item.Key;
                     existing.KeyPrefix = item.Key.Length >= 12 ? item.Key[..12] : item.Key;
                     existing.KeySuffix = item.Key.Length >= 6 ? item.Key[^6..] : item.Key;
@@ -281,6 +298,11 @@ public sealed class ApiKeyService : IApiKeyService
             if (toInsert.Count > 0)
             {
                 _keyRepository.Insert(toInsert);
+            }
+
+            if (hashesToInvalidate.Count > 0)
+            {
+                await _cache.RemoveAsync(hashesToInvalidate);
             }
 
             return ListKeys(isSuperadmin ? null : currentUser.Username);

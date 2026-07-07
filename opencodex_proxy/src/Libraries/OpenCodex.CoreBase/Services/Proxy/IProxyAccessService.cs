@@ -12,5 +12,5 @@ public interface IProxyAccessService
     /// </summary>
     /// <param name="authorizationHeader">传入请求中的认证头。</param>
     /// <returns>已认证的访问密钥信息。</returns>
-    AuthenticatedAccessApiKeyDto AuthenticateBearer(string? authorizationHeader);
+    Task<AuthenticatedAccessApiKeyDto> AuthenticateBearerAsync(string? authorizationHeader);
 }
