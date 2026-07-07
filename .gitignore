@@ -28,3 +28,8 @@ src-tauri/target/
 src-tauri/resources/
 src-tauri/binaries/publish/
 src-tauri/binaries/opencodex-api-*
+
+# 本地临时与工具文件
+.tmp/
+.claude/
+*.tmp
