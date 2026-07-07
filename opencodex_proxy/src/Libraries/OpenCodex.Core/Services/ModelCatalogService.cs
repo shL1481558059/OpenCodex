@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Persistence;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Caching;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain.Models;
 using OpenCodex.CoreBase.DTOs;
@@ -20,6 +21,8 @@ public sealed class ModelCatalogService : IModelCatalogService
         PropertyNameCaseInsensitive = true
     };
 
+    private static readonly TimeSpan PricingCacheTtl = TimeSpan.FromSeconds(60);
+
     private readonly IRepository<ModelProvider> _providers;
     private readonly IRepository<ModelInfo> _models;
     private readonly IRepository<ChannelModelInfo> _channelModels;
@@ -29,6 +32,7 @@ public sealed class ModelCatalogService : IModelCatalogService
     private readonly IRepository<Channel> _channels;
     private readonly IRepository<ModelPricing> _legacyPricing;
     private readonly IWorkContext _workContext;
+    private readonly ICacheService _cache;
 
     public ModelCatalogService(
         IRepository<ModelProvider> providers,
@@ -39,7 +43,8 @@ public sealed class ModelCatalogService : IModelCatalogService
         IRepository<ChannelModelMapping> mappings,
         IRepository<Channel> channels,
         IRepository<ModelPricing> legacyPricing,
-        IWorkContext workContext)
+        IWorkContext workContext,
+        ICacheService cache)
     {
         _providers = providers;
         _models = models;
@@ -50,6 +55,7 @@ public sealed class ModelCatalogService : IModelCatalogService
         _channels = channels;
         _legacyPricing = legacyPricing;
         _workContext = workContext;
+        _cache = cache;
     }
 
     public ApiOpResult<ModelProviderListResponse> ListProviders(bool includeDisabled = false)
@@ -412,33 +418,36 @@ public sealed class ModelCatalogService : IModelCatalogService
             result.Skipped + migrated.Skipped));
     }
 
-    public ModelPricingCalculationResult CalculateCost(
+    public async Task<ModelPricingCalculationResult> CalculateCostAsync(
         Guid? channelId,
         string? requestModel,
         string? upstreamModel,
         string? responseModel,
         ModelUsageVector usage)
     {
-        var resolution = ResolvePricing(channelId, upstreamModel);
-        if (!resolution.HasModel || resolution.Plan is null)
+        // 缓存定价解析(按 channelId + upstreamModel),扁平 DTO 规避 PricingResolution 不可序列化的问题。
+        // rules/provider 为索引小查询,每次现查;usage 计算每请求不同,不可缓存。
+        var cached = await ResolvePricingCachedAsync(channelId, upstreamModel);
+        if (cached is null || !cached.HasModel || !cached.HasPlan)
         {
-            return EmptyCalculation(resolution.Reason);
+            return EmptyCalculation(cached?.Reason ?? "model_not_matched");
         }
 
+        var planId = cached.PlanId!.Value;
         var rules = _rules.TableNoTracking
-            .Where(rule => rule.PricingPlanId == resolution.Plan.Id && rule.Enabled)
+            .Where(rule => rule.PricingPlanId == planId && rule.Enabled)
             .ToList();
         if (rules.Count == 0)
         {
             return EmptyCalculation("pricing_plan_has_no_rules");
         }
 
-        var providerId = resolution.ProviderId;
-        var modelInfoId = resolution.Model?.Id;
-        var channelModelInfoId = resolution.ChannelModel?.Id;
-        var modelKey = resolution.ModelKey;
-        var matchType = resolution.MatchType;
-        var matchPattern = resolution.MatchPattern;
+        var providerId = cached.ProviderId!.Value;
+        var modelInfoId = cached.ModelInfoId;
+        var channelModelInfoId = cached.ChannelModelInfoId;
+        var modelKey = cached.ModelKey!;
+        var matchType = cached.MatchType!;
+        var matchPattern = cached.MatchPattern!;
         var total = 0m;
         var snapshotRules = new List<ModelPricingSnapshotRule>();
         foreach (var rule in rules)
@@ -456,12 +465,12 @@ public sealed class ModelCatalogService : IModelCatalogService
 
         var provider = _providers.TableNoTracking.FirstOrDefault(item => item.Id == providerId);
         var snapshot = new ModelPricingSnapshot(
-            resolution.Reason,
-            resolution.Plan.Currency,
+            cached.Reason,
+            cached.PlanCurrency,
             total,
             modelInfoId,
             channelModelInfoId,
-            resolution.Plan.Id,
+            planId,
             provider?.Code,
             modelKey,
             matchType,
@@ -471,17 +480,57 @@ public sealed class ModelCatalogService : IModelCatalogService
 
         return new ModelPricingCalculationResult(
             total,
-            resolution.Plan.Currency,
+            cached.PlanCurrency,
             modelInfoId,
             channelModelInfoId,
-            resolution.Plan.Id,
+            planId,
             provider?.Code,
             modelKey,
             matchType,
             matchPattern,
-            resolution.Reason,
+            cached.Reason,
             snapshotJson);
     }
+
+    private async Task<CachedPricingResolution?> ResolvePricingCachedAsync(
+        Guid? channelId,
+        string? upstreamModel)
+    {
+        return await _cache.GetOrCreateAsync(
+            CacheKeys.PricingContext(channelId, upstreamModel),
+            () => Task.FromResult(ToCached(ResolvePricing(channelId, upstreamModel))),
+            PricingCacheTtl);
+    }
+
+    private static CachedPricingResolution ToCached(PricingResolution resolution)
+    {
+        var hasModel = resolution.HasModel;
+        return new CachedPricingResolution(
+            hasModel,
+            resolution.Plan is not null,
+            resolution.Plan?.Id,
+            resolution.Plan?.Currency,
+            hasModel ? resolution.ProviderId : null,
+            resolution.Model?.Id,
+            resolution.ChannelModel?.Id,
+            hasModel ? resolution.ModelKey : null,
+            hasModel ? resolution.MatchType : null,
+            hasModel ? resolution.MatchPattern : null,
+            resolution.Reason);
+    }
+
+    private sealed record CachedPricingResolution(
+        bool HasModel,
+        bool HasPlan,
+        Guid? PlanId,
+        string? PlanCurrency,
+        Guid? ProviderId,
+        Guid? ModelInfoId,
+        Guid? ChannelModelInfoId,
+        string? ModelKey,
+        string? MatchType,
+        string? MatchPattern,
+        string Reason);
 
     private PricingResolution ResolvePricing(
         Guid? channelId,

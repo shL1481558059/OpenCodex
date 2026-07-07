@@ -169,7 +169,7 @@ public sealed class ModelCatalogServiceTests
     }
 
     [Fact]
-    public void CalculateCostUsesMatchPriority()
+    public async Task CalculateCostUsesMatchPriority()
     {
         var dbPath = CreateDbPath();
         using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
@@ -185,14 +185,14 @@ public sealed class ModelCatalogServiceTests
 
         var service = CreateService(dbPath);
 
-        Assert.Equal(1m, service.CalculateCost(null, null, "model-x", null, Tokens(1_000_000)).Cost);
-        Assert.Equal(2m, service.CalculateCost(null, null, "model-y", null, Tokens(1_000_000)).Cost);
-        Assert.Equal(3m, service.CalculateCost(null, null, "other-x", null, Tokens(1_000_000)).Cost);
-        Assert.Equal(4m, service.CalculateCost(null, null, "other-x-other", null, Tokens(1_000_000)).Cost);
+        Assert.Equal(1m, (await service.CalculateCostAsync(null, null, "model-x", null, Tokens(1_000_000))).Cost);
+        Assert.Equal(2m, (await service.CalculateCostAsync(null, null, "model-y", null, Tokens(1_000_000))).Cost);
+        Assert.Equal(3m, (await service.CalculateCostAsync(null, null, "other-x", null, Tokens(1_000_000))).Cost);
+        Assert.Equal(4m, (await service.CalculateCostAsync(null, null, "other-x-other", null, Tokens(1_000_000))).Cost);
     }
 
     [Fact]
-    public void CalculateCostUsesUpstreamModelForGlobalPricing()
+    public async Task CalculateCostUsesUpstreamModelForGlobalPricing()
     {
         var dbPath = CreateDbPath();
         using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
@@ -205,7 +205,7 @@ public sealed class ModelCatalogServiceTests
         }
 
         var service = CreateService(dbPath);
-        var result = service.CalculateCost(null, "request-model", "upstream-model", null, Tokens(1_000_000));
+        var result = await service.CalculateCostAsync(null, "request-model", "upstream-model", null, Tokens(1_000_000));
 
         Assert.Equal(7m, result.Cost);
         Assert.Equal("global_model_match", result.Resolution);
@@ -213,7 +213,7 @@ public sealed class ModelCatalogServiceTests
     }
 
     [Fact]
-    public void CalculateCostIgnoresResponseModelForPricing()
+    public async Task CalculateCostIgnoresResponseModelForPricing()
     {
         var dbPath = CreateDbPath();
         using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
@@ -226,7 +226,7 @@ public sealed class ModelCatalogServiceTests
         }
 
         var service = CreateService(dbPath);
-        var result = service.CalculateCost(null, "request-model", "upstream-model", "response-model", Tokens(1_000_000));
+        var result = await service.CalculateCostAsync(null, "request-model", "upstream-model", "response-model", Tokens(1_000_000));
 
         Assert.Equal(2m, result.Cost);
         Assert.Equal("global_model_match", result.Resolution);
@@ -234,7 +234,7 @@ public sealed class ModelCatalogServiceTests
     }
 
     [Fact]
-    public void CalculateCostUsesChannelModelInfoByUpstreamModel()
+    public async Task CalculateCostUsesChannelModelInfoByUpstreamModel()
     {
         var dbPath = CreateDbPath();
         var channelId = Guid.NewGuid();
@@ -256,7 +256,7 @@ public sealed class ModelCatalogServiceTests
         }
 
         var service = CreateService(dbPath);
-        var result = service.CalculateCost(channelId, "request-alias", "upstream-model", "response-model", Tokens(1_000_000));
+        var result = await service.CalculateCostAsync(channelId, "request-alias", "upstream-model", "response-model", Tokens(1_000_000));
 
         Assert.Equal(9m, result.Cost);
         Assert.Equal("channel_model_override", result.Resolution);
@@ -266,7 +266,7 @@ public sealed class ModelCatalogServiceTests
     }
 
     [Fact]
-    public void CalculateCostDoesNotFallbackToRequestModel()
+    public async Task CalculateCostDoesNotFallbackToRequestModel()
     {
         var dbPath = CreateDbPath();
         using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
@@ -278,14 +278,14 @@ public sealed class ModelCatalogServiceTests
         }
 
         var service = CreateService(dbPath);
-        var result = service.CalculateCost(null, "request-model", "missing-upstream-model", null, Tokens(1_000_000));
+        var result = await service.CalculateCostAsync(null, "request-model", "missing-upstream-model", null, Tokens(1_000_000));
 
         Assert.Equal(0m, result.Cost);
         Assert.Equal("model_not_matched", result.Resolution);
     }
 
     [Fact]
-    public void CalculateCostIgnoresLegacyChannelMappingPricingFields()
+    public async Task CalculateCostIgnoresLegacyChannelMappingPricingFields()
     {
         var dbPath = CreateDbPath();
         var channelId = Guid.NewGuid();
@@ -313,14 +313,14 @@ public sealed class ModelCatalogServiceTests
         }
 
         var service = CreateService(dbPath);
-        var result = service.CalculateCost(channelId, "model-a", "model-a", null, Tokens(1_000_000));
+        var result = await service.CalculateCostAsync(channelId, "model-a", "model-a", null, Tokens(1_000_000));
 
         Assert.Equal(1m, result.Cost);
         Assert.Equal("global_model_match", result.Resolution);
     }
 
     [Fact]
-    public void ChannelModelInfoManagementOverridesAndRestoresGlobalPricing()
+    public async Task ChannelModelInfoManagementOverridesAndRestoresGlobalPricing()
     {
         var dbPath = CreateDbPath();
         var channelId = Guid.NewGuid();
@@ -367,7 +367,7 @@ public sealed class ModelCatalogServiceTests
         });
 
         Assert.True(saved.Succeeded);
-        var overrideCost = service.CalculateCost(channelId, "request-model", "upstream-model", null, Tokens(1_000_000));
+        var overrideCost = await service.CalculateCostAsync(channelId, "request-model", "upstream-model", null, Tokens(1_000_000));
         Assert.Equal(7m, overrideCost.Cost);
         Assert.Equal("channel_model_override", overrideCost.Resolution);
 
@@ -379,7 +379,7 @@ public sealed class ModelCatalogServiceTests
         var restored = service.RestoreChannelModelInfo(channelId, saved.Payload!.Model.Id);
 
         Assert.True(restored.Succeeded);
-        var globalCost = service.CalculateCost(channelId, "request-model", "upstream-model", null, Tokens(1_000_000));
+        var globalCost = await service.CalculateCostAsync(channelId, "request-model", "upstream-model", null, Tokens(1_000_000));
         Assert.Equal(1m, globalCost.Cost);
         Assert.Equal("global_model_match", globalCost.Resolution);
 
@@ -389,7 +389,7 @@ public sealed class ModelCatalogServiceTests
     }
 
     [Fact]
-    public void CalculateCostSplitsCacheWriteAndCacheRead()
+    public async Task CalculateCostSplitsCacheWriteAndCacheRead()
     {
         var dbPath = CreateDbPath();
         using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
@@ -408,7 +408,7 @@ public sealed class ModelCatalogServiceTests
         }
 
         var service = CreateService(dbPath);
-        var result = service.CalculateCost(
+        var result = await service.CalculateCostAsync(
             null,
             null,
             "cache-model",
@@ -633,7 +633,8 @@ public sealed class ModelCatalogServiceTests
             new EfRepository<ChannelModelMapping>(context),
             new EfRepository<Channel>(context),
             new EfRepository<ModelPricing>(context),
-            new TestWorkContext(TestUserId, "admin", "superadmin"));
+            new TestWorkContext(TestUserId, "admin", "superadmin"),
+            new TestCacheService());
     }
 
     private static readonly Guid TestUserId = Guid.Parse("99999999-9999-9999-9999-999999999901");

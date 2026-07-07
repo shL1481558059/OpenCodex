@@ -17,32 +17,32 @@ public interface IConfigService
     /// 创建单个渠道。
     /// </summary>
     /// <param name="request">渠道请求。</param>
-    ApiOpResult<ConfigResponse> CreateChannel(ChannelRequest request);
+    Task<ApiOpResult<ConfigResponse>> CreateChannelAsync(ChannelRequest request);
 
     /// <summary>
     /// 更新单个渠道。
     /// </summary>
     /// <param name="channelId">渠道标识符。</param>
     /// <param name="request">渠道请求。</param>
-    ApiOpResult<ConfigResponse> UpdateChannel(Guid channelId, ChannelRequest request);
+    Task<ApiOpResult<ConfigResponse>> UpdateChannelAsync(Guid channelId, ChannelRequest request);
 
     /// <summary>
     /// 批量更新通道的低风险字段。
     /// </summary>
     /// <param name="request">批量更新请求。</param>
-    ApiOpResult<ConfigResponse> BatchUpdateChannels(ChannelBatchUpdateRequest request);
+    Task<ApiOpResult<ConfigResponse>> BatchUpdateChannelsAsync(ChannelBatchUpdateRequest request);
 
     /// <summary>
     /// 删除单个渠道。
     /// </summary>
     /// <param name="channelId">渠道标识符。</param>
-    ApiOpResult<ConfigResponse> DeleteChannel(Guid channelId);
+    Task<ApiOpResult<ConfigResponse>> DeleteChannelAsync(Guid channelId);
 
     /// <summary>
     /// 合并导入通道配置。按 (owner_username, name) 匹配：已存在则更新，不存在则新增。
     /// </summary>
     /// <param name="body">导入的通道配置请求内容。</param>
-    ApiOpResult<ConfigResponse> ImportConfig(
+    Task<ApiOpResult<ConfigResponse>> ImportConfigAsync(
         IReadOnlyDictionary<string, object?> body);
 
     /// <summary>
