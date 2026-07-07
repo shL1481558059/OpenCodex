@@ -28,8 +28,8 @@ public sealed class ProxyRequestService : IProxyRequestService
             settings.DefaultTimeout);
     }
 
-    public AuthenticatedAccessApiKeyDto AuthenticateAccessKey(string? authorizationHeader)
+    public Task<AuthenticatedAccessApiKeyDto> AuthenticateAccessKeyAsync(string? authorizationHeader)
     {
-        return _access.AuthenticateBearer(authorizationHeader);
+        return _access.AuthenticateBearerAsync(authorizationHeader);
     }
 }

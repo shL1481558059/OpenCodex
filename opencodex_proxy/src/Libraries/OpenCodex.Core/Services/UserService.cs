@@ -2,6 +2,7 @@ using Mapster;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Persistence;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Caching;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.DTOs;
@@ -24,19 +25,22 @@ public sealed class UserService : IUserService
     private readonly IRepository<User> _userRepository;
     private readonly IRepository<AccessApiKey> _apiKeyRepository;
     private readonly IRepository<Channel> _channelRepository;
+    private readonly ICacheService _cache;
 
     public UserService(
         IOpenCodexRuntimeSettingsProvider settingsProvider,
         IWorkContext workContext,
         IRepository<User> userRepository,
         IRepository<AccessApiKey> apiKeyRepository,
-        IRepository<Channel> channelRepository)
+        IRepository<Channel> channelRepository,
+        ICacheService cache)
     {
         _settingsProvider = settingsProvider;
         _workContext = workContext;
         _userRepository = userRepository;
         _apiKeyRepository = apiKeyRepository;
         _channelRepository = channelRepository;
+        _cache = cache;
     }
 
     public ApiOpResult<UsersResponse> ListUsers()
@@ -62,7 +66,7 @@ public sealed class UserService : IUserService
         }
     }
 
-    public ApiOpResult<UserResponsePayload> UpdateUser(string username, UserUpdateCommand command)
+    public async Task<ApiOpResult<UserResponsePayload>> UpdateUserAsync(string username, UserUpdateCommand command)
     {
         try
         {
@@ -71,6 +75,8 @@ public sealed class UserService : IUserService
             if (command.Enabled.HasValue)
             {
                 user = SetUserEnabled(username, command.Enabled.Value);
+                // 启用状态变更影响 apikey 鉴权,失效该用户的鉴权快照。
+                await _cache.RemoveAsync(CacheKeys.AuthUser(user.Id));
             }
             else
             {
@@ -86,6 +92,7 @@ public sealed class UserService : IUserService
                 }
 
                 user = ResetUserPassword(username, command.Password.Trim());
+                // 密码仅用于后台登录,不影响 apikey 鉴权,无需失效 auth 缓存。
             }
 
             return ApiOpResult<UserResponsePayload>.Succeed(UserResponsePayload.From(user));
@@ -104,12 +111,16 @@ public sealed class UserService : IUserService
         }
     }
 
-    public ApiOpResult<DeleteUserResponse> DeleteUser(string username)
+    public async Task<ApiOpResult<DeleteUserResponse>> DeleteUserAsync(string username)
     {
         try
         {
             var currentUser = _workContext.RequireUser();
             var user = DeleteUser(username, currentUser.Username);
+            // 用户被删,其所有 apikey 也已级联删除;失效该用户的鉴权快照即可。
+            // 残留的 apikey 快照因 user 快照缺失会在下次鉴权时判定失败,无需单独失效,
+            // 且 apikey 快照会在 60s TTL 后自然过期。
+            await _cache.RemoveAsync(CacheKeys.AuthUser(user.Id));
             return ApiOpResult<DeleteUserResponse>.Succeed(DeleteUserResponse.From(user));
         }
         catch (ArgumentException exception)

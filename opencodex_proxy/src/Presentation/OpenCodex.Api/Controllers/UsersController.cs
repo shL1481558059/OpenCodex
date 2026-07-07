@@ -33,18 +33,18 @@ public sealed class UsersController : AuthenticatedApiControllerBase
     }
 
     [HttpPatch("/users/{username}")]
-    public IActionResult UpdateUser(string username, UserUpdateRequest request)
+    public async Task<IActionResult> UpdateUser(string username, UserUpdateRequest request)
     {
         RequireSuperadmin();
-        var result = _users.UpdateUser(username, request.ToCommand());
+        var result = await _users.UpdateUserAsync(username, request.ToCommand());
         return Api(result);
     }
 
     [HttpDelete("/users/{username}")]
-    public IActionResult DeleteUser(string username)
+    public async Task<IActionResult> DeleteUser(string username)
     {
         RequireSuperadmin();
-        var result = _users.DeleteUser(username);
+        var result = await _users.DeleteUserAsync(username);
         return Api(result);
     }
 }

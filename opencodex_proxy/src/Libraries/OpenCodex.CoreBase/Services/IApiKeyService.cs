@@ -31,7 +31,7 @@ public interface IApiKeyService
     /// <param name="keyId">访问密钥标识。</param>
     /// <param name="command">更新访问密钥命令。</param>
     /// <returns>更新后的访问密钥结果。</returns>
-   ApiOpResult<ApiKeyResponsePayload> UpdateKey(
+   Task<ApiOpResult<ApiKeyResponsePayload>> UpdateKeyAsync(
         Guid keyId,
        ApiKeyUpdateCommand command);
 
@@ -40,7 +40,7 @@ public interface IApiKeyService
    /// </summary>
    /// <param name="keyId">访问密钥标识。</param>
    /// <returns>删除操作结果。</returns>
-   ApiOpResult<DeleteApiKeyResponse> DeleteKey(
+   Task<ApiOpResult<DeleteApiKeyResponse>> DeleteKeyAsync(
         Guid keyId);
 
     /// <summary>
@@ -48,6 +48,6 @@ public interface IApiKeyService
     /// </summary>
     /// <param name="command">导入访问密钥命令。</param>
     /// <returns>导入后的访问密钥列表结果。</returns>
-    ApiOpResult<ApiKeysResponse> ImportKeys(
+    Task<ApiOpResult<ApiKeysResponse>> ImportKeysAsync(
         ApiKeyImportCommand command);
 }
