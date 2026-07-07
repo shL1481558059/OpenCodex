@@ -290,7 +290,7 @@ public sealed class ProxyStreamService : IProxyStreamService
         }
         finally
         {
-            _logs.CompleteLog(
+            await _logs.CompleteLogAsync(
                 context.RequestLogId,
                 new ProxyLogContext(
                     context.RequestId,

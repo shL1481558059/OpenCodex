@@ -27,7 +27,7 @@ public sealed class ProxyImageFallbackService : IProxyImageFallbackService
             return new ProxyImageFallbackResult(plan.Payload, usedOcr: false);
         }
 
-        var visionRoute = _routes.ChooseOcrRoute(context.OwnerUsername, context.RequestModel);
+        var visionRoute = await _routes.ChooseOcrRouteAsync(context.OwnerUsername, context.RequestModel);
         var results = new List<ProxyOcrResult>(plan.UserImages.Count);
         foreach (var image in plan.UserImages.OrderBy(item => item.ImageNumber))
         {

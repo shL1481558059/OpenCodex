@@ -118,9 +118,9 @@ public sealed class ProxyLogService : IProxyLogService
         }
     }
 
-    public void CompleteLog(Guid requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
+    public async Task CompleteLogAsync(Guid requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
     {
-        CompleteLog(requestLogId, new ProxyRequestLogContext(
+        await CompleteLogAsync(requestLogId, new ProxyRequestLogContext(
             context.RequestId,
             context.OwnerUsername,
             context.ApiKeyId,
@@ -150,9 +150,9 @@ public sealed class ProxyLogService : IProxyLogService
             context.StreamLines));
     }
 
-    public Guid WriteLog(ProxyLogContext context, ProxyRequestMetadata request)
+    public async Task<Guid> WriteLogAsync(ProxyLogContext context, ProxyRequestMetadata request)
     {
-        return WriteLog(new ProxyRequestLogContext(
+        return await WriteLogAsync(new ProxyRequestLogContext(
             context.RequestId,
             context.OwnerUsername,
             context.ApiKeyId,
@@ -182,13 +182,13 @@ public sealed class ProxyLogService : IProxyLogService
             context.StreamLines));
     }
 
-    public Guid WriteLog(ProxyRequestLogContext context)
+    public async Task<Guid> WriteLogAsync(ProxyRequestLogContext context)
     {
         var settings = _settingsProvider.GetSettings();
-        return WriteCompletedLog(settings, context);
+        return await WriteCompletedLogAsync(settings, context);
     }
 
-    private Guid CompleteLog(Guid requestLogId, ProxyRequestLogContext context)
+    private async Task<Guid> CompleteLogAsync(Guid requestLogId, ProxyRequestLogContext context)
     {
         var settings = _settingsProvider.GetSettings();
         var responseForUsage = context.UpstreamResponse ?? [];
@@ -204,14 +204,14 @@ public sealed class ProxyLogService : IProxyLogService
         var log = _logRepository.Table.FirstOrDefault(item => item.Id == requestLogId);
         if (log is null)
         {
-            return WriteCompletedLog(settings, context);
+            return await WriteCompletedLogAsync(settings, context);
         }
 
         var ownerUsername = context.OwnerUsername.Length == 0
             ? DefaultOwnerUsername(settings)
             : context.OwnerUsername;
         var channelId = ParseChannelId(context.ChannelId);
-        var pricing = _catalog.CalculateCost(
+        var pricing = await _catalog.CalculateCostAsync(
             channelId,
             context.RequestModel,
             context.UpstreamModel,
@@ -350,7 +350,7 @@ public sealed class ProxyLogService : IProxyLogService
         return log.Id;
     }
 
-    private Guid WriteCompletedLog(OpenCodexRuntimeSettings settings, ProxyRequestLogContext context)
+    private async Task<Guid> WriteCompletedLogAsync(OpenCodexRuntimeSettings settings, ProxyRequestLogContext context)
     {
         var ownerUsername = context.OwnerUsername.Length == 0
             ? DefaultOwnerUsername(settings)
@@ -367,7 +367,7 @@ public sealed class ProxyLogService : IProxyLogService
         }
 
         var channelId = ParseChannelId(context.ChannelId);
-        var pricing = _catalog.CalculateCost(
+        var pricing = await _catalog.CalculateCostAsync(
             channelId,
             context.RequestModel,
             context.UpstreamModel,

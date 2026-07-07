@@ -90,7 +90,7 @@ public sealed class ProxyVisionRoutingTests
     }
 
     [Fact]
-    public void ChooseRoute_ImageInput_KeepsOriginalTextModel()
+    public async Task ChooseRoute_ImageInput_KeepsOriginalTextModel()
     {
         var service = CreateRouteService(
             ChannelEntity(
@@ -107,7 +107,7 @@ public sealed class ProxyVisionRoutingTests
                 1,
                 [ModelConfig("other-vision", "other-vision-upstream", true)]));
 
-        var route = service.ChooseRoute("admin", "text-model", requestContainsImages: true);
+        var route = await service.ChooseRouteAsync("admin", "text-model", requestContainsImages: true);
 
         Assert.Equal("text-model", route.OriginalModel);
         Assert.Equal("text-upstream", route.UpstreamModel);
@@ -116,7 +116,7 @@ public sealed class ProxyVisionRoutingTests
     }
 
     [Fact]
-    public void ChooseRoute_ModelMappings_PrefersLowerPriority()
+    public async Task ChooseRoute_ModelMappings_PrefersLowerPriority()
     {
         var service = CreateRouteService(
             ChannelEntity(
@@ -132,14 +132,14 @@ public sealed class ProxyVisionRoutingTests
                 [ModelConfig("shared-model", "shared-upstream-a")],
                 priority: 3));
 
-        var route = service.ChooseRoute("admin", "shared-model");
+        var route = await service.ChooseRouteAsync("admin", "shared-model");
 
         Assert.Equal("later-position-better-priority", route.Channel["name"]);
         Assert.Equal("shared-upstream-b", route.UpstreamModel);
     }
 
     [Fact]
-    public void ChooseRoute_ModelMappings_SamePriorityFallsBackToPosition()
+    public async Task ChooseRoute_ModelMappings_SamePriorityFallsBackToPosition()
     {
         var service = CreateRouteService(
             ChannelEntity(
@@ -155,14 +155,14 @@ public sealed class ProxyVisionRoutingTests
                 [ModelConfig("shared-model", "shared-upstream-a")],
                 priority: 2));
 
-        var route = service.ChooseRoute("admin", "shared-model");
+        var route = await service.ChooseRouteAsync("admin", "shared-model");
 
         Assert.Equal("position-0", route.Channel["name"]);
         Assert.Equal("shared-upstream-a", route.UpstreamModel);
     }
 
     [Fact]
-    public void ChooseOcrRoute_ImageInput_UsesSameChannelVisionModelFirst()
+    public async Task ChooseOcrRoute_ImageInput_UsesSameChannelVisionModelFirst()
     {
         var service = CreateRouteService(
             ChannelEntity(
@@ -179,7 +179,7 @@ public sealed class ProxyVisionRoutingTests
                 1,
                 [ModelConfig("other-vision", "other-vision-upstream", true)]));
 
-        var route = service.ChooseOcrRoute("admin", "text-model");
+        var route = await service.ChooseOcrRouteAsync("admin", "text-model");
 
         Assert.NotNull(route);
         Assert.Equal("same-vision", route!.OriginalModel);
@@ -189,7 +189,7 @@ public sealed class ProxyVisionRoutingTests
     }
 
     [Fact]
-    public void ChooseOcrRoute_ImageInput_FallsBackToLaterChannelVisionModel()
+    public async Task ChooseOcrRoute_ImageInput_FallsBackToLaterChannelVisionModel()
     {
         var service = CreateRouteService(
             ChannelEntity(
@@ -203,7 +203,7 @@ public sealed class ProxyVisionRoutingTests
                 1,
                 [ModelConfig("other-vision", "other-vision-upstream", true)]));
 
-        var route = service.ChooseOcrRoute("admin", "text-model");
+        var route = await service.ChooseOcrRouteAsync("admin", "text-model");
 
         Assert.NotNull(route);
         Assert.Equal("other-vision", route!.OriginalModel);
@@ -213,7 +213,7 @@ public sealed class ProxyVisionRoutingTests
     }
 
     [Fact]
-    public void ChooseRoute_ImageInput_KeepsOriginalVisionModel()
+    public async Task ChooseRoute_ImageInput_KeepsOriginalVisionModel()
     {
         var service = CreateRouteService(
             ChannelEntity(
@@ -225,7 +225,7 @@ public sealed class ProxyVisionRoutingTests
                     ModelConfig("same-vision", "same-vision-upstream", true)
                 ]));
 
-        var route = service.ChooseRoute("admin", "vision-model", requestContainsImages: true);
+        var route = await service.ChooseRouteAsync("admin", "vision-model", requestContainsImages: true);
 
         Assert.Equal("vision-model", route.OriginalModel);
         Assert.Equal("vision-upstream", route.UpstreamModel);
@@ -233,7 +233,7 @@ public sealed class ProxyVisionRoutingTests
     }
 
     [Fact]
-    public void ChooseOcrRoute_ImageInput_ReturnsNullWhenNoVisionModelExists()
+    public async Task ChooseOcrRoute_ImageInput_ReturnsNullWhenNoVisionModelExists()
     {
         var service = CreateRouteService(
             ChannelEntity(
@@ -242,7 +242,7 @@ public sealed class ProxyVisionRoutingTests
                 0,
                 [ModelConfig("text-model", "text-upstream", false)]));
 
-        Assert.Null(service.ChooseOcrRoute("admin", "text-model"));
+        Assert.Null(await service.ChooseOcrRouteAsync("admin", "text-model"));
     }
 
     [Theory]
@@ -369,11 +369,13 @@ context.Channels.AddRange(channels);
             new EfRepository<ChannelModelMapping>(routeContext),
             new EfRepository<Channel>(routeContext),
             new EfRepository<ModelPricing>(routeContext),
-            new TestWorkContext(AdminUserId, "admin", "superadmin"));
+            new TestWorkContext(AdminUserId, "admin", "superadmin"),
+            new TestCacheService());
         return new ProxyRouteService(
             new EfRepository<OpenCodex.Core.Domain.Channel>(routeContext),
             new EfRepository<OpenCodex.Core.Domain.User>(routeContext),
-            catalog);
+            catalog,
+            new TestCacheService());
     }
 
     private static readonly Guid AdminUserId = Guid.Parse("77777777-7777-7777-7777-777777777701");

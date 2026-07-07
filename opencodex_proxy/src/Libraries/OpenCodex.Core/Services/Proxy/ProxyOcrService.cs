@@ -175,7 +175,7 @@ public sealed class ProxyOcrService : IProxyOcrService
         }
         finally
         {
-            _logs.WriteLog(new ProxyRequestLogContext(
+            await _logs.WriteLogAsync(new ProxyRequestLogContext(
                 context.RequestId,
                 context.OwnerUsername,
                 context.ApiKeyId,
