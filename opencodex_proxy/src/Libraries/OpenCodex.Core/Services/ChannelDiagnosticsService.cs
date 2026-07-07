@@ -204,7 +204,7 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
         }
         finally
         {
-            WriteTestChannelLog(
+            await WriteTestChannelLogAsync(
                 body,
                 user,
                 requestMetadata,
@@ -525,7 +525,7 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
         "password"
     };
 
-    private void WriteTestChannelLog(
+    private async Task WriteTestChannelLogAsync(
         IReadOnlyDictionary<string, object?> originalBody,
         SessionUser user,
         ProxyRequestMetadata requestMetadata,
@@ -544,7 +544,7 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
         bool isStream = false,
         StreamWriteMetrics? streamWriteMetrics = null)
     {
-        _logs.WriteLog(
+        await _logs.WriteLogAsync(
             new ProxyLogContext(
                 RandomNumberGenerator.GetHexString(12).ToLowerInvariant(),
                 user.Username,

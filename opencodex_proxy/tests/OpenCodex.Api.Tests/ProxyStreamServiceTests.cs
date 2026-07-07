@@ -967,22 +967,23 @@ public sealed class ProxyStreamServiceTests
         {
         }
 
-        public void CompleteLog(Guid requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
+        public Task CompleteLogAsync(Guid requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
         {
             LastContext = context;
+            return Task.CompletedTask;
         }
 
         public ProxyLogContext? LastContext { get; private set; }
 
-        public Guid WriteLog(ProxyLogContext context, ProxyRequestMetadata request)
+        public Task<Guid> WriteLogAsync(ProxyLogContext context, ProxyRequestMetadata request)
         {
             LastContext = context;
-            return Guid.Empty;
+            return Task.FromResult(Guid.Empty);
         }
 
-        public Guid WriteLog(ProxyRequestLogContext context)
+        public Task<Guid> WriteLogAsync(ProxyRequestLogContext context)
         {
-            return Guid.Empty;
+            return Task.FromResult(Guid.Empty);
         }
     }
 }

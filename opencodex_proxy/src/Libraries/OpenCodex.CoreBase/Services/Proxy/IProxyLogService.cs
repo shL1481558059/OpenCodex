@@ -12,7 +12,7 @@ public interface IProxyLogService
 
     void MarkProcessing(Guid requestLogId, ProxyRequestLogProcessingContext context);
 
-    void CompleteLog(Guid requestLogId, ProxyLogContext context, ProxyRequestMetadata request);
+    Task CompleteLogAsync(Guid requestLogId, ProxyLogContext context, ProxyRequestMetadata request);
 
     /// <summary>
     /// 根据代理日志上下文和请求元数据写入日志。
@@ -20,12 +20,12 @@ public interface IProxyLogService
     /// <param name="context">代理日志上下文。</param>
     /// <param name="request">请求元数据。</param>
     /// <returns>写入后的日志标识。</returns>
-    Guid WriteLog(ProxyLogContext context, ProxyRequestMetadata request);
+    Task<Guid> WriteLogAsync(ProxyLogContext context, ProxyRequestMetadata request);
 
     /// <summary>
     /// 根据完整请求日志上下文写入日志。
     /// </summary>
     /// <param name="context">完整请求日志上下文。</param>
     /// <returns>写入后的日志标识。</returns>
-    Guid WriteLog(ProxyRequestLogContext context);
+    Task<Guid> WriteLogAsync(ProxyRequestLogContext context);
 }

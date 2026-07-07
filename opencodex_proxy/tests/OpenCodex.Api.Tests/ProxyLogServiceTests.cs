@@ -19,7 +19,7 @@ public sealed class ProxyLogServiceTests
     private static readonly Guid TestChannelId = Guid.Parse("66666666-6666-6666-6666-666666666601");
 
     [Fact]
-    public void WriteLog_PersistsStreamTimingsJson()
+    public async Task WriteLog_PersistsStreamTimingsJson()
     {
         var dbPath = Path.Combine(
             Path.GetTempPath(),
@@ -35,7 +35,7 @@ public sealed class ProxyLogServiceTests
         EnsureAdminUser(dbPath);
         var service = CreateService(dbPath);
 
-        service.WriteLog(new ProxyRequestLogContext(
+        await service.WriteLogAsync(new ProxyRequestLogContext(
             requestId: "req-stream-1",
             ownerUsername: "admin",
             apiKeyId: null,
@@ -83,7 +83,7 @@ var detail = context.RequestLogDetails.Single();
     }
 
     [Fact]
-    public void LifecycleMethods_PersistStatusesAndStreamLines()
+    public async Task LifecycleMethods_PersistStatusesAndStreamLines()
     {
         var dbPath = Path.Combine(
             Path.GetTempPath(),
@@ -147,7 +147,7 @@ var processing = context.RequestLogs
             Assert.Contains("\"stream\":true", processingDetail.UpstreamRequestBody!, StringComparison.Ordinal);
         }
 
-        service.CompleteLog(
+        await service.CompleteLogAsync(
             requestLogId,
             new ProxyLogContext(
                 RequestId: "req-lifecycle-1",
@@ -234,7 +234,8 @@ var completed = context.RequestLogs
             new EfRepository<ChannelModelMapping>(context),
             new EfRepository<Channel>(context),
             new EfRepository<ModelPricing>(context),
-            new TestWorkContext(Guid.Parse("55555555-5555-5555-5555-555555555599"), "admin", "superadmin"));
+            new TestWorkContext(Guid.Parse("55555555-5555-5555-5555-555555555599"), "admin", "superadmin"),
+            new TestCacheService());
         return new ProxyLogService(
             settingsProvider,
             catalog,
