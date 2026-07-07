@@ -20,7 +20,10 @@ public sealed class OpenCodexRuntimeSettingsProvider : IOpenCodexRuntimeSettings
             (ConfigValue("OpenCodex:AdminPassword", "OPENCODEX_ADMIN_PASSWORD") ?? string.Empty).Trim(),
             PositiveInt("OpenCodex:DefaultTimeout", "OPENCODEX_DEFAULT_TIMEOUT", 120),
             ConfigValue("OpenCodex:OcrCacheDir", "OPENCODEX_OCR_CACHE_DIR") ?? "ocr-cache",
-            LocalOcrModel());
+            LocalOcrModel(),
+            ConfigValue("OpenCodex:RedisConnection", "OPENCODEX_REDIS_CONNECTION"),
+            ConfigValue("OpenCodex:RedisPrefix", "OPENCODEX_REDIS_PREFIX"),
+            PositiveInt("OpenCodex:CacheDefaultTtlSeconds", "OPENCODEX_CACHE_DEFAULT_TTL_SECONDS", 300));
     }
 
     private string DbProvider()

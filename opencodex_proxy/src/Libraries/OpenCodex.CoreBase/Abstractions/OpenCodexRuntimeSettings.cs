@@ -12,7 +12,10 @@ public sealed class OpenCodexRuntimeSettings
         string adminPassword,
         int defaultTimeout,
         string? ocrCacheDir = null,
-        string? localOcrModel = null)
+        string? localOcrModel = null,
+        string? redisConnection = null,
+        string? redisPrefix = null,
+        int cacheDefaultTtlSeconds = 300)
     {
         DatabaseProvider = databaseProvider;
         ConnectionString = connectionString;
@@ -21,6 +24,9 @@ public sealed class OpenCodexRuntimeSettings
         DefaultTimeout = defaultTimeout;
         OcrCacheDir = string.IsNullOrWhiteSpace(ocrCacheDir) ? "ocr-cache" : ocrCacheDir.Trim();
         LocalOcrModel = string.IsNullOrWhiteSpace(localOcrModel) ? "ChineseV5" : localOcrModel.Trim();
+        RedisConnection = (redisConnection ?? string.Empty).Trim();
+        RedisPrefix = string.IsNullOrWhiteSpace(redisPrefix) ? "opencodex" : redisPrefix.Trim();
+        CacheDefaultTtlSeconds = cacheDefaultTtlSeconds > 0 ? cacheDefaultTtlSeconds : 300;
     }
 
     /// <summary>
@@ -57,4 +63,19 @@ public sealed class OpenCodexRuntimeSettings
     /// 获取本地 OCR 模型名称。
     /// </summary>
     public string LocalOcrModel { get; }
+
+    /// <summary>
+    /// 获取 Redis 连接字符串;为空表示禁用 Redis(L2),缓存降级为纯进程内 L1。
+    /// </summary>
+    public string RedisConnection { get; }
+
+    /// <summary>
+    /// 获取 Redis 全局键前缀,默认 <c>opencodex</c>。
+    /// </summary>
+    public string RedisPrefix { get; }
+
+    /// <summary>
+    /// 获取缓存默认过期时长,单位为秒,默认 300。
+    /// </summary>
+    public int CacheDefaultTtlSeconds { get; }
 }

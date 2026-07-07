@@ -3,12 +3,15 @@ using System.Text;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.OpenApi;
 using OpenCodex.Api.Configuration;
 using OpenCodex.Api.Controllers;
 using OpenCodex.Api.Infrastructure;
 using OpenCodex.Core.ExternalIntegrations;
 using OpenCodex.Core.Services;
+using OpenCodex.Core.Services.Caching;
+using OpenCodex.CoreBase.Caching;
 using OpenCodex.Core.Services.Mapping;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.Core.Services.WebSearch;
@@ -79,6 +82,26 @@ public static class OpenCodexServiceCollectionExtensions
             };
         });
         services.AddScoped(typeof(IRepository<>), typeof(EfRepository<>));
+
+        // 缓存基础设施:L1 进程内内存 + L2 Redis(可选降级)。
+        services.AddMemoryCache();
+        services.AddSingleton<IRedisConnectionProvider>(serviceProvider =>
+        {
+            var settings = serviceProvider
+                .GetRequiredService<IOpenCodexRuntimeSettingsProvider>()
+                .GetSettings();
+            return new RedisConnectionProvider(settings.RedisConnection, settings.RedisPrefix);
+        });
+        services.AddSingleton<ICacheService>(serviceProvider =>
+        {
+            var settings = serviceProvider
+                .GetRequiredService<IOpenCodexRuntimeSettingsProvider>()
+                .GetSettings();
+            return new TwoLevelCacheService(
+                serviceProvider.GetRequiredService<IMemoryCache>(),
+                serviceProvider.GetRequiredService<IRedisConnectionProvider>(),
+                TimeSpan.FromSeconds(settings.CacheDefaultTtlSeconds));
+        });
 
         services.AddHttpClient<IUpstreamClient, HttpUpstreamClient>()
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
