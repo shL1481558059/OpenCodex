@@ -1170,6 +1170,70 @@ public sealed class SseStreamConverterTests
         Assert.Equal("tool_search_call", outputItem["type"]);
         Assert.Equal(arguments, outputItem["input"]);
     }
+
+    [Fact]
+    public async Task Chat_WebSearchWithRequestMapping_StreamsWebSearchCall()
+    {
+        const string arguments = "{\"query\":\"OpenAI recent news\"}";
+        var lines = SseLines(
+            SseBlock(ChatChunk(toolCalls: new List<object?>
+            {
+                ChatToolCall(0, id: "call_web_search", name: "web_search", arguments: arguments[..14])
+            })),
+            SseBlock(ChatChunk(toolCalls: new List<object?>
+            {
+                ChatToolCall(0, arguments: arguments[14..])
+            })),
+            SseBlock(ChatChunk(finishReason: "tool_calls")),
+            SseBlock("[DONE]"));
+
+        var result = new ConvertedStreamResult
+        {
+            ToolCallMappings = ProtocolConverter.BuildResponsesToolCallMappings(new Dictionary<string, object?>
+            {
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "web_search"
+                    }
+                }
+            })
+        };
+
+        var events = await CollectAsync(
+            SseStreamConverter.ChatToResponsesEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var added = Assert.Single(AllByType(parsed, "response.output_item.added"));
+        var addedItem = Assert.IsType<Dictionary<string, object?>>(added["item"]);
+        Assert.Equal("web_search_call", addedItem["type"]);
+        Assert.Equal("in_progress", addedItem["status"]);
+        Assert.False(addedItem.ContainsKey("name"));
+        Assert.False(addedItem.ContainsKey("arguments"));
+        Assert.False(addedItem.ContainsKey("input"));
+
+        Assert.DoesNotContain(parsed, entry => (string?)entry["type"] == "response.function_call_arguments.delta");
+        Assert.DoesNotContain(parsed, entry => (string?)entry["type"] == "response.function_call_arguments.done");
+        Assert.DoesNotContain(parsed, entry => (string?)entry["type"] == "response.custom_tool_call_input.delta");
+
+        var done = ByType(parsed, "response.output_item.done");
+        Assert.NotNull(done);
+        var doneItem = Assert.IsType<Dictionary<string, object?>>(done!["item"]);
+        Assert.Equal("web_search_call", doneItem["type"]);
+        Assert.Equal("completed", doneItem["status"]);
+        var action = Assert.IsType<Dictionary<string, object?>>(doneItem["action"]);
+        Assert.Equal("search", action["type"]);
+        Assert.Equal("OpenAI recent news", action["query"]);
+
+        var completed = ByType(parsed, "response.completed");
+        Assert.NotNull(completed);
+        var output = Assert.IsType<List<object?>>(Assert.IsType<Dictionary<string, object?>>(completed!["response"])["output"]);
+        var outputItem = Assert.IsType<Dictionary<string, object?>>(Assert.Single(output));
+        Assert.Equal("web_search_call", outputItem["type"]);
+        var outputAction = Assert.IsType<Dictionary<string, object?>>(outputItem["action"]);
+        Assert.Equal("OpenAI recent news", outputAction["query"]);
+    }
     // ── response.completed P2 fields ──────────────────────────
 
     [Fact]

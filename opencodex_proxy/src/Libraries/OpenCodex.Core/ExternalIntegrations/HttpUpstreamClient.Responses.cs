@@ -6,6 +6,52 @@ namespace OpenCodex.Core.ExternalIntegrations;
 
 public sealed partial class HttpUpstreamClient
 {
+    // Anthropic 等上游在并发超限或过载时，会用 HTTP 200 + SSE body 返回 error 事件。
+    // 这些 error.type 需要当作可重试错误处理，而不是透传给客户端。
+    private static readonly HashSet<string> RetryableStreamErrorTypes =
+        new(StringComparer.Ordinal) { "rate_limit_error", "overloaded_error" };
+
+    private static (string ErrorType, string Message)? TryGetRetryableErrorFromElement(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (!root.TryGetProperty("type", out var typeEl) || typeEl.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        var type = typeEl.GetString();
+        if (!string.Equals(type, "error", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        if (!root.TryGetProperty("error", out var errorEl) || errorEl.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (!errorEl.TryGetProperty("type", out var errorTypeEl) || errorTypeEl.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        var errorType = errorTypeEl.GetString();
+        if (errorType is null || !RetryableStreamErrorTypes.Contains(errorType))
+        {
+            return null;
+        }
+
+        var message = errorEl.TryGetProperty("message", out var msgEl) && msgEl.ValueKind == JsonValueKind.String
+            ? msgEl.GetString() ?? errorType
+            : errorType;
+
+        return (errorType, message);
+    }
+
     private static async Task<Dictionary<string, object?>> ReadJsonObject(
         HttpResponseMessage response,
         IReadOnlyDictionary<string, object?> channel,
@@ -20,7 +66,16 @@ public sealed partial class HttpUpstreamClient
         try
         {
             using var document = JsonDocument.Parse(body);
-            var value = FromJsonElement(document.RootElement);
+            var root = document.RootElement;
+            if (TryGetRetryableErrorFromElement(root) is { } retryable)
+            {
+                throw new UpstreamException(
+                    retryable.Message,
+                    ProxyHttpStatus.TooManyRequests,
+                    body: FromJsonElement(root),
+                    channelId: JsonDictionaryValue.String(channel, "id"));
+            }
+            var value = FromJsonElement(root);
             if (value is Dictionary<string, object?> dictionary)
             {
                 return dictionary;
