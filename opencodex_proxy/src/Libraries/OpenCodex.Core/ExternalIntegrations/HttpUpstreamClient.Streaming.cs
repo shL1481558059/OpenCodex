@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.Json;
 using OpenCodex.Core.Errors;
 using OpenCodex.CoreBase.Abstractions;
 
@@ -22,6 +23,8 @@ public sealed partial class HttpUpstreamClient
         var timeout = TimeoutValue(JsonDictionaryValue.Get(channel, "timeout_seconds"), defaultTimeout);
         var retryCount = RetryCountValue(JsonDictionaryValue.Get(channel, "retry_count"));
         HttpResponseMessage? response = null;
+        StreamReader? reader = null;
+        var bufferedLines = new List<string>();
         Exception? lastException = null;
 
         for (var attempt = 0; attempt <= retryCount; attempt++)
@@ -37,6 +40,33 @@ public sealed partial class HttpUpstreamClient
                     timeoutCts.Token);
                 if (response.IsSuccessStatusCode)
                 {
+                    // 方案 A：探测流开头是否为可重试 SSE error（如 rate_limit_error）。
+                    // 读取直到第一条 data: 行，检查其内容；读到的行缓存在 bufferedLines 中。
+                    var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                    reader = new StreamReader(stream, Encoding.UTF8);
+                    bufferedLines.Clear();
+
+                    var retryable = await ProbeStreamForRetryableError(reader, bufferedLines, cancellationToken);
+                    if (retryable is not null)
+                    {
+                        reader.Dispose();
+                        reader = null;
+                        response.Dispose();
+                        response = null;
+
+                        if (attempt >= retryCount)
+                        {
+                            throw new UpstreamException(
+                                retryable.Value.Message,
+                                ProxyHttpStatus.TooManyRequests,
+                                body: retryable.Value.Body,
+                                channelId: JsonDictionaryValue.String(channel, "id"));
+                        }
+
+                       await DelayBeforeRetry(attempt, response: null, cancellationToken);
+                       continue;
+                   }
+
                     break;
                 }
 
@@ -73,7 +103,7 @@ public sealed partial class HttpUpstreamClient
             }
         }
 
-        if (response is null)
+        if (response is null || reader is null)
         {
             if (lastException is not null)
             {
@@ -89,8 +119,12 @@ public sealed partial class HttpUpstreamClient
                 channelId: JsonDictionaryValue.String(channel, "id"));
         }
 
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var reader = new StreamReader(stream, Encoding.UTF8);
+        // 回放探测期间读到的行（在 try-catch 外 yield，符合 C# 语法约束）
+        foreach (var line in bufferedLines)
+        {
+            yield return line;
+        }
+
         try
         {
             while (true)
@@ -106,7 +140,54 @@ public sealed partial class HttpUpstreamClient
         }
         finally
         {
+            reader.Dispose();
             response.Dispose();
+        }
+    }
+
+    // 读取流直到遇到第一条 data: 行（或流结束），检查其内容是否为可重试 SSE error。
+    // 读到的所有行加入 bufferedLines，供正常流回放使用。
+    private static async Task<(string Message, object? Body)?> ProbeStreamForRetryableError(
+        StreamReader reader,
+        List<string> bufferedLines,
+        CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            var line = await reader.ReadLineAsync(cancellationToken);
+            if (line is null)
+            {
+                return null;
+            }
+
+            bufferedLines.Add(line + "\n");
+
+            if (!line.StartsWith("data:", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var json = line["data:".Length..].TrimStart();
+            if (json.Length == 0 || json == "[DONE]")
+            {
+                continue;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(json);
+                if (TryGetRetryableErrorFromElement(document.RootElement) is { } retryable)
+                {
+                    return (retryable.Message, FromJsonElement(document.RootElement));
+                }
+            }
+            catch (JsonException)
+            {
+                // 非 JSON data 行，不视为可重试错误
+            }
+
+            // 第一条 data 行不是可重试 error，探测完成
+            return null;
         }
     }
 }

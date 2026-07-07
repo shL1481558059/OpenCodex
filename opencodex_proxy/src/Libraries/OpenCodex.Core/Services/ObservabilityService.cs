@@ -1,4 +1,5 @@
 using System.Globalization;
+using Microsoft.EntityFrameworkCore;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Persistence;
 using OpenCodex.CoreBase.Abstractions;
@@ -65,6 +66,7 @@ public sealed class ObservabilityService : IObservabilityService
 
     private readonly IOpenCodexRuntimeSettingsProvider _settingsProvider;
     private readonly IWorkContext _workContext;
+    private readonly IOpenCodexDbContext _dbContext;
     private readonly IRepository<RequestLog> _logRepository;
     private readonly IRepository<RequestLogDetail> _detailRepository;
     private readonly IRepository<RequestLogStreamLine> _streamLineRepository;
@@ -76,6 +78,7 @@ public sealed class ObservabilityService : IObservabilityService
     public ObservabilityService(
         IOpenCodexRuntimeSettingsProvider settingsProvider,
         IWorkContext workContext,
+        IOpenCodexDbContext dbContext,
         IRepository<RequestLog> logRepository,
         IRepository<RequestLogDetail> detailRepository,
         IRepository<RequestLogStreamLine> streamLineRepository,
@@ -86,6 +89,7 @@ public sealed class ObservabilityService : IObservabilityService
     {
         _settingsProvider = settingsProvider;
         _workContext = workContext;
+        _dbContext = dbContext;
         _logRepository = logRepository;
         _detailRepository = detailRepository;
         _streamLineRepository = streamLineRepository;
@@ -231,16 +235,34 @@ public sealed class ObservabilityService : IObservabilityService
             return ApiOpResult<ClearLogsResponse>.Fail(403, "only superadmin can clear logs");
         }
 
-        // 使用 ExecuteDelete 直接在数据库层面执行 DELETE FROM，
-        // 避免将数十万条流式行记录加载到内存。
-        var deletedStreamLines = _streamLineRepository.ExecuteDeleteAll();
-        var deletedDetails = _detailRepository.ExecuteDeleteAll();
-        var deletedLogs = _logRepository.ExecuteDeleteAll();
+        // 先统计行数用于返回值：TRUNCATE 不返回受影响行数。
+        var streamLineCount = _streamLineRepository.TableNoTracking.Count();
+        var detailCount = _detailRepository.TableNoTracking.Count();
+        var logCount = _logRepository.TableNoTracking.Count();
+
+        // 直接执行原生 SQL 清空三张日志表。
+        // 流式行表可达千万级，逐行 DELETE FROM 会超过命令超时导致 500，
+        // 因此 Postgres 使用 TRUNCATE（元数据操作，瞬时完成，不受行数影响）。
+        var provider = (_settingsProvider.GetSettings().DatabaseProvider ?? string.Empty)
+            .Trim()
+            .ToLowerInvariant();
+        if (provider is "postgres" or "postgresql" or "pgsql")
+        {
+            _dbContext.Database.ExecuteSqlRaw(
+                "TRUNCATE TABLE \"RequestLogs\", \"RequestLogDetails\", \"RequestLogStreamLines\" RESTART IDENTITY;");
+        }
+        else
+        {
+            // SQLite 无 TRUNCATE；无 WHERE 的 DELETE 会走内部 truncate 优化。
+            _dbContext.Database.ExecuteSqlRaw("DELETE FROM \"RequestLogStreamLines\";");
+            _dbContext.Database.ExecuteSqlRaw("DELETE FROM \"RequestLogDetails\";");
+            _dbContext.Database.ExecuteSqlRaw("DELETE FROM \"RequestLogs\";");
+        }
 
         return ApiOpResult<ClearLogsResponse>.Succeed(new ClearLogsResponse(
-            deletedLogs,
-            deletedDetails,
-            deletedStreamLines));
+            logCount,
+            detailCount,
+            streamLineCount));
     }
 
     private Dictionary<Guid, string> BuildOwnerMap(IReadOnlyList<RequestLog> logs)

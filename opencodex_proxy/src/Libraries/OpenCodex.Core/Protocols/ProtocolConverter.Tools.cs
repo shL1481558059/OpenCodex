@@ -15,7 +15,7 @@ public static partial class ProtocolConverter
 
             var nativeType = (GetString(tool, "native_type") ?? "function")
                 .Replace("-", "_", StringComparison.Ordinal);
-            if (nativeType is "function" or "web_search")
+            if (nativeType == "function")
             {
                 continue;
             }
@@ -444,6 +444,13 @@ public static partial class ProtocolConverter
                 return Obj(
                     ("type", "function"),
                     ("function", Obj(("name", "apply_patch"))));
+            }
+
+            if (IsWebSearchToolChoice(toolChoiceObject))
+            {
+                return Obj(
+                    ("type", "function"),
+                    ("function", Obj(("name", "web_search"))));
             }
 
             var function = ObjectValue(toolChoiceObject, "function");

@@ -864,6 +864,36 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
+    public void ConvertRequest_ResponsesWebSearchToolChoice_MapsToChatFunctionChoice()
+    {
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = "search this",
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "web_search"
+                    }
+                },
+                ["tool_choice"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "web_search"
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Chat,
+            "upstream");
+
+        var toolChoice = Assert.IsType<Dictionary<string, object?>>(request["tool_choice"]);
+        Assert.Equal("function", toolChoice["type"]);
+        var function = Assert.IsType<Dictionary<string, object?>>(toolChoice["function"]);
+        Assert.Equal("web_search", function["name"]);
+    }
+
+    [Fact]
     public void ConvertRequest_ResponsesNamespaceTool_FlattensForMessages()
     {
         var request = ProtocolConverter.ConvertRequest(
@@ -1684,7 +1714,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
-    public void ConvertResponse_ChatWebSearchWithRequestMapping_RemainsFunctionCall()
+    public void ConvertResponse_ChatWebSearchWithRequestMapping_ReturnsWebSearchCall()
     {
         var toolMappings = ProtocolConverter.BuildResponsesToolCallMappings(new Dictionary<string, object?>
         {
@@ -1738,10 +1768,14 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
 
         var output = Assert.IsType<List<object?>>(response["output"]);
         var item = Assert.IsType<Dictionary<string, object?>>(Assert.Single(output));
-        Assert.Equal("function_call", item["type"]);
-        Assert.Equal("web_search", item["name"]);
-        Assert.True(item.ContainsKey("arguments"));
+        Assert.Equal("web_search_call", item["type"]);
+        Assert.Equal("completed", item["status"]);
+        Assert.False(item.ContainsKey("name"));
+        Assert.False(item.ContainsKey("arguments"));
         Assert.False(item.ContainsKey("input"));
+        var action = Assert.IsType<Dictionary<string, object?>>(item["action"]);
+        Assert.Equal("search", action["type"]);
+        Assert.Equal("OpenAI", action["query"]);
     }
 
 
