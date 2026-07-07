@@ -26,42 +26,42 @@ public sealed class ConfigController : AuthenticatedApiControllerBase
     }
 
     [HttpPost("/channels")]
-    public IActionResult CreateChannel(ChannelRequest request)
+    public async Task<IActionResult> CreateChannel(ChannelRequest request)
     {
         RequireUser();
-        var result = _config.CreateChannel(request);
+        var result = await _config.CreateChannelAsync(request);
         return Api(result);
     }
 
     [HttpPut("/channels/{channelId:guid}")]
-    public IActionResult UpdateChannel(Guid channelId, ChannelRequest request)
+    public async Task<IActionResult> UpdateChannel(Guid channelId, ChannelRequest request)
     {
         RequireUser();
-        var result = _config.UpdateChannel(channelId, request);
+        var result = await _config.UpdateChannelAsync(channelId, request);
         return Api(result);
     }
 
     [HttpPatch("/channels/batch")]
-    public IActionResult BatchUpdateChannels(ChannelBatchUpdateRequest request)
+    public async Task<IActionResult> BatchUpdateChannels(ChannelBatchUpdateRequest request)
     {
         RequireUser();
-        var result = _config.BatchUpdateChannels(request);
+        var result = await _config.BatchUpdateChannelsAsync(request);
         return Api(result);
     }
 
     [HttpDelete("/channels/{channelId:guid}")]
-    public IActionResult DeleteChannel(Guid channelId)
+    public async Task<IActionResult> DeleteChannel(Guid channelId)
     {
         RequireUser();
-        var result = _config.DeleteChannel(channelId);
+        var result = await _config.DeleteChannelAsync(channelId);
         return Api(result);
     }
 
     [HttpPost("/config/import")]
-    public IActionResult ImportConfig(ConfigSaveRequest request)
+    public async Task<IActionResult> ImportConfig(ConfigSaveRequest request)
     {
         RequireUser();
-        var result = _config.ImportConfig(request.ToDictionary());
+        var result = await _config.ImportConfigAsync(request.ToDictionary());
         return Api(result);
     }
 

@@ -33,7 +33,7 @@ public interface IModelCatalogService
 
     ApiOpResult<SeedModelCatalogResponse> SeedDefaults();
 
-    ModelPricingCalculationResult CalculateCost(
+    Task<ModelPricingCalculationResult> CalculateCostAsync(
         Guid? channelId,
         string? requestModel,
         string? upstreamModel,

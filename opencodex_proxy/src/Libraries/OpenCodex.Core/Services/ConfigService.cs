@@ -5,6 +5,7 @@ using OpenCodex.Core.Config;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Persistence;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Caching;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs;
@@ -29,6 +30,7 @@ public sealed class ConfigService : IConfigService
     private readonly IRepository<Channel> _channelRepository;
     private readonly IRepository<User> _userRepository;
     private readonly IRepository<ChannelModelMapping> _channelModelMappings;
+    private readonly ICacheService _cache;
 
     public ConfigService(
         IOpenCodexRuntimeSettingsProvider settingsProvider,
@@ -37,7 +39,8 @@ public sealed class ConfigService : IConfigService
         IWorkContext workContext,
         IRepository<Channel> channelRepository,
         IRepository<User> userRepository,
-        IRepository<ChannelModelMapping> channelModelMappings)
+        IRepository<ChannelModelMapping> channelModelMappings,
+        ICacheService cache)
     {
         _settingsProvider = settingsProvider;
         _channelCapacity = channelCapacity;
@@ -46,6 +49,7 @@ public sealed class ConfigService : IConfigService
         _channelRepository = channelRepository;
         _userRepository = userRepository;
         _channelModelMappings = channelModelMappings;
+        _cache = cache;
     }
 
     public ApiOpResult<ConfigResponse> ReadConfig()
@@ -57,43 +61,52 @@ public sealed class ConfigService : IConfigService
             ResolveHealthStatus));
     }
 
-    public ApiOpResult<ConfigResponse> CreateChannel(ChannelRequest request)
+    public async Task<ApiOpResult<ConfigResponse>> CreateChannelAsync(ChannelRequest request)
     {
         var (currentUsername, isSuperadmin) = CurrentScope();
         var saved = SaveSingleChannel(null, request, currentUsername, isSuperadmin);
-        return saved.Succeeded
-            ? ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
-                ReadChannels(currentUsername, isSuperadmin),
-                ResolveActiveRequests,
-                ResolveHealthStatus))
-            : ApiOpResult<ConfigResponse>.Fail(saved.Code, saved.Description);
+        if (!saved.Succeeded)
+        {
+            return ApiOpResult<ConfigResponse>.Fail(saved.Code, saved.Description);
+        }
+        await InvalidateRouteCache(currentUsername);
+        return ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
+            ReadChannels(currentUsername, isSuperadmin),
+            ResolveActiveRequests,
+            ResolveHealthStatus));
     }
 
-    public ApiOpResult<ConfigResponse> UpdateChannel(Guid channelId, ChannelRequest request)
+    public async Task<ApiOpResult<ConfigResponse>> UpdateChannelAsync(Guid channelId, ChannelRequest request)
     {
         var (currentUsername, isSuperadmin) = CurrentScope();
         var saved = SaveSingleChannel(channelId, request, currentUsername, isSuperadmin);
-        return saved.Succeeded
-            ? ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
-                ReadChannels(currentUsername, isSuperadmin),
-                ResolveActiveRequests,
-                ResolveHealthStatus))
-            : ApiOpResult<ConfigResponse>.Fail(saved.Code, saved.Description);
+        if (!saved.Succeeded)
+        {
+            return ApiOpResult<ConfigResponse>.Fail(saved.Code, saved.Description);
+        }
+        await InvalidateRouteCache(currentUsername);
+        return ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
+            ReadChannels(currentUsername, isSuperadmin),
+            ResolveActiveRequests,
+            ResolveHealthStatus));
     }
 
-    public ApiOpResult<ConfigResponse> BatchUpdateChannels(ChannelBatchUpdateRequest request)
+    public async Task<ApiOpResult<ConfigResponse>> BatchUpdateChannelsAsync(ChannelBatchUpdateRequest request)
     {
         var (currentUsername, isSuperadmin) = CurrentScope();
         var updated = PatchChannels(request, currentUsername, isSuperadmin);
-        return updated.Succeeded
-            ? ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
-                ReadChannels(currentUsername, isSuperadmin),
-                ResolveActiveRequests,
-                ResolveHealthStatus))
-            : ApiOpResult<ConfigResponse>.Fail(updated.Code, updated.Description);
+        if (!updated.Succeeded)
+        {
+            return ApiOpResult<ConfigResponse>.Fail(updated.Code, updated.Description);
+        }
+        await InvalidateRouteCache(currentUsername);
+        return ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
+            ReadChannels(currentUsername, isSuperadmin),
+            ResolveActiveRequests,
+            ResolveHealthStatus));
     }
 
-    public ApiOpResult<ConfigResponse> DeleteChannel(Guid channelId)
+    public async Task<ApiOpResult<ConfigResponse>> DeleteChannelAsync(Guid channelId)
     {
         if (channelId == Guid.Empty)
         {
@@ -109,6 +122,7 @@ public sealed class ConfigService : IConfigService
 
         DeleteMappingsForChannels([channel.Id]);
         _channelRepository.Delete(channel);
+        await InvalidateRouteCache(currentUsername);
 
         return ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
             ReadChannels(currentUsername, isSuperadmin),
@@ -116,17 +130,20 @@ public sealed class ConfigService : IConfigService
             ResolveHealthStatus));
     }
 
-    public ApiOpResult<ConfigResponse> ImportConfig(
+    public async Task<ApiOpResult<ConfigResponse>> ImportConfigAsync(
         IReadOnlyDictionary<string, object?> body)
     {
         var (currentUsername, isSuperadmin) = CurrentScope();
         var merged = MergeChannels(body, currentUsername, isSuperadmin);
-        return merged.Succeeded
-            ? ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
-                ReadChannels(currentUsername, isSuperadmin),
-                ResolveActiveRequests,
-                ResolveHealthStatus))
-            : ApiOpResult<ConfigResponse>.Fail(merged.Code, merged.Description);
+        if (!merged.Succeeded)
+        {
+            return ApiOpResult<ConfigResponse>.Fail(merged.Code, merged.Description);
+        }
+        await InvalidateRouteCache(currentUsername);
+        return ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
+            ReadChannels(currentUsername, isSuperadmin),
+            ResolveActiveRequests,
+            ResolveHealthStatus));
     }
 
     public ApiOpResult ResetChannelHealth(Guid channelId)
@@ -172,6 +189,14 @@ public sealed class ConfigService : IConfigService
     {
         var currentUser = _workContext.RequireUser();
         return (currentUser.Username, currentUser.Role == "superadmin");
+    }
+
+    private async Task InvalidateRouteCache(string ownerUsername)
+    {
+        // 失效该 owner 的渠道路由缓存。
+        // 非超管只能改自己的渠道,currentUsername 即受影响 owner,精确失效。
+        // 超管改他人渠道时,他人缓存靠 60s TTL + 路由 failover 兜底(删除的渠道路由失败会自动切下一个候选)。
+        await _cache.RemoveAsync(CacheKeys.RouteChannels(ownerUsername));
     }
 
     private ApiOpResult SaveSingleChannel(

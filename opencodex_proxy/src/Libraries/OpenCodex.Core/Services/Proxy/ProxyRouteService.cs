@@ -4,6 +4,7 @@ using OpenCodex.Core.Config;
 using OpenCodex.Core.Errors;
 using OpenCodex.Core.Persistence;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Caching;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.Proxy;
@@ -14,34 +15,39 @@ namespace OpenCodex.Core.Services.Proxy;
 
 public sealed class ProxyRouteService : IProxyRouteService
 {
+    private static readonly TimeSpan RouteCacheTtl = TimeSpan.FromSeconds(60);
+
     private readonly IRepository<Channel> _channelRepository;
     private readonly IRepository<User> _userRepository;
     private readonly IModelCatalogService _catalog;
+    private readonly ICacheService _cache;
 
     public ProxyRouteService(
         IRepository<Channel> channelRepository,
         IRepository<User> userRepository,
-        IModelCatalogService catalog)
+        IModelCatalogService catalog,
+        ICacheService cache)
     {
         _channelRepository = channelRepository;
         _userRepository = userRepository;
         _catalog = catalog;
+        _cache = cache;
     }
 
-    public ProxyRouteDto ChooseRoute(
+    public async Task<ProxyRouteDto> ChooseRouteAsync(
         string ownerUsername,
         string? model,
         bool requestContainsImages = false)
     {
-        return ListRouteCandidates(ownerUsername, model, requestContainsImages)[0];
+        return (await ListRouteCandidatesAsync(ownerUsername, model, requestContainsImages))[0];
     }
 
-    public IReadOnlyList<ProxyRouteDto> ListRouteCandidates(
+    public async Task<IReadOnlyList<ProxyRouteDto>> ListRouteCandidatesAsync(
         string ownerUsername,
         string? model,
         bool requestContainsImages = false)
     {
-        var enabledChannels = ListEnabledChannelConfigs(ownerUsername);
+        var enabledChannels = await ListEnabledChannelConfigsAsync(ownerUsername);
         if (enabledChannels.Count == 0)
         {
             throw new RoutingException("no enabled channels configured");
@@ -72,16 +78,16 @@ public sealed class ProxyRouteService : IProxyRouteService
         ];
     }
 
-    public IReadOnlyList<string> ListModels(string ownerUsername)
+    public async Task<IReadOnlyList<string>> ListModelsAsync(string ownerUsername)
     {
-        return ListModelCapabilities(ownerUsername)
+        return (await ListModelCapabilitiesAsync(ownerUsername))
             .Select(model => model.Model)
             .ToList();
     }
 
-    public ProxyRouteDto? ChooseOcrRoute(string ownerUsername, string? model)
+    public async Task<ProxyRouteDto?> ChooseOcrRouteAsync(string ownerUsername, string? model)
     {
-        var enabledChannels = ListEnabledChannelConfigs(ownerUsername);
+        var enabledChannels = await ListEnabledChannelConfigsAsync(ownerUsername);
         if (enabledChannels.Count == 0)
         {
             return null;
@@ -110,10 +116,10 @@ public sealed class ProxyRouteService : IProxyRouteService
             ?.ToRoute();
     }
 
-    public IReadOnlyList<ProxyModelCapabilityDto> ListModelCapabilities(string ownerUsername)
+    public async Task<IReadOnlyList<ProxyModelCapabilityDto>> ListModelCapabilitiesAsync(string ownerUsername)
     {
         var bestCandidates = new Dictionary<string, ModelRouteCandidate>(StringComparer.Ordinal);
-        foreach (var channel in ListEnabledChannelConfigs(ownerUsername))
+        foreach (var channel in await ListEnabledChannelConfigsAsync(ownerUsername))
         {
             if (!channel.TryGetValue("models", out var modelsValue)
                 || !ConfigValue.TryAsList(modelsValue, out var mappings))
@@ -336,9 +342,9 @@ public sealed class ProxyRouteService : IProxyRouteService
             : 0;
     }
 
-    private List<Dictionary<string, object?>> ListEnabledChannelConfigs(string ownerUsername)
+    private async Task<List<Dictionary<string, object?>>> ListEnabledChannelConfigsAsync(string ownerUsername)
     {
-        var channelValues = ReadExpandedChannelValues(ownerUsername);
+        var channelValues = await ReadExpandedChannelValuesAsync(ownerUsername);
         var enabledChannels = new List<Dictionary<string, object?>>();
         foreach (var channelValue in channelValues)
         {
@@ -358,37 +364,16 @@ public sealed class ProxyRouteService : IProxyRouteService
         return enabledChannels;
     }
 
-    private List<object?> ReadExpandedChannelValues(string ownerUsername)
+    private async Task<List<object?>> ReadExpandedChannelValuesAsync(string ownerUsername)
     {
-        var normalizedOwnerUsername = string.IsNullOrWhiteSpace(ownerUsername)
-            ? string.Empty
-            : ownerUsername.Trim();
-
-        var query = _channelRepository.TableNoTracking;
-        if (normalizedOwnerUsername.Length > 0)
-        {
-            // 按 owner username 过滤:先查 User 拿 UserId
-            var ownerUser = _userRepository.TableNoTracking.FirstOrDefault(u => u.Username == normalizedOwnerUsername);
-            if (ownerUser is null)
-            {
-                return [];
-            }
-            query = query.Where(channel => channel.OwnerUserId == ownerUser.Id);
-        }
-
-        var channels = query
-            .OrderBy(channel => channel.OwnerUserId)
-            .ThenBy(channel => channel.Position)
-            .ThenBy(channel => channel.Id)
-            .ToList();
-
-        // 手动 join User 拿 username(禁止导航属性)
-        var ownerIds = channels.Select(ch => ch.OwnerUserId).Distinct().ToList();
-        var owners = ownerIds.Count > 0
-            ? _userRepository.TableNoTracking
-                .Where(u => ownerIds.Contains(u.Id))
-                .ToDictionary(u => u.Id, u => u.Username)
-            : new Dictionary<Guid, string>();
+        // 缓存原始渠道实体集(强类型,JSON 干净往返),避免松类型展开结果往返成 JsonElement。
+        // 映射 + 环境变量展开为 CPU 工作,每次现算,保证环境变量即时生效。
+        var channelSet = await _cache.GetOrCreateAsync(
+            CacheKeys.RouteChannels(ownerUsername ?? string.Empty),
+            () => LoadChannelSet(ownerUsername),
+            RouteCacheTtl);
+        var channels = channelSet?.Channels ?? new List<Channel>();
+        var owners = channelSet?.OwnerNames ?? new Dictionary<Guid, string>();
 
         var channelConfigs = channels
             .Select(channel => ChannelToConfig(MapToChannelDto(channel,
@@ -412,6 +397,44 @@ public sealed class ProxyRouteService : IProxyRouteService
 
         return channelValues;
     }
+
+    private Task<CachedChannelSet?> LoadChannelSet(string? ownerUsername)
+    {
+        var normalizedOwnerUsername = string.IsNullOrWhiteSpace(ownerUsername)
+            ? string.Empty
+            : ownerUsername.Trim();
+
+        var query = _channelRepository.TableNoTracking;
+        if (normalizedOwnerUsername.Length > 0)
+        {
+            // 按 owner username 过滤:先查 User 拿 UserId
+            var ownerUser = _userRepository.TableNoTracking.FirstOrDefault(u => u.Username == normalizedOwnerUsername);
+            if (ownerUser is null)
+            {
+                // owner 不存在:不缓存(null),下次仍回源,避免新用户创建后读到陈旧空集。
+                return Task.FromResult<CachedChannelSet?>(null);
+            }
+            query = query.Where(channel => channel.OwnerUserId == ownerUser.Id);
+        }
+
+        var channels = query
+            .OrderBy(channel => channel.OwnerUserId)
+            .ThenBy(channel => channel.Position)
+            .ThenBy(channel => channel.Id)
+            .ToList();
+
+        // 手动 join User 拿 username(禁止导航属性)
+        var ownerIds = channels.Select(ch => ch.OwnerUserId).Distinct().ToList();
+        var owners = ownerIds.Count > 0
+            ? _userRepository.TableNoTracking
+                .Where(u => ownerIds.Contains(u.Id))
+                .ToDictionary(u => u.Id, u => u.Username)
+            : new Dictionary<Guid, string>();
+
+        return Task.FromResult<CachedChannelSet?>(new CachedChannelSet(channels, owners));
+    }
+
+    private sealed record CachedChannelSet(List<Channel> Channels, Dictionary<Guid, string> OwnerNames);
 
     private static ChannelDto MapToChannelDto(Channel channel, string ownerUsername)
     {
