@@ -31,6 +31,7 @@ public sealed class ObservabilityServiceTests
         return new ObservabilityService(
             new TestSettingsProvider(dbPath),
             new TestWorkContext(currentUserId ?? AdminUserId, currentUsername, currentRole),
+            context,
             new EfRepository<RequestLog>(context),
             new EfRepository<RequestLogDetail>(context),
             new EfRepository<RequestLogStreamLine>(context),
@@ -433,7 +434,7 @@ context.Users.Add(new User
     }
 
     [Fact]
-    public void ActiveChannelQueue_UsesRuntimeCapacityInsteadOfProcessingLogs()
+    public async Task ActiveChannelQueue_UsesRuntimeCapacityInsteadOfProcessingLogs()
     {
         var dbPath = Path.Combine(
             Path.GetTempPath(),
@@ -518,9 +519,9 @@ context.Users.Add(new User
             ["id"] = channelId402.ToString(),
             ["capacity"] = 3
         };
-        using var lease1 = capacity.TryAcquire("admin", runtimeChannel, "gpt-5", "gpt-5-upstream");
-        using var lease2 = capacity.TryAcquire("admin", runtimeChannel, "gpt-5", "gpt-5-upstream");
-        using var lease3 = capacity.TryAcquire("admin", runtimeChannel, "gpt-4.1", "gpt-4.1-upstream");
+        using var lease1 = await capacity.TryAcquireAsync("admin", runtimeChannel, "gpt-5", "gpt-5-upstream");
+        using var lease2 = await capacity.TryAcquireAsync("admin", runtimeChannel, "gpt-5", "gpt-5-upstream");
+        using var lease3 = await capacity.TryAcquireAsync("admin", runtimeChannel, "gpt-4.1", "gpt-4.1-upstream");
 
         var service = CreateService(dbPath, capacity);
 
