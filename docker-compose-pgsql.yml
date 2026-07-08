@@ -19,6 +19,22 @@ services:
     networks:
       - ocxp-network
 
+  redis:
+    image: redis:7-alpine
+    container_name: ${REDIS_CONTAINER_NAME:-ocxp-redis}
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - ./redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - ocxp-network
+
   ocxp:
     image: ${IMAGE_NAME:-shl148155/opencodexp:ocxp}
     platform: linux/amd64
@@ -31,10 +47,15 @@ services:
     environment:
       - OPENCODEX_DB_PROVIDER=postgres
       - OPENCODEX_DB_CONNECTION_STRING=Host=postgres;Port=5432;Database=opencodex;Username=admin;Password=123456
+      - OPENCODEX_REDIS_CONNECTION=redis:6379,abortConnect=false
+      - OPENCODEX_REDIS_PREFIX=opencodex
+      - OPENCODEX_CACHE_DEFAULT_TTL_SECONDS=300
     volumes:
       - ./logs:/app/logs
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]

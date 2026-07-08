@@ -132,46 +132,46 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 var candidateEnabled = !candidate.Route.Channel.TryGetValue("enabled", out var enabledValue) || enabledValue is true;
                 var candidateCircuitBreakDuration = TimeSpan.FromSeconds(Math.Max(
                     0,
-                    IntValue(candidate.Route.Channel, "circuit_break_duration_seconds", 0)));
-                var healthStatus = _channelCircuitBreaker.GetHealthStatus(
-                    ownerUsername,
-                    candidateChannelId,
-                    candidateEnabled,
-                    candidateCircuitBreakDuration);
-                if (healthStatus == ChannelHealthStatus.Open)
-                {
-                    continue;
-                }
+                   IntValue(candidate.Route.Channel, "circuit_break_duration_seconds", 0)));
+              var healthStatus = await _channelCircuitBreaker.GetHealthStatusAsync(
+                  ownerUsername,
+                  candidateChannelId,
+                  candidateEnabled,
+                   candidateCircuitBreakDuration);
+               if (healthStatus == ChannelHealthStatus.Open)
+               {
+                   continue;
+               }
 
-                var halfOpenProbeAcquired = false;
-                if (healthStatus == ChannelHealthStatus.HalfOpen)
-                {
-                    halfOpenProbeAcquired = _channelCircuitBreaker.TryAcquireHalfOpenProbe(
-                        ownerUsername,
-                        candidateChannelId,
-                        candidateCircuitBreakDuration);
-                    if (!halfOpenProbeAcquired)
-                    {
-                        continue;
-                    }
-                }
+               var halfOpenProbeAcquired = false;
+               if (healthStatus == ChannelHealthStatus.HalfOpen)
+               {
+                    halfOpenProbeAcquired = await _channelCircuitBreaker.TryAcquireHalfOpenProbeAsync(
+                       ownerUsername,
+                       candidateChannelId,
+                       candidateCircuitBreakDuration);
+                   if (!halfOpenProbeAcquired)
+                   {
+                       continue;
+                   }
+               }
 
-                using var capacityLease = await _channelCapacity.TryAcquireAsync(
-                    ownerUsername,
-                    candidate.Route.Channel,
-                    candidate.Route.OriginalModel,
-                    candidate.Route.UpstreamModel);
-                if (capacityLease is null)
-                {
-                    if (halfOpenProbeAcquired)
-                    {
-                        _channelCircuitBreaker.ReleaseHalfOpenProbe(
-                            ownerUsername,
-                            candidateChannelId,
-                            candidateCircuitBreakDuration);
-                    }
-                    continue;
-                }
+               using var capacityLease = await _channelCapacity.TryAcquireAsync(
+                   ownerUsername,
+                   candidate.Route.Channel,
+                   candidate.Route.OriginalModel,
+                   candidate.Route.UpstreamModel);
+               if (capacityLease is null)
+               {
+                   if (halfOpenProbeAcquired)
+                   {
+                        await _channelCircuitBreaker.ReleaseHalfOpenProbeAsync(
+                           ownerUsername,
+                           candidateChannelId,
+                           candidateCircuitBreakDuration);
+                   }
+                   continue;
+               }
 
                 TrackingProxyStreamWriter? trackingWriter = null;
                 routeAttemptNumber++;
@@ -294,77 +294,77 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                             ProxyHttpStatus.Ok,
                             error: null,
                             failoverEligible: false,
-                            upstreamResponse: null,
-                            requestMetadata);
-                        _channelCircuitBreaker.RecordSuccess(ownerUsername, candidateChannelId);
-                        streamResponseStarted = trackingWriter.HasWritten;
-                        return new ProxyEndpointResult(200, Payload: null, IsEmpty: true);
-                    }
+                           upstreamResponse: null,
+                          requestMetadata);
+                       await _channelCircuitBreaker.RecordSuccessAsync(ownerUsername, candidateChannelId);
+                      streamResponseStarted = trackingWriter.HasWritten;
+                      return new ProxyEndpointResult(200, Payload: null, IsEmpty: true);
+                  }
 
-                    logInFinally = false;
-                    var result = await _nonStreams.SendAsync(
-                        new ProxyNonStreamContext(
-                            started,
-                            requestLogId ?? Guid.Empty,
-                            requestId,
-                            ownerUsername,
-                            apiKeyId,
-                            payload,
-                            effectivePayload,
-                            upstreamRequest,
-                            context.EntryProtocol,
-                            route,
-                            channelType,
-                            channelId,
-                            ownerRole ?? string.Empty,
-                            upstreamModel,
-                            requestModel,
-                            defaultTimeout,
-                            requestMetadata,
-                            context.CancellationToken));
+                   logInFinally = false;
+                   var result = await _nonStreams.SendAsync(
+                       new ProxyNonStreamContext(
+                           started,
+                           requestLogId ?? Guid.Empty,
+                           requestId,
+                           ownerUsername,
+                           apiKeyId,
+                           payload,
+                           effectivePayload,
+                           upstreamRequest,
+                           context.EntryProtocol,
+                           route,
+                           channelType,
+                           channelId,
+                           ownerRole ?? string.Empty,
+                           upstreamModel,
+                           requestModel,
+                           defaultTimeout,
+                           requestMetadata,
+                           context.CancellationToken));
 
-                    if (result.FailureException is ProxyException failureException)
-                    {
-                        throw failureException;
-                    }
+                   if (result.FailureException is ProxyException failureException)
+                   {
+                       throw failureException;
+                   }
 
-                    await WriteChannelAttemptLogAsync(
-                        requestLogId,
-                        requestId,
-                        ownerUsername,
-                        apiKeyId,
-                        payload,
-                        attemptUpstreamRequest,
-                        requestModel,
-                        attemptUpstreamModel,
-                        candidate.Route.Channel,
-                        candidateChannelId,
-                        attemptChannelType,
-                        isStream,
-                        routeAttemptNumber,
-                        attemptStarted,
-                        result.StatusCode,
-                        error: null,
-                        failoverEligible: false,
-                        upstreamResponse: null,
-                        requestMetadata);
-                    _channelCircuitBreaker.RecordSuccess(ownerUsername, candidateChannelId);
-                    return new ProxyEndpointResult(result.StatusCode, result.Payload, IsEmpty: false);
-                }
-                catch (ProxyException exception)
-                {
-                    var counted = _channelCircuitBreaker.RecordFailure(
-                        ownerUsername,
-                        candidateChannelId,
-                        exception,
-                        candidateCircuitBreakDuration);
-                    if (halfOpenProbeAcquired && !counted)
-                    {
-                        _channelCircuitBreaker.ReleaseHalfOpenProbe(
-                            ownerUsername,
-                            candidateChannelId,
-                            candidateCircuitBreakDuration);
-                    }
+                   await WriteChannelAttemptLogAsync(
+                       requestLogId,
+                       requestId,
+                       ownerUsername,
+                       apiKeyId,
+                       payload,
+                       attemptUpstreamRequest,
+                       requestModel,
+                       attemptUpstreamModel,
+                       candidate.Route.Channel,
+                       candidateChannelId,
+                       attemptChannelType,
+                       isStream,
+                       routeAttemptNumber,
+                       attemptStarted,
+                       result.StatusCode,
+                       error: null,
+                       failoverEligible: false,
+                       upstreamResponse: null,
+                      requestMetadata);
+                   await _channelCircuitBreaker.RecordSuccessAsync(ownerUsername, candidateChannelId);
+                  return new ProxyEndpointResult(result.StatusCode, result.Payload, IsEmpty: false);
+              }
+              catch (ProxyException exception)
+              {
+                   var counted = await _channelCircuitBreaker.RecordFailureAsync(
+                      ownerUsername,
+                      candidateChannelId,
+                      exception,
+                      candidateCircuitBreakDuration);
+                  if (halfOpenProbeAcquired && !counted)
+                  {
+                       await _channelCircuitBreaker.ReleaseHalfOpenProbeAsync(
+                          ownerUsername,
+                          candidateChannelId,
+                          candidateCircuitBreakDuration);
+                  }
 
                     var upstreamErrorResponse = UpstreamErrorBody(exception);
                     if (isStream)
@@ -432,13 +432,13 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 }
                 catch (Exception exception)
                 {
-                    if (halfOpenProbeAcquired)
-                    {
-                        _channelCircuitBreaker.ReleaseHalfOpenProbe(
-                            ownerUsername,
-                            candidateChannelId,
-                            candidateCircuitBreakDuration);
-                    }
+                   if (halfOpenProbeAcquired)
+                   {
+                       await _channelCircuitBreaker.ReleaseHalfOpenProbeAsync(
+                           ownerUsername,
+                           candidateChannelId,
+                           candidateCircuitBreakDuration);
+                   }
 
                     if (exception is not OperationCanceledException)
                     {

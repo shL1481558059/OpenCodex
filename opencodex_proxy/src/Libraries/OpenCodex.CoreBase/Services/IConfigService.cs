@@ -49,5 +49,5 @@ public interface IConfigService
     /// 重置指定渠道的运行时健康状态。
     /// </summary>
     /// <param name="channelId">渠道标识符。</param>
-    ApiOpResult ResetChannelHealth(Guid channelId);
+    Task<ApiOpResult> ResetChannelHealthAsync(Guid channelId);
 }

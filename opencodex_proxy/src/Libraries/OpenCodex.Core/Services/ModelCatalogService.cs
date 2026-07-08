@@ -1,8 +1,10 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Persistence;
+using OpenCodex.Core.Services.Caching;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Caching;
 using OpenCodex.CoreBase.Data;
@@ -23,6 +25,8 @@ public sealed class ModelCatalogService : IModelCatalogService
 
     private static readonly TimeSpan PricingCacheTtl = TimeSpan.FromSeconds(60);
 
+    private static int _localPricingVersion;
+
     private readonly IRepository<ModelProvider> _providers;
     private readonly IRepository<ModelInfo> _models;
     private readonly IRepository<ChannelModelInfo> _channelModels;
@@ -33,6 +37,7 @@ public sealed class ModelCatalogService : IModelCatalogService
     private readonly IRepository<ModelPricing> _legacyPricing;
     private readonly IWorkContext _workContext;
     private readonly ICacheService _cache;
+    private readonly IRedisConnectionProvider? _redis;
 
     public ModelCatalogService(
         IRepository<ModelProvider> providers,
@@ -44,7 +49,8 @@ public sealed class ModelCatalogService : IModelCatalogService
         IRepository<Channel> channels,
         IRepository<ModelPricing> legacyPricing,
         IWorkContext workContext,
-        ICacheService cache)
+        ICacheService cache,
+        IRedisConnectionProvider? redis = null)
     {
         _providers = providers;
         _models = models;
@@ -56,6 +62,7 @@ public sealed class ModelCatalogService : IModelCatalogService
         _legacyPricing = legacyPricing;
         _workContext = workContext;
         _cache = cache;
+        _redis = redis;
     }
 
     public ApiOpResult<ModelProviderListResponse> ListProviders(bool includeDisabled = false)
@@ -496,10 +503,33 @@ public sealed class ModelCatalogService : IModelCatalogService
         Guid? channelId,
         string? upstreamModel)
     {
+        var version = await GetPricingVersionAsync();
         return await _cache.GetOrCreateAsync(
-            CacheKeys.PricingContext(channelId, upstreamModel),
+            CacheKeys.PricingContext(version, channelId, upstreamModel),
             () => Task.FromResult(ToCached(ResolvePricing(channelId, upstreamModel))),
             PricingCacheTtl);
+    }
+
+    private async Task<int> GetPricingVersionAsync()
+    {
+        if (_redis is not null && _redis.IsAvailable)
+        {
+            var db = _redis.GetDatabase();
+            if (db is not null)
+            {
+                var val = await db.StringGetAsync(PricingVersionKey);
+                return val.HasValue ? (int)val : 0;
+            }
+        }
+
+        return Volatile.Read(ref _localPricingVersion);
+    }
+
+    internal static readonly string PricingVersionKey = "pricing:version";
+
+    internal static int BumpLocalPricingVersion()
+    {
+        return Interlocked.Increment(ref _localPricingVersion);
     }
 
     private static CachedPricingResolution ToCached(PricingResolution resolution)

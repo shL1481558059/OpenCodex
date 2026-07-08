@@ -8,118 +8,124 @@ namespace OpenCodex.Api.Tests;
 public sealed class ChannelCircuitBreakerServiceTests
 {
     [Fact]
-    public void RecordFailure_ReachesThreshold_OpensCircuit()
+    public async Task RecordFailure_ReachesThreshold_OpensCircuit()
     {
         var now = DateTimeOffset.UtcNow;
         var service = new ChannelCircuitBreakerService(
             failureThreshold: 3,
             openDuration: TimeSpan.FromSeconds(30),
             halfOpenMaxProbeRequests: 1,
+            redis: null,
             clock: () => now);
 
-        service.RecordFailure("admin", "primary", new UpstreamException("1", ProxyHttpStatus.BadGateway));
-        service.RecordFailure("admin", "primary", new UpstreamException("2", ProxyHttpStatus.BadGateway));
-        service.RecordFailure("admin", "primary", new UpstreamException("3", ProxyHttpStatus.BadGateway));
+        await service.RecordFailureAsync("admin", "primary", new UpstreamException("1", ProxyHttpStatus.BadGateway));
+        await service.RecordFailureAsync("admin", "primary", new UpstreamException("2", ProxyHttpStatus.BadGateway));
+        await service.RecordFailureAsync("admin", "primary", new UpstreamException("3", ProxyHttpStatus.BadGateway));
 
         Assert.Equal(
             ChannelHealthStatus.Open,
-            service.GetHealthStatus("admin", "primary", enabled: true));
+            await service.GetHealthStatusAsync("admin", "primary", enabled: true));
     }
 
     [Fact]
-    public void OpenCircuit_ExpiresToHalfOpen()
+    public async Task OpenCircuit_ExpiresToHalfOpen()
     {
         var now = DateTimeOffset.UtcNow;
         var service = new ChannelCircuitBreakerService(
             failureThreshold: 1,
             openDuration: TimeSpan.FromSeconds(10),
             halfOpenMaxProbeRequests: 1,
+            redis: null,
             clock: () => now);
 
-        service.RecordFailure("admin", "primary", new UpstreamException("boom", ProxyHttpStatus.BadGateway));
+        await service.RecordFailureAsync("admin", "primary", new UpstreamException("boom", ProxyHttpStatus.BadGateway));
         now = now.AddSeconds(11);
 
         Assert.Equal(
             ChannelHealthStatus.HalfOpen,
-            service.GetHealthStatus("admin", "primary", enabled: true));
+            await service.GetHealthStatusAsync("admin", "primary", enabled: true));
     }
 
     [Fact]
-    public void HalfOpen_Success_ClosesCircuit()
+    public async Task HalfOpen_Success_ClosesCircuit()
     {
         var now = DateTimeOffset.UtcNow;
         var service = new ChannelCircuitBreakerService(
             failureThreshold: 1,
             openDuration: TimeSpan.FromSeconds(10),
             halfOpenMaxProbeRequests: 1,
+            redis: null,
             clock: () => now);
 
-        service.RecordFailure("admin", "primary", new UpstreamException("boom", ProxyHttpStatus.BadGateway));
+        await service.RecordFailureAsync("admin", "primary", new UpstreamException("boom", ProxyHttpStatus.BadGateway));
         now = now.AddSeconds(11);
 
-        Assert.Equal(ChannelHealthStatus.HalfOpen, service.GetHealthStatus("admin", "primary", enabled: true));
-        Assert.True(service.TryAcquireHalfOpenProbe("admin", "primary"));
+        Assert.Equal(ChannelHealthStatus.HalfOpen, await service.GetHealthStatusAsync("admin", "primary", enabled: true));
+        Assert.True(await service.TryAcquireHalfOpenProbeAsync("admin", "primary"));
 
-        service.RecordSuccess("admin", "primary");
+        await service.RecordSuccessAsync("admin", "primary");
 
-        Assert.Equal(ChannelHealthStatus.Healthy, service.GetHealthStatus("admin", "primary", enabled: true));
+        Assert.Equal(ChannelHealthStatus.Healthy, await service.GetHealthStatusAsync("admin", "primary", enabled: true));
     }
 
     [Fact]
-    public void HalfOpen_Failure_ReopensCircuit()
+    public async Task HalfOpen_Failure_ReopensCircuit()
     {
         var now = DateTimeOffset.UtcNow;
         var service = new ChannelCircuitBreakerService(
             failureThreshold: 1,
             openDuration: TimeSpan.FromSeconds(10),
             halfOpenMaxProbeRequests: 1,
+            redis: null,
             clock: () => now);
 
-        service.RecordFailure("admin", "primary", new UpstreamException("boom", ProxyHttpStatus.BadGateway));
+        await service.RecordFailureAsync("admin", "primary", new UpstreamException("boom", ProxyHttpStatus.BadGateway));
         now = now.AddSeconds(11);
 
-        Assert.Equal(ChannelHealthStatus.HalfOpen, service.GetHealthStatus("admin", "primary", enabled: true));
-        Assert.True(service.TryAcquireHalfOpenProbe("admin", "primary"));
+        Assert.Equal(ChannelHealthStatus.HalfOpen, await service.GetHealthStatusAsync("admin", "primary", enabled: true));
+        Assert.True(await service.TryAcquireHalfOpenProbeAsync("admin", "primary"));
 
-        service.RecordFailure("admin", "primary", new UpstreamException("again", ProxyHttpStatus.BadGateway));
+        await service.RecordFailureAsync("admin", "primary", new UpstreamException("again", ProxyHttpStatus.BadGateway));
 
-        Assert.Equal(ChannelHealthStatus.Open, service.GetHealthStatus("admin", "primary", enabled: true));
+        Assert.Equal(ChannelHealthStatus.Open, await service.GetHealthStatusAsync("admin", "primary", enabled: true));
     }
 
     [Fact]
-    public void GetHealthStatus_DisabledChannel_ReturnsDisabled()
+    public async Task GetHealthStatus_DisabledChannel_ReturnsDisabled()
     {
         var service = new ChannelCircuitBreakerService();
 
-        Assert.Equal(ChannelHealthStatus.Disabled, service.GetHealthStatus("admin", "primary", enabled: false));
+        Assert.Equal(ChannelHealthStatus.Disabled, await service.GetHealthStatusAsync("admin", "primary", enabled: false));
     }
 
     [Fact]
-    public void RecordFailure_LocalBadRequest_DoesNotCount()
+    public async Task RecordFailure_LocalBadRequest_DoesNotCount()
     {
         var service = new ChannelCircuitBreakerService(
             failureThreshold: 1,
             openDuration: TimeSpan.FromSeconds(10),
             halfOpenMaxProbeRequests: 1,
+            redis: null,
             clock: () => DateTimeOffset.UtcNow);
 
-        var counted = service.RecordFailure("admin", "primary", new BadRequestException("local bad request"));
+        var counted = await service.RecordFailureAsync("admin", "primary", new BadRequestException("local bad request"));
 
         Assert.False(counted);
-        Assert.Equal(ChannelHealthStatus.Healthy, service.GetHealthStatus("admin", "primary", enabled: true));
+        Assert.Equal(ChannelHealthStatus.Healthy, await service.GetHealthStatusAsync("admin", "primary", enabled: true));
     }
 
     [Fact]
-    public void RecordFailure_UpstreamForbidden_CountsAndOpensCircuit()
+    public async Task RecordFailure_UpstreamForbidden_CountsAndOpensCircuit()
     {
         var now = DateTimeOffset.UtcNow;
         var service = new ChannelCircuitBreakerService(
             failureThreshold: 1,
             openDuration: TimeSpan.FromSeconds(30),
             halfOpenMaxProbeRequests: 1,
+            redis: null,
             clock: () => now);
 
-        var counted = service.RecordFailure(
+        var counted = await service.RecordFailureAsync(
             "admin",
             "primary",
             new UpstreamException("upstream returned HTTP 403", ProxyHttpStatus.Forbidden));
@@ -127,19 +133,20 @@ public sealed class ChannelCircuitBreakerServiceTests
         Assert.True(counted);
         Assert.Equal(
             ChannelHealthStatus.Open,
-            service.GetHealthStatus("admin", "primary", enabled: true));
+            await service.GetHealthStatusAsync("admin", "primary", enabled: true));
     }
 
     [Fact]
-    public void RecordFailure_UpstreamUnauthorized_DoesNotCount()
+    public async Task RecordFailure_UpstreamUnauthorized_DoesNotCount()
     {
         var service = new ChannelCircuitBreakerService(
             failureThreshold: 1,
             openDuration: TimeSpan.FromSeconds(30),
             halfOpenMaxProbeRequests: 1,
+            redis: null,
             clock: () => DateTimeOffset.UtcNow);
 
-        var counted = service.RecordFailure(
+        var counted = await service.RecordFailureAsync(
             "admin",
             "primary",
             new UpstreamException("upstream returned HTTP 401", ProxyHttpStatus.Unauthorized));
@@ -147,39 +154,41 @@ public sealed class ChannelCircuitBreakerServiceTests
         Assert.False(counted);
         Assert.Equal(
             ChannelHealthStatus.Healthy,
-            service.GetHealthStatus("admin", "primary", enabled: true));
+            await service.GetHealthStatusAsync("admin", "primary", enabled: true));
     }
 
     [Fact]
-    public void Reset_ClearsOpenCircuitBackToHealthy()
+    public async Task Reset_ClearsOpenCircuitBackToHealthy()
     {
         var now = DateTimeOffset.UtcNow;
         var service = new ChannelCircuitBreakerService(
             failureThreshold: 1,
             openDuration: TimeSpan.FromSeconds(10),
             halfOpenMaxProbeRequests: 1,
+            redis: null,
             clock: () => now);
 
-        service.RecordFailure("admin", "primary", new UpstreamException("boom", ProxyHttpStatus.BadGateway));
+        await service.RecordFailureAsync("admin", "primary", new UpstreamException("boom", ProxyHttpStatus.BadGateway));
 
-        Assert.Equal(ChannelHealthStatus.Open, service.GetHealthStatus("admin", "primary", enabled: true));
+        Assert.Equal(ChannelHealthStatus.Open, await service.GetHealthStatusAsync("admin", "primary", enabled: true));
 
-        service.Reset("admin", "primary");
+        await service.ResetAsync("admin", "primary");
 
-        Assert.Equal(ChannelHealthStatus.Healthy, service.GetHealthStatus("admin", "primary", enabled: true));
+        Assert.Equal(ChannelHealthStatus.Healthy, await service.GetHealthStatusAsync("admin", "primary", enabled: true));
     }
 
     [Fact]
-    public void RecordFailure_ZeroDuration_DoesNotMarkCircuitOpen()
+    public async Task RecordFailure_ZeroDuration_DoesNotMarkCircuitOpen()
     {
         var now = DateTimeOffset.UtcNow;
         var service = new ChannelCircuitBreakerService(
             failureThreshold: 1,
             openDuration: TimeSpan.FromSeconds(10),
             halfOpenMaxProbeRequests: 1,
+            redis: null,
             clock: () => now);
 
-        var counted = service.RecordFailure(
+        var counted = await service.RecordFailureAsync(
             "admin",
             "primary",
             new UpstreamException("boom", ProxyHttpStatus.BadGateway),
@@ -188,6 +197,6 @@ public sealed class ChannelCircuitBreakerServiceTests
         Assert.True(counted);
         Assert.Equal(
             ChannelHealthStatus.Healthy,
-            service.GetHealthStatus("admin", "primary", enabled: true, TimeSpan.Zero));
+            await service.GetHealthStatusAsync("admin", "primary", enabled: true, TimeSpan.Zero));
     }
 }

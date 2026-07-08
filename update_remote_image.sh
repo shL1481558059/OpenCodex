@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # 数据库类型: sqlite 或 postgres
-DB_TYPE="${DB_TYPE:-sqlite}"
+DB_TYPE="${DB_TYPE:-postgres}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 REMOTE_USER="${REMOTE_USER:-admin}"

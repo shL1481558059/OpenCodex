@@ -340,7 +340,7 @@ public sealed class ProxyEndpointServiceTests
 
         Assert.Equal(200, result.StatusCode);
         Assert.Equal(["primary", "secondary"], attempts);
-        Assert.Equal(ChannelHealthStatus.Healthy, breaker.GetHealthStatus("admin", "secondary", enabled: true));
+        Assert.Equal(ChannelHealthStatus.Healthy, await breaker.GetHealthStatusAsync("admin", "secondary", enabled: true));
     }
 
     [Fact]
@@ -649,66 +649,68 @@ public sealed class ProxyEndpointServiceTests
     {
         var capacity = new ChannelCapacityService();
         var now = DateTimeOffset.UtcNow;
-        var breaker = new ChannelCircuitBreakerService(
-            failureThreshold: 1,
-            openDuration: TimeSpan.FromSeconds(30),
-            halfOpenMaxProbeRequests: 1,
-            clock: () => now);
-        var primary = CreateChannel("primary", priority: 0, capacity: 1);
-        var secondary = CreateChannel("secondary", priority: 1, capacity: 1);
+       var breaker = new ChannelCircuitBreakerService(
+           failureThreshold: 1,
+           openDuration: TimeSpan.FromSeconds(30),
+           halfOpenMaxProbeRequests: 1,
+            redis: null,
+           clock: () => now);
+       var primary = CreateChannel("primary", priority: 0, capacity: 1);
+       var secondary = CreateChannel("secondary", priority: 1, capacity: 1);
         primary["circuit_break_duration_seconds"] = 30;
         secondary["circuit_break_duration_seconds"] = 30;
-        breaker.RecordFailure("admin", "primary", new UpstreamException("down", ProxyHttpStatus.BadGateway));
+        await breaker.RecordFailureAsync("admin", "primary", new UpstreamException("down", ProxyHttpStatus.BadGateway));
 
-        var attempts = new List<string>();
-        var nonStreams = new StubProxyNonStreamService(context =>
-        {
-            attempts.Add(context.ChannelId);
-            return Task.FromResult(new ProxyNonStreamResult(200, new { ok = true }));
-        });
-        var service = CreateService(
-            capacity,
-            new StubProxyRouteService(
-            [
-                CreateRoute(primary, "shared-model", "upstream-primary"),
-                CreateRoute(secondary, "shared-model", "upstream-secondary")
-            ]),
-            breaker: breaker,
-            nonStreams: nonStreams);
+       var attempts = new List<string>();
+       var nonStreams = new StubProxyNonStreamService(context =>
+       {
+           attempts.Add(context.ChannelId);
+           return Task.FromResult(new ProxyNonStreamResult(200, new { ok = true }));
+       });
+       var service = CreateService(
+           capacity,
+           new StubProxyRouteService(
+           [
+               CreateRoute(primary, "shared-model", "upstream-primary"),
+               CreateRoute(secondary, "shared-model", "upstream-secondary")
+           ]),
+           breaker: breaker,
+           nonStreams: nonStreams);
 
-        var result = await service.ProxyAsync(CreateChatContext("shared-model"));
+       var result = await service.ProxyAsync(CreateChatContext("shared-model"));
 
-        Assert.Equal(200, result.StatusCode);
-        Assert.Equal(["secondary"], attempts);
-    }
+       Assert.Equal(200, result.StatusCode);
+       Assert.Equal(["secondary"], attempts);
+   }
 
-    [Fact]
-    public async Task ProxyAsync_HalfOpenProbeSuccess_ClosesCircuit()
-    {
-        var capacity = new ChannelCapacityService();
-        var now = DateTimeOffset.UtcNow;
-        var breaker = new ChannelCircuitBreakerService(
-            failureThreshold: 1,
-            openDuration: TimeSpan.FromSeconds(10),
-            halfOpenMaxProbeRequests: 1,
-            clock: () => now);
-        var primary = CreateChannel("primary", priority: 0, capacity: 1);
-        breaker.RecordFailure("admin", "primary", new UpstreamException("down", ProxyHttpStatus.BadGateway));
-        now = now.AddSeconds(11);
+   [Fact]
+   public async Task ProxyAsync_HalfOpenProbeSuccess_ClosesCircuit()
+   {
+       var capacity = new ChannelCapacityService();
+       var now = DateTimeOffset.UtcNow;
+       var breaker = new ChannelCircuitBreakerService(
+           failureThreshold: 1,
+           openDuration: TimeSpan.FromSeconds(10),
+           halfOpenMaxProbeRequests: 1,
+            redis: null,
+           clock: () => now);
+       var primary = CreateChannel("primary", priority: 0, capacity: 1);
+        await breaker.RecordFailureAsync("admin", "primary", new UpstreamException("down", ProxyHttpStatus.BadGateway));
+       now = now.AddSeconds(11);
 
-        var nonStreams = new StubProxyNonStreamService(_ =>
-            Task.FromResult(new ProxyNonStreamResult(200, new { ok = true })));
-        var service = CreateService(
-            capacity,
-            new StubProxyRouteService([CreateRoute(primary, "shared-model", "upstream-primary")]),
-            breaker: breaker,
-            nonStreams: nonStreams);
+       var nonStreams = new StubProxyNonStreamService(_ =>
+           Task.FromResult(new ProxyNonStreamResult(200, new { ok = true })));
+       var service = CreateService(
+           capacity,
+           new StubProxyRouteService([CreateRoute(primary, "shared-model", "upstream-primary")]),
+           breaker: breaker,
+           nonStreams: nonStreams);
 
-        var result = await service.ProxyAsync(CreateChatContext("shared-model"));
+       var result = await service.ProxyAsync(CreateChatContext("shared-model"));
 
-        Assert.Equal(200, result.StatusCode);
-        Assert.Equal(ChannelHealthStatus.Healthy, breaker.GetHealthStatus("admin", "primary", enabled: true));
-    }
+       Assert.Equal(200, result.StatusCode);
+        Assert.Equal(ChannelHealthStatus.Healthy, await breaker.GetHealthStatusAsync("admin", "primary", enabled: true));
+   }
 
     [Fact]
     public async Task ProxyAsync_ResponsesPassthrough_CopiesCodexHeadersToUpstreamChannel()
