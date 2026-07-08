@@ -31,10 +31,13 @@ public sealed partial class WebSearchSimulator
         var completedConverted = (ConvertedStreamResult?)null;
         var completedRequest = requestPayload;
         var textFormat = ProtocolConverter.ExtractTextFormat(payload);
+        var toolCallMappings = protocol == ProtocolConverter.Chat
+            ? ProtocolConverter.BuildResponsesToolCallMappings(payload)
+            : null;
 
         for (var iteration = 0; iteration < maxIterations; iteration++)
         {
-            var converted = new ConvertedStreamResult { TextFormat = textFormat };
+            var converted = new ConvertedStreamResult { TextFormat = textFormat, ToolCallMappings = toolCallMappings };
             var lines = _upstream.StreamJsonAsync(channel, requestPayload, defaultTimeout, cancellationToken);
             lines = CaptureUpstreamLines(lines, streamCapture);
             var events = new List<string>();
@@ -171,7 +174,7 @@ public sealed partial class WebSearchSimulator
                 continue;
             }
 
-            converted = new ConvertedStreamResult { TextFormat = textFormat };
+            converted = new ConvertedStreamResult { TextFormat = textFormat, ToolCallMappings = toolCallMappings };
             lines = _upstream.StreamJsonAsync(channel, requestPayload, defaultTimeout, cancellationToken);
             lines = CaptureUpstreamLines(lines, streamCapture);
             events = [];
@@ -251,7 +254,8 @@ public sealed partial class WebSearchSimulator
                 ProtocolConverter.Responses,
                 protocol,
                 originalModel,
-                textFormat);
+                textFormat,
+                toolCallMappings);
             responsePayload = WebSearchResponsePayload.PrependWebSearchItems(
                 responsePayload,
                 webResults,

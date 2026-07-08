@@ -1707,10 +1707,10 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Assert.Equal("tool_search", item["name"]);
         Assert.Equal("call_search", item["call_id"]);
 
-        var input = JsonSerializer.Deserialize<Dictionary<string, object?>>(Assert.IsType<string>(item["input"]));
-        Assert.NotNull(input);
-        Assert.Equal("browser", input!["query"]?.ToString());
-        Assert.Equal(3, Assert.IsType<JsonElement>(input["limit"]!).GetInt32());
+        var arguments = JsonSerializer.Deserialize<Dictionary<string, object?>>(Assert.IsType<string>(item["arguments"]));
+        Assert.NotNull(arguments);
+        Assert.Equal("browser", arguments!["query"]?.ToString());
+        Assert.Equal(3, Assert.IsType<JsonElement>(arguments["limit"]!).GetInt32());
     }
 
     [Fact]
@@ -2357,6 +2357,127 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             item is Dictionary<string, object?> entry && (string?)entry["type"] == "message");
         Assert.DoesNotContain(output, item =>
             item is Dictionary<string, object?> entry && (string?)entry["type"] == "function_call");
+    }
+
+    [Fact]
+    public async Task WebSearchStream_ChatUpstream_PreservesNativeToolSearchCall()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-web-search-tests", $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        await using (var db = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            db.Database.Migrate();
+            db.WebSearchSettings.Add(new WebSearchSettings
+            {
+                Mode = WebSearchModes.Simulate,
+                KeyUsageLimit = 5,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            db.TavilyKeys.Add(new TavilyKey
+            {
+                Position = 0,
+                Provider = "tavily",
+                ApiKey = "test-key",
+                Enabled = true,
+                UsageCount = 0,
+                UsageLimit = 5,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var upstream = new RecordingStreamUpstreamClient(
+            ChatToolStreamResponse("call_web_1", "web_search", "{\"query\":\"OpenAI\"}"),
+            ChatToolStreamResponse("call_ts_1", "tool_search", "{\"query\":\"browser\",\"limit\":3}"));
+        var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var simulator = new WebSearchSimulator(
+            upstream,
+            new SuccessfulWebSearchClient(),
+            new EfRepository<WebSearchSettings>(wsContext),
+            new EfRepository<TavilyKey>(wsContext));
+        var streamResult = new WebSearchStreamResult();
+        var events = new List<string>();
+        await foreach (var line in simulator.RunChatStreamAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                ["type"] = ProtocolConverter.Chat
+            },
+            new Dictionary<string, object?>
+            {
+                ["model"] = "upstream",
+                ["messages"] = new List<object?>
+                {
+                    new Dictionary<string, object?> { ["role"] = "user", ["content"] = "search then discover tools" }
+                },
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "function",
+                        ["function"] = new Dictionary<string, object?>
+                        {
+                            ["name"] = "web_search",
+                            ["parameters"] = new Dictionary<string, object?>()
+                        }
+                    },
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "function",
+                        ["function"] = new Dictionary<string, object?>
+                        {
+                            ["name"] = "tool_search",
+                            ["parameters"] = new Dictionary<string, object?>()
+                        }
+                    }
+                }
+            },
+            new Dictionary<string, object?>
+            {
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?> { ["type"] = "web_search" },
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "tool_search",
+                        ["parameters"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object?>
+                            {
+                                ["query"] = new Dictionary<string, object?> { ["type"] = "string" }
+                            },
+                            ["required"] = new List<object?> { "query" }
+                        }
+                    }
+                },
+                ["max_tool_calls"] = 5
+            },
+            "public-model",
+            120,
+            streamResult,
+            null,
+            CancellationToken.None))
+        {
+            events.Add(line);
+        }
+
+        var body = string.Concat(events);
+        Assert.Contains("\"type\":\"tool_search_call\"", body, StringComparison.Ordinal);
+        Assert.Contains("\"arguments\"", body, StringComparison.Ordinal);
+        Assert.Contains("response.function_call_arguments.delta", body, StringComparison.Ordinal);
+        Assert.Contains("response.function_call_arguments.done", body, StringComparison.Ordinal);
+
+        Assert.NotNull(streamResult.ResponsePayload);
+        var output = Assert.IsType<List<object?>>(streamResult.ResponsePayload!["output"]);
+        Assert.Contains(output, item =>
+            item is Dictionary<string, object?> entry && (string?)entry["type"] == "tool_search_call");
+        Assert.DoesNotContain(output, item =>
+            item is Dictionary<string, object?> entry
+            && (string?)entry["type"] == "function_call"
+            && (string?)entry["name"] == "tool_search");
     }
 
     [Fact]

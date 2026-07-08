@@ -55,7 +55,7 @@ public static partial class ProtocolConverter
             {
                 Kind = ResponsesToolCallKind.NativeTool,
                 ItemType = NativeToolCallItemType(nativeType),
-                ArgumentField = "input",
+                ArgumentField = NativeToolArgumentField(nativeType),
                 Name = mapping.ResponsesName,
                 Namespace = mapping.Namespace
             };
@@ -117,5 +117,11 @@ public static partial class ProtocolConverter
         return nativeType.EndsWith("_call", StringComparison.Ordinal)
             ? nativeType
             : $"{nativeType}_call";
+    }
+
+    private static string NativeToolArgumentField(string nativeType)
+    {
+        // tool_search_call uses "arguments" (same as function_call), not "input"
+        return nativeType == "tool_search" ? "arguments" : "input";
     }
 }
