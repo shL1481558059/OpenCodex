@@ -66,10 +66,10 @@ public sealed class ConfigController : AuthenticatedApiControllerBase
     }
 
     [HttpPost("/channels/{channelId:guid}/reset-health")]
-    public IActionResult ResetChannelHealth(Guid channelId)
+    public async Task<IActionResult> ResetChannelHealth(Guid channelId)
     {
         RequireUser();
-        var result = _config.ResetChannelHealth(channelId);
+        var result = await _config.ResetChannelHealthAsync(channelId);
         return Api(result);
     }
 }

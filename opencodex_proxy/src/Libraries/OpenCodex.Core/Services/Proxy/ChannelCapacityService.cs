@@ -11,7 +11,8 @@ namespace OpenCodex.Core.Services.Proxy;
 /// </summary>
 /// <remarks>
 /// Redis 路径:每个 (owner,channel) 一个 Sorted Set,member=leaseId(GUID),score=租约过期时间戳。
-/// TryAcquire 用 Lua 原子完成"清理过期 + 判满 + 占位";Release 用 fire-and-forget ZREM。
+/// TryAcquire 用分布式锁(LockTake/LockRelease)保护"清理过期 + 判满 + 占位"三步操作。
+/// Release 用 fire-and-forget ZREM。
 /// 实例崩溃未释放的槽位靠租约 TTL(默认 600s)自动回收,避免容量永久卡死。
 /// 进程内 CounterEntry 始终维护(无论是否走 Redis),供 GetActiveRequests/GetActiveModelUsages 读取——
 /// 多实例下这两个值为本实例视角的近似(仅用于最小连接排序启发式与管理台展示),全局硬限流以 Redis 为准。
@@ -19,13 +20,9 @@ namespace OpenCodex.Core.Services.Proxy;
 public sealed class ChannelCapacityService : IChannelCapacityService
 {
     private static readonly TimeSpan LeaseTtl = TimeSpan.FromSeconds(600);
-
-    private static readonly LuaScript AcquireScript = LuaScript.Prepare(
-        "redis.call('ZREMRANGEBYSCORE', @key, '-inf', @now) " +
-        "local c = redis.call('ZCARD', @key) " +
-        "if c >= tonumber(@capacity) then return 0 end " +
-        "redis.call('ZADD', @key, @expiry, @leaseId) " +
-        "return 1");
+    private static readonly TimeSpan LockTtl = TimeSpan.FromSeconds(5);
+    private const int LockRetryCount = 3;
+    private static readonly TimeSpan LockRetryDelay = TimeSpan.FromMilliseconds(10);
 
     private readonly IRedisConnectionProvider? _redis;
     private readonly ConcurrentDictionary<string, CounterEntry> _entries = new(StringComparer.Ordinal);
@@ -53,22 +50,22 @@ public sealed class ChannelCapacityService : IChannelCapacityService
 
         var db = GetDatabase();
 
-        // 容量 > 0 且 Redis 可用:先 Lua 原子判满占位;失败则直接拒绝
+        // 容量 > 0 且 Redis 可用:分布式锁保护"清理过期 + 判满 + 占位";失败则直接拒绝
         string? leaseId = null;
         if (capacity > 0 && db is not null)
         {
             leaseId = Guid.NewGuid().ToString("N");
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var expiry = now + (long)LeaseTtl.TotalSeconds;
-            var result = await db.ScriptEvaluateAsync(AcquireScript, new
-            {
-                key = (RedisKey)CapacityKey(ownerUsername, channelId),
-                now = now,
-                capacity = capacity,
-                expiry = expiry,
-                leaseId = leaseId
-            }).ConfigureAwait(false);
-            if ((long)result != 1L)
+            var acquired = await TryAcquireRedisSlotAsync(
+                db,
+                CapacityKey(ownerUsername, channelId),
+                CapacityLockKey(ownerUsername, channelId),
+                now,
+                expiry,
+                capacity,
+                leaseId);
+            if (!acquired)
             {
                 return null;
             }
@@ -185,6 +182,65 @@ public sealed class ChannelCapacityService : IChannelCapacityService
         }
     }
 
+    /// <summary>
+    /// 分布式锁保护下的 Sorted Set 信号量获取:清理过期 → 判满 → 占位。
+    /// </summary>
+    private async Task<bool> TryAcquireRedisSlotAsync(
+        IDatabase db,
+        string setKey,
+        string lockKey,
+        long now,
+        long expiry,
+        int capacity,
+        string leaseId)
+    {
+        var lockToken = leaseId;
+        var redisKey = (RedisKey)setKey;
+        var redisLockKey = (RedisKey)lockKey;
+
+        for (var attempt = 0; attempt < LockRetryCount; attempt++)
+        {
+            if (await db.LockTakeAsync(redisLockKey, lockToken, LockTtl).ConfigureAwait(false))
+            {
+                try
+                {
+                    // 清理过期租约
+                    await db.SortedSetRemoveRangeByScoreAsync(redisKey, double.NegativeInfinity, now)
+                        .ConfigureAwait(false);
+                    // 判满
+                    var current = await db.SortedSetLengthAsync(redisKey).ConfigureAwait(false);
+                    if (current >= capacity)
+                    {
+                        return false;
+                    }
+                    // 占位
+                    await db.SortedSetAddAsync(redisKey, leaseId, expiry).ConfigureAwait(false);
+                    return true;
+                }
+                finally
+                {
+                    db.LockRelease(redisLockKey, lockToken, CommandFlags.FireAndForget);
+                }
+            }
+
+            if (attempt < LockRetryCount - 1)
+            {
+                await Task.Delay(LockRetryDelay).ConfigureAwait(false);
+            }
+        }
+
+        // 锁获取失败:降级为直接尝试占位(无锁,极端竞态下可能轻微超限,靠租约 TTL 兜底)
+        await db.SortedSetRemoveRangeByScoreAsync(redisKey, double.NegativeInfinity, now)
+            .ConfigureAwait(false);
+        var count = await db.SortedSetLengthAsync(redisKey).ConfigureAwait(false);
+        if (count >= capacity)
+        {
+            return false;
+        }
+        await db.SortedSetAddAsync(redisKey, leaseId, expiry).ConfigureAwait(false);
+        return true;
+    }
+
     private IDatabase? GetDatabase()
     {
         return _redis is not null && _redis.IsAvailable ? _redis.GetDatabase() : null;
@@ -193,6 +249,11 @@ public sealed class ChannelCapacityService : IChannelCapacityService
     private static string CapacityKey(string ownerUsername, string channelId)
     {
         return $"capacity:{ownerUsername.Trim()}:{channelId}";
+    }
+
+    private static string CapacityLockKey(string ownerUsername, string channelId)
+    {
+        return $"capacity:lock:{ownerUsername.Trim()}:{channelId}";
     }
 
     private static string ChannelId(IReadOnlyDictionary<string, object?> channel)

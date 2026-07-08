@@ -3,6 +3,8 @@
 config.json
 logs/
 .playwright-cli/
+.postgres-data/
+.redis-data/
 .DS_Store
 AGENTS.md
 .idea/

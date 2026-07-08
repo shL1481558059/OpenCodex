@@ -152,10 +152,10 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
 
         using (var scope = factory.Services.CreateScope())
         {
-            var breaker = scope.ServiceProvider.GetRequiredService<IChannelCircuitBreakerService>();
-            breaker.RecordFailure("admin", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", new UpstreamException("down", ProxyHttpStatus.BadGateway));
-            breaker.RecordFailure("admin", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", new UpstreamException("down", ProxyHttpStatus.BadGateway));
-            breaker.RecordFailure("admin", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", new UpstreamException("down", ProxyHttpStatus.BadGateway));
+           var breaker = scope.ServiceProvider.GetRequiredService<IChannelCircuitBreakerService>();
+            await breaker.RecordFailureAsync("admin", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", new UpstreamException("down", ProxyHttpStatus.BadGateway));
+            await breaker.RecordFailureAsync("admin", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", new UpstreamException("down", ProxyHttpStatus.BadGateway));
+            await breaker.RecordFailureAsync("admin", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", new UpstreamException("down", ProxyHttpStatus.BadGateway));
         }
 
         var response = await SendWithCookie(client, HttpMethod.Get, "/config", cookie);
@@ -199,10 +199,10 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
 
         using (var scope = factory.Services.CreateScope())
         {
-            var breaker = scope.ServiceProvider.GetRequiredService<IChannelCircuitBreakerService>();
-            breaker.RecordFailure("admin", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", new UpstreamException("down", ProxyHttpStatus.BadGateway));
-            breaker.RecordFailure("admin", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", new UpstreamException("down", ProxyHttpStatus.BadGateway));
-            breaker.RecordFailure("admin", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", new UpstreamException("down", ProxyHttpStatus.BadGateway));
+           var breaker = scope.ServiceProvider.GetRequiredService<IChannelCircuitBreakerService>();
+            await breaker.RecordFailureAsync("admin", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", new UpstreamException("down", ProxyHttpStatus.BadGateway));
+            await breaker.RecordFailureAsync("admin", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", new UpstreamException("down", ProxyHttpStatus.BadGateway));
+            await breaker.RecordFailureAsync("admin", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", new UpstreamException("down", ProxyHttpStatus.BadGateway));
         }
 
         var reset = await SendWithCookie(

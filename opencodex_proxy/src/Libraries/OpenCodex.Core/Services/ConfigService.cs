@@ -146,7 +146,7 @@ public sealed class ConfigService : IConfigService
             ResolveHealthStatus));
     }
 
-    public ApiOpResult ResetChannelHealth(Guid channelId)
+    public async Task<ApiOpResult> ResetChannelHealthAsync(Guid channelId)
     {
         if (channelId == Guid.Empty)
         {
@@ -161,7 +161,7 @@ public sealed class ConfigService : IConfigService
         }
 
         var ownerUsername = ResolveOwnerUsername(channel.OwnerUserId);
-        _channelCircuitBreaker.Reset(ownerUsername, channel.Id.ToString());
+        await _channelCircuitBreaker.ResetAsync(ownerUsername, channel.Id.ToString());
         return ApiOpResult.Succeed();
     }
 
@@ -172,11 +172,11 @@ public sealed class ConfigService : IConfigService
 
     private string ResolveHealthStatus(ChannelDto channel)
     {
-        return _channelCircuitBreaker.GetHealthStatus(
+        return _channelCircuitBreaker.GetHealthStatusAsync(
             channel.OwnerUsername,
             channel.Id.ToString(),
             channel.Enabled,
-            TimeSpan.FromSeconds(channel.CircuitBreakDurationSeconds)) switch
+            TimeSpan.FromSeconds(channel.CircuitBreakDurationSeconds)).GetAwaiter().GetResult() switch
         {
             ChannelHealthStatus.Disabled => "disabled",
             ChannelHealthStatus.Open => "open",

@@ -1,9 +1,11 @@
 using System.Globalization;
 using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Threading;
 using Mapster;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Persistence;
+using OpenCodex.Core.Services.Caching;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain;
@@ -11,16 +13,19 @@ using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.Pricing;
 using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
+using StackExchange.Redis;
 
 namespace OpenCodex.Core.Services;
 
 public sealed class ModelPricingService : IModelPricingService
 {
     private readonly IRepository<ModelPricing> _repository;
+    private readonly IRedisConnectionProvider? _redis;
 
-    public ModelPricingService(IRepository<ModelPricing> repository)
+    public ModelPricingService(IRepository<ModelPricing> repository, IRedisConnectionProvider? redis = null)
     {
         _repository = repository;
+        _redis = redis;
     }
 
     public ApiOpResult<ModelPricingListResponse> ListPrices(
@@ -68,6 +73,7 @@ public sealed class ModelPricingService : IModelPricingService
             }
 
             _repository.Insert(price);
+            BumpPricingVersion();
             return ApiOpResult<ModelPricingResponsePayload>.Succeed(ModelPricingResponsePayload.From(price.Adapt<ModelPricingDto>()));
         }
         catch (ArgumentException exception)
@@ -95,6 +101,7 @@ public sealed class ModelPricingService : IModelPricingService
             ApplyUpdates(price, command.Values);
             price.UpdatedAt = UnixTimeSeconds();
             _repository.Update(price);
+            BumpPricingVersion();
             return ApiOpResult<ModelPricingResponsePayload>.Succeed(ModelPricingResponsePayload.From(price.Adapt<ModelPricingDto>()));
         }
         catch (ArgumentException exception)
@@ -117,6 +124,7 @@ public sealed class ModelPricingService : IModelPricingService
 
         var deleted = price.Adapt<ModelPricingDto>();
         _repository.Delete(price);
+        BumpPricingVersion();
         return ApiOpResult<DeleteModelPricingResponse>.Succeed(DeleteModelPricingResponse.From(deleted));
     }
 
@@ -127,6 +135,10 @@ public sealed class ModelPricingService : IModelPricingService
         {
             var defaults = await OpenCodexPricingDefaults.CurrentRemoteAsync(cancellationToken);
             var result = UpdateDefaults(defaults);
+            if (result.Inserted > 0 || result.Updated > 0)
+            {
+                await BumpPricingVersionAsync();
+            }
             return ApiOpResult<SeedModelPricingResponse>.Succeed(
                 new SeedModelPricingResponse(result.Inserted, result.Updated, result.Skipped));
         }
@@ -499,5 +511,36 @@ public sealed class ModelPricingService : IModelPricingService
     private static double UnixTimeSeconds()
     {
         return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
+    }
+
+    private void BumpPricingVersion()
+    {
+        if (_redis is not null && _redis.IsAvailable)
+        {
+            var db = _redis.GetDatabase();
+            if (db is not null)
+            {
+                db.StringIncrementAsync(ModelCatalogService.PricingVersionKey, flags: CommandFlags.FireAndForget);
+                return;
+            }
+        }
+
+        ModelCatalogService.BumpLocalPricingVersion();
+    }
+
+    private async Task BumpPricingVersionAsync()
+    {
+        if (_redis is not null && _redis.IsAvailable)
+        {
+            var db = _redis.GetDatabase();
+            if (db is not null)
+            {
+                await db.StringIncrementAsync(ModelCatalogService.PricingVersionKey);
+                return;
+            }
+        }
+
+        ModelCatalogService.BumpLocalPricingVersion();
+        await Task.CompletedTask;
     }
 }

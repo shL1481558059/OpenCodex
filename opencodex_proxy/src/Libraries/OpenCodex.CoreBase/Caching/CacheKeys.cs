@@ -16,6 +16,7 @@ public static class CacheKeys
     public static string RouteChannels(string ownerUsername) => $"route:channels:{ownerUsername}";
 
     /// <summary>定价:按 (channelId, upstreamModel) 缓存的计费解析结果。</summary>
-    public static string PricingContext(Guid? channelId, string? upstreamModel)
-        => $"pricing:context:{channelId}:{upstreamModel}";
+    /// <param name="version">定价版本号;规则变更后递增,使旧缓存 key 自然失效。</param>
+    public static string PricingContext(int version, Guid? channelId, string? upstreamModel)
+        => $"pricing:context:{version}:{channelId}:{upstreamModel}";
 }
