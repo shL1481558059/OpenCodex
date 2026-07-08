@@ -26,6 +26,9 @@ public sealed partial class WebSearchSimulator
         var webExecuted = 0;
         var maxIterations = Math.Max(webLimit + 3, 3);
         Dictionary<string, object?> upstreamResponse = [];
+        var toolCallMappings = protocol == ProtocolConverter.Chat
+            ? ProtocolConverter.BuildResponsesToolCallMappings(payload)
+            : null;
 
         for (var iteration = 0; iteration < maxIterations; iteration++)
         {
@@ -62,7 +65,8 @@ public sealed partial class WebSearchSimulator
                     ProtocolConverter.Responses,
                     protocol,
                     originalModel,
-                    textFormat);
+                    textFormat,
+                    toolCallMappings);
                 if (webResults.Count > 0)
                 {
                     responsePayload = WebSearchResponsePayload.PrependWebSearchItems(
@@ -135,7 +139,8 @@ public sealed partial class WebSearchSimulator
                     ProtocolConverter.Responses,
                     protocol,
                     originalModel,
-                    textFormat);
+                    textFormat,
+                    toolCallMappings);
                 responsePayload = WebSearchResponsePayload.ReplaceOrPrependWebSearchItems(responsePayload, webResults);
                 responsePayload = WebSearchResponsePayload.AddSourceAnnotations(responsePayload, webResults);
                 return new WebSearchSimulationResult(
@@ -177,7 +182,8 @@ public sealed partial class WebSearchSimulator
                     ProtocolConverter.Responses,
                     protocol,
                     originalModel,
-                    textFormat);
+                    textFormat,
+                    toolCallMappings);
                 responsePayload = WebSearchResponsePayload.PrependWebSearchItems(
                     responsePayload,
                     webResults,
@@ -196,7 +202,8 @@ public sealed partial class WebSearchSimulator
             ProtocolConverter.Responses,
             protocol,
             originalModel,
-            textFormat);
+            textFormat,
+            toolCallMappings);
         fallbackResponse = WebSearchResponsePayload.PrependWebSearchItems(
             fallbackResponse,
             webResults,
