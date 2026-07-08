@@ -130,6 +130,7 @@ internal sealed class ToolStreamState
     public bool ItemAdded { get; set; }
     public int StreamedArgumentsLength { get; set; }
     public ResponsesToolCallKind CallKind { get; set; } = ResponsesToolCallKind.Function;
+    public string ArgumentField { get; set; } = "arguments";
     public ApplyPatchJsonDeltaDecoder? ApplyPatchDecoder { get; set; }
     public StringBuilder? DecodedInputBuilder { get; set; }
 }

@@ -364,7 +364,9 @@ public static partial class SseStreamConverter
                     }
 
                     var state = EnsureToolStreamState(index);
-                    state.CallKind = ProtocolConverter.GetResponsesToolCallKind(aggregate.Name, toolCallMappings);
+                    var shape = ProtocolConverter.ResolveResponsesToolCallShape(aggregate.Name, toolCallMappings);
+                    state.CallKind = shape.Kind;
+                    state.ArgumentField = shape.ArgumentField;
                     state.ApplyPatchDecoder ??= state.CallKind == ResponsesToolCallKind.CustomTool
                         ? new ApplyPatchJsonDeltaDecoder()
                         : null;
@@ -416,7 +418,26 @@ public static partial class SseStreamConverter
 
                     if (state.CallKind == ResponsesToolCallKind.NativeTool)
                     {
+                        // web_search has its own lifecycle events (searching/completed) handled elsewhere
+                        if (ProtocolConverter.IsWebSearchName(aggregate.Name))
+                        {
+                            state.StreamedArgumentsLength = aggregate.Arguments.Length;
+                            continue;
+                        }
+
+                        var nativeDelta = aggregate.Arguments[state.StreamedArgumentsLength..];
                         state.StreamedArgumentsLength = aggregate.Arguments.Length;
+                        var deltaEvent = state.ArgumentField == "input"
+                            ? "response.custom_tool_call_input.delta"
+                            : "response.function_call_arguments.delta";
+                        yield return Emit(
+                            deltaEvent,
+                            new Dictionary<string, object?>
+                            {
+                                ["item_id"] = state.ItemId,
+                                ["output_index"] = state.OutputIndex,
+                                ["delta"] = nativeDelta
+                            });
                         continue;
                     }
 
@@ -647,6 +668,29 @@ public static partial class SseStreamConverter
                             ? itemInput
                             : state.DecodedInputBuilder?.ToString() ?? string.Empty
                     });
+            }
+            else if (state.CallKind == ResponsesToolCallKind.NativeTool)
+            {
+                if (ProtocolConverter.IsWebSearchName(aggregate.Name))
+                {
+                    // web_search has its own lifecycle events handled elsewhere
+                }
+                else
+                {
+                    var doneEvent = state.ArgumentField == "input"
+                        ? "response.custom_tool_call_input.done"
+                        : "response.function_call_arguments.done";
+                    yield return Emit(
+                        doneEvent,
+                        new Dictionary<string, object?>
+                        {
+                            ["item_id"] = itemId,
+                            ["output_index"] = outputIndex,
+                            [state.ArgumentField] = functionItem.TryGetValue(state.ArgumentField, out var itemValue)
+                                ? itemValue
+                                : aggregate.Arguments
+                        });
+                }
             }
 
             yield return Emit(

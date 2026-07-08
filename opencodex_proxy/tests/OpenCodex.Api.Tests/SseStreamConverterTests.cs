@@ -1154,21 +1154,21 @@ public sealed class SseStreamConverterTests
         Assert.Equal("tool_search", addedItem["name"]);
         Assert.Equal("call_tool_search", addedItem["call_id"]);
 
-        Assert.DoesNotContain(parsed, entry => (string?)entry["type"] == "response.function_call_arguments.delta");
+        Assert.Contains(parsed, entry => (string?)entry["type"] == "response.function_call_arguments.delta");
         Assert.DoesNotContain(parsed, entry => (string?)entry["type"] == "response.custom_tool_call_input.delta");
 
         var done = ByType(parsed, "response.output_item.done");
         Assert.NotNull(done);
         var doneItem = Assert.IsType<Dictionary<string, object?>>(done!["item"]);
         Assert.Equal("tool_search_call", doneItem["type"]);
-        Assert.Equal(arguments, doneItem["input"]);
+        Assert.Equal(arguments, doneItem["arguments"]);
 
         var completed = ByType(parsed, "response.completed");
         Assert.NotNull(completed);
         var output = Assert.IsType<List<object?>>(Assert.IsType<Dictionary<string, object?>>(completed!["response"])["output"]);
         var outputItem = Assert.IsType<Dictionary<string, object?>>(Assert.Single(output));
         Assert.Equal("tool_search_call", outputItem["type"]);
-        Assert.Equal(arguments, outputItem["input"]);
+        Assert.Equal(arguments, outputItem["arguments"]);
     }
 
     [Fact]
