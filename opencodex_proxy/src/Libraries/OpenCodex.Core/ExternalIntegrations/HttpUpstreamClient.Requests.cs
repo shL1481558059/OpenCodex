@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -153,11 +154,24 @@ public sealed partial class HttpUpstreamClient
 
     private static int TimeoutValue(object? value, int defaultTimeout)
     {
-        return value is int intValue && intValue > 0 ? intValue : defaultTimeout;
+        return value switch
+        {
+            null => defaultTimeout,
+            int intValue => intValue > 0 ? intValue : defaultTimeout,
+            long longValue => longValue > 0 && longValue <= int.MaxValue ? (int)longValue : defaultTimeout,
+            double doubleValue => doubleValue > 0 && doubleValue <= int.MaxValue ? (int)doubleValue : defaultTimeout,
+            string text when int.TryParse(text, CultureInfo.InvariantCulture, out var parsed) && parsed > 0 => parsed,
+            _ => defaultTimeout
+        };
     }
 
     private static int RetryCountValue(object? value)
     {
-        return value is int intValue && intValue >= 0 ? intValue : 3;
+        return value switch
+        {
+            int intValue when intValue >= 0 => intValue,
+            long longValue when longValue >= 0 && longValue <= int.MaxValue => (int)longValue,
+            _ => 3
+        };
     }
 }
