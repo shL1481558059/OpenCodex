@@ -58,6 +58,8 @@ public static partial class SseStreamConverter
         var nextChatToolIndex = 0;
         var toolStates = new Dictionary<int, ChatToolStreamState>();
         var outputByIndex = new SortedDictionary<int, Dictionary<string, object?>>();
+        var responseAccumulator = new ResponsesStreamResponseAccumulator(
+            new StreamCaptureBudget(int.MaxValue, int.MaxValue));
 
         string EmitChunk(List<object?> choices)
         {
@@ -99,6 +101,7 @@ public static partial class SseStreamConverter
         while (await enumerator.MoveNextAsync())
         {
             var sseEvent = enumerator.Current;
+            responseAccumulator.Accept(sseEvent);
             if (!TryAsObject(sseEvent.Data, out var payload))
             {
                 continue;
@@ -514,17 +517,20 @@ public static partial class SseStreamConverter
 
             if (eventType == "response.failed")
             {
-                var failedResponse = TryAsObject(GetValue(payload, "response"), out var response)
-                    ? new Dictionary<string, object?>(response, StringComparer.Ordinal)
-                    : new Dictionary<string, object?>(StringComparer.Ordinal);
-                responseId = StringValue(failedResponse, "id", responseId);
-                responseModel = model ?? StringValue(failedResponse, "model", responseModel);
-                failedResponse["id"] = responseId;
-                failedResponse["object"] = "response";
-                failedResponse["status"] = "failed";
-                failedResponse["model"] = responseModel;
-                failedResponse.TryAdd("output", outputByIndex.Values.Cast<object?>().ToList());
-                failedResponse.TryAdd("usage", usage);
+                var capturedFailure = responseAccumulator.BuildResponse()
+                    ?? new Dictionary<string, object?>(StringComparer.Ordinal);
+                responseId = StringValue(capturedFailure, "id", responseId);
+                responseModel = model ?? StringValue(capturedFailure, "model", responseModel);
+                var failedResponse = BuildCapturedResponsesUpstreamResponse(
+                    responseAccumulator,
+                    "response.failed",
+                    responseId,
+                    createdAt,
+                    "failed",
+                    responseModel,
+                    outputByIndex.Values,
+                    usage,
+                    preserveCapturedOutputAndUsage: true)!;
                 result.UpstreamResponse = failedResponse;
 
                 var error = GetValue(failedResponse, "error") ?? new Dictionary<string, object?>
@@ -575,16 +581,15 @@ public static partial class SseStreamConverter
             };
         }
 
-        result.UpstreamResponse = new Dictionary<string, object?>
-        {
-            ["id"] = responseId,
-            ["object"] = "response",
-            ["created_at"] = createdAt,
-            ["status"] = finishStatus,
-            ["model"] = responseModel,
-            ["output"] = outputByIndex.Values.Cast<object?>().ToList(),
-            ["usage"] = usage
-        };
+        result.UpstreamResponse = BuildCapturedResponsesUpstreamResponse(
+            responseAccumulator,
+            finishStatus == "incomplete" ? "response.incomplete" : "response.completed",
+            responseId,
+            createdAt,
+            finishStatus,
+            responseModel,
+            outputByIndex.Values,
+            usage);
 
         foreach (var line in EnsureRoleChunk())
         {
@@ -626,6 +631,43 @@ public static partial class SseStreamConverter
         }
 
         yield return "data: [DONE]\n\n";
+    }
+
+    private static Dictionary<string, object?> BuildCapturedResponsesUpstreamResponse(
+        ResponsesStreamResponseAccumulator responseAccumulator,
+        string eventType,
+        string responseId,
+        long createdAt,
+        string status,
+        string responseModel,
+        IEnumerable<Dictionary<string, object?>> outputItems,
+        Dictionary<string, object?> usage,
+        bool preserveCapturedOutputAndUsage = false)
+    {
+        var response = responseAccumulator.BuildResponse()
+            ?? new Dictionary<string, object?>(StringComparer.Ordinal);
+        response["id"] = responseId;
+        response["object"] = "response";
+        response["status"] = status;
+        response["model"] = responseModel;
+        if (preserveCapturedOutputAndUsage)
+        {
+            response.TryAdd("output", outputItems.Cast<object?>().ToList());
+            response.TryAdd("usage", usage);
+        }
+        else
+        {
+            response["created_at"] = createdAt;
+            response["output"] = outputItems.Cast<object?>().ToList();
+            response["usage"] = usage;
+        }
+
+        responseAccumulator.Accept(new SseEvent(eventType, new Dictionary<string, object?>
+        {
+            ["type"] = eventType,
+            ["response"] = response
+        }));
+        return responseAccumulator.BuildResponse()!;
     }
 
     private static object? NormalizeJsonValueForChat(object? value)

@@ -40,10 +40,7 @@ public static partial class SseStreamConverter
         var createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var responseModel = model;
         var textParts = new List<string>();
-        var refusalParts = new List<string>();
         var usage = new Dictionary<string, object?>(StringComparer.Ordinal);
-        var completionId = string.Empty;
-        object? completionCreated = null;
         var finishReason = "stop";
         var textStarted = false;
         var reasoningParts = new List<string>();
@@ -57,6 +54,8 @@ public static partial class SseStreamConverter
         var toolStreamStates = new Dictionary<int, ToolStreamState>();
         var outputByIndex = new SortedDictionary<int, Dictionary<string, object?>>();
         var toolCallMappings = result.ToolCallMappings;
+        var upstreamResponseAccumulator = new ChatStreamResponseAccumulator(
+            new StreamCaptureBudget(int.MaxValue, int.MaxValue));
 
         string Emit(string eventName, Dictionary<string, object?> payload)
         {
@@ -208,6 +207,7 @@ public static partial class SseStreamConverter
         while (await enumerator.MoveNextAsync())
         {
             var sseEvent = enumerator.Current;
+            upstreamResponseAccumulator.Accept(sseEvent);
             if (sseEvent.Data is string dataText && dataText == "[DONE]")
             {
                 break;
@@ -220,7 +220,7 @@ public static partial class SseStreamConverter
 
             if (TryAsObject(GetValue(payload, "error"), out var error))
             {
-                result.UpstreamResponse = new Dictionary<string, object?>
+                var downstreamFailedResponse = new Dictionary<string, object?>
                 {
                     ["id"] = responseId,
                     ["object"] = "response",
@@ -230,15 +230,14 @@ public static partial class SseStreamConverter
                     ["error"] = new Dictionary<string, object?>(error, StringComparer.Ordinal),
                     ["output"] = new List<object?>()
                 };
+                result.UpstreamResponse = upstreamResponseAccumulator.BuildResponse() ?? payload;
                 yield return Emit("response.failed", new Dictionary<string, object?>
                 {
-                    ["response"] = result.UpstreamResponse
+                    ["response"] = downstreamFailedResponse
                 });
                 yield break;
             }
 
-            completionId = StringValue(payload, "id", completionId);
-            completionCreated = GetValue(payload, "created") ?? completionCreated;
             responseModel = model ?? StringValue(payload, "model", responseModel);
             if (TryAsObject(GetValue(payload, "usage"), out var usageObject))
             {
@@ -293,7 +292,6 @@ public static partial class SseStreamConverter
                     }
 
                     textParts.Add(refusal);
-                    refusalParts.Add(refusal);
                     yield return Emit(
                         "response.output_text.delta",
                         new Dictionary<string, object?>
@@ -521,62 +519,17 @@ public static partial class SseStreamConverter
             combinedText = WrapTextForJsonSchema(combinedText, result.TextFormat);
         }
         var combinedReasoning = string.Concat(reasoningParts);
-        var reconstructedToolCalls = new List<object?>();
         foreach (var (index, aggregate) in toolCalls.ToList())
         {
             var callId = string.IsNullOrEmpty(aggregate.Id) ? $"call_{Guid.NewGuid():N}" : aggregate.Id;
             var arguments = aggregate.Arguments.Length > 0 ? aggregate.Arguments : aggregate.Type == "custom" ? string.Empty : "{}";
-            reconstructedToolCalls.Add(aggregate.Type == "custom"
-                ? new Dictionary<string, object?>
-                {
-                    ["id"] = callId,
-                    ["type"] = "custom",
-                    ["custom"] = new Dictionary<string, object?>
-                    {
-                        ["name"] = aggregate.Name,
-                        ["input"] = arguments
-                    }
-                }
-                : new Dictionary<string, object?>
-                {
-                    ["id"] = callId,
-                    ["type"] = aggregate.Type,
-                    ["function"] = new Dictionary<string, object?>
-                    {
-                        ["name"] = aggregate.Name,
-                        ["arguments"] = arguments
-                    }
-                });
             aggregate.Id = callId;
             aggregate.Arguments = arguments;
             toolCalls[index] = aggregate;
         }
 
-        var message = new Dictionary<string, object?>
-        {
-            ["role"] = "assistant",
-            ["content"] = combinedText,
-            ["tool_calls"] = reconstructedToolCalls
-            ,["reasoning_content"] = combinedReasoning
-            ,["refusal"] = string.Concat(refusalParts)
-        };
-        result.UpstreamResponse = new Dictionary<string, object?>
-        {
-            ["id"] = completionId.Length > 0 ? completionId : $"chatcmpl_{Guid.NewGuid():N}",
-            ["object"] = "chat.completion",
-            ["created"] = completionCreated ?? createdAt,
-            ["model"] = responseModel,
-            ["choices"] = new List<object?>
-            {
-                new Dictionary<string, object?>
-                {
-                    ["index"] = 0,
-                    ["message"] = message,
-                    ["finish_reason"] = finishReason
-                }
-            },
-            ["usage"] = usage
-        };
+        result.UpstreamResponse = upstreamResponseAccumulator.BuildResponse()
+            ?? BuildEmptyChatCompletion(responseModel, createdAt, finishReason, usage);
 
         if (combinedReasoning.Length > 0)
         {
@@ -816,5 +769,35 @@ public static partial class SseStreamConverter
                     ["truncation"] = "disabled"
                 }
             });
+    }
+
+    private static Dictionary<string, object?> BuildEmptyChatCompletion(
+        string? model,
+        long createdAt,
+        string finishReason,
+        Dictionary<string, object?> usage)
+    {
+        return new Dictionary<string, object?>
+        {
+            ["id"] = $"chatcmpl_{Guid.NewGuid():N}",
+            ["object"] = "chat.completion",
+            ["created"] = createdAt,
+            ["model"] = model,
+            ["choices"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["index"] = 0,
+                    ["message"] = new Dictionary<string, object?>
+                    {
+                        ["role"] = "assistant",
+                        ["content"] = string.Empty,
+                        ["tool_calls"] = new List<object?>()
+                    },
+                    ["finish_reason"] = finishReason
+                }
+            },
+            ["usage"] = usage
+        };
     }
 }

@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 
 namespace OpenCodex.Core.Protocols;
@@ -47,14 +46,10 @@ public static partial class SseStreamConverter
         var messageId = $"msg_{Guid.NewGuid():N}";
         var responseModel = model;
         var createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var completionId = string.Empty;
-        object? completionCreated = null;
         var finishReason = "stop";
         var usage = new Dictionary<string, object?>(StringComparer.Ordinal);
-
-        var textParts = new List<string>();
-        var refusalParts = new List<string>();
-        var reasoningParts = new List<string>();
+        var upstreamResponseAccumulator = new ChatStreamResponseAccumulator(
+            new StreamCaptureBudget(int.MaxValue, int.MaxValue));
 
         var nextBlockIndex = 0;
         var openBlockIndex = (int?)null; // 当前仍在流的 block，需在切换/结束时发送 content_block_stop
@@ -178,6 +173,7 @@ public static partial class SseStreamConverter
         while (await enumerator.MoveNextAsync())
         {
             var sseEvent = enumerator.Current;
+            upstreamResponseAccumulator.Accept(sseEvent);
             if (sseEvent.Data is string dataText && dataText == "[DONE]")
             {
                 break;
@@ -188,14 +184,12 @@ public static partial class SseStreamConverter
                 continue;
             }
 
-            completionId = StringValue(payload, "id", completionId);
-            completionCreated = GetValue(payload, "created") ?? completionCreated;
             responseModel = model ?? StringValue(payload, "model", responseModel);
             var upstreamError = GetValue(payload, "error");
             if (upstreamError is not null
                 || string.Equals(StringValue(payload, "type", string.Empty), "error", StringComparison.Ordinal))
             {
-                result.UpstreamResponse = payload;
+                result.UpstreamResponse = upstreamResponseAccumulator.BuildResponse() ?? payload;
                 yield return Emit(
                     "error",
                     new Dictionary<string, object?>
@@ -241,7 +235,6 @@ public static partial class SseStreamConverter
                         yield return line;
                     }
 
-                    reasoningParts.Add(reasoningText);
                     yield return Emit(
                         "content_block_delta",
                         new Dictionary<string, object?>
@@ -263,7 +256,6 @@ public static partial class SseStreamConverter
                         yield return line;
                     }
 
-                    textParts.Add(text);
                     yield return Emit(
                         "content_block_delta",
                         new Dictionary<string, object?>
@@ -286,8 +278,6 @@ public static partial class SseStreamConverter
                         yield return line;
                     }
 
-                    textParts.Add(refusal);
-                    refusalParts.Add(refusal);
                     yield return Emit(
                         "content_block_delta",
                         new Dictionary<string, object?>
@@ -357,53 +347,17 @@ public static partial class SseStreamConverter
             }
         }
 
-        // 收尾上游响应记录（Chat 格式，供 ProxyStreamService 的 ConvertResponse 转为 Messages 记录用）
-        var combinedText = string.Concat(textParts);
-        var combinedReasoning = string.Concat(reasoningParts);
-        var reconstructedToolCalls = new List<object?>();
         foreach (var (index, aggregate) in toolAggregates.ToList())
         {
             var callId = string.IsNullOrEmpty(aggregate.Id) ? $"call_{Guid.NewGuid():N}" : aggregate.Id;
             var arguments = aggregate.Arguments.Length > 0 ? aggregate.Arguments : "{}";
-            reconstructedToolCalls.Add(new Dictionary<string, object?>
-            {
-                ["id"] = callId,
-                ["type"] = aggregate.Type,
-                ["function"] = new Dictionary<string, object?>
-                {
-                    ["name"] = aggregate.Name,
-                    ["arguments"] = arguments
-                }
-            });
             aggregate.Id = callId;
             aggregate.Arguments = arguments;
             toolAggregates[index] = aggregate;
         }
 
-        result.UpstreamResponse = new Dictionary<string, object?>
-        {
-            ["id"] = completionId.Length > 0 ? completionId : $"chatcmpl_{Guid.NewGuid():N}",
-            ["object"] = "chat.completion",
-            ["created"] = completionCreated ?? createdAt,
-            ["model"] = responseModel,
-            ["choices"] = new List<object?>
-            {
-                new Dictionary<string, object?>
-                {
-                    ["index"] = 0,
-                    ["message"] = new Dictionary<string, object?>
-                    {
-                        ["role"] = "assistant",
-                        ["content"] = combinedText,
-                        ["tool_calls"] = reconstructedToolCalls,
-                        ["reasoning_content"] = combinedReasoning,
-                        ["refusal"] = string.Concat(refusalParts)
-                    },
-                    ["finish_reason"] = finishReason
-                }
-            },
-            ["usage"] = usage
-        };
+        result.UpstreamResponse = upstreamResponseAccumulator.BuildResponse()
+            ?? BuildEmptyChatCompletion(responseModel, createdAt, finishReason, usage);
 
         // 关闭最后一个仍打开的块
         var closingOutput = new List<string>();

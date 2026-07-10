@@ -147,7 +147,9 @@ var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-ch
         Assert.Contains("\"request_model\":\"public-model\"", body, StringComparison.Ordinal);
         Assert.Contains("\"upstream_model\":\"upstream-model\"", body, StringComparison.Ordinal);
         Assert.Contains("\"upstream_response\"", body, StringComparison.Ordinal);
-        Assert.Contains("\"output_text\":\"pong\"", body, StringComparison.Ordinal);
+        Assert.Contains("\"output\":[{\"id\":\"msg_test\"", body, StringComparison.Ordinal);
+        Assert.Contains("\"text\":\"pong\"", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"output_text\":\"pong\"", body, StringComparison.Ordinal);
         Assert.Contains("\"upstream_request\"", body, StringComparison.Ordinal);
         Assert.Contains("\"stream\":true", body, StringComparison.Ordinal);
         Assert.DoesNotContain(SecretApiKey, body, StringComparison.Ordinal);
@@ -187,11 +189,66 @@ var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-ch
             });
 
         Assert.Equal(HttpStatusCode.OK, statusCode);
-        // SseStreamConverter.ChatToResponsesEvents 会将 chat chunk 的 content 转为
-        // response.output_text.delta 事件，ChannelTestStreamCapture 应能提取 output_text。
+        // 客户端仍收到 Responses 协议事件。
         Assert.Contains("response.output_text.delta", body, StringComparison.Ordinal);
         Assert.Contains("pong", body, StringComparison.Ordinal);
         Assert.Contains("response.completed", body, StringComparison.Ordinal);
+
+        // 日志保存转换前的 Chat 标准响应，而不是转换后的 Responses 响应。
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={_factory.DbPath}");
+        context.Database.Migrate();
+        var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
+        var detail = context.RequestLogDetails.Single(item => item.RequestLogId == log.Id);
+        Assert.Contains("\"object\":\"chat.completion\"", detail.UpstreamResponseBody, StringComparison.Ordinal);
+        Assert.Contains("\"content\":\"pong\"", detail.UpstreamResponseBody, StringComparison.Ordinal);
+        Assert.Contains("\"finish_reason\":\"stop\"", detail.UpstreamResponseBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TestChannelStreamForMessagesChannelCapturesOriginalResponse()
+    {
+        _factory.UpstreamClient = new MessagesUpstreamClient();
+        var cookie = await LoginAndReadSessionCookie();
+
+        var (statusCode, body) = await SendStreamRequestWithCookie(
+            "/test-channel/stream",
+            cookie,
+            new
+            {
+                id = "messages-channel",
+                name = "Messages Channel",
+                type = ProtocolConverter.Messages,
+                baseurl = "https://upstream.example/v1",
+                apikey = SecretApiKey,
+                auth_mode = "config",
+                capacity = 3,
+                models = new[]
+                {
+                    new
+                    {
+                        model = "claude-sonnet",
+                        upstream_model = "claude-sonnet-upstream",
+                        supports_image = false
+                    }
+                },
+                model = "claude-sonnet",
+                input = "你好",
+                max_output_tokens = 32
+            });
+
+        Assert.Equal(HttpStatusCode.OK, statusCode);
+        Assert.Contains("response.output_text.delta", body, StringComparison.Ordinal);
+        Assert.Contains("pong", body, StringComparison.Ordinal);
+        Assert.Contains("response.completed", body, StringComparison.Ordinal);
+
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={_factory.DbPath}");
+        context.Database.Migrate();
+        var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
+        var detail = context.RequestLogDetails.Single(item => item.RequestLogId == log.Id);
+        Assert.Contains("\"type\":\"message\"", detail.UpstreamResponseBody, StringComparison.Ordinal);
+        Assert.Contains("\"model\":\"claude-sonnet-upstream\"", detail.UpstreamResponseBody, StringComparison.Ordinal);
+        Assert.Contains("\"text\":\"pong\"", detail.UpstreamResponseBody, StringComparison.Ordinal);
+        Assert.Contains("\"stop_reason\":\"end_turn\"", detail.UpstreamResponseBody, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -352,7 +409,7 @@ var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-ch
             yield return "data: {\"type\":\"response.output_text.delta\",\"delta\":\"pong\"}\n";
             yield return "\n";
             yield return "event: response.completed\n";
-            yield return "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"model\":\"upstream-model\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":5}}}\n";
+            yield return "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"upstream-model\",\"output\":[{\"id\":\"msg_test\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"pong\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":3,\"output_tokens\":5}}}\n";
             yield return "\n";
         }
     }
@@ -423,6 +480,48 @@ var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-ch
             yield return "";
             yield return "data: [DONE]";
             yield return "";
+        }
+    }
+
+    /// <summary>
+    /// 上游返回 Messages 协议流式事件。
+    /// </summary>
+    private sealed class MessagesUpstreamClient : IUpstreamClient
+    {
+        public Task<Dictionary<string, object?>> PostJsonAsync(
+            IReadOnlyDictionary<string, object?> channel,
+            IReadOnlyDictionary<string, object?> payload,
+            int defaultTimeout,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new Dictionary<string, object?>());
+        }
+
+        public async IAsyncEnumerable<string> StreamJsonAsync(
+            IReadOnlyDictionary<string, object?> channel,
+            IReadOnlyDictionary<string, object?> payload,
+            int defaultTimeout,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await Task.CompletedTask;
+            yield return "event: message_start\n";
+            yield return "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_test\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-upstream\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n";
+            yield return "\n";
+            yield return "event: content_block_start\n";
+            yield return "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n";
+            yield return "\n";
+            yield return "event: content_block_delta\n";
+            yield return "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"pong\"}}\n";
+            yield return "\n";
+            yield return "event: content_block_stop\n";
+            yield return "data: {\"type\":\"content_block_stop\",\"index\":0}\n";
+            yield return "\n";
+            yield return "event: message_delta\n";
+            yield return "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n";
+            yield return "\n";
+            yield return "event: message_stop\n";
+            yield return "data: {\"type\":\"message_stop\"}\n";
+            yield return "\n";
         }
     }
 

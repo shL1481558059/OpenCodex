@@ -54,6 +54,8 @@ public static partial class SseStreamConverter
         var sequenceNumber = InitialSequenceNumber;
         var toolStates = new Dictionary<int, ToolStreamState>();
         var nextOutputIndex = InitialOutputIndex;
+        var upstreamResponseAccumulator = new MessagesStreamResponseAccumulator(
+            new StreamCaptureBudget(int.MaxValue, int.MaxValue));
 
         string Emit(string eventName, Dictionary<string, object?> payload)
         {
@@ -204,6 +206,7 @@ public static partial class SseStreamConverter
         while (await enumerator.MoveNextAsync())
         {
             var sseEvent = enumerator.Current;
+            upstreamResponseAccumulator.Accept(sseEvent);
             if (!TryAsObject(sseEvent.Data, out var payload))
             {
                 continue;
@@ -212,7 +215,7 @@ public static partial class SseStreamConverter
             var eventType = StringValue(payload, "type", sseEvent.EventName);
             if (eventType == "error")
             {
-                result.UpstreamResponse = new Dictionary<string, object?>
+                var downstreamFailedResponse = new Dictionary<string, object?>
                 {
                     ["id"] = responseId,
                     ["object"] = "response",
@@ -222,9 +225,10 @@ public static partial class SseStreamConverter
                     ["error"] = GetValue(payload, "error") ?? new Dictionary<string, object?>(payload, StringComparer.Ordinal),
                     ["output"] = new List<object?>()
                 };
+                result.UpstreamResponse = upstreamResponseAccumulator.BuildResponse() ?? payload;
                 yield return Emit("response.failed", new Dictionary<string, object?>
                 {
-                    ["response"] = result.UpstreamResponse
+                    ["response"] = downstreamFailedResponse
                 });
                 yield break;
             }
@@ -544,17 +548,7 @@ public static partial class SseStreamConverter
             }
         }
 
-        var orderedBlocks = contentBlocks.Values.Cast<object?>().ToList();
-        result.UpstreamResponse = new Dictionary<string, object?>
-        {
-            ["id"] = $"msg_{Guid.NewGuid():N}",
-            ["type"] = "message",
-            ["role"] = "assistant",
-            ["model"] = responseModel,
-            ["content"] = orderedBlocks,
-            ["stop_reason"] = stopReason,
-            ["usage"] = usage
-        };
+        result.UpstreamResponse = upstreamResponseAccumulator.BuildResponse();
 
         var output = new List<object?>();
         var combinedReasoning = string.Concat(reasoningParts);
