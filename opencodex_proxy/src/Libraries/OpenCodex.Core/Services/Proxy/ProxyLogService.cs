@@ -72,8 +72,8 @@ public sealed class ProxyLogService : IProxyLogService
         _detailRepository.Insert(new RequestLogDetail
         {
             RequestLogId = log.Id,
-            RequestHeaders = JsonSerializer.Serialize(context.RequestHeaders, JsonOptions),
-            RequestBody = JsonSerializer.Serialize(context.Payload, JsonOptions)
+            RequestHeaders = SerializeForLog(context.RequestHeaders),
+            RequestBody = SerializeForLog(context.Payload)
         });
         return log.Id;
     }
@@ -108,12 +108,12 @@ public sealed class ProxyLogService : IProxyLogService
             _detailRepository.Insert(new RequestLogDetail
             {
                 RequestLogId = requestLogId,
-                UpstreamRequestBody = JsonSerializer.Serialize(context.UpstreamRequest, JsonOptions)
+                UpstreamRequestBody = SerializeForLog(context.UpstreamRequest)
             });
         }
         else
         {
-            detail.UpstreamRequestBody = JsonSerializer.Serialize(context.UpstreamRequest, JsonOptions);
+            detail.UpstreamRequestBody = SerializeForLog(context.UpstreamRequest);
             _detailRepository.Update(detail);
         }
     }
@@ -249,13 +249,13 @@ public sealed class ProxyLogService : IProxyLogService
 
         // 手动维护 Detail
         var detail = _detailRepository.Table.FirstOrDefault(d => d.RequestLogId == requestLogId);
-        var detailHeaders = JsonSerializer.Serialize(context.RequestHeaders, JsonOptions);
-        var detailBody = JsonSerializer.Serialize(context.Payload, JsonOptions);
-        var detailUpstreamReq = JsonSerializer.Serialize(context.UpstreamRequest, JsonOptions);
-        var detailUpstreamResp = JsonSerializer.Serialize(context.UpstreamResponse, JsonOptions);
-        var detailResp = JsonSerializer.Serialize(context.ResponsePayload ?? context.ErrorResponse, JsonOptions);
-        var detailWebSearch = context.WebSearchDetails is null ? null : JsonSerializer.Serialize(context.WebSearchDetails, JsonOptions);
-        var detailOcr = context.OcrDetails is null ? null : JsonSerializer.Serialize(context.OcrDetails, JsonOptions);
+        var detailHeaders = SerializeForLog(context.RequestHeaders);
+        var detailBody = SerializeForLog(context.Payload);
+        var detailUpstreamReq = SerializeForLog(context.UpstreamRequest);
+        var detailUpstreamResp = SerializeForLog(context.UpstreamResponse);
+        var detailResp = SerializeForLog(context.ResponsePayload ?? context.ErrorResponse);
+        var detailWebSearch = context.WebSearchDetails is null ? null : SerializeForLog(context.WebSearchDetails);
+        var detailOcr = context.OcrDetails is null ? null : SerializeForLog(context.OcrDetails);
         var detailStreamTimings = context.StreamWriteMetrics is { HasValues: true }
             ? JsonSerializer.Serialize(context.StreamWriteMetrics, JsonOptions)
             : null;
@@ -389,12 +389,12 @@ public sealed class ProxyLogService : IProxyLogService
                 context.Method,
                 context.Path,
                 context.ClientIp,
-                JsonSerializer.Serialize(context.RequestHeaders, JsonOptions),
-                JsonSerializer.Serialize(context.Payload, JsonOptions),
-                JsonSerializer.Serialize(context.UpstreamRequest, JsonOptions),
-                JsonSerializer.Serialize(context.UpstreamResponse, JsonOptions),
-                JsonSerializer.Serialize(context.ResponsePayload ?? context.ErrorResponse, JsonOptions),
-                context.WebSearchDetails is null ? null : JsonSerializer.Serialize(context.WebSearchDetails, JsonOptions),
+                SerializeForLog(context.RequestHeaders),
+                SerializeForLog(context.Payload),
+                SerializeForLog(context.UpstreamRequest),
+                SerializeForLog(context.UpstreamResponse),
+                SerializeForLog(context.ResponsePayload ?? context.ErrorResponse),
+                context.WebSearchDetails is null ? null : SerializeForLog(context.WebSearchDetails),
                 context.RequestModel,
                 context.UpstreamModel,
                 channelId,
@@ -417,7 +417,7 @@ public sealed class ProxyLogService : IProxyLogService
                 ownerUserId,
                 context.ApiKeyId,
                 context.Error,
-                context.OcrDetails is null ? null : JsonSerializer.Serialize(context.OcrDetails, JsonOptions),
+                context.OcrDetails is null ? null : SerializeForLog(context.OcrDetails),
                 context.StreamWriteMetrics is { HasValues: true }
                     ? JsonSerializer.Serialize(context.StreamWriteMetrics, JsonOptions)
                     : null,
@@ -734,5 +734,43 @@ public sealed class ProxyLogService : IProxyLogService
         return status >= 400 || !string.IsNullOrWhiteSpace(error)
             ? ProxyRequestLifecycleStatus.Failed
             : ProxyRequestLifecycleStatus.Success;
+    }
+
+    private static readonly HashSet<string> SensitiveLogKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "authorization", "authorization_token", "api-key", "api_key", "apikey", "x-api-key",
+        "cookie", "set-cookie", "password", "access_token", "refresh_token"
+    };
+
+    private static string SerializeForLog(object? value)
+    {
+        if (value is null)
+        {
+            return "null";
+        }
+
+        var element = JsonSerializer.SerializeToElement(value, JsonOptions);
+        return JsonSerializer.Serialize(RedactJsonElement(element), JsonOptions);
+    }
+
+    private static object? RedactJsonElement(JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.Object => element.EnumerateObject().ToDictionary(
+                property => property.Name,
+                property => SensitiveLogKeys.Contains(property.Name)
+                    ? (object?)"***REDACTED***"
+                    : RedactJsonElement(property.Value),
+                StringComparer.Ordinal),
+            JsonValueKind.Array => element.EnumerateArray().Select(RedactJsonElement).ToList(),
+            JsonValueKind.String => element.GetString(),
+            JsonValueKind.Number when element.TryGetInt64(out var integer) => integer,
+            JsonValueKind.Number when element.TryGetDecimal(out var number) => number,
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Null or JsonValueKind.Undefined => null,
+            _ => element.GetRawText()
+        };
     }
 }

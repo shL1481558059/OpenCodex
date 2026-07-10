@@ -516,6 +516,9 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
     private static readonly HashSet<string> SensitiveLogKeys = new(StringComparer.OrdinalIgnoreCase)
     {
         "authorization",
+        "authorization_token",
+        "access_token",
+        "refresh_token",
         "api-key",
         "api_key",
         "apikey",

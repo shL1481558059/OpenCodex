@@ -1153,22 +1153,45 @@ public sealed class SseStreamConverterTests
         Assert.Equal("tool_search_call", addedItem["type"]);
         Assert.Equal("tool_search", addedItem["name"]);
         Assert.Equal("call_tool_search", addedItem["call_id"]);
+        Assert.Equal("client", addedItem["execution"]);
+        Assert.False(addedItem.ContainsKey("input"));
 
-        Assert.Contains(parsed, entry => (string?)entry["type"] == "response.function_call_arguments.delta");
+        var argumentDeltas = AllByType(parsed, "response.function_call_arguments.delta");
+        Assert.Equal(
+            [arguments[..12], arguments[12..]],
+            argumentDeltas.Select(entry => Assert.IsType<string>(entry["delta"])).ToArray());
         Assert.DoesNotContain(parsed, entry => (string?)entry["type"] == "response.custom_tool_call_input.delta");
+
+        var argumentsDone = ByType(parsed, "response.function_call_arguments.done");
+        Assert.NotNull(argumentsDone);
+        Assert.Equal(arguments, Assert.IsType<string>(argumentsDone!["arguments"]));
 
         var done = ByType(parsed, "response.output_item.done");
         Assert.NotNull(done);
         var doneItem = Assert.IsType<Dictionary<string, object?>>(done!["item"]);
         Assert.Equal("tool_search_call", doneItem["type"]);
-        Assert.Equal(arguments, doneItem["arguments"]);
+        using (var doneArguments = JsonDocument.Parse(JsonSerializer.Serialize(doneItem["arguments"])))
+        {
+            Assert.Equal(JsonValueKind.Object, doneArguments.RootElement.ValueKind);
+            Assert.Equal("browser", doneArguments.RootElement.GetProperty("query").GetString());
+            Assert.Equal(3, doneArguments.RootElement.GetProperty("limit").GetInt32());
+        }
+        Assert.Equal("client", doneItem["execution"]);
+        Assert.False(doneItem.ContainsKey("input"));
 
         var completed = ByType(parsed, "response.completed");
         Assert.NotNull(completed);
         var output = Assert.IsType<List<object?>>(Assert.IsType<Dictionary<string, object?>>(completed!["response"])["output"]);
         var outputItem = Assert.IsType<Dictionary<string, object?>>(Assert.Single(output));
         Assert.Equal("tool_search_call", outputItem["type"]);
-        Assert.Equal(arguments, outputItem["arguments"]);
+        using (var outputArguments = JsonDocument.Parse(JsonSerializer.Serialize(outputItem["arguments"])))
+        {
+            Assert.Equal(JsonValueKind.Object, outputArguments.RootElement.ValueKind);
+            Assert.Equal("browser", outputArguments.RootElement.GetProperty("query").GetString());
+            Assert.Equal(3, outputArguments.RootElement.GetProperty("limit").GetInt32());
+        }
+        Assert.Equal("client", outputItem["execution"]);
+        Assert.False(outputItem.ContainsKey("input"));
     }
 
     [Fact]

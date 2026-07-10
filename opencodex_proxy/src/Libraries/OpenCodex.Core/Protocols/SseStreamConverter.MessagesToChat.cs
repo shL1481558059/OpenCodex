@@ -27,6 +27,7 @@ public static partial class SseStreamConverter
             model,
             result,
             SkipToolNames: null,
+            IncludeUsage: true,
             cancellationToken))
         {
             yield return line;
@@ -38,6 +39,26 @@ public static partial class SseStreamConverter
         string? model,
         ConvertedStreamResult result,
         IReadOnlySet<string>? SkipToolNames,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await foreach (var line in MessagesToChatEvents(
+            upstreamLines,
+            model,
+            result,
+            SkipToolNames,
+            IncludeUsage: true,
+            cancellationToken))
+        {
+            yield return line;
+        }
+    }
+
+    public static async IAsyncEnumerable<string> MessagesToChatEvents(
+        IAsyncEnumerable<string> upstreamLines,
+        string? model,
+        ConvertedStreamResult result,
+        IReadOnlySet<string>? SkipToolNames,
+        bool IncludeUsage,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var completionId = $"chatcmpl_{Guid.NewGuid():N}";
@@ -103,6 +124,17 @@ public static partial class SseStreamConverter
             }
 
             var eventType = StringValue(payload, "type", sseEvent.EventName);
+            if (eventType == "error")
+            {
+                result.UpstreamResponse = payload;
+                var errorPayload = new Dictionary<string, object?>
+                {
+                    ["error"] = GetValue(payload, "error") ?? payload
+                };
+                yield return $"data: {JsonSerializer.Serialize(errorPayload, JsonOptions)}\n\n";
+                yield break;
+            }
+
             if (eventType == "message_start")
             {
                 if (TryAsObject(GetValue(payload, "message"), out var message))
@@ -408,24 +440,28 @@ public static partial class SseStreamConverter
             }
         });
 
-        // usage 单独的 chunk（OpenAI include_usage 约定：choices 为空）
-        var promptTokens = ToInt(GetValue(usage, "input_tokens"));
-        var completionTokens = ToInt(GetValue(usage, "output_tokens"));
-        var usageChunk = new Dictionary<string, object?>
+        // usage 单独的 chunk 仅在入口 Chat 请求 stream_options.include_usage=true 时输出。
+        // 旧重载默认 true 以保持兼容，调用层可通过 IncludeUsage 精确控制。
+        if (IncludeUsage)
         {
-            ["id"] = completionId,
-            ["object"] = "chat.completion.chunk",
-            ["created"] = createdAt,
-            ["model"] = responseModel,
-            ["choices"] = new List<object?>(),
-            ["usage"] = new Dictionary<string, object?>
+            var promptTokens = ToInt(GetValue(usage, "input_tokens"));
+            var completionTokens = ToInt(GetValue(usage, "output_tokens"));
+            var usageChunk = new Dictionary<string, object?>
             {
-                ["prompt_tokens"] = promptTokens,
-                ["completion_tokens"] = completionTokens,
-                ["total_tokens"] = promptTokens + completionTokens
-            }
-        };
-        yield return $"data: {JsonSerializer.Serialize(usageChunk, JsonOptions)}\n\n";
+                ["id"] = completionId,
+                ["object"] = "chat.completion.chunk",
+                ["created"] = createdAt,
+                ["model"] = responseModel,
+                ["choices"] = new List<object?>(),
+                ["usage"] = new Dictionary<string, object?>
+                {
+                    ["prompt_tokens"] = promptTokens,
+                    ["completion_tokens"] = completionTokens,
+                    ["total_tokens"] = promptTokens + completionTokens
+                }
+            };
+            yield return $"data: {JsonSerializer.Serialize(usageChunk, JsonOptions)}\n\n";
+        }
 
         yield return "data: [DONE]\n\n";
     }

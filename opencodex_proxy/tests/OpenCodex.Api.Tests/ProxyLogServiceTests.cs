@@ -19,6 +19,66 @@ public sealed class ProxyLogServiceTests
     private static readonly Guid TestChannelId = Guid.Parse("66666666-6666-6666-6666-666666666601");
 
     [Fact]
+    public async Task WriteLog_RedactsNestedMcpAuthorizationTokens()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-proxy-log-tests", $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        using (var bootstrap = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            bootstrap.Database.Migrate();
+        }
+
+        EnsureAdminUser(dbPath);
+        var service = CreateService(dbPath);
+        await service.WriteLogAsync(new ProxyRequestLogContext(
+            requestId: "req-mcp-redaction",
+            ownerUsername: "admin",
+            apiKeyId: null,
+            payload: new Dictionary<string, object?>
+            {
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?> { ["type"] = "mcp", ["authorization"] = "openai-secret" }
+                },
+                ["mcp_servers"] = new List<object?>
+                {
+                    new Dictionary<string, object?> { ["authorization_token"] = "anthropic-secret" }
+                }
+            },
+            upstreamRequest: new Dictionary<string, object?>
+            {
+                ["headers"] = new Dictionary<string, object?> { ["Authorization"] = "Bearer nested-secret" }
+            },
+            upstreamResponse: new Dictionary<string, object?>(),
+            responsePayload: new Dictionary<string, object?>(),
+            errorResponse: null,
+            requestModel: "gpt",
+            upstreamModel: "claude",
+            channelId: TestChannelId.ToString(),
+            channelType: "messages",
+            isStream: false,
+            ttftMs: null,
+            statusCode: 200,
+            durationMs: 1,
+            error: null,
+            webSearchDetails: null,
+            method: "POST",
+            path: "/v1/messages",
+            clientIp: "127.0.0.1",
+            requestHeaders: new Dictionary<string, string> { ["authorization"] = "Bearer client-secret" }));
+
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        context.Database.Migrate();
+        var detail = context.RequestLogDetails.Single();
+        var combined = $"{detail.RequestHeaders}\n{detail.RequestBody}\n{detail.UpstreamRequestBody}";
+        Assert.DoesNotContain("openai-secret", combined, StringComparison.Ordinal);
+        Assert.DoesNotContain("anthropic-secret", combined, StringComparison.Ordinal);
+        Assert.DoesNotContain("nested-secret", combined, StringComparison.Ordinal);
+        Assert.DoesNotContain("client-secret", combined, StringComparison.Ordinal);
+        Assert.Contains("***REDACTED***", combined, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task WriteLog_PersistsStreamTimingsJson()
     {
         var dbPath = Path.Combine(

@@ -210,6 +210,25 @@ public static partial class SseStreamConverter
             }
 
             var eventType = StringValue(payload, "type", sseEvent.EventName);
+            if (eventType == "error")
+            {
+                result.UpstreamResponse = new Dictionary<string, object?>
+                {
+                    ["id"] = responseId,
+                    ["object"] = "response",
+                    ["created_at"] = createdAt,
+                    ["status"] = "failed",
+                    ["model"] = responseModel,
+                    ["error"] = GetValue(payload, "error") ?? new Dictionary<string, object?>(payload, StringComparer.Ordinal),
+                    ["output"] = new List<object?>()
+                };
+                yield return Emit("response.failed", new Dictionary<string, object?>
+                {
+                    ["response"] = result.UpstreamResponse
+                });
+                yield break;
+            }
+
             if (eventType == "message_start")
             {
                 if (TryAsObject(GetValue(payload, "message"), out var message))
@@ -302,7 +321,27 @@ public static partial class SseStreamConverter
                                         [state.CallKind == ResponsesToolCallKind.CustomTool ? "input" : "arguments"] = string.Empty
                                     }
                                 });
+                            }
                         }
+                    else if (blockType == "mcp_tool_use")
+                    {
+                        var state = EnsureToolState(index);
+                        state.ItemAdded = true;
+                        yield return Emit(
+                            "response.output_item.added",
+                            new Dictionary<string, object?>
+                            {
+                                ["output_index"] = state.OutputIndex,
+                                ["item"] = new Dictionary<string, object?>
+                                {
+                                    ["id"] = GetValue(block, "id") ?? state.ItemId,
+                                    ["type"] = "mcp_call",
+                                    ["status"] = "in_progress",
+                                    ["name"] = GetValue(block, "name"),
+                                    ["server_label"] = GetValue(block, "server_name"),
+                                    ["arguments"] = WebSearchPayload.JsonDumps(GetValue(block, "input") ?? new Dictionary<string, object?>())
+                                }
+                            });
                     }
                 }
 
@@ -403,6 +442,11 @@ public static partial class SseStreamConverter
 
                     var partialJson = StringValue(delta, "partial_json", string.Empty);
                     parts.Add(partialJson);
+
+                    if (blockType == "mcp_tool_use")
+                    {
+                        continue;
+                    }
 
                     // Stream the delta as a function_call_arguments.delta event.
                     if (partialJson.Length > 0)
@@ -533,9 +577,13 @@ public static partial class SseStreamConverter
                         ["type"] = "summary_text",
                         ["text"] = combinedReasoning
                     }
-                },
-                ["encrypted_content"] = BuildThinkingEncryptedContent(contentBlocks, combinedReasoning)
+                }
             };
+            var encryptedThinking = BuildThinkingEncryptedContent(contentBlocks);
+            if (!string.IsNullOrEmpty(encryptedThinking))
+            {
+                reasoningItem["encrypted_content"] = encryptedThinking;
+            }
             output.Add(reasoningItem);
             yield return Emit(
                 "response.reasoning_summary_text.done",
@@ -681,8 +729,65 @@ public static partial class SseStreamConverter
             output.Add(functionItem);
         }
 
+        foreach (var (index, block) in contentBlocks)
+        {
+            if (StringValue(block, "type", string.Empty) != "mcp_tool_use")
+            {
+                continue;
+            }
+
+            var callId = GetValue(block, "id") ?? $"mcp_{Guid.NewGuid():N}";
+            var state = toolStates.TryGetValue(index, out var existingState)
+                ? existingState
+                : EnsureToolState(index);
+            var outputIndex = state.OutputIndex ?? AllocateOutputIndex();
+            var resultBlock = contentBlocks.Values.FirstOrDefault(candidate =>
+                StringValue(candidate, "type", string.Empty) == "mcp_tool_result"
+                && Equals(GetValue(candidate, "tool_use_id"), callId));
+            var mcpCall = new Dictionary<string, object?>
+            {
+                ["id"] = callId,
+                ["type"] = "mcp_call",
+                ["status"] = "completed",
+                ["name"] = GetValue(block, "name"),
+                ["server_label"] = GetValue(block, "server_name") ?? string.Empty,
+                ["arguments"] = WebSearchPayload.JsonDumps(GetValue(block, "input") ?? new Dictionary<string, object?>())
+            };
+            if (resultBlock is not null)
+            {
+                var resultContent = GetValue(resultBlock, "content");
+                var resultText = TryAsList(resultContent, out var resultParts)
+                    ? string.Concat(resultParts.Select(part => TryAsObject(part, out var resultPart)
+                        ? StringValue(resultPart, "text", string.Empty)
+                        : Convert.ToString(part) ?? string.Empty))
+                    : Convert.ToString(resultContent) ?? string.Empty;
+                var isError = GetValue(resultBlock, "is_error") is true
+                    || bool.TryParse(Convert.ToString(GetValue(resultBlock, "is_error")), out var parsedError) && parsedError;
+                if (isError)
+                {
+                    mcpCall["error"] = resultText;
+                    mcpCall["status"] = "failed";
+                }
+                else
+                {
+                    mcpCall["output"] = resultText;
+                }
+            }
+
+            output.Add(mcpCall);
+            yield return Emit(
+                "response.output_item.done",
+                new Dictionary<string, object?>
+                {
+                    ["output_index"] = outputIndex,
+                    ["item"] = mcpCall
+                });
+        }
+
+        var incomplete = stopReason == "max_tokens";
+
         yield return Emit(
-            "response.completed",
+            incomplete ? "response.incomplete" : "response.completed",
             new Dictionary<string, object?>
             {
                 ["response"] = new Dictionary<string, object?>
@@ -690,21 +795,23 @@ public static partial class SseStreamConverter
                     ["id"] = responseId,
                     ["object"] = "response",
                     ["created_at"] = createdAt,
-                    ["status"] = "completed",
+                    ["status"] = incomplete ? "incomplete" : "completed",
                     ["model"] = responseModel,
                     ["output"] = output,
                     ["usage"] = MessagesUsageToResponsesUsage(usage),
                     ["end_turn"] = true,
                     ["parallel_tool_calls"] = true,
                     ["error"] = null,
-                    ["truncation"] = "disabled"
+                    ["truncation"] = "disabled",
+                    ["incomplete_details"] = incomplete
+                        ? new Dictionary<string, object?> { ["reason"] = "max_output_tokens" }
+                        : null
                 }
             });
     }
 
     private static string BuildThinkingEncryptedContent(
-        SortedDictionary<int, Dictionary<string, object?>> contentBlocks,
-        string fallbackText)
+        SortedDictionary<int, Dictionary<string, object?>> contentBlocks)
     {
         var thinkingBlocks = contentBlocks.Values
             .Where(block =>
@@ -728,6 +835,6 @@ public static partial class SseStreamConverter
             return ProtocolConverter.EncodeAnthropicThinkingBlocks(thinkingBlocks);
         }
 
-        return fallbackText;
+        return string.Empty;
     }
 }

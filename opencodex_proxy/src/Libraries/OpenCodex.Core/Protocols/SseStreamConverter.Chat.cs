@@ -218,6 +218,25 @@ public static partial class SseStreamConverter
                 continue;
             }
 
+            if (TryAsObject(GetValue(payload, "error"), out var error))
+            {
+                result.UpstreamResponse = new Dictionary<string, object?>
+                {
+                    ["id"] = responseId,
+                    ["object"] = "response",
+                    ["created_at"] = createdAt,
+                    ["status"] = "failed",
+                    ["model"] = responseModel,
+                    ["error"] = new Dictionary<string, object?>(error, StringComparer.Ordinal),
+                    ["output"] = new List<object?>()
+                };
+                yield return Emit("response.failed", new Dictionary<string, object?>
+                {
+                    ["response"] = result.UpstreamResponse
+                });
+                yield break;
+            }
+
             completionId = StringValue(payload, "id", completionId);
             completionCreated = GetValue(payload, "created") ?? completionCreated;
             responseModel = model ?? StringValue(payload, "model", responseModel);
@@ -352,6 +371,21 @@ public static partial class SseStreamConverter
                             aggregate.Arguments += arguments;
                         }
                     }
+                    else if (TryAsObject(GetValue(toolCall, "custom"), out var custom))
+                    {
+                        aggregate.Type = "custom";
+                        var name = StringValue(custom, "name", string.Empty);
+                        if (name.Length > 0)
+                        {
+                            aggregate.Name = name;
+                        }
+
+                        var input = StringValue(custom, "input", string.Empty);
+                        if (input.Length > 0)
+                        {
+                            aggregate.Arguments += input;
+                        }
+                    }
 
                     if (string.IsNullOrEmpty(aggregate.Id) || string.IsNullOrEmpty(aggregate.Name))
                     {
@@ -365,8 +399,8 @@ public static partial class SseStreamConverter
 
                     var state = EnsureToolStreamState(index);
                     var shape = ProtocolConverter.ResolveResponsesToolCallShape(aggregate.Name, toolCallMappings);
-                    state.CallKind = shape.Kind;
-                    state.ArgumentField = shape.ArgumentField;
+                    state.CallKind = aggregate.Type == "custom" ? ResponsesToolCallKind.CustomTool : shape.Kind;
+                    state.ArgumentField = aggregate.Type == "custom" ? "input" : shape.ArgumentField;
                     state.ApplyPatchDecoder ??= state.CallKind == ResponsesToolCallKind.CustomTool
                         ? new ApplyPatchJsonDeltaDecoder()
                         : null;
@@ -381,16 +415,42 @@ public static partial class SseStreamConverter
                             new Dictionary<string, object?>
                             {
                                 ["output_index"] = state.OutputIndex,
-                                ["item"] = ProtocolConverter.ResponsesToolCallStartedItem(
-                                    aggregate.Id,
-                                    aggregate.Name,
-                                    state.ItemId ?? $"fc_{Guid.NewGuid():N}",
-                                    toolCallMappings)
+                                ["item"] = aggregate.Type == "custom"
+                                    ? new Dictionary<string, object?>
+                                    {
+                                        ["id"] = state.ItemId ?? $"ct_{Guid.NewGuid():N}",
+                                        ["type"] = "custom_tool_call",
+                                        ["status"] = "in_progress",
+                                        ["call_id"] = aggregate.Id,
+                                        ["name"] = aggregate.Name,
+                                        ["input"] = string.Empty
+                                    }
+                                    : ProtocolConverter.ResponsesToolCallStartedItem(
+                                        aggregate.Id,
+                                        aggregate.Name,
+                                        state.ItemId ?? $"fc_{Guid.NewGuid():N}",
+                                        toolCallMappings)
                             });
                     }
 
                     if (aggregate.Arguments.Length <= state.StreamedArgumentsLength)
                     {
+                        continue;
+                    }
+
+                    if (aggregate.Type == "custom")
+                    {
+                        var customDelta = aggregate.Arguments[state.StreamedArgumentsLength..];
+                        state.StreamedArgumentsLength = aggregate.Arguments.Length;
+                        state.DecodedInputBuilder?.Append(customDelta);
+                        yield return Emit(
+                            "response.custom_tool_call_input.delta",
+                            new Dictionary<string, object?>
+                            {
+                                ["item_id"] = state.ItemId,
+                                ["output_index"] = state.OutputIndex,
+                                ["delta"] = customDelta
+                            });
                         continue;
                     }
 
@@ -465,17 +525,28 @@ public static partial class SseStreamConverter
         foreach (var (index, aggregate) in toolCalls.ToList())
         {
             var callId = string.IsNullOrEmpty(aggregate.Id) ? $"call_{Guid.NewGuid():N}" : aggregate.Id;
-            var arguments = aggregate.Arguments.Length > 0 ? aggregate.Arguments : "{}";
-            reconstructedToolCalls.Add(new Dictionary<string, object?>
-            {
-                ["id"] = callId,
-                ["type"] = aggregate.Type,
-                ["function"] = new Dictionary<string, object?>
+            var arguments = aggregate.Arguments.Length > 0 ? aggregate.Arguments : aggregate.Type == "custom" ? string.Empty : "{}";
+            reconstructedToolCalls.Add(aggregate.Type == "custom"
+                ? new Dictionary<string, object?>
                 {
-                    ["name"] = aggregate.Name,
-                    ["arguments"] = arguments
+                    ["id"] = callId,
+                    ["type"] = "custom",
+                    ["custom"] = new Dictionary<string, object?>
+                    {
+                        ["name"] = aggregate.Name,
+                        ["input"] = arguments
+                    }
                 }
-            });
+                : new Dictionary<string, object?>
+                {
+                    ["id"] = callId,
+                    ["type"] = aggregate.Type,
+                    ["function"] = new Dictionary<string, object?>
+                    {
+                        ["name"] = aggregate.Name,
+                        ["arguments"] = arguments
+                    }
+                });
             aggregate.Id = callId;
             aggregate.Arguments = arguments;
             toolCalls[index] = aggregate;
@@ -522,7 +593,6 @@ public static partial class SseStreamConverter
                         ["text"] = combinedReasoning
                     }
                 },
-                ["encrypted_content"] = combinedReasoning
             };
             yield return Emit(
                 "response.reasoning_summary_text.done",
@@ -618,12 +688,22 @@ public static partial class SseStreamConverter
                 : EnsureToolStreamState(index);
             var itemId = state.ItemId ?? $"fc_{Guid.NewGuid():N}";
             var outputIndex = state.OutputIndex ?? AllocateOutputIndex();
-            var functionItem = ProtocolConverter.ResponsesToolCallItemFromToolCall(
-                aggregate.Id,
-                aggregate.Name,
-                aggregate.Arguments,
-                itemId: itemId,
-                mappings: toolCallMappings);
+            var functionItem = aggregate.Type == "custom"
+                ? new Dictionary<string, object?>
+                {
+                    ["id"] = itemId,
+                    ["type"] = "custom_tool_call",
+                    ["status"] = "completed",
+                    ["call_id"] = aggregate.Id,
+                    ["name"] = aggregate.Name,
+                    ["input"] = aggregate.Arguments
+                }
+                : ProtocolConverter.ResponsesToolCallItemFromToolCall(
+                    aggregate.Id,
+                    aggregate.Name,
+                    aggregate.Arguments,
+                    itemId: itemId,
+                    mappings: toolCallMappings);
             var functionItemType = functionItem.TryGetValue("type", out var itemType)
                 ? itemType?.ToString()
                 : null;
@@ -634,11 +714,21 @@ public static partial class SseStreamConverter
                     new Dictionary<string, object?>
                     {
                         ["output_index"] = outputIndex,
-                        ["item"] = ProtocolConverter.ResponsesToolCallStartedItem(
-                            aggregate.Id,
-                            aggregate.Name,
-                            itemId,
-                            toolCallMappings)
+                        ["item"] = aggregate.Type == "custom"
+                            ? new Dictionary<string, object?>
+                            {
+                                ["id"] = itemId,
+                                ["type"] = "custom_tool_call",
+                                ["status"] = "in_progress",
+                                ["call_id"] = aggregate.Id,
+                                ["name"] = aggregate.Name,
+                                ["input"] = string.Empty
+                            }
+                            : ProtocolConverter.ResponsesToolCallStartedItem(
+                                aggregate.Id,
+                                aggregate.Name,
+                                itemId,
+                                toolCallMappings)
                     });
             }
 
@@ -686,9 +776,11 @@ public static partial class SseStreamConverter
                         {
                             ["item_id"] = itemId,
                             ["output_index"] = outputIndex,
-                            [state.ArgumentField] = functionItem.TryGetValue(state.ArgumentField, out var itemValue)
-                                ? itemValue
-                                : aggregate.Arguments
+                            [state.ArgumentField] = functionItemType == "tool_search_call"
+                                ? aggregate.Arguments
+                                : functionItem.TryGetValue(state.ArgumentField, out var itemValue)
+                                    ? itemValue
+                                    : aggregate.Arguments
                         });
                 }
             }

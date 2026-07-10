@@ -51,14 +51,10 @@ public static partial class ProtocolConverter
     private static string ResponsesReasoningToText(Dictionary<string, object?> item)
     {
         var encryptedContent = StringifyContent(GetValue(item, "encrypted_content") ?? string.Empty).Trim();
-        if (!string.IsNullOrEmpty(encryptedContent))
+        if (!string.IsNullOrEmpty(encryptedContent)
+            && TryDecodeAnthropicThinkingText(encryptedContent, out var plainText))
         {
-            if (TryDecodeAnthropicThinkingText(encryptedContent, out var plainText))
-            {
-                return plainText;
-            }
-
-            return encryptedContent;
+            return plainText;
         }
 
         var summary = StringifyContent(GetValue(item, "summary") ?? string.Empty).Trim();
@@ -75,7 +71,6 @@ public static partial class ProtocolConverter
         return Obj(
             ("type", "reasoning"),
             ("summary", new List<object?> { Obj(("type", "summary_text"), ("text", text)) }),
-            ("encrypted_content", text),
             ("status", "completed"));
     }
 
@@ -161,10 +156,19 @@ public static partial class ProtocolConverter
                 continue;
             }
 
+            var nested = ObjectValue(source, "url_citation");
             var annotation = Obj(
                 ("type", GetValue(source, "type") ?? "url_citation"),
-                ("url", GetValue(source, "url") ?? string.Empty),
-                ("title", GetValue(source, "title") ?? string.Empty));
+                ("url", GetValue(source, "url") ?? GetValue(nested, "url") ?? string.Empty),
+                ("title", GetValue(source, "title") ?? GetValue(nested, "title") ?? string.Empty));
+            foreach (var key in new[] { "start_index", "end_index", "file_id", "filename", "container_id", "index" })
+            {
+                var field = GetValue(source, key) ?? GetValue(nested, key);
+                if (field is not null)
+                {
+                    annotation[key] = DeepCopy(field);
+                }
+            }
             var snippet = GetValue(source, "snippet") ?? GetValue(source, "summary");
             if (snippet is not null)
             {
@@ -172,6 +176,32 @@ public static partial class ProtocolConverter
             }
 
             result.Add(annotation);
+        }
+
+        return result;
+    }
+
+    private static List<object?> CanonicalAnnotationsToChat(List<object?> annotations)
+    {
+        var result = new List<object?>();
+        foreach (var item in annotations)
+        {
+            if (!TryAsObject(item, out var annotation))
+            {
+                continue;
+            }
+
+            if (GetString(annotation, "type") != "url_citation")
+            {
+                continue;
+            }
+
+            var citation = Obj(
+                ("url", GetValue(annotation, "url") ?? string.Empty),
+                ("title", GetValue(annotation, "title") ?? string.Empty),
+                ("start_index", GetValue(annotation, "start_index") ?? 0),
+                ("end_index", GetValue(annotation, "end_index") ?? 0));
+            result.Add(Obj(("type", "url_citation"), ("url_citation", citation)));
         }
 
         return result;

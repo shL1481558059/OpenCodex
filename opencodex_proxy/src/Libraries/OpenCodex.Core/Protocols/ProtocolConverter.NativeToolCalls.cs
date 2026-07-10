@@ -1,3 +1,6 @@
+using System.Text.Json;
+using OpenCodex.Core.Errors;
+
 namespace OpenCodex.Core.Protocols;
 
 public static partial class ProtocolConverter
@@ -40,13 +43,17 @@ public static partial class ProtocolConverter
 
         if (shape.Kind == ResponsesToolCallKind.NativeTool)
         {
+            object? nativeArguments = string.Equals(shape.ItemType, "tool_search_call", StringComparison.Ordinal)
+                ? ParseToolSearchArguments(arguments)
+                : serializedArguments;
             var nativeToolCall = Obj(
                 ("id", itemId ?? NewId("tc")),
                 ("type", shape.ItemType),
                 ("status", "completed"),
                 ("call_id", callId),
-                (shape.ArgumentField, serializedArguments));
+                (shape.ArgumentField, nativeArguments));
             MergeInto(nativeToolCall, ResponsesFunctionCallNameFields(responseName, responseNamespace));
+            MergeNativeToolExecution(nativeToolCall);
             return nativeToolCall;
         }
 
@@ -81,6 +88,45 @@ public static partial class ProtocolConverter
             ("call_id", callId),
             (shape.ArgumentField, string.Empty));
         MergeInto(item, ResponsesFunctionCallNameFields(responseName, shape.Namespace));
+        MergeNativeToolExecution(item);
         return item;
+    }
+
+    private static void MergeNativeToolExecution(Dictionary<string, object?> item)
+    {
+        if (string.Equals(GetString(item, "type"), "tool_search_call", StringComparison.Ordinal))
+        {
+            item["execution"] = "client";
+        }
+    }
+
+    private static Dictionary<string, object?> ParseToolSearchArguments(object? arguments)
+    {
+        if (TryAsObject(arguments, out var argumentObject))
+        {
+            return AsObject(DeepCopy(argumentObject));
+        }
+
+        var text = Convert.ToString(arguments);
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return new Dictionary<string, object?>(StringComparer.Ordinal);
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(text);
+            var parsed = FromJsonElement(document.RootElement);
+            if (TryAsObject(parsed, out var parsedObject))
+            {
+                return parsedObject;
+            }
+        }
+        catch (JsonException)
+        {
+            // Converted below into a stable protocol error with no raw payload leakage.
+        }
+
+        throw new BadRequestException("tool_search arguments must be a valid JSON object");
     }
 }

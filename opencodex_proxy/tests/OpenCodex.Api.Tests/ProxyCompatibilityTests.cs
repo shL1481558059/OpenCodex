@@ -590,7 +590,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
-    public void ConvertRequest_ResponsesToMessages_DropsResponsesOnlyParams()
+    public void ConvertRequest_ResponsesToMessages_DropsUnsupportedMetadataAndPreservesSharedParams()
     {
         var request = ProtocolConverter.ConvertRequest(
             new Dictionary<string, object?>
@@ -613,12 +613,9 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                     }
                 },
                 ["include"] = new List<object?> { "reasoning.encrypted_content" },
-                ["reasoning"] = new Dictionary<string, object?> { ["effort"] = "xhigh" },
                 ["text"] = new Dictionary<string, object?> { ["verbosity"] = "low" },
                 ["service_tier"] = "priority",
-                ["previous_response_id"] = "resp_123",
                 ["client_metadata"] = new Dictionary<string, object?> { ["thread_id"] = "thread_123" },
-                ["parallel_tool_calls"] = true,
                 ["prompt_cache_key"] = "cache-key",
                 ["store"] = true,
                 ["stream"] = true,
@@ -635,16 +632,193 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Assert.True(request.ContainsKey("stream"));
         Assert.True(request.ContainsKey("temperature"));
         Assert.Equal(128, request["max_tokens"]);
+        Assert.Equal("priority", request["service_tier"]);
 
         Assert.False(request.ContainsKey("include"));
         Assert.False(request.ContainsKey("reasoning"));
         Assert.False(request.ContainsKey("text"));
-        Assert.False(request.ContainsKey("service_tier"));
         Assert.False(request.ContainsKey("previous_response_id"));
         Assert.False(request.ContainsKey("client_metadata"));
         Assert.False(request.ContainsKey("parallel_tool_calls"));
         Assert.False(request.ContainsKey("prompt_cache_key"));
-        Assert.False(request.ContainsKey("store"));
+       Assert.False(request.ContainsKey("store"));
+   }
+
+    [Fact]
+    public void ConvertRequest_ResponsesToolSearchOutput_ConvertsToChatToolResult()
+    {
+        // Reproduces: tool_search_output is not recognized by IsResponsesToolOutputLike
+        // because its type ends with "_output" (not "_call_output") and is missing from
+        // ResponsesToolOutputTypes. This causes the output to become an assistant text
+        // message and a "tool output missing" placeholder to be inserted.
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["role"] = "user",
+                        ["content"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "input_text",
+                                ["text"] = "search tools"
+                            }
+                        }
+                    },
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "tool_search_call",
+                        ["id"] = "tc_1",
+                        ["call_id"] = "call_abc",
+                        ["status"] = "completed",
+                        ["execution"] = "client",
+                        ["name"] = "tool_search",
+                        ["arguments"] = new Dictionary<string, object?>
+                        {
+                            ["query"] = "node_repl js"
+                        }
+                    },
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "tool_search_output",
+                        ["call_id"] = "call_abc",
+                        ["status"] = "completed",
+                        ["execution"] = "client",
+                        ["tools"] = Array.Empty<object>()
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Chat,
+            "upstream");
+
+        var messages = Assert.IsType<List<object?>>(request["messages"]);
+
+        // The tool_search_call must produce an assistant message with tool_calls
+        var assistantWithToolCall = messages
+            .Select(m => Assert.IsType<Dictionary<string, object?>>(m))
+            .FirstOrDefault(m => m.TryGetValue("role", out var r) && r?.ToString() == "assistant"
+                && m.ContainsKey("tool_calls"));
+        Assert.NotNull(assistantWithToolCall);
+
+        var toolCalls = Assert.IsType<List<object?>>(assistantWithToolCall!["tool_calls"]);
+        var toolCall = Assert.IsType<Dictionary<string, object?>>(Assert.Single(toolCalls));
+        var function = Assert.IsType<Dictionary<string, object?>>(toolCall["function"]);
+        var chatArguments = Assert.IsType<string>(function["arguments"]);
+        using (var argumentsDocument = JsonDocument.Parse(chatArguments))
+        {
+            Assert.Equal(JsonValueKind.Object, argumentsDocument.RootElement.ValueKind);
+            Assert.Equal("node_repl js", argumentsDocument.RootElement.GetProperty("query").GetString());
+        }
+
+        // The tool_search_output must produce a tool result for call_abc,
+        // not a "tool output missing" placeholder.
+        var toolResult = messages
+            .Select(m => Assert.IsType<Dictionary<string, object?>>(m))
+            .FirstOrDefault(m => m.TryGetValue("role", out var r) && r?.ToString() == "tool"
+                && m.TryGetValue("tool_call_id", out var id) && id?.ToString() == "call_abc");
+        Assert.NotNull(toolResult);
+
+        var content = Assert.IsType<string>(toolResult!["content"]);
+        Assert.DoesNotContain("tool output missing", content, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ConvertRequest_ResponsesToolSearchOutput_ExposesDiscoveredNamespaceToolsToChat()
+    {
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "tool_search_call",
+                        ["call_id"] = "call_search",
+                        ["status"] = "completed",
+                        ["execution"] = "client",
+                        ["arguments"] = new Dictionary<string, object?> { ["query"] = "node_repl js" }
+                    },
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "tool_search_output",
+                        ["call_id"] = "call_search",
+                        ["status"] = "completed",
+                        ["execution"] = "client",
+                        ["tools"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "namespace",
+                                ["name"] = "mcp__node_repl",
+                                ["description"] = "Node-backed tools.",
+                                ["tools"] = new List<object?>
+                                {
+                                    new Dictionary<string, object?>
+                                    {
+                                        ["type"] = "function",
+                                        ["name"] = "js",
+                                        ["description"] = "Execute JavaScript.",
+                                        ["parameters"] = new Dictionary<string, object?>
+                                        {
+                                            ["type"] = "object",
+                                            ["properties"] = new Dictionary<string, object?>
+                                            {
+                                                ["code"] = new Dictionary<string, object?> { ["type"] = "string" }
+                                            },
+                                            ["required"] = new List<object?> { "code" },
+                                            ["additionalProperties"] = false
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "tool_search",
+                        ["execution"] = "client",
+                        ["parameters"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object?>
+                            {
+                                ["query"] = new Dictionary<string, object?> { ["type"] = "string" }
+                            },
+                            ["required"] = new List<object?> { "query" }
+                        }
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Chat,
+            "upstream");
+
+        var tools = Assert.IsType<List<object?>>(request["tools"])
+            .Select(item => Assert.IsType<Dictionary<string, object?>>(item))
+            .ToList();
+        var discovered = Assert.Single(tools, tool =>
+            Assert.IsType<Dictionary<string, object?>>(tool["function"])["name"]?.ToString() == "mcp__node_repl__js");
+        var function = Assert.IsType<Dictionary<string, object?>>(discovered["function"]);
+        var parameters = Assert.IsType<Dictionary<string, object?>>(function["parameters"]);
+        Assert.Contains("code", Assert.IsType<Dictionary<string, object?>>(parameters["properties"]));
+
+        var messages = Assert.IsType<List<object?>>(request["messages"])
+            .Select(item => Assert.IsType<Dictionary<string, object?>>(item))
+            .ToList();
+        var toolResult = Assert.Single(messages, message => message["role"]?.ToString() == "tool");
+        var content = Assert.IsType<string>(toolResult["content"]);
+        using var contentJson = JsonDocument.Parse(content);
+        Assert.Equal(JsonValueKind.Array, contentJson.RootElement.ValueKind);
+        Assert.Equal("mcp__node_repl", contentJson.RootElement[0].GetProperty("name").GetString());
     }
 
     [Fact]
@@ -1706,11 +1880,13 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Assert.Equal("tool_search_call", item["type"]);
         Assert.Equal("tool_search", item["name"]);
         Assert.Equal("call_search", item["call_id"]);
+        Assert.Equal("client", item["execution"]);
+        Assert.False(item.ContainsKey("input"));
 
-        var arguments = JsonSerializer.Deserialize<Dictionary<string, object?>>(Assert.IsType<string>(item["arguments"]));
-        Assert.NotNull(arguments);
-        Assert.Equal("browser", arguments!["query"]?.ToString());
-        Assert.Equal(3, Assert.IsType<JsonElement>(arguments["limit"]!).GetInt32());
+        using var arguments = JsonDocument.Parse(JsonSerializer.Serialize(item["arguments"]));
+        Assert.Equal(JsonValueKind.Object, arguments.RootElement.ValueKind);
+        Assert.Equal("browser", arguments.RootElement.GetProperty("query").GetString());
+        Assert.Equal(3, arguments.RootElement.GetProperty("limit").GetInt32());
     }
 
     [Fact]
@@ -2467,6 +2643,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         var body = string.Concat(events);
         Assert.Contains("\"type\":\"tool_search_call\"", body, StringComparison.Ordinal);
         Assert.Contains("\"arguments\"", body, StringComparison.Ordinal);
+        Assert.Contains("\"execution\":\"client\"", body, StringComparison.Ordinal);
         Assert.Contains("response.function_call_arguments.delta", body, StringComparison.Ordinal);
         Assert.Contains("response.function_call_arguments.done", body, StringComparison.Ordinal);
 
