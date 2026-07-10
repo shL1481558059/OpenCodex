@@ -53,7 +53,9 @@ public static partial class SseStreamConverter
         var usage = new Dictionary<string, object?>(StringComparer.Ordinal);
 
         var textParts = new List<string>();
+        var refusalParts = new List<string>();
         var reasoningParts = new List<string>();
+        var annotations = new List<object?>();
         var nextBlockIndex = 0;
         var openBlockIndex = (int?)null;
         var thinkingStarted = false;
@@ -63,7 +65,7 @@ public static partial class SseStreamConverter
 
         var toolStates = new Dictionary<int, ResponsesToMessagesToolState>();
         var outputByIndex = new SortedDictionary<int, Dictionary<string, object?>>();
-        var hasToolUse = false;
+        var pendingToolUseCount = 0;
 
         string Emit(string eventName, Dictionary<string, object?> payload)
         {
@@ -208,6 +210,67 @@ public static partial class SseStreamConverter
                 continue;
             }
 
+            if (eventType == "response.refusal.delta" || eventType == "response.refusal.done")
+            {
+                var completeRefusal = eventType == "response.refusal.done"
+                    ? StringValue(payload, "refusal", string.Empty)
+                    : string.Empty;
+                var refusal = eventType == "response.refusal.delta"
+                    ? StringValue(payload, "delta", string.Empty)
+                    : MissingSuffix(string.Concat(refusalParts), completeRefusal);
+                if (refusal.Length == 0)
+                {
+                    continue;
+                }
+
+                foreach (var line in EnsureTextStarted())
+                {
+                    yield return line;
+                }
+
+                refusalParts.Add(refusal);
+                yield return Emit("content_block_delta", new Dictionary<string, object?>
+                {
+                    ["index"] = textIndex,
+                    ["delta"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "text_delta",
+                        ["text"] = refusal
+                    }
+                });
+                continue;
+            }
+
+            if (eventType == "response.output_text.annotation.added")
+            {
+                if (!TryAsObject(GetValue(payload, "annotation"), out var annotation))
+                {
+                    continue;
+                }
+
+                annotations.Add(annotation);
+                if (!TryConvertResponsesAnnotationToAnthropic(annotation, out var citation))
+                {
+                    continue;
+                }
+
+                foreach (var line in EnsureTextStarted())
+                {
+                    yield return line;
+                }
+
+                yield return Emit("content_block_delta", new Dictionary<string, object?>
+                {
+                    ["index"] = textIndex,
+                    ["delta"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "citations_delta",
+                        ["citation"] = citation
+                    }
+                });
+                continue;
+            }
+
             if (eventType == "response.reasoning_summary_text.delta")
             {
                 var text = StringValue(payload, "delta", string.Empty);
@@ -243,8 +306,28 @@ public static partial class SseStreamConverter
                 }
 
                 var itemType = StringValue(item, "type", string.Empty);
-                if (itemType != "function_call" && itemType != "custom_tool_call")
+                if (itemType is "mcp_list_tools" or "mcp_approval_request" or "mcp_approval_response")
                 {
+                    throw new InvalidOperationException(
+                        $"Responses stream item '{itemType}' has no compatible Anthropic Messages streaming representation.");
+                }
+
+                var isMcpCall = itemType == "mcp_call";
+                if (IsServerExecutedNativeToolCallType(itemType))
+                {
+                    outputByIndex[outputIndex] = new Dictionary<string, object?>(item, StringComparer.Ordinal);
+                    continue;
+                }
+
+                if (!isMcpCall
+                    && !TryGetClientToolCallInfo(item, out _, out _, out _))
+                {
+                    if (IsResponsesNativeToolCallType(itemType))
+                    {
+                        throw new InvalidOperationException(
+                            $"Responses native stream item '{itemType}' has no compatible Anthropic Messages representation.");
+                    }
+
                     continue;
                 }
 
@@ -266,9 +349,12 @@ public static partial class SseStreamConverter
                     BlockIndex = blockIndex,
                     CallId = callId,
                     Name = toolName,
-                    CallKind = ProtocolConverter.GetResponsesToolCallKind(toolName)
+                    CallKind = isMcpCall
+                        ? ResponsesToolCallKind.NativeTool
+                        : ProtocolConverter.GetResponsesToolCallKind(toolName),
+                    IsMcp = isMcpCall
                 };
-                hasToolUse = true;
+                pendingToolUseCount++;
 
                 var startOutput = new List<string>();
                 CloseOpenBlock(startOutput);
@@ -278,21 +364,32 @@ public static partial class SseStreamConverter
                 }
 
                 openBlockIndex = blockIndex;
+                var contentBlock = new Dictionary<string, object?>
+                {
+                    ["type"] = isMcpCall ? "mcp_tool_use" : "tool_use",
+                    ["id"] = callId,
+                    ["name"] = toolName,
+                    ["input"] = new Dictionary<string, object?>()
+                };
+                if (isMcpCall)
+                {
+                    contentBlock["server_name"] = StringValue(
+                        item,
+                        "server_label",
+                        StringValue(item, "server_name", string.Empty));
+                }
+
                 yield return Emit("content_block_start", new Dictionary<string, object?>
                 {
                     ["index"] = blockIndex,
-                    ["content_block"] = new Dictionary<string, object?>
-                    {
-                        ["type"] = "tool_use",
-                        ["id"] = callId,
-                        ["name"] = toolName,
-                        ["input"] = new Dictionary<string, object?>()
-                    }
+                    ["content_block"] = contentBlock
                 });
                 continue;
             }
 
-            if (eventType == "response.function_call_arguments.delta")
+            if (eventType == "response.function_call_arguments.delta"
+                || eventType.EndsWith("_call.arguments.delta", StringComparison.Ordinal)
+                || eventType.EndsWith("_call_arguments.delta", StringComparison.Ordinal))
             {
                 var outputIndex = ToInt(GetValue(payload, "output_index"));
                 if (!toolStates.TryGetValue(outputIndex, out var state)
@@ -316,6 +413,7 @@ public static partial class SseStreamConverter
                         ["partial_json"] = deltaText
                     }
                 });
+                state.ArgumentsDeltaEmitted = true;
                 continue;
             }
 
@@ -342,6 +440,16 @@ public static partial class SseStreamConverter
                     continue;
                 }
 
+                var completedItemType = StringValue(item, "type", string.Empty);
+                if (!toolStates.ContainsKey(outputIndex)
+                    && (IsNativeMcpItemType(completedItemType)
+                        || (IsResponsesNativeToolCallType(completedItemType)
+                            && !IsServerExecutedNativeToolCallType(completedItemType))))
+                {
+                    throw new InvalidOperationException(
+                        $"Responses stream item '{completedItemType}' completed without a compatible Anthropic content-block start event.");
+                }
+
                 outputByIndex[outputIndex] = new Dictionary<string, object?>(item, StringComparer.Ordinal);
 
                 // custom_tool_call：done 时把完整 input 序列化为 JSON 作为 input_json_delta 一次性发出
@@ -349,7 +457,24 @@ public static partial class SseStreamConverter
                     && state.CallKind == ResponsesToolCallKind.CustomTool)
                 {
                     var input = GetValue(item, "input") ?? new Dictionary<string, object?>();
-                    var argumentsJson = JsonSerializer.Serialize(NormalizeJsonValueForMessages(input), JsonOptions);
+                    var normalizedInput = ProtocolConverter.IsApplyPatchPublic(state.Name) && input is string patch
+                        ? new Dictionary<string, object?> { ["patch"] = patch }
+                        : input;
+                    var argumentsJson = JsonSerializer.Serialize(NormalizeJsonValueForMessages(normalizedInput), JsonOptions);
+                    yield return Emit("content_block_delta", new Dictionary<string, object?>
+                    {
+                        ["index"] = state.BlockIndex,
+                        ["delta"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "input_json_delta",
+                            ["partial_json"] = argumentsJson
+                        }
+                    });
+                }
+                else if (toolStates.TryGetValue(outputIndex, out state)
+                    && !state.ArgumentsDeltaEmitted
+                    && TryGetToolArguments(item, out var argumentsJson))
+                {
                     yield return Emit("content_block_delta", new Dictionary<string, object?>
                     {
                         ["index"] = state.BlockIndex,
@@ -361,16 +486,52 @@ public static partial class SseStreamConverter
                     });
                 }
 
+                if (toolStates.TryGetValue(outputIndex, out state) && state.IsMcp)
+                {
+                    var mcpOutput = GetValue(item, "output");
+                    var mcpError = GetValue(item, "error");
+                    if (mcpOutput is not null || mcpError is not null)
+                    {
+                        pendingToolUseCount = Math.Max(0, pendingToolUseCount - 1);
+                        var resultOutput = new List<string>();
+                        CloseOpenBlock(resultOutput);
+                        foreach (var line in resultOutput)
+                        {
+                            yield return line;
+                        }
+
+                        var resultIndex = AllocateBlockIndex();
+                        yield return Emit("content_block_start", new Dictionary<string, object?>
+                        {
+                            ["index"] = resultIndex,
+                            ["content_block"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "mcp_tool_result",
+                                ["tool_use_id"] = state.CallId,
+                                ["is_error"] = mcpError is not null,
+                                ["content"] = BuildAnthropicMcpResultContent(mcpError ?? mcpOutput)
+                            }
+                        });
+                        yield return Emit("content_block_stop", new Dictionary<string, object?>
+                        {
+                            ["index"] = resultIndex
+                        });
+                    }
+                }
+
                 continue;
             }
 
-            if (eventType == "response.completed")
+            if (eventType == "response.completed" || eventType == "response.incomplete")
             {
                 if (TryAsObject(GetValue(payload, "response"), out var response))
                 {
                     responseId = StringValue(response, "id", responseId);
                     responseModel = model ?? StringValue(response, "model", responseModel);
-                    finishStatus = StringValue(response, "status", finishStatus);
+                    finishStatus = StringValue(
+                        response,
+                        "status",
+                        eventType == "response.incomplete" ? "incomplete" : finishStatus);
                     if (TryAsObject(GetValue(response, "usage"), out var responseUsage))
                     {
                         usage = responseUsage;
@@ -383,6 +544,16 @@ public static partial class SseStreamConverter
                         {
                             if (TryAsObject(responseOutput[i], out var doneItem))
                             {
+                                var doneItemType = StringValue(doneItem, "type", string.Empty);
+                                if ((IsNativeMcpItemType(doneItemType)
+                                        || (IsResponsesNativeToolCallType(doneItemType)
+                                            && !IsServerExecutedNativeToolCallType(doneItemType)))
+                                    && !toolStates.ContainsKey(i))
+                                {
+                                    throw new InvalidOperationException(
+                                        $"Responses terminal output item '{doneItemType}' has no compatible Anthropic stream representation.");
+                                }
+
                                 outputByIndex[i] = new Dictionary<string, object?>(doneItem, StringComparer.Ordinal);
                             }
                         }
@@ -390,13 +561,50 @@ public static partial class SseStreamConverter
                 }
                 break;
             }
+
+            if (eventType == "response.failed")
+            {
+                var failedResponse = TryAsObject(GetValue(payload, "response"), out var response)
+                    ? new Dictionary<string, object?>(response, StringComparer.Ordinal)
+                    : new Dictionary<string, object?>(StringComparer.Ordinal);
+                responseId = StringValue(failedResponse, "id", responseId);
+                responseModel = model ?? StringValue(failedResponse, "model", responseModel);
+                failedResponse["id"] = responseId;
+                failedResponse["object"] = "response";
+                failedResponse["status"] = "failed";
+                failedResponse["model"] = responseModel;
+                failedResponse.TryAdd("output", outputByIndex.Values.Cast<object?>().ToList());
+                failedResponse.TryAdd("usage", usage);
+                result.UpstreamResponse = failedResponse;
+
+                var closing = new List<string>();
+                CloseOpenBlock(closing);
+                foreach (var line in closing)
+                {
+                    yield return line;
+                }
+
+                var upstreamError = GetValue(failedResponse, "error");
+                var error = TryAsObject(upstreamError, out var errorObject)
+                    ? new Dictionary<string, object?>(errorObject, StringComparer.Ordinal)
+                    : new Dictionary<string, object?>
+                    {
+                        ["type"] = "api_error",
+                        ["message"] = upstreamError?.ToString() ?? "The upstream Responses stream failed."
+                    };
+                error.TryAdd("type", "api_error");
+                error.TryAdd("message", "The upstream Responses stream failed.");
+                yield return Emit("error", new Dictionary<string, object?> { ["error"] = error });
+                yield break;
+            }
         }
 
         var combinedText = string.Concat(textParts);
         var combinedReasoning = string.Concat(reasoningParts);
 
         // 确保 output 含 message / reasoning 项，供 ProxyStreamService 的 ConvertResponse 提取
-        if (combinedText.Length > 0 && !outputByIndex.Values.Any(o => StringValue(o, "type", string.Empty) == "message"))
+        if ((combinedText.Length > 0 || refusalParts.Count > 0)
+            && !outputByIndex.Values.Any(o => StringValue(o, "type", string.Empty) == "message"))
         {
             var msgIndex = outputByIndex.Count > 0 ? outputByIndex.Keys.Max() + 1 : 0;
             outputByIndex[msgIndex] = new Dictionary<string, object?>
@@ -405,14 +613,7 @@ public static partial class SseStreamConverter
                 ["type"] = "message",
                 ["status"] = "completed",
                 ["role"] = "assistant",
-                ["content"] = new List<object?>
-                {
-                    new Dictionary<string, object?>
-                    {
-                        ["type"] = "output_text",
-                        ["text"] = combinedText
-                    }
-                }
+                ["content"] = BuildResponsesMessageContent(combinedText, refusalParts, annotations)
             };
         }
 
@@ -455,7 +656,7 @@ public static partial class SseStreamConverter
             yield return line;
         }
 
-        var stopReason = ResponsesStatusToMessagesStopReason(finishStatus, hasToolUse);
+        var stopReason = ResponsesStatusToMessagesStopReason(finishStatus, pendingToolUseCount > 0);
         var outputTokens = ToInt(GetValue(usage, "output_tokens"));
         yield return Emit("message_delta", new Dictionary<string, object?>
         {
@@ -507,6 +708,44 @@ public static partial class SseStreamConverter
 
         return value;
     }
+
+    private static bool TryConvertResponsesAnnotationToAnthropic(
+        Dictionary<string, object?> annotation,
+        out Dictionary<string, object?> citation)
+    {
+        citation = new Dictionary<string, object?>(StringComparer.Ordinal);
+        if (StringValue(annotation, "type", string.Empty) != "url_citation")
+        {
+            return false;
+        }
+
+        citation["type"] = "web_search_result_location";
+        citation["cited_text"] = StringValue(annotation, "cited_text", StringValue(annotation, "text", string.Empty));
+        citation["encrypted_index"] = StringValue(annotation, "encrypted_index", string.Empty);
+        citation["title"] = StringValue(annotation, "title", string.Empty);
+        citation["url"] = StringValue(annotation, "url", string.Empty);
+        return citation["url"]?.ToString()?.Length > 0;
+    }
+
+    private static List<object?> BuildAnthropicMcpResultContent(object? value)
+    {
+        if (value is List<object?> list)
+        {
+            return list;
+        }
+
+        var text = value is string stringValue
+            ? stringValue
+            : JsonSerializer.Serialize(NormalizeJsonValueForMessages(value), JsonOptions);
+        return new List<object?>
+        {
+            new Dictionary<string, object?>
+            {
+                ["type"] = "text",
+                ["text"] = text
+            }
+        };
+    }
 }
 
 internal sealed class ResponsesToMessagesToolState
@@ -516,4 +755,6 @@ internal sealed class ResponsesToMessagesToolState
     public string Name { get; set; } = string.Empty;
     public ResponsesToolCallKind CallKind { get; set; } = ResponsesToolCallKind.Function;
     public StringBuilder? InputBuilder { get; set; }
+    public bool ArgumentsDeltaEmitted { get; set; }
+    public bool IsMcp { get; set; }
 }

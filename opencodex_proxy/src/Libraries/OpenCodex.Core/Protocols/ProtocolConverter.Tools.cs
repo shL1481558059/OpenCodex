@@ -6,9 +6,17 @@ public static partial class ProtocolConverter
         Dictionary<string, object?> payload)
     {
         var result = new Dictionary<string, ResponsesToolCallMapping>(StringComparer.Ordinal);
-        foreach (var item in ResponsesToolsToCanonical(GetValue(payload, "tools")))
+        foreach (var item in ResponsesRequestToolsToCanonical(payload))
         {
             if (!TryAsObject(item, out var tool))
+            {
+                continue;
+            }
+
+            // Native remote MCP tools execute on the Responses provider. They are not
+            // client-side function calls and must never participate in the legacy
+            // namespace/function call restoration map.
+            if (IsNativeRemoteMcpCanonicalTool(tool))
             {
                 continue;
             }
@@ -45,6 +53,30 @@ public static partial class ProtocolConverter
         foreach (var item in AsOptionalList(tools))
         {
             result.AddRange(ResponsesToolToCanonicalItems(item, compat));
+        }
+
+        return DedupeCanonicalTools(result);
+    }
+
+    private static List<object?> ResponsesRequestToolsToCanonical(
+        Dictionary<string, object?> payload,
+        IReadOnlyDictionary<string, object?>? compat = null)
+    {
+        var result = ResponsesToolsToCanonical(GetValue(payload, "tools"), compat);
+        if (!TryAsList(GetValue(payload, "input"), out var inputItems))
+        {
+            return result;
+        }
+
+        foreach (var item in inputItems)
+        {
+            if (!TryAsObject(item, out var inputItem)
+                || GetString(inputItem, "type") != "tool_search_output")
+            {
+                continue;
+            }
+
+            result.AddRange(ResponsesToolsToCanonical(GetValue(inputItem, "tools"), compat));
         }
 
         return DedupeCanonicalTools(result);
@@ -100,11 +132,22 @@ public static partial class ProtocolConverter
 
     private static List<object?> AnthropicToolsToCanonical(object? tools)
     {
+        return AnthropicToolsToCanonical(tools, null);
+    }
+
+    internal static List<object?> AnthropicToolsToCanonical(object? tools, object? mcpServers)
+    {
         var result = new List<object?>();
         foreach (var item in AsOptionalList(tools))
         {
             if (!TryAsObject(item, out var tool))
             {
+                continue;
+            }
+
+            if (IsAnthropicMcpToolset(tool))
+            {
+                result.Add(AnthropicMcpToolsetToCanonical(tool));
                 continue;
             }
 
@@ -115,7 +158,7 @@ public static partial class ProtocolConverter
                 ("native_type", "function")));
         }
 
-        return result;
+        return EnrichCanonicalMcpToolsWithAnthropicServers(result, mcpServers);
     }
 
     private static List<object?> CanonicalToolsToResponses(List<object?> tools)
@@ -130,6 +173,17 @@ public static partial class ProtocolConverter
             }
 
             var nativeType = GetString(tool, "native_type") ?? "function";
+            if (IsNativeRemoteMcpCanonicalTool(tool))
+            {
+                if (!TryCanonicalMcpToolToResponses(tool, out var responseMcpTool, out var error))
+                {
+                    ThrowRemoteMcpConversionError(tool, Responses, error);
+                }
+
+                result.Add(responseMcpTool);
+                continue;
+            }
+
             if (nativeType != "function" && TryAsObject(GetValue(tool, "raw"), out var raw) && raw.Count > 0)
             {
                 result.Add(DeepCopy(raw));
@@ -184,7 +238,20 @@ public static partial class ProtocolConverter
         var result = new List<object?>();
         foreach (var item in tools)
         {
-            if (!TryAsObject(item, out var tool) || !HasNonNullValue(tool, "name"))
+            if (!TryAsObject(item, out var tool))
+            {
+                continue;
+            }
+
+            if (IsNativeRemoteMcpCanonicalTool(tool))
+            {
+                ThrowRemoteMcpConversionError(
+                    tool,
+                    Chat,
+                    "Chat Completions has no native remote MCP tool definition; use a Responses/Messages upstream or an explicit proxy-side MCP bridge");
+            }
+
+            if (!HasNonNullValue(tool, "name"))
             {
                 continue;
             }
@@ -207,7 +274,23 @@ public static partial class ProtocolConverter
         var result = new List<object?>();
         foreach (var item in tools)
         {
-            if (!TryAsObject(item, out var tool) || !HasNonNullValue(tool, "name"))
+            if (!TryAsObject(item, out var tool))
+            {
+                continue;
+            }
+
+            if (IsNativeRemoteMcpCanonicalTool(tool))
+            {
+                if (!TryCanonicalMcpToolToAnthropic(tool, out var anthropicMcpTool, out var error))
+                {
+                    ThrowRemoteMcpConversionError(tool, Messages, error);
+                }
+
+                result.Add(anthropicMcpTool);
+                continue;
+            }
+
+            if (!HasNonNullValue(tool, "name"))
             {
                 continue;
             }
@@ -267,6 +350,11 @@ public static partial class ProtocolConverter
                     ("parameters", GetValue(tool, "parameters") ?? new Dictionary<string, object?>()),
                     ("native_type", "function"))
             ];
+        }
+
+        if (toolType == "mcp")
+        {
+            return [ResponsesMcpToolToCanonical(tool)];
         }
 
         if (toolType == "web_search")
@@ -460,6 +548,20 @@ public static partial class ProtocolConverter
             }
 
             var type = GetString(toolChoiceObject, "type");
+            if (type == "function" && HasNonNullValue(toolChoiceObject, "name"))
+            {
+                return Obj(
+                    ("type", "function"),
+                    ("function", Obj(("name", GetValue(toolChoiceObject, "name")))));
+            }
+
+            if (type == "custom" && HasNonNullValue(toolChoiceObject, "name"))
+            {
+                return Obj(
+                    ("type", "custom"),
+                    ("custom", Obj(("name", GetValue(toolChoiceObject, "name")))));
+            }
+
             if (type is "auto" or "none")
             {
                 return type;
@@ -472,6 +574,102 @@ public static partial class ProtocolConverter
         }
 
         return toolChoice;
+    }
+
+    private static object? ToolChoiceToResponses(object? toolChoice)
+    {
+        if (toolChoice is string text)
+        {
+            return text switch
+            {
+                "any" or "tool" => "required",
+                _ => text
+            };
+        }
+
+        if (!TryAsObject(toolChoice, out var choice))
+        {
+            return toolChoice;
+        }
+
+        var type = GetString(choice, "type") ?? string.Empty;
+        if (type == "tool" && HasNonNullValue(choice, "name"))
+        {
+            return Obj(("type", "function"), ("name", GetValue(choice, "name")));
+        }
+
+        if (type is "function" or "custom")
+        {
+            var nested = ObjectValue(choice, type);
+            var name = GetValue(choice, "name") ?? GetValue(nested, "name");
+            if (name is not null)
+            {
+                return Obj(("type", type), ("name", name));
+            }
+        }
+
+        if (type is "auto" or "none" or "required")
+        {
+            return type;
+        }
+
+        if (type == "any")
+        {
+            return "required";
+        }
+
+        return DeepCopy(choice);
+    }
+
+    private static object? ToolChoiceToMessages(object? toolChoice)
+    {
+        if (toolChoice is string text)
+        {
+            return text switch
+            {
+                "none" => Obj(("type", "none")),
+                "required" or "any" or "tool" => Obj(("type", "any")),
+                _ => Obj(("type", "auto"))
+            };
+        }
+
+        if (!TryAsObject(toolChoice, out var choice))
+        {
+            return toolChoice;
+        }
+
+        if (IsApplyPatchToolChoice(choice))
+        {
+            return Obj(("type", "tool"), ("name", "apply_patch"));
+        }
+
+        if (IsWebSearchToolChoice(choice))
+        {
+            return Obj(("type", "tool"), ("name", "web_search"));
+        }
+
+        var type = GetString(choice, "type") ?? string.Empty;
+        if (type == "tool" && HasNonNullValue(choice, "name"))
+        {
+            return DeepCopy(choice);
+        }
+
+        if (type is "function" or "custom")
+        {
+            var nested = ObjectValue(choice, type);
+            var name = GetValue(choice, "name") ?? GetValue(nested, "name");
+            if (name is not null)
+            {
+                return Obj(("type", "tool"), ("name", name));
+            }
+        }
+
+        return type switch
+        {
+            "none" => Obj(("type", "none")),
+            "required" or "any" => Obj(("type", "any")),
+            _ => Obj(("type", "auto"))
+        };
     }
 
     private static bool IsApplyPatchToolChoice(Dictionary<string, object?> toolChoiceObject)

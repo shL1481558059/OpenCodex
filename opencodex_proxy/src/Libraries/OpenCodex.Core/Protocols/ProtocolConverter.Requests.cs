@@ -63,7 +63,7 @@ public static partial class ProtocolConverter
         return Obj(
             ("model", GetValue(payload, "model")),
             ("messages", messages),
-            ("tools", ResponsesToolsToCanonical(GetValue(payload, "tools"), compat)),
+            ("tools", ResponsesRequestToolsToCanonical(payload, compat)),
             ("tool_choice", GetValue(payload, "tool_choice")),
             ("params", CopyCommonRequestParams(payload, Responses)));
     }
@@ -103,15 +103,13 @@ public static partial class ProtocolConverter
                 continue;
             }
 
-            messages.Add(Obj(
-                ("role", GetString(message, "role") ?? "user"),
-                ("content", AnthropicContentToChatContent(GetValue(message, "content") ?? string.Empty))));
+            messages.AddRange(AnthropicMessageToCanonicalMessages(message));
         }
 
         return Obj(
             ("model", GetValue(payload, "model")),
             ("messages", messages),
-            ("tools", AnthropicToolsToCanonical(GetValue(payload, "tools"))),
+            ("tools", AnthropicToolsToCanonical(GetValue(payload, "tools"), GetValue(payload, "mcp_servers"))),
             ("tool_choice", GetValue(payload, "tool_choice")),
             ("params", CopyCommonRequestParams(payload, Messages)));
     }
@@ -120,6 +118,23 @@ public static partial class ProtocolConverter
     {
         var result = Obj(("model", GetValue(canonical, "model")));
         MergeInto(result, ObjectValue(canonical, "params"));
+
+        if (HasNonNullValue(result, "reasoning_effort") && !HasNonNullValue(result, "reasoning"))
+        {
+            result["reasoning"] = Obj(("effort", GetValue(result, "reasoning_effort")));
+        }
+
+        if (TryAsObject(GetValue(result, "response_format"), out var responseFormat) && !HasNonNullValue(result, "text"))
+        {
+            result["text"] = Obj(("format", ChatResponseFormatToResponsesFormat(responseFormat)));
+        }
+
+        if (TryAsObject(GetValue(result, "output_config"), out var outputConfig)
+            && TryAsObject(GetValue(outputConfig, "format"), out var outputFormat)
+            && !HasNonNullValue(result, "text"))
+        {
+            result["text"] = Obj(("format", DeepCopy(outputFormat)));
+        }
 
         var (instructions, input) = MessagesToResponsesInput(ListValue(canonical, "messages"));
         if (!string.IsNullOrEmpty(instructions))
@@ -137,7 +152,7 @@ public static partial class ProtocolConverter
 
         if (HasNonNullValue(canonical, "tool_choice"))
         {
-            result["tool_choice"] = GetValue(canonical, "tool_choice");
+            result["tool_choice"] = ToolChoiceToResponses(GetValue(canonical, "tool_choice"));
         }
 
         if (result.ContainsKey("max_tokens") && !result.ContainsKey("max_output_tokens"))
@@ -145,6 +160,8 @@ public static partial class ProtocolConverter
             result["max_output_tokens"] = result["max_tokens"];
             result.Remove("max_tokens");
         }
+
+        FilterRequestParameters(result, Responses);
 
         return result;
     }
@@ -154,12 +171,40 @@ public static partial class ProtocolConverter
         var result = Obj(("model", GetValue(canonical, "model")), ("messages", new List<object?>()));
         MergeInto(result, ObjectValue(canonical, "params"));
 
+        if (TryAsObject(GetValue(result, "reasoning"), out var reasoning)
+            && HasNonNullValue(reasoning, "effort")
+            && !HasNonNullValue(result, "reasoning_effort"))
+        {
+            result["reasoning_effort"] = GetValue(reasoning, "effort");
+        }
+
+        if (TryAsObject(GetValue(result, "text"), out var textConfig)
+            && TryAsObject(GetValue(textConfig, "format"), out var responsesFormat)
+            && !HasNonNullValue(result, "response_format"))
+        {
+            result["response_format"] = ResponsesFormatToChatResponseFormat(responsesFormat);
+        }
+
+        if (TryAsObject(GetValue(result, "output_config"), out var outputConfig)
+            && TryAsObject(GetValue(outputConfig, "format"), out var outputFormat)
+            && !HasNonNullValue(result, "response_format"))
+        {
+            result["response_format"] = ResponsesFormatToChatResponseFormat(outputFormat);
+        }
+
         var outputMessages = ListValue(result, "messages");
         foreach (var item in ListValue(canonical, "messages"))
         {
             if (!TryAsObject(item, out var message))
             {
                 continue;
+            }
+
+            var role = GetString(message, "role") ?? "user";
+            if (ListValue(message, "tool_calls").Any(item => TryAsObject(item, out var call) && GetString(call, "native_type") == "mcp")
+                || (role == "tool" && GetString(message, "native_type") == "mcp"))
+            {
+                throw new BadRequestException("native MCP history cannot be represented by Chat Completions; use Responses or Messages protocol");
             }
 
             var converted = new Dictionary<string, object?>(StringComparer.Ordinal);
@@ -196,6 +241,13 @@ public static partial class ProtocolConverter
             result.Remove("max_output_tokens");
         }
 
+        if (result.TryGetValue("stop_sequences", out var stopSequences) && !result.ContainsKey("stop"))
+        {
+            result["stop"] = stopSequences;
+        }
+
+        FilterRequestParameters(result, Chat);
+
         return result;
     }
 
@@ -203,6 +255,20 @@ public static partial class ProtocolConverter
     {
         var result = Obj(("model", GetValue(canonical, "model")), ("messages", new List<object?>()));
         MergeInto(result, ObjectValue(canonical, "params"));
+
+        if (TryAsObject(GetValue(result, "text"), out var textConfig)
+            && TryAsObject(GetValue(textConfig, "format"), out var format)
+            && !HasNonNullValue(result, "output_config"))
+        {
+            result["output_config"] = Obj(("format", DeepCopy(format)));
+        }
+
+        if (TryAsObject(GetValue(result, "response_format"), out var responseFormat)
+            && !HasNonNullValue(result, "output_config"))
+        {
+            result["output_config"] = Obj(("format", ChatResponseFormatToResponsesFormat(responseFormat)));
+        }
+
         DropResponsesOnlyParamsForMessages(result);
 
         // Read internal marker injected by ChannelCompatRequestRewriter
@@ -236,13 +302,15 @@ public static partial class ProtocolConverter
 
             if (role == "tool")
             {
+                var nativeMcp = GetString(message, "native_type") == "mcp";
                 outputMessages.Add(Obj(
                     ("role", "user"),
                     ("content", new List<object?>
                     {
                         Obj(
-                            ("type", "tool_result"),
+                            ("type", nativeMcp ? "mcp_tool_result" : "tool_result"),
                             ("tool_use_id", GetValue(message, "tool_call_id")),
+                            ("is_error", nativeMcp ? GetValue(message, "is_error") ?? false : null),
                             ("content", StringifyContent(GetValue(message, "content") ?? string.Empty)))
                     })));
                 continue;
@@ -279,15 +347,28 @@ public static partial class ProtocolConverter
             result["tools"] = tools;
         }
 
+        var mcpServers = BuildAnthropicMcpServers(ListValue(canonical, "tools"));
+        if (mcpServers.Count > 0)
+        {
+            result["mcp_servers"] = mcpServers;
+        }
+
         if (HasNonNullValue(canonical, "tool_choice"))
         {
-            result["tool_choice"] = GetValue(canonical, "tool_choice");
+            result["tool_choice"] = ToolChoiceToMessages(GetValue(canonical, "tool_choice"));
         }
 
         if (result.ContainsKey("max_output_tokens") && !result.ContainsKey("max_tokens"))
         {
             result["max_tokens"] = result["max_output_tokens"];
             result.Remove("max_output_tokens");
+        }
+
+        if (result.TryGetValue("stop", out var stop) && !result.ContainsKey("stop_sequences"))
+        {
+            result["stop_sequences"] = stop is string stopText
+                ? new List<object?> { stopText }
+                : DeepCopy(stop);
         }
 
         // Auto-inject thinking param when preserve_thinking_history is enabled
@@ -304,6 +385,145 @@ public static partial class ProtocolConverter
             result["thinking"] = Obj(("type", "enabled"), ("budget_tokens", budgetTokens));
         }
 
+        FilterRequestParameters(result, Messages);
+        if (!HasNonNullValue(result, "max_tokens"))
+        {
+            result["max_tokens"] = 4096;
+        }
+
+        return result;
+    }
+
+    private static List<object?> AnthropicMessageToCanonicalMessages(Dictionary<string, object?> message)
+    {
+        var role = GetString(message, "role") ?? "user";
+        var rawContent = GetValue(message, "content") ?? string.Empty;
+        if (!TryAsList(rawContent, out var blocks))
+        {
+            return [Obj(("role", role), ("content", AnthropicContentToChatContent(rawContent)))];
+        }
+
+        if (role == "assistant")
+        {
+            var normalBlocks = new List<object?>();
+            var toolCalls = new List<object?>();
+            var reasoningParts = new List<string>();
+            var thinkingBlocks = new List<object?>();
+            foreach (var blockItem in blocks)
+            {
+                if (!TryAsObject(blockItem, out var block))
+                {
+                    continue;
+                }
+
+                var type = GetString(block, "type") ?? string.Empty;
+                if (type is "tool_use" or "mcp_tool_use")
+                {
+                    var toolCall = Obj(
+                        ("id", GetValue(block, "id") ?? NewId("call")),
+                        ("type", "function"),
+                        ("function", Obj(
+                            ("name", GetValue(block, "name") ?? string.Empty),
+                            ("arguments", JsonDumps(GetValue(block, "input") ?? new Dictionary<string, object?>())))));
+                    if (type == "mcp_tool_use")
+                    {
+                        toolCall["native_type"] = "mcp";
+                        toolCall["server_name"] = GetValue(block, "server_name");
+                    }
+
+                    toolCalls.Add(toolCall);
+                    continue;
+                }
+
+                if (type == "thinking")
+                {
+                    reasoningParts.Add(StringifyContent(GetValue(block, "thinking") ?? string.Empty));
+                    thinkingBlocks.Add(DeepCopy(block));
+                    continue;
+                }
+
+                if (type == "redacted_thinking")
+                {
+                    thinkingBlocks.Add(DeepCopy(block));
+                    continue;
+                }
+
+                normalBlocks.Add(DeepCopy(block));
+            }
+
+            var canonical = Obj(
+                ("role", "assistant"),
+                ("content", AnthropicContentToChatContent(normalBlocks)));
+            if (toolCalls.Count > 0)
+            {
+                canonical["tool_calls"] = toolCalls;
+            }
+
+            var reasoning = string.Concat(reasoningParts);
+            if (!string.IsNullOrEmpty(reasoning))
+            {
+                canonical["reasoning_content"] = reasoning;
+            }
+
+            if (thinkingBlocks.Any(item => TryAsObject(item, out var block) && HasNonNullValue(block, "signature")))
+            {
+                canonical["anthropic_thinking_encrypted"] = EncodeAnthropicThinkingBlocks(thinkingBlocks);
+            }
+
+            return [canonical];
+        }
+
+        var result = new List<object?>();
+        var pendingBlocks = new List<object?>();
+        void FlushPending()
+        {
+            if (pendingBlocks.Count == 0)
+            {
+                return;
+            }
+
+            var content = AnthropicContentToChatContent(pendingBlocks);
+            if (!IsEmptyChatContent(content))
+            {
+                result.Add(Obj(("role", role), ("content", content)));
+            }
+
+            pendingBlocks.Clear();
+        }
+
+        foreach (var blockItem in blocks)
+        {
+            if (!TryAsObject(blockItem, out var block))
+            {
+                continue;
+            }
+
+            var type = GetString(block, "type") ?? string.Empty;
+            if (type is not ("tool_result" or "mcp_tool_result"))
+            {
+                pendingBlocks.Add(DeepCopy(block));
+                continue;
+            }
+
+            FlushPending();
+            var toolMessage = Obj(
+                ("role", "tool"),
+                ("tool_call_id", GetValue(block, "tool_use_id")),
+                ("content", AnthropicContentToChatContent(GetValue(block, "content") ?? string.Empty)));
+            if (HasNonNullValue(block, "is_error"))
+            {
+                toolMessage["is_error"] = GetValue(block, "is_error");
+            }
+
+            if (type == "mcp_tool_result")
+            {
+                toolMessage["native_type"] = "mcp";
+            }
+
+            result.Add(toolMessage);
+        }
+
+        FlushPending();
         return result;
     }
 
@@ -319,10 +539,12 @@ public static partial class ProtocolConverter
             }
 
             var function = ObjectValue(toolCall, "function");
+            var nativeMcp = GetString(toolCall, "native_type") == "mcp";
             content.Add(Obj(
-                ("type", "tool_use"),
+                ("type", nativeMcp ? "mcp_tool_use" : "tool_use"),
                 ("id", GetValue(toolCall, "id")),
                 ("name", GetValue(function, "name") ?? GetValue(toolCall, "name")),
+                ("server_name", nativeMcp ? GetValue(toolCall, "server_name") ?? string.Empty : null),
                 ("input", ParseJsonObject(GetValue(function, "arguments") ?? GetValue(toolCall, "arguments") ?? "{}"))));
         }
 
@@ -336,7 +558,6 @@ public static partial class ProtocolConverter
                      "include",
                      "reasoning",
                      "text",
-                     "service_tier",
                      "previous_response_id",
                      "client_metadata",
                      "parallel_tool_calls",
@@ -375,7 +596,89 @@ public static partial class ProtocolConverter
             result.Remove("max_output_tokens");
         }
 
+        if (protocol == Chat
+            && result.ContainsKey("max_completion_tokens")
+            && !result.ContainsKey("max_tokens"))
+        {
+            result["max_tokens"] = result["max_completion_tokens"];
+            result.Remove("max_completion_tokens");
+        }
+
         return result;
+    }
+
+    private static void FilterRequestParameters(Dictionary<string, object?> payload, string protocol)
+    {
+        var allowed = protocol switch
+        {
+            Responses => ResponsesRequestParameterNames,
+            Chat => ChatRequestParameterNames,
+            Messages => MessagesRequestParameterNames,
+            _ => throw new BadRequestException($"unsupported target protocol: {protocol}")
+        };
+
+        foreach (var key in payload.Keys.Where(key => !allowed.Contains(key)).ToList())
+        {
+            payload.Remove(key);
+        }
+    }
+
+    private static readonly HashSet<string> ResponsesRequestParameterNames = new(StringComparer.Ordinal)
+    {
+        "background", "context_management", "conversation", "include", "input", "instructions",
+        "max_output_tokens", "max_tool_calls", "metadata", "model", "moderation", "parallel_tool_calls",
+        "previous_response_id", "prompt", "prompt_cache_key", "prompt_cache_options", "prompt_cache_retention",
+        "reasoning", "safety_identifier", "service_tier", "store", "stream", "stream_options", "temperature",
+        "text", "tool_choice", "tools", "top_logprobs", "top_p", "truncation", "user"
+    };
+
+    private static readonly HashSet<string> ChatRequestParameterNames = new(StringComparer.Ordinal)
+    {
+        "messages", "model", "audio", "frequency_penalty", "function_call", "functions", "logit_bias",
+        "logprobs", "max_completion_tokens", "max_tokens", "metadata", "modalities", "moderation", "n",
+        "parallel_tool_calls", "prediction", "presence_penalty", "prompt_cache_key", "prompt_cache_options",
+        "prompt_cache_retention", "reasoning_effort", "response_format", "safety_identifier", "seed",
+        "service_tier", "stop", "store", "stream", "stream_options", "temperature", "tool_choice", "tools",
+        "top_logprobs", "top_p", "user", "verbosity", "web_search_options"
+    };
+
+    private static readonly HashSet<string> MessagesRequestParameterNames = new(StringComparer.Ordinal)
+    {
+        "model", "messages", "max_tokens", "cache_control", "container", "inference_geo", "metadata",
+        "output_config", "service_tier", "stop_sequences", "stream", "system", "temperature", "thinking",
+        "tool_choice", "tools", "top_k", "top_p", "mcp_servers"
+    };
+
+    private static Dictionary<string, object?> ResponsesFormatToChatResponseFormat(Dictionary<string, object?> format)
+    {
+        var type = GetString(format, "type") ?? "text";
+        if (type != "json_schema")
+        {
+            return Obj(("type", type == "json_object" ? "json_object" : "text"));
+        }
+
+        return Obj(
+            ("type", "json_schema"),
+            ("json_schema", Obj(
+                ("name", GetValue(format, "name") ?? "response"),
+                ("schema", GetValue(format, "schema") ?? new Dictionary<string, object?>()),
+                ("strict", GetValue(format, "strict") ?? true))));
+    }
+
+    private static Dictionary<string, object?> ChatResponseFormatToResponsesFormat(Dictionary<string, object?> format)
+    {
+        var type = GetString(format, "type") ?? "text";
+        if (type != "json_schema")
+        {
+            return Obj(("type", type));
+        }
+
+        var jsonSchema = ObjectValue(format, "json_schema");
+        return Obj(
+            ("type", "json_schema"),
+            ("name", GetValue(jsonSchema, "name") ?? "response"),
+            ("schema", GetValue(jsonSchema, "schema") ?? new Dictionary<string, object?>()),
+            ("strict", GetValue(jsonSchema, "strict") ?? true));
     }
 
     private static List<object?> AppendSystemInstruction(List<object?> messages, string instruction)

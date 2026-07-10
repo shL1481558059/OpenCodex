@@ -30,7 +30,8 @@ public static partial class ProtocolConverter
         "local_shell_call_output",
         "shell_call_output",
         "apply_patch_call_output",
-        "tool_result"
+        "tool_result",
+        "tool_search_output"
     ];
 
     private const string NamespaceSeparator = "__";
@@ -190,6 +191,7 @@ public static partial class ProtocolConverter
                return converted;
            }
 
+            ValidateRequestSemanticCompatibility(converted, sourceProtocol, targetProtocol);
             var canonical = ToCanonicalRequest(converted, sourceProtocol, compat);
             var result = FromCanonicalRequest(canonical, targetProtocol);
             return result;

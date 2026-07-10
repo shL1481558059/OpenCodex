@@ -15,6 +15,40 @@ public static partial class ProtocolConverter
         }
 
         var itemType = GetString(inputItem, "type");
+        if (itemType == "mcp_call")
+        {
+            var callId = GetValue(inputItem, "call_id") ?? GetValue(inputItem, "id") ?? NewId("mcp");
+            var messages = new List<object?>
+            {
+                Obj(
+                    ("role", "assistant"),
+                    ("content", string.Empty),
+                    ("tool_calls", new List<object?>
+                    {
+                        Obj(
+                            ("id", callId),
+                            ("type", "function"),
+                            ("native_type", "mcp"),
+                            ("server_name", GetValue(inputItem, "server_label")),
+                            ("function", Obj(
+                                ("name", GetValue(inputItem, "name") ?? string.Empty),
+                                ("arguments", GetValue(inputItem, "arguments") ?? "{}"))))
+                    }))
+            };
+
+            if (HasNonNullValue(inputItem, "output") || HasNonNullValue(inputItem, "error"))
+            {
+                messages.Add(Obj(
+                    ("role", "tool"),
+                    ("tool_call_id", callId),
+                    ("content", StringifyContent(GetValue(inputItem, "output") ?? GetValue(inputItem, "error") ?? string.Empty)),
+                    ("is_error", HasNonNullValue(inputItem, "error")),
+                    ("native_type", "mcp")));
+            }
+
+            return messages;
+        }
+
         if (IsResponsesToolCallLike(inputItem))
         {
             var name = ResponsesToolCallName(inputItem);
@@ -50,7 +84,14 @@ public static partial class ProtocolConverter
                 return [];
             }
 
-            var output = GetValue(inputItem, "output") ?? GetValue(inputItem, "content") ?? string.Empty;
+            var output = GetValue(inputItem, "output") ?? GetValue(inputItem, "content");
+            // tool_search_output uses a "tools" array instead of "output"/"content"
+            if (output is null && itemType == "tool_search_output")
+            {
+                output = GetValue(inputItem, "tools") ?? new List<object?>();
+                return [Obj(("role", "tool"), ("tool_call_id", callId), ("content", JsonDumps(output)))];
+            }
+            output ??= string.Empty;
             return [Obj(("role", "tool"), ("tool_call_id", callId), ("content", StringifyContent(output)))];
         }
 
@@ -118,6 +159,13 @@ public static partial class ProtocolConverter
     {
         var instructions = new List<string>();
         var inputItems = new List<object?>();
+        var nativeMcpResults = messages
+            .Where(item => TryAsObject(item, out var message)
+                && GetString(message, "role") == "tool"
+                && GetString(message, "native_type") == "mcp")
+            .Select(AsObject)
+            .Where(message => HasNonNullValue(message, "tool_call_id"))
+            .ToDictionary(message => Convert.ToString(GetValue(message, "tool_call_id"))!, message => message, StringComparer.Ordinal);
         foreach (var item in messages)
         {
             if (!TryAsObject(item, out var message))
@@ -159,6 +207,11 @@ public static partial class ProtocolConverter
 
             if (role == "tool")
             {
+                if (GetString(message, "native_type") == "mcp")
+                {
+                    continue;
+                }
+
                 inputItems.Add(Obj(
                     ("type", "function_call_output"),
                     ("call_id", GetValue(message, "tool_call_id")),
@@ -179,6 +232,26 @@ public static partial class ProtocolConverter
                 }
 
                 var function = ObjectValue(toolCall, "function");
+                if (GetString(toolCall, "native_type") == "mcp")
+                {
+                    var callId = GetValue(toolCall, "id") ?? NewId("mcp");
+                    var mcpCall = Obj(
+                        ("type", "mcp_call"),
+                        ("id", callId),
+                        ("server_label", GetValue(toolCall, "server_name") ?? string.Empty),
+                        ("name", GetValue(function, "name") ?? string.Empty),
+                        ("arguments", GetValue(function, "arguments") ?? "{}"));
+                    if (nativeMcpResults.TryGetValue(Convert.ToString(callId) ?? string.Empty, out var result))
+                    {
+                        var isError = IsTruthy(GetValue(result, "is_error"));
+                        mcpCall[isError ? "error" : "output"] = StringifyContent(GetValue(result, "content") ?? string.Empty);
+                        mcpCall["status"] = isError ? "failed" : "completed";
+                    }
+
+                    inputItems.Add(mcpCall);
+                    continue;
+                }
+
                 inputItems.Add(Obj(
                     ("type", "function_call"),
                     ("call_id", GetValue(toolCall, "id")),

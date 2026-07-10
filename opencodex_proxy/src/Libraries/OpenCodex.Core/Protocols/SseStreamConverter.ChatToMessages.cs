@@ -65,9 +65,9 @@ public static partial class SseStreamConverter
 
         // chat tool 索引 -> Anthropic block 信息
         var toolAggregates = new SortedDictionary<int, ToolCallAggregate>();
-        var toolBlockIndex = new Dictionary<int, int>();
-        var toolBlockStarted = new Dictionary<int, bool>();
-        var toolStreamedLength = new Dictionary<int, int>();
+        // Chat 允许多个 tool_calls 的 arguments delta 交错出现；Anthropic content block
+        // 一旦 stop 后不能再次追加 delta。因此保留原始片段，读取完成后按工具顺序逐块输出。
+        var toolArgumentDeltas = new Dictionary<int, List<string>>();
 
         string Emit(string eventName, Dictionary<string, object?> payload)
         {
@@ -191,6 +191,20 @@ public static partial class SseStreamConverter
             completionId = StringValue(payload, "id", completionId);
             completionCreated = GetValue(payload, "created") ?? completionCreated;
             responseModel = model ?? StringValue(payload, "model", responseModel);
+            var upstreamError = GetValue(payload, "error");
+            if (upstreamError is not null
+                || string.Equals(StringValue(payload, "type", string.Empty), "error", StringComparison.Ordinal))
+            {
+                result.UpstreamResponse = payload;
+                yield return Emit(
+                    "error",
+                    new Dictionary<string, object?>
+                    {
+                        ["error"] = upstreamError ?? payload
+                    });
+                yield break;
+            }
+
             if (TryAsObject(GetValue(payload, "usage"), out var usageObject))
             {
                 usage = usageObject;
@@ -330,66 +344,15 @@ public static partial class SseStreamConverter
                         if (arguments.Length > 0)
                         {
                             aggregate.Arguments += arguments;
-                        }
-                    }
-
-                    if (string.IsNullOrEmpty(aggregate.Id) || string.IsNullOrEmpty(aggregate.Name))
-                    {
-                        continue;
-                    }
-
-                    if (SkipToolNames?.Contains(aggregate.Name) is true)
-                    {
-                        continue;
-                    }
-
-                    // 首次见到该工具：先收尾上一个块，再开 tool_use 块
-                    if (!toolBlockStarted.TryGetValue(index, out var started) || !started)
-                    {
-                        toolBlockStarted[index] = true;
-                        toolBlockIndex[index] = AllocateBlockIndex();
-                        var openOutput = new List<string>();
-                        CloseOpenBlock(openOutput);
-                        foreach (var line in openOutput)
-                        {
-                            yield return line;
-                        }
-
-                        openBlockIndex = toolBlockIndex[index];
-                        yield return Emit(
-                            "content_block_start",
-                            new Dictionary<string, object?>
+                            if (!toolArgumentDeltas.TryGetValue(index, out var argumentDeltas))
                             {
-                                ["index"] = toolBlockIndex[index],
-                                ["content_block"] = new Dictionary<string, object?>
-                                {
-                                    ["type"] = "tool_use",
-                                    ["id"] = aggregate.Id,
-                                    ["name"] = aggregate.Name,
-                                    ["input"] = new Dictionary<string, object?>()
-                                }
-                            });
-                    }
-
-                    var streamed = toolStreamedLength.TryGetValue(index, out var s) ? s : 0;
-                    if (aggregate.Arguments.Length <= streamed)
-                    {
-                        continue;
-                    }
-
-                    var deltaText = aggregate.Arguments[streamed..];
-                    toolStreamedLength[index] = aggregate.Arguments.Length;
-                    yield return Emit(
-                        "content_block_delta",
-                        new Dictionary<string, object?>
-                        {
-                            ["index"] = toolBlockIndex[index],
-                            ["delta"] = new Dictionary<string, object?>
-                            {
-                                ["type"] = "input_json_delta",
-                                ["partial_json"] = deltaText
+                                argumentDeltas = [];
+                                toolArgumentDeltas[index] = argumentDeltas;
                             }
-                        });
+
+                            argumentDeltas.Add(arguments);
+                        }
+                    }
                 }
             }
         }
@@ -448,6 +411,58 @@ public static partial class SseStreamConverter
         foreach (var line in closingOutput)
         {
             yield return line;
+        }
+
+        // Anthropic 要求每个 content block 的 start/delta/stop 连续且不可重开。
+        // 即使 Chat 上游交错发送多个工具参数，也在这里按 tool index 输出合法的顺序块。
+        foreach (var (toolIndex, aggregate) in toolAggregates)
+        {
+            if (string.IsNullOrEmpty(aggregate.Id)
+                || string.IsNullOrEmpty(aggregate.Name)
+                || SkipToolNames?.Contains(aggregate.Name) is true)
+            {
+                continue;
+            }
+
+            var blockIndex = AllocateBlockIndex();
+            yield return Emit(
+                "content_block_start",
+                new Dictionary<string, object?>
+                {
+                    ["index"] = blockIndex,
+                    ["content_block"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "tool_use",
+                        ["id"] = aggregate.Id,
+                        ["name"] = aggregate.Name,
+                        ["input"] = new Dictionary<string, object?>()
+                    }
+                });
+
+            if (toolArgumentDeltas.TryGetValue(toolIndex, out var argumentDeltas))
+            {
+                foreach (var argumentDelta in argumentDeltas)
+                {
+                    yield return Emit(
+                        "content_block_delta",
+                        new Dictionary<string, object?>
+                        {
+                            ["index"] = blockIndex,
+                            ["delta"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "input_json_delta",
+                                ["partial_json"] = argumentDelta
+                            }
+                        });
+                }
+            }
+
+            yield return Emit(
+                "content_block_stop",
+                new Dictionary<string, object?>
+                {
+                    ["index"] = blockIndex
+                });
         }
 
         var outputTokens = ToInt(GetValue(usage, "completion_tokens"));

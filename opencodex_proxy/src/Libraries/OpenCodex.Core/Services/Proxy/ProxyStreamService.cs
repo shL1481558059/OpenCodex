@@ -188,6 +188,10 @@ public sealed class ProxyStreamService : IProxyStreamService
                // 方案A: 直接调用内部重载，消除外层 await foreach 包装
                 // 按 (入口协议, 上游协议) 派发到对应流式转换器；下游事件格式取决于入口协议。
                 IAsyncEnumerable<string> convertedLines;
+                var includeChatUsage = context.Payload.TryGetValue("stream_options", out var streamOptionsValue)
+                    && streamOptionsValue is Dictionary<string, object?> streamOptions
+                    && streamOptions.TryGetValue("include_usage", out var includeUsageValue)
+                    && includeUsageValue is true;
                 switch ((context.EntryProtocol, context.ChannelType))
                 {
                     case (ProtocolConverter.Responses, ProtocolConverter.Chat):
@@ -227,6 +231,7 @@ public sealed class ProxyStreamService : IProxyStreamService
                            visibleModel,
                            converted,
                            SkipToolNames: null,
+                           IncludeUsage: includeChatUsage,
                            context.CancellationToken);
                        break;
                    case (ProtocolConverter.Chat, ProtocolConverter.Responses):

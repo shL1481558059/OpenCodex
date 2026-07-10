@@ -51,7 +51,9 @@ public static partial class SseStreamConverter
         var usage = new Dictionary<string, object?>(StringComparer.Ordinal);
 
         var textParts = new List<string>();
+        var refusalParts = new List<string>();
         var reasoningParts = new List<string>();
+        var annotations = new List<object?>();
         var firstRoleEmitted = false;
         var nextChatToolIndex = 0;
         var toolStates = new Dictionary<int, ChatToolStreamState>();
@@ -126,12 +128,29 @@ public static partial class SseStreamConverter
                 }
 
                 var itemType = StringValue(item, "type", string.Empty);
-                if (itemType != "function_call" && itemType != "custom_tool_call")
+                if (IsNativeMcpItemType(itemType))
                 {
+                    throw new InvalidOperationException(
+                        $"Responses stream item '{itemType}' cannot be represented by Chat Completions without changing MCP execution semantics.");
+                }
+
+                if (IsServerExecutedNativeToolCallType(itemType))
+                {
+                    outputByIndex[outputIndex] = new Dictionary<string, object?>(item, StringComparer.Ordinal);
                     continue;
                 }
 
-                var toolName = StringValue(item, "name", string.Empty);
+                if (!TryGetClientToolCallInfo(item, out var toolName, out var callKind, out _))
+                {
+                    if (IsResponsesNativeToolCallType(itemType))
+                    {
+                        throw new InvalidOperationException(
+                            $"Responses native stream item '{itemType}' has no compatible Chat Completions representation.");
+                    }
+
+                    continue;
+                }
+
                 if (SkipToolNames?.Contains(toolName) is true)
                 {
                     continue;
@@ -149,7 +168,7 @@ public static partial class SseStreamConverter
                     ChatIndex = chatIndex,
                     CallId = callId,
                     Name = toolName,
-                    CallKind = ProtocolConverter.GetResponsesToolCallKind(toolName)
+                    CallKind = callKind
                 };
 
                 foreach (var line in EnsureRoleChunk())
@@ -211,6 +230,65 @@ public static partial class SseStreamConverter
                 continue;
             }
 
+            if (eventType == "response.refusal.delta" || eventType == "response.refusal.done")
+            {
+                var completeRefusal = eventType == "response.refusal.done"
+                    ? StringValue(payload, "refusal", string.Empty)
+                    : string.Empty;
+                var refusal = eventType == "response.refusal.delta"
+                    ? StringValue(payload, "delta", string.Empty)
+                    : MissingSuffix(string.Concat(refusalParts), completeRefusal);
+                if (refusal.Length == 0)
+                {
+                    continue;
+                }
+
+                foreach (var line in EnsureRoleChunk())
+                {
+                    yield return line;
+                }
+
+                refusalParts.Add(refusal);
+                yield return EmitChunk(new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["index"] = 0,
+                        ["delta"] = new Dictionary<string, object?> { ["refusal"] = refusal },
+                        ["finish_reason"] = null
+                    }
+                });
+                continue;
+            }
+
+            if (eventType == "response.output_text.annotation.added")
+            {
+                if (GetValue(payload, "annotation") is not { } annotation)
+                {
+                    continue;
+                }
+
+                foreach (var line in EnsureRoleChunk())
+                {
+                    yield return line;
+                }
+
+                annotations.Add(annotation);
+                yield return EmitChunk(new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["index"] = 0,
+                        ["delta"] = new Dictionary<string, object?>
+                        {
+                            ["annotations"] = new List<object?> { annotation }
+                        },
+                        ["finish_reason"] = null
+                    }
+                });
+                continue;
+            }
+
             if (eventType == "response.reasoning_summary_text.delta")
             {
                 var text = StringValue(payload, "delta", string.Empty);
@@ -237,7 +315,9 @@ public static partial class SseStreamConverter
                 continue;
             }
 
-            if (eventType == "response.function_call_arguments.delta")
+            if (eventType == "response.function_call_arguments.delta"
+                || eventType.EndsWith("_call.arguments.delta", StringComparison.Ordinal)
+                || eventType.EndsWith("_call_arguments.delta", StringComparison.Ordinal))
             {
                 var outputIndex = ToInt(GetValue(payload, "output_index"));
                 if (!toolStates.TryGetValue(outputIndex, out var state)
@@ -279,6 +359,7 @@ public static partial class SseStreamConverter
                         ["finish_reason"] = null
                     }
                 });
+                state.ArgumentsDeltaEmitted = true;
                 continue;
             }
 
@@ -306,6 +387,16 @@ public static partial class SseStreamConverter
                     continue;
                 }
 
+                var completedItemType = StringValue(item, "type", string.Empty);
+                if (!toolStates.ContainsKey(outputIndex)
+                    && (IsNativeMcpItemType(completedItemType)
+                        || (IsResponsesNativeToolCallType(completedItemType)
+                            && !IsServerExecutedNativeToolCallType(completedItemType))))
+                {
+                    throw new InvalidOperationException(
+                        $"Responses stream item '{completedItemType}' completed without a compatible Chat tool-call start event.");
+                }
+
                 outputByIndex[outputIndex] = new Dictionary<string, object?>(item, StringComparer.Ordinal);
 
                 // custom_tool_call：done 时把完整 input 序列化为 JSON 作为 arguments 一次性发出
@@ -313,7 +404,42 @@ public static partial class SseStreamConverter
                     && state.CallKind == ResponsesToolCallKind.CustomTool)
                 {
                     var input = GetValue(item, "input") ?? new Dictionary<string, object?>();
-                    var argumentsJson = JsonSerializer.Serialize(NormalizeJsonValueForChat(input), JsonOptions);
+                    var normalizedInput = ProtocolConverter.IsApplyPatchPublic(state.Name) && input is string patch
+                        ? new Dictionary<string, object?> { ["patch"] = patch }
+                        : input;
+                    var argumentsJson = JsonSerializer.Serialize(NormalizeJsonValueForChat(normalizedInput), JsonOptions);
+                    foreach (var line in EnsureRoleChunk())
+                    {
+                        yield return line;
+                    }
+
+                    yield return EmitChunk(new List<object?>
+                    {
+                        new Dictionary<string, object?>
+                        {
+                            ["index"] = 0,
+                            ["delta"] = new Dictionary<string, object?>
+                            {
+                                ["tool_calls"] = new List<object?>
+                                {
+                                    new Dictionary<string, object?>
+                                    {
+                                        ["index"] = state.ChatIndex,
+                                        ["function"] = new Dictionary<string, object?>
+                                        {
+                                            ["arguments"] = argumentsJson
+                                        }
+                                    }
+                                }
+                            },
+                            ["finish_reason"] = null
+                        }
+                    });
+                }
+                else if (toolStates.TryGetValue(outputIndex, out state)
+                    && !state.ArgumentsDeltaEmitted
+                    && TryGetToolArguments(item, out var argumentsJson))
+                {
                     foreach (var line in EnsureRoleChunk())
                     {
                         yield return line;
@@ -346,13 +472,16 @@ public static partial class SseStreamConverter
                 continue;
             }
 
-            if (eventType == "response.completed")
+            if (eventType == "response.completed" || eventType == "response.incomplete")
             {
                 if (TryAsObject(GetValue(payload, "response"), out var response))
                 {
                     responseId = StringValue(response, "id", responseId);
                     responseModel = model ?? StringValue(response, "model", responseModel);
-                    finishStatus = StringValue(response, "status", finishStatus);
+                    finishStatus = StringValue(
+                        response,
+                        "status",
+                        eventType == "response.incomplete" ? "incomplete" : finishStatus);
                     if (TryAsObject(GetValue(response, "usage"), out var responseUsage))
                     {
                         usage = responseUsage;
@@ -365,6 +494,16 @@ public static partial class SseStreamConverter
                         {
                             if (TryAsObject(responseOutput[i], out var doneItem))
                             {
+                                var doneItemType = StringValue(doneItem, "type", string.Empty);
+                                if ((IsNativeMcpItemType(doneItemType)
+                                        || (IsResponsesNativeToolCallType(doneItemType)
+                                            && !IsServerExecutedNativeToolCallType(doneItemType)))
+                                    && !toolStates.ContainsKey(i))
+                                {
+                                    throw new InvalidOperationException(
+                                        $"Responses terminal output item '{doneItemType}' has no compatible Chat stream representation.");
+                                }
+
                                 outputByIndex[i] = new Dictionary<string, object?>(doneItem, StringComparer.Ordinal);
                             }
                         }
@@ -372,13 +511,38 @@ public static partial class SseStreamConverter
                 }
                 break;
             }
+
+            if (eventType == "response.failed")
+            {
+                var failedResponse = TryAsObject(GetValue(payload, "response"), out var response)
+                    ? new Dictionary<string, object?>(response, StringComparer.Ordinal)
+                    : new Dictionary<string, object?>(StringComparer.Ordinal);
+                responseId = StringValue(failedResponse, "id", responseId);
+                responseModel = model ?? StringValue(failedResponse, "model", responseModel);
+                failedResponse["id"] = responseId;
+                failedResponse["object"] = "response";
+                failedResponse["status"] = "failed";
+                failedResponse["model"] = responseModel;
+                failedResponse.TryAdd("output", outputByIndex.Values.Cast<object?>().ToList());
+                failedResponse.TryAdd("usage", usage);
+                result.UpstreamResponse = failedResponse;
+
+                var error = GetValue(failedResponse, "error") ?? new Dictionary<string, object?>
+                {
+                    ["code"] = "response_failed",
+                    ["message"] = "The upstream Responses stream failed."
+                };
+                yield return $"data: {JsonSerializer.Serialize(new Dictionary<string, object?> { ["error"] = error }, JsonOptions)}\n\n";
+                yield break;
+            }
         }
 
         var combinedText = string.Concat(textParts);
         var combinedReasoning = string.Concat(reasoningParts);
 
         // 确保 output 里有 message / reasoning 项，供 ProxyStreamService 的 ConvertResponse 提取
-        if (combinedText.Length > 0 && !outputByIndex.Values.Any(o => StringValue(o, "type", string.Empty) == "message"))
+        if ((combinedText.Length > 0 || refusalParts.Count > 0)
+            && !outputByIndex.Values.Any(o => StringValue(o, "type", string.Empty) == "message"))
         {
             var msgIndex = outputByIndex.Count > 0 ? outputByIndex.Keys.Max() + 1 : 0;
             outputByIndex[msgIndex] = new Dictionary<string, object?>
@@ -387,14 +551,7 @@ public static partial class SseStreamConverter
                 ["type"] = "message",
                 ["status"] = "completed",
                 ["role"] = "assistant",
-                ["content"] = new List<object?>
-                {
-                    new Dictionary<string, object?>
-                    {
-                        ["type"] = "output_text",
-                        ["text"] = combinedText
-                    }
-                }
+                ["content"] = BuildResponsesMessageContent(combinedText, refusalParts, annotations)
             };
         }
 
@@ -434,7 +591,9 @@ public static partial class SseStreamConverter
             yield return line;
         }
 
-        var finishReason = finishStatus == "incomplete" ? "length" : "stop";
+        var finishReason = finishStatus == "incomplete"
+            ? "length"
+            : toolStates.Count > 0 ? "tool_calls" : "stop";
         yield return EmitChunk(new List<object?>
         {
             new Dictionary<string, object?>
@@ -488,6 +647,125 @@ public static partial class SseStreamConverter
 
         return value;
     }
+
+    private static string MissingSuffix(string emitted, string complete)
+        => complete.StartsWith(emitted, StringComparison.Ordinal) ? complete[emitted.Length..] : complete;
+
+    private static List<object?> BuildResponsesMessageContent(
+        string text,
+        IReadOnlyCollection<string> refusalParts,
+        IReadOnlyCollection<object?> annotations)
+    {
+        var content = new List<object?>();
+        if (text.Length > 0)
+        {
+            content.Add(new Dictionary<string, object?>
+            {
+                ["type"] = "output_text",
+                ["text"] = text,
+                ["annotations"] = annotations.ToList()
+            });
+        }
+
+        if (refusalParts.Count > 0)
+        {
+            content.Add(new Dictionary<string, object?>
+            {
+                ["type"] = "refusal",
+                ["refusal"] = string.Concat(refusalParts)
+            });
+        }
+
+        return content;
+    }
+
+    private static bool IsNativeMcpItemType(string itemType)
+        => itemType is "mcp_call" or "mcp_list_tools" or "mcp_approval_request" or "mcp_approval_response";
+
+    private static bool IsResponsesNativeToolCallType(string itemType)
+        => itemType.EndsWith("_call", StringComparison.Ordinal)
+            || itemType is "mcp_list_tools" or "mcp_approval_request" or "mcp_approval_response";
+
+    private static bool IsServerExecutedNativeToolCallType(string itemType)
+        => itemType is "web_search_call" or "file_search_call" or "code_interpreter_call" or "image_generation_call";
+
+    private static bool TryGetClientToolCallInfo(
+        Dictionary<string, object?> item,
+        out string name,
+        out ResponsesToolCallKind callKind,
+        out string argumentField)
+    {
+        var itemType = StringValue(item, "type", string.Empty);
+        name = StringValue(item, "name", string.Empty);
+        argumentField = "arguments";
+        callKind = ProtocolConverter.GetResponsesToolCallKind(name);
+        if (itemType == "function_call")
+        {
+            return name.Length > 0;
+        }
+
+        if (itemType == "custom_tool_call")
+        {
+            callKind = ResponsesToolCallKind.CustomTool;
+            argumentField = "input";
+            return name.Length > 0;
+        }
+
+        var defaultName = itemType switch
+        {
+            "tool_search_call" => "tool_search",
+            "apply_patch_call" => "apply_patch",
+            "local_shell_call" => "local_shell",
+            "shell_call" => "shell",
+            "computer_call" or "computer_use_call" => "computer_use",
+            _ => string.Empty
+        };
+        if (defaultName.Length == 0)
+        {
+            return false;
+        }
+
+        name = name.Length > 0 ? name : defaultName;
+        argumentField = itemType == "tool_search_call" ? "arguments" : "input";
+        callKind = itemType == "apply_patch_call"
+            ? ResponsesToolCallKind.CustomTool
+            : ResponsesToolCallKind.NativeTool;
+        return itemType != "tool_search_call"
+            || !item.TryGetValue("execution", out var execution)
+            || string.Equals(execution?.ToString(), "client", StringComparison.Ordinal);
+    }
+
+    private static bool TryGetToolArguments(Dictionary<string, object?> item, out string argumentsJson)
+    {
+        argumentsJson = string.Empty;
+        foreach (var key in new[] { "arguments", "input", "action" })
+        {
+            if (!item.TryGetValue(key, out var value) || value is null)
+            {
+                continue;
+            }
+
+            argumentsJson = value is string text && LooksLikeJson(text)
+                ? text
+                : JsonSerializer.Serialize(NormalizeJsonValueForChat(value), JsonOptions);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool LooksLikeJson(string value)
+    {
+        try
+        {
+            using var _ = JsonDocument.Parse(value);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
 }
 
 internal sealed class ChatToolStreamState
@@ -497,4 +775,5 @@ internal sealed class ChatToolStreamState
     public string Name { get; set; } = string.Empty;
     public ResponsesToolCallKind CallKind { get; set; } = ResponsesToolCallKind.Function;
     public StringBuilder? CustomInputBuilder { get; set; }
+    public bool ArgumentsDeltaEmitted { get; set; }
 }

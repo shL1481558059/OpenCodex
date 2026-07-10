@@ -35,6 +35,27 @@ public sealed partial class HttpUpstreamClient
             }
         }
 
+        if (string.Equals(JsonDictionaryValue.String(channel, "type"), "messages", StringComparison.Ordinal)
+            && payload.TryGetValue("mcp_servers", out var mcpServers)
+            && mcpServers is IEnumerable<object?>)
+        {
+            const string mcpBeta = "mcp-client-2025-11-20";
+            var betaValues = request.Headers.TryGetValues("anthropic-beta", out var existingValues)
+                ? existingValues
+                    .SelectMany(value => value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    .ToList()
+                : [];
+            if (!betaValues.Contains(mcpBeta, StringComparer.Ordinal))
+            {
+                betaValues.Add(mcpBeta);
+            }
+
+            request.Headers.Remove("anthropic-beta");
+            request.Headers.TryAddWithoutValidation(
+                "anthropic-beta",
+                string.Join(", ", betaValues.Distinct(StringComparer.Ordinal)));
+        }
+
         return request;
     }
 
