@@ -89,6 +89,8 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
         var statusCode = 200;
         string? error = null;
         StreamWriteMetrics? metrics = null;
+        StreamResponseCapture? responseCapture = null;
+        var captureTermination = StreamCaptureTermination.UnexpectedEnd;
 
         writer.PrepareSse();
         try
@@ -102,29 +104,36 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
             channelType = prepared.ChannelType;
             channelId = JsonDictionaryValue.String(channel, "id");
 
-            var capture = new ChannelTestStreamCapture();
+            responseCapture = new StreamResponseCapture(channelType);
             var upstreamLines = _upstreamClient.StreamJsonAsync(
                 channel,
                 compatibleRequest,
                 DefaultTimeout(),
                 cancellationToken);
-            // chat/messages 渠道的上游流式事件需要转换为 responses 协议事件，
-            // 以便 ChannelTestStreamCapture 统一提取 output_text。
+            var observedUpstreamLines = ProxyStreamService.CapturePassThroughResponse(
+                upstreamLines,
+                responseCapture,
+                cancellationToken);
+            // chat/messages 渠道的客户端输出仍转换为 responses 协议；
+            // 渠道诊断日志则由转换前的透明观察器记录原始上游响应。
             var converted = new ConvertedStreamResult();
             IAsyncEnumerable<string> observableLines = channelType switch
             {
                 ProtocolConverter.Chat => SseStreamConverter.ChatToResponsesEvents(
-                    upstreamLines, originalModel, converted, cancellationToken),
+                    observedUpstreamLines, originalModel, converted, cancellationToken),
                 ProtocolConverter.Messages => SseStreamConverter.MessagesToResponsesEvents(
-                    upstreamLines, originalModel, converted, cancellationToken),
-                _ => upstreamLines
+                    observedUpstreamLines, originalModel, converted, cancellationToken),
+                _ => observedUpstreamLines
             };
             metrics = await writer.WriteLinesAsync(
                 AppendTestCompletedEventAsync(
-                    CaptureTestStreamAsync(observableLines, capture, cancellationToken),
+                    observableLines,
                     () =>
                     {
-                        upstreamResponse = capture.UpstreamResponse ?? converted.UpstreamResponse;
+                        captureTermination = StreamCaptureTermination.Completed;
+                        upstreamResponse = responseCapture
+                            .Complete(captureTermination)
+                            .Response;
                         return BuildTestCompletedEvent(
                             started,
                             statusCode,
@@ -142,10 +151,17 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
                 static line => line.Trim().Length > 0,
                 () => ElapsedMilliseconds(started),
                 cancellationToken);
-            upstreamResponse = capture.UpstreamResponse ?? converted.UpstreamResponse;
+            captureTermination = StreamCaptureTermination.Completed;
+            upstreamResponse = responseCapture
+                .Complete(captureTermination)
+                .Response;
         }
         catch (ConfigException exception)
         {
+            captureTermination = StreamCaptureTermination.UpstreamError;
+            upstreamResponse ??= responseCapture?
+                .Complete(captureTermination)
+                .Response;
             statusCode = 400;
             error = exception.Message;
             errorResponse = BuildErrorResponse(error, "config_error");
@@ -171,10 +187,15 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
         }
         catch (ProxyException exception)
         {
+            captureTermination = StreamCaptureTermination.UpstreamError;
+            upstreamResponse ??= responseCapture?
+                .Complete(captureTermination)
+                .Response;
             statusCode = exception.StatusCode;
             error = exception.Message;
             errorResponse = exception.ToResponse();
-            if (exception is UpstreamException { Body: not null } upstream)
+            if (upstreamResponse is null
+                && exception is UpstreamException { Body: not null } upstream)
             {
                 upstreamResponse = new Dictionary<string, object?>(StringComparer.Ordinal)
                 {
@@ -202,8 +223,31 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
                     error),
                 cancellationToken);
         }
+        catch (OperationCanceledException)
+        {
+            captureTermination = StreamCaptureTermination.ClientCancelled;
+            upstreamResponse ??= responseCapture?
+                .Complete(captureTermination)
+                .Response;
+            throw;
+        }
+        catch
+        {
+            captureTermination = StreamCaptureTermination.UpstreamError;
+            upstreamResponse ??= responseCapture?
+                .Complete(captureTermination)
+                .Response;
+            throw;
+        }
         finally
         {
+            if (responseCapture is not null)
+            {
+                upstreamResponse ??= responseCapture
+                    .Complete(captureTermination)
+                    .Response;
+            }
+
             await WriteTestChannelLogAsync(
                 body,
                 user,
@@ -277,18 +321,6 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
             channelType);
     }
 
-    private static async IAsyncEnumerable<string> CaptureTestStreamAsync(
-        IAsyncEnumerable<string> lines,
-        ChannelTestStreamCapture capture,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
-    {
-        await foreach (var line in lines.WithCancellation(cancellationToken))
-        {
-            capture.Accept(line);
-            yield return line;
-        }
-    }
-
     private static async IAsyncEnumerable<string> AppendTestCompletedEventAsync(
         IAsyncEnumerable<string> lines,
         Func<object> buildData,
@@ -358,104 +390,6 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
         public string UpstreamModel { get; }
 
         public string ChannelType { get; }
-    }
-
-    private sealed class ChannelTestStreamCapture
-    {
-        private readonly List<string> _outputText = [];
-        private Dictionary<string, object?>? _response;
-        private object? _model;
-        private object? _usage;
-
-        public Dictionary<string, object?>? UpstreamResponse
-        {
-            get
-            {
-                if (_response is not null)
-                {
-                    if (_outputText.Count > 0 && !_response.ContainsKey("output_text"))
-                    {
-                        _response["output_text"] = string.Concat(_outputText);
-                    }
-
-                    return _response;
-                }
-
-                if (_model is null && _usage is null && _outputText.Count == 0)
-                {
-                    return null;
-                }
-
-                var response = new Dictionary<string, object?>(StringComparer.Ordinal);
-                if (_model is not null)
-                {
-                    response["model"] = _model;
-                }
-
-                if (_usage is not null)
-                {
-                    response["usage"] = _usage;
-                }
-
-                if (_outputText.Count > 0)
-                {
-                    response["output_text"] = string.Concat(_outputText);
-                }
-
-                return response;
-            }
-        }
-
-        public void Accept(string line)
-        {
-            if (!line.StartsWith("data:", StringComparison.Ordinal))
-            {
-                return;
-            }
-
-            var json = line["data:".Length..].Trim();
-            if (json.Length == 0 || json == "[DONE]")
-            {
-                return;
-            }
-
-            try
-            {
-                using var doc = JsonDocument.Parse(json);
-                var root = doc.RootElement;
-                if (root.ValueKind != JsonValueKind.Object)
-                {
-                    return;
-                }
-
-                CaptureObject(root);
-                var type = ProxyStreamService.TryExtractString(root, "type");
-                if (string.Equals(type, "response.output_text.delta", StringComparison.Ordinal)
-                    && ProxyStreamService.TryExtractString(root, "delta") is { Length: > 0 } delta)
-                {
-                    _outputText.Add(delta);
-                }
-
-                if (root.TryGetProperty("response", out var responseElement)
-                    && responseElement.ValueKind == JsonValueKind.Object)
-                {
-                    CaptureObject(responseElement);
-                    if (string.Equals(type, "response.completed", StringComparison.Ordinal))
-                    {
-                        _response = ProxyStreamService.FromJsonElement(responseElement) as Dictionary<string, object?>;
-                    }
-                }
-            }
-            catch (JsonException)
-            {
-            }
-        }
-
-        private void CaptureObject(JsonElement element)
-        {
-            _model ??= ProxyStreamService.TryExtractString(element, "model");
-            _usage ??= ProxyStreamService.TryExtractObject(element, "usage");
-        }
     }
 
     private static (string OriginalModel, string UpstreamModel) TestModels(

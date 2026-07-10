@@ -62,16 +62,14 @@ public static partial class SseStreamConverter
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var completionId = $"chatcmpl_{Guid.NewGuid():N}";
-        var messageId = $"msg_{Guid.NewGuid():N}";
         var responseModel = model ?? string.Empty;
         var createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var usage = new Dictionary<string, object?>(StringComparer.Ordinal);
         var stopReason = "end_turn";
 
-        var textParts = new List<string>();
-        var reasoningParts = new List<string>();
         var contentBlocks = new SortedDictionary<int, Dictionary<string, object?>>();
-        var inputJsonParts = new Dictionary<int, List<string>>();
+        var upstreamResponseAccumulator = new MessagesStreamResponseAccumulator(
+            new StreamCaptureBudget(int.MaxValue, int.MaxValue));
 
         var firstRoleEmitted = false;
         var chatToolIndexByBlock = new Dictionary<int, int>();
@@ -118,6 +116,7 @@ public static partial class SseStreamConverter
         while (await enumerator.MoveNextAsync())
         {
             var sseEvent = enumerator.Current;
+            upstreamResponseAccumulator.Accept(sseEvent);
             if (!TryAsObject(sseEvent.Data, out var payload))
             {
                 continue;
@@ -126,7 +125,7 @@ public static partial class SseStreamConverter
             var eventType = StringValue(payload, "type", sseEvent.EventName);
             if (eventType == "error")
             {
-                result.UpstreamResponse = payload;
+                result.UpstreamResponse = upstreamResponseAccumulator.BuildResponse() ?? payload;
                 var errorPayload = new Dictionary<string, object?>
                 {
                     ["error"] = GetValue(payload, "error") ?? payload
@@ -157,23 +156,7 @@ public static partial class SseStreamConverter
                     var blockType = StringValue(block, "type", string.Empty);
                     contentBlocks[index] = new Dictionary<string, object?>(block, StringComparer.Ordinal);
 
-                    if (blockType == "text")
-                    {
-                        var initialText = StringValue(block, "text", string.Empty);
-                        if (initialText.Length > 0)
-                        {
-                            textParts.Add(initialText);
-                        }
-                    }
-                    else if (blockType == "thinking")
-                    {
-                        var initialThinking = StringValue(block, "thinking", string.Empty);
-                        if (initialThinking.Length > 0)
-                        {
-                            reasoningParts.Add(initialThinking);
-                        }
-                    }
-                    else if (blockType == "tool_use")
+                    if (blockType == "tool_use")
                     {
                         var toolName = StringValue(block, "name", string.Empty);
                         if (SkipToolNames?.Contains(toolName) is true)
@@ -259,8 +242,6 @@ public static partial class SseStreamConverter
                         yield return line;
                     }
 
-                    reasoningParts.Add(thinking);
-                    block["thinking"] = $"{StringValue(block, "thinking", string.Empty)}{thinking}";
                     yield return EmitChunk(new List<object?>
                     {
                         new Dictionary<string, object?>
@@ -270,15 +251,6 @@ public static partial class SseStreamConverter
                             ["finish_reason"] = null
                         }
                     });
-                }
-                else if (deltaType == "signature_delta")
-                {
-                    // Chat 协议无签名概念，丢弃（不伪造），与非流式 ChatResponseToCanonical 行为一致。
-                    var signature = StringValue(delta, "signature", string.Empty);
-                    if (signature.Length > 0 && contentBlocks.TryGetValue(index, out var sigBlock))
-                    {
-                        sigBlock["signature"] = $"{StringValue(sigBlock, "signature", string.Empty)}{signature}";
-                    }
                 }
                 else if (deltaType == "text_delta")
                 {
@@ -293,8 +265,6 @@ public static partial class SseStreamConverter
                         yield return line;
                     }
 
-                    textParts.Add(text);
-                    block["text"] = $"{StringValue(block, "text", string.Empty)}{text}";
                     yield return EmitChunk(new List<object?>
                     {
                         new Dictionary<string, object?>
@@ -307,15 +277,7 @@ public static partial class SseStreamConverter
                 }
                 else if (deltaType == "input_json_delta")
                 {
-                    if (!inputJsonParts.TryGetValue(index, out var parts))
-                    {
-                        parts = [];
-                        inputJsonParts[index] = parts;
-                    }
-
                     var partialJson = StringValue(delta, "partial_json", string.Empty);
-                    parts.Add(partialJson);
-
                     if (partialJson.Length == 0)
                     {
                         continue;
@@ -398,30 +360,7 @@ public static partial class SseStreamConverter
             }
         }
 
-        // 工具 input 收尾：把 partial_json 拼装为对象，写入 contentBlocks 供 UpstreamResponse 使用
-        foreach (var (index, parts) in inputJsonParts)
-        {
-            if (!contentBlocks.TryGetValue(index, out var block))
-            {
-                block = new Dictionary<string, object?>(StringComparer.Ordinal) { ["type"] = "tool_use" };
-                contentBlocks[index] = block;
-            }
-
-            block["input"] = ParseJsonObject(string.Concat(parts));
-        }
-
-        var orderedBlocks = contentBlocks.Values.Cast<object?>().ToList();
-        // UpstreamResponse 取上游（Messages）格式，供 ProxyStreamService 的 ConvertResponse 转为 Chat 记录用
-        result.UpstreamResponse = new Dictionary<string, object?>
-        {
-            ["id"] = messageId,
-            ["type"] = "message",
-            ["role"] = "assistant",
-            ["model"] = responseModel,
-            ["content"] = orderedBlocks,
-            ["stop_reason"] = stopReason,
-            ["usage"] = usage
-        };
+        result.UpstreamResponse = upstreamResponseAccumulator.BuildResponse();
 
         // 即使没有内容也补一个 role chunk，保证 Chat 客户端能拿到 assistant 角色
         foreach (var line in EnsureRoleChunk())

@@ -440,6 +440,63 @@ public sealed class ProxyStreamServiceTests
     }
 
     [Fact]
+    public async Task StreamAsync_PassThrough_LogsCompleteSanitizedResponsesPayload()
+    {
+        var upstreamLines = new[]
+        {
+            "event: response.completed",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"upstream-model\",\"instructions\":\"secret instructions\",\"tools\":[{\"name\":\"secret_tool\"}],\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}],\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}",
+            "",
+            "data: [DONE]"
+        };
+        var upstream = new SequencedUpstreamClient(upstreamLines.Select(line => (line, 0)).ToArray());
+        var logs = new StubProxyLogService();
+        var service = new ProxyStreamService(upstream, logs, new StubWebSearchSimulator(false, []));
+        var writer = new CapturingProxyStreamWriter();
+        var channel = new Dictionary<string, object?>
+        {
+            ["id"] = "responses",
+            ["type"] = ProtocolConverter.Responses
+        };
+        var route = new ProxyRouteDto(
+            channel,
+            "public-model",
+            "upstream-model",
+            supportsImage: false,
+            matchedModelMapping: true);
+        var context = new ProxyStreamContext(
+            startedTimestamp: Stopwatch.GetTimestamp(),
+            requestLogId: Guid.NewGuid(),
+            requestId: "req-complete-response",
+            ownerUsername: "admin",
+            apiKeyId: Guid.NewGuid(),
+            originalPayload: new Dictionary<string, object?>(),
+            payload: new Dictionary<string, object?>(),
+            upstreamRequest: new Dictionary<string, object?>(),
+            entryProtocol: ProtocolConverter.Responses,
+            route: route,
+            channelType: ProtocolConverter.Responses,
+            channelId: "responses",
+            ownerRole: "superadmin",
+            upstreamModel: "upstream-model",
+            requestModel: "public-model",
+            defaultTimeout: 120,
+            requestMetadata: new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
+            streamWriter: writer,
+            cancellationToken: CancellationToken.None);
+
+        await service.StreamAsync(context);
+
+        Assert.Equal(upstreamLines, writer.Lines);
+        Assert.NotNull(logs.LastContext?.UpstreamResponse);
+        var response = logs.LastContext!.UpstreamResponse!;
+        Assert.Equal("resp-1", response["id"]);
+        Assert.True(response.ContainsKey("output"));
+        Assert.False(response.ContainsKey("instructions"));
+        Assert.False(response.ContainsKey("tools"));
+    }
+
+    [Fact]
     public async Task StreamAsync_ConvertedChat_CapturesUpstreamAndDownstreamDeltas()
     {
         var upstream = new SequencedUpstreamClient(
@@ -549,23 +606,17 @@ public sealed class ProxyStreamServiceTests
     }
 
     [Fact]
-    public async Task CaptureStreamUsage_ForwardsAllLines()
+    public async Task CapturePassThroughResponse_ForwardsAllLines()
     {
         var input = new[] { "event: message", "data: {}", "", "data: [DONE]" };
 
-        var capture = new ProxyStreamService.PassThroughCapture();
-        var result = new List<string>();
-        await foreach (var line in ProxyStreamService.CaptureStreamUsage(
-            ToAsyncEnumerable(input), capture, CancellationToken.None))
-        {
-            result.Add(line);
-        }
+        var (result, _) = await CapturePassThroughAsync(ProtocolConverter.Chat, input);
 
         Assert.Equal(input, result);
     }
 
     [Fact]
-    public async Task CaptureStreamUsage_ExtractsModelAndUsageFromChatSse()
+    public async Task CapturePassThroughResponse_ExtractsChatResponseAndUsage()
     {
         var lines = new[]
         {
@@ -574,23 +625,17 @@ public sealed class ProxyStreamServiceTests
             "data: [DONE]"
         };
 
-        var capture = new ProxyStreamService.PassThroughCapture();
-        var result = new List<string>();
-        await foreach (var line in ProxyStreamService.CaptureStreamUsage(
-            ToAsyncEnumerable(lines), capture, CancellationToken.None))
-        {
-            result.Add(line);
-        }
+        var (_, response) = await CapturePassThroughAsync(ProtocolConverter.Chat, lines);
 
-        Assert.NotNull(capture.UpstreamResponse);
-        Assert.Equal("gpt-4o", capture.UpstreamResponse!["model"]);
-        var usage = Assert.IsType<Dictionary<string, object?>>(capture.UpstreamResponse!["usage"]);
+        Assert.NotNull(response);
+        Assert.Equal("gpt-4o", response!["model"]);
+        var usage = Assert.IsType<Dictionary<string, object?>>(response["usage"]);
         Assert.Equal(50, Convert.ToInt32(usage["prompt_tokens"]));
         Assert.Equal(30, Convert.ToInt32(usage["completion_tokens"]));
     }
 
     [Fact]
-    public async Task CaptureStreamUsage_ExtractsModelAndUsageFromResponsesSse()
+    public async Task CapturePassThroughResponse_ExtractsResponsesModelAndUsage()
     {
         var lines = new[]
         {
@@ -600,23 +645,38 @@ public sealed class ProxyStreamServiceTests
             "data: [DONE]"
         };
 
-        var capture = new ProxyStreamService.PassThroughCapture();
-        var result = new List<string>();
-        await foreach (var line in ProxyStreamService.CaptureStreamUsage(
-            ToAsyncEnumerable(lines), capture, CancellationToken.None))
-        {
-            result.Add(line);
-        }
+        var (_, response) = await CapturePassThroughAsync(ProtocolConverter.Responses, lines);
 
-        Assert.NotNull(capture.UpstreamResponse);
-        Assert.Equal("gpt-4o", capture.UpstreamResponse!["model"]);
-        var usage = Assert.IsType<Dictionary<string, object?>>(capture.UpstreamResponse!["usage"]);
+        Assert.NotNull(response);
+        Assert.Equal("gpt-4o", response!["model"]);
+        var usage = Assert.IsType<Dictionary<string, object?>>(response["usage"]);
         Assert.Equal(100, Convert.ToInt32(usage["input_tokens"]));
         Assert.Equal(50, Convert.ToInt32(usage["output_tokens"]));
     }
 
     [Fact]
-    public async Task CaptureStreamUsage_ExtractsModelAndUsageFromMessagesSse()
+    public async Task CapturePassThroughResponse_ResponsesCompletedPreservesOutputAndExcludesRequestEcho()
+    {
+        var lines = new[]
+        {
+            "event: response.completed",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"object\":\"response\",\"model\":\"gpt-4o\",\"status\":\"completed\",\"instructions\":\"secret instructions\",\"tools\":[{\"name\":\"secret_tool\"}],\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}],\"usage\":{\"input_tokens\":100,\"output_tokens\":50,\"total_tokens\":150}}}",
+            "",
+            "data: [DONE]"
+        };
+
+        var (forwarded, response) = await CapturePassThroughAsync(ProtocolConverter.Responses, lines);
+
+        Assert.Equal(lines, forwarded);
+        Assert.NotNull(response);
+        Assert.Equal("resp-1", response!["id"]);
+        Assert.True(response.ContainsKey("output"));
+        Assert.False(response.ContainsKey("instructions"));
+        Assert.False(response.ContainsKey("tools"));
+    }
+
+    [Fact]
+    public async Task CapturePassThroughResponse_ExtractsMessagesResponseAndMergedUsage()
     {
         var lines = new[]
         {
@@ -626,22 +686,17 @@ public sealed class ProxyStreamServiceTests
             "data: [DONE]"
         };
 
-        var capture = new ProxyStreamService.PassThroughCapture();
-        var result = new List<string>();
-        await foreach (var line in ProxyStreamService.CaptureStreamUsage(
-            ToAsyncEnumerable(lines), capture, CancellationToken.None))
-        {
-            result.Add(line);
-        }
+        var (_, response) = await CapturePassThroughAsync(ProtocolConverter.Messages, lines);
 
-        Assert.NotNull(capture.UpstreamResponse);
-        Assert.Equal("claude-sonnet", capture.UpstreamResponse!["model"]);
-        var usage = Assert.IsType<Dictionary<string, object?>>(capture.UpstreamResponse!["usage"]);
+        Assert.NotNull(response);
+        Assert.Equal("claude-sonnet", response!["model"]);
+        var usage = Assert.IsType<Dictionary<string, object?>>(response["usage"]);
         Assert.Equal(200, Convert.ToInt32(usage["input_tokens"]));
+        Assert.Equal(80, Convert.ToInt32(usage["output_tokens"]));
     }
 
     [Fact]
-    public async Task CaptureStreamUsage_NullWhenNoModelOrUsage()
+    public async Task CapturePassThroughResponse_MarksMissingEnvelopeAsIncomplete()
     {
         var lines = new[]
         {
@@ -649,19 +704,15 @@ public sealed class ProxyStreamServiceTests
             "data: [DONE]"
         };
 
-        var capture = new ProxyStreamService.PassThroughCapture();
-        var result = new List<string>();
-        await foreach (var line in ProxyStreamService.CaptureStreamUsage(
-            ToAsyncEnumerable(lines), capture, CancellationToken.None))
-        {
-            result.Add(line);
-        }
+        var (_, response) = await CapturePassThroughAsync(ProtocolConverter.Responses, lines);
 
-        Assert.Null(capture.UpstreamResponse);
+        Assert.NotNull(response);
+        var metadata = Assert.IsType<Dictionary<string, object?>>(response!["_opencodex_capture"]);
+        Assert.Equal(false, metadata["completed"]);
     }
 
     [Fact]
-    public async Task CaptureStreamUsage_HandlesNonJsonDataLines()
+    public async Task CapturePassThroughResponse_HandlesNonJsonDataLines()
     {
         var lines = new[]
         {
@@ -669,20 +720,14 @@ public sealed class ProxyStreamServiceTests
             "data: {\"model\":\"gpt-4o\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}"
         };
 
-        var capture = new ProxyStreamService.PassThroughCapture();
-        var result = new List<string>();
-        await foreach (var line in ProxyStreamService.CaptureStreamUsage(
-            ToAsyncEnumerable(lines), capture, CancellationToken.None))
-        {
-            result.Add(line);
-        }
+        var (_, response) = await CapturePassThroughAsync("unknown", lines);
 
-        Assert.NotNull(capture.UpstreamResponse);
-        Assert.Equal("gpt-4o", capture.UpstreamResponse!["model"]);
+        Assert.NotNull(response);
+        Assert.Equal("gpt-4o", response!["model"]);
     }
 
     [Fact]
-    public async Task CaptureStreamUsage_ExtractsTopLevelUsageOverNested()
+    public async Task CapturePassThroughResponse_UsageOnlyFallbackUsesLatestUsage()
     {
         // A SSE chunk that has usage at both top-level and inside nested object.
         // Top-level usage should be used (first-wins, the model key is also in both places).
@@ -691,34 +736,26 @@ public sealed class ProxyStreamServiceTests
             "data: {\"model\":\"top-model\",\"usage\":{\"input_tokens\":300},\"response\":{\"model\":\"nested-model\",\"usage\":{\"input_tokens\":999}}}"
         };
 
-        var capture = new ProxyStreamService.PassThroughCapture();
-        await foreach (var _ in ProxyStreamService.CaptureStreamUsage(
-            ToAsyncEnumerable(lines), capture, CancellationToken.None))
-        {
-        }
+        var (_, response) = await CapturePassThroughAsync("unknown", lines);
 
-        Assert.NotNull(capture.UpstreamResponse);
-        // top-level model wins (first seen)
-        Assert.Equal("top-model", capture.UpstreamResponse!["model"]);
-        // top-level usage wins (first seen)
-        var usage = Assert.IsType<Dictionary<string, object?>>(capture.UpstreamResponse!["usage"]);
-        Assert.Equal(300, Convert.ToInt32(usage["input_tokens"]));
+        Assert.NotNull(response);
+        Assert.Equal("top-model", response!["model"]);
+        var usage = Assert.IsType<Dictionary<string, object?>>(response["usage"]);
+        Assert.Equal(999, Convert.ToInt32(usage["input_tokens"]));
     }
 
     [Fact]
-    public async Task CaptureStreamUsage_EmptyStreamYieldsNull()
+    public async Task CapturePassThroughResponse_EmptyStreamIsMarkedIncomplete()
     {
-        var capture = new ProxyStreamService.PassThroughCapture();
-        await foreach (var _ in ProxyStreamService.CaptureStreamUsage(
-            ToAsyncEnumerable([]), capture, CancellationToken.None))
-        {
-        }
+        var (_, response) = await CapturePassThroughAsync(ProtocolConverter.Responses, []);
 
-        Assert.Null(capture.UpstreamResponse);
+        Assert.NotNull(response);
+        var metadata = Assert.IsType<Dictionary<string, object?>>(response!["_opencodex_capture"]);
+        Assert.Equal(false, metadata["completed"]);
     }
 
     [Fact]
-    public async Task CaptureStreamUsage_ModelWithoutUsageProducesResponse()
+    public async Task CapturePassThroughResponse_ModelWithoutUsageProducesResponse()
     {
         // response.created provides model but no usage at all.
         var lines = new[]
@@ -727,16 +764,28 @@ public sealed class ProxyStreamServiceTests
             "data: [DONE]"
         };
 
-        var capture = new ProxyStreamService.PassThroughCapture();
-        await foreach (var _ in ProxyStreamService.CaptureStreamUsage(
+        var (_, response) = await CapturePassThroughAsync(ProtocolConverter.Responses, lines);
+
+        Assert.NotNull(response);
+        Assert.Equal("gpt-mini", response!["model"]);
+        var usage = Assert.IsType<Dictionary<string, object?>>(response["usage"]);
+        Assert.Empty(usage);
+    }
+
+    private static async Task<(List<string> Forwarded, Dictionary<string, object?>? Response)>
+        CapturePassThroughAsync(string protocol, IEnumerable<string> lines)
+    {
+        var capture = new StreamResponseCapture(protocol);
+        var forwarded = new List<string>();
+        await foreach (var line in ProxyStreamService.CapturePassThroughResponse(
             ToAsyncEnumerable(lines), capture, CancellationToken.None))
         {
+            forwarded.Add(line);
         }
 
-        Assert.NotNull(capture.UpstreamResponse);
-        Assert.Equal("gpt-mini", capture.UpstreamResponse!["model"]);
-        var usage = Assert.IsType<Dictionary<string, object?>>(capture.UpstreamResponse!["usage"]);
-        Assert.Empty(usage);
+        return (
+            forwarded,
+            capture.Complete(StreamCaptureTermination.Completed).Response);
     }
 
     private static async IAsyncEnumerable<string> ToAsyncEnumerable(

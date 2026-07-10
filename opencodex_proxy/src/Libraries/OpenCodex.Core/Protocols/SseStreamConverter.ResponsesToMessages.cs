@@ -66,6 +66,8 @@ public static partial class SseStreamConverter
         var toolStates = new Dictionary<int, ResponsesToMessagesToolState>();
         var outputByIndex = new SortedDictionary<int, Dictionary<string, object?>>();
         var pendingToolUseCount = 0;
+        var responseAccumulator = new ResponsesStreamResponseAccumulator(
+            new StreamCaptureBudget(int.MaxValue, int.MaxValue));
 
         string Emit(string eventName, Dictionary<string, object?> payload)
         {
@@ -164,6 +166,7 @@ public static partial class SseStreamConverter
         while (await enumerator.MoveNextAsync())
         {
             var sseEvent = enumerator.Current;
+            responseAccumulator.Accept(sseEvent);
             if (!TryAsObject(sseEvent.Data, out var payload))
             {
                 continue;
@@ -564,17 +567,20 @@ public static partial class SseStreamConverter
 
             if (eventType == "response.failed")
             {
-                var failedResponse = TryAsObject(GetValue(payload, "response"), out var response)
-                    ? new Dictionary<string, object?>(response, StringComparer.Ordinal)
-                    : new Dictionary<string, object?>(StringComparer.Ordinal);
-                responseId = StringValue(failedResponse, "id", responseId);
-                responseModel = model ?? StringValue(failedResponse, "model", responseModel);
-                failedResponse["id"] = responseId;
-                failedResponse["object"] = "response";
-                failedResponse["status"] = "failed";
-                failedResponse["model"] = responseModel;
-                failedResponse.TryAdd("output", outputByIndex.Values.Cast<object?>().ToList());
-                failedResponse.TryAdd("usage", usage);
+                var capturedFailure = responseAccumulator.BuildResponse()
+                    ?? new Dictionary<string, object?>(StringComparer.Ordinal);
+                responseId = StringValue(capturedFailure, "id", responseId);
+                responseModel = model ?? StringValue(capturedFailure, "model", responseModel);
+                var failedResponse = BuildCapturedResponsesUpstreamResponse(
+                    responseAccumulator,
+                    "response.failed",
+                    responseId,
+                    createdAt,
+                    "failed",
+                    responseModel,
+                    outputByIndex.Values,
+                    usage,
+                    preserveCapturedOutputAndUsage: true)!;
                 result.UpstreamResponse = failedResponse;
 
                 var closing = new List<string>();
@@ -637,16 +643,15 @@ public static partial class SseStreamConverter
             };
         }
 
-        result.UpstreamResponse = new Dictionary<string, object?>
-        {
-            ["id"] = responseId,
-            ["object"] = "response",
-            ["created_at"] = createdAt,
-            ["status"] = finishStatus,
-            ["model"] = responseModel,
-            ["output"] = outputByIndex.Values.Cast<object?>().ToList(),
-            ["usage"] = usage
-        };
+        result.UpstreamResponse = BuildCapturedResponsesUpstreamResponse(
+            responseAccumulator,
+            finishStatus == "incomplete" ? "response.incomplete" : "response.completed",
+            responseId,
+            createdAt,
+            finishStatus,
+            responseModel,
+            outputByIndex.Values,
+            usage);
 
         // 关闭最后一个仍打开的块
         var closingOutput = new List<string>();

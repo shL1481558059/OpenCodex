@@ -90,6 +90,8 @@ public sealed class ProxyStreamService : IProxyStreamService
         Dictionary<string, object?>? webSearchDetails = null;
         Dictionary<string, object?>? upstreamResponse = null;
         Dictionary<string, object?>? responsePayload = null;
+        StreamResponseCapture? passThroughResponseCapture = null;
+        var passThroughTermination = StreamCaptureTermination.UnexpectedEnd;
         var streamLineCaptures = new List<ProxyRequestStreamLineCapture>();
         var statusCode = ProxyHttpStatus.Ok;
         var upstreamRequest = context.UpstreamRequest;
@@ -143,22 +145,25 @@ public sealed class ProxyStreamService : IProxyStreamService
                     upstreamRequest,
                     context.DefaultTimeout,
                     context.CancellationToken);
-                var capture = new PassThroughCapture();
+                passThroughResponseCapture = new StreamResponseCapture(context.ChannelType);
                 streamWriteMetrics = await context.StreamWriter.WriteLinesAsync(
-                    CaptureStreamUsage(
+                    CapturePassThroughResponse(
                         CaptureLoggableStreamLines(
                             streamLines,
                             streamLineCaptures,
                             "upstream",
                             context.CancellationToken),
-                        capture,
+                        passThroughResponseCapture,
                         context.CancellationToken),
                     static line => line.Trim().Length > 0,
                     () => ElapsedMilliseconds(ttftStarted),
                     context.CancellationToken);
                 Console.Error.WriteLine($"[OCXP-DEBUG] [{context.RequestId}] StreamAsync: PASSTHROUGH done. ttft={streamWriteMetrics.TtftMs}ms, first_sse={streamWriteMetrics.FirstSseEventMs}ms, completed={streamWriteMetrics.CompletedEventMs}ms");
                 ttftMs = streamWriteMetrics.TtftMs;
-                upstreamResponse = capture.UpstreamResponse;
+                passThroughTermination = StreamCaptureTermination.Completed;
+                upstreamResponse = passThroughResponseCapture
+                    .Complete(passThroughTermination)
+                    .Response;
             }
             else
             {
@@ -285,16 +290,36 @@ public sealed class ProxyStreamService : IProxyStreamService
         catch (Exception exception)
         {
             error = exception.Message;
+            passThroughTermination = exception is OperationCanceledException
+                ? StreamCaptureTermination.ClientCancelled
+                : StreamCaptureTermination.UpstreamError;
+            var capturedUpstreamResponse = passThroughResponseCapture?
+                .Complete(passThroughTermination)
+                .Response;
             if (exception is ProxyException proxyException)
             {
                 statusCode = proxyException.StatusCode;
                 errorResponse = proxyException.ToResponse();
-                upstreamResponse = UpstreamErrorBody(proxyException) ?? upstreamResponse;
+                upstreamResponse = CombineCapturedAndErrorResponse(
+                    capturedUpstreamResponse,
+                    UpstreamErrorBody(proxyException))
+                    ?? upstreamResponse;
+            }
+            else
+            {
+                upstreamResponse ??= capturedUpstreamResponse;
             }
             throw;
         }
         finally
         {
+            if (passThroughResponseCapture is not null && upstreamResponse is null)
+            {
+                upstreamResponse = passThroughResponseCapture
+                    .Complete(passThroughTermination)
+                    .Response;
+            }
+
             await _logs.CompleteLogAsync(
                 context.RequestLogId,
                 new ProxyLogContext(
@@ -407,64 +432,49 @@ public sealed class ProxyStreamService : IProxyStreamService
         return null;
     }
 
-    internal sealed class PassThroughCapture
+    private static Dictionary<string, object?>? CombineCapturedAndErrorResponse(
+        Dictionary<string, object?>? captured,
+        Dictionary<string, object?>? errorResponse)
     {
-        public Dictionary<string, object?>? UpstreamResponse { get; set; }
+        if (captured is null)
+        {
+            return errorResponse;
+        }
+
+        if (errorResponse is null)
+        {
+            return captured;
+        }
+
+        var hasProtocolResponse = captured.Keys.Any(key => key != "_opencodex_capture");
+        if (!hasProtocolResponse)
+        {
+            if (captured.TryGetValue("_opencodex_capture", out var captureMetadata))
+            {
+                errorResponse["_opencodex_capture"] = captureMetadata;
+            }
+
+            return errorResponse;
+        }
+
+        foreach (var (key, value) in errorResponse)
+        {
+            captured.TryAdd(key, value);
+        }
+
+        return captured;
     }
 
-    internal static async IAsyncEnumerable<string> CaptureStreamUsage(
+    internal static async IAsyncEnumerable<string> CapturePassThroughResponse(
         IAsyncEnumerable<string> lines,
-        PassThroughCapture capture,
+        StreamResponseCapture capture,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        object? model = null;
-        object? usage = null;
         await foreach (var line in lines.WithCancellation(cancellationToken))
         {
+            capture.Accept(line);
             yield return line;
-            if (!line.StartsWith("data:", StringComparison.Ordinal))
-            {
-                continue;
-            }
-            var json = line["data:".Length..].TrimStart();
-            if (json.Length == 0 || json == "[DONE]")
-            {
-                continue;
-            }
-            try
-            {
-                using var doc = JsonDocument.Parse(json);
-                var root = doc.RootElement;
-                if (root.ValueKind != JsonValueKind.Object)
-                {
-                    continue;
-                }
-                model ??= TryExtractString(root, "model");
-                usage ??= TryExtractObject(root, "usage");
-                if (root.TryGetProperty("response", out var responseEl)
-                    && responseEl.ValueKind == JsonValueKind.Object)
-                {
-                    model ??= TryExtractString(responseEl, "model");
-                    usage ??= TryExtractObject(responseEl, "usage");
-                }
-                if (root.TryGetProperty("message", out var messageEl)
-                    && messageEl.ValueKind == JsonValueKind.Object)
-                {
-                    model ??= TryExtractString(messageEl, "model");
-                    usage ??= TryExtractObject(messageEl, "usage");
-                }
-            }
-            catch (JsonException)
-            {
-            }
         }
-        capture.UpstreamResponse = model is null && usage is null
-            ? null
-            : new Dictionary<string, object?>(StringComparer.Ordinal)
-            {
-                ["model"] = model,
-                ["usage"] = usage ?? new Dictionary<string, object?>()
-            };
     }
 
     internal static IAsyncEnumerable<string> CaptureRawStreamLines(
