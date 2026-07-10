@@ -104,6 +104,7 @@ public static class OpenCodexServiceCollectionExtensions
         });
 
         services.AddHttpClient<IUpstreamClient, HttpUpstreamClient>()
+            .ConfigureHttpClient(client => client.Timeout = Timeout.InfiniteTimeSpan)
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {
                 PooledConnectionLifetime = TimeSpan.FromMinutes(15),
@@ -113,6 +114,7 @@ public static class OpenCodexServiceCollectionExtensions
             });
         
         services.AddHttpClient<IUpstreamModelClient, HttpUpstreamClient>()
+            .ConfigureHttpClient(client => client.Timeout = Timeout.InfiniteTimeSpan)
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {
                 PooledConnectionLifetime = TimeSpan.FromMinutes(15),
