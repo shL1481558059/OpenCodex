@@ -7,7 +7,11 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+};
 use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
     ShellExt,
@@ -63,15 +67,70 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .manage(BackendState::default())
         .invoke_handler(tauri::generate_handler![restart_backend])
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             let handle = app.handle().clone();
             let state = app.state::<BackendState>();
             let settings = start_backend(&handle, state.inner())?;
             open_admin_window(&handle, settings.port)?;
+            setup_tray(&handle)?;
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("failed to run OpenCodex desktop");
+}
+
+fn setup_tray(app: &AppHandle) -> Result<(), String> {
+    let open_item = MenuItem::with_id(app, "open", "打开 OpenCodex", true, None::<&str>)
+        .map_err(|error| error.to_string())?;
+    let quit_item = MenuItem::with_id(app, "quit", "退出 OpenCodex", true, None::<&str>)
+        .map_err(|error| error.to_string())?;
+    let menu = Menu::with_items(app, &[&open_item, &quit_item]).map_err(|error| error.to_string())?;
+
+    let mut tray = TrayIconBuilder::new()
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "open" => show_main_window(app),
+            "quit" => {
+                let state = app.state::<BackendState>();
+                stop_backend(state.inner());
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+
+    tray.build(app).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
 }
 
 fn start_backend(app: &AppHandle, state: &BackendState) -> Result<DesktopSettings, String> {
