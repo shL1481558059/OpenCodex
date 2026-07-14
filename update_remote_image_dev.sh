@@ -64,7 +64,8 @@ echo
 echo "Building and pushing $IMAGE_NAME for $DOCKER_PLATFORM"
 (
   cd "$ROOT_DIR"
-  docker buildx build --progress=plain --platform "$DOCKER_PLATFORM" -t "$IMAGE_NAME" --push .
+  docker buildx build --progress=plain --platform "$DOCKER_PLATFORM" -t "$IMAGE_NAME" .
+  docker push "$IMAGE_NAME"
 )
 echo
 
