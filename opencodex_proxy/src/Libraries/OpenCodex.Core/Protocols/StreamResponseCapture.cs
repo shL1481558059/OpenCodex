@@ -57,6 +57,8 @@ internal sealed class StreamResponseCapture
         };
     }
 
+    internal bool IsComplete => !_observerFailed && _accumulator.IsComplete;
+
     public void Accept(string chunk)
     {
         if (_observerFailed)

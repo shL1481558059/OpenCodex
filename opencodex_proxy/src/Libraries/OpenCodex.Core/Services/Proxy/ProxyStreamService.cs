@@ -474,6 +474,10 @@ public sealed class ProxyStreamService : IProxyStreamService
         {
             capture.Accept(line);
             yield return line;
+            if (capture.IsComplete)
+            {
+                yield break;
+            }
         }
     }
 
