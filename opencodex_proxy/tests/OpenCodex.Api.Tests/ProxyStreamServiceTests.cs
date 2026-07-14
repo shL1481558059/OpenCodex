@@ -487,7 +487,7 @@ public sealed class ProxyStreamServiceTests
 
         await service.StreamAsync(context);
 
-        Assert.Equal(upstreamLines, writer.Lines);
+        Assert.Equal(upstreamLines[..3], writer.Lines);
         Assert.NotNull(logs.LastContext?.UpstreamResponse);
         var response = logs.LastContext!.UpstreamResponse!;
         Assert.Equal("resp-1", response["id"]);
@@ -667,12 +667,36 @@ public sealed class ProxyStreamServiceTests
 
         var (forwarded, response) = await CapturePassThroughAsync(ProtocolConverter.Responses, lines);
 
-        Assert.Equal(lines, forwarded);
+        Assert.Equal(lines[..3], forwarded);
         Assert.NotNull(response);
         Assert.Equal("resp-1", response!["id"]);
         Assert.True(response.ContainsKey("output"));
         Assert.False(response.ContainsKey("instructions"));
         Assert.False(response.ContainsKey("tools"));
+    }
+
+    [Fact]
+    public async Task CapturePassThroughResponse_StopsAfterResponsesTerminalEventWhenUpstreamStaysOpen()
+    {
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        var capture = new StreamResponseCapture(ProtocolConverter.Responses);
+        var forwarded = new List<string>();
+
+        await foreach (var line in ProxyStreamService.CapturePassThroughResponse(
+            CompletedResponseThenWait(cancellation.Token),
+            capture,
+            cancellation.Token))
+        {
+            forwarded.Add(line);
+        }
+
+        Assert.Equal(3, forwarded.Count);
+        Assert.Equal("event: response.completed", forwarded[0]);
+        Assert.StartsWith("data: {\"type\":\"response.completed\"", forwarded[1], StringComparison.Ordinal);
+        Assert.Equal(string.Empty, forwarded[2]);
+        var response = capture.Complete(StreamCaptureTermination.Completed).Response;
+        Assert.NotNull(response);
+        Assert.Equal("resp-terminal", response!["id"]);
     }
 
     [Fact]
@@ -796,6 +820,15 @@ public sealed class ProxyStreamServiceTests
             yield return line;
             await Task.Yield();
         }
+    }
+
+    private static async IAsyncEnumerable<string> CompletedResponseThenWait(
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        yield return "event: response.completed";
+        yield return "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-terminal\",\"model\":\"gpt-5\",\"status\":\"completed\"}}";
+        yield return string.Empty;
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
     }
 
     private sealed class CapturingProxyStreamWriter : IProxyStreamWriter
