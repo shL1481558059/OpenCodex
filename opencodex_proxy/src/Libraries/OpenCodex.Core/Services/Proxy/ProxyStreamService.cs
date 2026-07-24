@@ -172,7 +172,8 @@ public sealed class ProxyStreamService : IProxyStreamService
                 {
                     TextFormat = ProtocolConverter.ExtractTextFormat(context.OriginalPayload),
                     ToolCallMappings = context.EntryProtocol == ProtocolConverter.Responses
-                        && context.ChannelType == ProtocolConverter.Chat
+                        && (context.ChannelType == ProtocolConverter.Chat
+                            || context.ChannelType == ProtocolConverter.Messages)
                         ? ProtocolConverter.BuildResponsesToolCallMappings(context.Payload)
                         : null
                 };

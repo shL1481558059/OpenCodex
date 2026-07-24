@@ -37,7 +37,8 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
        string? error = null;
         var textFormat = ProtocolConverter.ExtractTextFormat(context.OriginalPayload);
         var toolCallMappings = context.EntryProtocol == ProtocolConverter.Responses
-            && context.ChannelType == ProtocolConverter.Chat
+            && (context.ChannelType == ProtocolConverter.Chat
+                || context.ChannelType == ProtocolConverter.Messages)
             ? ProtocolConverter.BuildResponsesToolCallMappings(context.Payload)
             : null;
 

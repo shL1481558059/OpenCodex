@@ -89,6 +89,84 @@ public sealed class ProxyVisionRoutingTests
         Assert.Contains("compat has unsupported field(s): fallback_thinking_on_tool_use", exception.Message);
     }
 
+    [Theory]
+    [InlineData("openai")]
+    [InlineData("xai")]
+    public void ValidateImagesChannel_AcceptsSupportedDialect(string dialect)
+    {
+        var channel = ChannelConfig("images", "admin", [ModelConfig("image-model", "image-upstream")]);
+        channel["type"] = "images";
+        channel["retry_count"] = 0;
+        channel["compat"] = new Dictionary<string, object?> { ["images_api_dialect"] = dialect };
+
+        ConfigValidator.Validate(new Dictionary<string, object?>
+        {
+            ["channels"] = new List<object?> { channel }
+        });
+    }
+
+    [Fact]
+    public void ValidateImagesChannel_RequiresDialectAndZeroRetries()
+    {
+        var missingDialect = ChannelConfig("images", "admin", [ModelConfig("image-model", "image-upstream")]);
+        missingDialect["type"] = "images";
+        missingDialect["retry_count"] = 0;
+        var dialectException = Assert.Throws<ConfigException>(() => ConfigValidator.Validate(
+            new Dictionary<string, object?> { ["channels"] = new List<object?> { missingDialect } }));
+        Assert.Contains("compat.images_api_dialect is required", dialectException.Message);
+
+        var retrying = ChannelConfig("images", "admin", [ModelConfig("image-model", "image-upstream")]);
+        retrying["type"] = "images";
+        retrying["retry_count"] = 1;
+        retrying["compat"] = new Dictionary<string, object?> { ["images_api_dialect"] = "openai" };
+        var retryException = Assert.Throws<ConfigException>(() => ConfigValidator.Validate(
+            new Dictionary<string, object?> { ["channels"] = new List<object?> { retrying } }));
+        Assert.Contains("retry_count must be 0", retryException.Message);
+
+        var invalidDialect = ChannelConfig("images-invalid", "admin", [ModelConfig("image-model", "image-upstream")]);
+        invalidDialect["type"] = "images";
+        invalidDialect["retry_count"] = 0;
+        invalidDialect["compat"] = new Dictionary<string, object?> { ["images_api_dialect"] = "unknown" };
+        var invalidDialectException = Assert.Throws<ConfigException>(() => ConfigValidator.Validate(
+            new Dictionary<string, object?> { ["channels"] = new List<object?> { invalidDialect } }));
+        Assert.Contains("must be one of", invalidDialectException.Message);
+    }
+
+    [Fact]
+    public void ValidateImagesDialect_RejectsNonImagesChannelAndMissingModelMapping()
+    {
+        var chat = ChannelConfig("chat", "admin", []);
+        chat["compat"] = new Dictionary<string, object?> { ["images_api_dialect"] = "openai" };
+        var chatException = Assert.Throws<ConfigException>(() => ConfigValidator.Validate(
+            new Dictionary<string, object?> { ["channels"] = new List<object?> { chat } }));
+        Assert.Contains("only supported for images channels", chatException.Message);
+
+        var images = ChannelConfig("images", "admin", []);
+        images["type"] = "images";
+        images["retry_count"] = 0;
+        images["compat"] = new Dictionary<string, object?> { ["images_api_dialect"] = "openai" };
+        var mappingException = Assert.Throws<ConfigException>(() => ConfigValidator.Validate(
+            new Dictionary<string, object?> { ["channels"] = new List<object?> { images } }));
+        Assert.Contains("at least one model mapping", mappingException.Message);
+    }
+
+    [Fact]
+    public async Task ListRouteCandidates_AllowedTypesFilterRunsBeforeUnmappedFallback()
+    {
+        var service = CreateRouteService(
+            ChannelEntity("admin", "chat-first", 0, [], type: ProtocolConverter.Chat),
+            ChannelEntity("admin", "images-second", 1, [], type: "images"));
+
+        var routes = await service.ListRouteCandidatesAsync(
+            "admin",
+            "image-model",
+            requestContainsImages: false,
+            allowedChannelTypes: new HashSet<string>(StringComparer.Ordinal) { "images" });
+
+        var route = Assert.Single(routes);
+        Assert.Equal("images-second", route.Channel["name"]);
+    }
+
     [Fact]
     public async Task ChooseRoute_ImageInput_KeepsOriginalTextModel()
     {
@@ -386,7 +464,8 @@ context.Channels.AddRange(channels);
         int position,
         IReadOnlyList<object?> models,
         int? priority = null,
-        int? capacity = null)
+        int? capacity = null,
+        string? type = null)
     {
         return new Channel
         {
@@ -396,7 +475,7 @@ context.Channels.AddRange(channels);
             Priority = priority ?? position,
             Capacity = capacity ?? 3,
             Name = id,
-            Type = ProtocolConverter.Chat,
+            Type = type ?? ProtocolConverter.Chat,
             BaseUrl = "https://example.test/v1",
             ApiKey = "secret",
             AuthMode = "config",

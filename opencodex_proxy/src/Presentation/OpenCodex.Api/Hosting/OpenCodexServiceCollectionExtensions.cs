@@ -133,6 +133,7 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddSingleton<IOpenCodexRuntimeSettingsProvider, OpenCodexRuntimeSettingsProvider>();
         services.AddSingleton<IDesktopSystemSettingsStore, DesktopSystemSettingsStore>();
         services.AddScoped<IRequestBodyReader, RequestBodyReader>();
+        services.AddScoped<IImageEditRequestReader, ImageEditRequestReader>();
         services.AddScoped<IWorkContext, WebWorkContext>();
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<IChannelDiagnosticsService, ChannelDiagnosticsService>();

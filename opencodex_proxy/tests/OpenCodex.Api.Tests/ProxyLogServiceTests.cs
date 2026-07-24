@@ -79,6 +79,111 @@ public sealed class ProxyLogServiceTests
     }
 
     [Fact]
+    public async Task WriteLog_RedactsNestedImageDataInObjectsAndArrays()
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["input"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["content"] = new List<object?>
+                    {
+                        new Dictionary<string, object?>
+                        {
+                            ["image_url"] = "data:image/png;base64,request-secret"
+                        }
+                    }
+                }
+            },
+            ["nested"] = new Dictionary<string, object?> { ["b64_json"] = "request-b64-secret" }
+        };
+
+        var detail = await WriteImageLogAsync(payload: payload);
+
+        Assert.DoesNotContain("request-secret", detail.RequestBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("request-b64-secret", detail.RequestBody, StringComparison.Ordinal);
+        Assert.Contains("***IMAGE_DATA_REDACTED***", detail.RequestBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task WriteLog_RedactsImageDataInUpstreamErrorResponse()
+    {
+        var errorResponse = new Dictionary<string, object?>
+        {
+            ["error"] = new Dictionary<string, object?>
+            {
+                ["preview"] = "data:image/jpeg;base64,error-secret",
+                ["details"] = new List<object?>
+                {
+                    new Dictionary<string, object?> { ["b64_json"] = "error-b64-secret" }
+                }
+            }
+        };
+
+        var detail = await WriteImageLogAsync(errorResponse: errorResponse, statusCode: 502, error: "upstream failed");
+
+        Assert.DoesNotContain("error-secret", detail.ResponseBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("error-b64-secret", detail.ResponseBody, StringComparison.Ordinal);
+        Assert.Contains("***IMAGE_DATA_REDACTED***", detail.ResponseBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task WriteLog_DoesNotModifyClientResponseWhileSanitizingStoredLog()
+    {
+        var responsePayload = new Dictionary<string, object?>
+        {
+            ["data"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["b64_json"] = "client-b64-secret",
+                    ["url"] = "data:image/webp;base64,client-data-secret"
+                }
+            }
+        };
+
+        var detail = await WriteImageLogAsync(responsePayload: responsePayload);
+
+        var originalItem = Assert.IsType<Dictionary<string, object?>>(
+            Assert.Single(Assert.IsType<List<object?>>(responsePayload["data"])));
+        Assert.Equal("client-b64-secret", originalItem["b64_json"]);
+        Assert.Equal("data:image/webp;base64,client-data-secret", originalItem["url"]);
+        Assert.DoesNotContain("client-b64-secret", detail.ResponseBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("client-data-secret", detail.ResponseBody, StringComparison.Ordinal);
+        Assert.Contains("***IMAGE_DATA_REDACTED***", detail.ResponseBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task WriteLog_DoesNotRetainLongBase64SentinelOrMutateSource()
+    {
+        var sentinel = new string('Z', 128 * 1024);
+        var dataUri = $"data:image/png;base64,{sentinel}";
+        var payload = new Dictionary<string, object?> { ["image_url"] = dataUri };
+
+        var detail = await WriteImageLogAsync(payload: payload);
+
+        Assert.Equal(dataUri, payload["image_url"]);
+        Assert.DoesNotContain(sentinel, detail.RequestBody, StringComparison.Ordinal);
+        Assert.Contains("***IMAGE_DATA_REDACTED***", detail.RequestBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task WriteLog_ReplacesBinaryValuesWithoutEnumeratingThem()
+    {
+        var bytes = new byte[] { 1, 2, 3, 4 };
+        using var stream = new MemoryStream(new byte[] { 5, 6, 7 });
+        var payload = new Dictionary<string, object?> { ["bytes"] = bytes, ["stream"] = stream };
+
+        var detail = await WriteImageLogAsync(payload: payload);
+
+        Assert.Contains("***BINARY_DATA_REDACTED*** (4 bytes)", detail.RequestBody, StringComparison.Ordinal);
+        Assert.Contains("***BINARY_DATA_REDACTED*** (MemoryStream)", detail.RequestBody, StringComparison.Ordinal);
+        Assert.Same(bytes, payload["bytes"]);
+        Assert.Same(stream, payload["stream"]);
+    }
+
+    [Fact]
     public async Task WriteLog_PersistsStreamTimingsJson()
     {
         var dbPath = Path.Combine(
@@ -303,6 +408,51 @@ var completed = context.RequestLogs
             new EfRepository<RequestLogDetail>(context),
             new EfRepository<RequestLogStreamLine>(context),
             new EfRepository<User>(context));
+    }
+
+    private static async Task<RequestLogDetail> WriteImageLogAsync(
+        Dictionary<string, object?>? payload = null,
+        Dictionary<string, object?>? responsePayload = null,
+        object? errorResponse = null,
+        int statusCode = 200,
+        string? error = null)
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-proxy-log-tests", $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        using (var bootstrap = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            bootstrap.Database.Migrate();
+        }
+
+        EnsureAdminUser(dbPath);
+        var service = CreateService(dbPath);
+        await service.WriteLogAsync(new ProxyRequestLogContext(
+            requestId: $"req-image-log-{Guid.NewGuid():N}",
+            ownerUsername: "admin",
+            apiKeyId: null,
+            payload: payload ?? new Dictionary<string, object?>(),
+            upstreamRequest: new Dictionary<string, object?>(),
+            upstreamResponse: new Dictionary<string, object?>(),
+            responsePayload: responsePayload,
+            errorResponse: errorResponse,
+            requestModel: "gpt-image-1",
+            upstreamModel: "gpt-image-1",
+            channelId: TestChannelId.ToString(),
+            channelType: "images",
+            isStream: false,
+            ttftMs: null,
+            statusCode: statusCode,
+            durationMs: 1,
+            error: error,
+            webSearchDetails: null,
+            method: "POST",
+            path: "/v1/images/generations",
+            clientIp: "127.0.0.1",
+            requestHeaders: new Dictionary<string, string>()));
+
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        context.Database.Migrate();
+        return context.RequestLogDetails.AsNoTracking().Single();
     }
 
     private sealed class TestWorkContext : IWorkContext

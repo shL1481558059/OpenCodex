@@ -8,7 +8,8 @@ public static class OpenCodexConfig
     {
         "responses",
         "chat",
-        "messages"
+        "messages",
+        "images"
     };
 
     public static readonly HashSet<string> AuthModes = new(StringComparer.Ordinal)
@@ -31,6 +32,13 @@ public static class OpenCodexConfig
         "drop_tool_types",
         "force_params",
         "default_params",
-        "unsupported_params"
+        "unsupported_params",
+        "images_api_dialect"
+    };
+
+    public static readonly HashSet<string> ImagesApiDialects = new(StringComparer.Ordinal)
+    {
+        "openai",
+        "xai"
     };
 }

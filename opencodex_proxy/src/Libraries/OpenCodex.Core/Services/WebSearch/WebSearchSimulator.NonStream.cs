@@ -26,7 +26,7 @@ public sealed partial class WebSearchSimulator
         var webExecuted = 0;
         var maxIterations = Math.Max(webLimit + 3, 3);
         Dictionary<string, object?> upstreamResponse = [];
-        var toolCallMappings = protocol == ProtocolConverter.Chat
+        var toolCallMappings = protocol == ProtocolConverter.Chat || protocol == ProtocolConverter.Messages
             ? ProtocolConverter.BuildResponsesToolCallMappings(payload)
             : null;
 

@@ -14,7 +14,7 @@ public static partial class ProtocolConverter
         {
             Responses => ResponsesResponseToCanonical(payload, originalModel),
             Chat => ChatResponseToCanonical(payload, originalModel, toolCallMappings),
-            Messages => MessagesResponseToCanonical(payload, originalModel),
+            Messages => MessagesResponseToCanonical(payload, originalModel, toolCallMappings),
             _ => throw new BadRequestException($"unsupported upstream protocol: {protocol}")
         };
     }
@@ -191,7 +191,8 @@ public static partial class ProtocolConverter
 
     private static Dictionary<string, object?> MessagesResponseToCanonical(
         Dictionary<string, object?> payload,
-        string? originalModel)
+        string? originalModel,
+        IReadOnlyDictionary<string, ResponsesToolCallMapping>? toolCallMappings = null)
     {
         var textParts = new List<string>();
         var reasoningParts = new List<string>();
@@ -234,14 +235,33 @@ public static partial class ProtocolConverter
             }
             else if (blockType is "tool_use" or "mcp_tool_use")
             {
+                var toolName = GetValue(block, "name");
                 var call = Obj(
                     ("id", GetValue(block, "id") ?? NewId("call")),
-                    ("name", GetValue(block, "name")),
+                    ("name", toolName),
                     ("arguments", JsonDumps(GetValue(block, "input") ?? new Dictionary<string, object?>())));
                 if (blockType == "mcp_tool_use")
                 {
                     call["native_type"] = "mcp";
                     call["server_name"] = GetValue(block, "server_name");
+                }
+                else
+                {
+                    var shape = ResolveResponsesToolCallShape(toolName, toolCallMappings);
+                    if (shape.Kind != ResponsesToolCallKind.Function)
+                    {
+                        call["native_type"] = shape.Kind == ResponsesToolCallKind.CustomTool
+                            ? "custom"
+                            : shape.ItemType == "custom_tool_call"
+                                ? "custom"
+                                : shape.ItemType.EndsWith("_call", StringComparison.Ordinal)
+                                    ? shape.ItemType[..^"_call".Length]
+                                    : shape.ItemType;
+                        if (!string.IsNullOrEmpty(shape.Namespace))
+                        {
+                            call["namespace"] = shape.Namespace;
+                        }
+                    }
                 }
 
                 toolCalls.Add(call);

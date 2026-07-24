@@ -7,9 +7,13 @@
       </div>
       <div class="toolbar-actions">
         <el-button :icon="Refresh" @click="loadConfig">刷新</el-button>
-        <el-button :icon="Connection" :disabled="selectedChannels.length === 0" @click="openBulkChannelTest">
-          批量测试
-        </el-button>
+        <el-tooltip :content="bulkChannelTestDisabledReason" :disabled="!bulkChannelTestDisabledReason">
+          <span>
+            <el-button :icon="Connection" :disabled="Boolean(bulkChannelTestDisabledReason)" @click="openBulkChannelTest">
+              批量测试
+            </el-button>
+          </span>
+        </el-tooltip>
         <el-button :icon="Edit" :disabled="selectedChannels.length === 0" @click="openBulkChannelEdit">
           批量编辑
         </el-button>
@@ -112,8 +116,9 @@
                     </el-button>
                     <template #dropdown>
                       <el-dropdown-menu>
-                        <el-dropdown-item @click="openChannelTest(row)">
+                        <el-dropdown-item :disabled="!canUseChatStreamTest(row)" @click="openChannelTest(row)">
                           <el-icon><Connection /></el-icon>测试连接
+                          <span v-if="isImagesChannel(row)">（图片渠道不支持聊天流测试）</span>
                         </el-dropdown-item>
                         <el-dropdown-item @click="openChannelPricing(row)">
                           <el-icon><Edit /></el-icon>定价管理
@@ -243,8 +248,9 @@
                             </el-button>
                             <template #dropdown>
                               <el-dropdown-menu>
-                                <el-dropdown-item @click="openChannelTest(row)">
+                                <el-dropdown-item :disabled="!canUseChatStreamTest(row)" @click="openChannelTest(row)">
                                   <el-icon><Connection /></el-icon>测试连接
+                                  <span v-if="isImagesChannel(row)">（图片渠道不支持聊天流测试）</span>
                                 </el-dropdown-item>
                                 <el-dropdown-item @click="openChannelPricing(row)">
                                   <el-icon><Edit /></el-icon>定价管理
@@ -334,11 +340,23 @@
           </el-col>
           <el-col :span="12">
             <el-form-item label="服务类型">
-              <el-select v-model="channelDraft.type" class="full-width">
+              <el-select v-model="channelDraft.type" class="full-width" @change="handleChannelTypeChange">
                 <el-option label="responses" value="responses" />
                 <el-option label="chat" value="chat" />
                 <el-option label="messages" value="messages" />
+                <el-option label="images" value="images" />
               </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col v-if="isImagesChannel(channelDraft)" :span="12">
+            <el-form-item label="图片 API 方言">
+              <el-select v-model="compatTexts.images_api_dialect" class="full-width">
+                <el-option label="OpenAI Images API" value="openai" />
+                <el-option label="xAI Images API" value="xai" />
+              </el-select>
+              <div class="text-muted" style="margin-top: 4px; font-size: 12px">
+                首版 generation / edit 均使用非流式请求
+              </div>
             </el-form-item>
           </el-col>
           <el-col :span="12">
@@ -385,8 +403,12 @@
                 :min="0"
                 :step="1"
                 step-strictly
+                :disabled="isImagesChannel(channelDraft)"
                 class="full-width"
               />
+              <div v-if="isImagesChannel(channelDraft)" class="text-muted" style="margin-top: 4px; font-size: 12px">
+                图片 generation / edit 不自动重试，固定为 0
+              </div>
             </el-form-item>
           </el-col>
           <el-col :span="12">
@@ -472,7 +494,7 @@
               <el-input v-model="compatTexts.drop_params" type="textarea" :rows="4" placeholder="每行一个参数" />
             </el-form-item>
           </el-col>
-          <el-col :span="12">
+          <el-col v-if="!isImagesChannel(channelDraft)" :span="12">
             <el-form-item>
               <template #label>
                 <span class="form-label-with-tip">
@@ -851,10 +873,10 @@
           />
         </div>
         <div class="bulk-edit-row">
-          <el-checkbox v-model="bulkEditFields.retry_count">重试次数</el-checkbox>
+          <el-checkbox v-model="bulkEditFields.retry_count" :disabled="selectedChannelsContainImages">重试次数</el-checkbox>
           <el-input-number
             v-model="bulkEditDraft.retry_count"
-            :disabled="!bulkEditFields.retry_count"
+            :disabled="selectedChannelsContainImages || !bulkEditFields.retry_count"
             :min="0"
             :step="1"
             step-strictly
@@ -1092,6 +1114,12 @@ import {
   getChannelTestAlertType
 } from "./channelTestState.js";
 import {
+  applyChannelTypeContract,
+  buildImagesCompat,
+  canUseChatStreamTest,
+  isImagesChannel
+} from "./channelImagesState.js";
+import {
   Connection,
   Delete,
   Download,
@@ -1124,7 +1152,8 @@ const compatTexts = reactive({
   drop_tool_types: "",
   force_params: "",
   default_params: "",
-  unsupported_params: ""
+  unsupported_params: "",
+  images_api_dialect: "openai"
 });
 
 const testResult = ref(null);
@@ -1178,6 +1207,13 @@ const bulkTestAbortControllers = new Set();
 
 const channels = computed(() => config.channels || []);
 const enabledChannelCount = computed(() => channels.value.filter((c) => c.enabled !== false).length);
+const selectedChannelsContainImages = computed(() => selectedChannels.value.some(isImagesChannel));
+const bulkChannelTestDisabledReason = computed(() => {
+  if (selectedChannels.value.length === 0) return "请先选择渠道";
+  return selectedChannels.value.some(isImagesChannel)
+    ? "图片渠道使用 generation / edit 非流式接口，不能使用聊天流批量测试"
+    : "";
+});
 const groupedChannelSections = computed(() => buildGroupedChannelSections(channels.value));
 const channelTestModelOptions = computed(() => normalizeModels(testingChannel.value?.models).map((item) => item.model));
 const existingDiscoveredModelNames = computed(() => {
@@ -1324,10 +1360,15 @@ async function openChannelDrawer(channel = null, index = -1) {
   assignChannelDraft(draftSource);
   headersText.value = formatJson(draftSource.headers || {});
   assignCompat(draftSource.compat || {});
+  handleChannelTypeChange();
   channelDrawerVisible.value = true;
 }
 
 function openChannelTest(channel) {
+  if (!canUseChatStreamTest(channel)) {
+    ElMessage.warning("图片渠道使用 generation / edit 非流式接口，不能使用聊天流测试");
+    return;
+  }
   testingChannel.value = channel;
   channelTestForm.model = normalizeModels(channel.models)[0]?.model || "";
   channelTestForm.prompt = "你好";
@@ -1395,6 +1436,10 @@ async function applyBulkChannelEdit() {
 }
 
 function openBulkChannelTest() {
+  if (selectedChannels.value.some(isImagesChannel)) {
+    ElMessage.warning("所选渠道包含图片渠道，不能使用聊天流批量测试");
+    return;
+  }
   if (selectedChannels.value.length === 0) {
     ElMessage.warning("请先选择渠道");
     return;
@@ -2342,6 +2387,10 @@ function defaultChannel(priority = 0) {
   };
 }
 
+function handleChannelTypeChange() {
+  applyChannelTypeContract(channelDraft, compatTexts);
+}
+
 function assignChannelDraft(channel) {
   Object.assign(channelDraft, defaultChannel(normalizePriorityValue(channel.priority)), channel, {
     headers: channel.headers || {},
@@ -2362,7 +2411,8 @@ function assignCompat(compat) {
     drop_tool_types: formatStringList(compat.drop_tool_types || []),
     force_params: formatAssignmentMap(compat.force_params || {}),
     default_params: formatAssignmentMap(compat.default_params || {}),
-    unsupported_params: formatStringList(compat.unsupported_params || [])
+    unsupported_params: formatStringList(compat.unsupported_params || []),
+    images_api_dialect: compat.images_api_dialect || "openai"
   });
 }
 
@@ -2392,7 +2442,7 @@ function buildChannelFromDraft() {
     headers,
     timeout_seconds: Number(channelDraft.timeout_seconds || 120),
     circuit_break_duration_seconds: Number(channelDraft.circuit_break_duration_seconds ?? 0),
-    retry_count: Number(channelDraft.retry_count ?? 3),
+    retry_count: isImagesChannel(channelDraft) ? 0 : Number(channelDraft.retry_count ?? 3),
     priority,
     capacity,
     enabled: channelDraft.enabled === true,
@@ -2416,6 +2466,12 @@ function buildCompat() {
     default_params: parseAssignmentMap(compatTexts.default_params, true),
     unsupported_params: parseStringList(compatTexts.unsupported_params)
   };
+  if (isImagesChannel(channelDraft)) {
+    return buildImagesCompat({
+      ...compat,
+      images_api_dialect: compatTexts.images_api_dialect
+    });
+  }
   for (const key of Object.keys(compat)) {
     const value = compat[key];
     if ((Array.isArray(value) && value.length === 0) || (isPlainObject(value) && Object.keys(value).length === 0)) {

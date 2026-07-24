@@ -28,6 +28,40 @@ public interface IProxyRouteService
         string? model,
         bool requestContainsImages = false);
 
+    async Task<ProxyRouteDto> ChooseRouteAsync(
+        string ownerUsername,
+        string? model,
+        bool requestContainsImages,
+        IReadOnlySet<string>? allowedChannelTypes)
+    {
+        var candidates = await ListRouteCandidatesAsync(
+            ownerUsername,
+            model,
+            requestContainsImages,
+            allowedChannelTypes);
+        return candidates.Count > 0
+            ? candidates[0]
+            : throw new InvalidOperationException("no route candidate matches the allowed channel types");
+    }
+
+    async Task<IReadOnlyList<ProxyRouteDto>> ListRouteCandidatesAsync(
+        string ownerUsername,
+        string? model,
+        bool requestContainsImages,
+        IReadOnlySet<string>? allowedChannelTypes)
+    {
+        var candidates = await ListRouteCandidatesAsync(ownerUsername, model, requestContainsImages);
+        if (allowedChannelTypes is null)
+        {
+            return candidates;
+        }
+
+        return candidates
+            .Where(candidate => allowedChannelTypes.Contains(
+                candidate.Channel.TryGetValue("type", out var value) ? value?.ToString() ?? string.Empty : string.Empty))
+            .ToList();
+    }
+
     /// <summary>
     /// 为指定用户和模型选择 OCR 视觉来源通道。
     /// </summary>

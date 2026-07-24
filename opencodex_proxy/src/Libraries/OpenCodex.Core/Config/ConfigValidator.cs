@@ -90,6 +90,11 @@ public static class ConfigValidator
             throw new ConfigException($"channel {channelId} retry_count must be a non-negative integer");
         }
 
+        if (channelType == "images" && retryCountValue != 0)
+        {
+            throw new ConfigException($"channel {channelId} retry_count must be 0 for images channels");
+        }
+
         var priority = GetValue(channel, "priority", 0);
         if (priority is not int priorityValue || priorityValue < 0)
         {
@@ -124,8 +129,36 @@ public static class ConfigValidator
             throw new ConfigException($"channel {channelId} enabled must be a boolean");
         }
 
-        ValidateModelMappings(GetValue(channel, "models", new List<object?>()), channelId);
-        ValidateCompat(GetValue(channel, "compat", new Dictionary<string, object?>()), channelId);
+        var modelsValue = GetValue(channel, "models", new List<object?>());
+        ValidateModelMappings(modelsValue, channelId);
+        var compatValue = GetValue(channel, "compat", new Dictionary<string, object?>());
+        ValidateCompat(compatValue, channelId);
+
+        ConfigValue.TryAsObject(compatValue, out var compat);
+        if (channelType != "images" && compat.ContainsKey("images_api_dialect"))
+        {
+            throw new ConfigException($"channel {channelId} compat.images_api_dialect is only supported for images channels");
+        }
+
+        if (channelType == "images")
+        {
+            var dialect = ConfigValue.PythonString(GetValue(compat, "images_api_dialect", string.Empty)).Trim();
+            if (dialect.Length == 0)
+            {
+                throw new ConfigException($"channel {channelId} compat.images_api_dialect is required");
+            }
+
+            if (!OpenCodexConfig.ImagesApiDialects.Contains(dialect))
+            {
+                throw new ConfigException($"channel {channelId} compat.images_api_dialect must be one of {ConfigValue.PythonList(OpenCodexConfig.ImagesApiDialects.Order(StringComparer.Ordinal))}");
+            }
+
+            ConfigValue.TryAsList(modelsValue, out var models);
+            if (!models.Any(model => ConfigValue.TryAsObject(model, out _)))
+            {
+                throw new ConfigException($"channel {channelId} must define at least one model mapping for images channels");
+            }
+        }
 
         return channel;
     }
@@ -224,6 +257,12 @@ public static class ConfigValidator
         if (preserveThinkingHistory is not bool)
         {
             throw new ConfigException($"{label}.preserve_thinking_history must be a boolean");
+        }
+
+        if (compat.TryGetValue("images_api_dialect", out var dialectValue)
+            && dialectValue is not string)
+        {
+            throw new ConfigException($"{label}.images_api_dialect must be a string");
         }
     }
 
