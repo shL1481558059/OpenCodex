@@ -160,8 +160,10 @@ public sealed class ProxyImageFallbackTests
 
         var mainDetail = context.RequestLogDetails.Single(item => item.RequestLogId == mainLog.Id);
         var ocrDetail = context.RequestLogDetails.Single(item => item.RequestLogId == ocrLog.Id);
-        Assert.Contains("data:image/png;base64,AAAA", mainDetail.RequestBody, StringComparison.Ordinal);
-        Assert.Contains("data:image/png;base64,AAAA", ocrDetail.RequestBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("data:image/png;base64,AAAA", mainDetail.RequestBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("data:image/png;base64,AAAA", ocrDetail.RequestBody, StringComparison.Ordinal);
+        Assert.Contains("***IMAGE_DATA_REDACTED***", mainDetail.RequestBody, StringComparison.Ordinal);
+        Assert.Contains("***IMAGE_DATA_REDACTED***", ocrDetail.RequestBody, StringComparison.Ordinal);
         Assert.Contains("[图片 1 OCR文字]", mainDetail.UpstreamRequestBody, StringComparison.Ordinal);
         Assert.DoesNotContain("\"input_image\"", mainDetail.UpstreamRequestBody, StringComparison.Ordinal);
 
