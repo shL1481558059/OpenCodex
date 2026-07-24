@@ -1195,6 +1195,129 @@ public sealed class SseStreamConverterTests
     }
 
     [Fact]
+    public async Task Messages_ToolSearchWithRequestMapping_StreamsNativeToolCall()
+    {
+        var lines = SseLines(
+            SseBlock(JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["type"] = "message_start",
+                ["message"] = new Dictionary<string, object?>
+                {
+                    ["id"] = "msg_1",
+                    ["model"] = "claude-3",
+                    ["usage"] = new Dictionary<string, object?> { ["input_tokens"] = 5, ["output_tokens"] = 0 }
+                }
+            }), "message_start"),
+            SseBlock(JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["type"] = "content_block_start",
+                ["index"] = 0,
+                ["content_block"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "tool_use",
+                    ["id"] = "toolu_search",
+                    ["name"] = "tool_search",
+                    ["input"] = new Dictionary<string, object?>()
+                }
+            }), "content_block_start"),
+            SseBlock(JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["type"] = "content_block_delta",
+                ["index"] = 0,
+                ["delta"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "input_json_delta",
+                    ["partial_json"] = "{\"query\":"
+                }
+            }), "content_block_delta"),
+            SseBlock(JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["type"] = "content_block_delta",
+                ["index"] = 0,
+                ["delta"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "input_json_delta",
+                    ["partial_json"] = "\"browser\",\"limit\":3}"
+                }
+            }), "content_block_delta"),
+            SseBlock(JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["type"] = "content_block_stop",
+                ["index"] = 0
+            }), "content_block_stop"),
+            SseBlock(JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["type"] = "message_delta",
+                ["delta"] = new Dictionary<string, object?> { ["stop_reason"] = "tool_use" },
+                ["usage"] = new Dictionary<string, object?> { ["output_tokens"] = 8 }
+            }), "message_delta"),
+            SseBlock(JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["type"] = "message_stop"
+            }), "message_stop"));
+
+        var result = new ConvertedStreamResult
+        {
+            ToolCallMappings = ProtocolConverter.BuildResponsesToolCallMappings(new Dictionary<string, object?>
+            {
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "tool_search",
+                        ["execution"] = "client",
+                        ["parameters"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object?>
+                            {
+                                ["query"] = new Dictionary<string, object?> { ["type"] = "string" }
+                            },
+                            ["required"] = new List<object?> { "query" }
+                        }
+                    }
+                }
+            })
+        };
+
+        var events = await CollectAsync(
+            SseStreamConverter.MessagesToResponsesEvents(lines, "claude-3", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        var added = Assert.Single(AllByType(parsed, "response.output_item.added"));
+        var addedItem = Assert.IsType<Dictionary<string, object?>>(added["item"]);
+        Assert.Equal("tool_search_call", addedItem["type"]);
+        Assert.Equal("tool_search", addedItem["name"]);
+        Assert.Equal("toolu_search", addedItem["call_id"]);
+        Assert.Equal("client", addedItem["execution"]);
+        Assert.False(addedItem.ContainsKey("input"));
+
+        Assert.NotEmpty(AllByType(parsed, "response.function_call_arguments.delta"));
+        Assert.DoesNotContain(parsed, entry => (string?)entry["type"] == "response.custom_tool_call_input.delta");
+
+        Assert.NotNull(ByType(parsed, "response.function_call_arguments.done"));
+
+        var done = ByType(parsed, "response.output_item.done");
+        Assert.NotNull(done);
+        var doneItem = Assert.IsType<Dictionary<string, object?>>(done!["item"]);
+        Assert.Equal("tool_search_call", doneItem["type"]);
+        Assert.Equal("client", doneItem["execution"]);
+        using (var doneArguments = JsonDocument.Parse(JsonSerializer.Serialize(doneItem["arguments"])))
+        {
+            Assert.Equal(JsonValueKind.Object, doneArguments.RootElement.ValueKind);
+            Assert.Equal("browser", doneArguments.RootElement.GetProperty("query").GetString());
+            Assert.Equal(3, doneArguments.RootElement.GetProperty("limit").GetInt32());
+        }
+
+        var completed = ByType(parsed, "response.completed");
+        Assert.NotNull(completed);
+        var output = Assert.IsType<List<object?>>(Assert.IsType<Dictionary<string, object?>>(completed!["response"])["output"]);
+        var outputItem = Assert.IsType<Dictionary<string, object?>>(Assert.Single(output));
+        Assert.Equal("tool_search_call", outputItem["type"]);
+        Assert.Equal("client", outputItem["execution"]);
+    }
+
+    [Fact]
     public async Task Chat_WebSearchWithRequestMapping_StreamsWebSearchCall()
     {
         const string arguments = "{\"query\":\"OpenAI recent news\"}";

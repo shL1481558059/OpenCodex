@@ -4,7 +4,7 @@ using OpenCodex.CoreBase.Abstractions;
 
 namespace OpenCodex.Core.ExternalIntegrations;
 
-public sealed partial class HttpUpstreamClient : IUpstreamClient, IUpstreamModelClient
+public sealed partial class HttpUpstreamClient : IUpstreamClient, IUpstreamModelClient, IImagesUpstreamClient
 {
     private static readonly IReadOnlyDictionary<string, string> Endpoints =
         new Dictionary<string, string>(StringComparer.Ordinal)

@@ -31,7 +31,7 @@ public sealed partial class WebSearchSimulator
         var completedConverted = (ConvertedStreamResult?)null;
         var completedRequest = requestPayload;
         var textFormat = ProtocolConverter.ExtractTextFormat(payload);
-        var toolCallMappings = protocol == ProtocolConverter.Chat
+        var toolCallMappings = protocol == ProtocolConverter.Chat || protocol == ProtocolConverter.Messages
             ? ProtocolConverter.BuildResponsesToolCallMappings(payload)
             : null;
 

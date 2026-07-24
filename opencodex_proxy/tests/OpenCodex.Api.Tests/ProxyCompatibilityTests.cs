@@ -645,6 +645,193 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
    }
 
     [Fact]
+    public void ConvertRequest_ResponsesAdditionalToolsOnly_ConvertsToolsForMessages()
+    {
+        // Reproduces gpt-5.6-sol / Codex: tools live in input additional_tools, not top-level tools.
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "additional_tools",
+                        ["role"] = "developer",
+                        ["tools"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "custom",
+                                ["name"] = "exec",
+                                ["description"] = "Run JavaScript in a sandbox.",
+                                ["format"] = new Dictionary<string, object?>
+                                {
+                                    ["type"] = "grammar",
+                                    ["syntax"] = "lark",
+                                    ["definition"] = "start: SOURCE\nSOURCE: /.+/s"
+                                }
+                            },
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "tool_search",
+                                ["execution"] = "client",
+                                ["description"] = "Search deferred tools.",
+                                ["parameters"] = new Dictionary<string, object?>
+                                {
+                                    ["type"] = "object",
+                                    ["properties"] = new Dictionary<string, object?>
+                                    {
+                                        ["query"] = new Dictionary<string, object?> { ["type"] = "string" }
+                                    },
+                                    ["required"] = new List<object?> { "query" }
+                                }
+                            }
+                        }
+                    },
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "message",
+                        ["role"] = "user",
+                        ["content"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "input_text",
+                                ["text"] = "hello"
+                            }
+                        }
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Messages,
+            "upstream");
+
+        var tools = Assert.IsType<List<object?>>(request["tools"])
+            .Select(item => Assert.IsType<Dictionary<string, object?>>(item))
+            .ToArray();
+        Assert.Equal(2, tools.Length);
+
+        var exec = Assert.Single(tools, tool => tool["name"]?.ToString() == "exec");
+        var execSchema = Assert.IsType<Dictionary<string, object?>>(exec["input_schema"]);
+        var execProperties = Assert.IsType<Dictionary<string, object?>>(execSchema["properties"]);
+        Assert.True(execProperties.ContainsKey("input"));
+        var inputProp = Assert.IsType<Dictionary<string, object?>>(execProperties["input"]);
+        var inputDescription = Assert.IsType<string>(inputProp["description"]);
+        Assert.Contains("grammar", inputDescription, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("lark", inputDescription, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("start: SOURCE", inputDescription, StringComparison.Ordinal);
+
+        Assert.Contains(tools, tool => tool["name"]?.ToString() == "tool_search");
+
+        var mappings = ProtocolConverter.BuildResponsesToolCallMappings(new Dictionary<string, object?>
+        {
+            ["input"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "additional_tools",
+                    ["tools"] = new List<object?>
+                    {
+                        new Dictionary<string, object?>
+                        {
+                            ["type"] = "tool_search",
+                            ["execution"] = "client"
+                        },
+                        new Dictionary<string, object?>
+                        {
+                            ["type"] = "custom",
+                            ["name"] = "exec",
+                            ["format"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "grammar",
+                                ["syntax"] = "lark",
+                                ["definition"] = "start: SOURCE"
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        Assert.True(mappings.ContainsKey("tool_search"));
+        Assert.Equal("tool_search", mappings["tool_search"].NativeType);
+        Assert.True(mappings.ContainsKey("exec"));
+        Assert.Equal("custom", mappings["exec"].NativeType);
+    }
+
+    [Fact]
+    public void ConvertResponse_MessagesToolSearchWithRequestMapping_ReturnsNativeToolCall()
+    {
+        var toolMappings = ProtocolConverter.BuildResponsesToolCallMappings(new Dictionary<string, object?>
+        {
+            ["tools"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "tool_search",
+                    ["execution"] = "client",
+                    ["description"] = "Search deferred tools.",
+                    ["parameters"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object?>
+                        {
+                            ["query"] = new Dictionary<string, object?> { ["type"] = "string" }
+                        },
+                        ["required"] = new List<object?> { "query" }
+                    }
+                }
+            }
+        });
+
+        var response = ProtocolConverter.ConvertResponse(
+            new Dictionary<string, object?>
+            {
+                ["id"] = "msg_tool_search",
+                ["model"] = "upstream",
+                ["role"] = "assistant",
+                ["content"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "tool_use",
+                        ["id"] = "toolu_search",
+                        ["name"] = "tool_search",
+                        ["input"] = new Dictionary<string, object?>
+                        {
+                            ["query"] = "browser",
+                            ["limit"] = 3
+                        }
+                    }
+                },
+                ["stop_reason"] = "tool_use",
+                ["usage"] = new Dictionary<string, object?>
+                {
+                    ["input_tokens"] = 10,
+                    ["output_tokens"] = 5
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Messages,
+            "local",
+            toolCallMappings: toolMappings);
+
+        var output = Assert.IsType<List<object?>>(response["output"]);
+        var item = Assert.IsType<Dictionary<string, object?>>(Assert.Single(output));
+        Assert.Equal("tool_search_call", item["type"]);
+        Assert.Equal("tool_search", item["name"]);
+        Assert.Equal("toolu_search", item["call_id"]);
+        Assert.Equal("client", item["execution"]);
+        Assert.False(item.ContainsKey("input"));
+
+        using var arguments = JsonDocument.Parse(JsonSerializer.Serialize(item["arguments"]));
+        Assert.Equal(JsonValueKind.Object, arguments.RootElement.ValueKind);
+        Assert.Equal("browser", arguments.RootElement.GetProperty("query").GetString());
+        Assert.Equal(3, arguments.RootElement.GetProperty("limit").GetInt32());
+    }
+
+    [Fact]
     public void ConvertRequest_ResponsesToolSearchOutput_ConvertsToChatToolResult()
     {
         // Reproduces: tool_search_output is not recognized by IsResponsesToolOutputLike

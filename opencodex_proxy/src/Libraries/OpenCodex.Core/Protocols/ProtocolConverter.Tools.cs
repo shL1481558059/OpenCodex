@@ -70,8 +70,15 @@ public static partial class ProtocolConverter
 
         foreach (var item in inputItems)
         {
-            if (!TryAsObject(item, out var inputItem)
-                || GetString(inputItem, "type") != "tool_search_output")
+            if (!TryAsObject(item, out var inputItem))
+            {
+                continue;
+            }
+
+            var inputType = GetString(inputItem, "type");
+            // Codex / Responses advanced tool loading: tools may appear mid-input instead of
+            // only on the top-level tools array.
+            if (inputType is not ("additional_tools" or "tool_search_output"))
             {
                 continue;
             }
@@ -418,11 +425,17 @@ public static partial class ProtocolConverter
                 ("properties", Obj(("patch", Obj(("type", "string"))))),
                 ("required", new List<object?> { "patch" }));
         }
+        else if (toolType is "custom" or "custom_tool")
+        {
+            parameters = BuildCustomFreeformParameters(tool);
+        }
         else
         {
             parameters = Obj(
                 ("type", "object"),
-                ("properties", Obj(("input", Obj(("type", "string"))))));
+                ("properties", Obj(("input", Obj(("type", "string"))))),
+                ("required", new List<object?> { "input" }),
+                ("additionalProperties", false));
         }
 
         return Obj(
@@ -434,6 +447,40 @@ public static partial class ProtocolConverter
             ("native_type", toolType),
             ("compat", compat ?? GetValue(tool, "compat") ?? new Dictionary<string, object?>()),
             ("raw", DeepCopy(tool)));
+    }
+
+
+    private static Dictionary<string, object?> BuildCustomFreeformParameters(Dictionary<string, object?> tool)
+    {
+        var format = ObjectValue(tool, "format");
+        var formatType = GetString(format, "type") ?? string.Empty;
+        var inputDescription = "Freeform input for this custom tool.";
+
+        if (formatType == "grammar")
+        {
+            var syntax = GetString(format, "syntax") ?? "unknown";
+            var definition = Convert.ToString(GetValue(format, "definition")) ?? string.Empty;
+            const int maxDefinitionChars = 4000;
+            var definitionPart = definition.Length > maxDefinitionChars
+                ? definition[..maxDefinitionChars] + "\n...[truncated]"
+                : definition;
+            inputDescription =
+                $"Freeform input that must match the tool grammar (syntax={syntax}).\n" +
+                $"Grammar definition:\n{definitionPart}";
+        }
+        else if (formatType == "text")
+        {
+            inputDescription = "Freeform text input for this custom tool.";
+        }
+
+        return Obj(
+            ("type", "object"),
+            ("properties", Obj(
+                ("input", Obj(
+                    ("type", "string"),
+                    ("description", inputDescription))))),
+            ("required", new List<object?> { "input" }),
+            ("additionalProperties", false));
     }
 
     private static Dictionary<string, object?> RewriteApplyPatchToolDescription(Dictionary<string, object?> tool)

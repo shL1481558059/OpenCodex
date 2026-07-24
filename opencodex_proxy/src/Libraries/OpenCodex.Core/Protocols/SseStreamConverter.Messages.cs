@@ -54,6 +54,7 @@ public static partial class SseStreamConverter
         var sequenceNumber = InitialSequenceNumber;
         var toolStates = new Dictionary<int, ToolStreamState>();
         var nextOutputIndex = InitialOutputIndex;
+        var toolCallMappings = result.ToolCallMappings;
         var upstreamResponseAccumulator = new MessagesStreamResponseAccumulator(
             new StreamCaptureBudget(int.MaxValue, int.MaxValue));
 
@@ -300,7 +301,9 @@ public static partial class SseStreamConverter
                         }
 
                         var state = EnsureToolState(index);
-                        state.CallKind = ProtocolConverter.GetResponsesToolCallKind(toolName);
+                        var shape = ProtocolConverter.ResolveResponsesToolCallShape(toolName, toolCallMappings);
+                        state.CallKind = shape.Kind;
+                        state.ArgumentField = shape.ArgumentField;
                         state.ApplyPatchDecoder ??= state.CallKind == ResponsesToolCallKind.CustomTool
                             ? new ApplyPatchJsonDeltaDecoder()
                             : null;
@@ -315,18 +318,14 @@ public static partial class SseStreamConverter
                                 new Dictionary<string, object?>
                                 {
                                     ["output_index"] = state.OutputIndex,
-                                    ["item"] = new Dictionary<string, object?>
-                                    {
-                                        ["id"] = state.ItemId,
-                                        ["type"] = state.CallKind == ResponsesToolCallKind.CustomTool ? "custom_tool_call" : "function_call",
-                                        ["status"] = "in_progress",
-                                        ["call_id"] = GetValue(block, "id"),
-                                        ["name"] = GetValue(block, "name"),
-                                        [state.CallKind == ResponsesToolCallKind.CustomTool ? "input" : "arguments"] = string.Empty
-                                    }
+                                    ["item"] = ProtocolConverter.ResponsesToolCallStartedItem(
+                                        GetValue(block, "id"),
+                                        toolName,
+                                        state.ItemId ?? $"fc_{Guid.NewGuid():N}",
+                                        toolCallMappings)
                                 });
-                            }
                         }
+                    }
                     else if (blockType == "mcp_tool_use")
                     {
                         var state = EnsureToolState(index);
@@ -481,8 +480,18 @@ public static partial class SseStreamConverter
                             continue;
                         }
 
+                        if (state.CallKind == ResponsesToolCallKind.NativeTool
+                            && ProtocolConverter.IsWebSearchName(StringValue(block, "name", string.Empty)))
+                        {
+                            // web_search uses its own lifecycle events outside argument deltas.
+                            continue;
+                        }
+
+                        var deltaEvent = state.ArgumentField == "input"
+                            ? "response.custom_tool_call_input.delta"
+                            : "response.function_call_arguments.delta";
                         yield return Emit(
-                            "response.function_call_arguments.delta",
+                            deltaEvent,
                             new Dictionary<string, object?>
                             {
                                 ["item_id"] = state.ItemId,
@@ -684,7 +693,8 @@ public static partial class SseStreamConverter
                 callId,
                 name,
                 arguments,
-                itemId: itemId);
+                itemId: itemId,
+                mappings: toolCallMappings);
             if (functionItem.TryGetValue("type", out var functionItemType)
                 && string.Equals(functionItemType?.ToString(), "function_call", StringComparison.Ordinal))
             {
@@ -711,6 +721,25 @@ public static partial class SseStreamConverter
                         ["input"] = functionItem.TryGetValue("input", out var itemInput)
                             ? itemInput
                             : state.DecodedInputBuilder?.ToString() ?? string.Empty
+                    });
+            }
+            else if (state.CallKind == ResponsesToolCallKind.NativeTool
+                && !ProtocolConverter.IsWebSearchName(toolName))
+            {
+                var doneEvent = state.ArgumentField == "input"
+                    ? "response.custom_tool_call_input.done"
+                    : "response.function_call_arguments.done";
+                yield return Emit(
+                    doneEvent,
+                    new Dictionary<string, object?>
+                    {
+                        ["item_id"] = itemId,
+                        ["output_index"] = outputIndex,
+                        [state.ArgumentField] = string.Equals(functionItemType?.ToString(), "tool_search_call", StringComparison.Ordinal)
+                            ? (functionItem.TryGetValue("arguments", out var nativeArgs) ? nativeArgs : arguments)
+                            : (functionItem.TryGetValue(state.ArgumentField, out var itemValue)
+                                ? itemValue
+                                : arguments)
                     });
             }
             yield return Emit(

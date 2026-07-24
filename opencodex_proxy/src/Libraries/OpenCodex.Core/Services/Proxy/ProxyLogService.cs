@@ -736,12 +736,6 @@ public sealed class ProxyLogService : IProxyLogService
             : ProxyRequestLifecycleStatus.Success;
     }
 
-    private static readonly HashSet<string> SensitiveLogKeys = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "authorization", "authorization_token", "api-key", "api_key", "apikey", "x-api-key",
-        "cookie", "set-cookie", "password", "access_token", "refresh_token"
-    };
-
     private static string SerializeForLog(object? value)
     {
         if (value is null)
@@ -749,28 +743,7 @@ public sealed class ProxyLogService : IProxyLogService
             return "null";
         }
 
-        var element = JsonSerializer.SerializeToElement(value, JsonOptions);
-        return JsonSerializer.Serialize(RedactJsonElement(element), JsonOptions);
-    }
-
-    private static object? RedactJsonElement(JsonElement element)
-    {
-        return element.ValueKind switch
-        {
-            JsonValueKind.Object => element.EnumerateObject().ToDictionary(
-                property => property.Name,
-                property => SensitiveLogKeys.Contains(property.Name)
-                    ? (object?)"***REDACTED***"
-                    : RedactJsonElement(property.Value),
-                StringComparer.Ordinal),
-            JsonValueKind.Array => element.EnumerateArray().Select(RedactJsonElement).ToList(),
-            JsonValueKind.String => element.GetString(),
-            JsonValueKind.Number when element.TryGetInt64(out var integer) => integer,
-            JsonValueKind.Number when element.TryGetDecimal(out var number) => number,
-            JsonValueKind.True => true,
-            JsonValueKind.False => false,
-            JsonValueKind.Null or JsonValueKind.Undefined => null,
-            _ => element.GetRawText()
-        };
+        var sanitizedCopy = ImageLogSanitizer.CopyAndSanitize(value);
+        return JsonSerializer.Serialize(sanitizedCopy, JsonOptions);
     }
 }

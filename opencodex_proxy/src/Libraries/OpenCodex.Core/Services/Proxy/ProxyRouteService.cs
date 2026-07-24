@@ -42,12 +42,36 @@ public sealed class ProxyRouteService : IProxyRouteService
         return (await ListRouteCandidatesAsync(ownerUsername, model, requestContainsImages))[0];
     }
 
+    public async Task<ProxyRouteDto> ChooseRouteAsync(
+        string ownerUsername,
+        string? model,
+        bool requestContainsImages,
+        IReadOnlySet<string>? allowedChannelTypes)
+    {
+        return (await ListRouteCandidatesAsync(ownerUsername, model, requestContainsImages, allowedChannelTypes))[0];
+    }
+
     public async Task<IReadOnlyList<ProxyRouteDto>> ListRouteCandidatesAsync(
         string ownerUsername,
         string? model,
         bool requestContainsImages = false)
     {
+        return await ListRouteCandidatesAsync(ownerUsername, model, requestContainsImages, allowedChannelTypes: null);
+    }
+
+    public async Task<IReadOnlyList<ProxyRouteDto>> ListRouteCandidatesAsync(
+        string ownerUsername,
+        string? model,
+        bool requestContainsImages,
+        IReadOnlySet<string>? allowedChannelTypes)
+    {
         var enabledChannels = await ListEnabledChannelConfigsAsync(ownerUsername);
+        if (allowedChannelTypes is not null)
+        {
+            enabledChannels = enabledChannels
+                .Where(channel => allowedChannelTypes.Contains(JsonDictionaryValue.String(channel, "type")))
+                .ToList();
+        }
         if (enabledChannels.Count == 0)
         {
             throw new RoutingException("no enabled channels configured");
