@@ -10,6 +10,15 @@ public static partial class ProtocolConverter
     /// </summary>
     private const string AnthropicThinkingPrefix = "ocxp-thinking-v1:";
 
+    /// <summary>
+    /// Tags wrapping reasoning summaries that are downgraded to plain text blocks.
+    /// Used when the source protocol only provides a summary (no signed thinking
+    /// block), so the text cannot be sent as a native Anthropic thinking block.
+    /// </summary>
+    private const string ReasoningTextOpenTag = "<previous_thinking>";
+
+    private const string ReasoningTextCloseTag = "</previous_thinking>";
+
     private static void AppendReasoningContent(Dictionary<string, object?> message, object? reasoningContent)
     {
         var text = StringifyContent(reasoningContent);
