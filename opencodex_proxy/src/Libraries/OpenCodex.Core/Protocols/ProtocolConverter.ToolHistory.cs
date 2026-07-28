@@ -24,7 +24,7 @@ public static partial class ProtocolConverter
 
             if (IsReasoningOnlyMessage(message))
             {
-                if (folded.Count > 0 && TryAsObject(folded[^1], out var previous) && IsAssistantWithToolCalls(previous))
+                if (folded.Count > 0 && TryAsObject(folded[^1], out var previous) && GetString(previous, "role") == "assistant")
                 {
                     AppendReasoningContent(previous, GetValue(message, "reasoning_content"));
                 }
@@ -40,7 +40,7 @@ public static partial class ProtocolConverter
                 continue;
             }
 
-            if (IsAssistantWithToolCalls(message) && pendingReasoning is not null)
+            if (GetString(message, "role") == "assistant" && pendingReasoning is not null)
             {
                 message = AsObject(DeepCopy(message));
                 AppendReasoningContent(message, GetValue(pendingReasoning, "reasoning_content"));
@@ -48,17 +48,14 @@ public static partial class ProtocolConverter
             }
             else if (pendingReasoning is not null)
             {
-                folded.Add(pendingReasoning);
+                // reasoning 后面不是 assistant（如 user 消息），没有关联响应，丢弃避免产生空 content 消息
                 pendingReasoning = null;
             }
 
             folded.Add(message);
         }
 
-        if (pendingReasoning is not null)
-        {
-            folded.Add(pendingReasoning);
-        }
+        // 末尾孤儿 reasoning 丢弃：没有后续 assistant 可关联，保留只会产生空 content 消息
 
         return folded;
     }

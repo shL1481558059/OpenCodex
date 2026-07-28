@@ -193,6 +193,9 @@ public static partial class ProtocolConverter
         }
 
         var outputMessages = ListValue(result, "messages");
+        var preserveThinkingHistory = IsTruthy(GetValue(result, "_ocxp_preserve_thinking_history"));
+        result.Remove("_ocxp_preserve_thinking_history");
+
         foreach (var item in ListValue(canonical, "messages"))
         {
             if (!TryAsObject(item, out var message))
@@ -208,7 +211,8 @@ public static partial class ProtocolConverter
             }
 
             var converted = new Dictionary<string, object?>(StringComparer.Ordinal);
-            foreach (var key in new[] { "role", "content", "tool_calls", "tool_call_id", "name", "reasoning_content", "anthropic_thinking_encrypted" })
+            foreach (var key in new[] { "role", "content", "tool_calls", "tool_call_id", "name", "reasoning_content", "anthropic_thinking_encrypted" }
+                     .Where(key => preserveThinkingHistory || key is not "reasoning_content" and not "anthropic_thinking_encrypted"))
             {
                 if (message.TryGetValue(key, out var value))
                 {
