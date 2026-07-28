@@ -15,6 +15,7 @@ SERVICE_NAME="${SERVICE_NAME:-ocxp}"
 OLD_SERVICE_NAMES="${OLD_SERVICE_NAMES:-opencodex-proxy opencodex-proxy-8002}"
 DOCKER_PLATFORM="${DOCKER_PLATFORM:-linux/amd64}"
 POSTGRES_CONTAINER_NAME="${POSTGRES_CONTAINER_NAME:-ocxp-postgres}"
+REDIS_CONTAINER_NAME="${REDIS_CONTAINER_NAME:-ocxp-redis}"
 APP_PORT_MAPPING="${APP_PORT_MAPPING:-127.0.0.1:8002:8080}"
 NETWORK_NAME="${NETWORK_NAME:-ocxp-network}"
 
@@ -61,6 +62,7 @@ echo "Platform: $DOCKER_PLATFORM"
 echo "Remote: $SSH_TARGET:$REMOTE_DEPLOY_DIR"
 echo "Service name: $SERVICE_NAME"
 echo "Postgres container: $POSTGRES_CONTAINER_NAME"
+echo "Redis container: $REDIS_CONTAINER_NAME"
 echo "Port mapping: $APP_PORT_MAPPING"
 echo "Network: $NETWORK_NAME"
 echo "===================="
@@ -79,7 +81,7 @@ echo
 
 echo "Pulling and deploying on $SSH_TARGET"
 ssh "${SSH_OPTS[@]}" "$SSH_TARGET" \
-  "REMOTE_DEPLOY_DIR='$REMOTE_DEPLOY_DIR' IMAGE_NAME='$IMAGE_NAME' SERVICE_NAME='$SERVICE_NAME' OLD_SERVICE_NAMES='$OLD_SERVICE_NAMES' DB_TYPE='$DB_TYPE' POSTGRES_CONTAINER_NAME='$POSTGRES_CONTAINER_NAME' APP_PORT_MAPPING='$APP_PORT_MAPPING' NETWORK_NAME='$NETWORK_NAME' bash -s" <<'REMOTE_SCRIPT'
+  "REMOTE_DEPLOY_DIR='$REMOTE_DEPLOY_DIR' IMAGE_NAME='$IMAGE_NAME' SERVICE_NAME='$SERVICE_NAME' OLD_SERVICE_NAMES='$OLD_SERVICE_NAMES' DB_TYPE='$DB_TYPE' POSTGRES_CONTAINER_NAME='$POSTGRES_CONTAINER_NAME' REDIS_CONTAINER_NAME='$REDIS_CONTAINER_NAME' APP_PORT_MAPPING='$APP_PORT_MAPPING' NETWORK_NAME='$NETWORK_NAME' bash -s" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
 docker pull "$IMAGE_NAME"
@@ -115,6 +117,7 @@ docker ps --filter "name=$SERVICE_NAME" --format 'table {{.Names}}\t{{.Image}}\t
 # 如果是 PostgreSQL 部署，也显示 PostgreSQL 容器
 if [ "$DB_TYPE" = "postgres" ] || [ "$DB_TYPE" = "postgresql" ] || [ "$DB_TYPE" = "pgsql" ]; then
   docker ps --filter "name=$POSTGRES_CONTAINER_NAME" --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+  docker ps --filter "name=$REDIS_CONTAINER_NAME" --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
 fi
 REMOTE_SCRIPT
 

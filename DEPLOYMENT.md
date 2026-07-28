@@ -14,7 +14,11 @@ DOTNET_ROOT="$HOME/.dotnet" PATH="$HOME/.dotnet:$PATH" dotnet restore opencodex_
 ```env
 OPENCODEX_ADMIN_USERNAME=admin
 OPENCODEX_ADMIN_PASSWORD=change-me
-OPENCODEX_DB_PATH=logs/opencodex.db
+OPENCODEX_DB_PROVIDER=sqlite
+OPENCODEX_DB_CONNECTION_STRING=Data Source=logs/opencodex.db
+OPENCODEX_REDIS_CONNECTION=
+OPENCODEX_REDIS_PREFIX=opencodex
+OPENCODEX_CACHE_DEFAULT_TTL_SECONDS=300
 OPENCODEX_LOG_PATH=logs/opencodex.log
 OPENCODEX_LOG_LEVEL=INFO
 OPENCODEX_LOG_VIEW_LEVEL=BASIC
@@ -24,6 +28,8 @@ OPENCODEX_SECRET_KEY=change-me-session-secret
 OPENCODEX_DATA_PROTECTION_KEYS_PATH=logs/opencodex.keys
 TZ=Asia/Shanghai
 ```
+
+本地开发默认使用 SQLite、不启用 Redis。如需连接 PostgreSQL 或 Redis，按 `.env.example` 中的注释修改对应连接串即可。
 
 启动：
 
@@ -64,33 +70,25 @@ npm --prefix frontend run dev -- --host 127.0.0.1 --port 5173
 ./update_remote_image.sh
 ```
 
-### SQLite 版本部署
+### 现网部署（PostgreSQL + Redis）
+
+脚本默认即现网配置（PostgreSQL + Redis），直接运行：
 
 ```bash
 ./update_remote_image.sh
 ```
 
-或显式指定：
-
-```bash
-DB_TYPE=sqlite ./update_remote_image.sh
-```
-
-### PostgreSQL 版本部署
-
-```bash
-DB_TYPE=postgres ./update_remote_image.sh
-```
-
 脚本默认会执行以下流程：
 
-1. 根据 `DB_TYPE` 选择对应的 docker-compose 配置文件（`docker-compose-sqlite.yml` 或 `docker-compose-pgsql.yml`）
+1. 根据 `DB_TYPE` 选择对应的 docker-compose 配置文件（`docker-compose-sqlite.yml` 或 `docker-compose-pgsql.yml`），默认 `postgres` 使用 `docker-compose-pgsql.yml`
 2. 在本地使用 `docker buildx build --platform linux/amd64 --push` 构建 x86/amd64 镜像并推送到镜像仓库。管理台前端会在 Docker 构建阶段打包进镜像。
 3. 通过 SSH 登录远程服务器。
 4. 上传选定的 docker-compose 配置文件到远程服务器（重命名为 `docker-compose.yml`）。
 5. 在远程部署目录中拉取已推送的新镜像；远程服务器不构建镜像。
 6. 移除旧容器 `opencodex-proxy` / `opencodex-proxy-8002`。
 7. 执行 `docker compose up -d --no-build --force-recreate --remove-orphans` 重建容器。
+
+`docker-compose-pgsql.yml` 会拉起三个容器：应用 `ocxp`、PostgreSQL `ocxp-postgres`、Redis `ocxp-redis`，三者同属 `ocxp-network`。应用通过 `OPENCODEX_REDIS_CONNECTION=redis:6379,abortConnect=false` 连接 Redis，用于鉴权/路由/定价缓存与跨实例共享的亲和/容量/熔断状态。
 
 常用环境变量覆盖：
 
@@ -100,23 +98,35 @@ REMOTE_HOST=ssh.shldev.me \
 SSH_KEY=/path/to/private-key.pem \
 REMOTE_DEPLOY_DIR=/www/wwwroot/ocxp \
 IMAGE_NAME=shl148155/opencodexp:ocxp \
-SERVICE_NAME=ocxp \
+SERVICE_NAME=ocxp-dev \
+POSTGRES_CONTAINER_NAME=ocxp-postgres-dev \
+REDIS_CONTAINER_NAME=ocxp-redis-dev \
+APP_PORT_MAPPING=127.0.0.1:8003:8080 \
+NETWORK_NAME=ocxp-dev-network \
 DB_TYPE=postgres \
 ./update_remote_image.sh
 ```
 
 **重要提示**：
-- 默认使用 SQLite（`DB_TYPE=sqlite`）
-- 切换到 PostgreSQL 时，首次部署会自动创建 PostgreSQL 容器和数据库
-- PostgreSQL 数据持久化到 `/www/wwwroot/ocxp/postgres-data`
+- 默认使用 PostgreSQL（`DB_TYPE=postgres`），现网已启用 Redis 缓存
+- 首次部署 PostgreSQL 时会自动创建 PostgreSQL 容器和数据库
+- PostgreSQL 数据持久化到 `/www/wwwroot/ocxp/postgres-data`，Redis 数据持久化到 `/www/wwwroot/ocxp/redis-data`
 - 不要把真实 SSH 私钥路径、私钥内容或生产 `.env` 写入仓库文档
 - 未设置 `SSH_KEY` 时，脚本会使用本机 SSH agent 或 SSH config
 
 远程部署目录固定为 `/www/wwwroot/ocxp`。该目录下必须已经存在 `.env`，运行数据继续挂载到 `/www/wwwroot/ocxp/logs`。管理台静态文件随 Docker 镜像进入容器，不再同步到宿主机目录。
 
-### PostgreSQL 隔离验证部署
+### SQLite 版本部署
 
-用于不影响现网 `ocxp` 的隔离验证，例如部署到 `8001 + 独立目录 + 独立 PostgreSQL`：
+如需使用 SQLite（不含 Redis、PostgreSQL），显式指定：
+
+```bash
+DB_TYPE=sqlite ./update_remote_image.sh
+```
+
+### 隔离验证部署
+
+用于不影响现网 `ocxp-dev` 的隔离验证，例如部署到 `8001 + 独立目录 + 独立 PostgreSQL`：
 
 ```bash
 IMAGE_NAME=shl148155/opencodexp:ocxp-8001-$(date +%Y%m%d%H%M%S) \
@@ -127,13 +137,12 @@ APP_PORT_MAPPING=127.0.0.1:8001:8080 \
 NETWORK_NAME=ocxp-8001-network \
 OLD_SERVICE_NAMES='' \
 DB_TYPE=postgres \
-SSH_KEY=/Users/w/.ssh/LightsailDefaultKey-ap-northeast-2.pem \
 ./update_remote_image.sh
 ```
 
 说明：
 
-1. 该命令只会更新 `/www/wwwroot/ocxp-8001` 目录下的隔离环境，不会碰现网 `ocxp`
+1. 该命令只会更新 `/www/wwwroot/ocxp-8001` 目录下的隔离环境，不会碰现网 `ocxp-dev`
 2. 如果隔离 PostgreSQL 数据目录已经残留半迁移状态，重建前先清空 `/www/wwwroot/ocxp-8001/postgres-data`
 3. 验证完成后可通过 `http://127.0.0.1:8001/health` 检查服务状态
 
@@ -225,7 +234,7 @@ mkdir -p logs
 
 docker run --rm \
   --platform linux/amd64 \
-  --name ocxp \
+  --name ocxp-dev \
   --env-file .env \
   -v "$PWD/logs:/app/logs" \
   shl148155/opencodexp:ocxp
@@ -237,6 +246,8 @@ docker run --rm \
 OPENCODEX_DB_PATH=/app/logs/opencodex.db
 OPENCODEX_LOG_PATH=/app/logs/opencodex.log
 ```
+
+手动 `docker run` 不会拉起 PostgreSQL 和 Redis，仅适合临时单进程验证。生产部署请使用 `./update_remote_image.sh` 或 `docker-compose-pgsql.yml`。
 
 ## Codex CLI 隔离测试
 

@@ -842,8 +842,80 @@ public sealed class ProxyEndpointServiceTests
         Assert.NotNull(nonStreams.LastContext);
         var headers = Assert.IsType<Dictionary<string, object?>>(nonStreams.LastContext!.Route.Channel["headers"]);
         Assert.Equal("configured-agent", headers["User-Agent"]);
-        Assert.Equal("configured-attestation", headers["x-oai-attestation"]);
-        Assert.Equal("thread-id", headers["thread-id"]);
+       Assert.Equal("configured-attestation", headers["x-oai-attestation"]);
+       Assert.Equal("thread-id", headers["thread-id"]);
+   }
+
+    [Fact]
+    public async Task ProxyAsync_ProbeInterception_Enabled_InterceptsMaxTokensOneRequest()
+    {
+        var capacity = new ChannelCapacityService();
+        var compat = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["intercept_probe_requests"] = true
+        };
+        var channel = CreateChannel("probe-channel", priority: 0, type: ProtocolConverter.Messages, compat: compat);
+        var nonStreams = new StubProxyNonStreamService(_ =>
+            Task.FromResult(new ProxyNonStreamResult(200, new { ok = true })));
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService([CreateRoute(channel, "claude-opus-5", "upstream-claude")]),
+            nonStreams: nonStreams);
+
+        var payload = CreateMessagesPayload("claude-opus-5", maxTokens: 1);
+        var result = await service.ProxyAsync(CreateMessagesContext(payload));
+
+        // 拦截返回 200 伪造响应，不转发上游
+        Assert.Equal(200, result.StatusCode);
+        Assert.Null(nonStreams.LastContext);
+        // 响应体是 messages 协议格式
+        var response = Assert.IsType<Dictionary<string, object?>>(result.Payload);
+        Assert.Equal("message", response["type"]);
+        Assert.Equal("end_turn", response["stop_reason"]);
+    }
+
+    [Fact]
+    public async Task ProxyAsync_ProbeInterception_Disabled_ForwardsProbeRequest()
+    {
+        var capacity = new ChannelCapacityService();
+        var channel = CreateChannel("probe-channel", priority: 0, type: ProtocolConverter.Messages);
+        var nonStreams = new StubProxyNonStreamService(_ =>
+            Task.FromResult(new ProxyNonStreamResult(200, new { ok = true })));
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService([CreateRoute(channel, "claude-opus-5", "upstream-claude")]),
+            nonStreams: nonStreams);
+
+        var payload = CreateMessagesPayload("claude-opus-5", maxTokens: 1);
+        var result = await service.ProxyAsync(CreateMessagesContext(payload));
+
+        // 未开启拦截，正常转发上游
+        Assert.Equal(200, result.StatusCode);
+        Assert.NotNull(nonStreams.LastContext);
+    }
+
+    [Fact]
+    public async Task ProxyAsync_ProbeInterception_Enabled_DoesNotInterceptNormalRequest()
+    {
+        var capacity = new ChannelCapacityService();
+        var compat = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["intercept_probe_requests"] = true
+        };
+        var channel = CreateChannel("probe-channel", priority: 0, type: ProtocolConverter.Messages, compat: compat);
+        var nonStreams = new StubProxyNonStreamService(_ =>
+            Task.FromResult(new ProxyNonStreamResult(200, new { ok = true })));
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService([CreateRoute(channel, "claude-opus-5", "upstream-claude")]),
+            nonStreams: nonStreams);
+
+        var payload = CreateMessagesPayload("claude-opus-5", maxTokens: 4096);
+        var result = await service.ProxyAsync(CreateMessagesContext(payload));
+
+        // 正常请求不受拦截影响
+        Assert.Equal(200, result.StatusCode);
+        Assert.NotNull(nonStreams.LastContext);
     }
 
     private static ProxyEndpointService CreateService(
@@ -933,19 +1005,49 @@ public sealed class ProxyEndpointServiceTests
         return payload;
     }
 
+    private static ProxyEndpointContext CreateMessagesContext(Dictionary<string, object?> payload)
+    {
+        return new ProxyEndpointContext(
+            ProtocolConverter.Messages,
+            payload,
+            "Bearer test",
+            new ProxyRequestMetadata("POST", "/v1/messages", null, new Dictionary<string, string>()),
+            new StubProxyStreamWriter(),
+            CancellationToken.None);
+    }
+
+    private static Dictionary<string, object?> CreateMessagesPayload(string model, int maxTokens = 4096)
+    {
+        return new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["model"] = model,
+            ["max_tokens"] = maxTokens,
+            ["messages"] = new List<object?>
+            {
+                new Dictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["role"] = "user",
+                    ["content"] = "ping"
+                }
+            }
+        };
+    }
+
     private static Dictionary<string, object?> CreateChannel(
         string id,
         int priority,
-        int? capacity = null)
+        int? capacity = null,
+        string? type = null,
+        Dictionary<string, object?>? compat = null)
     {
         var channel = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
             ["id"] = id,
             ["name"] = id,
-            ["type"] = ProtocolConverter.Chat,
+            ["type"] = type ?? ProtocolConverter.Chat,
             ["priority"] = priority,
             ["position"] = 0,
-            ["compat"] = new Dictionary<string, object?>()
+            ["compat"] = compat ?? new Dictionary<string, object?>()
         };
         if (capacity.HasValue)
         {
