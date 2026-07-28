@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using OpenCodex.Api.Infrastructure;
+using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.Core.Protocols;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs.Proxy;
@@ -16,19 +17,22 @@ public sealed class ProxyController : ApiControllerBase
     private readonly IProxyRequestService _requests;
     private readonly IProxyRouteService _routes;
     private readonly IModelCatalogService _catalog;
+    private readonly IProxyLogService _logs;
 
     public ProxyController(
         IRequestBodyReader bodyReader,
         IProxyEndpointService proxy,
         IProxyRequestService requests,
         IProxyRouteService routes,
-        IModelCatalogService catalog)
+        IModelCatalogService catalog,
+        IProxyLogService logs)
     {
         _bodyReader = bodyReader;
         _proxy = proxy;
         _requests = requests;
         _routes = routes;
         _catalog = catalog;
+        _logs = logs;
     }
 
     [HttpGet("/models")]
@@ -90,6 +94,46 @@ public sealed class ProxyController : ApiControllerBase
     private async Task<IActionResult> Proxy(string entryProtocol)
     {
         var payload = await _bodyReader.ReadJsonObjectAsync(Request, HttpContext.RequestAborted);
+
+        // 探测请求拦截：Claude Code Desktop 等闭源客户端会高频发送 max_tokens<=1 的最小请求探测渠道可用性。
+        // 这些请求会消耗上游配额并触发 429 限流，系统重试机制又使日志量翻倍，严重污染渠道监控。
+        // 在代理层直接拦截并返回伪造的最小成功响应，既不消耗上游资源，也保留可观测的拦截日志。
+        if (payload is not null && TryGetProbeMaxTokens(payload, out var probeMaxTokens))
+        {
+            var requestMetadata = ProxyRequestMetadataFactory.FromHttpRequest(
+                Request,
+                HttpContext.Connection.RemoteIpAddress?.ToString());
+            var accessKey = await _requests.AuthenticateAccessKeyAsync(AuthorizationHeader());
+            var requestState = _requests.StartRequest();
+            var requestModel = JsonDictionaryValue.String(payload, "model");
+            var isStream = payload.TryGetValue("stream", out var streamValue) && streamValue is true;
+
+            await _logs.WriteLogAsync(
+                new ProxyLogContext(
+                    RequestId: requestState.RequestId,
+                    OwnerUsername: accessKey.OwnerUsername,
+                    ApiKeyId: accessKey.Id,
+                    Payload: payload,
+                    UpstreamRequest: null,
+                    UpstreamResponse: null,
+                    ResponsePayload: null,
+                    ErrorResponse: null,
+                    RequestModel: requestModel,
+                    UpstreamModel: null,
+                    ChannelId: null,
+                    ChannelType: null,
+                    IsStream: isStream,
+                    TtftMs: null,
+                    StatusCode: StatusCodes.Status200OK,
+                    DurationMs: 0,
+                    Error: $"probe intercepted (max_tokens={probeMaxTokens})",
+                    WebSearchDetails: null),
+                requestMetadata);
+
+            var probeResponse = BuildProbeResponse(entryProtocol, requestModel, requestState.RequestId);
+            return StatusCode(StatusCodes.Status200OK, probeResponse);
+        }
+
         var result = await _proxy.ProxyAsync(
             new ProxyEndpointContext(
                 entryProtocol,
@@ -106,6 +150,87 @@ public sealed class ProxyController : ApiControllerBase
         }
 
         return StatusCode(result.StatusCode, result.Payload);
+    }
+
+    /// <summary>
+    /// 判断请求是否为探测请求：当 messages/responses/chat 协议下的最大输出 token 限制 <= 1 时视为探测。
+    /// </summary>
+    private static bool TryGetProbeMaxTokens(Dictionary<string, object?> payload, out int maxTokens)
+    {
+        maxTokens = 0;
+        foreach (var key in new[] { "max_tokens", "max_output_tokens", "max_completion_tokens" })
+        {
+            if (payload.TryGetValue(key, out var value) && value is int intValue && intValue <= 1)
+            {
+                maxTokens = intValue;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 按入口协议构造伪造的最小成功响应，使客户端认为探测通过。
+    /// </summary>
+    private static Dictionary<string, object?> BuildProbeResponse(
+        string entryProtocol,
+        string? model,
+        string requestId)
+    {
+        var shortId = requestId.Replace("-", string.Empty);
+        if (shortId.Length > 24)
+        {
+            shortId = shortId[..24];
+        }
+
+        if (entryProtocol == ProtocolConverter.Messages)
+        {
+            return new Dictionary<string, object?>
+            {
+                ["id"] = $"msg_{shortId}",
+                ["type"] = "message",
+                ["role"] = "assistant",
+                ["model"] = model ?? "claude-opus-5",
+                ["content"] = Array.Empty<object>(),
+                ["stop_reason"] = "end_turn",
+                ["stop_sequence"] = null
+            };
+        }
+
+        if (entryProtocol == ProtocolConverter.Chat)
+        {
+            return new Dictionary<string, object?>
+            {
+                ["id"] = $"chatcmpl-{shortId}",
+                ["object"] = "chat.completion",
+                ["created"] = (int)DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                ["model"] = model ?? "gpt-5.5",
+                ["choices"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["index"] = 0,
+                        ["message"] = new Dictionary<string, object?>
+                        {
+                            ["role"] = "assistant",
+                            ["content"] = string.Empty
+                        },
+                        ["finish_reason"] = "stop"
+                    }
+                }
+            };
+        }
+
+        // responses 协议
+        return new Dictionary<string, object?>
+        {
+            ["id"] = $"resp_{shortId}",
+            ["object"] = "response",
+            ["status"] = "completed",
+            ["model"] = model ?? "gpt-5.5",
+            ["output"] = Array.Empty<object>()
+        };
     }
 
     private string? AuthorizationHeader()

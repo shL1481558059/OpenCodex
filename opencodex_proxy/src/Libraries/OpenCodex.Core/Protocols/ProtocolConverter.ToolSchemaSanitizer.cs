@@ -24,6 +24,38 @@ public static partial class ProtocolConverter
         }
     }
 
+    /// <summary>
+    /// Upstream providers reject requests that set tool_choice without any tools.
+    /// Keep the outbound request consistent after conversion and same-protocol passthrough.
+    /// </summary>
+    private static void SanitizeRequestToolChoiceConsistency(Dictionary<string, object?> request)
+    {
+        if (HasEffectiveTools(request))
+        {
+            return;
+        }
+
+        if (request.TryGetValue("tools", out var tools)
+            && tools is IReadOnlyList<object?> toolList
+            && toolList.Count == 0)
+        {
+            request.Remove("tools");
+        }
+
+        request.Remove("tool_choice");
+    }
+
+    private static bool HasEffectiveTools(Dictionary<string, object?> request)
+    {
+        if (ListValue(request, "tools").Count > 0)
+        {
+            return true;
+        }
+
+        // Anthropic Messages may advertise remote MCP servers without a local tools array.
+        return ListValue(request, "mcp_servers").Count > 0;
+    }
+
     private static void SanitizeChatRequestToolSchemas(Dictionary<string, object?> request)
     {
         var tools = ListValue(request, "tools");
