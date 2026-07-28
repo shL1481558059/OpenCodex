@@ -329,6 +329,19 @@ public static partial class ProtocolConverter
                     injectedThinkingBlocks = true;
                     continue;
                 }
+
+                // 没有可用签名时（如 Responses 入口只带 reasoning summary）降级为文本块，
+                // 避免整条推理历史被丢弃、只剩下空 content 的 assistant 消息。
+                var reasoningText = StringifyContent(GetValue(message, "reasoning_content") ?? string.Empty).Trim();
+                if (!string.IsNullOrEmpty(reasoningText))
+                {
+                    var content = CanonicalMessageToAnthropicContent(message);
+                    content.Insert(0, Obj(
+                        ("type", "text"),
+                        ("text", $"{ReasoningTextOpenTag}\n{reasoningText}\n{ReasoningTextCloseTag}")));
+                    outputMessages.Add(Obj(("role", role), ("content", content)));
+                    continue;
+                }
             }
 
             outputMessages.Add(Obj(

@@ -1,5 +1,6 @@
 using OpenCodex.Core.Errors;
 using OpenCodex.Core.Protocols;
+using OpenCodex.Core.Services.Proxy;
 using Xunit;
 
 namespace OpenCodex.Api.Tests;
@@ -81,6 +82,162 @@ public sealed class ProtocolStructuralCompatibilityTests
 
         var outputConfig = Object(converted["output_config"]);
         Assert.Equal("json_schema", String(Object(outputConfig["format"]), "type"));
+    }
+
+    /// <summary>
+    /// 复现真实会话 dde2878a519e：codex 的 Responses 请求里 reasoning 与并行
+    /// function_call_output 结构完整，转成 Anthropic Messages 后不应退化成
+    /// 空 content 消息、也不应把成组的 tool_result 打散成多条 user 消息。
+    /// </summary>
+    private static Dictionary<string, object?> CodexReasoningHistoryRequest()
+    {
+        return new Dictionary<string, object?>
+        {
+            ["model"] = "public",
+            ["input"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "message",
+                    ["role"] = "user",
+                    ["content"] = new List<object?>
+                    {
+                        new Dictionary<string, object?> { ["type"] = "input_text", ["text"] = "帮我改造激活码绑定" }
+                    }
+                },
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "reasoning",
+                    ["summary"] = new List<object?>
+                    {
+                        new Dictionary<string, object?>
+                        {
+                            ["type"] = "summary_text",
+                            ["text"] = "先并行核查两个关键路径，再给方案。"
+                        }
+                    },
+                    ["status"] = "completed"
+                },
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "message",
+                    ["role"] = "assistant",
+                    ["content"] = new List<object?>
+                    {
+                        new Dictionary<string, object?> { ["type"] = "output_text", ["text"] = "先确认路径。" }
+                    }
+                },
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "function_call",
+                    ["call_id"] = "call_a",
+                    ["name"] = "exec_command",
+                    ["arguments"] = "{\"cmd\":\"ls a\"}"
+                },
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "function_call",
+                    ["call_id"] = "call_b",
+                    ["name"] = "exec_command",
+                    ["arguments"] = "{\"cmd\":\"ls b\"}"
+                },
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "function_call_output",
+                    ["call_id"] = "call_a",
+                    ["output"] = "out a"
+                },
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "function_call_output",
+                    ["call_id"] = "call_b",
+                    ["output"] = "out b"
+                },
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "message",
+                    ["role"] = "user",
+                    ["content"] = new List<object?>
+                    {
+                        new Dictionary<string, object?> { ["type"] = "input_text", ["text"] = "开始啊" }
+                    }
+                }
+            }
+        };
+    }
+
+    [Fact]
+    public void ResponsesToMessages_WithPreserveThinkingHistory_KeepsReasoningSummaryAsTextBlock()
+    {
+        var converted = ConvertCodexReasoningHistory(preserveThinkingHistory: true);
+
+        var reasoningBlock = Assert.Single(
+            AnthropicTextBlocks(converted),
+            text => text.Contains("先并行核查两个关键路径", StringComparison.Ordinal));
+        Assert.StartsWith("<previous_thinking>", reasoningBlock, StringComparison.Ordinal);
+        Assert.EndsWith("</previous_thinking>", reasoningBlock, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ResponsesToMessages_WithPreserveThinkingHistory_DoesNotEmitEmptyContentMessages()
+    {
+        var converted = ConvertCodexReasoningHistory(preserveThinkingHistory: true);
+
+        var empty = List(converted, "messages")
+            .Select(Object)
+            .Where(message => message["content"] is List<object?> { Count: 0 })
+            .ToList();
+
+        Assert.Empty(empty);
+    }
+
+    [Fact]
+    public void ResponsesToMessages_WithPreserveThinkingHistory_DoesNotRequestNativeThinking()
+    {
+        var converted = ConvertCodexReasoningHistory(preserveThinkingHistory: true);
+
+        // 降级为文本块时不能伪造原生 thinking 请求，签名缺失会被上游拒绝。
+        Assert.False(converted.ContainsKey("thinking"));
+        var serialized = System.Text.Json.JsonSerializer.Serialize(converted["messages"]);
+        Assert.DoesNotContain("\"type\":\"thinking\"", serialized, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ResponsesToMessages_WithoutPreserveThinkingHistory_DropsReasoningSummary()
+    {
+        var converted = ConvertCodexReasoningHistory(preserveThinkingHistory: false);
+
+        Assert.DoesNotContain(
+            AnthropicTextBlocks(converted),
+            text => text.Contains("先并行核查两个关键路径", StringComparison.Ordinal));
+    }
+
+    private static List<string> AnthropicTextBlocks(Dictionary<string, object?> converted)
+    {
+        return List(converted, "messages")
+            .Select(Object)
+            .Where(message => message["content"] is List<object?>)
+            .SelectMany(message => Assert.IsType<List<object?>>(message["content"]))
+            .Select(Object)
+            .Where(block => block.TryGetValue("type", out var type) && (string?)type == "text")
+            .Select(block => String(block, "text"))
+            .ToList();
+    }
+
+    private static Dictionary<string, object?> ConvertCodexReasoningHistory(bool preserveThinkingHistory)
+    {
+        var compat = new Dictionary<string, object?>
+        {
+            ["preserve_thinking_history"] = preserveThinkingHistory
+        };
+
+        var rewritten = ChannelCompatRequestRewriter.Apply(CodexReasoningHistoryRequest(), compat).Payload;
+        return ProtocolConverter.ConvertRequest(
+            rewritten,
+            ProtocolConverter.Responses,
+            ProtocolConverter.Messages,
+            "upstream",
+            compat);
     }
 
     [Fact]
