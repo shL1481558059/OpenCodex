@@ -716,4 +716,192 @@ public sealed class ProtocolStructuralCompatibilityTests
     private static Dictionary<string, object?> Object(object? value) => Assert.IsType<Dictionary<string, object?>>(value);
     private static List<object?> List(Dictionary<string, object?> value, string key) => Assert.IsType<List<object?>>(value[key]);
     private static string String(Dictionary<string, object?> value, string key) => Assert.IsType<string>(value[key]);
+
+    /// <summary>
+    /// Responses 入口的 reasoning 顶级 item 转 canonical 后是 content 为空的 assistant 消息。
+    /// 归一化时应折叠进相邻 assistant 消息，不应作为独立消息留存，否则下游会产生
+    /// 空 content 消息和连续 assistant 消息。
+    /// </summary>
+
+    private static Dictionary<string, object?> ReasoningFoldRequest(string reasoningSummary, string assistantText)
+    {
+        return new Dictionary<string, object?>
+        {
+            ["model"] = "public",
+            ["input"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "message",
+                    ["role"] = "user",
+                    ["content"] = new List<object?>
+                    {
+                        new Dictionary<string, object?> { ["type"] = "input_text", ["text"] = "开始" }
+                    }
+                },
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "reasoning",
+                    ["summary"] = new List<object?>
+                    {
+                        new Dictionary<string, object?> { ["type"] = "summary_text", ["text"] = reasoningSummary }
+                    },
+                    ["status"] = "completed"
+                },
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "message",
+                    ["role"] = "assistant",
+                    ["content"] = new List<object?>
+                    {
+                        new Dictionary<string, object?> { ["type"] = "output_text", ["text"] = assistantText }
+                    }
+                },
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "message",
+                    ["role"] = "user",
+                    ["content"] = new List<object?>
+                    {
+                        new Dictionary<string, object?> { ["type"] = "input_text", ["text"] = "好的" }
+                    }
+                }
+            }
+        };
+    }
+
+    private static Dictionary<string, object?> ConvertFoldRequest(
+        Dictionary<string, object?> request, string targetProtocol, bool preserveThinkingHistory)
+    {
+        var compat = new Dictionary<string, object?>
+        {
+            ["preserve_thinking_history"] = preserveThinkingHistory
+        };
+
+        var rewritten = ChannelCompatRequestRewriter.Apply(request, compat).Payload;
+        return ProtocolConverter.ConvertRequest(
+            rewritten,
+            ProtocolConverter.Responses,
+            targetProtocol,
+            "upstream",
+            compat);
+    }
+
+    [Fact]
+    public void ResponsesToMessages_ReasoningFoldedIntoAssistant_NoConsecutiveAssistant()
+    {
+        var converted = ConvertFoldRequest(
+            ReasoningFoldRequest("我的思考", "回答"), ProtocolConverter.Messages, preserveThinkingHistory: true);
+
+        var roles = List(converted, "messages").Select(Object).Select(m => String(m, "role")).ToList();
+        Assert.Equal(new[] { "user", "assistant", "user" }, roles);
+
+        var assistant = Object(List(converted, "messages")[1]);
+        var content = Assert.IsType<List<object?>>(assistant["content"]);
+        Assert.True(content.Count >= 2, "assistant 消息应同时包含 reasoning 文本块和正文");
+
+        var firstBlock = Object(content[0]);
+        Assert.Equal("text", String(firstBlock, "type"));
+        Assert.Contains("我的思考", String(firstBlock, "text"));
+        Assert.Contains("回答", Object(content[1])["text"]!.ToString());
+    }
+
+    [Fact]
+    public void ResponsesToChat_ReasoningFoldedIntoAssistant_NoEmptyContent()
+    {
+        var converted = ConvertFoldRequest(
+            ReasoningFoldRequest("我的思考", "回答"), ProtocolConverter.Chat, preserveThinkingHistory: true);
+
+        var roles = List(converted, "messages").Select(Object).Select(m => String(m, "role")).ToList();
+        Assert.Equal(new[] { "user", "assistant", "user" }, roles);
+
+        var assistant = Object(List(converted, "messages")[1]);
+        Assert.Equal("我的思考", String(assistant, "reasoning_content"));
+        Assert.Equal("回答", String(assistant, "content"));
+    }
+
+    [Fact]
+    public void ResponsesToMessages_PreserveFalse_ReasoningFoldedAway_NoEmptyContent()
+    {
+        var converted = ConvertFoldRequest(
+            ReasoningFoldRequest("我的思考", "回答"), ProtocolConverter.Messages, preserveThinkingHistory: false);
+
+        var roles = List(converted, "messages").Select(Object).Select(m => String(m, "role")).ToList();
+        Assert.Equal(new[] { "user", "assistant", "user" }, roles);
+
+        var assistant = Object(List(converted, "messages")[1]);
+        var content = Assert.IsType<List<object?>>(assistant["content"]);
+        Assert.True(content.Count > 0, "不应产生空 content 的 assistant 消息");
+
+        var serialized = System.Text.Json.JsonSerializer.Serialize(converted["messages"]);
+        Assert.DoesNotContain("我的思考", serialized);
+    }
+
+    [Fact]
+    public void ResponsesToChat_PreserveFalse_ReasoningFoldedAway_NoEmptyContent()
+    {
+        var converted = ConvertFoldRequest(
+            ReasoningFoldRequest("我的思考", "回答"), ProtocolConverter.Chat, preserveThinkingHistory: false);
+
+        var roles = List(converted, "messages").Select(Object).Select(m => String(m, "role")).ToList();
+        Assert.Equal(new[] { "user", "assistant", "user" }, roles);
+
+        var assistant = Object(List(converted, "messages")[1]);
+        Assert.Equal("回答", String(assistant, "content"));
+        Assert.False(assistant.ContainsKey("reasoning_content"), "preserve=false 时不应保留 reasoning_content");
+    }
+
+    private static Dictionary<string, object?> ReasoningOrphanRequest()
+    {
+        // reasoning 后面跟 user 消息，没有关联的 assistant，应被丢弃
+        return new Dictionary<string, object?>
+        {
+            ["model"] = "public",
+            ["input"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "message",
+                    ["role"] = "user",
+                    ["content"] = new List<object?>
+                    {
+                        new Dictionary<string, object?> { ["type"] = "input_text", ["text"] = "开始" }
+                    }
+                },
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "reasoning",
+                    ["summary"] = new List<object?>
+                    {
+                        new Dictionary<string, object?> { ["type"] = "summary_text", ["text"] = "孤儿思考" }
+                    },
+                    ["status"] = "completed"
+                },
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "message",
+                    ["role"] = "user",
+                    ["content"] = new List<object?>
+                    {
+                        new Dictionary<string, object?> { ["type"] = "input_text", ["text"] = "继续" }
+                    }
+                }
+            }
+        };
+    }
+
+    [Fact]
+    public void ResponsesToMessages_OrphanReasoning_Dropped()
+    {
+        var compat = new Dictionary<string, object?> { ["preserve_thinking_history"] = true };
+        var rewritten = ChannelCompatRequestRewriter.Apply(ReasoningOrphanRequest(), compat).Payload;
+        var converted = ProtocolConverter.ConvertRequest(
+            rewritten, ProtocolConverter.Responses, ProtocolConverter.Messages, "upstream", compat);
+
+        var roles = List(converted, "messages").Select(Object).Select(m => String(m, "role")).ToList();
+        Assert.Equal(new[] { "user", "user" }, roles);
+
+        var serialized = System.Text.Json.JsonSerializer.Serialize(converted["messages"]);
+        Assert.DoesNotContain("孤儿思考", serialized);
+    }
 }
