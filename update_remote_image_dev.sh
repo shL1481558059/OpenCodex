@@ -18,6 +18,38 @@ POSTGRES_CONTAINER_NAME="${POSTGRES_CONTAINER_NAME:-ocxp-postgres-dev}"
 REDIS_CONTAINER_NAME="${REDIS_CONTAINER_NAME:-ocxp-redis-dev}"
 APP_PORT_MAPPING="${APP_PORT_MAPPING:-127.0.0.1:8003:8080}"
 NETWORK_NAME="${NETWORK_NAME:-ocxp-dev-network}"
+# 构建模式: remote（在服务器上构建，默认）或 local（本地 buildx 推送到镜像仓库）
+BUILD_MODE="${BUILD_MODE:-remote}"
+# 服务器端构建目录（远程构建时存放同步的源码）
+REMOTE_BUILD_DIR="${REMOTE_BUILD_DIR:-/www/wwwroot/ocxp-dev-build}"
+# rsync 排除项
+RSYNC_EXCLUDES=(
+  --exclude '.git'
+  --exclude 'node_modules'
+  --exclude '.venv'
+  --exclude '__pycache__'
+  --exclude '.env'
+  --exclude 'config.json'
+  --exclude 'logs'
+  --exclude '*.tar'
+  --exclude '*.tar.gz'
+  --exclude '*.zip'
+  --exclude '.DS_Store'
+  --exclude '.idea'
+  --exclude '.vscode'
+  --exclude 'frontend/node_modules'
+  --exclude 'frontend/dist'
+  --exclude 'src-tauri/target'
+  --exclude 'src-tauri/resources'
+  --exclude 'src-tauri/binaries/publish'
+  --exclude 'src-tauri/binaries/opencodex-api-*'
+  --exclude 'opencodex_proxy/**/bin/'
+  --exclude 'opencodex_proxy/**/obj/'
+  --exclude '**/TestResults/'
+  --exclude '**/*.trx'
+  --exclude '.tmp'
+  --exclude '.playwright-cli'
+)
 
 case "$DB_TYPE" in
   postgres|postgresql|pgsql)
@@ -58,27 +90,55 @@ echo "Postgres container: $POSTGRES_CONTAINER_NAME"
 echo "Redis container: $REDIS_CONTAINER_NAME"
 echo "Port mapping: $APP_PORT_MAPPING"
 echo "Network: $NETWORK_NAME"
+echo "Build mode: $BUILD_MODE"
 echo "============================"
 echo
 
-echo "Building and pushing $IMAGE_NAME for $DOCKER_PLATFORM"
-(
-  cd "$ROOT_DIR"
-  docker buildx build --progress=plain --platform "$DOCKER_PLATFORM" -t "$IMAGE_NAME" .
-  docker push "$IMAGE_NAME"
-)
-echo
+if [ "$BUILD_MODE" = "local" ]; then
+  # 本地构建并推送到镜像仓库（需要 docker buildx 支持）
+  echo "Building and pushing $IMAGE_NAME for $DOCKER_PLATFORM locally"
+  (
+    cd "$ROOT_DIR"
+    docker buildx build --progress=plain --platform "$DOCKER_PLATFORM" -t "$IMAGE_NAME" .
+    docker push "$IMAGE_NAME"
+  )
+  echo
+else
+  # 在服务器上构建镜像（服务器原生 amd64，无需跨架构，也不依赖本地 buildx）
+  echo "Syncing source to $SSH_TARGET:$REMOTE_BUILD_DIR"
+  ssh "${SSH_OPTS[@]}" "$SSH_TARGET" "mkdir -p '$REMOTE_BUILD_DIR'"
+  rsync -az --delete "${RSYNC_EXCLUDES[@]}" \
+    -e "ssh ${SSH_OPTS[*]}" \
+    "$ROOT_DIR/" "$SSH_TARGET:$REMOTE_BUILD_DIR/"
+  echo
+
+  echo "Building $IMAGE_NAME on remote"
+  ssh "${SSH_OPTS[@]}" "$SSH_TARGET" \
+    "REMOTE_BUILD_DIR='$REMOTE_BUILD_DIR' IMAGE_NAME='$IMAGE_NAME' DOCKER_PLATFORM='$DOCKER_PLATFORM' bash -s" <<'BUILD_SCRIPT'
+set -euo pipefail
+cd "$REMOTE_BUILD_DIR"
+docker build --platform "$DOCKER_PLATFORM" -t "$IMAGE_NAME" .
+BUILD_SCRIPT
+  echo
+fi
 
 echo "Uploading $COMPOSE_FILE to remote as docker-compose.yml"
 scp "${SCP_OPTS[@]}" "$ROOT_DIR/$COMPOSE_FILE" "$SSH_TARGET:$REMOTE_DEPLOY_DIR/docker-compose.yml"
 echo
 
-echo "Pulling and deploying on $SSH_TARGET"
+if [ "$BUILD_MODE" = "local" ]; then
+  echo "Pulling and deploying on $SSH_TARGET"
+else
+  echo "Deploying on $SSH_TARGET (image already built on remote)"
+fi
 ssh "${SSH_OPTS[@]}" "$SSH_TARGET" \
-  "REMOTE_DEPLOY_DIR='$REMOTE_DEPLOY_DIR' IMAGE_NAME='$IMAGE_NAME' SERVICE_NAME='$SERVICE_NAME' OLD_SERVICE_NAMES='$OLD_SERVICE_NAMES' POSTGRES_CONTAINER_NAME='$POSTGRES_CONTAINER_NAME' REDIS_CONTAINER_NAME='$REDIS_CONTAINER_NAME' APP_PORT_MAPPING='$APP_PORT_MAPPING' NETWORK_NAME='$NETWORK_NAME' bash -s" <<'REMOTE_SCRIPT'
+  "REMOTE_DEPLOY_DIR='$REMOTE_DEPLOY_DIR' IMAGE_NAME='$IMAGE_NAME' SERVICE_NAME='$SERVICE_NAME' OLD_SERVICE_NAMES='$OLD_SERVICE_NAMES' POSTGRES_CONTAINER_NAME='$POSTGRES_CONTAINER_NAME' REDIS_CONTAINER_NAME='$REDIS_CONTAINER_NAME' APP_PORT_MAPPING='$APP_PORT_MAPPING' NETWORK_NAME='$NETWORK_NAME' BUILD_MODE='$BUILD_MODE' bash -s" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
-docker pull "$IMAGE_NAME"
+# 本地构建模式需要从仓库拉取镜像；远程构建模式镜像已在服务器上
+if [ "$BUILD_MODE" = "local" ]; then
+  docker pull "$IMAGE_NAME"
+fi
 mkdir -p "$REMOTE_DEPLOY_DIR/logs" "$REMOTE_DEPLOY_DIR/redis-data"
 cd "$REMOTE_DEPLOY_DIR"
 
