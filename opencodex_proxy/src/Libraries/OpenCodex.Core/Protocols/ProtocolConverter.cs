@@ -188,12 +188,14 @@ public static partial class ProtocolConverter
            if (sourceProtocol == targetProtocol)
            {
                SanitizeRequestToolSchemas(converted, targetProtocol);
+               SanitizeRequestToolChoiceConsistency(converted);
                return converted;
            }
 
             ValidateRequestSemanticCompatibility(converted, sourceProtocol, targetProtocol);
             var canonical = ToCanonicalRequest(converted, sourceProtocol, compat);
             var result = FromCanonicalRequest(canonical, targetProtocol);
+            SanitizeRequestToolChoiceConsistency(result);
             return result;
        }
 

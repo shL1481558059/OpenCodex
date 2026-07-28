@@ -257,6 +257,19 @@ public sealed class ProtocolStructuralCompatibilityTests
             {
                 ["model"] = "public",
                 ["input"] = "hello",
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "function",
+                        ["name"] = "lookup",
+                        ["parameters"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object?>()
+                        }
+                    }
+                },
                 ["tool_choice"] = new Dictionary<string, object?>
                 {
                     ["type"] = "function",
@@ -270,6 +283,104 @@ public sealed class ProtocolStructuralCompatibilityTests
         var choice = Object(converted["tool_choice"]);
         Assert.Equal("function", String(choice, "type"));
         Assert.Equal("lookup", String(Object(choice["function"]), "name"));
+    }
+
+    [Theory]
+    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Chat)]
+    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Messages)]
+    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Responses)]
+    [InlineData(ProtocolConverter.Chat, ProtocolConverter.Chat)]
+    public void ConvertRequest_EmptyToolsWithToolChoice_DropsToolChoice(
+        string sourceProtocol,
+        string targetProtocol)
+    {
+        Dictionary<string, object?> payload = sourceProtocol switch
+        {
+            ProtocolConverter.Responses => new Dictionary<string, object?>
+            {
+                ["model"] = "public",
+                ["input"] = "hello",
+                ["tools"] = new List<object?>(),
+                ["tool_choice"] = "auto"
+            },
+            ProtocolConverter.Chat => new Dictionary<string, object?>
+            {
+                ["model"] = "public",
+                ["messages"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["role"] = "user",
+                        ["content"] = "hello"
+                    }
+                },
+                ["tools"] = new List<object?>(),
+                ["tool_choice"] = "auto"
+            },
+            _ => throw new InvalidOperationException(sourceProtocol)
+        };
+
+        var converted = ProtocolConverter.ConvertRequest(
+            payload,
+            sourceProtocol,
+            targetProtocol,
+            "upstream");
+
+        Assert.False(converted.ContainsKey("tools"));
+        Assert.False(converted.ContainsKey("tool_choice"));
+    }
+
+    [Fact]
+    public void ConvertRequest_ResponsesToChat_KeepsToolChoiceWhenToolsPresent()
+    {
+        var converted = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "public",
+                ["input"] = "hello",
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "function",
+                        ["name"] = "lookup",
+                        ["parameters"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object?>()
+                        }
+                    }
+                },
+                ["tool_choice"] = "auto"
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Chat,
+            "upstream");
+
+        Assert.Equal("auto", converted["tool_choice"]);
+        var tools = Assert.IsType<List<object?>>(converted["tools"]);
+        Assert.Single(tools);
+    }
+
+    [Theory]
+    [InlineData("none")]
+    [InlineData("required")]
+    public void ConvertRequest_ResponsesToChat_DropsStringToolChoiceWithoutTools(string toolChoice)
+    {
+        var converted = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "public",
+                ["input"] = "hello",
+                ["tools"] = new List<object?>(),
+                ["tool_choice"] = toolChoice
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Chat,
+            "upstream");
+
+        Assert.False(converted.ContainsKey("tools"));
+        Assert.False(converted.ContainsKey("tool_choice"));
     }
 
     private static Dictionary<string, object?> MessagesToolHistoryRequest()
