@@ -27,6 +27,7 @@ public static class OpenCodexConfig
     {
         "enable_apply_patch_prompt_compat",
         "preserve_thinking_history",
+        "intercept_probe_requests",
         "rename_params",
         "drop_params",
         "drop_tool_types",
