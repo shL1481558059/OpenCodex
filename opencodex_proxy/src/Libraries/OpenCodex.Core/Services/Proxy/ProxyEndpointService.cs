@@ -224,6 +224,77 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         effectivePayload,
                         channelCompat).Payload;
 
+                    // 探测请求拦截：渠道 compat 开启 intercept_probe_requests 后，
+                    // 对 max_tokens<=1 的探测请求直接返回伪造成功响应，不转发上游。
+                    if (IsProbeInterceptionEnabled(channelCompat)
+                        && TryGetProbeMaxTokens(effectivePayload, out var probeMaxTokens))
+                    {
+                        logInFinally = false;
+                        if (requestLogId.HasValue)
+                        {
+                            _logs.MarkProcessing(requestLogId.Value, new ProxyRequestLogProcessingContext(
+                                ownerUsername,
+                                apiKeyId,
+                                upstreamRequest: null,
+                                requestModel,
+                                upstreamModel,
+                                channelId,
+                                channelType,
+                                isStream));
+                        }
+
+                        await WriteChannelAttemptLogAsync(
+                            requestLogId,
+                            requestId,
+                            ownerUsername,
+                            apiKeyId,
+                           payload,
+                            upstreamRequest: null,
+                           requestModel,
+                           attemptUpstreamModel,
+                           candidate.Route.Channel,
+                           candidateChannelId,
+                           attemptChannelType,
+                           isStream,
+                            routeAttemptNumber,
+                            attemptStarted,
+                            ProxyHttpStatus.Ok,
+                            error: $"probe intercepted (max_tokens={probeMaxTokens})",
+                            failoverEligible: false,
+                            upstreamResponse: null,
+                            requestMetadata);
+                        await _channelCircuitBreaker.RecordSuccessAsync(ownerUsername, candidateChannelId);
+
+                        var probeResponse = BuildProbeResponse(context.EntryProtocol, requestModel, requestId);
+                        if (requestLogId.HasValue)
+                        {
+                            await _logs.CompleteLogAsync(
+                                requestLogId.Value,
+                                new ProxyLogContext(
+                                    requestId,
+                                    ownerUsername,
+                                    apiKeyId,
+                                    payload,
+                                    UpstreamRequest: null,
+                                    UpstreamResponse: null,
+                                    ResponsePayload: probeResponse,
+                                    ErrorResponse: null,
+                                    requestModel,
+                                    upstreamModel,
+                                    channelId,
+                                    channelType,
+                                    IsStream: false,
+                                    TtftMs: null,
+                                    StatusCode: 200,
+                                    ElapsedMilliseconds(started),
+                                    Error: $"probe intercepted (max_tokens={probeMaxTokens})",
+                                    WebSearchDetails: null),
+                                requestMetadata);
+                        }
+
+                        return new ProxyEndpointResult(200, probeResponse, IsEmpty: false);
+                    }
+
                     upstreamRequest = ProtocolConverter.ConvertRequest(
                         effectivePayload,
                         context.EntryProtocol,
@@ -813,6 +884,95 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             short shortValue => shortValue,
             byte byteValue => byteValue,
             _ => fallback
+        };
+    }
+
+    /// <summary>
+    /// 判断渠道 compat 是否开启了探测请求拦截。
+    /// </summary>
+    private static bool IsProbeInterceptionEnabled(IReadOnlyDictionary<string, object?> channelCompat)
+    {
+        return channelCompat.TryGetValue("intercept_probe_requests", out var value) && value is true;
+    }
+
+    /// <summary>
+    /// 判断请求是否为探测请求：当最大输出 token 限制 <= 1 时视为探测。
+    /// </summary>
+    private static bool TryGetProbeMaxTokens(Dictionary<string, object?> payload, out int maxTokens)
+    {
+        maxTokens = 0;
+        foreach (var key in new[] { "max_tokens", "max_output_tokens", "max_completion_tokens" })
+        {
+            if (payload.TryGetValue(key, out var value) && value is int intValue && intValue <= 1)
+            {
+                maxTokens = intValue;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 按入口协议构造伪造的最小成功响应，使客户端认为探测通过。
+    /// </summary>
+    private static Dictionary<string, object?> BuildProbeResponse(
+        string entryProtocol,
+        string? model,
+        string requestId)
+    {
+        var shortId = requestId.Replace("-", string.Empty);
+        if (shortId.Length > 24)
+        {
+            shortId = shortId[..24];
+        }
+
+        if (entryProtocol == ProtocolConverter.Messages)
+        {
+            return new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["id"] = $"msg_{shortId}",
+                ["type"] = "message",
+                ["role"] = "assistant",
+                ["model"] = model ?? "claude-opus-5",
+                ["content"] = Array.Empty<object>(),
+                ["stop_reason"] = "end_turn",
+                ["stop_sequence"] = null
+            };
+        }
+
+        if (entryProtocol == ProtocolConverter.Chat)
+        {
+            return new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["id"] = $"chatcmpl-{shortId}",
+                ["object"] = "chat.completion",
+                ["created"] = (int)DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                ["model"] = model ?? "gpt-5.5",
+                ["choices"] = new List<object?>
+                {
+                    new Dictionary<string, object?>(StringComparer.Ordinal)
+                    {
+                        ["index"] = 0,
+                        ["message"] = new Dictionary<string, object?>(StringComparer.Ordinal)
+                        {
+                            ["role"] = "assistant",
+                            ["content"] = string.Empty
+                        },
+                        ["finish_reason"] = "stop"
+                    }
+                }
+            };
+        }
+
+        // responses 协议
+        return new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["id"] = $"resp_{shortId}",
+            ["object"] = "response",
+            ["status"] = "completed",
+            ["model"] = model ?? "gpt-5.5",
+            ["output"] = Array.Empty<object>()
         };
     }
 
