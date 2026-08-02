@@ -192,7 +192,7 @@ public sealed class ProxyController : ApiControllerBase
             ["max_context_window"] = 256000,
             ["auto_compact_token_limit"] = null,
             ["reasoning_summary_format"] = "text",
-            ["default_reasoning_summary"] = "short",
+            ["default_reasoning_summary"] = "auto",
             ["supports_reasoning_summaries"] = true,
             ["additional_speed_tiers"] = new List<object?> { "fast" },
             ["service_tiers"] = new List<object?> { "standard", "pro" },

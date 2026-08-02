@@ -90,7 +90,7 @@ public static class OpenCodexModelCatalogDefaults
             },
             ["supports_parallel_tool_calls"] = true,
             ["supports_reasoning_summaries"] = true,
-            ["default_reasoning_summary"] = "short",
+            ["default_reasoning_summary"] = "auto",
             ["reasoning_summary_format"] = "text"
         });
     }
