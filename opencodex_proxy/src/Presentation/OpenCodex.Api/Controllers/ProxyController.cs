@@ -18,6 +18,7 @@ public sealed class ProxyController : ApiControllerBase
     private readonly IProxyRequestService _requests;
     private readonly IProxyRouteService _routes;
     private readonly IModelCatalogService _catalog;
+    private readonly ICodexOfficialModelCatalogFactory _codexModels;
     private readonly IDesktopSystemSettingsStore _systemSettings;
 
     public ProxyController(
@@ -26,6 +27,7 @@ public sealed class ProxyController : ApiControllerBase
         IProxyRequestService requests,
         IProxyRouteService routes,
         IModelCatalogService catalog,
+        ICodexOfficialModelCatalogFactory codexModels,
         IDesktopSystemSettingsStore systemSettings)
     {
         _bodyReader = bodyReader;
@@ -33,6 +35,7 @@ public sealed class ProxyController : ApiControllerBase
         _requests = requests;
         _routes = routes;
         _catalog = catalog;
+        _codexModels = codexModels;
         _systemSettings = systemSettings;
     }
 
@@ -60,6 +63,16 @@ public sealed class ProxyController : ApiControllerBase
                 model,
                 catalogByModel.TryGetValue(model.Model, out var info) ? info : null))
             .ToList();
+
+        if (IsCodexClient())
+        {
+            return StatusCode(
+                StatusCodes.Status200OK,
+                new Dictionary<string, object?>
+                {
+                    ["models"] = _codexModels.BuildCodexModels(models, catalogByModel)
+                });
+        }
 
         var payload = new Dictionary<string, object?>
         {
@@ -128,6 +141,18 @@ public sealed class ProxyController : ApiControllerBase
         }
 
         return StatusCode(result.StatusCode, result.Payload);
+    }
+
+    private bool IsCodexClient()
+    {
+        if (Request.Query.ContainsKey("client_version"))
+        {
+            return true;
+        }
+
+        var userAgent = Request.Headers.UserAgent.ToString();
+        return userAgent.Contains("codex", StringComparison.OrdinalIgnoreCase)
+            || userAgent.Contains("Codex Desktop", StringComparison.OrdinalIgnoreCase);
     }
 
     private string? AuthorizationHeader()

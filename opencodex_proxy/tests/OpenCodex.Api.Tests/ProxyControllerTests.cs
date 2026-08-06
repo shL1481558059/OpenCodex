@@ -71,10 +71,37 @@ public sealed class ProxyControllerTests
         Assert.True(proxy.Called);
     }
 
+    [Fact]
+    public async Task Models_CodexClientHeader_ReturnsModelsPayload()
+    {
+        var expectedModels = new List<Dictionary<string, object?>>
+        {
+            new()
+            {
+                ["slug"] = "gpt-5.5"
+            }
+        };
+        var factory = new StubCodexOfficialModelCatalogFactory(expectedModels);
+        var controller = CreateController(
+            new StubRequestBodyReader(CreateMessagesPayload(maxTokens: 4096)),
+            new StubProxyEndpointService(),
+            interceptProbeRequests: false,
+            codexFactory: factory);
+        controller.HttpContext.Request.QueryString = QueryString.Create("client_version", "0.147.0");
+
+        var action = await controller.Models();
+
+        var objectResult = Assert.IsType<ObjectResult>(action);
+        Assert.Equal(200, objectResult.StatusCode);
+        var payload = Assert.IsType<Dictionary<string, object?>>(objectResult.Value);
+        Assert.Same(expectedModels, payload["models"]);
+    }
+
     private static ProxyController CreateController(
         IRequestBodyReader bodyReader,
         StubProxyEndpointService proxy,
-        bool interceptProbeRequests)
+        bool interceptProbeRequests,
+        ICodexOfficialModelCatalogFactory? codexFactory = null)
     {
         var controller = new ProxyController(
             bodyReader,
@@ -82,6 +109,7 @@ public sealed class ProxyControllerTests
             new StubProxyRequestService(),
             new StubProxyRouteService(),
             new StubModelCatalogService(),
+            codexFactory ?? new StubCodexOfficialModelCatalogFactory(),
             new StubSystemSettingsStore(interceptProbeRequests))
         {
             ControllerContext = new ControllerContext
@@ -213,7 +241,7 @@ public sealed class ProxyControllerTests
 
         public ApiOpResult<ModelInfoListResponse> ListModels(string? query, string? providerCode, bool? enabled)
         {
-            throw new NotSupportedException();
+            return ApiOpResult<ModelInfoListResponse>.Succeed(new ModelInfoListResponse([]));
         }
 
         public ApiOpResult<ModelInfoResponsePayload> CreateModel(ModelInfoCreateRequest request)
@@ -266,6 +294,23 @@ public sealed class ProxyControllerTests
             ModelUsageVector usage)
         {
             throw new NotSupportedException();
+        }
+    }
+
+    private sealed class StubCodexOfficialModelCatalogFactory : ICodexOfficialModelCatalogFactory
+    {
+        private readonly IReadOnlyList<Dictionary<string, object?>> _result;
+
+        public StubCodexOfficialModelCatalogFactory(IReadOnlyList<Dictionary<string, object?>>? result = null)
+        {
+            _result = result ?? [];
+        }
+
+        public IReadOnlyList<Dictionary<string, object?>> BuildCodexModels(
+            IReadOnlyList<ProxyModelCapabilityDto> routedModels,
+            IReadOnlyDictionary<string, ModelInfoResponse> catalogByModel)
+        {
+            return _result;
         }
     }
 
