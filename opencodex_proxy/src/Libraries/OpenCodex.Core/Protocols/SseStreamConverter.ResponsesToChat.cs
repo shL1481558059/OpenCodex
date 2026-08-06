@@ -137,7 +137,8 @@ public static partial class SseStreamConverter
                         $"Responses stream item '{itemType}' cannot be represented by Chat Completions without changing MCP execution semantics.");
                 }
 
-                if (IsServerExecutedNativeToolCallType(itemType))
+                if (IsServerExecutedNativeToolCallType(itemType)
+                    || IsServerExecutedToolSearchCall(item))
                 {
                     outputByIndex[outputIndex] = new Dictionary<string, object?>(item, StringComparer.Ordinal);
                     continue;
@@ -394,7 +395,8 @@ public static partial class SseStreamConverter
                 if (!toolStates.ContainsKey(outputIndex)
                     && (IsNativeMcpItemType(completedItemType)
                         || (IsResponsesNativeToolCallType(completedItemType)
-                            && !IsServerExecutedNativeToolCallType(completedItemType))))
+                            && !IsServerExecutedNativeToolCallType(completedItemType)
+                            && !IsServerExecutedToolSearchCall(item))))
                 {
                     throw new InvalidOperationException(
                         $"Responses stream item '{completedItemType}' completed without a compatible Chat tool-call start event.");
@@ -500,7 +502,8 @@ public static partial class SseStreamConverter
                                 var doneItemType = StringValue(doneItem, "type", string.Empty);
                                 if ((IsNativeMcpItemType(doneItemType)
                                         || (IsResponsesNativeToolCallType(doneItemType)
-                                            && !IsServerExecutedNativeToolCallType(doneItemType)))
+                                            && !IsServerExecutedNativeToolCallType(doneItemType)
+                                            && !IsServerExecutedToolSearchCall(doneItem)))
                                     && !toolStates.ContainsKey(i))
                                 {
                                     throw new InvalidOperationException(
@@ -730,6 +733,10 @@ public static partial class SseStreamConverter
 
     private static bool IsServerExecutedNativeToolCallType(string itemType)
         => itemType is "web_search_call" or "file_search_call" or "code_interpreter_call" or "image_generation_call";
+
+    private static bool IsServerExecutedToolSearchCall(Dictionary<string, object?> item)
+        => string.Equals(StringValue(item, "type", string.Empty), "tool_search_call", StringComparison.Ordinal)
+            && string.Equals(StringValue(item, "execution", string.Empty), "server", StringComparison.Ordinal);
 
     private static bool TryGetClientToolCallInfo(
         Dictionary<string, object?> item,

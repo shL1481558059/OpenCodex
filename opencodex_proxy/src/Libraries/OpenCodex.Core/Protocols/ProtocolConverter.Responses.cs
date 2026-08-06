@@ -95,6 +95,10 @@ public static partial class ProtocolConverter
                         ("native_type", "mcp")));
                 }
             }
+            else if (IsServerExecutedToolSearchResponseItem(item))
+            {
+                continue;
+            }
             else if (IsResponsesToolCallLike(item))
             {
                 var arguments = ResponsesToolCallArguments(item);
@@ -570,5 +574,11 @@ public static partial class ProtocolConverter
             ("stop_reason", CanonicalFinishReasonToMessages(GetString(canonical, "finish_reason") ?? "stop")),
             ("stop_sequence", null),
             ("usage", CanonicalUsageToMessages(ObjectValue(canonical, "usage"))));
+    }
+
+    private static bool IsServerExecutedToolSearchResponseItem(Dictionary<string, object?> item)
+    {
+        return string.Equals(GetString(item, "type"), "tool_search_call", StringComparison.Ordinal)
+            && string.Equals(GetString(item, "execution"), "server", StringComparison.Ordinal);
     }
 }

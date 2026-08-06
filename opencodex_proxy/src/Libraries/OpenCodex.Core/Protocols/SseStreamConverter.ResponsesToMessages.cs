@@ -316,7 +316,8 @@ public static partial class SseStreamConverter
                 }
 
                 var isMcpCall = itemType == "mcp_call";
-                if (IsServerExecutedNativeToolCallType(itemType))
+                if (IsServerExecutedNativeToolCallType(itemType)
+                    || IsServerExecutedToolSearchCall(item))
                 {
                     outputByIndex[outputIndex] = new Dictionary<string, object?>(item, StringComparer.Ordinal);
                     continue;
@@ -447,7 +448,8 @@ public static partial class SseStreamConverter
                 if (!toolStates.ContainsKey(outputIndex)
                     && (IsNativeMcpItemType(completedItemType)
                         || (IsResponsesNativeToolCallType(completedItemType)
-                            && !IsServerExecutedNativeToolCallType(completedItemType))))
+                            && !IsServerExecutedNativeToolCallType(completedItemType)
+                            && !IsServerExecutedToolSearchCall(item))))
                 {
                     throw new InvalidOperationException(
                         $"Responses stream item '{completedItemType}' completed without a compatible Anthropic content-block start event.");
@@ -550,7 +552,8 @@ public static partial class SseStreamConverter
                                 var doneItemType = StringValue(doneItem, "type", string.Empty);
                                 if ((IsNativeMcpItemType(doneItemType)
                                         || (IsResponsesNativeToolCallType(doneItemType)
-                                            && !IsServerExecutedNativeToolCallType(doneItemType)))
+                                            && !IsServerExecutedNativeToolCallType(doneItemType)
+                                            && !IsServerExecutedToolSearchCall(doneItem)))
                                     && !toolStates.ContainsKey(i))
                                 {
                                     throw new InvalidOperationException(

@@ -15,6 +15,11 @@ public static partial class ProtocolConverter
         }
 
         var itemType = GetString(inputItem, "type");
+        if (itemType == "additional_tools")
+        {
+            return [];
+        }
+
         if (itemType == "mcp_call")
         {
             var callId = GetValue(inputItem, "call_id") ?? GetValue(inputItem, "id") ?? NewId("mcp");
@@ -47,6 +52,12 @@ public static partial class ProtocolConverter
             }
 
             return messages;
+        }
+
+        if (itemType == "tool_search_call"
+            && string.Equals(GetString(inputItem, "execution"), "server", StringComparison.Ordinal))
+        {
+            return [];
         }
 
         if (IsResponsesToolCallLike(inputItem))

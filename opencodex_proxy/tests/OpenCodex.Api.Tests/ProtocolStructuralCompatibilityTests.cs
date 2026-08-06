@@ -713,6 +713,314 @@ public sealed class ProtocolStructuralCompatibilityTests
         return response;
     }
 
+    [Theory]
+    [InlineData(ProtocolConverter.Chat)]
+    [InlineData(ProtocolConverter.Messages)]
+    public void ResponsesToChatOrMessages_DeferredFunctionTool_IgnoredWithoutError(string targetProtocol)
+    {
+        var converted = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "public",
+                ["input"] = "hello",
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "function",
+                        ["name"] = "lookup",
+                        ["defer_loading"] = true,
+                        ["parameters"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object?>()
+                        }
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            targetProtocol,
+            "upstream");
+
+        var serialized = System.Text.Json.JsonSerializer.Serialize(converted["tools"]);
+        Assert.DoesNotContain("defer_loading", serialized, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(ProtocolConverter.Chat)]
+    [InlineData(ProtocolConverter.Messages)]
+    public void ResponsesToChatOrMessages_AllowedCallersTool_IgnoredWithoutError(string targetProtocol)
+    {
+        var converted = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "public",
+                ["input"] = "hello",
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "function",
+                        ["name"] = "lookup",
+                        ["allowed_callers"] = new List<object?> { "direct" },
+                        ["parameters"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object?>()
+                        }
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            targetProtocol,
+            "upstream");
+
+        var serialized = System.Text.Json.JsonSerializer.Serialize(converted["tools"]);
+        Assert.DoesNotContain("allowed_callers", serialized, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(ProtocolConverter.Chat)]
+    [InlineData(ProtocolConverter.Messages)]
+    public void ResponsesToChatOrMessages_AllowedToolsToolChoice_DegradesToAuto(string targetProtocol)
+    {
+        var converted = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "public",
+                ["input"] = "hello",
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "function",
+                        ["name"] = "lookup",
+                        ["parameters"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object?>()
+                        }
+                    }
+                },
+                ["tool_choice"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "allowed_tools",
+                    ["mode"] = "auto",
+                    ["tools"] = new List<object?>
+                    {
+                        new Dictionary<string, object?> { ["type"] = "function", ["name"] = "lookup" }
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            targetProtocol,
+            "upstream");
+
+        if (targetProtocol == ProtocolConverter.Chat)
+        {
+            Assert.Equal("auto", converted["tool_choice"]);
+        }
+        else
+        {
+            var toolChoice = Assert.IsType<Dictionary<string, object?>>(converted["tool_choice"]);
+            Assert.Equal("auto", toolChoice["type"]);
+        }
+    }
+
+    [Theory]
+    [InlineData(ProtocolConverter.Chat)]
+    [InlineData(ProtocolConverter.Messages)]
+    public void ResponsesToChatOrMessages_MaxToolCalls_DroppedWithoutError(string targetProtocol)
+    {
+        var converted = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "public",
+                ["input"] = "hello",
+                ["max_tool_calls"] = 2
+            },
+            ProtocolConverter.Responses,
+            targetProtocol,
+            "upstream");
+
+        Assert.False(converted.ContainsKey("max_tool_calls"));
+    }
+
+    [Fact]
+    public void ResponsesToChat_AdditionalToolsAfterHistory_PromotedToTopLevelTools()
+    {
+        var converted = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "public",
+                ["input"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "message",
+                        ["role"] = "user",
+                        ["content"] = new List<object?>
+                        {
+                            new Dictionary<string, object?> { ["type"] = "input_text", ["text"] = "hello" }
+                        }
+                    },
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "additional_tools",
+                        ["role"] = "developer",
+                        ["tools"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "function",
+                                ["name"] = "lookup",
+                                ["parameters"] = new Dictionary<string, object?>
+                                {
+                                    ["type"] = "object",
+                                    ["properties"] = new Dictionary<string, object?>()
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Chat,
+            "upstream");
+
+        var tools = List(converted, "tools");
+        Assert.Contains(tools, item => String(Object(Object(item)["function"]), "name") == "lookup");
+        var serialized = System.Text.Json.JsonSerializer.Serialize(converted["messages"]);
+        Assert.DoesNotContain("additional_tools", serialized, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ResponsesToChat_AdditionalToolsAtStart_FlattensToTopLevelTools()
+    {
+        var converted = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "public",
+                ["input"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "additional_tools",
+                        ["role"] = "developer",
+                        ["tools"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "function",
+                                ["name"] = "lookup",
+                                ["parameters"] = new Dictionary<string, object?>
+                                {
+                                    ["type"] = "object",
+                                    ["properties"] = new Dictionary<string, object?>()
+                                }
+                            }
+                        }
+                    },
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "message",
+                        ["role"] = "user",
+                        ["content"] = new List<object?>
+                        {
+                            new Dictionary<string, object?> { ["type"] = "input_text", ["text"] = "hello" }
+                        }
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Chat,
+            "upstream");
+
+        var tools = List(converted, "tools");
+        Assert.Contains(tools, item => String(Object(Object(item)["function"]), "name") == "lookup");
+        var serialized = System.Text.Json.JsonSerializer.Serialize(converted["messages"]);
+        Assert.DoesNotContain("additional_tools", serialized, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ResponsesToChat_StrictFunctionTool_CopiesStrict()
+    {
+        var converted = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "public",
+                ["input"] = "hello",
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "function",
+                        ["name"] = "lookup",
+                        ["strict"] = true,
+                        ["parameters"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object?>()
+                        }
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Chat,
+            "upstream");
+
+        var function = Object(Object(List(converted, "tools")[0])["function"]);
+        Assert.Equal(true, function["strict"]);
+    }
+
+    [Fact]
+    public void ResponsesToChat_ServerExecutedToolSearchCall_NotEmittedAsToolCall()
+    {
+        var chat = ProtocolConverter.ConvertResponse(
+            new Dictionary<string, object?>
+            {
+                ["id"] = "resp_1",
+                ["object"] = "response",
+                ["status"] = "completed",
+                ["model"] = "public",
+                ["output"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["id"] = "ts_1",
+                        ["type"] = "tool_search_call",
+                        ["call_id"] = "call_1",
+                        ["name"] = "tool_search",
+                        ["execution"] = "server",
+                        ["arguments"] = new Dictionary<string, object?> { ["query"] = "files" },
+                        ["status"] = "completed"
+                    },
+                    new Dictionary<string, object?>
+                    {
+                        ["id"] = "msg_1",
+                        ["type"] = "message",
+                        ["status"] = "completed",
+                        ["role"] = "assistant",
+                        ["content"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "output_text",
+                                ["text"] = "done",
+                                ["annotations"] = new List<object?>()
+                            }
+                        }
+                    }
+                }
+            },
+            ProtocolConverter.Chat,
+            ProtocolConverter.Responses,
+            "public");
+
+        var message = Object(Object(List(chat, "choices")[0])["message"]);
+        Assert.False(message.ContainsKey("tool_calls"));
+    }
+
     private static Dictionary<string, object?> Object(object? value) => Assert.IsType<Dictionary<string, object?>>(value);
     private static List<object?> List(Dictionary<string, object?> value, string key) => Assert.IsType<List<object?>>(value[key]);
     private static string String(Dictionary<string, object?> value, string key) => Assert.IsType<string>(value[key]);
