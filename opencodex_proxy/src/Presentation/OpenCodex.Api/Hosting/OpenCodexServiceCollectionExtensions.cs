@@ -159,6 +159,7 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<IProxyNonStreamService, ProxyNonStreamService>();
         services.AddScoped<IProxyStreamService, ProxyStreamService>();
         services.AddScoped<IWebSearchSimulator, WebSearchSimulator>();
+        services.AddSingleton<ICodexOfficialModelCatalogFactory, CodexOfficialModelCatalogFactory>();
 
         return services;
     }
