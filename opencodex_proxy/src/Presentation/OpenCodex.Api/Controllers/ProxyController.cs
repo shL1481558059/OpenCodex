@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
+using OpenCodex.Api.Configuration;
 using OpenCodex.Api.Infrastructure;
 using OpenCodex.Core.Protocols;
+using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs.Proxy;
 using OpenCodex.CoreBase.DTOs.Models;
@@ -16,19 +18,22 @@ public sealed class ProxyController : ApiControllerBase
     private readonly IProxyRequestService _requests;
     private readonly IProxyRouteService _routes;
     private readonly IModelCatalogService _catalog;
+    private readonly IDesktopSystemSettingsStore _systemSettings;
 
     public ProxyController(
         IRequestBodyReader bodyReader,
         IProxyEndpointService proxy,
         IProxyRequestService requests,
         IProxyRouteService routes,
-        IModelCatalogService catalog)
+        IModelCatalogService catalog,
+        IDesktopSystemSettingsStore systemSettings)
     {
         _bodyReader = bodyReader;
         _proxy = proxy;
         _requests = requests;
         _routes = routes;
         _catalog = catalog;
+        _systemSettings = systemSettings;
     }
 
     [HttpGet("/models")]
@@ -90,6 +95,23 @@ public sealed class ProxyController : ApiControllerBase
     private async Task<IActionResult> Proxy(string entryProtocol)
     {
         var payload = await _bodyReader.ReadJsonObjectAsync(Request, HttpContext.RequestAborted);
+        if (payload is not null
+            && _systemSettings.Get().InterceptProbeRequests
+            && ProbeRequestInterceptor.TryIntercept(
+                entryProtocol,
+                payload,
+                Guid.NewGuid().ToString(),
+                out var probeResult))
+        {
+            await _requests.AuthenticateAccessKeyAsync(AuthorizationHeader());
+            if (probeResult!.IsEmpty)
+            {
+                return new EmptyResult();
+            }
+
+            return StatusCode(probeResult.StatusCode, probeResult.Payload);
+        }
+
         var result = await _proxy.ProxyAsync(
             new ProxyEndpointContext(
                 entryProtocol,
