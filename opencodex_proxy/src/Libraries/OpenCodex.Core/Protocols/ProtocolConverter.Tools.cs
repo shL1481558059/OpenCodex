@@ -2,6 +2,14 @@ namespace OpenCodex.Core.Protocols;
 
 public static partial class ProtocolConverter
 {
+    private static readonly string[] ResponsesToolMetadataFields =
+    [
+        "defer_loading",
+        "allowed_callers",
+        "strict",
+        "output_schema"
+    ];
+
     internal static IReadOnlyDictionary<string, ResponsesToolCallMapping> BuildResponsesToolCallMappings(
         Dictionary<string, object?> payload)
     {
@@ -172,6 +180,7 @@ public static partial class ProtocolConverter
     {
         var result = new List<object?>();
         var namespaceGroups = new Dictionary<string, List<object?>>(StringComparer.Ordinal);
+        var namespaceDescriptions = new Dictionary<string, string?>(StringComparer.Ordinal);
         foreach (var item in tools)
         {
             if (!TryAsObject(item, out var tool))
@@ -188,12 +197,6 @@ public static partial class ProtocolConverter
                 }
 
                 result.Add(responseMcpTool);
-                continue;
-            }
-
-            if (nativeType != "function" && TryAsObject(GetValue(tool, "raw"), out var raw) && raw.Count > 0)
-            {
-                result.Add(DeepCopy(raw));
                 continue;
             }
 
@@ -214,27 +217,74 @@ public static partial class ProtocolConverter
                     namespaceGroups[namespaceName] = group;
                 }
 
-                group.Add(Obj(
-                    ("type", "function"),
-                    ("name", bareName),
-                    ("description", GetValue(tool, "description") ?? string.Empty),
-                    ("parameters", GetValue(tool, "parameters") ?? new Dictionary<string, object?>())));
+                var namespaceDescription = GetString(tool, "namespace_description");
+                if (!string.IsNullOrEmpty(namespaceDescription))
+                {
+                    namespaceDescriptions[namespaceName] = namespaceDescription;
+                }
+
+                Dictionary<string, object?> innerTool;
+                if (nativeType == "function")
+                {
+                    innerTool = Obj(
+                        ("type", "function"),
+                        ("name", bareName),
+                        ("description", GetValue(tool, "description") ?? string.Empty),
+                        ("parameters", GetValue(tool, "parameters") ?? new Dictionary<string, object?>()));
+                }
+                else if (TryAsObject(GetValue(tool, "raw"), out var namespaceRaw) && namespaceRaw.Count > 0)
+                {
+                    innerTool = AsObject(DeepCopy(namespaceRaw));
+                    innerTool["name"] = bareName;
+                }
+                else
+                {
+                    innerTool = Obj(
+                        ("type", nativeType),
+                        ("name", bareName),
+                        ("description", GetValue(tool, "description") ?? string.Empty),
+                        ("parameters", GetValue(tool, "parameters") ?? new Dictionary<string, object?>()));
+                }
+
+                CopyResponsesToolMetadata(tool, innerTool);
+                group.Add(innerTool);
                 continue;
             }
 
-            result.Add(Obj(
+            if (nativeType != "function" && TryAsObject(GetValue(tool, "raw"), out var raw) && raw.Count > 0)
+            {
+                result.Add(DeepCopy(raw));
+                continue;
+            }
+
+            if (nativeType == "function" && TryAsObject(GetValue(tool, "raw"), out var functionRaw) && functionRaw.Count > 0)
+            {
+                result.Add(DeepCopy(functionRaw));
+                continue;
+            }
+
+            var functionTool = Obj(
                 ("type", "function"),
                 ("name", GetValue(tool, "name")),
                 ("description", GetValue(tool, "description") ?? string.Empty),
-                ("parameters", GetValue(tool, "parameters") ?? new Dictionary<string, object?>())));
+                ("parameters", GetValue(tool, "parameters") ?? new Dictionary<string, object?>()));
+            CopyResponsesToolMetadata(tool, functionTool);
+            result.Add(functionTool);
         }
 
         foreach (var (namespaceName, innerTools) in namespaceGroups)
         {
-            result.Add(Obj(
+            var namespaceTool = Obj(
                 ("type", "namespace"),
                 ("name", namespaceName),
-                ("tools", innerTools)));
+                ("tools", innerTools));
+            if (namespaceDescriptions.TryGetValue(namespaceName, out var description)
+                && !string.IsNullOrEmpty(description))
+            {
+                namespaceTool["description"] = description;
+            }
+
+            result.Add(namespaceTool);
         }
 
         return result;
@@ -265,12 +315,18 @@ public static partial class ProtocolConverter
 
             tool = RewriteApplyPatchToolDescription(tool);
 
+            var chatFunction = Obj(
+                ("name", NamespaceNameToChat(Convert.ToString(GetValue(tool, "name")) ?? string.Empty)),
+                ("description", GetValue(tool, "description") ?? string.Empty),
+                ("parameters", SanitizeToolSchema(GetValue(tool, "parameters") ?? new Dictionary<string, object?>())));
+            if (HasNonNullValue(tool, "strict"))
+            {
+                chatFunction["strict"] = GetValue(tool, "strict");
+            }
+
             result.Add(Obj(
                 ("type", "function"),
-                ("function", Obj(
-                    ("name", NamespaceNameToChat(Convert.ToString(GetValue(tool, "name")) ?? string.Empty)),
-                    ("description", GetValue(tool, "description") ?? string.Empty),
-                    ("parameters", SanitizeToolSchema(GetValue(tool, "parameters") ?? new Dictionary<string, object?>()))))));
+                ("function", chatFunction)));
         }
 
         return result;
@@ -325,6 +381,7 @@ public static partial class ProtocolConverter
         if (toolType == "namespace")
         {
             var namespaceName = Convert.ToString(GetValue(tool, "name")) ?? string.Empty;
+            var namespaceDescription = GetString(tool, "description") ?? string.Empty;
             var result = new List<object?>();
             foreach (var nested in ListValue(tool, "tools"))
             {
@@ -340,6 +397,11 @@ public static partial class ProtocolConverter
                         ? bareName
                         : $"{namespaceName}{NamespaceSeparator}{bareName}";
                     nestedTool["namespace"] = namespaceName;
+                    if (!string.IsNullOrEmpty(namespaceDescription))
+                    {
+                        nestedTool["namespace_description"] = namespaceDescription;
+                    }
+
                     result.Add(nestedTool);
                 }
             }
@@ -349,14 +411,14 @@ public static partial class ProtocolConverter
 
         if (toolType == "function")
         {
-            return
-            [
-                Obj(
-                    ("name", GetValue(tool, "name")),
-                    ("description", GetValue(tool, "description") ?? string.Empty),
-                    ("parameters", GetValue(tool, "parameters") ?? new Dictionary<string, object?>()),
-                    ("native_type", "function"))
-            ];
+            var canonical = Obj(
+                ("name", GetValue(tool, "name")),
+                ("description", GetValue(tool, "description") ?? string.Empty),
+                ("parameters", GetValue(tool, "parameters") ?? new Dictionary<string, object?>()),
+                ("native_type", "function"),
+                ("raw", DeepCopy(tool)));
+            CopyResponsesToolMetadata(tool, canonical);
+            return [canonical];
         }
 
         if (toolType == "mcp")
@@ -535,6 +597,17 @@ public static partial class ProtocolConverter
         return rewritten;
     }
 
+    private static void CopyResponsesToolMetadata(Dictionary<string, object?> source, Dictionary<string, object?> target)
+    {
+        foreach (var field in ResponsesToolMetadataFields)
+        {
+            if (HasNonNullValue(source, field))
+            {
+                target[field] = DeepCopy(GetValue(source, field));
+            }
+        }
+    }
+
     private static List<object?> DedupeCanonicalTools(List<object?> tools)
     {
         var result = new List<object?>();
@@ -595,6 +668,13 @@ public static partial class ProtocolConverter
             }
 
             var type = GetString(toolChoiceObject, "type");
+            if (type == "allowed_tools")
+            {
+                return string.Equals(GetString(toolChoiceObject, "mode"), "required", StringComparison.Ordinal)
+                    ? "required"
+                    : "auto";
+            }
+
             if (type == "function" && HasNonNullValue(toolChoiceObject, "name"))
             {
                 return Obj(
@@ -665,6 +745,11 @@ public static partial class ProtocolConverter
             return "required";
         }
 
+        if (type == "allowed_tools")
+        {
+            return DeepCopy(choice);
+        }
+
         return DeepCopy(choice);
     }
 
@@ -696,6 +781,13 @@ public static partial class ProtocolConverter
         }
 
         var type = GetString(choice, "type") ?? string.Empty;
+        if (type == "allowed_tools")
+        {
+            return string.Equals(GetString(choice, "mode"), "required", StringComparison.Ordinal)
+                ? Obj(("type", "any"))
+                : Obj(("type", "auto"));
+        }
+
         if (type == "tool" && HasNonNullValue(choice, "name"))
         {
             return DeepCopy(choice);
@@ -741,4 +833,5 @@ public static partial class ProtocolConverter
         return !string.IsNullOrEmpty(name)
             && IsApplyPatchName(name.Replace("-", "_", StringComparison.Ordinal));
     }
+
 }

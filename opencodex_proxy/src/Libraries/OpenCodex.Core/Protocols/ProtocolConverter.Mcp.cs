@@ -209,7 +209,9 @@ public static partial class ProtocolConverter
             "authorization",
             "headers",
             "allowed_tools",
-            "require_approval");
+            "require_approval",
+            "defer_loading",
+            "allowed_callers");
         return canonical;
     }
 
@@ -373,6 +375,10 @@ public static partial class ProtocolConverter
                 }
 
                 result["configs"] = configs;
+            }
+            else if (HasNonNullValue(tool, "defer_loading"))
+            {
+                result["default_config"] = Obj(("defer_loading", GetValue(tool, "defer_loading")));
             }
         }
 

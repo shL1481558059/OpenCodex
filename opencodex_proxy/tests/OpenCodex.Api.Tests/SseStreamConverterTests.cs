@@ -2586,6 +2586,47 @@ public sealed class SseStreamConverterTests
     }
 
     [Fact]
+    public async Task ResponsesToChat_ServerExecutedToolSearchCall_DoesNotEmitClientToolCall()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"response.created","response":{"id":"resp_1","model":"gpt-5","created_at":1700000000,"status":"in_progress"}}""", "response.created"),
+            SseBlock("""{"type":"response.output_item.added","output_index":0,"item":{"id":"ts_1","type":"tool_search_call","status":"in_progress","call_id":"call_ts","name":"tool_search","execution":"server","arguments":{}}}""", "response.output_item.added"),
+            SseBlock("""{"type":"response.output_item.done","output_index":0,"item":{"id":"ts_1","type":"tool_search_call","status":"completed","call_id":"call_ts","name":"tool_search","execution":"server","arguments":{"query":"files"}}}""", "response.output_item.done"),
+            SseBlock("""{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}""", "response.completed"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.ResponsesToChatEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        var chunks = ParseChatChunks(events);
+        Assert.All(chunks, chunk =>
+        {
+            var delta = FirstChoice(chunk)?["delta"] as Dictionary<string, object?>;
+            Assert.False(delta?.ContainsKey("tool_calls") == true);
+        });
+    }
+
+    [Fact]
+    public async Task ResponsesToMessages_ServerExecutedToolSearchCall_DoesNotEmitToolUse()
+    {
+        var lines = SseLines(
+            SseBlock("""{"type":"response.created","response":{"id":"resp_1","model":"gpt-5","created_at":1700000000,"status":"in_progress"}}""", "response.created"),
+            SseBlock("""{"type":"response.output_item.added","output_index":0,"item":{"id":"ts_1","type":"tool_search_call","status":"in_progress","call_id":"call_ts","name":"tool_search","execution":"server","arguments":{}}}""", "response.output_item.added"),
+            SseBlock("""{"type":"response.output_item.done","output_index":0,"item":{"id":"ts_1","type":"tool_search_call","status":"completed","call_id":"call_ts","name":"tool_search","execution":"server","arguments":{"query":"files"}}}""", "response.output_item.done"),
+            SseBlock("""{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}""", "response.completed"));
+
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(
+            SseStreamConverter.ResponsesToMessagesEvents(lines, "gpt-5", result, CancellationToken.None));
+
+        var parsed = ParseEvents(events);
+        Assert.DoesNotContain(parsed, entry =>
+            (string?)entry["type"] == "content_block_start"
+            && entry["content_block"] is Dictionary<string, object?> block
+            && (string?)block["type"] == "tool_use");
+    }
+
+    [Fact]
     public async Task ResponsesToChat_FunctionCall_EmitsToolCallStartAndArgumentDeltas()
     {
         var lines = SseLines(
