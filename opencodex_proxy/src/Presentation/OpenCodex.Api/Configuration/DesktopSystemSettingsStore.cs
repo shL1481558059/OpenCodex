@@ -13,6 +13,7 @@ public sealed class DesktopSystemSettingsStore : IDesktopSystemSettingsStore
     private const int DefaultPort = 18080;
     private const int MinPort = 1024;
     private const int MaxPort = 65535;
+    private const bool DefaultInterceptProbeRequests = false;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -38,7 +39,8 @@ public sealed class DesktopSystemSettingsStore : IDesktopSystemSettingsStore
         return new DesktopSystemSettingsDraft(
             accessMode,
             BindHostFromAccessMode(accessMode),
-            NormalizePort(request?.Port, current.Port));
+            NormalizePort(request?.Port, current.Port),
+            NormalizeProbeInterception(request?.InterceptProbeRequests, current.InterceptProbeRequests));
     }
 
     public SystemSettingsResponse Save(DesktopSystemSettingsDraft draft)
@@ -48,7 +50,8 @@ public sealed class DesktopSystemSettingsStore : IDesktopSystemSettingsStore
         {
             AccessMode = draft.AccessMode,
             BindHost = draft.BindHost,
-            Port = draft.Port
+            Port = draft.Port,
+            InterceptProbeRequests = draft.InterceptProbeRequests
         };
 
         var path = SettingsPath();
@@ -81,7 +84,10 @@ public sealed class DesktopSystemSettingsStore : IDesktopSystemSettingsStore
                 {
                     AccessMode = accessMode,
                     BindHost = BindHostFromAccessMode(accessMode),
-                    Port = NormalizePort(settings.Port, DefaultRuntimePort())
+                    Port = NormalizePort(settings.Port, DefaultRuntimePort()),
+                    InterceptProbeRequests = NormalizeProbeInterception(
+                        settings.InterceptProbeRequests,
+                        DefaultInterceptProbeRequests)
                 };
             }
         }
@@ -91,7 +97,8 @@ public sealed class DesktopSystemSettingsStore : IDesktopSystemSettingsStore
         {
             AccessMode = defaultAccessMode,
             BindHost = BindHostFromAccessMode(defaultAccessMode),
-            Port = DefaultRuntimePort()
+            Port = DefaultRuntimePort(),
+            InterceptProbeRequests = DefaultInterceptProbeRequests
         };
     }
 
@@ -104,7 +111,8 @@ public sealed class DesktopSystemSettingsStore : IDesktopSystemSettingsStore
             settings.BindHost,
             settings.Port,
             ManagedByDesktop(),
-            restartRequired);
+            restartRequired,
+            settings.InterceptProbeRequests);
     }
 
     private string SettingsPath()
@@ -216,6 +224,11 @@ public sealed class DesktopSystemSettingsStore : IDesktopSystemSettingsStore
         return port is >= MinPort and <= MaxPort;
     }
 
+    private static bool NormalizeProbeInterception(bool? requested, bool fallback)
+    {
+        return requested ?? fallback;
+    }
+
     private sealed class DesktopSystemSettingsFile
     {
         [JsonPropertyName("access_mode")]
@@ -226,5 +239,8 @@ public sealed class DesktopSystemSettingsStore : IDesktopSystemSettingsStore
 
         [JsonPropertyName("port")]
         public int Port { get; set; } = DefaultPort;
+
+        [JsonPropertyName("intercept_probe_requests")]
+        public bool InterceptProbeRequests { get; set; } = DefaultInterceptProbeRequests;
     }
 }

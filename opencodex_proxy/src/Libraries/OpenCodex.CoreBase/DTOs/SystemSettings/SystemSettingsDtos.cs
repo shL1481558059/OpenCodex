@@ -12,6 +12,9 @@ public sealed class SystemSettingsUpdateRequest
 
     [JsonPropertyName("port")]
     public int? Port { get; set; }
+
+    [JsonPropertyName("intercept_probe_requests")]
+    public bool? InterceptProbeRequests { get; set; }
 }
 
 public sealed class SystemSettingsResponse
@@ -21,13 +24,15 @@ public sealed class SystemSettingsResponse
         string bindHost,
         int port,
         bool managedByDesktop,
-        bool restartRequired)
+        bool restartRequired,
+        bool interceptProbeRequests)
     {
         AccessMode = accessMode;
         BindHost = bindHost;
         Port = port;
         ManagedByDesktop = managedByDesktop;
         RestartRequired = restartRequired;
+        InterceptProbeRequests = interceptProbeRequests;
     }
 
     [JsonPropertyName("access_mode")]
@@ -44,6 +49,9 @@ public sealed class SystemSettingsResponse
 
     [JsonPropertyName("restart_required")]
     public bool RestartRequired { get; }
+
+    [JsonPropertyName("intercept_probe_requests")]
+    public bool InterceptProbeRequests { get; }
 
     [JsonPropertyName("admin_url")]
     public string AdminUrl => $"http://127.0.0.1:{Port}/admin/";

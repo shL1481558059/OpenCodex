@@ -34,6 +34,14 @@
         />
       </el-form-item>
 
+      <el-form-item label="拦截探测请求">
+        <el-switch
+          v-model="draft.intercept_probe_requests"
+          active-text="开启"
+          inactive-text="关闭"
+        />
+      </el-form-item>
+
       <div v-if="settings" class="settings-meta">
         <el-descriptions :column="1" border>
           <el-descriptions-item label="监听地址">{{ bindHostLabel }}</el-descriptions-item>
@@ -96,7 +104,8 @@ const settings = ref(null);
 const tauriRuntime = isTauriRuntime();
 const draft = reactive({
   access_mode: "localhost",
-  port: 18080
+  port: 18080,
+  intercept_probe_requests: false
 });
 
 const bindHostLabel = computed(() => {
@@ -123,7 +132,8 @@ async function saveSettings() {
       method: "PUT",
       body: JSON.stringify({
         access_mode: draft.access_mode,
-        port: Number(draft.port)
+        port: Number(draft.port),
+        intercept_probe_requests: draft.intercept_probe_requests === true
       })
     });
     assignSettings(data);
@@ -152,6 +162,7 @@ function assignSettings(data) {
   settings.value = data;
   draft.access_mode = data?.access_mode || "localhost";
   draft.port = Number(data?.port || 18080);
+  draft.intercept_probe_requests = data?.intercept_probe_requests === true;
   restartRequired.value = data?.restart_required === true;
 }
 

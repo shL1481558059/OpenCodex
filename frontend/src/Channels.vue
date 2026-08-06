@@ -328,26 +328,6 @@
              </div>
            </el-form-item>
          </el-col>
-          <el-col v-if="channelDraft.type === 'messages'" :span="24">
-            <el-form-item>
-              <template #label>
-                <span class="form-label-with-tip">
-                  <span>拦截探测请求 (intercept_probe_requests)</span>
-                  <el-tooltip content="拦截 max_tokens<=1 的探测请求并直接返回伪造成功响应，不转发到上游。避免高频探测消耗上游配额并触发 429 限流。" placement="top">
-                    <el-icon class="form-label-tip"><Warning /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-switch
-                v-model="compatTexts.intercept_probe_requests"
-                active-text="开启"
-                inactive-text="关闭"
-              />
-              <div class="text-muted" style="margin-top: 4px; font-size: 12px">
-                适用于 Claude Code Desktop 等闭源客户端的高频探测场景，开启后探测请求不再消耗上游资源，也不会触发重试放大
-              </div>
-            </el-form-item>
-          </el-col>
           <el-col :span="12">
             <el-form-item label="名称">
               <el-input v-model="channelDraft.name" />
@@ -1167,7 +1147,6 @@ const headersText = ref("{}");
 const compatTexts = reactive({
   enable_apply_patch_prompt_compat: false,
   preserve_thinking_history: false,
-  intercept_probe_requests: false,
   rename_params: "",
   drop_params: "",
   drop_tool_types: "",
@@ -2427,7 +2406,6 @@ function assignCompat(compat) {
   Object.assign(compatTexts, {
     enable_apply_patch_prompt_compat: compat.enable_apply_patch_prompt_compat === true,
     preserve_thinking_history: compat.preserve_thinking_history === true,
-    intercept_probe_requests: compat.intercept_probe_requests === true,
     rename_params: formatAssignmentMap(compat.rename_params || {}),
     drop_params: formatStringList(compat.drop_params || []),
     drop_tool_types: formatStringList(compat.drop_tool_types || []),
@@ -2480,9 +2458,6 @@ function buildCompat() {
       : false,
     preserve_thinking_history: channelDraft.type === 'messages'
       ? compatTexts.preserve_thinking_history === true
-      : false,
-    intercept_probe_requests: channelDraft.type === 'messages'
-      ? compatTexts.intercept_probe_requests === true
       : false,
     rename_params: parseAssignmentMap(compatTexts.rename_params, false),
     drop_params: parseStringList(compatTexts.drop_params),

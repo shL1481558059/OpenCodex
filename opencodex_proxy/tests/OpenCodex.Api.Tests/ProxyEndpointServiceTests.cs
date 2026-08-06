@@ -847,55 +847,7 @@ public sealed class ProxyEndpointServiceTests
    }
 
     [Fact]
-    public async Task ProxyAsync_ProbeInterception_Enabled_InterceptsMaxTokensOneRequest()
-    {
-        var capacity = new ChannelCapacityService();
-        var compat = new Dictionary<string, object?>(StringComparer.Ordinal)
-        {
-            ["intercept_probe_requests"] = true
-        };
-        var channel = CreateChannel("probe-channel", priority: 0, type: ProtocolConverter.Messages, compat: compat);
-        var nonStreams = new StubProxyNonStreamService(_ =>
-            Task.FromResult(new ProxyNonStreamResult(200, new { ok = true })));
-        var service = CreateService(
-            capacity,
-            new StubProxyRouteService([CreateRoute(channel, "claude-opus-5", "upstream-claude")]),
-            nonStreams: nonStreams);
-
-        var payload = CreateMessagesPayload("claude-opus-5", maxTokens: 1);
-        var result = await service.ProxyAsync(CreateMessagesContext(payload));
-
-        // 拦截返回 200 伪造响应，不转发上游
-        Assert.Equal(200, result.StatusCode);
-        Assert.Null(nonStreams.LastContext);
-        // 响应体是 messages 协议格式
-        var response = Assert.IsType<Dictionary<string, object?>>(result.Payload);
-        Assert.Equal("message", response["type"]);
-        Assert.Equal("end_turn", response["stop_reason"]);
-    }
-
-    [Fact]
-    public async Task ProxyAsync_ProbeInterception_Disabled_ForwardsProbeRequest()
-    {
-        var capacity = new ChannelCapacityService();
-        var channel = CreateChannel("probe-channel", priority: 0, type: ProtocolConverter.Messages);
-        var nonStreams = new StubProxyNonStreamService(_ =>
-            Task.FromResult(new ProxyNonStreamResult(200, new { ok = true })));
-        var service = CreateService(
-            capacity,
-            new StubProxyRouteService([CreateRoute(channel, "claude-opus-5", "upstream-claude")]),
-            nonStreams: nonStreams);
-
-        var payload = CreateMessagesPayload("claude-opus-5", maxTokens: 1);
-        var result = await service.ProxyAsync(CreateMessagesContext(payload));
-
-        // 未开启拦截，正常转发上游
-        Assert.Equal(200, result.StatusCode);
-        Assert.NotNull(nonStreams.LastContext);
-    }
-
-    [Fact]
-    public async Task ProxyAsync_ProbeInterception_Enabled_DoesNotInterceptNormalRequest()
+    public async Task ProxyAsync_ProbeInterception_IsNotHandledAtServiceLayer()
     {
         var capacity = new ChannelCapacityService();
         var compat = new Dictionary<string, object?>(StringComparer.Ordinal)
@@ -913,7 +865,7 @@ public sealed class ProxyEndpointServiceTests
         var payload = CreateMessagesPayload("claude-opus-5", maxTokens: 4096);
         var result = await service.ProxyAsync(CreateMessagesContext(payload));
 
-        // 正常请求不受拦截影响
+        // 控制器层已负责拦截，服务层即使看到旧渠道字段也应继续转发。
         Assert.Equal(200, result.StatusCode);
         Assert.NotNull(nonStreams.LastContext);
     }
