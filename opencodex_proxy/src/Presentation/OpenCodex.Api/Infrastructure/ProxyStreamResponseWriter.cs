@@ -50,46 +50,9 @@ public sealed class ProxyStreamResponseWriter : IProxyStreamWriter
         var sawDone = false;
         await foreach (var line in lines.WithCancellation(cancellationToken))
         {
-            int? elapsed = null;
-
-            int CaptureElapsed()
-            {
-                elapsed ??= elapsedMilliseconds();
-                return elapsed.Value;
-            }
-
-            if (metrics.FirstSseEventMs is null && !string.IsNullOrWhiteSpace(line))
-            {
-                metrics.FirstSseEventMs = CaptureElapsed();
-            }
-
             if (metrics.TtftMs is null && countsForTtft(line))
             {
-                metrics.TtftMs = CaptureElapsed();
-            }
-
-            if (metrics.FirstReasoningSummaryTextDeltaMs is null
-                && line.Contains("response.reasoning_summary_text.delta", StringComparison.Ordinal))
-            {
-                metrics.FirstReasoningSummaryTextDeltaMs = CaptureElapsed();
-            }
-
-            if (metrics.FirstOutputTextDeltaMs is null
-                && line.Contains("response.output_text.delta", StringComparison.Ordinal))
-            {
-                metrics.FirstOutputTextDeltaMs = CaptureElapsed();
-            }
-
-            if (metrics.FirstFunctionCallArgumentsDeltaMs is null
-                && line.Contains("response.function_call_arguments.delta", StringComparison.Ordinal))
-            {
-                metrics.FirstFunctionCallArgumentsDeltaMs = CaptureElapsed();
-            }
-
-            if (metrics.CompletedEventMs is null
-                && line.Contains("response.completed", StringComparison.Ordinal))
-            {
-                metrics.CompletedEventMs = CaptureElapsed();
+                metrics.TtftMs = elapsedMilliseconds();
             }
 
             if (!sawCompleted && line.Contains("response.completed", StringComparison.Ordinal))

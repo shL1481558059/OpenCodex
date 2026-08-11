@@ -14,7 +14,8 @@ public sealed class ProxyRequestLogQueuedContext
         string? clientIp,
         IReadOnlyDictionary<string, string> requestHeaders,
         string requestType = ProxyRequestTypes.Main,
-        Guid? parentRequestLogId = null)
+        Guid? parentRequestLogId = null,
+        string? rawRequestBody = null)
     {
         RequestId = requestId;
         OwnerUsername = ownerUsername;
@@ -28,6 +29,7 @@ public sealed class ProxyRequestLogQueuedContext
         RequestHeaders = requestHeaders;
         RequestType = requestType;
         ParentRequestLogId = parentRequestLogId;
+        RawRequestBody = rawRequestBody;
     }
 
     public string RequestId { get; }
@@ -53,6 +55,8 @@ public sealed class ProxyRequestLogQueuedContext
     public string RequestType { get; }
 
     public Guid? ParentRequestLogId { get; }
+
+    public string? RawRequestBody { get; }
 }
 
 public sealed class ProxyRequestLogProcessingContext
@@ -96,17 +100,14 @@ public sealed class ProxyRequestLogProcessingContext
 
 public sealed class ProxyRequestStreamLineCapture
 {
-    public ProxyRequestStreamLineCapture(int sequence, double occurredAt, string source, string rawLine)
+    public ProxyRequestStreamLineCapture(int sequence, string source, string rawLine)
     {
         Sequence = sequence;
-        OccurredAt = occurredAt;
         Source = source;
         RawLine = rawLine;
     }
 
     public int Sequence { get; }
-
-    public double OccurredAt { get; }
 
     public string Source { get; }
 

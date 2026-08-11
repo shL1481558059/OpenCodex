@@ -37,9 +37,13 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
 
     public DbSet<RequestLog> RequestLogs => Set<RequestLog>();
 
-    public DbSet<RequestLogDetail> RequestLogDetails => Set<RequestLogDetail>();
+    public DbSet<LogContentBlock> LogContentBlocks => Set<LogContentBlock>();
 
-    public DbSet<RequestLogStreamLine> RequestLogStreamLines => Set<RequestLogStreamLine>();
+    public DbSet<LogContentManifest> LogContentManifests => Set<LogContentManifest>();
+
+    public DbSet<LogContentManifestChunk> LogContentManifestChunks => Set<LogContentManifestChunk>();
+
+    public DbSet<RequestLogContentRef> RequestLogContentRefs => Set<RequestLogContentRef>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -239,23 +243,70 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         logs.HasIndex(log => log.RequestType);
         logs.HasIndex(log => log.LifecycleStatus);
         logs.HasIndex(log => log.ParentRequestLogId);
+        logs.HasIndex(log => log.ConversationKey);
+        logs.HasIndex(log => log.ConversationTurnId);
+        logs.HasIndex(log => log.ConversationWindowId);
+        logs.HasIndex(log => log.PreviousResponseId);
         logs.HasIndex(log => log.Path);
         logs.HasIndex(log => log.StatusCode);
         logs.HasIndex(log => log.ApiKeyId);
         logs.HasIndex(log => new { log.OwnerUserId, log.Id });
 
-        var details = modelBuilder.Entity<RequestLogDetail>();
-        details.ToTable("RequestLogDetails");
-        details.HasKey(detail => detail.RequestLogId);
-        details.Property(detail => detail.RequestLogId).ValueGeneratedNever();
+        var blocks = modelBuilder.Entity<LogContentBlock>();
+        blocks.ToTable("LogContentBlocks");
+        blocks.HasKey(block => block.Id);
+        blocks.Property(block => block.Id).ValueGeneratedOnAdd();
+        blocks.Property(block => block.Sha256).IsRequired();
+        blocks.Property(block => block.RawLength).IsRequired();
+        blocks.Property(block => block.StoredLength).IsRequired();
+        blocks.Property(block => block.Compression).IsRequired();
+        blocks.Property(block => block.Data).IsRequired();
+        blocks.HasIndex(block => block.Sha256).IsUnique();
 
-        var lines = modelBuilder.Entity<RequestLogStreamLine>();
-        lines.ToTable("RequestLogStreamLines");
-        lines.HasKey(line => line.Id);
-        lines.Property(line => line.Id).ValueGeneratedOnAdd();
-        lines.Property(line => line.Source).IsRequired();
-        lines.Property(line => line.RawLine).IsRequired();
-        lines.HasIndex(line => new { line.RequestLogId, line.Sequence }).IsUnique();
-        lines.HasIndex(line => line.OccurredAt);
+        var manifests = modelBuilder.Entity<LogContentManifest>();
+        manifests.ToTable("LogContentManifests");
+        manifests.HasKey(manifest => manifest.Id);
+        manifests.Property(manifest => manifest.Id).ValueGeneratedOnAdd();
+        manifests.Property(manifest => manifest.Sha256).IsRequired();
+        manifests.Property(manifest => manifest.RawLength).IsRequired();
+        manifests.Property(manifest => manifest.ChunkCount).IsRequired();
+        manifests.Property(manifest => manifest.Encoding).IsRequired();
+        manifests.HasIndex(manifest => manifest.Sha256).IsUnique();
+
+        var manifestChunks = modelBuilder.Entity<LogContentManifestChunk>();
+        manifestChunks.ToTable("LogContentManifestChunks");
+        manifestChunks.HasKey(chunk => chunk.Id);
+        manifestChunks.Property(chunk => chunk.Id).ValueGeneratedOnAdd();
+        manifestChunks.Property(chunk => chunk.ManifestId).IsRequired();
+        manifestChunks.Property(chunk => chunk.BlockId).IsRequired();
+        manifestChunks.Property(chunk => chunk.RawLength).IsRequired();
+        manifestChunks.HasIndex(chunk => new { chunk.ManifestId, chunk.Ordinal }).IsUnique();
+        manifestChunks.HasIndex(chunk => chunk.BlockId);
+        manifestChunks.HasOne<LogContentManifest>()
+            .WithMany()
+            .HasForeignKey(chunk => chunk.ManifestId)
+            .OnDelete(DeleteBehavior.Cascade);
+        manifestChunks.HasOne<LogContentBlock>()
+            .WithMany()
+            .HasForeignKey(chunk => chunk.BlockId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        var contentRefs = modelBuilder.Entity<RequestLogContentRef>();
+        contentRefs.ToTable("RequestLogContentRefs");
+        contentRefs.HasKey(reference => reference.Id);
+        contentRefs.Property(reference => reference.Id).ValueGeneratedOnAdd();
+        contentRefs.Property(reference => reference.RequestLogId).IsRequired();
+        contentRefs.Property(reference => reference.Slot).IsRequired();
+        contentRefs.Property(reference => reference.ManifestId).IsRequired();
+        contentRefs.HasIndex(reference => new { reference.RequestLogId, reference.Slot }).IsUnique();
+        contentRefs.HasIndex(reference => reference.ManifestId);
+        contentRefs.HasOne<RequestLog>()
+            .WithMany()
+            .HasForeignKey(reference => reference.RequestLogId)
+            .OnDelete(DeleteBehavior.Cascade);
+        contentRefs.HasOne<LogContentManifest>()
+            .WithMany()
+            .HasForeignKey(reference => reference.ManifestId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }

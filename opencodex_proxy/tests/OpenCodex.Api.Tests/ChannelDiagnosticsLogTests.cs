@@ -9,7 +9,9 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using OpenCodex.Core.Errors;
+using OpenCodex.Core.Domain;
 using OpenCodex.Core.Protocols;
+using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.Data;
 using Xunit;
@@ -34,7 +36,7 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
     }
 
     [Fact]
-    public async Task TestChannelStreamWritesRequestLogWithoutSecrets()
+    public async Task TestChannelStreamWritesCompleteRequestLogContent()
     {
         var cookie = await LoginAndReadSessionCookie();
 
@@ -76,7 +78,7 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
 
         using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={_factory.DbPath}");
         context.Database.Migrate();
-var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
+        var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
         Assert.Equal("POST", log.Method);
         Assert.Equal("public-model", log.Model);
         Assert.Equal("upstream-model", log.UpstreamModel);
@@ -86,20 +88,19 @@ var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-ch
         Assert.True(log.IsStream);
         Assert.Equal(200, log.StatusCode);
 
-        var detail = context.RequestLogDetails.Single(item => item.RequestLogId == log.Id);
-        Assert.NotNull(detail);
+        var detail = new LogContentStore(context).Read(log.Id);
         var persistedDetail = string.Concat(
-            detail.RequestHeaders,
-            detail.RequestBody,
-            detail.UpstreamRequestBody,
-            detail.UpstreamResponseBody,
-            detail.ResponseBody);
-        Assert.DoesNotContain(SecretApiKey, persistedDetail, StringComparison.Ordinal);
-        Assert.DoesNotContain(SecretHeaderValue, persistedDetail, StringComparison.Ordinal);
-        Assert.DoesNotContain("opencodex_admin_auth", persistedDetail, StringComparison.Ordinal);
-        Assert.Contains("\"X-Normal\":\"visible\"", detail.RequestBody, StringComparison.Ordinal);
-        Assert.Contains("\"stream\":true", detail.UpstreamRequestBody, StringComparison.Ordinal);
-        Assert.Contains("\"text\":\"你好\"", detail.UpstreamRequestBody, StringComparison.Ordinal);
+            detail.Get(RequestLogContentSlot.RequestHeaders),
+            detail.Get(RequestLogContentSlot.RequestBody),
+            detail.Get(RequestLogContentSlot.UpstreamRequestBody),
+            detail.Get(RequestLogContentSlot.UpstreamResponseBody),
+            detail.Get(RequestLogContentSlot.ResponseBody));
+        Assert.Contains(SecretApiKey, persistedDetail, StringComparison.Ordinal);
+        Assert.Contains(SecretHeaderValue, persistedDetail, StringComparison.Ordinal);
+        Assert.Contains("opencodex_admin_auth", persistedDetail, StringComparison.Ordinal);
+        Assert.Contains("\"X-Normal\":\"visible\"", detail.Get(RequestLogContentSlot.RequestBody), StringComparison.Ordinal);
+        Assert.Contains("\"stream\":true", detail.Get(RequestLogContentSlot.UpstreamRequestBody), StringComparison.Ordinal);
+        Assert.Contains("\"text\":\"你好\"", detail.Get(RequestLogContentSlot.UpstreamRequestBody), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -198,10 +199,11 @@ var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-ch
         using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={_factory.DbPath}");
         context.Database.Migrate();
         var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
-        var detail = context.RequestLogDetails.Single(item => item.RequestLogId == log.Id);
-        Assert.Contains("\"object\":\"chat.completion\"", detail.UpstreamResponseBody, StringComparison.Ordinal);
-        Assert.Contains("\"content\":\"pong\"", detail.UpstreamResponseBody, StringComparison.Ordinal);
-        Assert.Contains("\"finish_reason\":\"stop\"", detail.UpstreamResponseBody, StringComparison.Ordinal);
+        var detail = new LogContentStore(context).Read(log.Id);
+        var upstreamResponse = detail.Get(RequestLogContentSlot.UpstreamResponseBody);
+        Assert.Contains("\"object\":\"chat.completion\"", upstreamResponse, StringComparison.Ordinal);
+        Assert.Contains("\"content\":\"pong\"", upstreamResponse, StringComparison.Ordinal);
+        Assert.Contains("\"finish_reason\":\"stop\"", upstreamResponse, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -244,11 +246,12 @@ var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-ch
         using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={_factory.DbPath}");
         context.Database.Migrate();
         var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
-        var detail = context.RequestLogDetails.Single(item => item.RequestLogId == log.Id);
-        Assert.Contains("\"type\":\"message\"", detail.UpstreamResponseBody, StringComparison.Ordinal);
-        Assert.Contains("\"model\":\"claude-sonnet-upstream\"", detail.UpstreamResponseBody, StringComparison.Ordinal);
-        Assert.Contains("\"text\":\"pong\"", detail.UpstreamResponseBody, StringComparison.Ordinal);
-        Assert.Contains("\"stop_reason\":\"end_turn\"", detail.UpstreamResponseBody, StringComparison.Ordinal);
+        var detail = new LogContentStore(context).Read(log.Id);
+        var upstreamResponse = detail.Get(RequestLogContentSlot.UpstreamResponseBody);
+        Assert.Contains("\"type\":\"message\"", upstreamResponse, StringComparison.Ordinal);
+        Assert.Contains("\"model\":\"claude-sonnet-upstream\"", upstreamResponse, StringComparison.Ordinal);
+        Assert.Contains("\"text\":\"pong\"", upstreamResponse, StringComparison.Ordinal);
+        Assert.Contains("\"stop_reason\":\"end_turn\"", upstreamResponse, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -267,7 +270,7 @@ var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-ch
 
         using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={_factory.DbPath}");
         context.Database.Migrate();
-var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
+        var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
         Assert.Equal(400, log.StatusCode);
         Assert.False(string.IsNullOrEmpty(log.Error));
     }
@@ -306,7 +309,7 @@ var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-ch
 
         using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={_factory.DbPath}");
         context.Database.Migrate();
-var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
+        var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
         Assert.Equal(429, log.StatusCode);
     }
 

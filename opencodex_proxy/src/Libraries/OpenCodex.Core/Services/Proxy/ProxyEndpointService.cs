@@ -117,7 +117,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 requestMetadata.Method,
                 requestMetadata.Path,
                 requestMetadata.ClientIp,
-                requestMetadata.Headers));
+                requestMetadata.Headers,
+                rawRequestBody: requestMetadata.RawBody));
             var candidates = await OrderCandidatesAsync(
                 ownerUsername,
                 requestModel,

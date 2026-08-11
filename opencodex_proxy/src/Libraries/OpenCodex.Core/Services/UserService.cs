@@ -1,6 +1,6 @@
-using Mapster;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Persistence;
+using OpenCodex.Core.Services.Mapping;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Caching;
 using OpenCodex.CoreBase.Data;
@@ -48,7 +48,7 @@ public sealed class UserService : IUserService
         var users = _userRepository.TableNoTracking
             .OrderBy(user => user.Role)
             .ThenBy(user => user.Username)
-            .Select(user => user.Adapt<UserDto>())
+            .Select(user => user.ToDto())
             .ToList();
         return ApiOpResult<UsersResponse>.Succeed(UsersResponse.From(users));
     }
@@ -176,7 +176,7 @@ public sealed class UserService : IUserService
             UpdatedAt = now
         };
         _userRepository.Insert(created);
-        return created.Adapt<UserDto>();
+        return created.ToDto();
     }
 
     private UserDto? GetUser(string username)
@@ -188,7 +188,7 @@ public sealed class UserService : IUserService
         }
 
         var user = _userRepository.TableNoTracking.FirstOrDefault(item => item.Username == username);
-        return user is null ? null : user.Adapt<UserDto>();
+        return user is null ? null : user.ToDto();
     }
 
     private UserDto SetUserEnabled(string username, bool enabled)
@@ -211,7 +211,7 @@ public sealed class UserService : IUserService
         user.Enabled = enabled;
         user.UpdatedAt = UnixTimeSeconds();
         _userRepository.Update(user);
-        return user.Adapt<UserDto>();
+        return user.ToDto();
     }
 
     private UserDto ResetUserPassword(string username, string password)
@@ -232,7 +232,7 @@ public sealed class UserService : IUserService
         user.PasswordHash = OpenCodexSecurity.HashPassword(password);
         user.UpdatedAt = UnixTimeSeconds();
         _userRepository.Update(user);
-        return user.Adapt<UserDto>();
+        return user.ToDto();
     }
 
     private UserDto DeleteUser(string username, string protectedUsername)
@@ -256,7 +256,7 @@ public sealed class UserService : IUserService
 
         var user = _userRepository.Table.FirstOrDefault(item => item.Username == username)
             ?? throw new InvalidOperationException("user not found");
-        var deleted = user.Adapt<UserDto>();
+        var deleted = user.ToDto();
 
         _apiKeyRepository.Delete(_apiKeyRepository.Table.Where(key => key.OwnerUserId == user.Id).ToList());
         _channelRepository.Delete(_channelRepository.Table.Where(channel => channel.OwnerUserId == user.Id).ToList());

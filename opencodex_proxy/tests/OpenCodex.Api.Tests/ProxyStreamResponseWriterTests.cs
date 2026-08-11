@@ -9,12 +9,12 @@ namespace OpenCodex.Api.Tests;
 public sealed class ProxyStreamResponseWriterTests
 {
     [Fact]
-    public async Task WriteLinesAsync_RecordsGranularStreamMetrics()
+    public async Task WriteLinesAsync_RecordsTtftOnly()
     {
         var context = new DefaultHttpContext();
         context.Response.Body = new MemoryStream();
 
-        var ticks = new Queue<int>(new[] { 10, 20, 30, 40 });
+        var ticks = new Queue<int>(new[] { 20 });
         var metrics = await ProxyStreamResponseWriter.WriteLinesAsync(
             context.Response,
             ToAsyncEnumerable(
@@ -26,11 +26,7 @@ public sealed class ProxyStreamResponseWriterTests
             () => ticks.Dequeue(),
             CancellationToken.None);
 
-        Assert.Equal(10, metrics.FirstSseEventMs);
         Assert.Equal(20, metrics.TtftMs);
-        Assert.Equal(20, metrics.FirstReasoningSummaryTextDeltaMs);
-        Assert.Equal(30, metrics.FirstOutputTextDeltaMs);
-        Assert.Equal(40, metrics.CompletedEventMs);
     }
 
     [Fact]
@@ -187,11 +183,6 @@ public sealed class ProxyStreamResponseWriterTests
             var metrics = new StreamWriteMetrics();
             await foreach (var line in lines.WithCancellation(cancellationToken))
             {
-                if (metrics.FirstSseEventMs is null && !string.IsNullOrWhiteSpace(line))
-                {
-                    metrics.FirstSseEventMs = elapsedMilliseconds();
-                }
-
                 if (metrics.TtftMs is null && countsForTtft(line))
                 {
                     metrics.TtftMs = elapsedMilliseconds();

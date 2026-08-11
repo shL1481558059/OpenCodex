@@ -486,10 +486,10 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
                 RandomNumberGenerator.GetHexString(12).ToLowerInvariant(),
                 user.Username,
                 ApiKeyId: null,
-                Payload: RedactObject(originalBody),
-                UpstreamRequest: RedactObject(compatibleRequest),
-                UpstreamResponse: RedactObject(upstreamResponse),
-                ResponsePayload: RedactObject(responsePayload),
+                Payload: originalBody.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
+                UpstreamRequest: compatibleRequest,
+                UpstreamResponse: upstreamResponse,
+                ResponsePayload: responsePayload,
                 ErrorResponse: errorResponse,
                 RequestModel: originalModel,
                 UpstreamModel: upstreamModel,
@@ -500,9 +500,8 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
                 StatusCode: statusCode,
                 DurationMs: ElapsedMilliseconds(started),
                 Error: error,
-                WebSearchDetails: null,
-                StreamWriteMetrics: streamWriteMetrics),
-            RedactRequestMetadata(requestMetadata));
+                WebSearchDetails: null),
+            requestMetadata);
     }
 
     private static object BuildErrorResponse(string message, string errorType)
@@ -566,18 +565,6 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
         }
 
         return data;
-    }
-
-    private static ProxyRequestMetadata RedactRequestMetadata(ProxyRequestMetadata requestMetadata)
-    {
-        return new ProxyRequestMetadata(
-            requestMetadata.Method,
-            requestMetadata.Path,
-            requestMetadata.ClientIp,
-            requestMetadata.Headers.ToDictionary(
-                pair => pair.Key,
-                pair => IsSensitiveLogKey(pair.Key) ? RedactText(pair.Value) : pair.Value,
-                StringComparer.Ordinal));
     }
 
     private static Dictionary<string, object?>? RedactObject(

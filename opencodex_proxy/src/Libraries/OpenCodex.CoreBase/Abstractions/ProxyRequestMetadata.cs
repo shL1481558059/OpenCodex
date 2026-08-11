@@ -12,16 +12,19 @@ public sealed class ProxyRequestMetadata
     /// <param name="path">请求路径。</param>
     /// <param name="clientIp">客户端 IP 地址（如果可用）。</param>
     /// <param name="headers">标准化后的请求头。</param>
+    /// <param name="rawBody">入口读取到的原始 UTF-8 请求正文（如果可用）。</param>
     public ProxyRequestMetadata(
         string method,
         string path,
         string? clientIp,
-        IReadOnlyDictionary<string, string> headers)
+        IReadOnlyDictionary<string, string> headers,
+        string? rawBody = null)
     {
         Method = method;
         Path = path;
         ClientIp = clientIp;
         Headers = headers;
+        RawBody = rawBody;
     }
 
     /// <summary>
@@ -43,4 +46,9 @@ public sealed class ProxyRequestMetadata
     /// 获取标准化后的请求头。
     /// </summary>
     public IReadOnlyDictionary<string, string> Headers { get; }
+
+    /// <summary>
+    /// 获取入口读取到的原始 UTF-8 请求正文（如果可用）。
+    /// </summary>
+    public string? RawBody { get; }
 }

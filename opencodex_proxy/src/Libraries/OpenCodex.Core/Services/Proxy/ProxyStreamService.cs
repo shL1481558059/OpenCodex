@@ -1,7 +1,4 @@
 using System.Diagnostics;
-using System.Text.Encodings.Web;
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Runtime.CompilerServices;
 using OpenCodex.Core.Errors;
 using OpenCodex.Core.Protocols;
@@ -15,55 +12,6 @@ namespace OpenCodex.Core.Services.Proxy;
 
 public sealed class ProxyStreamService : IProxyStreamService
 {
-    private static readonly JsonSerializerOptions StreamLogJsonOptions = new()
-    {
-        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-    };
-
-    private static readonly HashSet<string> LoggableResponseEventTypes = new(StringComparer.Ordinal)
-    {
-        "response.completed",
-        "response.content_part.added",
-        "response.content_part.done",
-        "response.custom_tool_call_input.delta",
-        "response.custom_tool_call_input.done",
-        "response.error",
-        "response.function_call_arguments.delta",
-        "response.function_call_arguments.done",
-        "response.output_item.added",
-        "response.output_item.done",
-        "response.output_text.delta",
-        "response.output_text.done",
-        "response.reasoning_summary_part.added",
-        "response.reasoning_summary_part.done",
-        "response.reasoning_summary_text.delta",
-        "response.reasoning_summary_text.done"
-    };
-
-    private static readonly HashSet<string> LoggableUpstreamEventTypes = new(StringComparer.Ordinal)
-    {
-        "content_block_delta",
-        "content_block_start",
-        "content_block_stop",
-        "error",
-        "message_delta",
-        "message_start",
-        "message_stop"
-    };
-
-    private static readonly string[] ResponseCompletedAllowedFields =
-    [
-        "id",
-        "object",
-        "created_at",
-        "completed_at",
-        "status",
-        "model",
-        "usage",
-        "error",
-        "incomplete_details"
-    ];
-
     private readonly IUpstreamClient _upstream;
     private readonly IProxyLogService _logs;
     private readonly IWebSearchSimulator _webSearch;
@@ -95,9 +43,6 @@ public sealed class ProxyStreamService : IProxyStreamService
         var streamLineCaptures = new List<ProxyRequestStreamLineCapture>();
         var statusCode = ProxyHttpStatus.Ok;
         var upstreamRequest = context.UpstreamRequest;
-        var isConversion = context.EntryProtocol != context.ChannelType;
-        Console.Error.WriteLine($"[OCXP-DEBUG] [{context.RequestId}] StreamAsync start: entry={context.EntryProtocol}, channel={context.ChannelType}, isConversion={isConversion}, model={VisibleModel(context)}, upstream={context.UpstreamModel}");
-
         try
         {
             if (_webSearch.CanSimulate(
@@ -115,15 +60,19 @@ public sealed class ProxyStreamService : IProxyStreamService
                     visibleModel,
                     context.DefaultTimeout,
                     streamResult,
-                    (lines, source) => CaptureLoggableStreamLines(
+                    (lines, source) => CaptureStreamLines(
                         lines,
                         streamLineCaptures,
                         source,
                         context.CancellationToken),
                     context.CancellationToken);
                 streamWriteMetrics = await context.StreamWriter.WriteLinesAsync(
-                    CaptureLoggableStreamLines(
-                        streamLines,
+                    EnsureCompletedStreamEndsWithDone(
+                        CaptureStreamLines(
+                            streamLines,
+                            streamLineCaptures,
+                            "downstream",
+                            context.CancellationToken),
                         streamLineCaptures,
                         "downstream",
                         context.CancellationToken),
@@ -139,7 +88,6 @@ public sealed class ProxyStreamService : IProxyStreamService
             }
             else if (context.EntryProtocol == context.ChannelType)
             {
-                Console.Error.WriteLine($"[OCXP-DEBUG] [{context.RequestId}] StreamAsync: PASSTHROUGH path (entry==channel)");
                 var streamLines = _upstream.StreamJsonAsync(
                     context.Route.Channel,
                     upstreamRequest,
@@ -147,18 +95,21 @@ public sealed class ProxyStreamService : IProxyStreamService
                     context.CancellationToken);
                 passThroughResponseCapture = new StreamResponseCapture(context.ChannelType);
                 streamWriteMetrics = await context.StreamWriter.WriteLinesAsync(
-                    CapturePassThroughResponse(
-                        CaptureLoggableStreamLines(
-                            streamLines,
-                            streamLineCaptures,
-                            "upstream",
+                    EnsureCompletedStreamEndsWithDone(
+                        CapturePassThroughResponse(
+                            CaptureStreamLines(
+                                streamLines,
+                                streamLineCaptures,
+                                "upstream",
+                                context.CancellationToken),
+                            passThroughResponseCapture,
                             context.CancellationToken),
-                        passThroughResponseCapture,
+                        streamLineCaptures,
+                        "downstream",
                         context.CancellationToken),
                     static line => line.Trim().Length > 0,
                     () => ElapsedMilliseconds(ttftStarted),
                     context.CancellationToken);
-                Console.Error.WriteLine($"[OCXP-DEBUG] [{context.RequestId}] StreamAsync: PASSTHROUGH done. ttft={streamWriteMetrics.TtftMs}ms, first_sse={streamWriteMetrics.FirstSseEventMs}ms, completed={streamWriteMetrics.CompletedEventMs}ms");
                 ttftMs = streamWriteMetrics.TtftMs;
                 passThroughTermination = StreamCaptureTermination.Completed;
                 upstreamResponse = passThroughResponseCapture
@@ -167,7 +118,6 @@ public sealed class ProxyStreamService : IProxyStreamService
             }
             else
             {
-                Console.Error.WriteLine($"[OCXP-DEBUG] [{context.RequestId}] StreamAsync: CONVERSION path, creating IAsyncEnumerables...");
                 var converted = new ConvertedStreamResult
                 {
                     TextFormat = ProtocolConverter.ExtractTextFormat(context.OriginalPayload),
@@ -183,7 +133,7 @@ public sealed class ProxyStreamService : IProxyStreamService
                     upstreamRequest,
                     context.DefaultTimeout,
                     context.CancellationToken);
-                var capturedStreamLines = CaptureLoggableStreamLines(
+                var capturedStreamLines = CaptureStreamLines(
                     streamLines,
                     streamLineCaptures,
                     "upstream",
@@ -191,7 +141,6 @@ public sealed class ProxyStreamService : IProxyStreamService
                 var confirmedStreamLines = await ConfirmUpstreamStreamStartedAsync(
                     capturedStreamLines,
                     context.CancellationToken);
-               // 方案A: 直接调用内部重载，消除外层 await foreach 包装
                 // 按 (入口协议, 上游协议) 派发到对应流式转换器；下游事件格式取决于入口协议。
                 IAsyncEnumerable<string> convertedLines;
                 var includeChatUsage = context.Payload.TryGetValue("stream_options", out var streamOptionsValue)
@@ -222,58 +171,59 @@ public sealed class ProxyStreamService : IProxyStreamService
                             InitialOutputIndex: 0,
                             context.CancellationToken);
                         break;
-                   case (ProtocolConverter.Messages, ProtocolConverter.Chat):
-                       convertedLines = SseStreamConverter.ChatToMessagesEvents(
-                           confirmedStreamLines,
-                           visibleModel,
-                           converted,
-                           SkipToolNames: null,
-                           SkipMessageStart: false,
-                           context.CancellationToken);
-                       break;
-                   case (ProtocolConverter.Chat, ProtocolConverter.Messages):
-                       convertedLines = SseStreamConverter.MessagesToChatEvents(
-                           confirmedStreamLines,
-                           visibleModel,
-                           converted,
-                           SkipToolNames: null,
-                           IncludeUsage: includeChatUsage,
-                           context.CancellationToken);
-                       break;
-                   case (ProtocolConverter.Chat, ProtocolConverter.Responses):
-                       convertedLines = SseStreamConverter.ResponsesToChatEvents(
-                           confirmedStreamLines,
-                           visibleModel,
-                           converted,
-                           SkipToolNames: null,
-                           context.CancellationToken);
-                       break;
+                    case (ProtocolConverter.Messages, ProtocolConverter.Chat):
+                        convertedLines = SseStreamConverter.ChatToMessagesEvents(
+                            confirmedStreamLines,
+                            visibleModel,
+                            converted,
+                            SkipToolNames: null,
+                            SkipMessageStart: false,
+                            context.CancellationToken);
+                        break;
+                    case (ProtocolConverter.Chat, ProtocolConverter.Messages):
+                        convertedLines = SseStreamConverter.MessagesToChatEvents(
+                            confirmedStreamLines,
+                            visibleModel,
+                            converted,
+                            SkipToolNames: null,
+                            IncludeUsage: includeChatUsage,
+                            context.CancellationToken);
+                        break;
+                    case (ProtocolConverter.Chat, ProtocolConverter.Responses):
+                        convertedLines = SseStreamConverter.ResponsesToChatEvents(
+                            confirmedStreamLines,
+                            visibleModel,
+                            converted,
+                            SkipToolNames: null,
+                            context.CancellationToken);
+                        break;
                     case (ProtocolConverter.Messages, ProtocolConverter.Responses):
-                       convertedLines = SseStreamConverter.ResponsesToMessagesEvents(
-                           confirmedStreamLines,
-                           visibleModel,
-                           converted,
-                           SkipToolNames: null,
-                           SkipMessageStart: false,
-                           context.CancellationToken);
-                       break;
-                   default:
-                       // 理论上不可达：SupportsStreamingConversion 已在上游拦截未实现方向。
-                       throw new BadRequestException(
-                           $"streaming conversion not implemented for {context.EntryProtocol} to {context.ChannelType}");
+                        convertedLines = SseStreamConverter.ResponsesToMessagesEvents(
+                            confirmedStreamLines,
+                            visibleModel,
+                            converted,
+                            SkipToolNames: null,
+                            SkipMessageStart: false,
+                            context.CancellationToken);
+                        break;
+                    default:
+                        // 理论上不可达：SupportsStreamingConversion 已在上游拦截未实现方向。
+                        throw new BadRequestException(
+                            $"streaming conversion not implemented for {context.EntryProtocol} to {context.ChannelType}");
                 }
-               Console.Error.WriteLine($"[OCXP-DEBUG] [{context.RequestId}] StreamAsync: CONVERSION enumerables created, starting WriteLinesAsync loop...");
-                var writeLoopStart = Stopwatch.GetTimestamp();
                 streamWriteMetrics = await context.StreamWriter.WriteLinesAsync(
-                    CaptureLoggableStreamLines(
-                        convertedLines,
+                    EnsureCompletedStreamEndsWithDone(
+                        CaptureStreamLines(
+                            convertedLines,
+                            streamLineCaptures,
+                            "downstream",
+                            context.CancellationToken),
                         streamLineCaptures,
                         "downstream",
                         context.CancellationToken),
                     SseStreamConverter.CountsForTtft,
                     () => ElapsedMilliseconds(ttftStarted),
                     context.CancellationToken);
-                Console.Error.WriteLine($"[OCXP-DEBUG] [{context.RequestId}] StreamAsync: CONVERSION done. ttft={streamWriteMetrics.TtftMs}ms, first_sse={streamWriteMetrics.FirstSseEventMs}ms, first_output_text={streamWriteMetrics.FirstOutputTextDeltaMs}ms, first_reasoning={streamWriteMetrics.FirstReasoningSummaryTextDeltaMs}ms, completed={streamWriteMetrics.CompletedEventMs}ms");
                 ttftMs = streamWriteMetrics.TtftMs;
 
                 upstreamResponse = converted.UpstreamResponse;
@@ -342,7 +292,6 @@ public sealed class ProxyStreamService : IProxyStreamService
                     DurationMs: ElapsedMilliseconds(context.StartedTimestamp),
                     error,
                     webSearchDetails,
-                    StreamWriteMetrics: streamWriteMetrics,
                     StreamLines: streamLineCaptures),
                 context.RequestMetadata);
         }
@@ -482,54 +431,50 @@ public sealed class ProxyStreamService : IProxyStreamService
         }
     }
 
-    internal static IAsyncEnumerable<string> CaptureRawStreamLines(
-        IAsyncEnumerable<string> lines,
-        IList<ProxyRequestStreamLineCapture> capture,
-        CancellationToken cancellationToken)
-    {
-        return CaptureLoggableStreamLines(lines, capture, "upstream", cancellationToken);
-    }
-
-    internal static async IAsyncEnumerable<string> CaptureLoggableStreamLines(
+    internal static async IAsyncEnumerable<string> CaptureStreamLines(
         IAsyncEnumerable<string> lines,
         IList<ProxyRequestStreamLineCapture> capture,
         string source,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var state = new StreamLogCaptureState();
         await foreach (var line in lines.WithCancellation(cancellationToken))
         {
-            CaptureLoggableStreamChunk(line, capture, source, state);
+            foreach (var rawLine in SplitStreamLogLines(line))
+            {
+                AddStreamLineCapture(capture, source, rawLine);
+            }
+
             yield return line;
         }
     }
 
-    private static void CaptureLoggableStreamChunk(
-        string chunk,
+    private static async IAsyncEnumerable<string> EnsureCompletedStreamEndsWithDone(
+        IAsyncEnumerable<string> lines,
         IList<ProxyRequestStreamLineCapture> capture,
         string source,
-        StreamLogCaptureState state)
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        foreach (var rawLine in SplitStreamLogLines(chunk))
+        var sawCompleted = false;
+        var sawDone = false;
+        await foreach (var line in lines.WithCancellation(cancellationToken))
         {
-            if (rawLine.Length == 0)
-            {
-                if (state.HasOpenLoggedEvent)
-                {
-                    AddStreamLineCapture(capture, source, string.Empty);
-                }
-
-                state.HasOpenLoggedEvent = false;
-                state.CurrentEventName = null;
-                continue;
-            }
-
-            if (TryBuildLoggableStreamLine(rawLine, state, out var logLine))
-            {
-                AddStreamLineCapture(capture, source, logLine);
-                state.HasOpenLoggedEvent = true;
-            }
+            sawCompleted |= line.Contains("response.completed", StringComparison.Ordinal);
+            sawDone |= line.Contains("data: [DONE]", StringComparison.Ordinal);
+            yield return line;
         }
+
+        if (!sawCompleted || sawDone)
+        {
+            yield break;
+        }
+
+        const string done = "data: [DONE]\n\n";
+        foreach (var rawLine in SplitStreamLogLines(done))
+        {
+            AddStreamLineCapture(capture, source, rawLine);
+        }
+
+        yield return done;
     }
 
     private static IEnumerable<string> SplitStreamLogLines(string chunk)
@@ -543,184 +488,6 @@ public sealed class ProxyStreamService : IProxyStreamService
         }
     }
 
-    private static bool TryBuildLoggableStreamLine(
-        string rawLine,
-        StreamLogCaptureState state,
-        out string logLine)
-    {
-        logLine = string.Empty;
-        if (rawLine.StartsWith("event:", StringComparison.Ordinal))
-        {
-            var eventName = rawLine["event:".Length..].Trim();
-            state.CurrentEventName = eventName;
-            if (!IsLoggableEventName(eventName))
-            {
-                return false;
-            }
-
-            logLine = rawLine;
-            return true;
-        }
-
-        if (!rawLine.StartsWith("data:", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        var data = rawLine["data:".Length..].TrimStart();
-        if (data.Length == 0)
-        {
-            return false;
-        }
-
-        if (data == "[DONE]")
-        {
-            logLine = rawLine;
-            return true;
-        }
-
-        return TryBuildLoggableDataLine(data, state.CurrentEventName, rawLine, out logLine);
-    }
-
-    private static bool TryBuildLoggableDataLine(
-        string data,
-        string? currentEventName,
-        string rawLine,
-        out string logLine)
-    {
-        logLine = string.Empty;
-        try
-        {
-            using var document = JsonDocument.Parse(data);
-            if (document.RootElement.ValueKind != JsonValueKind.Object)
-            {
-                return IsLoggableEventName(currentEventName, includeCompleted: false)
-                    && UseRawLine(rawLine, out logLine);
-            }
-
-            var root = document.RootElement;
-            var type = TryExtractString(root, "type") ?? currentEventName;
-            if (string.Equals(type, "response.created", StringComparison.Ordinal)
-                || string.Equals(type, "response.in_progress", StringComparison.Ordinal)
-                || string.Equals(type, "response.metadata", StringComparison.Ordinal))
-            {
-                return false;
-            }
-
-            if (string.Equals(type, "response.completed", StringComparison.Ordinal))
-            {
-                return TryBuildResponseCompletedSummary(data, out logLine);
-            }
-
-            if (IsLoggableEventName(type, includeCompleted: false)
-                || HasChatCompletionDelta(root)
-                || HasChatCompletionUsage(root)
-                || HasMessagesStreamPayload(root))
-            {
-                return UseRawLine(rawLine, out logLine);
-            }
-
-            return false;
-        }
-        catch (JsonException)
-        {
-            return IsLoggableEventName(currentEventName, includeCompleted: false)
-                && UseRawLine(rawLine, out logLine);
-        }
-    }
-
-    private static bool TryBuildResponseCompletedSummary(string data, out string logLine)
-    {
-        logLine = string.Empty;
-        try
-        {
-            var node = JsonNode.Parse(data) as JsonObject;
-            if (node is null)
-            {
-                return false;
-            }
-
-            if (node["response"] is JsonObject response)
-            {
-                var cleaned = new JsonObject();
-                foreach (var field in ResponseCompletedAllowedFields)
-                {
-                    if (response.TryGetPropertyValue(field, out var value))
-                    {
-                        cleaned[field] = value?.DeepClone();
-                    }
-                }
-
-                node["response"] = cleaned;
-            }
-
-            logLine = $"data: {node.ToJsonString(StreamLogJsonOptions)}";
-            return true;
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
-
-    private static bool HasChatCompletionDelta(JsonElement root)
-    {
-        if (!root.TryGetProperty("choices", out var choices)
-            || choices.ValueKind != JsonValueKind.Array)
-        {
-            return false;
-        }
-
-        foreach (var choice in choices.EnumerateArray())
-        {
-            if (choice.TryGetProperty("delta", out var delta)
-                && delta.ValueKind == JsonValueKind.Object
-                && delta.EnumerateObject().Any())
-            {
-                return true;
-            }
-
-            if (choice.TryGetProperty("finish_reason", out var finishReason)
-                && finishReason.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static bool HasChatCompletionUsage(JsonElement root)
-    {
-        return root.TryGetProperty("usage", out var usage)
-            && usage.ValueKind == JsonValueKind.Object;
-    }
-
-    private static bool HasMessagesStreamPayload(JsonElement root)
-    {
-        var type = TryExtractString(root, "type");
-        return type is not null && LoggableUpstreamEventTypes.Contains(type);
-    }
-
-    private static bool IsLoggableEventName(string? eventName, bool includeCompleted = true)
-    {
-        if (string.IsNullOrWhiteSpace(eventName))
-        {
-            return false;
-        }
-
-        return LoggableUpstreamEventTypes.Contains(eventName)
-            || (includeCompleted
-                ? LoggableResponseEventTypes.Contains(eventName)
-                : LoggableResponseEventTypes.Contains(eventName)
-                    && !string.Equals(eventName, "response.completed", StringComparison.Ordinal));
-    }
-
-    private static bool UseRawLine(string rawLine, out string logLine)
-    {
-        logLine = rawLine;
-        return true;
-    }
 
     private static void AddStreamLineCapture(
         IList<ProxyRequestStreamLineCapture> capture,
@@ -729,50 +496,8 @@ public sealed class ProxyStreamService : IProxyStreamService
     {
         capture.Add(new ProxyRequestStreamLineCapture(
             capture.Count,
-            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
             source,
             rawLine));
     }
 
-    internal static string? TryExtractString(JsonElement element, string property)
-    {
-        return element.TryGetProperty(property, out var value)
-            && value.ValueKind == JsonValueKind.String
-            && value.GetString() is { Length: > 0 } str
-            ? str
-            : null;
-    }
-    internal static object? TryExtractObject(JsonElement element, string property)
-    {
-        if (!element.TryGetProperty(property, out var value)
-            || value.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-        return FromJsonElement(value);
-    }
-    internal static object? FromJsonElement(JsonElement element)
-    {
-        return element.ValueKind switch
-        {
-            JsonValueKind.Object => element.EnumerateObject().ToDictionary(
-                p => p.Name,
-                p => FromJsonElement(p.Value),
-                StringComparer.Ordinal),
-            JsonValueKind.Array => element.EnumerateArray().Select(FromJsonElement).ToList(),
-            JsonValueKind.String => element.GetString(),
-            JsonValueKind.Number => element.TryGetInt64(out var l)
-                ? (l is >= int.MinValue and <= int.MaxValue ? (int)l : l)
-                : element.GetDouble(),
-            JsonValueKind.True => true,
-            JsonValueKind.False => false,
-            _ => null
-        };
-    }
-    private sealed class StreamLogCaptureState
-    {
-        public string? CurrentEventName { get; set; }
-
-        public bool HasOpenLoggedEvent { get; set; }
-    }
 }

@@ -1,5 +1,3 @@
-using OpenCodex.CoreBase.Abstractions;
-
 namespace OpenCodex.CoreBase.Domain.Proxy;
 
 /// <summary>
@@ -35,7 +33,7 @@ public sealed class ProxyRequestLogContext
     /// <param name="requestType">请求日志类型。</param>
     /// <param name="parentRequestLogId">父请求日志标识符（如果可用）。</param>
     /// <param name="ocrDetails">OCR 专用详情（如果可用）。</param>
-    /// <param name="streamWriteMetrics">流式写出时序诊断（如果可用）。</param>
+    /// <param name="rawRequestBody">入口读取到的原始 UTF-8 请求正文（如果可用）。</param>
     /// <param name="streamLines">按原始 SSE line 记录的上游流片段（如果可用）。</param>
     public ProxyRequestLogContext(
         string requestId,
@@ -63,7 +61,7 @@ public sealed class ProxyRequestLogContext
         string requestType = ProxyRequestTypes.Main,
         Guid? parentRequestLogId = null,
         Dictionary<string, object?>? ocrDetails = null,
-        StreamWriteMetrics? streamWriteMetrics = null,
+        string? rawRequestBody = null,
         IReadOnlyList<ProxyRequestStreamLineCapture>? streamLines = null)
     {
         RequestId = requestId;
@@ -91,7 +89,7 @@ public sealed class ProxyRequestLogContext
         RequestType = requestType;
         ParentRequestLogId = parentRequestLogId;
         OcrDetails = ocrDetails;
-        StreamWriteMetrics = streamWriteMetrics;
+        RawRequestBody = rawRequestBody;
         StreamLines = streamLines;
     }
 
@@ -221,9 +219,9 @@ public sealed class ProxyRequestLogContext
     public Dictionary<string, object?>? OcrDetails { get; }
 
     /// <summary>
-    /// 获取流式写出时序诊断（如果可用）。
+    /// 获取入口读取到的原始 UTF-8 请求正文（如果可用）。
     /// </summary>
-    public StreamWriteMetrics? StreamWriteMetrics { get; }
+    public string? RawRequestBody { get; }
 
     /// <summary>
     /// 获取按原始 SSE line 记录的上游流片段（如果可用）。

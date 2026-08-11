@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using OpenCodex.Api.Configuration;
 using OpenCodex.Api.Controllers;
 using OpenCodex.Api.Infrastructure;
+using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Models;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs;
@@ -22,10 +23,12 @@ public sealed class ProxyControllerTests
     public async Task Messages_EnabledProbeInterception_ReturnsFakeResponseWithoutProxy()
     {
         var proxy = new StubProxyEndpointService();
+        var logs = new StubProxyLogService();
         var controller = CreateController(
             new StubRequestBodyReader(CreateMessagesPayload(maxTokens: 1)),
             proxy,
-            interceptProbeRequests: true);
+            interceptProbeRequests: true,
+            logs: logs);
 
         var action = await controller.Messages();
 
@@ -35,6 +38,14 @@ public sealed class ProxyControllerTests
         Assert.Equal("message", payload["type"]);
         Assert.Equal("end_turn", payload["stop_reason"]);
         Assert.False(proxy.Called);
+        Assert.NotNull(logs.LastContext);
+        Assert.Equal(200, logs.LastContext!.StatusCode);
+        Assert.Equal("claude-opus-5", logs.LastContext.RequestModel);
+        Assert.Same(payload, logs.LastContext.ResponsePayload);
+        Assert.NotNull(logs.LastRequestMetadata);
+        Assert.Equal("POST", logs.LastRequestMetadata!.Method);
+        Assert.Equal("/v1/messages", logs.LastRequestMetadata.Path);
+        Assert.Equal("{\"model\":\"claude-opus-5\",\"max_tokens\":1}", logs.LastRequestMetadata.RawBody);
     }
 
     [Fact]
@@ -101,7 +112,8 @@ public sealed class ProxyControllerTests
         IRequestBodyReader bodyReader,
         StubProxyEndpointService proxy,
         bool interceptProbeRequests,
-        ICodexOfficialModelCatalogFactory? codexFactory = null)
+        ICodexOfficialModelCatalogFactory? codexFactory = null,
+        IProxyLogService? logs = null)
     {
         var controller = new ProxyController(
             bodyReader,
@@ -110,13 +122,16 @@ public sealed class ProxyControllerTests
             new StubProxyRouteService(),
             new StubModelCatalogService(),
             codexFactory ?? new StubCodexOfficialModelCatalogFactory(),
-            new StubSystemSettingsStore(interceptProbeRequests))
+            new StubSystemSettingsStore(interceptProbeRequests),
+            logs ?? new StubProxyLogService())
         {
             ControllerContext = new ControllerContext
             {
                 HttpContext = new DefaultHttpContext()
             }
         };
+        controller.HttpContext.Request.Method = HttpMethods.Post;
+        controller.HttpContext.Request.Path = "/v1/messages";
         return controller;
     }
 
@@ -150,7 +165,18 @@ public sealed class ProxyControllerTests
             HttpRequest request,
             CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<Dictionary<string, object?>?>(_payload);
+            request.Body = new MemoryStream(
+                System.Text.Encoding.UTF8.GetBytes(
+                    "{\"model\":\"claude-opus-5\",\"max_tokens\":1}"));
+            return ReadAndReturnPayloadAsync(request, cancellationToken);
+        }
+
+        private async Task<Dictionary<string, object?>?> ReadAndReturnPayloadAsync(
+            HttpRequest request,
+            CancellationToken cancellationToken)
+        {
+            await new RequestBodyReader().ReadJsonObjectAsync(request, cancellationToken);
+            return _payload;
         }
     }
 
@@ -169,6 +195,29 @@ public sealed class ProxyControllerTests
                 },
                 IsEmpty: false));
         }
+    }
+
+    private sealed class StubProxyLogService : IProxyLogService
+    {
+        public ProxyLogContext? LastContext { get; private set; }
+
+        public ProxyRequestMetadata? LastRequestMetadata { get; private set; }
+
+        public Guid CreateQueuedLog(ProxyRequestLogQueuedContext context) => throw new NotSupportedException();
+
+        public void MarkProcessing(Guid requestLogId, ProxyRequestLogProcessingContext context) => throw new NotSupportedException();
+
+        public Task CompleteLogAsync(Guid requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
+            => throw new NotSupportedException();
+
+        public Task<Guid> WriteLogAsync(ProxyLogContext context, ProxyRequestMetadata request)
+        {
+            LastContext = context;
+            LastRequestMetadata = request;
+            return Task.FromResult(Guid.NewGuid());
+        }
+
+        public Task<Guid> WriteLogAsync(ProxyRequestLogContext context) => throw new NotSupportedException();
     }
 
     private sealed class StubProxyRequestService : IProxyRequestService

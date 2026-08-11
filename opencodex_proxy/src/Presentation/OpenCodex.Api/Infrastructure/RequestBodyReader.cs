@@ -1,18 +1,23 @@
+using System.Text;
 using System.Text.Json;
 
 namespace OpenCodex.Api.Infrastructure;
 
 public sealed class RequestBodyReader : IRequestBodyReader
 {
+    private static readonly object RawBodyItemKey = new();
+
     public async Task<Dictionary<string, object?>?> ReadJsonObjectAsync(
         HttpRequest request,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            using var document = await JsonDocument.ParseAsync(
-                request.Body,
-                cancellationToken: cancellationToken);
+            using var buffer = new MemoryStream();
+            await request.Body.CopyToAsync(buffer, cancellationToken);
+            var bytes = buffer.ToArray();
+            request.HttpContext.Items[RawBodyItemKey] = new UTF8Encoding(false, true).GetString(bytes);
+            using var document = JsonDocument.Parse(bytes);
             return document.RootElement.ValueKind == JsonValueKind.Object
                 ? (Dictionary<string, object?>?)FromJsonElement(document.RootElement)
                 : null;
@@ -21,6 +26,13 @@ public sealed class RequestBodyReader : IRequestBodyReader
         {
             return null;
         }
+    }
+
+    internal static string? ReadCapturedRawBody(HttpRequest request)
+    {
+        return request.HttpContext.Items.TryGetValue(RawBodyItemKey, out var value)
+            ? value as string
+            : null;
     }
 
     private static object? FromJsonElement(JsonElement element)

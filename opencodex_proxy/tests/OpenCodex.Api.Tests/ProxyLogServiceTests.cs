@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Persistence;
 using OpenCodex.Core.Services;
@@ -19,7 +20,7 @@ public sealed class ProxyLogServiceTests
     private static readonly Guid TestChannelId = Guid.Parse("66666666-6666-6666-6666-666666666601");
 
     [Fact]
-    public async Task WriteLog_RedactsNestedMcpAuthorizationTokens()
+    public async Task WriteLog_PreservesNestedMcpAuthorizationTokens()
     {
         var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-proxy-log-tests", $"{Guid.NewGuid():N}.db");
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
@@ -69,17 +70,19 @@ public sealed class ProxyLogServiceTests
 
         using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         context.Database.Migrate();
-        var detail = context.RequestLogDetails.Single();
-        var combined = $"{detail.RequestHeaders}\n{detail.RequestBody}\n{detail.UpstreamRequestBody}";
-        Assert.DoesNotContain("openai-secret", combined, StringComparison.Ordinal);
-        Assert.DoesNotContain("anthropic-secret", combined, StringComparison.Ordinal);
-        Assert.DoesNotContain("nested-secret", combined, StringComparison.Ordinal);
-        Assert.DoesNotContain("client-secret", combined, StringComparison.Ordinal);
-        Assert.Contains("***REDACTED***", combined, StringComparison.Ordinal);
+        var logId = context.RequestLogs.Single().Id;
+        var content = new LogContentStore(context).Read(logId);
+        var combined = $"{content.Get(RequestLogContentSlot.RequestHeaders)}\n"
+            + $"{content.Get(RequestLogContentSlot.RequestBody)}\n"
+            + content.Get(RequestLogContentSlot.UpstreamRequestBody);
+        Assert.Contains("openai-secret", combined, StringComparison.Ordinal);
+        Assert.Contains("anthropic-secret", combined, StringComparison.Ordinal);
+        Assert.Contains("nested-secret", combined, StringComparison.Ordinal);
+        Assert.Contains("client-secret", combined, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task WriteLog_RedactsNestedImageDataInObjectsAndArrays()
+    public async Task WriteLog_PreservesNestedImageDataInObjectsAndArrays()
     {
         var payload = new Dictionary<string, object?>
         {
@@ -101,13 +104,13 @@ public sealed class ProxyLogServiceTests
 
         var detail = await WriteImageLogAsync(payload: payload);
 
-        Assert.DoesNotContain("request-secret", detail.RequestBody, StringComparison.Ordinal);
-        Assert.DoesNotContain("request-b64-secret", detail.RequestBody, StringComparison.Ordinal);
-        Assert.Contains("***IMAGE_DATA_REDACTED***", detail.RequestBody, StringComparison.Ordinal);
+        var requestBody = detail.Get(RequestLogContentSlot.RequestBody);
+        Assert.Contains("request-secret", requestBody, StringComparison.Ordinal);
+        Assert.Contains("request-b64-secret", requestBody, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task WriteLog_RedactsImageDataInUpstreamErrorResponse()
+    public async Task WriteLog_PreservesImageDataInUpstreamErrorResponse()
     {
         var errorResponse = new Dictionary<string, object?>
         {
@@ -123,9 +126,9 @@ public sealed class ProxyLogServiceTests
 
         var detail = await WriteImageLogAsync(errorResponse: errorResponse, statusCode: 502, error: "upstream failed");
 
-        Assert.DoesNotContain("error-secret", detail.ResponseBody, StringComparison.Ordinal);
-        Assert.DoesNotContain("error-b64-secret", detail.ResponseBody, StringComparison.Ordinal);
-        Assert.Contains("***IMAGE_DATA_REDACTED***", detail.ResponseBody, StringComparison.Ordinal);
+        var responseBody = detail.Get(RequestLogContentSlot.ResponseBody);
+        Assert.Contains("error-secret", responseBody, StringComparison.Ordinal);
+        Assert.Contains("error-b64-secret", responseBody, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -149,13 +152,13 @@ public sealed class ProxyLogServiceTests
             Assert.Single(Assert.IsType<List<object?>>(responsePayload["data"])));
         Assert.Equal("client-b64-secret", originalItem["b64_json"]);
         Assert.Equal("data:image/webp;base64,client-data-secret", originalItem["url"]);
-        Assert.DoesNotContain("client-b64-secret", detail.ResponseBody, StringComparison.Ordinal);
-        Assert.DoesNotContain("client-data-secret", detail.ResponseBody, StringComparison.Ordinal);
-        Assert.Contains("***IMAGE_DATA_REDACTED***", detail.ResponseBody, StringComparison.Ordinal);
+        var storedResponse = detail.Get(RequestLogContentSlot.ResponseBody);
+        Assert.Contains("client-b64-secret", storedResponse, StringComparison.Ordinal);
+        Assert.Contains("client-data-secret", storedResponse, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task WriteLog_DoesNotRetainLongBase64SentinelOrMutateSource()
+    public async Task WriteLog_PreservesLongBase64SentinelWithoutMutatingSource()
     {
         var sentinel = new string('Z', 128 * 1024);
         var dataUri = $"data:image/png;base64,{sentinel}";
@@ -164,27 +167,23 @@ public sealed class ProxyLogServiceTests
         var detail = await WriteImageLogAsync(payload: payload);
 
         Assert.Equal(dataUri, payload["image_url"]);
-        Assert.DoesNotContain(sentinel, detail.RequestBody, StringComparison.Ordinal);
-        Assert.Contains("***IMAGE_DATA_REDACTED***", detail.RequestBody, StringComparison.Ordinal);
+        Assert.Contains(sentinel, detail.Get(RequestLogContentSlot.RequestBody), StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task WriteLog_ReplacesBinaryValuesWithoutEnumeratingThem()
+    public async Task WriteLog_PreservesBinaryByteValues()
     {
         var bytes = new byte[] { 1, 2, 3, 4 };
-        using var stream = new MemoryStream(new byte[] { 5, 6, 7 });
-        var payload = new Dictionary<string, object?> { ["bytes"] = bytes, ["stream"] = stream };
+        var payload = new Dictionary<string, object?> { ["bytes"] = bytes };
 
         var detail = await WriteImageLogAsync(payload: payload);
 
-        Assert.Contains("***BINARY_DATA_REDACTED*** (4 bytes)", detail.RequestBody, StringComparison.Ordinal);
-        Assert.Contains("***BINARY_DATA_REDACTED*** (MemoryStream)", detail.RequestBody, StringComparison.Ordinal);
+        Assert.Contains("AQIDBA==", detail.Get(RequestLogContentSlot.RequestBody), StringComparison.Ordinal);
         Assert.Same(bytes, payload["bytes"]);
-        Assert.Same(stream, payload["stream"]);
     }
 
     [Fact]
-    public async Task WriteLog_PersistsStreamTimingsJson()
+    public async Task WriteLog_DoesNotPersistDetailedStreamTimings()
     {
         var dbPath = Path.Combine(
             Path.GetTempPath(),
@@ -230,21 +229,85 @@ public sealed class ProxyLogServiceTests
             method: "POST",
             path: "/v1/responses",
             clientIp: "127.0.0.1",
-            requestHeaders: new Dictionary<string, string>(),
-            streamWriteMetrics: new StreamWriteMetrics(
-                ttftMs: 120,
-                firstSseEventMs: 15,
-                firstReasoningSummaryTextDeltaMs: 70,
-                firstOutputTextDeltaMs: 120,
-                firstFunctionCallArgumentsDeltaMs: null,
-                completedEventMs: 340)));
+            requestHeaders: new Dictionary<string, string>()));
 
         using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         context.Database.Migrate();
-var detail = context.RequestLogDetails.Single();
-        Assert.NotNull(detail.StreamTimingsJson);
-        Assert.Contains("\"first_output_text_delta_ms\":120", detail.StreamTimingsJson!, StringComparison.Ordinal);
-        Assert.Contains("\"first_sse_event_ms\":15", detail.StreamTimingsJson!, StringComparison.Ordinal);
+        var log = context.RequestLogs.Single();
+        var references = context.RequestLogContentRefs
+            .Where(reference => reference.RequestLogId == log.Id)
+            .ToList();
+        Assert.Equal(120, log.TtftMs);
+        Assert.Equal(5, references.Count);
+        Assert.DoesNotContain(
+            context.LogContentBlocks.AsNoTracking(),
+            block => block.Compression == LogContentCodec.RawCodec
+                && System.Text.Encoding.UTF8.GetString(block.Data).Contains(
+                    "first_output_text_delta_ms",
+                    StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task WriteLog_PreservesRawRequestBodyAndIndexesConversationMetadata()
+    {
+        var dbPath = Path.Combine(
+            Path.GetTempPath(),
+            "opencodex-proxy-log-tests",
+            $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        using (var bootstrap = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            bootstrap.Database.Migrate();
+        }
+
+        EnsureAdminUser(dbPath);
+        const string rawBody = "{\n  \"model\": \"gpt-5\",\n  \"value\": 1.00,\n  \"previous_response_id\": \"resp-parent\"\n}";
+        var headers = new Dictionary<string, string>
+        {
+            ["x-codex-turn-metadata"] = "{\"session_id\":\"session-1\",\"thread_id\":\"thread-1\","
+                + "\"turn_id\":\"turn-7\",\"window_id\":\"window-2\"}"
+        };
+        var service = CreateService(dbPath);
+        await service.WriteLogAsync(
+            new ProxyLogContext(
+                RequestId: "req-raw-body",
+                OwnerUsername: "admin",
+                ApiKeyId: null,
+                Payload: new Dictionary<string, object?>
+                {
+                    ["model"] = "gpt-5",
+                    ["value"] = 1d,
+                    ["previous_response_id"] = "resp-parent"
+                },
+                UpstreamRequest: new Dictionary<string, object?>(),
+                UpstreamResponse: new Dictionary<string, object?>(),
+                ResponsePayload: new Dictionary<string, object?>(),
+                ErrorResponse: null,
+                RequestModel: "gpt-5",
+                UpstreamModel: "gpt-5",
+                ChannelId: TestChannelId.ToString(),
+                ChannelType: "responses",
+                IsStream: false,
+                TtftMs: null,
+                StatusCode: 200,
+                DurationMs: 1,
+                Error: null,
+                WebSearchDetails: null),
+            new ProxyRequestMetadata(
+                "POST",
+                "/v1/responses",
+                "127.0.0.1",
+                headers,
+                rawBody));
+
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var log = context.RequestLogs.Single();
+        var content = new LogContentStore(context).Read(log.Id);
+        Assert.Equal(rawBody, content.Get(RequestLogContentSlot.RequestBody));
+        Assert.Equal("thread:thread-1", log.ConversationKey);
+        Assert.Equal("turn-7", log.ConversationTurnId);
+        Assert.Equal("window-2", log.ConversationWindowId);
+        Assert.Equal("resp-parent", log.PreviousResponseId);
     }
 
     [Fact]
@@ -279,14 +342,16 @@ var detail = context.RequestLogDetails.Single();
         using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
             context.Database.Migrate();
-var queued = context.RequestLogs
+            var queued = context.RequestLogs
                 .Single(item => item.Id == requestLogId);
-            var queuedDetail = context.RequestLogDetails.Single(d => d.RequestLogId == requestLogId);
+            var queuedContent = new LogContentStore(context).Read(requestLogId);
             Assert.Equal(ProxyRequestLifecycleStatus.Queued, queued.LifecycleStatus);
             Assert.Null(queued.ProcessingStartedAt);
             Assert.Null(queued.CompletedAt);
-            Assert.NotNull(queuedDetail);
-            Assert.Contains("\"model\":\"gpt-5\"", queuedDetail.RequestBody!, StringComparison.Ordinal);
+            Assert.Contains(
+                "\"model\":\"gpt-5\"",
+                queuedContent.Get(RequestLogContentSlot.RequestBody),
+                StringComparison.Ordinal);
         }
 
         service.MarkProcessing(requestLogId, new ProxyRequestLogProcessingContext(
@@ -302,14 +367,17 @@ var queued = context.RequestLogs
         using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
             context.Database.Migrate();
-var processing = context.RequestLogs
+            var processing = context.RequestLogs
                 .Single(item => item.Id == requestLogId);
-            var processingDetail = context.RequestLogDetails.Single(d => d.RequestLogId == requestLogId);
+            var processingContent = new LogContentStore(context).Read(requestLogId);
             Assert.Equal(ProxyRequestLifecycleStatus.Processing, processing.LifecycleStatus);
             Assert.NotNull(processing.ProcessingStartedAt);
             Assert.Equal(TestApiKeyId, processing.ApiKeyId);
             Assert.Equal(TestChannelId, processing.ChannelId);
-            Assert.Contains("\"stream\":true", processingDetail.UpstreamRequestBody!, StringComparison.Ordinal);
+            Assert.Contains(
+                "\"stream\":true",
+                processingContent.Get(RequestLogContentSlot.UpstreamRequestBody),
+                StringComparison.Ordinal);
         }
 
         await service.CompleteLogAsync(
@@ -343,21 +411,21 @@ var processing = context.RequestLogs
                 WebSearchDetails: null,
                 StreamLines:
                 [
-                    new ProxyRequestStreamLineCapture(0, 1_700_000_000.100, "upstream", "event: response.output_text.delta"),
-                    new ProxyRequestStreamLineCapture(1, 1_700_000_000.120, "upstream", "data: {\"delta\":\"hello\"}"),
-                    new ProxyRequestStreamLineCapture(2, 1_700_000_000.121, "upstream", string.Empty)
+                    new ProxyRequestStreamLineCapture(0, "upstream", "event: response.output_text.delta"),
+                    new ProxyRequestStreamLineCapture(1, "upstream", "data: {\"delta\":\"hello\"}"),
+                    new ProxyRequestStreamLineCapture(2, "upstream", string.Empty)
                 ]),
             new ProxyRequestMetadata("POST", "/v1/responses", "127.0.0.1", new Dictionary<string, string>()));
 
         using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
             context.Database.Migrate();
-var completed = context.RequestLogs
+            var completed = context.RequestLogs
                 .Single(item => item.Id == requestLogId);
-            var completedStreamLines = context.RequestLogStreamLines
-                .Where(line => line.RequestLogId == requestLogId)
-                .OrderBy(line => line.Sequence)
-                .ToList();
+            var completedContent = new LogContentStore(context).Read(requestLogId);
+            using var streamDocument = JsonDocument.Parse(
+                completedContent.Get(RequestLogContentSlot.StreamLinesJson)!);
+            var completedStreamLines = streamDocument.RootElement.EnumerateArray().ToList();
             Assert.Equal(ProxyRequestLifecycleStatus.Success, completed.LifecycleStatus);
             Assert.NotNull(completed.CompletedAt);
             Assert.Equal(88, completed.TtftMs);
@@ -369,19 +437,20 @@ var completed = context.RequestLogs
                 completedStreamLines,
                 line =>
                 {
-                    Assert.Equal(0, line.Sequence);
-                    Assert.Equal("upstream", line.Source);
-                    Assert.Equal("event: response.output_text.delta", line.RawLine);
+                    Assert.False(line.TryGetProperty("occurred_at", out _));
+                    Assert.Equal(0, line.GetProperty("sequence").GetInt32());
+                    Assert.Equal("upstream", line.GetProperty("source").GetString());
+                    Assert.Equal("event: response.output_text.delta", line.GetProperty("raw_line").GetString());
                 },
                 line =>
                 {
-                    Assert.Equal(1, line.Sequence);
-                    Assert.Equal("data: {\"delta\":\"hello\"}", line.RawLine);
+                    Assert.Equal(1, line.GetProperty("sequence").GetInt32());
+                    Assert.Equal("data: {\"delta\":\"hello\"}", line.GetProperty("raw_line").GetString());
                 },
                 line =>
                 {
-                    Assert.Equal(2, line.Sequence);
-                    Assert.Equal(string.Empty, line.RawLine);
+                    Assert.Equal(2, line.GetProperty("sequence").GetInt32());
+                    Assert.Equal(string.Empty, line.GetProperty("raw_line").GetString());
                 });
         }
     }
@@ -404,13 +473,12 @@ var completed = context.RequestLogs
         return new ProxyLogService(
             settingsProvider,
             catalog,
+            context,
             new EfRepository<RequestLog>(context),
-            new EfRepository<RequestLogDetail>(context),
-            new EfRepository<RequestLogStreamLine>(context),
             new EfRepository<User>(context));
     }
 
-    private static async Task<RequestLogDetail> WriteImageLogAsync(
+    private static async Task<LogContentSnapshot> WriteImageLogAsync(
         Dictionary<string, object?>? payload = null,
         Dictionary<string, object?>? responsePayload = null,
         object? errorResponse = null,
@@ -452,7 +520,8 @@ var completed = context.RequestLogs
 
         using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         context.Database.Migrate();
-        return context.RequestLogDetails.AsNoTracking().Single();
+        var logId = context.RequestLogs.AsNoTracking().Single().Id;
+        return new LogContentStore(context).Read(logId);
     }
 
     private sealed class TestWorkContext : IWorkContext

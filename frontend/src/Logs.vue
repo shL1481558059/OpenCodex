@@ -51,7 +51,7 @@
        <el-button :icon="Refresh" :loading="refreshLoading" @click="refreshLogPageData()">刷新</el-button>
         <el-popconfirm
           v-if="isSuperadmin"
-          title="确定清除全部请求日志？此操作不可恢复，将删除所有日志、详情及 SSE 流行。"
+          title="确定清除全部请求日志？此操作不可恢复，将删除所有日志、内容引用及 SSE 流。"
           confirm-button-text="清除"
           cancel-button-text="取消"
           confirm-button-type="danger"
@@ -84,6 +84,18 @@
       </el-form-item>
       <el-form-item label="请求 ID">
         <el-autocomplete v-model="logFilters.request_id" :fetch-suggestions="requestIdSuggestions" clearable @focus="loadFilterOptions('request_id')" @select="refreshLogPageData(1)" @clear="refreshLogPageData(1)" />
+      </el-form-item>
+      <el-form-item label="会话">
+        <el-autocomplete v-model="logFilters.conversation_key" :fetch-suggestions="conversationKeySuggestions" clearable @focus="loadFilterOptions('conversation_key')" @select="refreshLogPageData(1)" @clear="refreshLogPageData(1)" />
+      </el-form-item>
+      <el-form-item label="Turn ID">
+        <el-autocomplete v-model="logFilters.conversation_turn_id" :fetch-suggestions="conversationTurnIdSuggestions" clearable @focus="loadFilterOptions('conversation_turn_id')" @select="refreshLogPageData(1)" @clear="refreshLogPageData(1)" />
+      </el-form-item>
+      <el-form-item label="窗口 ID">
+        <el-autocomplete v-model="logFilters.conversation_window_id" :fetch-suggestions="conversationWindowIdSuggestions" clearable @focus="loadFilterOptions('conversation_window_id')" @select="refreshLogPageData(1)" @clear="refreshLogPageData(1)" />
+      </el-form-item>
+      <el-form-item label="上一响应">
+        <el-autocomplete v-model="logFilters.previous_response_id" :fetch-suggestions="previousResponseIdSuggestions" clearable @focus="loadFilterOptions('previous_response_id')" @select="refreshLogPageData(1)" @clear="refreshLogPageData(1)" />
       </el-form-item>
       <el-form-item label="模型">
         <el-autocomplete v-model="logFilters.model" :fetch-suggestions="modelSuggestions" clearable @focus="loadFilterOptions('model')" @select="refreshLogPageData(1)" @clear="refreshLogPageData(1)" />
@@ -259,6 +271,10 @@
               </template>
               <span v-else>-</span>
             </el-descriptions-item>
+            <el-descriptions-item label="会话键">{{ selectedLog.conversation_key || "-" }}</el-descriptions-item>
+            <el-descriptions-item label="Turn ID">{{ selectedLog.conversation_turn_id || "-" }}</el-descriptions-item>
+            <el-descriptions-item label="窗口 ID">{{ selectedLog.conversation_window_id || "-" }}</el-descriptions-item>
+            <el-descriptions-item label="上一响应">{{ selectedLog.previous_response_id || "-" }}</el-descriptions-item>
             <el-descriptions-item label="模型">{{ selectedLog.model }}</el-descriptions-item>
             <el-descriptions-item label="上游模型">{{ selectedLog.upstream_model }}</el-descriptions-item>
             <el-descriptions-item label="渠道">{{ formatChannelName(selectedLog) || "-" }}</el-descriptions-item>
@@ -331,7 +347,6 @@
                 >
                   <div class="stream-record-card__meta">
                     <span>#{{ line.sequence }}</span>
-                    <span>{{ formatTimeOrDash(line.occurred_at) }}</span>
                     <span>{{ line.source || "upstream" }}</span>
                   </div>
                   <pre class="json-view stream-record-card__body">{{ formatStreamLine(line.raw_line) }}</pre>
@@ -346,7 +361,6 @@
                 >
                   <div class="stream-record-card__meta">
                     <span>事件 {{ event.index }}</span>
-                    <span>{{ formatTimeOrDash(event.started_at) }}</span>
                     <span>{{ event.line_count }} 行</span>
                   </div>
                   <pre class="json-view stream-record-card__body">{{ event.text }}</pre>
@@ -401,6 +415,10 @@ const statsData = reactive({
 
 const filterOptions = reactive({
   request_ids: [],
+  conversation_keys: [],
+  conversation_turn_ids: [],
+  conversation_window_ids: [],
+  previous_response_ids: [],
   models: [],
   upstream_models: [],
   channel_ids: [],
@@ -414,6 +432,10 @@ const filterOptions = reactive({
 
 const filterOptionFieldMap = {
   request_id: "request_ids",
+  conversation_key: "conversation_keys",
+  conversation_turn_id: "conversation_turn_ids",
+  conversation_window_id: "conversation_window_ids",
+  previous_response_id: "previous_response_ids",
   model: "models",
   channel_id: "channel_ids",
   owner_username: "owner_usernames",
@@ -423,6 +445,10 @@ const filterOptionFieldMap = {
 };
 const filterOptionsLoading = reactive({
   request_id: false,
+  conversation_key: false,
+  conversation_turn_id: false,
+  conversation_window_id: false,
+  previous_response_id: false,
   model: false,
   channel_id: false,
   owner_username: false,
@@ -446,6 +472,10 @@ const logFilters = reactive({
   created_from: defaultLogTimeRange.created_from,
   created_to: defaultLogTimeRange.created_to,
   request_id: "",
+  conversation_key: "",
+  conversation_turn_id: "",
+  conversation_window_id: "",
+  previous_response_id: "",
   model: "",
   channel_id: "",
   owner_username: "",
@@ -468,7 +498,6 @@ const logDetailSections = [
   { key: "upstream_request_body", label: "转换后请求" },
   { key: "upstream_response_body", label: "转换前响应" },
   { key: "response_body", label: "转换后响应" },
-  { key: "stream_timings_json", label: "流式时序" },
   { key: "ocr_json", label: "OCR 元数据" },
   { key: "web_search_json", label: "Web Search" }
 ];
@@ -476,6 +505,7 @@ const logDetailSections = [
 const logColumnDefinitions = [
   { key: "created_at", prop: "created_at", label: "时间", width: 220 },
   { key: "request_id", prop: "request_id", label: "请求", width: 130, showOverflowTooltip: true },
+  { key: "conversation_key", prop: "conversation_key", label: "会话", width: 180, showOverflowTooltip: true },
   { key: "request_status", prop: "request_status", label: "状态", width: 100 },
   { key: "owner_username", prop: "owner_username", label: "用户", width: 120, showOverflowTooltip: true },
   { key: "api_key_id", prop: "api_key_id", label: "Key 名称", width: 140, showOverflowTooltip: true },
@@ -647,6 +677,10 @@ function resetLogFilters() {
   Object.assign(logFilters, {
     ...buildDefaultLogTimeRange(),
     request_id: "",
+    conversation_key: "",
+    conversation_turn_id: "",
+    conversation_window_id: "",
+    previous_response_id: "",
     model: "",
     channel_id: "",
     owner_username: "",
@@ -778,6 +812,22 @@ async function loadFilterOptions(field, query = "") {
 
 async function requestIdSuggestions(query, callback) {
   callback(buildSuggestions(await loadFilterOptions("request_id", query)));
+}
+
+async function conversationKeySuggestions(query, callback) {
+  callback(buildSuggestions(await loadFilterOptions("conversation_key", query)));
+}
+
+async function conversationTurnIdSuggestions(query, callback) {
+  callback(buildSuggestions(await loadFilterOptions("conversation_turn_id", query)));
+}
+
+async function conversationWindowIdSuggestions(query, callback) {
+  callback(buildSuggestions(await loadFilterOptions("conversation_window_id", query)));
+}
+
+async function previousResponseIdSuggestions(query, callback) {
+  callback(buildSuggestions(await loadFilterOptions("previous_response_id", query)));
 }
 
 async function modelSuggestions(query, callback) {
@@ -945,13 +995,10 @@ function mergeStreamLines(lines) {
 
   const flush = () => {
     if (!bucket.length) return;
-    const endedAt = bucket[bucket.length - 1]?.occurred_at ?? null;
     const normalized = bucket[bucket.length - 1]?.raw_line === "" ? bucket.slice(0, -1) : bucket.slice();
     events.push({
       key: `event-${eventIndex}-${bucket[0]?.sequence ?? 0}`,
       index: eventIndex,
-      started_at: bucket[0]?.occurred_at ?? null,
-      completed_at: endedAt,
       line_count: normalized.length,
       text: normalized.map((item) => String(item.raw_line ?? "")).join("\n") || "(空事件)"
     });
@@ -971,12 +1018,12 @@ function mergeStreamLines(lines) {
 function buildRawStreamText(lines) {
   return (lines || []).map((line) => {
     const rawText = line?.raw_line === "" ? "(空行)" : String(line?.raw_line ?? "");
-    return `#${line?.sequence ?? 0} ${formatTimeOrDash(line?.occurred_at)} ${line?.source || "upstream"}\n${rawText}`;
+    return `#${line?.sequence ?? 0} ${line?.source || "upstream"}\n${rawText}`;
   }).join("\n\n");
 }
 
 function buildMergedStreamText(events) {
-  return (events || []).map((event) => `事件 ${event.index} ${formatTimeOrDash(event.started_at)}\n${event.text}`).join("\n\n");
+  return (events || []).map((event) => `事件 ${event.index}\n${event.text}`).join("\n\n");
 }
 
 function defaultSummary() {

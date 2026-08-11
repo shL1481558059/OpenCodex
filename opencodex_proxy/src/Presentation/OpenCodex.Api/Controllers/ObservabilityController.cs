@@ -35,6 +35,10 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         string? request_status,
         string? created_from,
         string? created_to,
+        string? conversation_key = null,
+        string? conversation_turn_id = null,
+        string? conversation_window_id = null,
+        string? previous_response_id = null,
         string page = "1",
         string page_size = "50")
     {
@@ -54,7 +58,11 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
             error,
             request_status,
             created_from,
-            created_to);
+            created_to,
+            conversation_key,
+            conversation_turn_id,
+            conversation_window_id,
+            previous_response_id);
         var result = _observability.ReadLogsPage(
             page,
             page_size,
@@ -80,7 +88,11 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         string? error = null,
         string? request_status = null,
         string? created_from = null,
-        string? created_to = null)
+        string? created_to = null,
+        string? conversation_key = null,
+        string? conversation_turn_id = null,
+        string? conversation_window_id = null,
+        string? previous_response_id = null)
     {
         RequireUser();
         var filters = BuildLogFilters(
@@ -99,6 +111,10 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
             request_status,
             created_from,
             created_to,
+            conversation_key,
+            conversation_turn_id,
+            conversation_window_id,
+            previous_response_id,
             field);
         var result = _observability.ReadLogFilterOption(
             field,
@@ -140,7 +156,11 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         string? is_stream = null,
         string? client_ip = null,
         string? error = null,
-        string? request_status = null)
+        string? request_status = null,
+        string? conversation_key = null,
+        string? conversation_turn_id = null,
+        string? conversation_window_id = null,
+        string? previous_response_id = null)
     {
         RequireUser();
         var filters = BuildLogFilters(
@@ -158,7 +178,11 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
             error,
             request_status,
             null,
-            null);
+            null,
+            conversation_key,
+            conversation_turn_id,
+            conversation_window_id,
+            previous_response_id);
         var result = _observability.ReadStats(
             range,
             start,
@@ -246,6 +270,10 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         string? requestStatus,
         string? createdFrom,
         string? createdTo,
+        string? conversationKey,
+        string? conversationTurnId,
+        string? conversationWindowId,
+        string? previousResponseId,
         string? excludedKey = null)
     {
         var filters = new Dictionary<string, object?>(StringComparer.Ordinal);
@@ -264,6 +292,10 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         AddFilter(filters, "request_status", requestStatus, excludedKey);
         AddFilter(filters, "created_from", createdFrom, excludedKey);
         AddFilter(filters, "created_to", createdTo, excludedKey);
+        AddFilter(filters, "conversation_key", conversationKey, excludedKey);
+        AddFilter(filters, "conversation_turn_id", conversationTurnId, excludedKey);
+        AddFilter(filters, "conversation_window_id", conversationWindowId, excludedKey);
+        AddFilter(filters, "previous_response_id", previousResponseId, excludedKey);
         return filters;
     }
 

@@ -17,7 +17,7 @@ public interface IProxyStreamWriter
     /// <param name="countsForTtft">用于判断某一行是否计入首 token 时间的谓词。</param>
     /// <param name="elapsedMilliseconds">返回请求已耗时毫秒数的回调。</param>
     /// <param name="cancellationToken">用于取消写入的令牌。</param>
-    /// <returns>本次流式写出的时序指标。</returns>
+    /// <returns>本次流式写出的首令牌耗时。</returns>
     Task<StreamWriteMetrics> WriteLinesAsync(
         IAsyncEnumerable<string> lines,
         Func<string, bool> countsForTtft,
