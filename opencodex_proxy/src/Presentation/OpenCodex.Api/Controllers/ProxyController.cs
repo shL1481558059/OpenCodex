@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
 using OpenCodex.Api.Configuration;
 using OpenCodex.Api.Infrastructure;
@@ -20,6 +21,7 @@ public sealed class ProxyController : ApiControllerBase
     private readonly IModelCatalogService _catalog;
     private readonly ICodexOfficialModelCatalogFactory _codexModels;
     private readonly IDesktopSystemSettingsStore _systemSettings;
+    private readonly IProxyLogService _logs;
 
     public ProxyController(
         IRequestBodyReader bodyReader,
@@ -28,7 +30,8 @@ public sealed class ProxyController : ApiControllerBase
         IProxyRouteService routes,
         IModelCatalogService catalog,
         ICodexOfficialModelCatalogFactory codexModels,
-        IDesktopSystemSettingsStore systemSettings)
+        IDesktopSystemSettingsStore systemSettings,
+        IProxyLogService logs)
     {
         _bodyReader = bodyReader;
         _proxy = proxy;
@@ -37,6 +40,7 @@ public sealed class ProxyController : ApiControllerBase
         _catalog = catalog;
         _codexModels = codexModels;
         _systemSettings = systemSettings;
+        _logs = logs;
     }
 
     [HttpGet("/models")]
@@ -107,16 +111,45 @@ public sealed class ProxyController : ApiControllerBase
 
     private async Task<IActionResult> Proxy(string entryProtocol)
     {
+        var started = Stopwatch.GetTimestamp();
         var payload = await _bodyReader.ReadJsonObjectAsync(Request, HttpContext.RequestAborted);
+        var probeRequestId = Guid.NewGuid().ToString();
         if (payload is not null
             && _systemSettings.Get().InterceptProbeRequests
             && ProbeRequestInterceptor.TryIntercept(
                 entryProtocol,
                 payload,
-                Guid.NewGuid().ToString(),
+                probeRequestId,
                 out var probeResult))
         {
-            await _requests.AuthenticateAccessKeyAsync(AuthorizationHeader());
+            var accessKey = await _requests.AuthenticateAccessKeyAsync(AuthorizationHeader());
+            var requestMetadata = ProxyRequestMetadataFactory.FromHttpRequest(
+                Request,
+                HttpContext.Connection.RemoteIpAddress?.ToString());
+            var responsePayload = probeResult!.Payload as Dictionary<string, object?>;
+            await _logs.WriteLogAsync(
+                new ProxyLogContext(
+                    probeRequestId,
+                    accessKey.OwnerUsername,
+                    accessKey.Id,
+                    payload,
+                    UpstreamRequest: null,
+                    UpstreamResponse: null,
+                    ResponsePayload: responsePayload,
+                    ErrorResponse: null,
+                    RequestModel: payload.TryGetValue("model", out var modelValue)
+                        ? modelValue?.ToString()
+                        : null,
+                    UpstreamModel: null,
+                    ChannelId: null,
+                    ChannelType: null,
+                    IsStream: false,
+                    TtftMs: null,
+                    StatusCode: probeResult.StatusCode,
+                    DurationMs: (int)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                    Error: null,
+                    WebSearchDetails: null),
+                requestMetadata);
             if (probeResult!.IsEmpty)
             {
                 return new EmptyResult();

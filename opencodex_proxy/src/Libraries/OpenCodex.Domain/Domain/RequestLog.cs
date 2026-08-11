@@ -28,6 +28,26 @@ public sealed class RequestLog : BaseEntity<Guid>
 
     public Guid? ParentRequestLogId { get; set; }
 
+    /// <summary>
+    /// 客户端会话/线程的稳定索引键，不参与正文恢复。
+    /// </summary>
+    public string? ConversationKey { get; set; }
+
+    /// <summary>
+    /// 客户端 turn 标识。编辑或分支时每个请求仍保持自己的不可变值。
+    /// </summary>
+    public string? ConversationTurnId { get; set; }
+
+    /// <summary>
+    /// 客户端窗口标识（如果请求提供）。窗口不等同于对话分支。
+    /// </summary>
+    public string? ConversationWindowId { get; set; }
+
+    /// <summary>
+    /// 原始请求中的 previous_response_id，保留增量会话的显式父引用。
+    /// </summary>
+    public string? PreviousResponseId { get; set; }
+
     public bool IsStream { get; set; }
 
     public int? TtftMs { get; set; }

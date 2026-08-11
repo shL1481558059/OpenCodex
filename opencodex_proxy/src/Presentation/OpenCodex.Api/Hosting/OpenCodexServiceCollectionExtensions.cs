@@ -12,7 +12,6 @@ using OpenCodex.Core.ExternalIntegrations;
 using OpenCodex.Core.Services;
 using OpenCodex.Core.Services.Caching;
 using OpenCodex.CoreBase.Caching;
-using OpenCodex.Core.Services.Mapping;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.Core.Services.WebSearch;
 using OpenCodex.CoreBase.Abstractions;
@@ -30,7 +29,6 @@ public static class OpenCodexServiceCollectionExtensions
         this IServiceCollection services,
         IConfiguration configuration)
     {
-        OpenCodexMappingConfig.Register();
         services.AddControllers();
         services.AddEndpointsApiExplorer();
         services.AddSwaggerGen(options =>

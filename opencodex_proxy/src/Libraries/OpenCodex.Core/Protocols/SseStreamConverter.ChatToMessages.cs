@@ -13,8 +13,8 @@ public static partial class SseStreamConverter
     // 已知限制（与现有非流式 ConvertResponse 行为一致，不在流式侧隐藏）：
     //  - thinking 块无 signature_delta / redacted_thinking：上游 Chat 的 reasoning_content 不携带签名，
     //    多轮历史中 thinking 不可验证；不伪造签名。
-    //  - message_start.usage.input_tokens 固定为 0：代理未向上游请求设置 stream_options.include_usage，
-    //    usage 通常仅在末尾出现且无法回填 message_start；output_tokens 在 message_delta 中按上游 usage 报告。
+    //  - Chat usage 通常仅在末尾出现，message_start.usage.input_tokens 因此保持 0；
+    //    output_tokens 在 message_delta 中按上游 usage 报告，避免为回填 usage 而破坏实时流式语义。
     //  - 工具名直接透传 Chat 的 function.name（与非流式 CanonicalToMessagesResponse 一致），
     //    arguments 原样作为 input_json_delta 的 partial_json 流出，由下游自行拼装为 JSON。
     public static async IAsyncEnumerable<string> ChatToMessagesEvents(

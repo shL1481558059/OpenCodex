@@ -278,6 +278,97 @@ namespace OpenCodex.Data.Migrations.SqliteMigrations
                     b.ToTable("ChannelModelMappings", (string)null);
                 });
 
+            modelBuilder.Entity("OpenCodex.Core.Domain.LogContentBlock", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Compression")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<double>("CreatedAt")
+                        .HasColumnType("REAL");
+
+                    b.Property<byte[]>("Data")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<long>("RawLength")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Sha256")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("StoredLength")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Sha256")
+                        .IsUnique();
+
+                    b.ToTable("LogContentBlocks", (string)null);
+                });
+
+            modelBuilder.Entity("OpenCodex.Core.Domain.LogContentManifest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("ChunkCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Encoding")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("RawLength")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Sha256")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Sha256")
+                        .IsUnique();
+
+                    b.ToTable("LogContentManifests", (string)null);
+                });
+
+            modelBuilder.Entity("OpenCodex.Core.Domain.LogContentManifestChunk", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("BlockId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("ManifestId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Ordinal")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("RawLength")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BlockId");
+
+                    b.HasIndex("ManifestId", "Ordinal")
+                        .IsUnique();
+
+                    b.ToTable("LogContentManifestChunks", (string)null);
+                });
+
             modelBuilder.Entity("OpenCodex.Core.Domain.ModelInfo", b =>
                 {
                     b.Property<Guid>("Id")
@@ -565,6 +656,15 @@ namespace OpenCodex.Data.Migrations.SqliteMigrations
                     b.Property<double?>("CompletedAt")
                         .HasColumnType("REAL");
 
+                    b.Property<string>("ConversationKey")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ConversationTurnId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ConversationWindowId")
+                        .HasColumnType("TEXT");
+
                     b.Property<double>("Cost")
                         .HasColumnType("REAL");
 
@@ -608,6 +708,9 @@ namespace OpenCodex.Data.Migrations.SqliteMigrations
                     b.Property<string>("Path")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("PreviousResponseId")
+                        .HasColumnType("TEXT");
+
                     b.Property<Guid?>("PricingModelInfoId")
                         .HasColumnType("TEXT");
 
@@ -642,6 +745,12 @@ namespace OpenCodex.Data.Migrations.SqliteMigrations
 
                     b.HasIndex("ChannelId");
 
+                    b.HasIndex("ConversationKey");
+
+                    b.HasIndex("ConversationTurnId");
+
+                    b.HasIndex("ConversationWindowId");
+
                     b.HasIndex("CreatedAt");
 
                     b.HasIndex("LifecycleStatus");
@@ -651,6 +760,8 @@ namespace OpenCodex.Data.Migrations.SqliteMigrations
                     b.HasIndex("ParentRequestLogId");
 
                     b.HasIndex("Path");
+
+                    b.HasIndex("PreviousResponseId");
 
                     b.HasIndex("PricingModelInfoId");
 
@@ -667,74 +778,29 @@ namespace OpenCodex.Data.Migrations.SqliteMigrations
                     b.ToTable("RequestLogs", (string)null);
                 });
 
-            modelBuilder.Entity("OpenCodex.Core.Domain.RequestLogDetail", b =>
-                {
-                    b.Property<Guid>("RequestLogId")
-                        .HasColumnType("TEXT");
-
-                    b.Property<Guid>("Id")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("OcrJson")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("RequestBody")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("RequestHeaders")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("ResponseBody")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("StreamTimingsJson")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("UpstreamRequestBody")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("UpstreamResponseBody")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("WebSearchJson")
-                        .HasColumnType("TEXT");
-
-                    b.HasKey("RequestLogId");
-
-                    b.ToTable("RequestLogDetails", (string)null);
-                });
-
-            modelBuilder.Entity("OpenCodex.Core.Domain.RequestLogStreamLine", b =>
+            modelBuilder.Entity("OpenCodex.Core.Domain.RequestLogContentRef", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("TEXT");
 
-                    b.Property<double>("OccurredAt")
-                        .HasColumnType("REAL");
-
-                    b.Property<string>("RawLine")
-                        .IsRequired()
+                    b.Property<Guid>("ManifestId")
                         .HasColumnType("TEXT");
 
                     b.Property<Guid>("RequestLogId")
                         .HasColumnType("TEXT");
 
-                    b.Property<int>("Sequence")
+                    b.Property<short>("Slot")
                         .HasColumnType("INTEGER");
-
-                    b.Property<string>("Source")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
 
                     b.HasKey("Id");
 
-                    b.HasIndex("OccurredAt");
+                    b.HasIndex("ManifestId");
 
-                    b.HasIndex("RequestLogId", "Sequence")
+                    b.HasIndex("RequestLogId", "Slot")
                         .IsUnique();
 
-                    b.ToTable("RequestLogStreamLines", (string)null);
+                    b.ToTable("RequestLogContentRefs", (string)null);
                 });
 
             modelBuilder.Entity("OpenCodex.Core.Domain.TavilyKey", b =>
@@ -833,6 +899,36 @@ namespace OpenCodex.Data.Migrations.SqliteMigrations
                     b.HasKey("Id");
 
                     b.ToTable("WebSearchSettings", (string)null);
+                });
+
+            modelBuilder.Entity("OpenCodex.Core.Domain.LogContentManifestChunk", b =>
+                {
+                    b.HasOne("OpenCodex.Core.Domain.LogContentBlock", null)
+                        .WithMany()
+                        .HasForeignKey("BlockId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("OpenCodex.Core.Domain.LogContentManifest", null)
+                        .WithMany()
+                        .HasForeignKey("ManifestId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("OpenCodex.Core.Domain.RequestLogContentRef", b =>
+                {
+                    b.HasOne("OpenCodex.Core.Domain.LogContentManifest", null)
+                        .WithMany()
+                        .HasForeignKey("ManifestId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("OpenCodex.Core.Domain.RequestLog", null)
+                        .WithMany()
+                        .HasForeignKey("RequestLogId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 #pragma warning restore 612, 618
         }

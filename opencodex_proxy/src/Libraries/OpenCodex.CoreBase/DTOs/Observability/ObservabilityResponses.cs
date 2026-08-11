@@ -162,7 +162,11 @@ public sealed class LogEventResponse
         string requestStatus,
         string displayRequestStatus,
         int attemptCount,
-        int failedAttemptCount)
+        int failedAttemptCount,
+        string? conversationKey,
+        string? conversationTurnId,
+        string? conversationWindowId,
+        string? previousResponseId)
     {
         Id = id;
         RequestId = requestId;
@@ -194,6 +198,10 @@ public sealed class LogEventResponse
         DisplayRequestStatus = displayRequestStatus;
         AttemptCount = attemptCount;
         FailedAttemptCount = failedAttemptCount;
+        ConversationKey = conversationKey;
+        ConversationTurnId = conversationTurnId;
+        ConversationWindowId = conversationWindowId;
+        PreviousResponseId = previousResponseId;
     }
 
     /// <summary>
@@ -273,6 +281,18 @@ public sealed class LogEventResponse
     /// </summary>
     [JsonPropertyName("parent_request_log_id")]
     public Guid? ParentRequestLogId { get; }
+
+    [JsonPropertyName("conversation_key")]
+    public string? ConversationKey { get; }
+
+    [JsonPropertyName("conversation_turn_id")]
+    public string? ConversationTurnId { get; }
+
+    [JsonPropertyName("conversation_window_id")]
+    public string? ConversationWindowId { get; }
+
+    [JsonPropertyName("previous_response_id")]
+    public string? PreviousResponseId { get; }
 
     /// <summary>
     /// 获取是否为流式请求的数值标记。
@@ -416,7 +436,11 @@ public sealed class LogEventResponse
             log.RequestStatus,
             ResolveDisplayRequestStatus(log.RequestStatus, log.AttemptCount, log.FailedAttemptCount),
             log.AttemptCount,
-            log.FailedAttemptCount);
+            log.FailedAttemptCount,
+            log.ConversationKey,
+            log.ConversationTurnId,
+            log.ConversationWindowId,
+            log.PreviousResponseId);
     }
 
     private static string ResolveDisplayRequestStatus(
@@ -466,19 +490,15 @@ public sealed class LogEventResponse
 /// </summary>
 public sealed class RequestLogStreamLineResponse
 {
-    public RequestLogStreamLineResponse(int sequence, double occurredAt, string source, string rawLine)
+    public RequestLogStreamLineResponse(int sequence, string source, string rawLine)
     {
         Sequence = sequence;
-        OccurredAt = occurredAt;
         Source = source;
         RawLine = rawLine;
     }
 
     [JsonPropertyName("sequence")]
     public int Sequence { get; }
-
-    [JsonPropertyName("occurred_at")]
-    public double OccurredAt { get; }
 
     [JsonPropertyName("source")]
     public string Source { get; }
@@ -524,7 +544,6 @@ public sealed class LogDetailResponse
     /// <param name="responseBody">响应体内容。</param>
     /// <param name="webSearchJson">联网搜索记录内容。</param>
     /// <param name="ocrJson">OCR 记录内容。</param>
-    /// <param name="streamTimingsJson">流式写出时序诊断内容。</param>
     /// <param name="streamLines">原始 SSE line 记录。</param>
     public LogDetailResponse(
         Guid id,
@@ -561,8 +580,14 @@ public sealed class LogDetailResponse
         string? responseBody,
         string? webSearchJson,
         string? ocrJson,
-        string? streamTimingsJson,
-        IReadOnlyList<RequestLogStreamLineResponse> streamLines)
+        IReadOnlyList<RequestLogStreamLineResponse> streamLines,
+        string? conversationKey,
+        string? conversationTurnId,
+        string? conversationWindowId,
+        string? previousResponseId,
+        string displayRequestStatus,
+        int attemptCount,
+        int failedAttemptCount)
     {
         Id = id;
         RequestId = requestId;
@@ -598,8 +623,14 @@ public sealed class LogDetailResponse
         ResponseBody = responseBody;
         WebSearchJson = webSearchJson;
         OcrJson = ocrJson;
-        StreamTimingsJson = streamTimingsJson;
         StreamLines = streamLines;
+        ConversationKey = conversationKey;
+        ConversationTurnId = conversationTurnId;
+        ConversationWindowId = conversationWindowId;
+        PreviousResponseId = previousResponseId;
+        DisplayRequestStatus = displayRequestStatus;
+        AttemptCount = attemptCount;
+        FailedAttemptCount = failedAttemptCount;
     }
 
     /// <summary>
@@ -679,6 +710,27 @@ public sealed class LogDetailResponse
     /// </summary>
     [JsonPropertyName("parent_request_log_id")]
     public Guid? ParentRequestLogId { get; }
+
+    [JsonPropertyName("conversation_key")]
+    public string? ConversationKey { get; }
+
+    [JsonPropertyName("conversation_turn_id")]
+    public string? ConversationTurnId { get; }
+
+    [JsonPropertyName("conversation_window_id")]
+    public string? ConversationWindowId { get; }
+
+    [JsonPropertyName("previous_response_id")]
+    public string? PreviousResponseId { get; }
+
+    [JsonPropertyName("display_request_status")]
+    public string DisplayRequestStatus { get; }
+
+    [JsonPropertyName("attempt_count")]
+    public int AttemptCount { get; }
+
+    [JsonPropertyName("failed_attempt_count")]
+    public int FailedAttemptCount { get; }
 
     /// <summary>
     /// 获取是否为流式请求的数值标记。
@@ -807,12 +859,6 @@ public sealed class LogDetailResponse
     public string? OcrJson { get; }
 
     /// <summary>
-    /// 获取流式写出时序诊断内容。
-    /// </summary>
-    [JsonPropertyName("stream_timings_json")]
-    public string? StreamTimingsJson { get; }
-
-    /// <summary>
     /// 获取原始 SSE line 记录。
     /// </summary>
     [JsonPropertyName("stream_lines")]
@@ -853,7 +899,13 @@ public sealed class LogDetailResponse
             log.OwnerUsername,
             log.ApiKeyId,
             log.Error,
-            log.RequestStatus), apiKeyNames, channelNames);
+            log.RequestStatus,
+            log.ConversationKey,
+            log.ConversationTurnId,
+            log.ConversationWindowId,
+            log.PreviousResponseId,
+            log.AttemptCount,
+            log.FailedAttemptCount), apiKeyNames, channelNames);
 
         return new LogDetailResponse(
             logEvent.Id,
@@ -890,12 +942,17 @@ public sealed class LogDetailResponse
             log.ResponseBody,
             log.WebSearchJson,
             log.OcrJson,
-            log.StreamTimingsJson,
             log.StreamLines.Select(line => new RequestLogStreamLineResponse(
                 line.Sequence,
-                line.OccurredAt,
                 line.Source,
-                line.RawLine)).ToList());
+                line.RawLine)).ToList(),
+            logEvent.ConversationKey,
+            logEvent.ConversationTurnId,
+            logEvent.ConversationWindowId,
+            logEvent.PreviousResponseId,
+            logEvent.DisplayRequestStatus,
+            logEvent.AttemptCount,
+            logEvent.FailedAttemptCount);
     }
 }
 
@@ -1405,13 +1462,13 @@ public sealed class ClearLogsResponse
     /// 初始化 <see cref="ClearLogsResponse"/> 类的新实例。
     /// </summary>
     /// <param name="deletedLogs">已删除的请求日志数。</param>
-    /// <param name="deletedDetails">已删除的日志详情数。</param>
-    /// <param name="deletedStreamLines">已删除的流式行数。</param>
-    public ClearLogsResponse(int deletedLogs, int deletedDetails, int deletedStreamLines)
+    /// <param name="deletedContentRefs">已删除的日志内容引用数。</param>
+    /// <param name="deletedContentBlocks">已删除的共享内容块数。</param>
+    public ClearLogsResponse(int deletedLogs, int deletedContentRefs, int deletedContentBlocks)
     {
         DeletedLogs = deletedLogs;
-        DeletedDetails = deletedDetails;
-        DeletedStreamLines = deletedStreamLines;
+        DeletedContentRefs = deletedContentRefs;
+        DeletedContentBlocks = deletedContentBlocks;
     }
 
     /// <summary>
@@ -1421,16 +1478,16 @@ public sealed class ClearLogsResponse
     public int DeletedLogs { get; }
 
     /// <summary>
-    /// 获取已删除的日志详情数。
+    /// 获取已删除的日志内容引用数。
     /// </summary>
-    [JsonPropertyName("deleted_details")]
-    public int DeletedDetails { get; }
+    [JsonPropertyName("deleted_content_refs")]
+    public int DeletedContentRefs { get; }
 
     /// <summary>
-    /// 获取已删除的流式行数。
+    /// 获取已删除的共享内容块数。
     /// </summary>
-    [JsonPropertyName("deleted_stream_lines")]
-    public int DeletedStreamLines { get; }
+    [JsonPropertyName("deleted_content_blocks")]
+    public int DeletedContentBlocks { get; }
 }
 
 /// <summary>

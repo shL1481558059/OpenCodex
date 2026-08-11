@@ -34,9 +34,13 @@ public interface IOpenCodexDbContext : IDisposable, IAsyncDisposable
 
     DbSet<RequestLog> RequestLogs { get; }
 
-    DbSet<RequestLogDetail> RequestLogDetails { get; }
+    DbSet<LogContentBlock> LogContentBlocks { get; }
 
-    DbSet<RequestLogStreamLine> RequestLogStreamLines { get; }
+    DbSet<LogContentManifest> LogContentManifests { get; }
+
+    DbSet<LogContentManifestChunk> LogContentManifestChunks { get; }
+
+    DbSet<RequestLogContentRef> RequestLogContentRefs { get; }
 
     DatabaseFacade Database { get; }
 

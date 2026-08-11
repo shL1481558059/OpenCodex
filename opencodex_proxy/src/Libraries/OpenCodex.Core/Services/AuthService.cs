@@ -1,6 +1,6 @@
-using Mapster;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Persistence;
+using OpenCodex.Core.Services.Mapping;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain;
@@ -151,7 +151,7 @@ public sealed class AuthService : IAuthService
         }
 
         return OpenCodexSecurity.VerifyPassword(password, user.PasswordHash)
-            ? user.Adapt<UserDto>()
+            ? user.ToDto()
             : null;
     }
 

@@ -12,6 +12,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using OpenCodex.Core.Domain;
 using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services;
 using OpenCodex.Core.Services.Proxy;
@@ -158,16 +159,27 @@ public sealed class ProxyImageFallbackTests
         Assert.Contains("HELLO", factory.Upstream.RequestJsons[1], StringComparison.Ordinal);
         Assert.Contains("[图片 1 描述]", factory.Upstream.RequestJsons[1], StringComparison.Ordinal);
 
-        var mainDetail = context.RequestLogDetails.Single(item => item.RequestLogId == mainLog.Id);
-        var ocrDetail = context.RequestLogDetails.Single(item => item.RequestLogId == ocrLog.Id);
-        Assert.DoesNotContain("data:image/png;base64,AAAA", mainDetail.RequestBody, StringComparison.Ordinal);
-        Assert.DoesNotContain("data:image/png;base64,AAAA", ocrDetail.RequestBody, StringComparison.Ordinal);
-        Assert.Contains("***IMAGE_DATA_REDACTED***", mainDetail.RequestBody, StringComparison.Ordinal);
-        Assert.Contains("***IMAGE_DATA_REDACTED***", ocrDetail.RequestBody, StringComparison.Ordinal);
-        Assert.Contains("[图片 1 OCR文字]", mainDetail.UpstreamRequestBody, StringComparison.Ordinal);
-        Assert.DoesNotContain("\"input_image\"", mainDetail.UpstreamRequestBody, StringComparison.Ordinal);
+        var contentStore = new LogContentStore(context);
+        var mainDetail = contentStore.Read(mainLog.Id);
+        var ocrDetail = contentStore.Read(ocrLog.Id);
+        Assert.Contains(
+            "data:image/png;base64,AAAA",
+            mainDetail.Get(RequestLogContentSlot.RequestBody),
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "data:image/png;base64,AAAA",
+            ocrDetail.Get(RequestLogContentSlot.RequestBody),
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "[图片 1 OCR文字]",
+            mainDetail.Get(RequestLogContentSlot.UpstreamRequestBody),
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "\"input_image\"",
+            mainDetail.Get(RequestLogContentSlot.UpstreamRequestBody),
+            StringComparison.Ordinal);
 
-        using var ocrJson = JsonDocument.Parse(ocrDetail.OcrJson!);
+        using var ocrJson = JsonDocument.Parse(ocrDetail.Get(RequestLogContentSlot.OcrJson)!);
         Assert.Equal("vision", ocrJson.RootElement.GetProperty("engine").GetString());
         Assert.False(ocrJson.RootElement.GetProperty("cache_hit").GetBoolean());
         Assert.Equal(mainLog.Id, Guid.Parse(ocrJson.RootElement.GetProperty("parent_request_log_id").GetString()!));
@@ -287,7 +299,6 @@ public sealed class ProxyImageFallbackTests
     // Assert.Equal("__ocr_paddleocr__", ocrLog.UpstreamModel);
     // Assert.Equal("/internal/ocr/paddleocr", ocrLog.Path);
     // 
-    // using var ocrJson = JsonDocument.Parse(context.RequestLogDetails.Single(item => item.RequestLogId == ocrLog.Id).OcrJson!);
     // Assert.Equal("paddleocr", ocrJson.RootElement.GetProperty("engine").GetString());
     // Assert.False(ocrJson.RootElement.GetProperty("cache_hit").GetBoolean());
     // }
@@ -348,7 +359,6 @@ public sealed class ProxyImageFallbackTests
     // using var readContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
     // var ocrLog = Assert.Single(readContext.RequestLogs.Where(item => item.RequestType == ProxyRequestTypes.Ocr));
     // Assert.Equal("/internal/ocr/vision", ocrLog.Path);
-    // using var ocrJson = JsonDocument.Parse(readContext.RequestLogDetails.Single(item => item.RequestLogId == ocrLog.Id).OcrJson!);
     // Assert.True(ocrJson.RootElement.GetProperty("cache_hit").GetBoolean());
     // }
     // 

@@ -1,4 +1,5 @@
 using OpenCodex.Core.Domain;
+using System.Text.Json;
 using OpenCodex.Core.Services.Proxy;
 using Microsoft.EntityFrameworkCore;
 using OpenCodex.Core.Services;
@@ -33,8 +34,6 @@ public sealed class ObservabilityServiceTests
             new TestWorkContext(currentUserId ?? AdminUserId, currentUsername, currentRole),
             context,
             new EfRepository<RequestLog>(context),
-            new EfRepository<RequestLogDetail>(context),
-            new EfRepository<RequestLogStreamLine>(context),
             new EfRepository<AccessApiKey>(context),
             new EfRepository<User>(context),
             new EfRepository<Channel>(context),
@@ -53,7 +52,7 @@ public sealed class ObservabilityServiceTests
         using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
             context.Database.Migrate();
-context.Users.Add(new User
+            context.Users.Add(new User
             {
                 Id = AdminUserId,
                 Username = "admin",
@@ -148,7 +147,7 @@ context.Users.Add(new User
         using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
             context.Database.Migrate();
-context.Users.Add(new User
+            context.Users.Add(new User
             {
                 Id = AdminUserId,
                 Username = "admin",
@@ -292,13 +291,12 @@ context.Users.Add(new User
                     OutputTokens = 999,
                     Cost = 99
                 });
-            context.RequestLogDetails.Add(new RequestLogDetail
-            {
-                RequestLogId = attemptLogId,
-                ResponseBody = "{\"route_attempt_number\":1,\"route_retry_number\":0}",
-                UpstreamResponseBody = "{\"error\":{\"type\":\"rate_limit_exceeded\",\"message\":\"primary unavailable\"}}"
-            });
             context.SaveChanges();
+            new LogContentStore(context).Write(attemptLogId, new Dictionary<RequestLogContentSlot, string?>
+            {
+                [RequestLogContentSlot.ResponseBody] = "{\"route_attempt_number\":1,\"route_retry_number\":0}",
+                [RequestLogContentSlot.UpstreamResponseBody] = "{\"error\":{\"type\":\"rate_limit_exceeded\",\"message\":\"primary unavailable\"}}"
+            });
         }
 
         var service = CreateService(dbPath);
@@ -311,6 +309,12 @@ context.Users.Add(new User
         Assert.Equal("success_with_retry", defaultLog.DisplayRequestStatus);
         Assert.Equal(1, defaultLog.AttemptCount);
         Assert.Equal(1, defaultLog.FailedAttemptCount);
+
+        var mainDetail = service.ReadLogById(mainLogId);
+        Assert.True(mainDetail.Succeeded);
+        Assert.Equal("success_with_retry", mainDetail.Payload!.DisplayRequestStatus);
+        Assert.Equal(1, mainDetail.Payload.AttemptCount);
+        Assert.Equal(1, mainDetail.Payload.FailedAttemptCount);
 
         var defaultStats = service.ReadStats(
             "custom",
@@ -370,7 +374,7 @@ context.Users.Add(new User
         using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
             context.Database.Migrate();
-context.Users.Add(new User
+            context.Users.Add(new User
             {
                 Id = AdminUserId,
                 Username = "admin",
@@ -674,7 +678,7 @@ context.Users.Add(new User
         using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
             context.Database.Migrate();
-context.Users.Add(new User
+            context.Users.Add(new User
             {
                 Id = AdminUserId,
                 Username = "admin",
@@ -741,29 +745,18 @@ context.Users.Add(new User
                     Error = "failed",
                     OwnerUserId = AdminUserId
                 });
-            context.RequestLogDetails.Add(new RequestLogDetail
-            {
-                RequestLogId = Guid.Parse("33333333-3333-3333-3333-333333333333"),
-                RequestBody = "{\"model\":\"gpt-test\"}"
-            });
-            context.RequestLogStreamLines.AddRange(
-                new RequestLogStreamLine
-                {
-                    RequestLogId = Guid.Parse("33333333-3333-3333-3333-333333333333"),
-                    Sequence = 0,
-                    OccurredAt = 1_700_000_020.100,
-                    Source = "upstream",
-                    RawLine = "event: response.output_text.delta"
-                },
-                new RequestLogStreamLine
-                {
-                    RequestLogId = Guid.Parse("33333333-3333-3333-3333-333333333333"),
-                    Sequence = 1,
-                    OccurredAt = 1_700_000_020.120,
-                    Source = "upstream",
-                    RawLine = "data: {\"delta\":\"hi\"}"
-                });
             context.SaveChanges();
+            new LogContentStore(context).Write(
+                Guid.Parse("33333333-3333-3333-3333-333333333333"),
+                new Dictionary<RequestLogContentSlot, string?>
+                {
+                    [RequestLogContentSlot.RequestBody] = "{\"model\":\"gpt-test\"}",
+                    [RequestLogContentSlot.StreamLinesJson] = "["
+                        + "{\"sequence\":0,\"source\":\"upstream\","
+                        + "\"raw_line\":\"event: response.output_text.delta\"},"
+                        + "{\"sequence\":1,\"source\":\"upstream\","
+                        + "\"raw_line\":\"data: {\\\"delta\\\":\\\"hi\\\"}\"}]"
+                });
         }
 
         var service = CreateService(dbPath);
@@ -798,6 +791,10 @@ context.Users.Add(new User
             line =>
             {
                 Assert.Equal(0, line.Sequence);
+                Assert.DoesNotContain(
+                    "occurred_at",
+                    JsonSerializer.Serialize(line),
+                    StringComparison.Ordinal);
                 Assert.Equal("upstream", line.Source);
                 Assert.Equal("event: response.output_text.delta", line.RawLine);
             },
@@ -806,6 +803,58 @@ context.Users.Add(new User
                 Assert.Equal(1, line.Sequence);
                 Assert.Equal("data: {\"delta\":\"hi\"}", line.RawLine);
             });
+    }
+
+    [Fact]
+    public void ClearLogs_RemovesContentRefsManifestsBlocksAndLogs()
+    {
+        var dbPath = Path.Combine(
+            Path.GetTempPath(),
+            "opencodex-api-tests",
+            $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        var logId = Guid.NewGuid();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            context.Users.Add(new User
+            {
+                Id = AdminUserId,
+                Username = "admin",
+                PasswordHash = "hash",
+                Role = "superadmin",
+                Enabled = true,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            context.RequestLogs.Add(new RequestLog
+            {
+                Id = logId,
+                RequestId = "req-clear",
+                CreatedAt = 1,
+                RequestType = ProxyRequestTypes.Main,
+                OwnerUserId = AdminUserId
+            });
+            context.SaveChanges();
+            new LogContentStore(context).Write(logId, new Dictionary<RequestLogContentSlot, string?>
+            {
+                [RequestLogContentSlot.RequestBody] = new string('x', 10_000),
+                [RequestLogContentSlot.StreamLinesJson] = "[]"
+            });
+        }
+
+        var result = CreateService(dbPath).ClearLogs();
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(1, result.Payload!.DeletedLogs);
+        Assert.Equal(2, result.Payload.DeletedContentRefs);
+        Assert.True(result.Payload.DeletedContentBlocks > 0);
+        using var readContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        Assert.Empty(readContext.RequestLogs);
+        Assert.Empty(readContext.RequestLogContentRefs);
+        Assert.Empty(readContext.LogContentManifests);
+        Assert.Empty(readContext.LogContentManifestChunks);
+        Assert.Empty(readContext.LogContentBlocks);
     }
 
     private sealed class TestSettingsProvider : IOpenCodexRuntimeSettingsProvider

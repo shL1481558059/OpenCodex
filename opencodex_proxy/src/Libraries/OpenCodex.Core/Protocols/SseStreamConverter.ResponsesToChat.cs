@@ -45,6 +45,7 @@ public static partial class SseStreamConverter
     {
         var completionId = $"chatcmpl_{Guid.NewGuid():N}";
         var responseModel = model ?? string.Empty;
+        var upstreamResponseModel = string.Empty;
         var createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var responseId = $"resp_{Guid.NewGuid():N}";
         var finishStatus = "completed";
@@ -113,7 +114,8 @@ public static partial class SseStreamConverter
                 if (TryAsObject(GetValue(payload, "response"), out var response))
                 {
                     responseId = StringValue(response, "id", responseId);
-                    responseModel = model ?? StringValue(response, "model", responseModel);
+                    upstreamResponseModel = StringValue(response, "model", upstreamResponseModel);
+                    responseModel = model ?? upstreamResponseModel;
                     if (TryAsObject(GetValue(response, "usage"), out var responseUsage))
                     {
                         usage = responseUsage;
@@ -482,7 +484,8 @@ public static partial class SseStreamConverter
                 if (TryAsObject(GetValue(payload, "response"), out var response))
                 {
                     responseId = StringValue(response, "id", responseId);
-                    responseModel = model ?? StringValue(response, "model", responseModel);
+                    upstreamResponseModel = StringValue(response, "model", upstreamResponseModel);
+                    responseModel = model ?? upstreamResponseModel;
                     finishStatus = StringValue(
                         response,
                         "status",
@@ -523,14 +526,15 @@ public static partial class SseStreamConverter
                 var capturedFailure = responseAccumulator.BuildResponse()
                     ?? new Dictionary<string, object?>(StringComparer.Ordinal);
                 responseId = StringValue(capturedFailure, "id", responseId);
-                responseModel = model ?? StringValue(capturedFailure, "model", responseModel);
+                upstreamResponseModel = StringValue(capturedFailure, "model", upstreamResponseModel);
+                responseModel = model ?? upstreamResponseModel;
                 var failedResponse = BuildCapturedResponsesUpstreamResponse(
                     responseAccumulator,
                     "response.failed",
                     responseId,
                     createdAt,
                     "failed",
-                    responseModel,
+                    upstreamResponseModel.Length > 0 ? upstreamResponseModel : responseModel,
                     outputByIndex.Values,
                     usage,
                     preserveCapturedOutputAndUsage: true)!;
@@ -590,7 +594,7 @@ public static partial class SseStreamConverter
             responseId,
             createdAt,
             finishStatus,
-            responseModel,
+            upstreamResponseModel.Length > 0 ? upstreamResponseModel : responseModel,
             outputByIndex.Values,
             usage);
 

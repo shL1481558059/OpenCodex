@@ -2,9 +2,9 @@ using System.Globalization;
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Threading;
-using Mapster;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Persistence;
+using OpenCodex.Core.Services.Mapping;
 using OpenCodex.Core.Services.Caching;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Data;
@@ -37,7 +37,7 @@ public sealed class ModelPricingService : IModelPricingService
             .OrderBy(price => price.Vendor)
             .ThenBy(price => price.ModelId)
             .AsEnumerable()
-            .Select(price => price.Adapt<ModelPricingDto>())
+            .Select(price => price.ToDto())
             .ToList();
         return ApiOpResult<ModelPricingListResponse>.Succeed(ModelPricingListResponse.From(prices));
     }
@@ -74,7 +74,7 @@ public sealed class ModelPricingService : IModelPricingService
 
             _repository.Insert(price);
             BumpPricingVersion();
-            return ApiOpResult<ModelPricingResponsePayload>.Succeed(ModelPricingResponsePayload.From(price.Adapt<ModelPricingDto>()));
+            return ApiOpResult<ModelPricingResponsePayload>.Succeed(ModelPricingResponsePayload.From(price.ToDto()));
         }
         catch (ArgumentException exception)
         {
@@ -102,7 +102,7 @@ public sealed class ModelPricingService : IModelPricingService
             price.UpdatedAt = UnixTimeSeconds();
             _repository.Update(price);
             BumpPricingVersion();
-            return ApiOpResult<ModelPricingResponsePayload>.Succeed(ModelPricingResponsePayload.From(price.Adapt<ModelPricingDto>()));
+            return ApiOpResult<ModelPricingResponsePayload>.Succeed(ModelPricingResponsePayload.From(price.ToDto()));
         }
         catch (ArgumentException exception)
         {
@@ -122,7 +122,7 @@ public sealed class ModelPricingService : IModelPricingService
             return ApiOpResult<DeleteModelPricingResponse>.Fail(404, "price not found");
         }
 
-        var deleted = price.Adapt<ModelPricingDto>();
+        var deleted = price.ToDto();
         _repository.Delete(price);
         BumpPricingVersion();
         return ApiOpResult<DeleteModelPricingResponse>.Succeed(DeleteModelPricingResponse.From(deleted));

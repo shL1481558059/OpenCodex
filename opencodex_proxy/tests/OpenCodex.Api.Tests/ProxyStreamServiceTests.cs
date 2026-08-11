@@ -144,9 +144,10 @@ public sealed class ProxyStreamServiceTests
 
         Assert.True(webSearch.StreamCalled);
         Assert.True(writer.Prepared);
-        Assert.Equal(2, writer.Lines.Count);
+        Assert.Equal(3, writer.Lines.Count);
         Assert.Contains("response.created", writer.Lines[0], StringComparison.Ordinal);
         Assert.Contains("response.completed", writer.Lines[1], StringComparison.Ordinal);
+        Assert.Equal("data: [DONE]\n\n", writer.Lines[2]);
         Assert.NotNull(logs.LastContext?.StreamLines);
         Assert.Contains(logs.LastContext!.StreamLines!, line =>
             line.Source == "upstream"
@@ -154,6 +155,9 @@ public sealed class ProxyStreamServiceTests
         Assert.Contains(logs.LastContext!.StreamLines!, line =>
             line.Source == "downstream"
             && line.RawLine.Contains("response.completed", StringComparison.Ordinal));
+        Assert.Contains(logs.LastContext.StreamLines!, line =>
+            line.Source == "downstream"
+            && line.RawLine == "data: [DONE]");
     }
 
     [Fact]
@@ -440,7 +444,7 @@ public sealed class ProxyStreamServiceTests
     }
 
     [Fact]
-    public async Task StreamAsync_PassThrough_LogsCompleteSanitizedResponsesPayload()
+    public async Task StreamAsync_PassThrough_LogsCompleteResponsesPayload()
     {
         var upstreamLines = new[]
         {
@@ -487,13 +491,62 @@ public sealed class ProxyStreamServiceTests
 
         await service.StreamAsync(context);
 
-        Assert.Equal(upstreamLines[..3], writer.Lines);
+        Assert.Equal(
+            upstreamLines[..3].Append("data: [DONE]\n\n"),
+            writer.Lines);
         Assert.NotNull(logs.LastContext?.UpstreamResponse);
         var response = logs.LastContext!.UpstreamResponse!;
         Assert.Equal("resp-1", response["id"]);
         Assert.True(response.ContainsKey("output"));
         Assert.False(response.ContainsKey("instructions"));
         Assert.False(response.ContainsKey("tools"));
+    }
+
+    [Fact]
+    public async Task StreamAsync_PassThrough_RecordsFinalDoneWrittenToClient()
+    {
+        var upstream = new SequencedUpstreamClient(
+        [
+            ("event: response.completed", 0),
+            ("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-done\",\"status\":\"completed\"}}", 0),
+            ("", 0),
+            ("data: [DONE]", 0)
+        ]);
+        var logs = new StubProxyLogService();
+        var service = new ProxyStreamService(upstream, logs, new StubWebSearchSimulator(false, []));
+        var writer = new CapturingProxyStreamWriter();
+        var context = new ProxyStreamContext(
+            startedTimestamp: Stopwatch.GetTimestamp(),
+            requestLogId: Guid.NewGuid(),
+            requestId: "req-final-done",
+            ownerUsername: "admin",
+            apiKeyId: Guid.NewGuid(),
+            originalPayload: new Dictionary<string, object?>(),
+            payload: new Dictionary<string, object?>(),
+            upstreamRequest: new Dictionary<string, object?>(),
+            entryProtocol: ProtocolConverter.Responses,
+            route: new ProxyRouteDto(
+                new Dictionary<string, object?> { ["id"] = "responses", ["type"] = ProtocolConverter.Responses },
+                "public-model",
+                "upstream-model",
+                supportsImage: false,
+                matchedModelMapping: true),
+            channelType: ProtocolConverter.Responses,
+            channelId: "responses",
+            ownerRole: "superadmin",
+            upstreamModel: "upstream-model",
+            requestModel: "public-model",
+            defaultTimeout: 120,
+            requestMetadata: new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
+            streamWriter: writer,
+            cancellationToken: CancellationToken.None);
+
+        await service.StreamAsync(context);
+
+        Assert.Equal("data: [DONE]\n\n", writer.Lines.Last());
+        Assert.NotNull(logs.LastContext?.StreamLines);
+        Assert.Contains(logs.LastContext!.StreamLines!, line =>
+            line.Source == "downstream" && line.RawLine == "data: [DONE]");
     }
 
     [Fact]
@@ -557,14 +610,16 @@ public sealed class ProxyStreamServiceTests
             line.Source == "downstream"
             && line.RawLine.Contains("\"type\":\"response.output_text.delta\"", StringComparison.Ordinal)
             && line.RawLine.Contains("\"delta\":\"hello\"", StringComparison.Ordinal));
-        Assert.DoesNotContain(streamLines, line =>
+        Assert.Contains(streamLines, line =>
             line.Source == "downstream"
-            && (line.RawLine.Contains("response.created", StringComparison.Ordinal)
-                || line.RawLine.Contains("response.in_progress", StringComparison.Ordinal)));
+            && line.RawLine.Contains("response.created", StringComparison.Ordinal));
+        Assert.Contains(streamLines, line =>
+            line.Source == "downstream"
+            && line.RawLine.Contains("response.in_progress", StringComparison.Ordinal));
     }
 
     [Fact]
-    public async Task CaptureLoggableStreamLines_SkipsRequestConfigSnapshotsAndKeepsDeltas()
+    public async Task CaptureStreamLines_PreservesAllEventsAndPayloads()
     {
         var input = new[]
         {
@@ -581,7 +636,7 @@ public sealed class ProxyStreamServiceTests
         var capture = new List<ProxyRequestStreamLineCapture>();
         var forwarded = new List<string>();
 
-        await foreach (var line in ProxyStreamService.CaptureLoggableStreamLines(
+        await foreach (var line in ProxyStreamService.CaptureStreamLines(
             ToAsyncEnumerable(input),
             capture,
             "upstream",
@@ -591,18 +646,19 @@ public sealed class ProxyStreamServiceTests
         }
 
         Assert.Equal(input, forwarded);
-        Assert.DoesNotContain(capture, line => line.RawLine.Contains("secret instructions", StringComparison.Ordinal));
-        Assert.DoesNotContain(capture, line => line.RawLine.Contains("secret_tool", StringComparison.Ordinal));
-        Assert.DoesNotContain(capture, line => line.RawLine.Contains("response.created", StringComparison.Ordinal));
+        Assert.Equal(input, capture.Select(line => line.RawLine));
+        Assert.Contains(capture, line => line.RawLine.Contains("secret instructions", StringComparison.Ordinal));
+        Assert.Contains(capture, line => line.RawLine.Contains("secret_tool", StringComparison.Ordinal));
+        Assert.Contains(capture, line => line.RawLine.Contains("response.created", StringComparison.Ordinal));
         Assert.Contains(capture, line => line.RawLine == "event: response.output_text.delta");
         Assert.Contains(capture, line => line.RawLine.Contains("\"delta\":\"hello\"", StringComparison.Ordinal));
         var completed = Assert.Single(capture, line =>
             line.RawLine.StartsWith("data:", StringComparison.Ordinal)
             && line.RawLine.Contains("\"type\":\"response.completed\"", StringComparison.Ordinal));
         Assert.Contains("\"usage\"", completed.RawLine, StringComparison.Ordinal);
-        Assert.DoesNotContain("\"instructions\"", completed.RawLine, StringComparison.Ordinal);
-        Assert.DoesNotContain("\"tools\"", completed.RawLine, StringComparison.Ordinal);
-        Assert.DoesNotContain("\"output\":[", completed.RawLine, StringComparison.Ordinal);
+        Assert.Contains("\"instructions\"", completed.RawLine, StringComparison.Ordinal);
+        Assert.Contains("\"tools\"", completed.RawLine, StringComparison.Ordinal);
+        Assert.Contains("\"output\":[", completed.RawLine, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -857,11 +913,6 @@ public sealed class ProxyStreamServiceTests
                 }
 
                 Lines.Add(line);
-                if (metrics.FirstSseEventMs is null && !string.IsNullOrWhiteSpace(line))
-                {
-                    metrics.FirstSseEventMs = elapsedMilliseconds();
-                }
-
                 if (metrics.TtftMs is null && countsForTtft(line))
                 {
                     metrics.TtftMs = elapsedMilliseconds();

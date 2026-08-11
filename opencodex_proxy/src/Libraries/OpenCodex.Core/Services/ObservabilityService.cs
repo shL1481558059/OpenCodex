@@ -1,7 +1,9 @@
 using System.Globalization;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Persistence;
+using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain.Proxy;
@@ -34,6 +36,10 @@ public sealed class ObservabilityService : IObservabilityService
         new Dictionary<string, (string OptionKey, string OptionType)>(StringComparer.Ordinal)
         {
             ["request_id"] = ("request_ids", "text"),
+            ["conversation_key"] = ("conversation_keys", "text"),
+            ["conversation_turn_id"] = ("conversation_turn_ids", "text"),
+            ["conversation_window_id"] = ("conversation_window_ids", "text"),
+            ["previous_response_id"] = ("previous_response_ids", "text"),
             ["model"] = ("models", "text"),
             ["upstream_model"] = ("upstream_models", "text"),
             ["channel_id"] = ("channel_ids", "select_option"),
@@ -68,20 +74,17 @@ public sealed class ObservabilityService : IObservabilityService
     private readonly IWorkContext _workContext;
     private readonly IOpenCodexDbContext _dbContext;
     private readonly IRepository<RequestLog> _logRepository;
-    private readonly IRepository<RequestLogDetail> _detailRepository;
-    private readonly IRepository<RequestLogStreamLine> _streamLineRepository;
     private readonly IRepository<AccessApiKey> _keyRepository;
     private readonly IRepository<User> _userRepository;
     private readonly IRepository<Channel> _channelRepository;
     private readonly IChannelCapacityService _channelCapacity;
+    private readonly LogContentStore _contentStore;
 
     public ObservabilityService(
         IOpenCodexRuntimeSettingsProvider settingsProvider,
         IWorkContext workContext,
         IOpenCodexDbContext dbContext,
         IRepository<RequestLog> logRepository,
-        IRepository<RequestLogDetail> detailRepository,
-        IRepository<RequestLogStreamLine> streamLineRepository,
         IRepository<AccessApiKey> keyRepository,
         IRepository<User> userRepository,
         IRepository<Channel> channelRepository,
@@ -91,12 +94,11 @@ public sealed class ObservabilityService : IObservabilityService
         _workContext = workContext;
         _dbContext = dbContext;
         _logRepository = logRepository;
-        _detailRepository = detailRepository;
-        _streamLineRepository = streamLineRepository;
         _keyRepository = keyRepository;
         _userRepository = userRepository;
         _channelRepository = channelRepository;
         _channelCapacity = channelCapacity;
+        _contentStore = new LogContentStore(dbContext);
     }
 
     public ApiOpResult<LogsPageResponse> ReadLogsPage(
@@ -236,33 +238,33 @@ public sealed class ObservabilityService : IObservabilityService
         }
 
         // 先统计行数用于返回值：TRUNCATE 不返回受影响行数。
-        var streamLineCount = _streamLineRepository.TableNoTracking.Count();
-        var detailCount = _detailRepository.TableNoTracking.Count();
+        var contentRefCount = _dbContext.RequestLogContentRefs.Count();
+        var contentBlockCount = _dbContext.LogContentBlocks.Count();
         var logCount = _logRepository.TableNoTracking.Count();
 
-        // 直接执行原生 SQL 清空三张日志表。
-        // 流式行表可达千万级，逐行 DELETE FROM 会超过命令超时导致 500，
-        // 因此 Postgres 使用 TRUNCATE（元数据操作，瞬时完成，不受行数影响）。
+        // 内容块由多个请求共享，清空时必须把引用、清单和物理块作为一个整体处理。
         var provider = (_settingsProvider.GetSettings().DatabaseProvider ?? string.Empty)
             .Trim()
             .ToLowerInvariant();
         if (provider is "postgres" or "postgresql" or "pgsql")
         {
             _dbContext.Database.ExecuteSqlRaw(
-                "TRUNCATE TABLE \"RequestLogs\", \"RequestLogDetails\", \"RequestLogStreamLines\" RESTART IDENTITY;");
+                "TRUNCATE TABLE \"RequestLogContentRefs\", \"LogContentManifestChunks\", "
+                + "\"LogContentManifests\", \"LogContentBlocks\", \"RequestLogs\" RESTART IDENTITY CASCADE;");
         }
         else
         {
-            // SQLite 无 TRUNCATE；无 WHERE 的 DELETE 会走内部 truncate 优化。
-            _dbContext.Database.ExecuteSqlRaw("DELETE FROM \"RequestLogStreamLines\";");
-            _dbContext.Database.ExecuteSqlRaw("DELETE FROM \"RequestLogDetails\";");
+            _dbContext.Database.ExecuteSqlRaw("DELETE FROM \"RequestLogContentRefs\";");
+            _dbContext.Database.ExecuteSqlRaw("DELETE FROM \"LogContentManifestChunks\";");
+            _dbContext.Database.ExecuteSqlRaw("DELETE FROM \"LogContentManifests\";");
+            _dbContext.Database.ExecuteSqlRaw("DELETE FROM \"LogContentBlocks\";");
             _dbContext.Database.ExecuteSqlRaw("DELETE FROM \"RequestLogs\";");
         }
 
         return ApiOpResult<ClearLogsResponse>.Succeed(new ClearLogsResponse(
             logCount,
-            detailCount,
-            streamLineCount));
+            contentRefCount,
+            contentBlockCount));
     }
 
     private Dictionary<Guid, string> BuildOwnerMap(IReadOnlyList<RequestLog> logs)
@@ -345,14 +347,17 @@ public sealed class ObservabilityService : IObservabilityService
             return null;
         }
 
-        var detail = _detailRepository.TableNoTracking.FirstOrDefault(d => d.RequestLogId == log.Id);
-        var streamLines = _streamLineRepository.TableNoTracking
-            .Where(line => line.RequestLogId == log.Id)
-            .OrderBy(line => line.Sequence)
-            .ToList();
+        var content = _contentStore.Read(log.Id);
         var ownerUsername = _userRepository.TableNoTracking
             .FirstOrDefault(u => u.Id == log.OwnerUserId)?.Username ?? string.Empty;
-        return MapRequestLog(log, detail, streamLines, ownerUsername);
+        var attemptStats = BuildAttemptStats([log]);
+        return MapRequestLog(
+            log,
+            content,
+            ownerUsername,
+            attemptStats.TryGetValue(log.Id, out var stats)
+                ? stats
+                : (AttemptCount: 0, FailedAttemptCount: 0));
     }
 
     private IReadOnlyDictionary<string, object> QueryLogFilterOption(
@@ -500,6 +505,10 @@ public sealed class ObservabilityService : IObservabilityService
         return field switch
         {
             "request_id" when text.Length > 0 => query.Where(log => log.RequestId != null && log.RequestId.Contains(text)),
+            "conversation_key" when text.Length > 0 => query.Where(log => log.ConversationKey != null && log.ConversationKey.Contains(text)),
+            "conversation_turn_id" when text.Length > 0 => query.Where(log => log.ConversationTurnId != null && log.ConversationTurnId.Contains(text)),
+            "conversation_window_id" when text.Length > 0 => query.Where(log => log.ConversationWindowId != null && log.ConversationWindowId.Contains(text)),
+            "previous_response_id" when text.Length > 0 => query.Where(log => log.PreviousResponseId != null && log.PreviousResponseId.Contains(text)),
             "model" when text.Length > 0 => query.Where(log => log.Model != null && log.Model.Contains(text)),
             "upstream_model" when text.Length > 0 => query.Where(log => log.UpstreamModel != null && log.UpstreamModel.Contains(text)),
             "channel_id" when text.Length > 0 && Guid.TryParse(text, out var channelId) => query.Where(log => log.ChannelId == channelId),
@@ -576,23 +585,6 @@ public sealed class ObservabilityService : IObservabilityService
             : query;
     }
 
-    private static Dictionary<string, object> EmptyLogFilterOptions()
-    {
-        return new Dictionary<string, object>(StringComparer.Ordinal)
-        {
-            ["request_ids"] = new List<string>(),
-            ["models"] = new List<string>(),
-            ["upstream_models"] = new List<string>(),
-            ["channel_ids"] = new List<SelectOption<Guid>>(),
-            ["owner_usernames"] = new List<string>(),
-            ["paths"] = new List<string>(),
-            ["request_types"] = RequestTypeValues.ToList(),
-            ["status_codes"] = new List<int>(),
-            ["api_key_ids"] = new List<LogApiKeyFilterOption>(),
-            ["request_statuses"] = RequestStatusValues.ToList()
-        };
-    }
-
     private Dictionary<Guid, string> ReadApiKeyNames(
         IEnumerable<Guid?> apiKeyIds)
     {
@@ -642,6 +634,10 @@ public sealed class ObservabilityService : IObservabilityService
         var values = field switch
         {
             "request_id" => query.Select(log => log.RequestId),
+            "conversation_key" => query.Select(log => log.ConversationKey),
+            "conversation_turn_id" => query.Select(log => log.ConversationTurnId),
+            "conversation_window_id" => query.Select(log => log.ConversationWindowId),
+            "previous_response_id" => query.Select(log => log.PreviousResponseId),
             "model" => query.Select(log => log.Model),
             "upstream_model" => query.Select(log => log.UpstreamModel),
             "channel_id" => query.Select(log => log.ChannelId != null ? log.ChannelId.Value.ToString() : null),
@@ -814,37 +810,6 @@ public sealed class ObservabilityService : IObservabilityService
         return TryConvertInt32(pageSize, out var parsed)
             ? Math.Clamp(parsed, 1, 200)
             : 50;
-    }
-
-    private static StatsDto EmptyStatsResponse(ResolvedStatsRange resolved)
-    {
-        return new StatsDto(
-            resolved.RangeKey,
-            TimestampToIso(resolved.StartTs),
-            TimestampToIso(resolved.EndTs),
-            resolved.GranularityMinutes,
-            PricingDefaults.UsdCnyRate,
-            EmptyStatsSummary(),
-            [],
-            [],
-            []);
-    }
-
-    private static StatsSummaryDto EmptyStatsSummary()
-    {
-        return new StatsSummaryDto(
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0);
     }
 
     private ActiveChannelQueueDto QueryActiveChannelQueue(string currentUsername, bool isSuperadmin)
@@ -1066,6 +1031,10 @@ public sealed class ObservabilityService : IObservabilityService
             log.ApiKeyId,
             log.Error,
             NormalizeRequestStatus(log.LifecycleStatus, log.StatusCode, log.Error),
+            log.ConversationKey,
+            log.ConversationTurnId,
+            log.ConversationWindowId,
+            log.PreviousResponseId,
             attemptCount,
             failedAttemptCount);
     }
@@ -1099,9 +1068,9 @@ public sealed class ObservabilityService : IObservabilityService
 
     private static RequestLogDto MapRequestLog(
         RequestLog log,
-        RequestLogDetail? detail,
-        IReadOnlyList<RequestLogStreamLine> streamLines,
-        string ownerUsername)
+        LogContentSnapshot content,
+        string ownerUsername,
+        (int AttemptCount, int FailedAttemptCount) attemptStats)
     {
         return new RequestLogDto(
             log.Id,
@@ -1128,23 +1097,57 @@ public sealed class ObservabilityService : IObservabilityService
             ownerUsername,
             log.ApiKeyId,
             log.Error,
-            detail?.RequestHeaders,
-            detail?.RequestBody,
-            detail?.UpstreamRequestBody,
-            detail?.UpstreamResponseBody,
-            detail?.ResponseBody,
-            detail?.WebSearchJson,
-            detail?.OcrJson,
-            detail?.StreamTimingsJson,
-            streamLines
-                .OrderBy(item => item.Sequence)
-                .Select(item => new RequestLogStreamLineDto(
-                    item.Sequence,
-                    item.OccurredAt,
-                    item.Source,
-                    item.RawLine))
-                .ToList(),
-            NormalizeRequestStatus(log.LifecycleStatus, log.StatusCode, log.Error));
+            content.Get(RequestLogContentSlot.RequestHeaders),
+            content.Get(RequestLogContentSlot.RequestBody),
+            content.Get(RequestLogContentSlot.UpstreamRequestBody),
+            content.Get(RequestLogContentSlot.UpstreamResponseBody),
+            content.Get(RequestLogContentSlot.ResponseBody),
+            content.Get(RequestLogContentSlot.WebSearchJson),
+            content.Get(RequestLogContentSlot.OcrJson),
+            ParseStreamLines(content.Get(RequestLogContentSlot.StreamLinesJson)),
+            NormalizeRequestStatus(log.LifecycleStatus, log.StatusCode, log.Error),
+            log.ConversationKey,
+            log.ConversationTurnId,
+            log.ConversationWindowId,
+            log.PreviousResponseId,
+            attemptStats.AttemptCount,
+            attemptStats.FailedAttemptCount);
+    }
+
+    private static IReadOnlyList<RequestLogStreamLineDto> ParseStreamLines(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return [];
+        }
+
+        using var document = JsonDocument.Parse(value);
+        if (document.RootElement.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidDataException("Stored SSE log content must be a JSON array.");
+        }
+
+        var lines = new List<RequestLogStreamLineDto>();
+        foreach (var item in document.RootElement.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object
+                || !item.TryGetProperty("sequence", out var sequence)
+                || !sequence.TryGetInt32(out var sequenceValue)
+                || !item.TryGetProperty("source", out var source)
+                || source.ValueKind != JsonValueKind.String
+                || !item.TryGetProperty("raw_line", out var rawLine)
+                || rawLine.ValueKind != JsonValueKind.String)
+            {
+                throw new InvalidDataException("Stored SSE log line is malformed.");
+            }
+
+            lines.Add(new RequestLogStreamLineDto(
+                sequenceValue,
+                source.GetString() ?? string.Empty,
+                rawLine.GetString() ?? string.Empty));
+        }
+
+        return lines.OrderBy(line => line.Sequence).ToList();
     }
 
     private static string NormalizeRequestStatus(string? lifecycleStatus, int? statusCode, string? error)

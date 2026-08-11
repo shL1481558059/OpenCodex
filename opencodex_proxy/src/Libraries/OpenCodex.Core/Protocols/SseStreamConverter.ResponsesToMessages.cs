@@ -19,6 +19,8 @@ public static partial class SseStreamConverter
     //    序列化为 JSON 作为 input_json_delta 发出。function_call 的 arguments 是 JSON 片段，可安全逐字实时流出。
     //  - 若检测到 tool_use 输出且上游 status == completed，stop_reason 设为 tool_use（符合 Anthropic 协议，
     //    便于客户端触发工具循环）；其余按 status 映射 completed->end_turn、incomplete->max_tokens。
+    //  - Responses 的 input_tokens 通常仅在终止事件出现，message_start.usage.input_tokens 因此保持 0；
+    //    output_tokens 在 message_delta 中按终止 usage 报告，避免破坏实时流式语义。
     public static async IAsyncEnumerable<string> ResponsesToMessagesEvents(
         IAsyncEnumerable<string> upstreamLines,
         string? model,
@@ -47,6 +49,7 @@ public static partial class SseStreamConverter
     {
         var messageId = $"msg_{Guid.NewGuid():N}";
         var responseModel = model ?? string.Empty;
+        var upstreamResponseModel = string.Empty;
         var createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var responseId = $"resp_{Guid.NewGuid():N}";
         var finishStatus = "completed";
@@ -178,7 +181,8 @@ public static partial class SseStreamConverter
                 if (TryAsObject(GetValue(payload, "response"), out var response))
                 {
                     responseId = StringValue(response, "id", responseId);
-                    responseModel = model ?? StringValue(response, "model", responseModel);
+                    upstreamResponseModel = StringValue(response, "model", upstreamResponseModel);
+                    responseModel = model ?? upstreamResponseModel;
                     if (TryAsObject(GetValue(response, "usage"), out var responseUsage))
                     {
                         usage = responseUsage;
@@ -532,7 +536,8 @@ public static partial class SseStreamConverter
                 if (TryAsObject(GetValue(payload, "response"), out var response))
                 {
                     responseId = StringValue(response, "id", responseId);
-                    responseModel = model ?? StringValue(response, "model", responseModel);
+                    upstreamResponseModel = StringValue(response, "model", upstreamResponseModel);
+                    responseModel = model ?? upstreamResponseModel;
                     finishStatus = StringValue(
                         response,
                         "status",
@@ -573,14 +578,15 @@ public static partial class SseStreamConverter
                 var capturedFailure = responseAccumulator.BuildResponse()
                     ?? new Dictionary<string, object?>(StringComparer.Ordinal);
                 responseId = StringValue(capturedFailure, "id", responseId);
-                responseModel = model ?? StringValue(capturedFailure, "model", responseModel);
+                upstreamResponseModel = StringValue(capturedFailure, "model", upstreamResponseModel);
+                responseModel = model ?? upstreamResponseModel;
                 var failedResponse = BuildCapturedResponsesUpstreamResponse(
                     responseAccumulator,
                     "response.failed",
                     responseId,
                     createdAt,
                     "failed",
-                    responseModel,
+                    upstreamResponseModel.Length > 0 ? upstreamResponseModel : responseModel,
                     outputByIndex.Values,
                     usage,
                     preserveCapturedOutputAndUsage: true)!;
@@ -652,7 +658,7 @@ public static partial class SseStreamConverter
             responseId,
             createdAt,
             finishStatus,
-            responseModel,
+            upstreamResponseModel.Length > 0 ? upstreamResponseModel : responseModel,
             outputByIndex.Values,
             usage);
 

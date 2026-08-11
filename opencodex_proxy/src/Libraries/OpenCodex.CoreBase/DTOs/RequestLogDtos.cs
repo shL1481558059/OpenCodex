@@ -70,7 +70,6 @@ public sealed class RequestLogWriteDto(
     Guid? apiKeyId,
     string? error,
     string? ocrJson,
-    string? streamTimingsJson,
     IReadOnlyList<ProxyRequestStreamLineCapture>? streamLines)
 {
     /// <summary>
@@ -259,11 +258,6 @@ public sealed class RequestLogWriteDto(
     public string? OcrJson { get; } = ocrJson;
 
     /// <summary>
-    /// 获取序列化后的流式写出时序诊断（如果可用）。
-    /// </summary>
-    public string? StreamTimingsJson { get; } = streamTimingsJson;
-
-    /// <summary>
     /// 获取按原始 SSE line 记录的上游流片段。
     /// </summary>
     public IReadOnlyList<ProxyRequestStreamLineCapture>? StreamLines { get; } = streamLines;
@@ -273,12 +267,10 @@ public sealed class RequestLogWriteDto(
 /// 表示请求日志中的一条原始流式响应行。
 /// </summary>
 /// <param name="sequence">该行在请求内的顺序。</param>
-/// <param name="occurredAt">记录该行的时间戳。</param>
 /// <param name="source">该行来源。</param>
 /// <param name="rawLine">原始行文本。</param>
 public sealed class RequestLogStreamLineDto(
     int sequence,
-    double occurredAt,
     string source,
     string rawLine)
 {
@@ -286,11 +278,6 @@ public sealed class RequestLogStreamLineDto(
     /// 获取该行在请求内的顺序。
     /// </summary>
     public int Sequence { get; } = sequence;
-
-    /// <summary>
-    /// 获取记录该行的时间戳。
-    /// </summary>
-    public double OccurredAt { get; } = occurredAt;
 
     /// <summary>
     /// 获取该行来源。
@@ -335,7 +322,6 @@ public sealed class RequestLogStreamLineDto(
 /// <param name="responseBody">序列化后的下游响应体（如果可用）。</param>
 /// <param name="webSearchJson">序列化后的 Web 搜索详情（如果可用）。</param>
 /// <param name="ocrJson">序列化后的 OCR 详情（如果可用）。</param>
-/// <param name="streamTimingsJson">序列化后的流式写出时序诊断（如果可用）。</param>
 /// <param name="requestStatus">标准化后的请求状态。</param>
 public sealed class RequestLogDto(
     Guid id,
@@ -369,9 +355,14 @@ public sealed class RequestLogDto(
     string? responseBody,
     string? webSearchJson,
     string? ocrJson,
-    string? streamTimingsJson,
     IReadOnlyList<RequestLogStreamLineDto> streamLines,
-    string requestStatus)
+    string requestStatus,
+    string? conversationKey = null,
+    string? conversationTurnId = null,
+    string? conversationWindowId = null,
+    string? previousResponseId = null,
+    int attemptCount = 0,
+    int failedAttemptCount = 0)
 {
     /// <summary>
     /// 获取请求日志的数据库标识符。
@@ -529,11 +520,6 @@ public sealed class RequestLogDto(
     public string? OcrJson { get; } = ocrJson;
 
     /// <summary>
-    /// 获取序列化后的流式写出时序诊断（如果可用）。
-    /// </summary>
-    public string? StreamTimingsJson { get; } = streamTimingsJson;
-
-    /// <summary>
     /// 获取按原始 SSE line 记录的上游流片段。
     /// </summary>
     public IReadOnlyList<RequestLogStreamLineDto> StreamLines { get; } = streamLines;
@@ -542,6 +528,18 @@ public sealed class RequestLogDto(
     /// 获取标准化后的请求状态。
     /// </summary>
     public string RequestStatus { get; } = requestStatus;
+
+    public string? ConversationKey { get; } = conversationKey;
+
+    public string? ConversationTurnId { get; } = conversationTurnId;
+
+    public string? ConversationWindowId { get; } = conversationWindowId;
+
+    public string? PreviousResponseId { get; } = previousResponseId;
+
+    public int AttemptCount { get; } = attemptCount;
+
+    public int FailedAttemptCount { get; } = failedAttemptCount;
 }
 
 /// <summary>
@@ -596,6 +594,10 @@ public sealed class RequestLogEventDto(
     Guid? apiKeyId,
     string? error,
     string requestStatus,
+    string? conversationKey = null,
+    string? conversationTurnId = null,
+    string? conversationWindowId = null,
+    string? previousResponseId = null,
     int attemptCount = 0,
     int failedAttemptCount = 0)
 {
@@ -723,6 +725,14 @@ public sealed class RequestLogEventDto(
     /// 获取标准化后的请求状态。
     /// </summary>
     public string RequestStatus { get; } = requestStatus;
+
+    public string? ConversationKey { get; } = conversationKey;
+
+    public string? ConversationTurnId { get; } = conversationTurnId;
+
+    public string? ConversationWindowId { get; } = conversationWindowId;
+
+    public string? PreviousResponseId { get; } = previousResponseId;
 
     /// <summary>
     /// 获取该主请求下的渠道尝试次数（仅对 main 日志有意义）。
