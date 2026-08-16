@@ -19,9 +19,6 @@ OPENCODEX_DB_CONNECTION_STRING=Data Source=logs/opencodex.db
 OPENCODEX_REDIS_CONNECTION=
 OPENCODEX_REDIS_PREFIX=opencodex
 OPENCODEX_CACHE_DEFAULT_TTL_SECONDS=300
-OPENCODEX_LOG_PATH=logs/opencodex.log
-OPENCODEX_LOG_LEVEL=INFO
-OPENCODEX_LOG_VIEW_LEVEL=BASIC
 OPENCODEX_DEFAULT_TIMEOUT=120
 OPENCODEX_ADMIN_COOKIE_DAYS=30
 OPENCODEX_SECRET_KEY=change-me-session-secret
@@ -244,7 +241,6 @@ docker run --rm \
 
 ```env
 OPENCODEX_DB_PATH=/app/logs/opencodex.db
-OPENCODEX_LOG_PATH=/app/logs/opencodex.log
 ```
 
 手动 `docker run` 不会拉起 PostgreSQL 和 Redis，仅适合临时单进程验证。生产部署请使用 `./update_remote_image.sh` 或 `docker-compose-pgsql.yml`。

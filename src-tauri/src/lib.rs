@@ -150,7 +150,6 @@ fn start_backend(app: &AppHandle, state: &BackendState) -> Result<DesktopSetting
     let content_root = content_root(app)?;
     let urls = format!("http://{}:{}", settings.bind_host, settings.port);
     let db_connection = format!("Data Source={}", logs_dir.join("opencodex.db").display());
-    let log_path = logs_dir.join("opencodex.log").display().to_string();
     let keys_path = keys_dir.display().to_string();
     let ocr_path = ocr_dir.display().to_string();
 
@@ -167,7 +166,6 @@ fn start_backend(app: &AppHandle, state: &BackendState) -> Result<DesktopSetting
         .env("OPENCODEX_DESKTOP_PORT", settings.port.to_string())
         .env("OPENCODEX_DB_PROVIDER", "sqlite")
         .env("OPENCODEX_DB_CONNECTION_STRING", db_connection)
-        .env("OPENCODEX_LOG_PATH", log_path)
         .env("OPENCODEX_DATA_PROTECTION_KEYS_PATH", keys_path)
         .env("OPENCODEX_OCR_CACHE_DIR", ocr_path);
 
