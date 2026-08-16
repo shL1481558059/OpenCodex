@@ -18,6 +18,8 @@ POSTGRES_CONTAINER_NAME="${POSTGRES_CONTAINER_NAME:-ocxp-postgres-dev}"
 REDIS_CONTAINER_NAME="${REDIS_CONTAINER_NAME:-ocxp-redis-dev}"
 APP_PORT_MAPPING="${APP_PORT_MAPPING:-127.0.0.1:8003:8080}"
 NETWORK_NAME="${NETWORK_NAME:-ocxp-dev-network}"
+DOCKER_LOG_MAX_SIZE="${DOCKER_LOG_MAX_SIZE:-50m}"
+DOCKER_LOG_MAX_FILE="${DOCKER_LOG_MAX_FILE:-5}"
 
 case "$DB_TYPE" in
   postgres|postgresql|pgsql)
@@ -58,6 +60,7 @@ echo "Postgres container: $POSTGRES_CONTAINER_NAME"
 echo "Redis container: $REDIS_CONTAINER_NAME"
 echo "Port mapping: $APP_PORT_MAPPING"
 echo "Network: $NETWORK_NAME"
+echo "Docker log rotation: $DOCKER_LOG_MAX_SIZE x $DOCKER_LOG_MAX_FILE files"
 echo "============================"
 echo
 
@@ -75,7 +78,7 @@ echo
 
 echo "Pulling and deploying on $SSH_TARGET"
 ssh "${SSH_OPTS[@]}" "$SSH_TARGET" \
-  "REMOTE_DEPLOY_DIR='$REMOTE_DEPLOY_DIR' IMAGE_NAME='$IMAGE_NAME' SERVICE_NAME='$SERVICE_NAME' OLD_SERVICE_NAMES='$OLD_SERVICE_NAMES' POSTGRES_CONTAINER_NAME='$POSTGRES_CONTAINER_NAME' REDIS_CONTAINER_NAME='$REDIS_CONTAINER_NAME' APP_PORT_MAPPING='$APP_PORT_MAPPING' NETWORK_NAME='$NETWORK_NAME' bash -s" <<'REMOTE_SCRIPT'
+  "REMOTE_DEPLOY_DIR='$REMOTE_DEPLOY_DIR' IMAGE_NAME='$IMAGE_NAME' SERVICE_NAME='$SERVICE_NAME' OLD_SERVICE_NAMES='$OLD_SERVICE_NAMES' POSTGRES_CONTAINER_NAME='$POSTGRES_CONTAINER_NAME' REDIS_CONTAINER_NAME='$REDIS_CONTAINER_NAME' APP_PORT_MAPPING='$APP_PORT_MAPPING' NETWORK_NAME='$NETWORK_NAME' DOCKER_LOG_MAX_SIZE='$DOCKER_LOG_MAX_SIZE' DOCKER_LOG_MAX_FILE='$DOCKER_LOG_MAX_FILE' bash -s" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
 docker pull "$IMAGE_NAME"
@@ -93,6 +96,8 @@ export POSTGRES_CONTAINER_NAME="$POSTGRES_CONTAINER_NAME"
 export REDIS_CONTAINER_NAME="$REDIS_CONTAINER_NAME"
 export APP_PORT_MAPPING="$APP_PORT_MAPPING"
 export NETWORK_NAME="$NETWORK_NAME"
+export DOCKER_LOG_MAX_SIZE="$DOCKER_LOG_MAX_SIZE"
+export DOCKER_LOG_MAX_FILE="$DOCKER_LOG_MAX_FILE"
 
 # 启动服务（优先 docker-compose v1，兼容服务器环境）
 if command -v docker-compose >/dev/null 2>&1; then
@@ -100,6 +105,14 @@ if command -v docker-compose >/dev/null 2>&1; then
 else
   docker compose up -d --no-build --force-recreate
 fi
+
+echo
+echo "=== Docker Log Rotation (dev) ==="
+for container in "$SERVICE_NAME" "$POSTGRES_CONTAINER_NAME" "$REDIS_CONTAINER_NAME"; do
+  if docker inspect "$container" >/dev/null 2>&1; then
+    docker inspect "$container" --format '{{.Name}}\t{{.HostConfig.LogConfig.Type}}\t{{index .HostConfig.LogConfig.Config "max-size"}}\t{{index .HostConfig.LogConfig.Config "max-file"}}'
+  fi
+done
 
 echo
 echo "=== Running Containers (dev) ==="
