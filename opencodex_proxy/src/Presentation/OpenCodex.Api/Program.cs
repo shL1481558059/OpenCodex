@@ -17,8 +17,6 @@ builder.Services.AddOpenCodexApi(builder.Configuration);
 
 var app = builder.Build();
 
-WriteStartupDiagnostic(app, contentRoot, webRoot);
-
 app.UseOpenCodexApi();
 app.Run();
 
@@ -78,48 +76,6 @@ static string? ResolveWebRoot(string? contentRoot)
         }
     }
     return null;
-}
-
-static void WriteStartupDiagnostic(WebApplication app, string? contentRoot, string? webRoot)
-{
-    try
-    {
-        var diagPath = Path.Combine(AppContext.BaseDirectory, "opencodex-startup-diagnostic.txt");
-        var envContentRoot = Environment.GetEnvironmentVariable("OPENCODEX_CONTENT_ROOT");
-        var resolvedContentRoot = app.Environment.ContentRootPath ?? "(null)";
-        var resolvedWebRoot = app.Environment.WebRootPath ?? "(null)";
-
-        var lines = new List<string>
-        {
-            $"Timestamp: {DateTime.Now:O}",
-            $"EnvVar OPENCODEX_CONTENT_ROOT: {envContentRoot ?? "(null)"}",
-            $"Resolved contentRoot (Program.cs): {contentRoot ?? "(null)"}",
-            $"Resolved webRoot (Program.cs): {webRoot ?? "(null)"}",
-            $"App ContentRootPath: {resolvedContentRoot}",
-            $"App WebRootPath: {resolvedWebRoot}",
-            $"AppContext.BaseDirectory: {AppContext.BaseDirectory}",
-            $"wwwroot exists at ContentRoot: {Directory.Exists(Path.Combine(resolvedContentRoot, "wwwroot"))}",
-            $"wwwroot exists at BaseDirectory: {Directory.Exists(Path.Combine(AppContext.BaseDirectory, "wwwroot"))}",
-            $"admin dir exists at wwwroot: {Directory.Exists(Path.Combine(resolvedWebRoot, "admin"))}",
-            $"admin/assets dir exists: {Directory.Exists(Path.Combine(resolvedWebRoot, "admin", "assets"))}"
-        };
-
-        var assetDir = Path.Combine(resolvedWebRoot, "admin", "assets");
-        if (Directory.Exists(assetDir))
-        {
-            lines.Add("Files in admin/assets (first 15):");
-            foreach (var f in Directory.GetFiles(assetDir).Take(15))
-            {
-                lines.Add($"  {Path.GetFileName(f)}");
-            }
-        }
-
-        File.WriteAllLines(diagPath, lines);
-    }
-    catch
-    {
-        // 诊断日志不应影响正常启动
-    }
 }
 
 public partial class Program;

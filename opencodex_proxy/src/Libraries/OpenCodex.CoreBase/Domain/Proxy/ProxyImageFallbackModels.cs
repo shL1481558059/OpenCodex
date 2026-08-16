@@ -13,8 +13,6 @@ public static class ProxyImageSourceKinds
 public static class ProxyOcrEngines
 {
     public const string Vision = "vision";
-
-    public const string PaddleOcr = "paddleocr";
 }
 
 public sealed class ProxyImageInput(

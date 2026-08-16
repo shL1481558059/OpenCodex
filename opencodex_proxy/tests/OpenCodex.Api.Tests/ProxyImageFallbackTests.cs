@@ -3,7 +3,6 @@ using Microsoft.EntityFrameworkCore;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
@@ -186,6 +185,71 @@ public sealed class ProxyImageFallbackTests
     }
 
     [Fact]
+    public async Task PaddleOcrCache_IsIgnoredAndVisionOcrRunsAgain()
+    {
+        using var factory = new ProxyImageFallbackApiFactory(
+            [
+                ResponsesOcrResponse("vision-upstream", "LIVE", "实时识别"),
+                ResponsesTextResponse("text-upstream", "done")
+            ]);
+        var imageBytes = Convert.FromBase64String("AAAA");
+        var cacheKey = Convert.ToHexStringLower(SHA256.HashData(imageBytes));
+        var cacheDir = Path.Combine(factory.OcrCacheDir, "results");
+        Directory.CreateDirectory(cacheDir);
+        File.WriteAllText(
+            Path.Combine(cacheDir, $"{cacheKey}.json"),
+            """
+            {"Engine":"paddleocr","SourceKind":"data","Text":"STALE","Description":"旧缓存","CreatedAt":1,"Model":"old-model","UpstreamModel":"old-upstream","ChannelId":"old-channel","ChannelType":"responses"}
+            """);
+
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = false
+        });
+
+        var cookie = await LoginAndReadSessionCookie(client);
+        await ConfigureModelsAsync(client, cookie, includeVisionModel: true);
+        var apiKey = await CreateApiKeyAsync(client, cookie, "cli-paddle-cache");
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "text-model",
+                input = new object[]
+                {
+                    new
+                    {
+                        type = "message",
+                        role = "user",
+                        content = new object[]
+                        {
+                            new { type = "input_text", text = "请看这张图" },
+                            new { type = "input_image", image_url = "data:image/png;base64,AAAA" }
+                        }
+                    }
+                }
+            })
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(2, factory.Upstream.Requests.Count);
+        Assert.Contains("LIVE", factory.Upstream.RequestJsons[1], StringComparison.Ordinal);
+
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={factory.DbPath}");
+        context.Database.Migrate();
+        var ocrLog = Assert.Single(context.RequestLogs.Where(item => item.RequestType == ProxyRequestTypes.Ocr));
+        var contentStore = new LogContentStore(context);
+        using var ocrJson = JsonDocument.Parse(contentStore.Read(ocrLog.Id).Get(RequestLogContentSlot.OcrJson)!);
+        Assert.Equal("vision", ocrJson.RootElement.GetProperty("engine").GetString());
+        Assert.False(ocrJson.RootElement.GetProperty("cache_hit").GetBoolean());
+    }
+
+    [Fact]
     public async Task RemoteUrlWithoutVisionModel_Returns400AndWritesOcrChildLog()
     {
         using var factory = new ProxyImageFallbackApiFactory();
@@ -241,127 +305,6 @@ public sealed class ProxyImageFallbackTests
         Assert.Equal("/internal/ocr/vision", ocrLog.Path);
     }
 
-    // [Fact]
-    // public async Task DataImageWithoutVisionModel_UsesLocalPaddleOcrAndKeepsMainRoute()
-    // {
-    // using var factory = new ProxyImageFallbackApiFactory(
-    // [ResponsesTextResponse("text-upstream", "done")],
-    // new FakeLocalImageOcrService("本地识别文本"));
-    // using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
-    // {
-    // AllowAutoRedirect = false,
-    // HandleCookies = false
-    // });
-    // 
-    // var cookie = await LoginAndReadSessionCookie(client);
-    // await ConfigureModelsAsync(client, cookie, includeVisionModel: false);
-    // var apiKey = await CreateApiKeyAsync(client, cookie, "cli-local-ocr");
-    // 
-    // var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
-    // {
-    // Content = JsonContent.Create(new
-    // {
-    // model = "text-model",
-    // input = new object[]
-    // {
-    // new
-    // {
-    // type = "message",
-    // role = "user",
-    // content = new object[]
-    // {
-    // new { type = "input_text", text = "请看这张图" },
-    // new { type = "input_image", image_url = "data:image/png;base64,AAAA" }
-    // }
-    // }
-    // }
-    // })
-    // };
-    // request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-    // 
-    // var response = await client.SendAsync(request);
-    // 
-    // Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-    // Assert.Single(factory.Upstream.Requests);
-    // Assert.Contains("\"model\":\"text-upstream\"", factory.Upstream.RequestJsons[0], StringComparison.Ordinal);
-    // Assert.DoesNotContain("\"input_image\"", factory.Upstream.RequestJsons[0], StringComparison.Ordinal);
-    // Assert.Contains("本地识别文本", factory.Upstream.RequestJsons[0], StringComparison.Ordinal);
-    // 
-    // using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={factory.DbPath}");
-    // var logs = context.RequestLogs.OrderBy(item => item.Id).ToList();
-    // Assert.Equal(2, logs.Count);
-    // var mainLog = Assert.Single(logs, item => item.RequestType == ProxyRequestTypes.Main);
-    // var ocrLog = Assert.Single(logs, item => item.RequestType == ProxyRequestTypes.Ocr);
-    // Assert.Equal(mainLog.Id, ocrLog.ParentRequestLogId);
-    // Assert.Equal("text-model", mainLog.Model);
-    // Assert.Equal("text-upstream", mainLog.UpstreamModel);
-    // Assert.Equal("__ocr_paddleocr__", ocrLog.Model);
-    // Assert.Equal("__ocr_paddleocr__", ocrLog.UpstreamModel);
-    // Assert.Equal("/internal/ocr/paddleocr", ocrLog.Path);
-    // 
-    // Assert.Equal("paddleocr", ocrJson.RootElement.GetProperty("engine").GetString());
-    // Assert.False(ocrJson.RootElement.GetProperty("cache_hit").GetBoolean());
-    // }
-    // 
-    // [Fact]
-    // public async Task OcrService_UsesCachedRemoteUrlResult_WhenVisionRouteIsUnavailable()
-    // {
-    // var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-ocr-cache-tests", $"{Guid.NewGuid():N}.db");
-    // Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
-    // using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
-    // {
-    // }
-    // 
-    // var cachedUrl = "https://example.com/cached-image.png";
-    // var cacheKey = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(cachedUrl)));
-    // var cacheRoot = Path.Combine(
-    // Path.GetTempPath(),
-    // "opencodex-ocr-cache-tests",
-    // $"{Guid.NewGuid():N}");
-    // var cacheDir = Path.Combine(cacheRoot, "results");
-    // Directory.CreateDirectory(cacheDir);
-    // File.WriteAllText(
-    // Path.Combine(cacheDir, $"{cacheKey}.json"),
-    // """
-    // {"Engine":"vision","SourceKind":"url","Text":"CACHED","Description":"缓存命中","CreatedAt":1,"Model":"vision-model","UpstreamModel":"vision-upstream","ChannelId":"vision","ChannelType":"responses"}
-    // """);
-    // 
-    // var settingsProvider = new FixedSettingsProvider(dbPath, cacheRoot);
-    // var pricing = new ModelPricingService(settingsProvider);
-    // var logs = new ProxyLogService(settingsProvider, pricing);
-    // var upstream = new RecordingUpstreamClient();
-    // var service = new ProxyOcrService(upstream, logs, new FakeLocalImageOcrService(), settingsProvider);
-    // 
-    // var result = await service.RecognizeAsync(new ProxyOcrContext(
-    // "req_cached",
-    // "admin",
-    // apiKeyId: null,
-    // new ProxyRequestMetadata(
-    // "POST",
-    // "/v1/responses",
-    // clientIp: null,
-    // headers: new Dictionary<string, string>(StringComparer.Ordinal)),
-    // new ProxyImageInput(
-    // 1,
-    // ProxyImageSourceKinds.Url,
-    // cachedUrl,
-    // imageBytes: null,
-    // mediaType: string.Empty),
-    // visionRoute: null,
-    // defaultTimeout: 120,
-    // cancellationToken: CancellationToken.None));
-    // 
-    // Assert.True(result.CacheHit);
-    // Assert.Equal("CACHED", result.Text);
-    // Assert.Equal("vision", result.Engine);
-    // Assert.Empty(upstream.Requests);
-    // 
-    // using var readContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
-    // var ocrLog = Assert.Single(readContext.RequestLogs.Where(item => item.RequestType == ProxyRequestTypes.Ocr));
-    // Assert.Equal("/internal/ocr/vision", ocrLog.Path);
-    // Assert.True(ocrJson.RootElement.GetProperty("cache_hit").GetBoolean());
-    // }
-    // 
     public static IEnumerable<object[]> UserImagePayloads()
     {
         yield return
@@ -636,14 +579,11 @@ public sealed class ProxyImageFallbackTests
     private sealed class ProxyImageFallbackApiFactory : WebApplicationFactory<Program>
     {
         private readonly Dictionary<string, object?>[] _responses;
-        // private readonly ILocalImageOcrService? _localOcr;
 
         public ProxyImageFallbackApiFactory(
-            Dictionary<string, object?>[]? responses = null,
-            object? localOcr = null)
+            Dictionary<string, object?>[]? responses = null)
         {
             _responses = responses ?? [];
-            // _localOcr = localOcr;
             Upstream = new RecordingUpstreamClient(_responses);
         }
 
@@ -679,11 +619,6 @@ public sealed class ProxyImageFallbackTests
             {
                 services.RemoveAll<IUpstreamClient>();
                 services.AddSingleton<IUpstreamClient>(Upstream);
-                // if (_localOcr is not null)
-                // {
-                //     services.RemoveAll<ILocalImageOcrService>();
-                //     services.AddSingleton(_localOcr);
-                // }
             });
         }
     }
@@ -814,43 +749,4 @@ public sealed class ProxyImageFallbackTests
         }
     }
 
-    private sealed class FixedSettingsProvider : IOpenCodexRuntimeSettingsProvider
-    {
-        private readonly string _dbPath;
-        private readonly string _ocrCacheDir;
-
-        public FixedSettingsProvider(string dbPath, string? ocrCacheDir = null)
-        {
-            _dbPath = dbPath;
-            _ocrCacheDir = ocrCacheDir ?? "ocr-cache";
-        }
-
-        public OpenCodexRuntimeSettings GetSettings()
-        {
-            return new OpenCodexRuntimeSettings(
-                "sqlite",
-                $"Data Source={_dbPath}",
-                "admin",
-                OpenCodexApiFactory.AdminPassword,
-                120,
-                _ocrCacheDir);
-        }
-    }
-
-    // private sealed class FakeLocalImageOcrService : ILocalImageOcrService
-    // {
-    //     private readonly string _text;
-    //
-    //     public FakeLocalImageOcrService(string text = "")
-    //     {
-    //         _text = text;
-    //     }
-    //
-    //     public Task<string> RecognizeTextAsync(
-    //         byte[] imageBytes,
-    //         CancellationToken cancellationToken)
-    //     {
-    //         return Task.FromResult(_text);
-    //     }
-    // }
 }

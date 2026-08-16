@@ -138,8 +138,7 @@ public sealed class ProxyOcrService : IProxyOcrService
                     cacheHit: false);
             }
 
-            // 本地 OCR 已移除，必须配置 vision 模型
-            throw new BadRequestException("OCR requires a configured vision model. Local OCR has been removed.");
+            throw new BadRequestException("OCR requires a configured vision model.");
         }
         catch (BadRequestException exception)
         {
@@ -527,7 +526,7 @@ public sealed class ProxyOcrService : IProxyOcrService
 
     private static bool IsSupportedCacheEngine(string? engine)
     {
-        return engine == ProxyOcrEngines.Vision || engine == ProxyOcrEngines.PaddleOcr;
+        return engine == ProxyOcrEngines.Vision;
     }
 
     private static int ElapsedMilliseconds(long started)

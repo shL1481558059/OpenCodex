@@ -12,7 +12,6 @@ public sealed class OpenCodexRuntimeSettings
         string adminPassword,
         int defaultTimeout,
         string? ocrCacheDir = null,
-        string? localOcrModel = null,
         string? redisConnection = null,
         string? redisPrefix = null,
         int cacheDefaultTtlSeconds = 300)
@@ -23,7 +22,6 @@ public sealed class OpenCodexRuntimeSettings
         AdminPassword = adminPassword;
         DefaultTimeout = defaultTimeout;
         OcrCacheDir = string.IsNullOrWhiteSpace(ocrCacheDir) ? "ocr-cache" : ocrCacheDir.Trim();
-        LocalOcrModel = string.IsNullOrWhiteSpace(localOcrModel) ? "ChineseV5" : localOcrModel.Trim();
         RedisConnection = (redisConnection ?? string.Empty).Trim();
         RedisPrefix = string.IsNullOrWhiteSpace(redisPrefix) ? "opencodex" : redisPrefix.Trim();
         CacheDefaultTtlSeconds = cacheDefaultTtlSeconds > 0 ? cacheDefaultTtlSeconds : 300;
@@ -58,11 +56,6 @@ public sealed class OpenCodexRuntimeSettings
     /// 获取 OCR 缓存目录。
     /// </summary>
     public string OcrCacheDir { get; }
-
-    /// <summary>
-    /// 获取本地 OCR 模型名称。
-    /// </summary>
-    public string LocalOcrModel { get; }
 
     /// <summary>
     /// 获取 Redis 连接字符串;为空表示禁用 Redis(L2),缓存降级为纯进程内 L1。

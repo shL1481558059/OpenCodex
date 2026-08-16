@@ -110,10 +110,6 @@ Assert.Equal("Expected full text", string.Join("", textDeltas));
 
 ## 运行测试
 
-### 前提条件
-
-需要先修复 `ProxyImageFallbackTests.cs` 中的编译错误（删除 `ILocalImageOcrService` 引用）。
-
 ### 运行所有集成测试
 
 ```bash
