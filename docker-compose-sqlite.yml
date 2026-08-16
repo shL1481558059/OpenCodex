@@ -1,3 +1,9 @@
+x-json-file-logging: &json-file-logging
+  driver: json-file
+  options:
+    max-size: "${DOCKER_LOG_MAX_SIZE:-50m}"
+    max-file: "${DOCKER_LOG_MAX_FILE:-5}"
+
 services:
   ocxp:
     image: shl148155/opencodexp:ocxp
@@ -11,8 +17,10 @@ services:
     environment:
       - OPENCODEX_DB_PROVIDER=sqlite
       - OPENCODEX_DB_CONNECTION_STRING=Data Source=/app/logs/opencodex.db
+      - Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command=Warning
     volumes:
       - ./logs:/app/logs
+    logging: *json-file-logging
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
       interval: 30s
