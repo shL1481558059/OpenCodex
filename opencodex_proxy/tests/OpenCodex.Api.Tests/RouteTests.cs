@@ -44,7 +44,133 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         Assert.Contains("/login", routes);
         Assert.Contains("/config", routes);
         Assert.Contains("/pricing", routes);
+        Assert.Contains("/model-catalog/export", routes);
+        Assert.Contains("/model-catalog/import", routes);
+        Assert.DoesNotContain("/pricing/seed-defaults", routes);
+        Assert.DoesNotContain("/model-infos/seed-defaults", routes);
         Assert.Contains("/logs", routes);
+    }
+
+    [Fact]
+    public async Task RemovedSeedRoutesAreNotCallable()
+    {
+        using var pricingContent = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
+        var pricingResponse = await _client.PostAsync("/pricing/seed-defaults", pricingContent);
+
+        using var catalogContent = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
+        var catalogResponse = await _client.PostAsync("/model-infos/seed-defaults", catalogContent);
+
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, pricingResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, catalogResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task FreshStartupDoesNotSeedModelCatalogOrLegacyPricing()
+    {
+        using var factory = new OpenCodexApiFactory();
+        using var client = factory.CreateClient();
+        var session = await client.GetAsync("/session");
+        Assert.Equal(HttpStatusCode.OK, session.StatusCode);
+
+        using var scope = factory.Services.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<OpenCodex.CoreBase.Data.IOpenCodexDbContext>();
+        Assert.Empty(context.ModelProviders);
+        Assert.Empty(context.ModelInfos);
+        Assert.Empty(context.ModelPricingPlans);
+        Assert.Empty(context.ModelPricingRules);
+        Assert.Empty(context.ModelPricings);
+    }
+
+    [Fact]
+    public async Task StartupKeepsExistingCatalogAndDoesNotMigrateLegacyPricing()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), "opencodex-api-tests", Guid.NewGuid().ToString("N"));
+        var dbPath = Path.Combine(testRoot, "catalog.db");
+        var keysPath = Path.Combine(testRoot, "keys");
+        Directory.CreateDirectory(testRoot);
+
+        var providerId = Guid.NewGuid();
+        var modelId = Guid.NewGuid();
+        var planId = Guid.NewGuid();
+        using (var context = OpenCodex.Data.OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            context.ModelProviders.Add(new OpenCodex.Core.Domain.ModelProvider
+            {
+                Id = providerId,
+                Code = "manual-provider",
+                Name = "Manual Provider",
+                Enabled = true,
+                SortOrder = 10,
+                Source = "manual",
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            context.ModelInfos.Add(new OpenCodex.Core.Domain.ModelInfo
+            {
+                Id = modelId,
+                Scope = "global",
+                ProviderId = providerId,
+                ModelKey = "manual-model",
+                DisplayName = "Manual Model",
+                MatchType = "exact",
+                MatchPattern = "manual-model",
+                CatalogJson = "{}",
+                CapabilitiesJson = "{}",
+                Enabled = true,
+                Source = "manual",
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            context.ModelPricingPlans.Add(new OpenCodex.Core.Domain.ModelPricingPlan
+            {
+                Id = planId,
+                ModelInfoId = modelId,
+                Currency = "USD",
+                Enabled = true,
+                Source = "manual",
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            context.ModelPricingRules.Add(new OpenCodex.Core.Domain.ModelPricingRule
+            {
+                Id = Guid.NewGuid(),
+                PricingPlanId = planId,
+                BillingItem = "input",
+                BillingMode = "per_million_tokens",
+                UnitPrice = 2,
+                TiersJson = "[]",
+                Enabled = true
+            });
+            context.ModelPricings.Add(new OpenCodex.Core.Domain.ModelPricing
+            {
+                Id = Guid.NewGuid(),
+                ModelId = "legacy-only-model",
+                Vendor = "legacy-vendor",
+                Name = "Legacy Only Model",
+                MatchPattern = "legacy-only-model",
+                InputPrice = 1,
+                OutputPrice = 2,
+                Enabled = true,
+                Source = "legacy",
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            context.SaveChanges();
+        }
+
+        using var factory = new OpenCodexApiFactory(dbPath, keysPath);
+        using var client = factory.CreateClient();
+        var session = await client.GetAsync("/session");
+        Assert.Equal(HttpStatusCode.OK, session.StatusCode);
+
+        using var verify = OpenCodex.Data.OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        Assert.Contains(verify.ModelProviders, provider => provider.Id == providerId);
+        Assert.Contains(verify.ModelInfos, model => model.Id == modelId);
+        Assert.Contains(verify.ModelPricingPlans, plan => plan.Id == planId);
+        Assert.Contains(verify.ModelPricingRules, rule => rule.PricingPlanId == planId);
+        Assert.Contains(verify.ModelPricings, price => price.ModelId == "legacy-only-model");
+        Assert.DoesNotContain(verify.ModelInfos, model => model.ModelKey == "legacy-only-model");
     }
 
     [Fact]
@@ -749,15 +875,11 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
-    public async Task PricingDefaultsAreSeededAndSuperadminCanMaintain()
+    public async Task PricingCrudRemainsAvailableForSuperadmin()
     {
         var cookie = await LoginAndReadSessionCookie();
         var list = await SendWithCookie(HttpMethod.Get, "/pricing", cookie);
         Assert.Equal(HttpStatusCode.OK, list.StatusCode);
-        using (var document = await JsonDocument.ParseAsync(await list.Content.ReadAsStreamAsync()))
-        {
-            Assert.True(document.RootElement.GetProperty("Data").GetProperty("prices").GetArrayLength() > 0);
-        }
 
         var modelId = $"test-model-{Guid.NewGuid():N}";
         var created = await SendJsonWithCookie(
@@ -819,6 +941,55 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         var userCookie = await LoginAndReadSessionCookie(username, password);
         var pricing = await SendWithCookie(HttpMethod.Get, "/pricing", userCookie);
         await AssertResponseCode(pricing, HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task ModelCatalogImportExportRequireSuperadmin()
+    {
+        var adminCookie = await LoginAndReadSessionCookie();
+        var username = $"catalog-user-{Guid.NewGuid():N}";
+        var password = "user-password";
+        var createdUser = await SendJsonWithCookie(
+            HttpMethod.Post,
+            "/users",
+            adminCookie,
+            new
+            {
+                username,
+                password,
+                enabled = true
+            });
+        Assert.Equal(HttpStatusCode.Created, createdUser.StatusCode);
+
+        var userCookie = await LoginAndReadSessionCookie(username, password);
+        var exported = await SendWithCookie(HttpMethod.Get, "/model-catalog/export", userCookie);
+        await AssertResponseCode(exported, HttpStatusCode.Forbidden);
+
+        using var importContent = new StringContent(
+            JsonSerializer.Serialize(new
+            {
+                type = "model_catalog",
+                version = 1,
+                exported_at = "2026-08-17T12:00:00Z",
+                providers = new object[] { },
+                models = new object[] { }
+            }),
+            System.Text.Encoding.UTF8,
+            "application/json");
+        using var importRequest = new HttpRequestMessage(HttpMethod.Post, "/model-catalog/import?dryRun=true")
+        {
+            Content = importContent
+        };
+        importRequest.Headers.Add("Cookie", userCookie);
+        var imported = await _client.SendAsync(importRequest);
+        await AssertResponseCode(imported, HttpStatusCode.Forbidden);
+
+        var adminExport = await SendWithCookie(HttpMethod.Get, "/model-catalog/export", adminCookie);
+        Assert.Equal(HttpStatusCode.OK, adminExport.StatusCode);
+        Assert.Equal(
+            "application/json",
+            adminExport.Content.Headers.ContentType?.MediaType,
+            StringComparer.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -308,6 +308,18 @@ public sealed class ProxyControllerTests
             throw new NotSupportedException();
         }
 
+        public ApiOpResult<ModelCatalogTransferDocument> ExportModelCatalog()
+        {
+            throw new NotSupportedException();
+        }
+
+        public ApiOpResult<ModelCatalogImportResult> ImportModelCatalog(
+            ModelCatalogTransferDocument document,
+            bool dryRun)
+        {
+            throw new NotSupportedException();
+        }
+
         public ApiOpResult<ChannelModelInfoListResponse> ListChannelModelInfos(Guid channelId)
         {
             throw new NotSupportedException();
@@ -326,11 +338,6 @@ public sealed class ProxyControllerTests
         }
 
         public bool SupportsImage(Guid? channelId, string? upstreamModel, bool legacyMappingValue)
-        {
-            throw new NotSupportedException();
-        }
-
-        public ApiOpResult<SeedModelCatalogResponse> SeedDefaults()
         {
             throw new NotSupportedException();
         }

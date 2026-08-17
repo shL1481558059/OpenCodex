@@ -2,11 +2,7 @@ namespace OpenCodex.Core.Domain;
 
 public static class ModelCatalogSources
 {
-    public const string SystemDefault = "system-default";
-
     public const string Manual = "manual";
-
-    public const string MigratedModelPricing = "migrated-model-pricing";
 }
 
 public static class ModelInfoScopes

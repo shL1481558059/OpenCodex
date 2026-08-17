@@ -542,6 +542,7 @@ status, errorCode, message, requestId, retryAfter, details, isNetworkError, isAb
 - 搜索模型/名称/匹配键；
 - enabled筛选；
 - 刷新、更新默认目录、新增供应商、新增模型；
+- 导出、导入全局模型目录；
 - 桌面用供应商Tabs，移动用Select；
 - 表格/卡片展示供应商、模型、名称、匹配规则、输入/输出/缓存价格、状态、来源；
 - 客户端分页，默认25，可选25/50/100；
@@ -569,6 +570,22 @@ status, errorCode, message, requestId, retryAfter, details, isNetworkError, isAb
 - 停用操作使用“删除”图标和DELETE接口，但产品结果是停用，语义需要统一。
 - Catalog JSON和tiers错误主要在保存时Toast，没有字段定位。
 - 页面状态在切页/刷新后丢失。
+
+### 14.4 模型目录导入导出
+
+| 项目 | 说明 |
+|---|---|
+| 触发入口 | 模型信息页工具栏"导出"和"导入"按钮 |
+| 权限 | 仅超级管理员 |
+| 导出格式 | JSON，`type: "model_catalog"`，`version: 1` |
+| 导出范围 | 全部供应商（含停用）、全部全局模型（含停用）、Catalog、能力、匹配规则、币种及完整计费规则；不含渠道级覆盖、旧 `/pricing` 数据、数据库 ID/时间戳/source、静态 Codex 官方目录 |
+| 导出不受搜索/筛选影响 | 始终读取后端完整目录 |
+| 导入语义 | 非破坏性合并：供应商按 code 匹配、模型按全局 model_key 匹配；已存在则原位更新并保留数据库 ID，不存在则创建；文件中未含的数据保持不变 |
+| pricing: null | 删除该模型当前价格 |
+| 空 rules | 保持为空，不自动生成默认零价格规则 |
+| 校验 | 文件内部重复键、未知版本、无效枚举、负价格或未知供应商拒绝整批导入；导入采用单一数据库事务，任一条失败都不写入数据；成功后只刷新一次计费缓存 |
+| 页面流程 | 选择文件 -> 后端 dryRun 预检 -> 对话框展示新增/更新/无变化/错误数量 -> 用户确认 -> 正式导入（再次校验 + 事务提交）-> 刷新列表 |
+| 移动端 | 导入对话框全屏 |
 
 ---
 
@@ -679,7 +696,7 @@ status, errorCode, message, requestId, retryAfter, details, isNetworkError, isAb
 | 渠道 | JSON | JSON | 含上游Key/Headers |
 | API Key | JSON | JSON | 当前含访问Key明文 |
 | Web Search | JSON | JSON | 含Web Search Key明文 |
-| 模型信息 | 无普通导入导出 | seed默认目录 | 配置风险 |
+| 模型信息 | JSON（全局目录导入） | JSON（全局目录导出） | 配置风险 |
 
 当前导出通过Blob和临时`<a download>`触发；导入通过隐藏文件input读取完整文本并解析JSON。
 
@@ -1185,7 +1202,7 @@ flowchart LR
 | API Key | `/api-keys`、`/api-keys/{id}`、`/api-keys/import`、超级管理员创建时 `/users` |
 | 用户 | `/users`、`/users/{username}` |
 | Web Search | `/web-search`、`/web-search/import`、`/web-search/test-key` |
-| 模型信息 | `/model-providers`、`/model-infos`、`/model-infos/{id}`、`/model-infos/seed-defaults` |
+| 模型信息 | `/model-providers`、`/model-infos`、`/model-infos/{id}`、`/model-infos/seed-defaults`、`/model-catalog/export`、`/model-catalog/import` |
 | 系统设置 | `/system-settings`；Tauri `restart_backend` command |
 | 请求日志 | `/logs`、`/logs/{id}`、`/log-filter-options`、`/stats` |
 

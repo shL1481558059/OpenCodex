@@ -1,6 +1,6 @@
 using OpenCodex.Core.Domain;
 
-namespace OpenCodex.Core.Persistence;
+namespace OpenCodex.Core.Services;
 
 public static class OpenCodexPricing
 {

@@ -440,26 +440,3 @@ public sealed class ModelProviderResponsePayload
     [JsonPropertyName("provider")]
     public ModelProviderResponse Provider { get; }
 }
-
-public sealed class SeedModelCatalogResponse
-{
-    public SeedModelCatalogResponse(int providersInserted, int modelsInserted, int modelsUpdated, int modelsSkipped)
-    {
-        ProvidersInserted = providersInserted;
-        ModelsInserted = modelsInserted;
-        ModelsUpdated = modelsUpdated;
-        ModelsSkipped = modelsSkipped;
-    }
-
-    [JsonPropertyName("providers_inserted")]
-    public int ProvidersInserted { get; }
-
-    [JsonPropertyName("models_inserted")]
-    public int ModelsInserted { get; }
-
-    [JsonPropertyName("models_updated")]
-    public int ModelsUpdated { get; }
-
-    [JsonPropertyName("models_skipped")]
-    public int ModelsSkipped { get; }
-}

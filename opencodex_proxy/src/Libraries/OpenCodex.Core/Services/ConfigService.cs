@@ -3,7 +3,6 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using OpenCodex.Core.Config;
 using OpenCodex.Core.Domain;
-using OpenCodex.Core.Persistence;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Caching;
 using OpenCodex.CoreBase.Data;

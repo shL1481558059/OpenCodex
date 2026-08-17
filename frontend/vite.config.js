@@ -20,6 +20,7 @@ const adminProxyRoutes = [
   "/web-search",
   "/model-providers",
   "/model-infos",
+  "/model-catalog",
   "/channels",
   "/discover-models",
   "/test-channel"

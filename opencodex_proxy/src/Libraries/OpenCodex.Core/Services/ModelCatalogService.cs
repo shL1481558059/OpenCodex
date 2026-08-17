@@ -1,9 +1,8 @@
-using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
+using Microsoft.EntityFrameworkCore;
 using OpenCodex.Core.Domain;
-using OpenCodex.Core.Persistence;
 using OpenCodex.Core.Services.Caching;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Caching;
@@ -13,6 +12,7 @@ using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.Models;
 using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
+using StackExchange.Redis;
 
 namespace OpenCodex.Core.Services;
 
@@ -26,6 +26,8 @@ public sealed class ModelCatalogService : IModelCatalogService
     private static readonly TimeSpan PricingCacheTtl = TimeSpan.FromSeconds(60);
 
     private static int _localPricingVersion;
+    private static int _lastKnownRedisPricingVersion;
+    private static int _pendingRedisPricingVersionBump;
 
     private readonly IRepository<ModelProvider> _providers;
     private readonly IRepository<ModelInfo> _models;
@@ -34,10 +36,10 @@ public sealed class ModelCatalogService : IModelCatalogService
     private readonly IRepository<ModelPricingRule> _rules;
     private readonly IRepository<ChannelModelMapping> _mappings;
     private readonly IRepository<Channel> _channels;
-    private readonly IRepository<ModelPricing> _legacyPricing;
     private readonly IWorkContext _workContext;
     private readonly ICacheService _cache;
     private readonly IRedisConnectionProvider? _redis;
+    private readonly IOpenCodexDbContext _dbContext;
 
     public ModelCatalogService(
         IRepository<ModelProvider> providers,
@@ -47,10 +49,10 @@ public sealed class ModelCatalogService : IModelCatalogService
         IRepository<ModelPricingRule> rules,
         IRepository<ChannelModelMapping> mappings,
         IRepository<Channel> channels,
-        IRepository<ModelPricing> legacyPricing,
         IWorkContext workContext,
         ICacheService cache,
-        IRedisConnectionProvider? redis = null)
+        IRedisConnectionProvider? redis = null,
+        IOpenCodexDbContext? dbContext = null)
     {
         _providers = providers;
         _models = models;
@@ -59,10 +61,20 @@ public sealed class ModelCatalogService : IModelCatalogService
         _rules = rules;
         _mappings = mappings;
         _channels = channels;
-        _legacyPricing = legacyPricing;
         _workContext = workContext;
         _cache = cache;
         _redis = redis;
+        _dbContext = dbContext
+            ?? (SharedContext(
+                    providers,
+                    models,
+                    channelModels,
+                    plans,
+                    rules,
+                    mappings,
+                    channels)
+                ?? throw new InvalidOperationException(
+                    "Model catalog repositories must use the same DbContext"));
     }
 
     public ApiOpResult<ModelProviderListResponse> ListProviders(bool includeDisabled = false)
@@ -193,6 +205,7 @@ public sealed class ModelCatalogService : IModelCatalogService
 
             _models.Insert(model);
             ReplacePricing(model, request.Pricing, ModelCatalogSources.Manual, now);
+            BumpPricingVersion();
 
             return ApiOpResult<ModelInfoResponsePayload>.Succeed(
                 new ModelInfoResponsePayload(ToModelResponse(model, ProviderMap())));
@@ -245,6 +258,7 @@ public sealed class ModelCatalogService : IModelCatalogService
                 RemovePlans(model.Id, oldChannelId);
             }
             ReplacePricing(model, request.Pricing, ModelCatalogSources.Manual, now);
+            BumpPricingVersion();
 
             return ApiOpResult<ModelInfoResponsePayload>.Succeed(
                 new ModelInfoResponsePayload(ToModelResponse(model, ProviderMap())));
@@ -266,8 +280,302 @@ public sealed class ModelCatalogService : IModelCatalogService
         model.Enabled = false;
         model.UpdatedAt = UnixTimeSeconds();
         _models.Update(model);
+        BumpPricingVersion();
         return ApiOpResult<ModelInfoResponsePayload>.Succeed(
             new ModelInfoResponsePayload(ToModelResponse(model, ProviderMap())));
+    }
+
+    public ApiOpResult<ModelCatalogTransferDocument> ExportModelCatalog()
+    {
+        var providerById = _providers.TableNoTracking.ToDictionary(provider => provider.Id);
+        var plansByModel = _plans.TableNoTracking
+            .Where(plan => plan.ModelInfoId != null && plan.ChannelModelInfoId == null && plan.ChannelId == null)
+            .AsEnumerable()
+            .GroupBy(plan => plan.ModelInfoId!.Value)
+            .ToDictionary(group => group.Key, group => group.OrderByDescending(plan => plan.UpdatedAt).First());
+        var rulesByPlan = _rules.TableNoTracking
+            .AsEnumerable()
+            .GroupBy(rule => rule.PricingPlanId)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderBy(rule => rule.BillingItem, StringComparer.Ordinal)
+                    .ThenBy(rule => rule.BillingMode, StringComparer.Ordinal)
+                    .ToList());
+
+        var providers = _providers.TableNoTracking
+            .OrderBy(provider => provider.SortOrder)
+            .AsEnumerable()
+            .OrderBy(provider => provider.SortOrder)
+            .ThenBy(provider => provider.Code, StringComparer.Ordinal)
+            .Select(ToProviderTransfer)
+            .ToList();
+
+        var models = _models.TableNoTracking
+            .Where(model => model.Scope == ModelInfoScopes.Global && model.ChannelId == null)
+            .AsEnumerable()
+            .Select(model => ToModelTransfer(
+                model,
+                providerById.TryGetValue(model.ProviderId, out var provider) ? provider.Code : string.Empty,
+                plansByModel.TryGetValue(model.Id, out var plan) ? plan : null,
+                plan => rulesByPlan.TryGetValue(plan.Id, out var rules) ? rules : []))
+            .ToList();
+
+        return ApiOpResult<ModelCatalogTransferDocument>.Succeed(new ModelCatalogTransferDocument
+        {
+            Type = "model_catalog",
+            Version = 1,
+            ExportedAt = DateTimeOffset.UtcNow.ToString("O"),
+            Providers = providers,
+            Models = models
+        });
+    }
+
+    public ApiOpResult<ModelCatalogImportResult> ImportModelCatalog(
+        ModelCatalogTransferDocument document,
+        bool dryRun)
+    {
+        if (document is null)
+        {
+            return ImportFailure("request body is required");
+        }
+
+        var validation = ValidateImportDocument(document);
+        if (validation.Count > 0)
+        {
+            return ImportFailure(string.Join("; ", validation));
+        }
+
+        var existingProviders = _providers.TableNoTracking
+            .AsEnumerable()
+            .GroupBy(provider => provider.Code, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
+        if (existingProviders.Any(pair => pair.Value.Count > 1))
+        {
+            var duplicate = existingProviders.First(pair => pair.Value.Count > 1).Key;
+            return ImportFailure($"provider_code '{duplicate}' is duplicated in the database");
+        }
+
+        var existingModels = _models.TableNoTracking
+            .Where(model => model.Scope == ModelInfoScopes.Global && model.ChannelId == null)
+            .AsEnumerable()
+            .GroupBy(model => model.ModelKey, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
+        if (existingModels.Any(pair => pair.Value.Count > 1))
+        {
+            var duplicate = existingModels.First(pair => pair.Value.Count > 1).Key;
+            return ImportFailure($"model_key '{duplicate}' is duplicated in the database");
+        }
+
+        var plansByModelId = _plans.TableNoTracking
+            .Where(plan => plan.ModelInfoId != null && plan.ChannelModelInfoId == null && plan.ChannelId == null)
+            .AsEnumerable()
+            .GroupBy(plan => plan.ModelInfoId!.Value)
+            .ToDictionary(group => group.Key, group => group.OrderByDescending(plan => plan.UpdatedAt).First());
+        var rulesByPlanId = _rules.TableNoTracking
+            .AsEnumerable()
+            .GroupBy(rule => rule.PricingPlanId)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderBy(rule => rule.BillingItem, StringComparer.Ordinal)
+                    .ThenBy(rule => rule.BillingMode, StringComparer.Ordinal)
+                    .ToList());
+
+        var errors = new List<string>();
+        var providerPlans = new List<(ModelCatalogProviderTransfer Transfer, ModelProvider? Entity)>();
+        foreach (var item in document.Providers)
+        {
+            try
+            {
+                var code = NormalizeProviderCodeRequired(item.Code);
+                existingProviders.TryGetValue(code, out var matches);
+                var existing = matches?.SingleOrDefault();
+                providerPlans.Add((item, existing));
+            }
+            catch (ArgumentException exception)
+            {
+                errors.Add(exception.Message);
+                providerPlans.Add((item, null));
+            }
+        }
+
+        var modelPlans = new List<(ModelCatalogModelTransfer Transfer, ModelInfo? Entity, ModelProvider Provider)>();
+        var providerIdByCode = new Dictionary<string, ModelProvider>(StringComparer.OrdinalIgnoreCase);
+        foreach (var provider in existingProviders.Values.SelectMany(providers => providers))
+        {
+            providerIdByCode[provider.Code] = provider;
+        }
+
+        foreach (var item in document.Models)
+        {
+            ModelProvider? provider = null;
+            try
+            {
+                var providerCode = NormalizeProviderCodeRequired(item.ProviderCode);
+                if (existingProviders.TryGetValue(providerCode, out var matches))
+                {
+                    provider = matches.SingleOrDefault();
+                }
+
+                if (provider is null)
+                {
+                    var transferCode = document.Providers
+                        .FirstOrDefault(candidate => string.Equals(
+                            NormalizeProviderCode(candidate.Code),
+                            providerCode,
+                            StringComparison.OrdinalIgnoreCase));
+                    if (transferCode is not null)
+                    {
+                        provider = new ModelProvider
+                        {
+                            Code = NormalizeProviderCodeRequired(transferCode.Code),
+                            Name = DisplayName(transferCode.Name, transferCode.Code),
+                            Enabled = transferCode.Enabled,
+                            SortOrder = transferCode.SortOrder
+                        };
+                        providerIdByCode[provider.Code] = provider;
+                    }
+                }
+
+                if (provider is null)
+                {
+                    throw new ArgumentException($"provider_code '{item.ProviderCode}' is invalid", nameof(item.ProviderCode));
+                }
+
+                var modelKey = NormalizeRequired(item.ModelKey, "model_key");
+                existingModels.TryGetValue(modelKey, out var modelMatches);
+                var existing = modelMatches?.SingleOrDefault();
+                ValidateImportModel(item);
+                modelPlans.Add((item, existing, provider));
+            }
+            catch (ArgumentException exception)
+            {
+                errors.Add(exception.Message);
+                modelPlans.Add((item, null, provider ?? new ModelProvider()));
+            }
+        }
+
+        if (errors.Count > 0)
+        {
+            return ImportFailure(string.Join("; ", errors), errors);
+        }
+
+        var providerCounts = ImportCounts(
+            providerPlans.Select(plan => plan.Entity is null),
+            providerPlans.Select(plan => plan.Entity is null
+                ? false
+                : ProviderUnchanged(plan.Entity, plan.Transfer)));
+        var modelCounts = ImportCounts(
+            modelPlans.Select(plan => plan.Entity is null),
+            modelPlans.Select(plan => plan.Entity is null
+                ? false
+                : ModelUnchanged(
+                    plan.Entity,
+                    plan.Provider.Id,
+                    plan.Transfer,
+                    plansByModelId,
+                    rulesByPlanId)));
+        var pricingDeleted = modelPlans.Count(plan => plan.Entity is not null
+            && plan.Transfer.Pricing is null
+            && plansByModelId.ContainsKey(plan.Entity.Id));
+
+        var result = new ModelCatalogImportResult
+        {
+            DryRun = dryRun,
+            Providers = providerCounts,
+            Models = modelCounts,
+            PricingDeleted = pricingDeleted,
+            ErrorCount = 0,
+            Errors = []
+        };
+        if (dryRun)
+        {
+            return ApiOpResult<ModelCatalogImportResult>.Succeed(result);
+        }
+
+        var now = UnixTimeSeconds();
+        using var transaction = _dbContext.Database.BeginTransaction();
+        try
+        {
+            var trackedProvidersByCode = new Dictionary<string, ModelProvider>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (transfer, existing) in providerPlans)
+            {
+                var provider = _providers.Table
+                    .AsEnumerable()
+                    .FirstOrDefault(item => string.Equals(
+                        item.Code,
+                        NormalizeProviderCodeRequired(transfer.Code),
+                        StringComparison.OrdinalIgnoreCase));
+                if (provider is null)
+                {
+                    provider = new ModelProvider
+                    {
+                        Code = NormalizeProviderCodeRequired(transfer.Code),
+                        Name = DisplayName(transfer.Name, transfer.Code),
+                        Enabled = transfer.Enabled,
+                        SortOrder = transfer.SortOrder,
+                        Source = ModelCatalogSources.Manual,
+                        CreatedAt = now,
+                        UpdatedAt = now
+                    };
+                    _providers.Insert(provider);
+                }
+                else
+                {
+                    provider.Name = DisplayName(transfer.Name, provider.Code);
+                    provider.Enabled = transfer.Enabled;
+                    provider.SortOrder = transfer.SortOrder;
+                    provider.UpdatedAt = now;
+                    _providers.Update(provider);
+                }
+
+                trackedProvidersByCode[provider.Code] = provider;
+            }
+
+            foreach (var (transfer, existing, _) in modelPlans)
+            {
+                var providerCode = NormalizeProviderCodeRequired(transfer.ProviderCode);
+                var provider = trackedProvidersByCode[providerCode];
+                var modelKey = NormalizeRequired(transfer.ModelKey, "model_key");
+                var model = _models.Table
+                    .AsEnumerable()
+                    .FirstOrDefault(item => item.Scope == ModelInfoScopes.Global
+                        && item.ChannelId == null
+                        && string.Equals(item.ModelKey, modelKey, StringComparison.OrdinalIgnoreCase))
+                    ?? new ModelInfo
+                {
+                    Scope = ModelInfoScopes.Global,
+                    ChannelId = null,
+                    ModelKey = modelKey,
+                    Source = ModelCatalogSources.Manual,
+                    CreatedAt = now
+                };
+
+                model.ProviderId = provider.Id;
+                model.DisplayName = DisplayName(transfer.DisplayName, modelKey);
+                model.Description = Normalize(transfer.Description);
+                model.MatchType = NormalizeMatchType(transfer.MatchType);
+                model.MatchPattern = NormalizeMatchPattern(transfer.MatchPattern, modelKey);
+                model.CatalogJson = SerializeObject(JsonRequestValue.Object(transfer.Catalog));
+                model.CapabilitiesJson = SerializeObject(JsonRequestValue.Object(transfer.Capabilities));
+                model.Enabled = transfer.Enabled;
+                model.UpdatedAt = now;
+                _models.Update(model);
+
+                ReplaceImportedPricing(model, transfer.Pricing, now);
+            }
+
+            _dbContext.SaveChanges();
+            transaction.Commit();
+            BumpPricingVersion();
+            return ApiOpResult<ModelCatalogImportResult>.Succeed(result);
+        }
+        catch (Exception exception) when (exception is ArgumentException or DbUpdateException or InvalidOperationException)
+        {
+            transaction.Rollback();
+            return ImportFailure(exception.Message);
+        }
     }
 
     public ApiOpResult<ChannelModelInfoListResponse> ListChannelModelInfos(Guid channelId)
@@ -356,6 +664,7 @@ public sealed class ModelCatalogService : IModelCatalogService
             }
 
             ReplacePricing(existing, request.Pricing, ModelCatalogSources.Manual, now);
+            BumpPricingVersion();
 
             return ApiOpResult<ChannelModelInfoResponsePayload>.Succeed(
                 new ChannelModelInfoResponsePayload(ToChannelModelResponse(existing, ProviderMap())));
@@ -382,6 +691,7 @@ public sealed class ModelCatalogService : IModelCatalogService
 
         RemovePlansForChannelModel(model.Id);
         _channelModels.Delete(model);
+        BumpPricingVersion();
         return ApiOpResult.Succeed();
     }
 
@@ -409,20 +719,6 @@ public sealed class ModelCatalogService : IModelCatalogService
 
         var globalModel = ResolveGlobalModel(actualModel);
         return globalModel is not null && SupportsImage(globalModel.CapabilitiesJson);
-    }
-
-    public ApiOpResult<SeedModelCatalogResponse> SeedDefaults()
-    {
-        var now = UnixTimeSeconds();
-        var providersInserted = EnsureDefaultProviders(now);
-        var result = SeedDefaultModels(now);
-        var migrated = MigrateLegacyPricing(now);
-
-        return ApiOpResult<SeedModelCatalogResponse>.Succeed(new SeedModelCatalogResponse(
-            providersInserted + migrated.ProvidersInserted,
-            result.Inserted + migrated.Inserted,
-            result.Updated + migrated.Updated,
-            result.Skipped + migrated.Skipped));
     }
 
     public async Task<ModelPricingCalculationResult> CalculateCostAsync(
@@ -503,26 +799,50 @@ public sealed class ModelCatalogService : IModelCatalogService
         Guid? channelId,
         string? upstreamModel)
     {
-        var version = await GetPricingVersionAsync();
+        var versions = await GetPricingVersionsAsync();
         return await _cache.GetOrCreateAsync(
-            CacheKeys.PricingContext(version, channelId, upstreamModel),
+            CacheKeys.PricingContext(
+                versions.RedisVersion,
+                versions.LocalVersion,
+                channelId,
+                upstreamModel),
             () => Task.FromResult(ToCached(ResolvePricing(channelId, upstreamModel))),
             PricingCacheTtl);
     }
 
-    private async Task<int> GetPricingVersionAsync()
+    private async Task<(int RedisVersion, int LocalVersion)> GetPricingVersionsAsync()
     {
+        var redisVersion = Volatile.Read(ref _lastKnownRedisPricingVersion);
         if (_redis is not null && _redis.IsAvailable)
         {
             var db = _redis.GetDatabase();
             if (db is not null)
             {
-                var val = await db.StringGetAsync(PricingVersionKey);
-                return val.HasValue ? (int)val : 0;
+                var pendingBump = Interlocked.Exchange(ref _pendingRedisPricingVersionBump, 0);
+                try
+                {
+                    var observedRedisVersion = pendingBump > 0
+                        ? checked((int)await db.StringIncrementAsync(PricingVersionKey))
+                        : await ReadRedisPricingVersionAsync(db);
+                    redisVersion = AdvanceLastKnownRedisPricingVersionTo(observedRedisVersion);
+                }
+                catch (RedisException)
+                {
+                    if (pendingBump > 0)
+                    {
+                        Interlocked.Exchange(ref _pendingRedisPricingVersionBump, 1);
+                    }
+                }
             }
         }
 
-        return Volatile.Read(ref _localPricingVersion);
+        return (redisVersion, Volatile.Read(ref _localPricingVersion));
+    }
+
+    private static async Task<int> ReadRedisPricingVersionAsync(IDatabase db)
+    {
+        var value = await db.StringGetAsync(PricingVersionKey);
+        return value.HasValue ? (int)value : 0;
     }
 
     internal static readonly string PricingVersionKey = "pricing:version";
@@ -530,6 +850,54 @@ public sealed class ModelCatalogService : IModelCatalogService
     internal static int BumpLocalPricingVersion()
     {
         return Interlocked.Increment(ref _localPricingVersion);
+    }
+
+    private static int AdvanceLastKnownRedisPricingVersionTo(int version)
+    {
+        var current = Volatile.Read(ref _lastKnownRedisPricingVersion);
+        while (current < version)
+        {
+            var observed = Interlocked.CompareExchange(
+                ref _lastKnownRedisPricingVersion,
+                version,
+                current);
+            if (observed == current)
+            {
+                return version;
+            }
+
+            current = observed;
+        }
+
+        return current;
+    }
+
+    private void BumpPricingVersion()
+    {
+        BumpLocalPricingVersion();
+        if (_redis is not null && _redis.IsAvailable)
+        {
+            var db = _redis.GetDatabase();
+            if (db is not null)
+            {
+                Interlocked.Exchange(ref _pendingRedisPricingVersionBump, 0);
+                try
+                {
+                    var redisVersion = checked((int)db.StringIncrement(PricingVersionKey));
+                    AdvanceLastKnownRedisPricingVersionTo(redisVersion);
+                    return;
+                }
+                catch (RedisException)
+                {
+                    // 本次变更已由进程内版本隔离，Redis 恢复后补一次全局失效。
+                }
+            }
+        }
+
+        if (_redis is not null)
+        {
+            Interlocked.Exchange(ref _pendingRedisPricingVersionBump, 1);
+        }
     }
 
     private static CachedPricingResolution ToCached(PricingResolution resolution)
@@ -778,218 +1146,6 @@ public sealed class ModelCatalogService : IModelCatalogService
         }
     }
 
-    private int EnsureDefaultProviders(double now)
-    {
-        var defaults = OpenCodexModelCatalogDefaults.Providers();
-        var defaultCodes = defaults
-            .Select(provider => provider.Code)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var existing = _providers.Table
-            .ToDictionary(provider => provider.Code, StringComparer.OrdinalIgnoreCase);
-        var inserted = 0;
-        foreach (var provider in defaults)
-        {
-            if (existing.TryGetValue(provider.Code, out var current))
-            {
-                if (string.Equals(current.Source, ModelCatalogSources.SystemDefault, StringComparison.Ordinal)
-                    && (!string.Equals(current.Name, provider.Name, StringComparison.Ordinal)
-                        || current.SortOrder != provider.SortOrder))
-                {
-                    current.Name = provider.Name;
-                    current.SortOrder = provider.SortOrder;
-                    current.UpdatedAt = now;
-                    _providers.Update(current);
-                }
-
-                continue;
-            }
-
-            var created = new ModelProvider
-            {
-                Code = provider.Code,
-                Name = provider.Name,
-                Enabled = true,
-                SortOrder = provider.SortOrder,
-                Source = ModelCatalogSources.SystemDefault,
-                CreatedAt = now,
-                UpdatedAt = now
-            };
-            _providers.Insert(created);
-            existing[created.Code] = created;
-            inserted++;
-        }
-
-        foreach (var provider in existing.Values)
-        {
-            if (string.Equals(provider.Source, ModelCatalogSources.SystemDefault, StringComparison.Ordinal)
-                && provider.Enabled
-                && !defaultCodes.Contains(provider.Code))
-            {
-                provider.Enabled = false;
-                provider.UpdatedAt = now;
-                _providers.Update(provider);
-            }
-        }
-
-        return inserted;
-    }
-
-    private (int Inserted, int Updated, int Skipped) SeedDefaultModels(double now)
-    {
-        var providers = ProviderMapByCode();
-        var inserted = 0;
-        var updated = 0;
-        var skipped = 0;
-        foreach (var source in OpenCodexModelCatalogDefaults.Models())
-        {
-            if (!providers.TryGetValue(source.ProviderCode, out var provider))
-            {
-                skipped++;
-                continue;
-            }
-
-            var existing = _models.Table.FirstOrDefault(model =>
-                model.Scope == ModelInfoScopes.Global
-                && model.ChannelId == null
-                && model.ModelKey == source.ModelKey);
-            if (existing is null)
-            {
-                var created = new ModelInfo
-                {
-                    Scope = ModelInfoScopes.Global,
-                    ProviderId = provider.Id,
-                    ChannelId = null,
-                    ModelKey = source.ModelKey,
-                    DisplayName = source.DisplayName,
-                    Description = source.Description,
-                    MatchType = source.MatchType,
-                    MatchPattern = source.MatchPattern,
-                    CatalogJson = source.CatalogJson,
-                    CapabilitiesJson = source.CapabilitiesJson,
-                    Enabled = true,
-                    Source = ModelCatalogSources.SystemDefault,
-                    CreatedAt = now,
-                    UpdatedAt = now
-                };
-                _models.Insert(created);
-                ReplacePricing(created, source, now);
-                inserted++;
-                continue;
-            }
-
-            if (!string.Equals(existing.Source, ModelCatalogSources.SystemDefault, StringComparison.Ordinal))
-            {
-                skipped++;
-                continue;
-            }
-
-            existing.ProviderId = provider.Id;
-            existing.DisplayName = source.DisplayName;
-            existing.Description = source.Description;
-            existing.MatchType = source.MatchType;
-            existing.MatchPattern = source.MatchPattern;
-            existing.CatalogJson = source.CatalogJson;
-            existing.CapabilitiesJson = source.CapabilitiesJson;
-            existing.UpdatedAt = now;
-            _models.Update(existing);
-            ReplacePricing(existing, source, now);
-            updated++;
-        }
-
-        return (inserted, updated, skipped);
-    }
-
-    private (int ProvidersInserted, int Inserted, int Updated, int Skipped) MigrateLegacyPricing(double now)
-    {
-        var providerByCode = ProviderMapByCode();
-        var providersInserted = 0;
-        var inserted = 0;
-        var updated = 0;
-        var skipped = 0;
-
-        foreach (var legacy in _legacyPricing.TableNoTracking.ToList())
-        {
-            var providerCode = NormalizeProviderCode(legacy.Vendor);
-            if (providerCode.Length == 0)
-            {
-                skipped++;
-                continue;
-            }
-
-            if (!providerByCode.TryGetValue(providerCode, out var provider))
-            {
-                provider = new ModelProvider
-                {
-                    Code = providerCode,
-                    Name = providerCode,
-                    Enabled = true,
-                    SortOrder = 900,
-                    Source = ModelCatalogSources.MigratedModelPricing,
-                    CreatedAt = now,
-                    UpdatedAt = now
-                };
-                _providers.Insert(provider);
-                providerByCode[provider.Code] = provider;
-                providersInserted++;
-            }
-
-            var modelKey = Normalize(legacy.ModelId);
-            if (modelKey.Length == 0)
-            {
-                skipped++;
-                continue;
-            }
-
-            var existing = _models.Table.FirstOrDefault(model =>
-                model.Scope == ModelInfoScopes.Global
-                && model.ChannelId == null
-                && model.ModelKey == modelKey);
-            if (existing is not null
-                && !string.Equals(existing.Source, ModelCatalogSources.MigratedModelPricing, StringComparison.Ordinal))
-            {
-                skipped++;
-                continue;
-            }
-
-            if (existing is null)
-            {
-                existing = new ModelInfo
-                {
-                    Scope = ModelInfoScopes.Global,
-                    ProviderId = provider.Id,
-                    ChannelId = null,
-                    ModelKey = modelKey,
-                    DisplayName = DisplayName(legacy.Name, modelKey),
-                    Description = string.Empty,
-                    MatchType = ModelMatchTypes.Exact,
-                    MatchPattern = NormalizeMatchPattern(legacy.MatchPattern, modelKey),
-                    CatalogJson = OpenCodexModelCatalogDefaults.CatalogJson(modelKey, DisplayName(legacy.Name, modelKey), false, 128000),
-                    CapabilitiesJson = OpenCodexModelCatalogDefaults.CapabilitiesJson(false, 128000),
-                    Enabled = legacy.Enabled,
-                    Source = ModelCatalogSources.MigratedModelPricing,
-                    CreatedAt = now,
-                    UpdatedAt = now
-                };
-                _models.Insert(existing);
-                inserted++;
-            }
-            else
-            {
-                existing.ProviderId = provider.Id;
-                existing.DisplayName = DisplayName(legacy.Name, modelKey);
-                existing.MatchPattern = NormalizeMatchPattern(legacy.MatchPattern, modelKey);
-                existing.Enabled = legacy.Enabled;
-                existing.UpdatedAt = now;
-                _models.Update(existing);
-                updated++;
-            }
-
-            ReplacePricing(existing, legacy, now);
-        }
-
-        return (providersInserted, inserted, updated, skipped);
-    }
-
     private void ReplacePricing(
         ModelInfo model,
         ModelPricingPlanRequest? request,
@@ -1073,66 +1229,6 @@ public sealed class ModelCatalogService : IModelCatalogService
         }
     }
 
-    private void ReplacePricing(ModelInfo model, DefaultModelInfo source, double now)
-    {
-        RemovePlans(model.Id, model.ChannelId);
-        var plan = new ModelPricingPlan
-        {
-            ModelInfoId = model.Id,
-            ChannelId = null,
-            Currency = source.Currency,
-            Enabled = true,
-            Source = ModelCatalogSources.SystemDefault,
-            CreatedAt = now,
-            UpdatedAt = now
-        };
-        _plans.Insert(plan);
-
-        if (source.CustomRules is not null && source.CustomRules.Count > 0)
-        {
-            _rules.Insert(source.CustomRules.Select(rule => new ModelPricingRule
-            {
-                PricingPlanId = plan.Id,
-                BillingItem = rule.BillingItem,
-                BillingMode = rule.BillingMode,
-                UnitPrice = 0m,
-                TiersJson = JsonSerializer.Serialize(rule.Tiers.Select(tier => new PricingTier
-                {
-                    UpTo = tier.UpTo,
-                    UnitPrice = tier.UnitPrice
-                }).ToList()),
-                Enabled = true
-            }).ToList());
-        }
-        else
-        {
-            _rules.Insert(DefaultRules(plan.Id, source.InputPrice, source.OutputPrice, source.CacheWritePrice, source.CacheReadPrice));
-        }
-    }
-
-    private void ReplacePricing(ModelInfo model, ModelPricing source, double now)
-    {
-        RemovePlans(model.Id, model.ChannelId);
-        var plan = new ModelPricingPlan
-        {
-            ModelInfoId = model.Id,
-            ChannelId = null,
-            Currency = "USD",
-            Enabled = source.Enabled,
-            Source = ModelCatalogSources.MigratedModelPricing,
-            CreatedAt = now,
-            UpdatedAt = now
-        };
-        _plans.Insert(plan);
-        var cachePrice = Convert.ToDecimal(source.CachedInputPrice ?? source.InputPrice, CultureInfo.InvariantCulture);
-        _rules.Insert(DefaultRules(
-            plan.Id,
-            Convert.ToDecimal(source.InputPrice, CultureInfo.InvariantCulture),
-            Convert.ToDecimal(source.OutputPrice, CultureInfo.InvariantCulture),
-            cachePrice,
-            cachePrice));
-    }
-
     private void RemovePlans(Guid modelInfoId, Guid? channelId)
     {
         var plans = _plans.Table
@@ -1169,33 +1265,45 @@ public sealed class ModelCatalogService : IModelCatalogService
         _plans.Delete(plans);
     }
 
-    private static List<ModelPricingRule> DefaultRules(
-        Guid pricingPlanId,
-        decimal inputPrice,
-        decimal outputPrice,
-        decimal cacheWritePrice,
-        decimal cacheReadPrice)
+    private void ReplaceImportedPricing(
+        ModelInfo model,
+        ModelCatalogPricingTransfer? pricing,
+        double now)
     {
-        return
-        [
-            DefaultRule(pricingPlanId, ModelBillingItems.Input, inputPrice),
-            DefaultRule(pricingPlanId, ModelBillingItems.Output, outputPrice),
-            DefaultRule(pricingPlanId, ModelBillingItems.CacheWrite, cacheWritePrice),
-            DefaultRule(pricingPlanId, ModelBillingItems.CacheRead, cacheReadPrice)
-        ];
-    }
-
-    private static ModelPricingRule DefaultRule(Guid pricingPlanId, string billingItem, decimal unitPrice)
-    {
-        return new ModelPricingRule
+        RemovePlans(model.Id, model.ChannelId);
+        if (pricing is null)
         {
-            PricingPlanId = pricingPlanId,
-            BillingItem = billingItem,
-            BillingMode = ModelBillingModes.PerMillionTokens,
-            UnitPrice = unitPrice,
-            TiersJson = "[]",
-            Enabled = true
+            return;
+        }
+
+        var plan = new ModelPricingPlan
+        {
+            ModelInfoId = model.Id,
+            ChannelModelInfoId = null,
+            ChannelId = null,
+            Currency = NormalizeCurrency(pricing.Currency),
+            Enabled = pricing.Enabled,
+            Source = ModelCatalogSources.Manual,
+            CreatedAt = now,
+            UpdatedAt = now
         };
+        _plans.Insert(plan);
+
+        var rules = pricing.Rules
+            .Select(rule => new ModelPricingRule
+            {
+                PricingPlanId = plan.Id,
+                BillingItem = NormalizeBillingItem(rule.BillingItem),
+                BillingMode = NormalizeBillingMode(rule.BillingMode),
+                UnitPrice = ValidatePrice(rule.UnitPrice, "unit_price"),
+                TiersJson = SerializeImportTiers(rule.Tiers),
+                Enabled = rule.Enabled
+            })
+            .ToList();
+        if (rules.Count > 0)
+        {
+            _rules.Insert(rules);
+        }
     }
 
     private Channel? FindChannelInScope(Guid channelId)
@@ -1337,11 +1445,6 @@ public sealed class ModelCatalogService : IModelCatalogService
         return _providers.TableNoTracking.ToDictionary(provider => provider.Id);
     }
 
-    private Dictionary<string, ModelProvider> ProviderMapByCode()
-    {
-        return _providers.Table.ToDictionary(provider => provider.Code, StringComparer.OrdinalIgnoreCase);
-    }
-
     private int NextProviderSortOrder()
     {
         var currentMax = _providers.TableNoTracking
@@ -1418,6 +1521,63 @@ public sealed class ModelCatalogService : IModelCatalogService
             provider.Source,
             provider.CreatedAt,
             provider.UpdatedAt);
+    }
+
+    private static ModelCatalogProviderTransfer ToProviderTransfer(ModelProvider provider)
+    {
+        return new ModelCatalogProviderTransfer
+        {
+            Code = provider.Code,
+            Name = provider.Name,
+            Enabled = provider.Enabled,
+            SortOrder = provider.SortOrder
+        };
+    }
+
+    private static ModelCatalogModelTransfer ToModelTransfer(
+        ModelInfo model,
+        string providerCode,
+        ModelPricingPlan? plan,
+        Func<ModelPricingPlan, IReadOnlyList<ModelPricingRule>> rulesForPlan)
+    {
+        return new ModelCatalogModelTransfer
+        {
+            ProviderCode = providerCode,
+            ModelKey = model.ModelKey,
+            DisplayName = model.DisplayName,
+            Description = model.Description,
+            MatchType = model.MatchType,
+            MatchPattern = model.MatchPattern,
+            Catalog = DeserializeObject(model.CatalogJson),
+            Capabilities = DeserializeObject(model.CapabilitiesJson),
+            Enabled = model.Enabled,
+            Pricing = plan is null
+                ? null
+                : new ModelCatalogPricingTransfer
+                {
+                    Currency = plan.Currency,
+                    Enabled = plan.Enabled,
+                    Rules = rulesForPlan(plan).Select(ToPricingRuleTransfer).ToList()
+                }
+        };
+    }
+
+    private static ModelCatalogPricingRuleTransfer ToPricingRuleTransfer(ModelPricingRule rule)
+    {
+        return new ModelCatalogPricingRuleTransfer
+        {
+            BillingItem = rule.BillingItem,
+            BillingMode = rule.BillingMode,
+            UnitPrice = rule.UnitPrice,
+            Tiers = DeserializeTiers(rule.TiersJson)
+                .Select(tier => new ModelCatalogPricingTierTransfer
+                {
+                    UpTo = tier.UpTo,
+                    UnitPrice = tier.UnitPrice
+                })
+                .ToList(),
+            Enabled = rule.Enabled
+        };
     }
 
     private static IReadOnlyList<ModelPricingRuleRequest> NormalizeRules(IEnumerable<ModelPricingRuleRequest>? rules)
@@ -1566,6 +1726,15 @@ public sealed class ModelCatalogService : IModelCatalogService
         }).ToList());
     }
 
+    private static string SerializeImportTiers(IEnumerable<ModelCatalogPricingTierTransfer>? tiers)
+    {
+        return JsonSerializer.Serialize((tiers ?? []).Select(tier => new PricingTier
+        {
+            UpTo = tier.UpTo,
+            UnitPrice = ValidatePrice(tier.UnitPrice, "unit_price")
+        }).ToList());
+    }
+
     private static Dictionary<string, object?> DeserializeObject(string? raw)
     {
         return DeserializeJson(raw) as Dictionary<string, object?>
@@ -1644,6 +1813,228 @@ public sealed class ModelCatalogService : IModelCatalogService
     private static ApiOpResult<ModelProviderResponsePayload> ProviderValidationFailure(string message)
     {
         return ApiOpResult<ModelProviderResponsePayload>.Fail(400, message);
+    }
+
+    private static ApiOpResult<ModelCatalogImportResult> ImportFailure(
+        string description,
+        IReadOnlyList<string>? errors = null)
+    {
+        var details = errors ?? [description];
+        return ApiOpResult<ModelCatalogImportResult>.Fail(
+            400,
+            description,
+            new ModelCatalogImportResult
+            {
+                DryRun = true,
+                ErrorCount = details.Count,
+                Errors = details
+            });
+    }
+
+    private static List<string> ValidateImportDocument(ModelCatalogTransferDocument document)
+    {
+        var errors = new List<string>();
+        if (!string.Equals(document.Type, "model_catalog", StringComparison.OrdinalIgnoreCase))
+        {
+            errors.Add("type must be 'model_catalog'");
+        }
+
+        if (document.Version != 1)
+        {
+            errors.Add("version must be 1");
+        }
+
+        var providerCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var provider in document.Providers)
+        {
+            try
+            {
+                var code = NormalizeProviderCodeRequired(provider.Code);
+                if (!providerCodes.Add(code))
+                {
+                    errors.Add($"provider_code '{code}' is duplicated");
+                }
+
+                var name = Normalize(provider.Name);
+                if (name.Length == 0)
+                {
+                    errors.Add($"provider '{code}' name is required");
+                }
+            }
+            catch (ArgumentException exception)
+            {
+                errors.Add(exception.Message);
+            }
+        }
+
+        var modelKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var model in document.Models)
+        {
+            try
+            {
+                var modelKey = NormalizeRequired(model.ModelKey, "model_key");
+                if (!modelKeys.Add(modelKey))
+                {
+                    errors.Add($"model_key '{modelKey}' is duplicated");
+                }
+
+                ValidateImportModel(model);
+            }
+            catch (ArgumentException exception)
+            {
+                errors.Add(exception.Message);
+            }
+        }
+
+        return errors;
+    }
+
+    private static void ValidateImportModel(ModelCatalogModelTransfer model)
+    {
+        NormalizeProviderCodeRequired(model.ProviderCode);
+        NormalizeRequired(model.ModelKey, "model_key");
+        NormalizeMatchType(model.MatchType);
+        NormalizeMatchPattern(model.MatchPattern, model.ModelKey);
+        if (model.Pricing is null)
+        {
+            return;
+        }
+
+        NormalizeCurrency(model.Pricing.Currency);
+        foreach (var rule in model.Pricing.Rules)
+        {
+            NormalizeBillingItem(rule.BillingItem);
+            NormalizeBillingMode(rule.BillingMode);
+            ValidatePrice(rule.UnitPrice, "unit_price");
+            foreach (var tier in rule.Tiers)
+            {
+                if (tier.UpTo.HasValue && tier.UpTo.Value < 0)
+                {
+                    throw new ArgumentException("up_to must be a non-negative number", nameof(tier.UpTo));
+                }
+
+                ValidatePrice(tier.UnitPrice, "unit_price");
+            }
+        }
+    }
+
+    private static bool ProviderUnchanged(ModelProvider provider, ModelCatalogProviderTransfer transfer)
+    {
+        return provider.Name == DisplayName(transfer.Name, provider.Code)
+            && provider.Enabled == transfer.Enabled
+            && provider.SortOrder == transfer.SortOrder;
+    }
+
+    private static bool ModelUnchanged(
+        ModelInfo model,
+        Guid providerId,
+        ModelCatalogModelTransfer transfer,
+        IReadOnlyDictionary<Guid, ModelPricingPlan> plansByModelId,
+        IReadOnlyDictionary<Guid, List<ModelPricingRule>> rulesByPlanId)
+    {
+        if (model.ProviderId != providerId
+            || model.DisplayName != DisplayName(transfer.DisplayName, model.ModelKey)
+            || model.Description != Normalize(transfer.Description)
+            || model.MatchType != NormalizeMatchType(transfer.MatchType)
+            || model.MatchPattern != NormalizeMatchPattern(transfer.MatchPattern, model.ModelKey)
+            || model.CatalogJson != SerializeObject(JsonRequestValue.Object(transfer.Catalog))
+            || model.CapabilitiesJson != SerializeObject(JsonRequestValue.Object(transfer.Capabilities))
+            || model.Enabled != transfer.Enabled)
+        {
+            return false;
+        }
+
+        if (!plansByModelId.TryGetValue(model.Id, out var plan))
+        {
+            return transfer.Pricing is null;
+        }
+
+        if (transfer.Pricing is null)
+        {
+            return false;
+        }
+
+        return PricingUnchanged(model, plan, transfer.Pricing, rulesByPlanId);
+    }
+
+    private static bool PricingUnchanged(
+        ModelInfo model,
+        ModelPricingPlan plan,
+        ModelCatalogPricingTransfer transfer,
+        IReadOnlyDictionary<Guid, List<ModelPricingRule>> rulesByPlanId)
+    {
+        if (plan.Currency != NormalizeCurrency(transfer.Currency)
+            || plan.Enabled != transfer.Enabled
+            || plan.ModelInfoId != model.Id
+            || plan.ChannelModelInfoId != null
+            || plan.ChannelId != null)
+        {
+            return false;
+        }
+
+        if (!rulesByPlanId.TryGetValue(plan.Id, out var rules))
+        {
+            return true;
+        }
+
+        if (rules.Count != transfer.Rules.Count)
+        {
+            return false;
+        }
+
+        var expected = transfer.Rules
+            .Select(rule => new ModelPricingRule
+            {
+                BillingItem = NormalizeBillingItem(rule.BillingItem),
+                BillingMode = NormalizeBillingMode(rule.BillingMode),
+                UnitPrice = rule.UnitPrice,
+                TiersJson = SerializeImportTiers(rule.Tiers),
+                Enabled = rule.Enabled
+            })
+            .ToList();
+        return rules
+            .Select(rule => (
+                NormalizeBillingItem(rule.BillingItem),
+                NormalizeBillingMode(rule.BillingMode),
+                rule.UnitPrice,
+                rule.TiersJson,
+                rule.Enabled))
+            .SequenceEqual(expected.Select(rule =>
+                (rule.BillingItem, rule.BillingMode, rule.UnitPrice, rule.TiersJson, rule.Enabled)));
+    }
+
+    private static ModelCatalogImportCounts ImportCounts(
+        IEnumerable<bool> created,
+        IEnumerable<bool> unchanged)
+    {
+        var createdList = created.ToList();
+        var unchangedList = unchanged.ToList();
+        return new ModelCatalogImportCounts
+        {
+            Created = createdList.Count(value => value),
+            Updated = createdList.Count - createdList.Count(value => value) - unchangedList.Count(value => value),
+            Unchanged = unchangedList.Count(value => value)
+        };
+    }
+
+    private static IOpenCodexDbContext? SharedContext(
+        IRepository<ModelProvider> providers,
+        IRepository<ModelInfo> models,
+        IRepository<ChannelModelInfo> channelModels,
+        IRepository<ModelPricingPlan> plans,
+        IRepository<ModelPricingRule> rules,
+        IRepository<ChannelModelMapping> mappings,
+        IRepository<Channel> channels)
+    {
+        var repositories = new object[] { providers, models, channelModels, plans, rules, mappings, channels };
+        return repositories
+            .Select(repository => (Repository: repository, Property: repository.GetType().GetProperty(
+                "SharedContext",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public)))
+            .Select(item => item.Property?.GetValue(item.Repository))
+            .OfType<IOpenCodexDbContext>()
+            .Distinct()
+            .SingleOrDefault();
     }
 
     private static ModelPricingCalculationResult EmptyCalculation(string resolution)

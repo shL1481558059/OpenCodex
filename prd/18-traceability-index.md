@@ -79,6 +79,8 @@
 | `GET/POST/PATCH/DELETE /model-infos*` | 读用户/写超管 | 模型、价格 | ModelCatalogController/Service | 匹配、Catalog、停用、播种 |
 | `GET/PUT/DELETE /channels/{id}/model-infos*` | 渠道 Owner/超管 | 渠道模型覆盖 | ModelCatalogController/Service | Owner、覆盖、恢复全局 |
 | `GET/POST/PATCH/DELETE /pricing*` | 超级管理员 | 计费 | PricingController、ModelPricingService | 规则公式、播种、历史快照 |
+| `GET /model-catalog/export` | 超级管理员 | 模型目录、备份迁移 | ModelCatalogController/Service | 全量导出、不含渠道覆盖 |
+| `POST /model-catalog/import` | 超级管理员 | 模型目录、备份迁移 | ModelCatalogController/Service | dryRun 预检、事务导入、重复键拒绝 |
 | `GET/POST /web-search*` | 超级管理员 | 特殊流程、UI | WebSearchController/Service | 三模式、Key 用量、导入测试 |
 | `POST /web-search/test-key` | 超级管理员 | 特殊流程 | WebSearchService、TavilyClient | 成功、超时、无效 Key |
 | `GET /logs` | 管理 Cookie | 可观测性 | ObservabilityController/Service | Owner、过滤、分页、大范围 |
@@ -137,6 +139,8 @@
 | `POST` | `/model-infos/seed-defaults` | 超级管理员 Cookie | `ModelCatalogController.SeedDefaults` |
 | `PATCH` | `/model-infos/{id:guid}` | 超级管理员 Cookie | `ModelCatalogController.UpdateModel` |
 | `PUT` | `/channels/{channelId:guid}/model-infos` | 管理 Cookie，服务层限定资源范围 | `ModelCatalogController.UpsertChannelModel` |
+| `GET` | `/model-catalog/export` | 超级管理员 Cookie | `ModelCatalogController.ExportCatalog` |
+| `POST` | `/model-catalog/import` | 超级管理员 Cookie | `ModelCatalogController.ImportCatalog` |
 | `GET` | `/stats/active-channels` | 管理 Cookie，服务层限定资源范围 | `ObservabilityController.ActiveChannels` |
 | `GET` | `/stats/active-channels/stream` | 管理 Cookie，服务层限定资源范围 | `ObservabilityController.ActiveChannelsStream` |
 | `DELETE` | `/logs` | 超级管理员 Cookie | `ObservabilityController.ClearLogs` |
@@ -184,7 +188,7 @@
 | API Key | 普通/超管 | `/api-keys*`、`/users` | AccessKeys.vue | 创建、复制、启停、导入导出和秘密冲突 |
 | 用户管理 | 超管 | `/users*` | Users.vue | 创建、停用、重置、删除和保护规则 |
 | Web Search | 超管 | `/web-search*` | WebSearch.vue | 模式、Key、用量、测试和失败回滚 |
-| 模型信息 | 超管 | `/model-providers*`、`/model-infos*` | Pricing.vue | 筛选、供应商、模型、定价、停用 |
+| 模型信息 | 超管 | `/model-providers*`、`/model-infos*`、`/model-catalog/export`、`/model-catalog/import` | Pricing.vue | 筛选、供应商、模型、定价、停用、导入导出 |
 | 系统设置 | 超管 | `/system-settings` | SystemSettings.vue、tauriBackend.js | LAN、端口、Probe、重启 |
 | 请求日志 | 普通/超管 | `/logs*`、`/stats` | Logs.vue | 快捷/高级筛选、分页、详情、SSE、清空 |
 

@@ -21,6 +21,10 @@ public interface IModelCatalogService
 
     ApiOpResult<ModelInfoResponsePayload> DeleteModel(Guid id);
 
+    ApiOpResult<ModelCatalogTransferDocument> ExportModelCatalog();
+
+    ApiOpResult<ModelCatalogImportResult> ImportModelCatalog(ModelCatalogTransferDocument document, bool dryRun);
+
     ApiOpResult<ChannelModelInfoListResponse> ListChannelModelInfos(Guid channelId);
 
     ApiOpResult<ChannelModelInfoResponsePayload> UpsertChannelModelInfo(
@@ -30,8 +34,6 @@ public interface IModelCatalogService
     ApiOpResult RestoreChannelModelInfo(Guid channelId, Guid id);
 
     bool SupportsImage(Guid? channelId, string? upstreamModel, bool legacyMappingValue);
-
-    ApiOpResult<SeedModelCatalogResponse> SeedDefaults();
 
     Task<ModelPricingCalculationResult> CalculateCostAsync(
         Guid? channelId,

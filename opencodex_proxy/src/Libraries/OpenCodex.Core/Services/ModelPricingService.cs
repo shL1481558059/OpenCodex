@@ -1,11 +1,6 @@
 using System.Globalization;
-using System.Collections.Concurrent;
-using System.Text.Json;
-using System.Threading;
 using OpenCodex.Core.Domain;
-using OpenCodex.Core.Persistence;
 using OpenCodex.Core.Services.Mapping;
-using OpenCodex.Core.Services.Caching;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain;
@@ -13,19 +8,16 @@ using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.Pricing;
 using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
-using StackExchange.Redis;
 
 namespace OpenCodex.Core.Services;
 
 public sealed class ModelPricingService : IModelPricingService
 {
     private readonly IRepository<ModelPricing> _repository;
-    private readonly IRedisConnectionProvider? _redis;
 
-    public ModelPricingService(IRepository<ModelPricing> repository, IRedisConnectionProvider? redis = null)
+    public ModelPricingService(IRepository<ModelPricing> repository)
     {
         _repository = repository;
-        _redis = redis;
     }
 
     public ApiOpResult<ModelPricingListResponse> ListPrices(
@@ -73,7 +65,6 @@ public sealed class ModelPricingService : IModelPricingService
             }
 
             _repository.Insert(price);
-            BumpPricingVersion();
             return ApiOpResult<ModelPricingResponsePayload>.Succeed(ModelPricingResponsePayload.From(price.ToDto()));
         }
         catch (ArgumentException exception)
@@ -101,7 +92,6 @@ public sealed class ModelPricingService : IModelPricingService
             ApplyUpdates(price, command.Values);
             price.UpdatedAt = UnixTimeSeconds();
             _repository.Update(price);
-            BumpPricingVersion();
             return ApiOpResult<ModelPricingResponsePayload>.Succeed(ModelPricingResponsePayload.From(price.ToDto()));
         }
         catch (ArgumentException exception)
@@ -124,32 +114,7 @@ public sealed class ModelPricingService : IModelPricingService
 
         var deleted = price.ToDto();
         _repository.Delete(price);
-        BumpPricingVersion();
         return ApiOpResult<DeleteModelPricingResponse>.Succeed(DeleteModelPricingResponse.From(deleted));
-    }
-
-    public async Task<ApiOpResult<SeedModelPricingResponse>> SeedDefaultsAsync(
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            var defaults = await OpenCodexPricingDefaults.CurrentRemoteAsync(cancellationToken);
-            var result = UpdateDefaults(defaults);
-            if (result.Inserted > 0 || result.Updated > 0)
-            {
-                await BumpPricingVersionAsync();
-            }
-            return ApiOpResult<SeedModelPricingResponse>.Succeed(
-                new SeedModelPricingResponse(result.Inserted, result.Updated, result.Skipped));
-        }
-        catch (Exception exception) when (exception is HttpRequestException
-            or JsonException
-            or InvalidOperationException)
-        {
-            return ApiOpResult<SeedModelPricingResponse>.Fail(
-                502,
-                $"failed to fetch latest model pricing: {exception.Message}");
-        }
     }
 
     public double CalculateCost(
@@ -162,118 +127,6 @@ public sealed class ModelPricingService : IModelPricingService
             .Where(price => price.Enabled)
             .ToList();
         return OpenCodexPricing.CalculateCost(prices, model, inputTokens, cachedTokens, outputTokens);
-    }
-
-    public (int Inserted, int Skipped) SeedDefaults(bool insertOnlyWhenEmpty)
-    {
-        if (insertOnlyWhenEmpty && _repository.TableNoTracking.Any())
-        {
-            return (0, _repository.TableNoTracking.Count());
-        }
-
-        var now = UnixTimeSeconds();
-        var existing = _repository.TableNoTracking
-            .Select(price => price.ModelId)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var inserted = 0;
-        var skipped = 0;
-        var toInsert = new List<ModelPricing>();
-        foreach (var price in OpenCodexPricingDefaults.Current())
-        {
-            if (existing.Contains(price.ModelId))
-            {
-                skipped++;
-                continue;
-            }
-
-            toInsert.Add(new ModelPricing
-            {
-                ModelId = price.ModelId,
-                Vendor = price.Vendor,
-                Name = price.Name,
-                MatchPattern = price.ModelId,
-                InputPrice = price.InputPrice,
-                CachedInputPrice = price.CachedInputPrice,
-                OutputPrice = price.OutputPrice,
-                Enabled = true,
-                Source = OpenCodexPricingDefaults.Source,
-                CreatedAt = now,
-                UpdatedAt = now
-            });
-            existing.Add(price.ModelId);
-            inserted++;
-        }
-
-        if (toInsert.Count > 0)
-        {
-            _repository.Insert(toInsert);
-        }
-
-        return (inserted, skipped);
-    }
-
-    internal (int Inserted, int Updated, int Skipped) UpdateDefaults(
-        IReadOnlyList<DefaultModelPricing> defaults)
-    {
-        var now = UnixTimeSeconds();
-        var existing = _repository.Table
-            .ToDictionary(price => price.ModelId, StringComparer.OrdinalIgnoreCase);
-        var inserted = 0;
-        var updated = 0;
-        var skipped = 0;
-        var toInsert = new List<ModelPricing>();
-
-        foreach (var price in defaults)
-        {
-            if (!existing.TryGetValue(price.ModelId, out var existingPrice))
-            {
-                var created = new ModelPricing
-                {
-                    ModelId = price.ModelId,
-                    Vendor = price.Vendor,
-                    Name = price.Name,
-                    MatchPattern = price.ModelId,
-                    InputPrice = price.InputPrice,
-                    CachedInputPrice = price.CachedInputPrice,
-                    OutputPrice = price.OutputPrice,
-                    Enabled = true,
-                    Source = OpenCodexPricingDefaults.Source,
-                    CreatedAt = now,
-                    UpdatedAt = now
-                };
-                toInsert.Add(created);
-                existing.Add(price.ModelId, created);
-                inserted++;
-                continue;
-            }
-
-            if (!string.Equals(existingPrice.Source, OpenCodexPricingDefaults.Source, StringComparison.Ordinal))
-            {
-                skipped++;
-                continue;
-            }
-
-            if (!ApplyDefaultUpdates(existingPrice, price))
-            {
-                skipped++;
-                continue;
-            }
-
-            existingPrice.UpdatedAt = now;
-            updated++;
-        }
-
-        if (toInsert.Count > 0)
-        {
-            _repository.Insert(toInsert);
-        }
-
-        if (updated > 0)
-        {
-            _repository.SaveChanges();
-        }
-
-        return (inserted, updated, skipped);
     }
 
     private static IQueryable<ModelPricing> ApplyFilters(
@@ -358,50 +211,6 @@ public sealed class ModelPricingService : IModelPricingService
         }
 
         price.Source = "manual";
-    }
-
-    private static bool ApplyDefaultUpdates(
-        ModelPricing target,
-        DefaultModelPricing source)
-    {
-        var changed = false;
-        if (!string.Equals(target.Vendor, source.Vendor, StringComparison.Ordinal))
-        {
-            target.Vendor = source.Vendor;
-            changed = true;
-        }
-
-        if (!string.Equals(target.Name, source.Name, StringComparison.Ordinal))
-        {
-            target.Name = source.Name;
-            changed = true;
-        }
-
-        if (!string.Equals(target.MatchPattern, source.ModelId, StringComparison.Ordinal))
-        {
-            target.MatchPattern = source.ModelId;
-            changed = true;
-        }
-
-        if (Math.Abs(target.InputPrice - source.InputPrice) >= double.Epsilon)
-        {
-            target.InputPrice = source.InputPrice;
-            changed = true;
-        }
-
-        if (!Nullable.Equals(target.CachedInputPrice, source.CachedInputPrice))
-        {
-            target.CachedInputPrice = source.CachedInputPrice;
-            changed = true;
-        }
-
-        if (Math.Abs(target.OutputPrice - source.OutputPrice) >= double.Epsilon)
-        {
-            target.OutputPrice = source.OutputPrice;
-            changed = true;
-        }
-
-        return changed;
     }
 
     private static string NormalizeRequired(string? value, string field)
@@ -513,34 +322,4 @@ public sealed class ModelPricingService : IModelPricingService
         return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
     }
 
-    private void BumpPricingVersion()
-    {
-        if (_redis is not null && _redis.IsAvailable)
-        {
-            var db = _redis.GetDatabase();
-            if (db is not null)
-            {
-                db.StringIncrementAsync(ModelCatalogService.PricingVersionKey, flags: CommandFlags.FireAndForget);
-                return;
-            }
-        }
-
-        ModelCatalogService.BumpLocalPricingVersion();
-    }
-
-    private async Task BumpPricingVersionAsync()
-    {
-        if (_redis is not null && _redis.IsAvailable)
-        {
-            var db = _redis.GetDatabase();
-            if (db is not null)
-            {
-                await db.StringIncrementAsync(ModelCatalogService.PricingVersionKey);
-                return;
-            }
-        }
-
-        ModelCatalogService.BumpLocalPricingVersion();
-        await Task.CompletedTask;
-    }
 }

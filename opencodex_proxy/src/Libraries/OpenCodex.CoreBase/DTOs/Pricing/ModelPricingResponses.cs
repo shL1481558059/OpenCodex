@@ -65,28 +65,6 @@ public sealed class DeleteModelPricingResponse
 }
 
 /// <summary>
-/// 表示默认模型定价补齐响应。
-/// </summary>
-public sealed class SeedModelPricingResponse
-{
-    public SeedModelPricingResponse(int inserted, int updated, int skipped)
-    {
-        Inserted = inserted;
-        Updated = updated;
-        Skipped = skipped;
-    }
-
-    [JsonPropertyName("inserted")]
-    public int Inserted { get; }
-
-    [JsonPropertyName("updated")]
-    public int Updated { get; }
-
-    [JsonPropertyName("skipped")]
-    public int Skipped { get; }
-}
-
-/// <summary>
 /// 表示管理接口返回的模型定价。
 /// </summary>
 public sealed class ModelPricingResponse

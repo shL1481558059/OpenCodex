@@ -18,6 +18,8 @@ public class EfRepository<TEntity> : IRepository<TEntity> where TEntity : BaseEn
         _context = context;
     }
 
+    internal IOpenCodexDbContext SharedContext => _context;
+
     protected DbSet<TEntity> Entities => _entities ??= _context.Set<TEntity>();
 
     public IQueryable<TEntity> Table => Entities;

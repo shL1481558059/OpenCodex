@@ -162,20 +162,20 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 ### B.2 `/pricing` 是死计费半边
 
 - 现状（已实证）：实际计费走 `IModelCatalogService.CalculateCostAsync`，生产调用点仅 `ProxyLogService.cs:214` 和 `:370`。`IModelPricingService.CalculateCost` 除 `ModelPricingServiceTests.cs:40` 外**零生产调用**；其底层 `OpenCodexPricing.cs`（exact/contains 匹配算法）只服务于它。
-- 前端**完全不调 `/pricing`**：已从 `App.vue:176` 的 `api()` helper 穷举全部前端请求路径，`Pricing.vue` 只用 `/model-providers`、`/model-infos`、`/model-infos/{id}`、`/model-infos/seed-defaults`。5 个 `/pricing*` 路由仅被 `RouteTests.cs` 覆盖，README / DEPLOYMENT 无 `/pricing` 字样。
+- 前端**完全不调 `/pricing`**：`Pricing.vue` 只使用 `/model-providers`、`/model-infos`及其 CRUD；内置目录 seed 入口已删除。现存 4 个 `/pricing*` CRUD 路由仅被兼容性测试覆盖。
 - 死链条（约 700 行）：
   - `opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/PricingController.cs`（67，路由 `:21/32/52/60`）
   - `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/ModelPricingService.cs`（546）
-  - `opencodex_proxy/src/Libraries/OpenCodex.Core/Persistence/OpenCodexPricing.cs`（80）
+  - `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/OpenCodexPricing.cs`（80）
   - `IModelPricingService` + `ModelPricingDto` + `ModelPricing.ToDto()` 扩展方法
-- `ModelPricing` 表现在只被两处单向读：`OpenCodexDatabaseInitializer.SeedDefaultModelPricing`（`:19/23` 启动播种）和 `ModelCatalogService.MigrateLegacyPricing`（`:419/902`，迁移到新结构）→ 删除前需确认迁移已在生产执行完毕，否则要保留一次性迁移路径。
-- `OpenCodexDatabaseInitializer` 每次启动都会播种旧表，`ModelCatalogService.MigrateLegacyPricing` 还会把 legacy 表全量读出并重写新目录；确认一次性迁移完成后，应加迁移 marker、清空旧表，再删除这条每次启动的兼容路径。
+- `ModelPricing` 表已与当前模型目录和实际代理计费解耦：启动时不再播种，`ModelCatalogService` 不再读取或迁移其数据。
+- 新模型目录完全依赖手工维护的 `ModelInfo` / `ChannelModelInfo` / `ModelPricingPlan` / `ModelPricingRule`；空库不会自动生成供应商或模型。
 - 删除前不要只看仓库内部引用；应从生产访问日志或 `RequestLogs.Path` 检查 `/pricing` 的外部调用，并在迁移窗口保留 deprecation 观测。
 - 当前远端样本日志窗口未命中 `%pricing%` 路径，支持继续核实后收敛，但不等同于目标生产或外部脚本零调用。
 - 远端样本中 legacy `ModelPricings` 仍有约 111 行数据，`ChannelModelMappings` 约 161 行；删除旧表/整表迁移前必须完成并核验真实数据迁移，不能按“表空/已迁移”处理。
-- 附带风险：`ModelPricingService.SeedDefaultsAsync` 会联网抓 `https://api.github.com/repos/simonw/llm-prices/contents/data?ref=main`（`OpenCodexPricingDefaults.cs:13`）——死路由上挂着外网依赖，删除同时消除该出网调用（内嵌资源 `llm-prices-current-v1.json` 仍可保留给新结构播种）。
+- 旧的远端更新路由、联网客户端、解析器和内嵌价格快照已全部删除，运行时不再为模型目录主动出网。
 - 属决策点 7。
-- 验证：`/pricing*` 返回 404；代理请求的费用计算结果与改造前抽样一致。
+- 验证：`/pricing/seed-defaults` 不可调用；新目录 CRUD 后计费立即生效；旧 `/pricing` CRUD 不影响实际代理计费。
 
 ### B.3 Dashboard 两条伪 SSE（先评估删除，不默认改轮询）
 
@@ -198,6 +198,8 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 - 建议：优先删除三页导入/导出按钮、端点、请求 DTO 和服务分支，迁移改用数据库备份或专用加密 CLI。若必须保留，至少增加超级管理员权限、加密文件、预览/冲突确认、审计记录，并禁止列表接口回传完整密钥。
 - 风险：失去管理台便捷迁移；安全收益明显。实施前核对是否存在外部备份脚本。
 - 验证：删除后管理台 CRUD、数据库备份恢复和密钥一次性展示全绿；保留时补充恶意/重复导入、权限和密钥泄露测试。
+
+> 备注：模型信息页的全局目录导入导出（`/model-catalog/export`、`/model-catalog/import`）已于 v1 实现，采用 dryRun 预检 + 事务导入 + 超级管理员权限，不含明文密钥。渠道级覆盖暂未纳入导出范围。
 
 ### B.5 观测日志写放大、原始 SSE 留存与保留策略
 
@@ -481,7 +483,7 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 
 1. **先观测再软下线**：对 `/images*`、`/pricing*`、配置导入/导出、批量测试和 Dashboard SSE 记录路径、UA、客户端版本、调用次数和状态码，至少覆盖一个完整保留窗口。观测数据不得保存 API key、Authorization 或完整请求体。
 2. **修复 `/images` 的错误语义**：不能在现有 `ImagesController` 上简单加 feature flag，因为构造注入仍会先解析缺失的 `IProxyImagesEndpointService`。若决定下线，应替换为不依赖业务服务的 `RetiredImagesController`/中间件并返回统一 `410 Gone`；若需要保留“未实现”语义则返回 `501`。响应带 `Deprecation`、`Sunset` 和迁移文档链接，确保不再出现 500。最终删除时再移除 Controller、图片渠道校验、`channelImagesState`、历史配置迁移和所有 `images` 引用。
-3. **收敛 `/pricing`**：先运行一次 `ModelPricing` 到新模型目录的迁移，写入幂等 marker，对重复 vendor/model、未知 vendor、空 pattern、disabled、币种和规则优先级做对账。只有在发现登记过的外部读调用、且新旧字段/匹配语义完成契约对照时，软下线期才提供旧 GET 到新目录的只读映射；否则直接返回 410。写入/seed/update/delete 一律返回 410，禁止把旧写操作隐式转换成新模型目录写操作。停止每次启动的 legacy seed、全量重写和 GitHub 外网拉取。连续一个保留窗口无旧调用后，再删除 `PricingController`、`ModelPricingService`、旧 DTO（`ModelPricing.ToDto()` 扩展方法待删）、`OpenCodexPricing` 和旧表。
+3. **收敛 `/pricing`**：legacy seed、全量重写、远端拉取和新目录迁移已停止。剩余 `/pricing` CRUD 仅作兼容保留，不影响实际代理计费；连续一个保留窗口无外部调用后，再删除 `PricingController`、`ModelPricingService`、旧 DTO、`OpenCodexPricing` 和旧表。
 4. **收敛 Dashboard 实时卡片**：若无实时运维刚需，删除队列/错误两张卡片、伪 SSE、仅供它们使用的查询链和测试；若必须保留，新增单一低频 GET + 前端轮询，不同时维护 SSE 和轮询两套状态机。
 5. **迁移低价值管理台便利层**：保留单渠道测试、模型发现和渠道 CRUD；在使用率确认后删除批量测试、批量编辑、归并视图和未使用的路由前缀别名。Web Search 近期只有 Tavily 时，在 API 边界固定 provider，保留接口作为测试边界，不提前为第二家供应商维护整套泛化字段。
 6. **执行扩展→回填→切换→收缩**：先加新字段/marker 和兼容读取，再批量回填并校验计数/哈希，切换代码只读新结构，保留旧列一个版本，最后为 SQLite/Postgres 分别提交删列/删表 migration。生产回滚以备份/旧镜像为准，不把 EF `Down()` 当唯一回滚手段。
@@ -624,7 +626,7 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 
 ### F.8 B.2：旧 `/pricing` 计费管理链
 
-**背景与原因**：生产计费已走 `IModelCatalogService.CalculateCostAsync`，旧 `/pricing*` 只剩路由测试和启动迁移/播种；**远端样本**旧表仍有约 111 行（正式目标实例待确认），且旧 seed 会访问 GitHub，不能凭前端零调用直接删表。
+**背景与原因**：生产计费已走 `IModelCatalogService.CalculateCostAsync`，旧 `/pricing*` CRUD 仅作外部兼容保留；启动迁移、内置播种和 GitHub 远端更新均已删除。**远端样本**旧表仍有约 111 行（正式目标实例待确认），因此仍不能凭前端零调用直接删表。
 
 - **方案 A**：保留薄只读兼容 facade，把新目录映射成旧 GET DTO；POST/PATCH/DELETE/seed 返回 410，停止旧播种和 GitHub 拉取。优点是保护外部只读脚本；缺点是旧 DTO/匹配语义仍要维护。验收：登记调用方 GET 与新目录逐字段一致，写路由不改变价格数据。
 - **方案 B（推荐）**：生成 legacy→新目录逐行对账和幂等 marker，完成迁移后软下线一个窗口，再删 `PricingController`、旧 service/算法/DTO/表及双 provider migration。优点是最终只留一套计费真相；缺点是迁移和费用回归风险高。验收：冲突/未知 vendor/规则优先级均可审计，费用与历史账单抽样一致，旧路由 410→404。

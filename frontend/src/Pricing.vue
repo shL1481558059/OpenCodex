@@ -20,10 +20,24 @@
         </el-select>
         <el-button :icon="Search" @click="loadModels">搜索</el-button>
         <el-button :icon="Refresh" @click="loadAll">刷新</el-button>
-        <el-button :icon="Download" :loading="seedLoading" @click="seedDefaults">更新</el-button>
-        <el-button :icon="Plus" @click="openProviderDialog">新增供应商</el-button>
-        <el-button type="primary" :icon="Plus" @click="openModelDialog()">新增模型</el-button>
+        <el-button :icon="Download" :loading="catalogExporting" @click="exportCatalog">导出</el-button>
+        <el-button :icon="Upload" :loading="catalogImporting" @click="selectCatalogFile">导入</el-button>
+        <el-button :icon="Plus" @click="openProviderDialog(false)">新增供应商</el-button>
+        <el-button
+          class="create-model-button"
+          type="primary"
+          :icon="Plus"
+          :loading="providersLoading"
+          @click="openModelDialog()"
+        >新增模型</el-button>
       </div>
+      <input
+        ref="catalogFileInput"
+        type="file"
+        accept="application/json,.json"
+        class="catalog-file-input"
+        @change="handleCatalogFileSelected"
+      />
     </div>
 
     <div v-if="isMobile" class="mobile-provider-filter">
@@ -47,6 +61,59 @@
         :name="provider.code"
       />
     </el-tabs>
+
+    <el-dialog
+      v-model="catalogImportVisible"
+      class="catalog-import-dialog"
+      title="导入模型目录"
+      :width="isMobile ? undefined : '620px'"
+      :fullscreen="isMobile"
+    >
+      <template v-if="catalogImportState.phase === 'preview'">
+        <el-alert
+          type="success"
+          show-icon
+          :closable="false"
+          title="预检通过，等待确认"
+          description="确认后写入数据库，未确认前不修改任何数据。"
+        />
+        <dl class="catalog-import-summary">
+          <div>
+            <dt>供应商</dt>
+            <dd>新增 {{ catalogImportState.dryRun?.providers?.created || 0 }}，更新 {{ catalogImportState.dryRun?.providers?.updated || 0 }}，无变化 {{ catalogImportState.dryRun?.providers?.unchanged || 0 }}</dd>
+          </div>
+          <div>
+            <dt>模型</dt>
+            <dd>新增 {{ catalogImportState.dryRun?.models?.created || 0 }}，更新 {{ catalogImportState.dryRun?.models?.updated || 0 }}，无变化 {{ catalogImportState.dryRun?.models?.unchanged || 0 }}</dd>
+          </div>
+          <div v-if="(catalogImportState.dryRun?.pricing_deleted || 0) > 0">
+            <dt>价格删除</dt>
+            <dd>{{ catalogImportState.dryRun.pricing_deleted }} 个模型价格将被移除</dd>
+          </div>
+        </dl>
+      </template>
+
+      <template v-else-if="catalogImportState.phase === 'done'">
+        <el-alert type="success" show-icon :closable="false" title="导入完成" description="供应商和模型列表已刷新。" />
+      </template>
+
+      <template v-else>
+        <el-alert type="error" show-icon :closable="false" title="导入失败" :description="catalogImportState.errors[0] || '请检查文件后重试'" />
+      </template>
+
+      <template #footer>
+        <div class="drawer-footer">
+          <el-button @click="closeCatalogImportDialog">取消</el-button>
+          <el-button
+            v-if="catalogImportState.phase === 'preview'"
+            type="primary"
+            :loading="catalogImporting"
+            @click="confirmCatalogImport"
+          >确认导入</el-button>
+          <el-button v-else-if="catalogImportState.phase === 'done'" @click="closeCatalogImportDialog">完成</el-button>
+        </div>
+      </template>
+    </el-dialog>
 
     <div class="table-area">
       <el-table
@@ -399,7 +466,15 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
-import { Delete, Download, Edit, Plus, Refresh, Search } from "@element-plus/icons-vue";
+import { Delete, Download, Edit, Plus, Refresh, Search, Upload } from "@element-plus/icons-vue";
+import {
+  createModelCatalogImportState,
+  parseModelCatalogFile,
+  applyModelCatalogDryRun,
+  applyModelCatalogImport,
+  failModelCatalogImport,
+  resetModelCatalogImport
+} from "./modelCatalogImportState.js";
 
 const props = defineProps({
   api: { type: Function, required: true }
@@ -407,8 +482,14 @@ const props = defineProps({
 
 const providers = ref([]);
 const models = ref([]);
+const providersLoading = ref(false);
+const providersLoadFailed = ref(false);
 const modelsLoading = ref(false);
-const seedLoading = ref(false);
+const catalogExporting = ref(false);
+const catalogImporting = ref(false);
+const catalogImportVisible = ref(false);
+const catalogFileInput = ref(null);
+const catalogImportState = reactive(createModelCatalogImportState());
 const modelDialogVisible = ref(false);
 const modelSaving = ref(false);
 const providerDialogVisible = ref(false);
@@ -418,6 +499,7 @@ const activeProvider = ref("all");
 const page = ref(1);
 const pageSize = ref(25);
 const catalogText = ref("{}");
+const createModelAfterProvider = ref(false);
 const matchTypes = {
   exact: "精确",
   prefix: "前缀",
@@ -453,10 +535,21 @@ async function loadAll() {
 }
 
 async function loadProviders() {
-  const data = await props.api("/model-providers");
-  providers.value = Array.isArray(data.providers) ? data.providers : [];
-  if (activeProvider.value !== "all" && !providers.value.some((provider) => provider.code === activeProvider.value)) {
-    activeProvider.value = "all";
+  providersLoading.value = true;
+  providersLoadFailed.value = false;
+  try {
+    const data = await props.api("/model-providers");
+    providers.value = Array.isArray(data.providers) ? data.providers : [];
+    if (activeProvider.value !== "all" && !providers.value.some((provider) => provider.code === activeProvider.value)) {
+      activeProvider.value = "all";
+    }
+    return true;
+  } catch (error) {
+    providersLoadFailed.value = true;
+    ElMessage.error(error.message);
+    return false;
+  } finally {
+    providersLoading.value = false;
   }
 }
 
@@ -478,7 +571,93 @@ async function loadModels() {
   }
 }
 
+async function exportCatalog() {
+  catalogExporting.value = true;
+  try {
+    const data = await props.api("/model-catalog/export");
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `model-catalog-${Date.now()}.json`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    catalogExporting.value = false;
+  }
+}
+
+function selectCatalogFile() {
+  catalogFileInput.value?.click();
+}
+
+async function handleCatalogFileSelected(event) {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file) return;
+
+  try {
+    const text = await file.text();
+    const document = parseModelCatalogFile(text, file.name);
+    catalogImportState.document = document;
+    catalogImportVisible.value = true;
+    catalogImporting.value = true;
+    try {
+      const data = await props.api("/model-catalog/import?dryRun=true", {
+        method: "POST",
+        body: JSON.stringify(document)
+      });
+      applyModelCatalogDryRun(catalogImportState, file.name, document, data);
+    } catch (error) {
+      failModelCatalogImport(catalogImportState, error.message);
+    } finally {
+      catalogImporting.value = false;
+    }
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
+async function confirmCatalogImport() {
+  if (!catalogImportState.document) return;
+  catalogImporting.value = true;
+  try {
+    const data = await props.api("/model-catalog/import?dryRun=false", {
+      method: "POST",
+      body: JSON.stringify(catalogImportState.document)
+    });
+    applyModelCatalogImport(catalogImportState, data);
+    await loadAll();
+  } catch (error) {
+    failModelCatalogImport(catalogImportState, error.message);
+  } finally {
+    catalogImporting.value = false;
+  }
+}
+
+function closeCatalogImportDialog() {
+  catalogImportVisible.value = false;
+  resetModelCatalogImport(catalogImportState);
+}
+
 function openModelDialog(row = null) {
+  if (!row && providersLoading.value) {
+    ElMessage.info("供应商正在加载，请稍后");
+    return;
+  }
+
+  if (!row && providersLoadFailed.value) {
+    ElMessage.error("供应商加载失败，请先刷新");
+    return;
+  }
+
+  if (!row && providers.value.length === 0) {
+    ElMessage.warning("请先新增供应商");
+    openProviderDialog(true);
+    return;
+  }
+
   Object.assign(modelDraft, emptyModelDraft());
   catalogText.value = "{}";
   if (row) {
@@ -508,7 +687,8 @@ function openModelDialog(row = null) {
   modelDialogVisible.value = true;
 }
 
-function openProviderDialog() {
+function openProviderDialog(continueToModel = false) {
+  createModelAfterProvider.value = continueToModel;
   Object.assign(providerDraft, emptyProviderDraft());
   providerDialogVisible.value = true;
 }
@@ -531,8 +711,10 @@ async function saveProvider() {
         sort_order: Number(providerDraft.sort_order || 0)
       })
     });
+    const continueToModel = createModelAfterProvider.value;
+    createModelAfterProvider.value = false;
     providerDialogVisible.value = false;
-    await loadProviders();
+    if (!await loadProviders()) return;
     const createdCode = data.provider?.code || code;
     if (activeProvider.value === createdCode) {
       await loadModels();
@@ -540,6 +722,7 @@ async function saveProvider() {
       activeProvider.value = createdCode;
     }
     ElMessage.success("供应商已新增");
+    if (continueToModel) openModelDialog();
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
@@ -564,19 +747,6 @@ async function saveModel() {
     ElMessage.error(error.message);
   } finally {
     modelSaving.value = false;
-  }
-}
-
-async function seedDefaults() {
-  seedLoading.value = true;
-  try {
-    const data = await props.api("/model-infos/seed-defaults", { method: "POST", body: "{}" });
-    await loadAll();
-    ElMessage.success(`供应商新增 ${data.providers_inserted || 0} 个，模型新增 ${data.models_inserted || 0} 个，更新 ${data.models_updated || 0} 个`);
-  } catch (error) {
-    ElMessage.error(error.message);
-  } finally {
-    seedLoading.value = false;
   }
 }
 
@@ -787,6 +957,37 @@ onBeforeUnmount(() => {
   width: 100%;
 }
 
+.catalog-file-input {
+  display: none;
+}
+
+.catalog-import-summary {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.catalog-import-summary > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  background: var(--el-bg-color);
+}
+
+.catalog-import-summary dt {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+
+.catalog-import-summary dd {
+  margin: 0;
+  font-size: 14px;
+  text-align: right;
+}
+
 .mobile-provider-filter,
 .mobile-model-list {
   display: none;
@@ -819,6 +1020,19 @@ onBeforeUnmount(() => {
     width: 100%;
     min-height: 44px;
     margin-left: 0;
+  }
+
+  .create-model-button {
+    grid-column: 1 / -1;
+  }
+
+  .catalog-import-summary > div {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .catalog-import-summary dd {
+    text-align: left;
   }
 
   .pricing-page .toolbar-actions > :deep(.el-input),

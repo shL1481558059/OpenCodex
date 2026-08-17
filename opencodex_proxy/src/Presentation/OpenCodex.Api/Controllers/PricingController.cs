@@ -57,11 +57,4 @@ public sealed class PricingController : AuthenticatedApiControllerBase
         return Api(result);
     }
 
-    [HttpPost("/pricing/seed-defaults")]
-    public async Task<IActionResult> SeedDefaults(CancellationToken cancellationToken)
-    {
-        RequireSuperadmin();
-        var result = await _pricing.SeedDefaultsAsync(cancellationToken);
-        return Api(result);
-    }
 }

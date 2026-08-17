@@ -444,13 +444,19 @@ public sealed class ProxyImageFallbackTests
 
     private static async Task EnsureVisionModelInfoAsync(HttpClient client, string cookie)
     {
-        var seed = await SendJsonWithCookie(
+        var provider = await SendJsonWithCookie(
             client,
             HttpMethod.Post,
-            "/model-infos/seed-defaults",
+            "/model-providers",
             cookie,
-            new { });
-        Assert.Equal(HttpStatusCode.OK, seed.StatusCode);
+            new
+            {
+                code = "openai",
+                name = "OpenAI",
+                enabled = true,
+                sort_order = 10
+            });
+        Assert.Equal(HttpStatusCode.Created, provider.StatusCode);
 
         var response = await SendJsonWithCookie(
             client,
