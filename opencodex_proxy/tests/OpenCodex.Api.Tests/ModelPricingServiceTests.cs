@@ -1,6 +1,5 @@
 using OpenCodex.Core.Domain;
 using Microsoft.EntityFrameworkCore;
-using OpenCodex.Core.Persistence;
 using OpenCodex.Core.Services;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain;
@@ -43,118 +42,6 @@ public sealed class ModelPricingServiceTests
     }
 
     [Fact]
-    public void ParseRemoteAnthropicPricingIncludesLatestOpusModels()
-    {
-        const string json = """
-                            {
-                              "vendor": "anthropic",
-                              "models": [
-                                {
-                                  "id": "claude-opus-4-7",
-                                  "name": "Claude Opus 4.7",
-                                  "price_history": [
-                                    {
-                                      "input": 5,
-                                      "output": 25,
-                                      "from_date": null,
-                                      "to_date": null,
-                                      "input_cached": null
-                                    }
-                                  ]
-                                },
-                                {
-                                  "id": "claude-opus-4-8",
-                                  "name": "Claude Opus 4.8",
-                                  "price_history": [
-                                    {
-                                      "input": 5,
-                                      "output": 25,
-                                      "from_date": null,
-                                      "to_date": null,
-                                      "input_cached": null
-                                    }
-                                  ]
-                                }
-                              ]
-                            }
-                            """;
-
-        var prices = OpenCodexPricingDefaults.ParseRemoteDataFile(json);
-
-        Assert.Contains(prices, price =>
-            price.ModelId == "claude-opus-4-7"
-            && price.Vendor == "anthropic"
-            && price.InputPrice == 5
-            && price.OutputPrice == 25);
-        Assert.Contains(prices, price =>
-            price.ModelId == "claude-opus-4-8"
-            && price.Vendor == "anthropic"
-            && price.InputPrice == 5
-            && price.OutputPrice == 25);
-    }
-
-    [Fact]
-    public void UpdateDefaultsUpdatesDefaultSourceAndSkipsManualSource()
-    {
-        var dbPath = CreateDbPath();
-        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
-        {
-            context.Database.Migrate();
-            context.ModelPricings.AddRange(
-                new ModelPricing
-                {
-                    ModelId = "default-model",
-                    Vendor = "old",
-                    Name = "Old",
-                    MatchPattern = "default-model",
-                    InputPrice = 1,
-                    CachedInputPrice = null,
-                    OutputPrice = 2,
-                    Enabled = true,
-                    Source = OpenCodexPricingDefaults.Source,
-                    CreatedAt = 1,
-                    UpdatedAt = 1
-                },
-                new ModelPricing
-                {
-                    ModelId = "manual-model",
-                    Vendor = "manual",
-                    Name = "Manual",
-                    MatchPattern = "manual-model",
-                    InputPrice = 9,
-                    CachedInputPrice = null,
-                    OutputPrice = 9,
-                    Enabled = true,
-                    Source = "manual",
-                    CreatedAt = 1,
-                    UpdatedAt = 1
-                });
-            context.SaveChanges();
-        }
-
-        var service = CreateService(dbPath);
-        var result = service.UpdateDefaults(
-        [
-            new DefaultModelPricing("default-model", "remote", "Remote", 3, 1, 4),
-            new DefaultModelPricing("manual-model", "remote", "Remote Manual", 3, 1, 4),
-            new DefaultModelPricing("new-model", "remote", "New", 5, null, 6)
-        ]);
-
-        Assert.Equal((1, 1, 1), result);
-        using var verify = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
-        var defaultPrice = verify.ModelPricings.Single(price => price.ModelId == "default-model");
-        var manualPrice = verify.ModelPricings.Single(price => price.ModelId == "manual-model");
-        var newPrice = verify.ModelPricings.Single(price => price.ModelId == "new-model");
-        Assert.Equal("remote", defaultPrice.Vendor);
-        Assert.Equal(3, defaultPrice.InputPrice);
-        Assert.Equal(1, defaultPrice.CachedInputPrice);
-        Assert.Equal(4, defaultPrice.OutputPrice);
-        Assert.Equal("manual", manualPrice.Source);
-        Assert.Equal(9, manualPrice.InputPrice);
-        Assert.Equal(OpenCodexPricingDefaults.Source, newPrice.Source);
-    }
-
-    [Fact]
     public void UpdatePriceMarksPricingAsManual()
     {
         var dbPath = CreateDbPath();
@@ -172,7 +59,7 @@ public sealed class ModelPricingServiceTests
                 CachedInputPrice = null,
                 OutputPrice = 2,
                 Enabled = true,
-                Source = OpenCodexPricingDefaults.Source,
+                Source = "legacy-default",
                 CreatedAt = 1,
                 UpdatedAt = 1
             };

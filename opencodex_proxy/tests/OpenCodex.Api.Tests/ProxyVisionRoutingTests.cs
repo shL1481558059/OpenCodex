@@ -446,7 +446,6 @@ context.Channels.AddRange(channels);
             new EfRepository<ModelPricingRule>(routeContext),
             new EfRepository<ChannelModelMapping>(routeContext),
             new EfRepository<Channel>(routeContext),
-            new EfRepository<ModelPricing>(routeContext),
             new TestWorkContext(AdminUserId, "admin", "superadmin"),
             new TestCacheService());
         return new ProxyRouteService(

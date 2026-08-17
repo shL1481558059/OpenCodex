@@ -1,7 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using OpenCodex.Core.Domain;
-using OpenCodex.Core.Persistence;
 using OpenCodex.Core.Services;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Abstractions;
@@ -467,7 +466,6 @@ public sealed class ProxyLogServiceTests
             new EfRepository<ModelPricingRule>(context),
             new EfRepository<ChannelModelMapping>(context),
             new EfRepository<Channel>(context),
-            new EfRepository<ModelPricing>(context),
             new TestWorkContext(Guid.Parse("55555555-5555-5555-5555-555555555599"), "admin", "superadmin"),
             new TestCacheService());
         return new ProxyLogService(

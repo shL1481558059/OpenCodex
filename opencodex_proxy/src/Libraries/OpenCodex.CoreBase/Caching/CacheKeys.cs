@@ -16,7 +16,12 @@ public static class CacheKeys
     public static string RouteChannels(string ownerUsername) => $"route:channels:{ownerUsername}";
 
     /// <summary>定价:按 (channelId, upstreamModel) 缓存的计费解析结果。</summary>
-    /// <param name="version">定价版本号;规则变更后递增,使旧缓存 key 自然失效。</param>
-    public static string PricingContext(int version, Guid? channelId, string? upstreamModel)
-        => $"pricing:context:{version}:{channelId}:{upstreamModel}";
+    /// <param name="redisVersion">Redis 全局定价版本;用于跨实例失效。</param>
+    /// <param name="localVersion">进程内定价版本;用于 Redis 故障期间失效。</param>
+    public static string PricingContext(
+        int redisVersion,
+        int localVersion,
+        Guid? channelId,
+        string? upstreamModel)
+        => $"pricing:context:r{redisVersion}:l{localVersion}:{channelId}:{upstreamModel}";
 }

@@ -1,5 +1,5 @@
 using OpenCodex.Core.Domain;
-using OpenCodex.Core.Persistence;
+using OpenCodex.Core.Security;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Caching;
 using OpenCodex.CoreBase.Data;

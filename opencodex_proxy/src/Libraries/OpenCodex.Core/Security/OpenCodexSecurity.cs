@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 
-namespace OpenCodex.Core.Persistence;
+namespace OpenCodex.Core.Security;
 
 public static class OpenCodexSecurity
 {

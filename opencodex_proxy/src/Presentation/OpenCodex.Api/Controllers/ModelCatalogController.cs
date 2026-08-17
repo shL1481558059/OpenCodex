@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
+using System.Text.Json;
 using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.DTOs.Models;
+using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
 
 namespace OpenCodex.Api.Controllers;
@@ -62,6 +64,35 @@ public sealed class ModelCatalogController : AuthenticatedApiControllerBase
         return Api(_catalog.DeleteModel(id));
     }
 
+    [HttpGet("/model-catalog/export")]
+    public IActionResult ExportCatalog()
+    {
+        RequireSuperadmin();
+        var result = _catalog.ExportModelCatalog();
+        if (!result.Succeeded)
+        {
+            return StatusCode(result.Code, result);
+        }
+
+        Response.ContentType = "application/json";
+        return File(
+            JsonSerializer.SerializeToUtf8Bytes(result.Payload!),
+            "application/json",
+            $"model-catalog-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}.json");
+    }
+
+    [HttpPost("/model-catalog/import")]
+    public IActionResult ImportCatalog([FromQuery] string? dryRun, ModelCatalogTransferDocument request)
+    {
+        RequireSuperadmin();
+        if (!bool.TryParse(dryRun, out var parsedDryRun))
+        {
+            return Api(ApiOpResult<ModelCatalogImportResult>.Fail(400, "dryRun must be true or false"));
+        }
+
+        return Api(_catalog.ImportModelCatalog(request, parsedDryRun));
+    }
+
     [HttpGet("/channels/{channelId:guid}/model-infos")]
     public IActionResult ChannelModels(Guid channelId)
     {
@@ -83,10 +114,4 @@ public sealed class ModelCatalogController : AuthenticatedApiControllerBase
         return Api(_catalog.RestoreChannelModelInfo(channelId, id));
     }
 
-    [HttpPost("/model-infos/seed-defaults")]
-    public IActionResult SeedDefaults()
-    {
-        RequireSuperadmin();
-        return Api(_catalog.SeedDefaults());
-    }
 }
