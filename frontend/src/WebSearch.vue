@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="web-search-page">
     <div class="toolbar">
       <div>
         <h2>Web Search</h2>
@@ -20,17 +20,18 @@
       </div>
     </div>
 
-    <el-row :gutter="12">
-      <el-col :span="8">
+    <el-row class="web-search-stats" :gutter="12">
+      <el-col :span="8" :xs="8">
         <el-statistic
           title="当前模式"
-          :value="formatWebSearchMode(webSearchConfig.mode)"
+          :value="0"
+          :formatter="formatWebSearchModeStatistic"
         />
       </el-col>
-      <el-col :span="8">
+      <el-col :span="8" :xs="8">
         <el-statistic title="可用 Key" :value="webSearchEnabledKeyCount" />
       </el-col>
-      <el-col :span="8">
+      <el-col :span="8" :xs="8">
         <el-statistic title="累计调用" :value="webSearchTotalUsage" />
       </el-col>
     </el-row>
@@ -48,6 +49,7 @@
     <div class="section-scroll">
       <el-table
         v-loading="webSearchLoading"
+        class="desktop-web-search-list"
         :data="webSearchConfig.keys"
         row-key="client_id"
         style="width: 100%; margin-top: 16px"
@@ -107,6 +109,68 @@
         </el-table-column>
       </el-table>
 
+      <div v-loading="webSearchLoading" class="mobile-card-list mobile-web-search-list">
+        <el-empty
+          v-if="!webSearchLoading && webSearchConfig.keys.length === 0"
+          description="暂无 Web Search Key"
+          :image-size="64"
+        />
+        <article
+          v-for="(row, index) in webSearchConfig.keys"
+          :key="row.client_id"
+          class="mobile-data-card"
+        >
+          <header class="mobile-data-card__header">
+            <div class="mobile-data-card__heading">
+              <span class="mobile-data-card__index">#{{ index + 1 }}</span>
+              <strong class="mobile-data-card__title">{{ formatWebSearchProvider(row.provider) }}</strong>
+            </div>
+            <el-tag :type="row.enabled === false ? 'warning' : 'success'">
+              {{ row.enabled === false ? "停用" : "启用" }}
+            </el-tag>
+          </header>
+
+          <dl class="mobile-data-card__details">
+            <div>
+              <dt>API Key</dt>
+              <dd><code class="mobile-key-value">{{ maskWebSearchKey(row.key) }}</code></dd>
+            </div>
+            <div>
+              <dt>调用次数</dt>
+              <dd>{{ Number(row.usage_count || 0) }} / {{ webSearchKeyLimit(row) }}</dd>
+            </div>
+            <div>
+              <dt>单 Key 上限</dt>
+              <dd>{{ webSearchKeyLimit(row) }}</dd>
+            </div>
+          </dl>
+
+          <div class="mobile-card-actions">
+            <el-button
+              type="primary"
+              plain
+              :loading="row.id && webSearchTestingId === row.id"
+              :disabled="webSearchSaving"
+              @click="testWebSearchKey(row)"
+            >
+              测试
+            </el-button>
+            <el-button
+              :icon="Edit"
+              :disabled="webSearchSaving"
+              @click="openWebSearchKeyDrawer(row, index)"
+            >
+              编辑
+            </el-button>
+            <el-popconfirm title="删除这个 Web Search Key？" @confirm="deleteWebSearchKey(index)">
+              <template #reference>
+                <el-button type="danger" :icon="Delete" :disabled="webSearchSaving">删除</el-button>
+              </template>
+            </el-popconfirm>
+          </div>
+        </article>
+      </div>
+
       <el-alert
         v-if="webSearchTestResult"
         class="channel-test-result"
@@ -126,6 +190,7 @@
     <!-- Web Search Key 编辑 Drawer -->
     <el-drawer
       v-model="webSearchKeyDrawerVisible"
+      class="web-search-key-drawer"
       :title="webSearchKeyEditingIndex === -1 ? '新增 Web Search Key' : '编辑 Web Search Key'"
       size="520px"
     >
@@ -480,6 +545,10 @@ function formatWebSearchMode(mode) {
   return WEB_SEARCH_MODE_LABELS[normalizeWebSearchMode(mode)] || "转换";
 }
 
+function formatWebSearchModeStatistic() {
+  return formatWebSearchMode(webSearchConfig.mode);
+}
+
 function defaultWebSearchKeyUsageLimit() {
   return normalizePositiveInteger(webSearchConfig.default_key_usage_limit, 1000);
 }
@@ -562,3 +631,206 @@ function displayMs(value) {
 
 onMounted(() => loadWebSearch());
 </script>
+
+<style scoped>
+.mobile-web-search-list {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  .desktop-web-search-list {
+    display: none;
+  }
+
+  .mobile-web-search-list {
+    display: grid;
+  }
+
+  .web-search-stats {
+    row-gap: 8px;
+  }
+
+  .web-search-stats :deep(.el-col) {
+    min-width: 0;
+  }
+
+  .web-search-stats :deep(.el-statistic) {
+    min-height: 78px;
+    padding: 10px 8px;
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 6px;
+  }
+
+  .web-search-stats :deep(.el-statistic__head) {
+    margin-bottom: 6px;
+    font-size: 12px;
+  }
+
+  .web-search-stats :deep(.el-statistic__content) {
+    font-size: 20px;
+    overflow-wrap: anywhere;
+  }
+
+  .web-search-control-row {
+    gap: 8px;
+    margin-top: 16px;
+  }
+
+  .web-search-control-row :deep(.el-segmented) {
+    width: 100%;
+  }
+
+  .web-search-control-row :deep(.el-segmented__item) {
+    flex: 1;
+    min-height: 44px;
+  }
+
+  .mobile-card-list {
+    position: relative;
+    gap: 12px;
+    min-height: 96px;
+    margin-top: 16px;
+  }
+
+  .mobile-data-card {
+    min-width: 0;
+    padding: 14px;
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 6px;
+    background: var(--el-bg-color);
+  }
+
+  .mobile-data-card__header,
+  .mobile-data-card__heading {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .mobile-data-card__header {
+    justify-content: space-between;
+  }
+
+  .mobile-data-card__heading {
+    min-width: 0;
+  }
+
+  .mobile-data-card__index {
+    flex: 0 0 auto;
+    color: var(--el-text-color-secondary);
+    font-size: 12px;
+    line-height: 1.8;
+  }
+
+  .mobile-data-card__title {
+    min-width: 0;
+    font-size: 15px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-data-card__header :deep(.el-tag) {
+    flex: 0 0 auto;
+  }
+
+  .mobile-data-card__details {
+    display: grid;
+    gap: 8px;
+    margin: 14px 0;
+  }
+
+  .mobile-data-card__details > div {
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+  }
+
+  .mobile-data-card__details dt {
+    color: var(--el-text-color-secondary);
+  }
+
+  .mobile-data-card__details dd {
+    min-width: 0;
+    margin: 0;
+    text-align: right;
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-key-value {
+    display: block;
+    font-size: 12px;
+    word-break: break-all;
+  }
+
+  .mobile-card-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .mobile-card-actions :deep(.el-button) {
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    margin-left: 0;
+    padding-inline: 8px;
+  }
+
+  .web-search-page .toolbar-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .web-search-page .toolbar-actions :deep(.el-button) {
+    width: 100%;
+    min-height: 44px;
+    margin-left: 0;
+  }
+
+  .web-search-page .toolbar-actions :deep(.el-button:last-child) {
+    grid-column: 1 / -1;
+  }
+
+  .channel-test-result {
+    min-width: 0;
+  }
+
+  .channel-test-output {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  :global(.web-search-key-drawer) {
+    width: 100% !important;
+    max-width: 100vw;
+  }
+
+  :global(.web-search-key-drawer .el-drawer__header) {
+    flex: 0 0 auto;
+    margin-bottom: 0;
+    padding: 16px;
+  }
+
+  :global(.web-search-key-drawer .el-drawer__body) {
+    min-height: 0;
+    padding: 16px;
+    overflow-y: auto;
+  }
+
+  :global(.web-search-key-drawer .el-drawer__footer) {
+    flex: 0 0 auto;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+  }
+
+  :global(.web-search-key-drawer .el-input__inner),
+  :global(.web-search-key-drawer .el-select__input) {
+    font-size: 16px;
+  }
+
+  :global(.web-search-key-drawer .drawer-footer .el-button) {
+    min-height: 44px;
+  }
+}
+</style>

@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="pricing-page">
     <div class="toolbar">
       <div>
         <h2>模型信息</h2>
@@ -8,13 +8,13 @@
       <div class="toolbar-actions">
         <el-input
           v-model="filters.query"
+          class="toolbar-query"
           clearable
           placeholder="搜索模型、名称、匹配键"
-          style="width: 260px"
           @keyup.enter="loadModels"
           @clear="loadModels"
         />
-        <el-select v-model="filters.enabled" clearable placeholder="状态" style="width: 120px" @change="loadModels">
+        <el-select v-model="filters.enabled" class="toolbar-status" clearable placeholder="状态" @change="loadModels">
           <el-option label="启用" :value="true" />
           <el-option label="停用" :value="false" />
         </el-select>
@@ -26,7 +26,19 @@
       </div>
     </div>
 
-    <el-tabs v-model="activeProvider" class="provider-tabs">
+    <div v-if="isMobile" class="mobile-provider-filter">
+      <span class="mobile-provider-label">供应商</span>
+      <el-select v-model="activeProvider" aria-label="供应商筛选">
+        <el-option label="全部供应商" value="all" />
+        <el-option
+          v-for="provider in providers"
+          :key="provider.code"
+          :label="provider.name"
+          :value="provider.code"
+        />
+      </el-select>
+    </div>
+    <el-tabs v-else v-model="activeProvider" class="provider-tabs">
       <el-tab-pane label="全部" name="all" />
       <el-tab-pane
         v-for="provider in providers"
@@ -38,6 +50,7 @@
 
     <div class="table-area">
       <el-table
+        v-if="!isMobile"
         v-loading="modelsLoading"
         :data="pagedModels"
         row-key="id"
@@ -87,21 +100,97 @@
         </el-table-column>
       </el-table>
 
+      <div v-else v-loading="modelsLoading" class="mobile-model-list">
+        <article v-for="model in pagedModels" :key="model.id" class="model-card">
+          <div class="model-card-header">
+            <div class="model-card-title-wrap">
+              <strong class="model-card-title">{{ model.display_name || model.model_key }}</strong>
+              <span class="model-card-key">{{ model.model_key }}</span>
+            </div>
+            <el-tag :type="model.enabled === false ? 'warning' : 'success'" size="small">
+              {{ model.enabled === false ? "停用" : "启用" }}
+            </el-tag>
+          </div>
+
+          <dl class="model-card-meta">
+            <div>
+              <dt>供应商</dt>
+              <dd>{{ model.provider_name || model.provider_code || "-" }}</dd>
+            </div>
+            <div>
+              <dt>来源</dt>
+              <dd>{{ model.source || "-" }}</dd>
+            </div>
+          </dl>
+
+          <div class="model-card-match">
+            <el-tag size="small">{{ formatMatchType(model.match_type) }}</el-tag>
+            <span>{{ model.match_pattern || "-" }}</span>
+          </div>
+
+          <dl class="model-card-pricing">
+            <div>
+              <dt>输入</dt>
+              <dd>{{ pricingSummary(model, "input") }}</dd>
+            </div>
+            <div>
+              <dt>输出</dt>
+              <dd>{{ pricingSummary(model, "output") }}</dd>
+            </div>
+            <div>
+              <dt>缓存写</dt>
+              <dd>{{ pricingSummary(model, "cache_write") }}</dd>
+            </div>
+            <div>
+              <dt>缓存读</dt>
+              <dd>{{ pricingSummary(model, "cache_read") }}</dd>
+            </div>
+          </dl>
+
+          <div class="model-card-actions">
+            <el-button :icon="Edit" @click="openModelDialog(model)">编辑</el-button>
+            <el-popconfirm :title="`停用模型 ${model.model_key}？`" @confirm="deleteModel(model)">
+              <template #reference>
+                <el-button type="danger" :icon="Delete">停用</el-button>
+              </template>
+            </el-popconfirm>
+          </div>
+        </article>
+        <el-empty v-if="!modelsLoading && pagedModels.length === 0" description="暂无模型信息" />
+      </div>
+
       <div class="pagination-wrap">
         <el-pagination
+          v-if="!isMobile"
           v-model:current-page="page"
           v-model:page-size="pageSize"
           layout="total, sizes, prev, pager, next"
           :page-sizes="[25, 50, 100]"
           :total="models.length"
         />
+        <div v-else class="mobile-pagination">
+          <span>共 {{ models.length }} 项</span>
+          <el-pagination
+            v-model:current-page="page"
+            :page-size="pageSize"
+            :pager-count="5"
+            layout="prev, pager, next"
+            :total="models.length"
+          />
+        </div>
       </div>
     </div>
 
-    <el-dialog v-model="modelDialogVisible" :title="modelDraft.id ? '编辑模型' : '新增模型'" width="880px">
+    <el-dialog
+      v-model="modelDialogVisible"
+      class="pricing-model-dialog"
+      :title="modelDraft.id ? '编辑模型' : '新增模型'"
+      :width="isMobile ? undefined : '880px'"
+      :fullscreen="isMobile"
+    >
       <el-form label-position="top" :model="modelDraft">
         <el-row :gutter="16">
-          <el-col :span="16">
+          <el-col :xs="24" :span="16">
             <el-form-item label="供应商">
               <el-select v-model="modelDraft.provider_code" class="full-width">
                 <el-option
@@ -113,7 +202,7 @@
               </el-select>
             </el-form-item>
           </el-col>
-          <el-col :span="8">
+          <el-col :xs="24" :span="8">
             <el-form-item label="状态">
               <el-switch v-model="modelDraft.enabled" />
             </el-form-item>
@@ -121,12 +210,12 @@
         </el-row>
 
         <el-row :gutter="16">
-          <el-col :span="12">
+          <el-col :xs="24" :span="12">
             <el-form-item label="模型标识">
               <el-input v-model="modelDraft.model_key" autocomplete="off" />
             </el-form-item>
           </el-col>
-          <el-col :span="12">
+          <el-col :xs="24" :span="12">
             <el-form-item label="显示名称">
               <el-input v-model="modelDraft.display_name" autocomplete="off" />
             </el-form-item>
@@ -134,7 +223,7 @@
         </el-row>
 
         <el-row :gutter="16">
-          <el-col :span="8">
+          <el-col :xs="24" :span="8">
             <el-form-item label="匹配类型">
               <el-select v-model="modelDraft.match_type" class="full-width">
                 <el-option label="精确" value="exact" />
@@ -144,7 +233,7 @@
               </el-select>
             </el-form-item>
           </el-col>
-          <el-col :span="16">
+          <el-col :xs="24" :span="16">
             <el-form-item label="匹配键">
               <el-input v-model="modelDraft.match_pattern" autocomplete="off" />
             </el-form-item>
@@ -156,12 +245,12 @@
         </el-form-item>
 
         <el-row :gutter="16">
-          <el-col :span="8">
+          <el-col :xs="24" :span="8">
             <el-form-item label="支持图片">
               <el-switch v-model="modelDraft.capabilities.supports_image" />
             </el-form-item>
           </el-col>
-          <el-col :span="8">
+          <el-col :xs="24" :span="8">
             <el-form-item label="上下文窗口">
               <el-input-number
                 v-model="modelDraft.capabilities.context_window"
@@ -171,7 +260,7 @@
               />
             </el-form-item>
           </el-col>
-          <el-col :span="8">
+          <el-col :xs="24" :span="8">
             <el-form-item label="币种">
               <el-input v-model="modelDraft.pricing.currency" autocomplete="off" />
             </el-form-item>
@@ -179,7 +268,13 @@
         </el-row>
 
         <el-divider content-position="left">计费规则</el-divider>
-        <el-table :data="modelDraft.pricing.rules" border size="small" class="pricing-rule-table">
+        <el-table
+          v-if="!isMobile"
+          :data="modelDraft.pricing.rules"
+          border
+          size="small"
+          class="pricing-rule-table"
+        >
           <el-table-column label="计费项" width="110">
             <template #default="{ row }">{{ formatBillingItem(row.billing_item) }}</template>
           </el-table-column>
@@ -214,6 +309,40 @@
           </el-table-column>
         </el-table>
 
+        <div v-else class="mobile-pricing-rules">
+          <section v-for="rule in modelDraft.pricing.rules" :key="rule.billing_item" class="pricing-rule-card">
+            <div class="pricing-rule-heading">
+              <strong>{{ formatBillingItem(rule.billing_item) }}</strong>
+              <div class="pricing-rule-switch">
+                <span>{{ rule.enabled ? "启用" : "停用" }}</span>
+                <el-switch v-model="rule.enabled" />
+              </div>
+            </div>
+            <label class="pricing-rule-field">
+              <span>计费模式</span>
+              <el-select v-model="rule.billing_mode" class="full-width">
+                <el-option label="按次" value="per_request" />
+                <el-option label="每百万 token" value="per_million_tokens" />
+                <el-option label="阶梯 token" value="tiered_tokens" />
+              </el-select>
+            </label>
+            <label class="pricing-rule-field">
+              <span>单价</span>
+              <el-input-number
+                v-model="rule.unit_price"
+                :min="0"
+                :precision="8"
+                :step="0.01"
+                class="full-width"
+              />
+            </label>
+            <label v-if="rule.billing_mode === 'tiered_tokens'" class="pricing-rule-field">
+              <span>阶梯 JSON</span>
+              <el-input v-model="rule.tiers_text" type="textarea" :rows="4" />
+            </label>
+          </section>
+        </div>
+
         <el-collapse class="advanced-collapse">
           <el-collapse-item title="Catalog JSON" name="catalog">
             <el-input v-model="catalogText" type="textarea" :rows="8" />
@@ -229,7 +358,13 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="providerDialogVisible" title="新增供应商" width="480px">
+    <el-dialog
+      v-model="providerDialogVisible"
+      class="pricing-provider-dialog"
+      title="新增供应商"
+      :width="isMobile ? undefined : '480px'"
+      :fullscreen="isMobile"
+    >
       <el-form label-position="top" :model="providerDraft">
         <el-form-item label="供应商编码">
           <el-input v-model="providerDraft.code" autocomplete="off" placeholder="例如 custom-ai" />
@@ -238,12 +373,12 @@
           <el-input v-model="providerDraft.name" autocomplete="off" placeholder="例如 Custom AI" />
         </el-form-item>
         <el-row :gutter="16">
-          <el-col :span="12">
+          <el-col :xs="24" :span="12">
             <el-form-item label="排序">
               <el-input-number v-model="providerDraft.sort_order" :min="0" :step="10" class="full-width" />
             </el-form-item>
           </el-col>
-          <el-col :span="12">
+          <el-col :xs="24" :span="12">
             <el-form-item label="状态">
               <el-switch v-model="providerDraft.enabled" />
             </el-form-item>
@@ -262,7 +397,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
 import { Delete, Download, Edit, Plus, Refresh, Search } from "@element-plus/icons-vue";
 
@@ -278,6 +413,7 @@ const modelDialogVisible = ref(false);
 const modelSaving = ref(false);
 const providerDialogVisible = ref(false);
 const providerSaving = ref(false);
+const isMobile = ref(false);
 const activeProvider = ref("all");
 const page = ref(1);
 const pageSize = ref(25);
@@ -300,6 +436,7 @@ const filters = reactive({
 });
 const modelDraft = reactive(emptyModelDraft());
 const providerDraft = reactive(emptyProviderDraft());
+let mobileMediaQuery = null;
 
 const pagedModels = computed(() => {
   const start = (page.value - 1) * pageSize.value;
@@ -605,10 +742,31 @@ function formatPrice(value) {
   });
 }
 
-onMounted(() => loadAll());
+function syncMobileState(event) {
+  isMobile.value = event.matches;
+}
+
+onMounted(() => {
+  mobileMediaQuery = window.matchMedia("(max-width: 767px)");
+  syncMobileState(mobileMediaQuery);
+  mobileMediaQuery.addEventListener("change", syncMobileState);
+  loadAll();
+});
+
+onBeforeUnmount(() => {
+  mobileMediaQuery?.removeEventListener("change", syncMobileState);
+});
 </script>
 
 <style scoped>
+.toolbar-query {
+  width: 260px;
+}
+
+.toolbar-status {
+  width: 120px;
+}
+
 .provider-tabs {
   margin-bottom: 12px;
 }
@@ -627,5 +785,316 @@ onMounted(() => loadAll());
 
 .full-width {
   width: 100%;
+}
+
+.mobile-provider-filter,
+.mobile-model-list {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  .pricing-page .toolbar {
+    display: block;
+    margin-bottom: 16px;
+  }
+
+  .pricing-page .toolbar-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    width: 100%;
+    margin-top: 16px;
+  }
+
+  .toolbar-query {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .toolbar-status {
+    width: 100%;
+  }
+
+  .pricing-page .toolbar-actions > :deep(.el-button) {
+    width: 100%;
+    min-height: 44px;
+    margin-left: 0;
+  }
+
+  .pricing-page .toolbar-actions > :deep(.el-input),
+  .pricing-page .toolbar-actions > :deep(.el-select) {
+    min-width: 0;
+  }
+
+  .mobile-provider-filter {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+
+  .mobile-provider-label {
+    color: var(--el-text-color-regular);
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .mobile-model-list {
+    display: grid;
+    gap: 12px;
+    min-height: 96px;
+  }
+
+  .model-card {
+    min-width: 0;
+    padding: 14px;
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 6px;
+    background: var(--el-bg-color);
+  }
+
+  .model-card-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .model-card-title-wrap {
+    display: grid;
+    min-width: 0;
+    gap: 4px;
+  }
+
+  .model-card-title,
+  .model-card-key,
+  .model-card-match span,
+  .model-card-meta dd {
+    overflow-wrap: anywhere;
+  }
+
+  .model-card-title {
+    color: var(--el-text-color-primary);
+    font-size: 16px;
+    line-height: 1.4;
+  }
+
+  .model-card-key {
+    color: var(--el-text-color-secondary);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .model-card-meta,
+  .model-card-pricing {
+    display: grid;
+    margin: 14px 0 0;
+  }
+
+  .model-card-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 16px;
+  }
+
+  .model-card-meta div,
+  .model-card-pricing div {
+    min-width: 0;
+  }
+
+  .model-card-meta dt,
+  .model-card-pricing dt {
+    margin-bottom: 3px;
+    color: var(--el-text-color-secondary);
+    font-size: 12px;
+  }
+
+  .model-card-meta dd,
+  .model-card-pricing dd {
+    margin: 0;
+    color: var(--el-text-color-primary);
+    font-size: 14px;
+    line-height: 1.45;
+  }
+
+  .model-card-match {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--el-border-color-lighter);
+    color: var(--el-text-color-regular);
+    font-size: 13px;
+    line-height: 24px;
+  }
+
+  .model-card-match span {
+    min-width: 0;
+  }
+
+  .model-card-pricing {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 16px;
+    padding: 12px;
+    border-radius: 4px;
+    background: var(--el-fill-color-light);
+  }
+
+  .model-card-pricing dd {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .model-card-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 14px;
+  }
+
+  .model-card-actions > :deep(.el-button),
+  .model-card-actions > :deep(.el-tooltip__trigger) {
+    width: 100%;
+    min-height: 44px;
+    margin-left: 0;
+  }
+
+  .pagination-wrap {
+    margin-top: 16px;
+  }
+
+  .mobile-pagination {
+    display: grid;
+    justify-items: center;
+    gap: 8px;
+    width: 100%;
+    color: var(--el-text-color-secondary);
+    font-size: 13px;
+  }
+
+  .mobile-pagination :deep(.el-pagination) {
+    display: flex;
+    justify-content: center;
+    max-width: 100%;
+  }
+
+  .mobile-pagination :deep(.btn-prev),
+  .mobile-pagination :deep(.btn-next),
+  .mobile-pagination :deep(.el-pager li) {
+    min-width: 32px;
+    margin: 0;
+  }
+
+  .mobile-pricing-rules {
+    display: grid;
+    gap: 12px;
+  }
+
+  .pricing-rule-card {
+    min-width: 0;
+    padding: 14px;
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 6px;
+    background: var(--el-fill-color-extra-light);
+  }
+
+  .pricing-rule-heading,
+  .pricing-rule-switch {
+    display: flex;
+    align-items: center;
+  }
+
+  .pricing-rule-heading {
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+
+  .pricing-rule-switch {
+    gap: 8px;
+    color: var(--el-text-color-secondary);
+    font-size: 13px;
+  }
+
+  .pricing-rule-field {
+    display: grid;
+    gap: 7px;
+    margin-top: 12px;
+    color: var(--el-text-color-regular);
+    font-size: 13px;
+  }
+
+  .pricing-rule-field:first-of-type {
+    margin-top: 0;
+  }
+
+  .pricing-page :deep(.el-input__inner),
+  .pricing-page :deep(.el-textarea__inner) {
+    font-size: 16px;
+  }
+}
+
+@media (max-width: 380px) {
+  .model-card-meta,
+  .model-card-pricing {
+    grid-template-columns: 1fr;
+  }
+}
+
+:global(.pricing-model-dialog.is-fullscreen),
+:global(.pricing-provider-dialog.is-fullscreen) {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  margin: 0;
+  overflow: hidden;
+}
+
+:global(.pricing-model-dialog.is-fullscreen .el-dialog__header),
+:global(.pricing-provider-dialog.is-fullscreen .el-dialog__header) {
+  flex: none;
+  padding: 16px;
+  padding-top: max(16px, env(safe-area-inset-top));
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+:global(.pricing-model-dialog.is-fullscreen .el-dialog__body),
+:global(.pricing-provider-dialog.is-fullscreen .el-dialog__body) {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 14px 16px;
+}
+
+:global(.pricing-model-dialog.is-fullscreen .el-dialog__footer),
+:global(.pricing-provider-dialog.is-fullscreen .el-dialog__footer) {
+  flex: none;
+  padding: 12px 16px;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--el-border-color-lighter);
+  background: var(--el-bg-color);
+}
+
+:global(.pricing-model-dialog.is-fullscreen .drawer-footer),
+:global(.pricing-provider-dialog.is-fullscreen .drawer-footer) {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+:global(.pricing-model-dialog.is-fullscreen .drawer-footer .el-button),
+:global(.pricing-provider-dialog.is-fullscreen .drawer-footer .el-button) {
+  width: 100%;
+  min-height: 44px;
+  margin-left: 0;
+}
+
+:global(.pricing-model-dialog.is-fullscreen .el-input__inner),
+:global(.pricing-model-dialog.is-fullscreen .el-textarea__inner),
+:global(.pricing-provider-dialog.is-fullscreen .el-input__inner) {
+  font-size: 16px;
 }
 </style>

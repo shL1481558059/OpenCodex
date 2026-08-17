@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="access-keys-page">
     <div class="toolbar">
       <div>
         <h2>API Key 管理</h2>
@@ -20,14 +20,14 @@
       </div>
     </div>
 
-    <el-row :gutter="12">
-      <el-col :span="8">
+    <el-row class="access-key-stats" :gutter="12">
+      <el-col :span="8" :xs="12">
         <el-statistic title="Key 总数" :value="accessKeys.length" />
       </el-col>
-      <el-col :span="8">
+      <el-col :span="8" :xs="12">
         <el-statistic title="启用 Key" :value="enabledAccessKeyCount" />
       </el-col>
-      <el-col :span="8">
+      <el-col class="access-key-stats__recent" :span="8" :xs="24">
         <el-statistic
           title="最近使用"
           :value="lastAccessKeyUsedTimestamp"
@@ -36,7 +36,7 @@
       </el-col>
     </el-row>
 
-    <div class="table-area">
+    <div class="table-area desktop-access-key-list">
       <el-table
         v-loading="accessKeysLoading"
         :data="accessKeys"
@@ -87,8 +87,67 @@
       </el-table>
     </div>
 
+    <div v-loading="accessKeysLoading" class="mobile-card-list mobile-access-key-list">
+      <el-empty
+        v-if="!accessKeysLoading && accessKeys.length === 0"
+        description="暂无 API Key"
+        :image-size="64"
+      />
+      <article v-for="row in accessKeys" :key="row.id" class="mobile-data-card">
+        <header class="mobile-data-card__header">
+          <strong class="mobile-data-card__title">{{ row.name || "未命名 Key" }}</strong>
+          <el-tag :type="row.enabled === false ? 'warning' : 'success'">
+            {{ row.enabled === false ? "停用" : "启用" }}
+          </el-tag>
+        </header>
+
+        <dl class="mobile-data-card__details">
+          <div v-if="isSuperadmin">
+            <dt>用户</dt>
+            <dd>{{ row.owner_username || "-" }}</dd>
+          </div>
+          <div>
+            <dt>Key</dt>
+            <dd><code class="mobile-key-value">{{ row.masked_key || "-" }}</code></dd>
+          </div>
+          <div>
+            <dt>最近使用</dt>
+            <dd>{{ formatTime(row.last_used_at) || "-" }}</dd>
+          </div>
+        </dl>
+
+        <div class="mobile-card-actions">
+          <el-button
+            :icon="CopyDocument"
+            :disabled="!row.key"
+            @click="copyText(row.key)"
+          >
+            复制
+          </el-button>
+          <el-button
+            :type="row.enabled === false ? 'success' : 'warning'"
+            plain
+            @click="toggleAccessKey(row)"
+          >
+            {{ row.enabled === false ? "启用" : "停用" }}
+          </el-button>
+          <el-popconfirm title="删除这个 API Key？" @confirm="deleteAccessKey(row)">
+            <template #reference>
+              <el-button type="danger" :icon="Delete">删除</el-button>
+            </template>
+          </el-popconfirm>
+        </div>
+      </article>
+    </div>
+
     <!-- 新增 API Key Dialog -->
-    <el-dialog v-model="accessKeyDialogVisible" title="新增 API Key" width="560px" @closed="createdAccessKey = null">
+    <el-dialog
+      v-model="accessKeyDialogVisible"
+      class="access-key-dialog"
+      title="新增 API Key"
+      width="min(560px, calc(100vw - 24px))"
+      @closed="createdAccessKey = null"
+    >
       <el-form label-position="top" :model="accessKeyDraft">
         <el-form-item v-if="isSuperadmin" label="归属用户">
           <el-select v-model="accessKeyDraft.owner_username" class="full-width" filterable :loading="usersLoading">
@@ -316,3 +375,165 @@ onMounted(() => {
   loadUsers();
 });
 </script>
+
+<style scoped>
+.mobile-access-key-list {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  .desktop-access-key-list {
+    display: none;
+  }
+
+  .mobile-access-key-list {
+    display: grid;
+  }
+
+  .access-key-stats {
+    row-gap: 12px;
+  }
+
+  .access-key-stats :deep(.el-col) {
+    min-width: 0;
+  }
+
+  .access-key-stats :deep(.el-statistic) {
+    min-height: 78px;
+    padding: 12px;
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 6px;
+  }
+
+  .access-key-stats__recent :deep(.el-statistic__content) {
+    font-size: 18px;
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-card-list {
+    position: relative;
+    gap: 12px;
+    min-height: 96px;
+    margin-top: 16px;
+  }
+
+  .mobile-data-card {
+    min-width: 0;
+    padding: 14px;
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 6px;
+    background: var(--el-bg-color);
+  }
+
+  .mobile-data-card__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .mobile-data-card__title {
+    min-width: 0;
+    font-size: 15px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-data-card__header :deep(.el-tag) {
+    flex: 0 0 auto;
+  }
+
+  .mobile-data-card__details {
+    display: grid;
+    gap: 8px;
+    margin: 14px 0;
+  }
+
+  .mobile-data-card__details > div {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+  }
+
+  .mobile-data-card__details dt {
+    color: var(--el-text-color-secondary);
+  }
+
+  .mobile-data-card__details dd {
+    min-width: 0;
+    margin: 0;
+    text-align: right;
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-key-value {
+    display: block;
+    font-size: 12px;
+    word-break: break-all;
+  }
+
+  .mobile-card-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .mobile-card-actions :deep(.el-button) {
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    margin-left: 0;
+    padding-inline: 8px;
+  }
+
+  .access-keys-page .toolbar-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .access-keys-page .toolbar-actions :deep(.el-button) {
+    width: 100%;
+    min-height: 44px;
+    margin-left: 0;
+  }
+
+  .access-keys-page .toolbar-actions :deep(.el-button:last-child) {
+    grid-column: 1 / -1;
+  }
+
+  :global(.access-key-dialog) {
+    max-height: calc(100dvh - 24px);
+    margin: 12px auto !important;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  :global(.access-key-dialog .el-dialog__body) {
+    min-height: 0;
+    padding: 12px 16px 16px;
+    overflow-y: auto;
+  }
+
+  :global(.access-key-dialog .el-dialog__footer) {
+    flex: 0 0 auto;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+  }
+
+  :global(.access-key-dialog .el-input__inner),
+  :global(.access-key-dialog .el-select__input) {
+    font-size: 16px;
+  }
+
+  :global(.access-key-dialog .drawer-footer .el-button) {
+    min-height: 44px;
+  }
+
+  :global(.access-key-dialog .created-key-box code) {
+    overflow-wrap: anywhere;
+    word-break: break-all;
+  }
+}
+</style>

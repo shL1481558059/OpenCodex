@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="channels-page">
     <div class="toolbar">
       <div>
         <h2>渠道配置</h2>
@@ -30,11 +30,11 @@
       </div>
     </div>
 
-    <el-row :gutter="12">
-      <el-col :span="12">
+    <el-row :gutter="12" class="channel-stats">
+      <el-col :span="12" :xs="24">
         <el-statistic title="渠道总数" :value="channels.length" />
       </el-col>
-      <el-col :span="12">
+      <el-col :span="12" :xs="24">
         <el-statistic title="启用渠道" :value="enabledChannelCount" />
       </el-col>
     </el-row>
@@ -43,6 +43,7 @@
       <el-tabs v-model="channelView" class="channel-view-tabs" @tab-change="handleChannelViewChange">
         <el-tab-pane label="原始列表" name="raw">
           <el-table
+            v-if="!isMobile"
             ref="channelTableRef"
             v-loading="configLoading"
             :data="channels"
@@ -139,10 +140,122 @@
               </template>
             </el-table-column>
           </el-table>
+          <div v-else v-loading="configLoading" class="mobile-channel-list">
+            <div v-if="channels.length" class="mobile-selection-bar">
+              <el-checkbox
+                :model-value="allMobileChannelsSelected"
+                :indeterminate="someMobileChannelsSelected"
+                @change="toggleAllMobileChannels"
+              >
+                全选
+              </el-checkbox>
+              <span>已选 {{ selectedChannels.length }} 个</span>
+            </div>
+            <el-empty v-if="channels.length === 0" description="暂无渠道" />
+            <article v-for="channel in channels" :key="channel.id" class="mobile-channel-card">
+              <div class="mobile-channel-card__header">
+                <el-checkbox
+                  :model-value="isChannelSelected(channel)"
+                  :aria-label="`选择渠道 ${channel.name || channel.id}`"
+                  @change="(checked) => setMobileChannelSelection(channel, checked)"
+                />
+                <div class="mobile-channel-card__identity">
+                  <strong>{{ channel.name || channel.id }}</strong>
+                  <span>{{ channel.id }}</span>
+                </div>
+                <el-switch
+                  :model-value="channel.enabled !== false"
+                  :loading="isChannelToggleSaving(channel, channelIndexById(channel.id))"
+                  :disabled="configLoading"
+                  :width="56"
+                  inline-prompt
+                  active-text="启用"
+                  inactive-text="停用"
+                  @change="toggleChannelEnabled(channel, channelIndexById(channel.id), $event)"
+                />
+              </div>
+
+              <div class="mobile-channel-card__tags">
+                <el-tag size="small">{{ channel.type }}</el-tag>
+                <el-tag v-if="normalizeGroupNameText(channel.group_name)" size="small" effect="plain" type="info">
+                  {{ normalizeGroupNameText(channel.group_name) }}
+                </el-tag>
+                <el-tag size="small" :type="healthStatusTagType(channel.health_status)">
+                  {{ formatHealthStatus(channel.health_status) }}
+                </el-tag>
+              </div>
+
+              <dl class="mobile-channel-card__details">
+                <div v-if="props.isSuperadmin">
+                  <dt>所属用户</dt>
+                  <dd>{{ channel.owner_username || "-" }}</dd>
+                </div>
+                <div class="mobile-channel-card__url">
+                  <dt>Base URL</dt>
+                  <dd>{{ channel.baseurl || "未设置" }}</dd>
+                </div>
+                <div>
+                  <dt>优先级</dt>
+                  <dd>{{ channel.priority ?? 0 }}</dd>
+                </div>
+                <div>
+                  <dt>容量</dt>
+                  <dd>{{ formatCapacityStatus(channel) }}</dd>
+                </div>
+                <div>
+                  <dt>模型</dt>
+                  <dd>{{ normalizeModels(channel.models).length }}</dd>
+                </div>
+              </dl>
+
+              <div class="mobile-channel-card__actions">
+                <el-button :icon="Edit" @click="openChannelDrawer(channel, channelIndexById(channel.id))">编辑</el-button>
+                <el-button
+                  :icon="Connection"
+                  :disabled="!canUseChatStreamTest(channel)"
+                  @click="openChannelTest(channel)"
+                >
+                  测试
+                </el-button>
+                <el-dropdown trigger="click">
+                  <el-button :icon="MoreFilled">更多</el-button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item @click="openChannelPricing(channel)">
+                        <el-icon><Edit /></el-icon>定价管理
+                      </el-dropdown-item>
+                      <el-dropdown-item @click="copyChannel(channel)">
+                        <el-icon><DocumentCopy /></el-icon>复制
+                      </el-dropdown-item>
+                      <el-dropdown-item
+                        :disabled="!canResetChannelHealth(channel) || resetChannelHealthLoadingId === channel.id"
+                        @click="confirmResetChannelHealth(channel)"
+                      >
+                        <el-icon><Refresh /></el-icon>重置可用状态
+                      </el-dropdown-item>
+                      <el-dropdown-item divided @click="confirmDeleteChannel(channel)">
+                        <el-icon><Delete /></el-icon>删除
+                      </el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
+              </div>
+            </article>
+          </div>
         </el-tab-pane>
 
         <el-tab-pane label="归并视图" name="grouped">
           <div v-loading="configLoading" class="channel-grouped-view">
+            <div v-if="isMobile && channels.length" class="mobile-selection-bar">
+              <el-checkbox
+                :model-value="allMobileChannelsSelected"
+                :indeterminate="someMobileChannelsSelected"
+                @change="toggleAllMobileChannels"
+              >
+                全选
+              </el-checkbox>
+              <span>已选 {{ selectedChannels.length }} 个</span>
+            </div>
             <el-empty v-if="groupedChannelSections.length === 0" description="暂无渠道" />
             <template v-else>
               <section
@@ -187,6 +300,7 @@
                   </div>
 
                   <el-table
+                    v-if="!isMobile"
                     :data="baseGroup.channels"
                     row-key="id"
                     size="small"
@@ -271,6 +385,87 @@
                       </template>
                     </el-table-column>
                   </el-table>
+                  <div v-else class="mobile-channel-list mobile-channel-list--grouped">
+                    <article v-for="channel in baseGroup.channels" :key="channel.id" class="mobile-channel-card">
+                      <div class="mobile-channel-card__header">
+                        <el-checkbox
+                          :model-value="isChannelSelected(channel)"
+                          :aria-label="`选择渠道 ${channel.name || channel.id}`"
+                          @change="(checked) => setMobileChannelSelection(channel, checked)"
+                        />
+                        <div class="mobile-channel-card__identity">
+                          <strong>{{ channel.name || channel.id }}</strong>
+                          <span>{{ channel.id }}</span>
+                        </div>
+                        <el-switch
+                          :model-value="channel.enabled !== false"
+                          :loading="isChannelToggleSaving(channel, channelIndexById(channel.id))"
+                          :disabled="configLoading"
+                          :width="56"
+                          inline-prompt
+                          active-text="启用"
+                          inactive-text="停用"
+                          @change="toggleChannelEnabled(channel, channelIndexById(channel.id), $event)"
+                        />
+                      </div>
+                      <div class="mobile-channel-card__tags">
+                        <el-tag size="small">{{ channel.type }}</el-tag>
+                        <el-tag size="small" :type="healthStatusTagType(channel.health_status)">
+                          {{ formatHealthStatus(channel.health_status) }}
+                        </el-tag>
+                      </div>
+                      <dl class="mobile-channel-card__details">
+                        <div class="mobile-channel-card__url">
+                          <dt>Base URL</dt>
+                          <dd>{{ channel.baseurl || "未设置" }}</dd>
+                        </div>
+                        <div>
+                          <dt>模型</dt>
+                          <dd>{{ normalizeModels(channel.models).length }}</dd>
+                        </div>
+                        <div>
+                          <dt>优先级</dt>
+                          <dd>{{ channel.priority ?? 0 }}</dd>
+                        </div>
+                        <div>
+                          <dt>容量</dt>
+                          <dd>{{ formatCapacityStatus(channel) }}</dd>
+                        </div>
+                      </dl>
+                      <div class="mobile-channel-card__actions">
+                        <el-button :icon="Edit" @click="openChannelDrawer(channel, channelIndexById(channel.id))">编辑</el-button>
+                        <el-button
+                          :icon="Connection"
+                          :disabled="!canUseChatStreamTest(channel)"
+                          @click="openChannelTest(channel)"
+                        >
+                          测试
+                        </el-button>
+                        <el-dropdown trigger="click">
+                          <el-button :icon="MoreFilled">更多</el-button>
+                          <template #dropdown>
+                            <el-dropdown-menu>
+                              <el-dropdown-item @click="openChannelPricing(channel)">
+                                <el-icon><Edit /></el-icon>定价管理
+                              </el-dropdown-item>
+                              <el-dropdown-item @click="copyChannel(channel)">
+                                <el-icon><DocumentCopy /></el-icon>复制
+                              </el-dropdown-item>
+                              <el-dropdown-item
+                                :disabled="!canResetChannelHealth(channel) || resetChannelHealthLoadingId === channel.id"
+                                @click="confirmResetChannelHealth(channel)"
+                              >
+                                <el-icon><Refresh /></el-icon>重置可用状态
+                              </el-dropdown-item>
+                              <el-dropdown-item divided @click="confirmDeleteChannel(channel)">
+                                <el-icon><Delete /></el-icon>删除
+                              </el-dropdown-item>
+                            </el-dropdown-menu>
+                          </template>
+                        </el-dropdown>
+                      </div>
+                    </article>
+                  </div>
                 </div>
               </section>
             </template>
@@ -280,7 +475,12 @@
     </div>
 
     <!-- 渠道编辑 Drawer -->
-    <el-drawer v-model="channelDrawerVisible" :title="editingIndex === -1 ? '新增渠道' : '编辑渠道'" size="720px">
+    <el-drawer
+      v-model="channelDrawerVisible"
+      :title="editingIndex === -1 ? '新增渠道' : '编辑渠道'"
+      :size="isMobile ? '100%' : '720px'"
+      class="channel-editor-drawer"
+    >
       <el-form label-position="top" :model="channelDraft">
         <el-row :gutter="12">
           <el-col :span="12">
@@ -439,7 +639,7 @@
         <el-input v-model="headersText" type="textarea" :rows="4" placeholder='{"X-Test":"yes"}' />
 
         <el-divider content-position="left">模型映射</el-divider>
-        <el-table :data="channelDraft.models" empty-text="暂无模型映射">
+        <el-table v-if="!isMobile" :data="channelDraft.models" empty-text="暂无模型映射">
           <el-table-column label="请求模型">
             <template #default="{ row }">
               <el-input v-model="row.model" />
@@ -456,6 +656,27 @@
             </template>
           </el-table-column>
         </el-table>
+        <div v-else class="model-mapping-list">
+          <div v-if="channelDraft.models.length === 0" class="model-mapping-empty">暂无模型映射</div>
+          <div v-for="(mapping, mappingIndex) in channelDraft.models" :key="mappingIndex" class="model-mapping-card">
+            <div class="model-mapping-card__field">
+              <span>请求模型</span>
+              <el-input v-model="mapping.model" autocomplete="off" />
+            </div>
+            <div class="model-mapping-card__field">
+              <span>上游模型</span>
+              <el-input v-model="mapping.upstream_model" autocomplete="off" />
+            </div>
+            <el-button
+              type="danger"
+              plain
+              :icon="Delete"
+              @click="channelDraft.models.splice(mappingIndex, 1)"
+            >
+              删除映射
+            </el-button>
+          </div>
+        </div>
         <el-button style="margin-top: 8px" :icon="Plus" @click="channelDraft.models.push(defaultModelMapping())">
           添加模型
         </el-button>
@@ -557,8 +778,15 @@
       </template>
     </el-drawer>
 
-    <el-dialog v-model="discoverModelsVisible" title="发现模型" width="720px">
+    <el-dialog
+      v-model="discoverModelsVisible"
+      title="发现模型"
+      width="720px"
+      :fullscreen="isMobile"
+      class="channel-mobile-dialog discover-models-dialog"
+    >
       <el-table
+        v-if="!isMobile"
         ref="discoveredModelsTableRef"
         :data="discoveredModelRows"
         row-key="model"
@@ -576,6 +804,20 @@
           </template>
         </el-table-column>
       </el-table>
+      <div v-else class="discover-model-list">
+        <div v-if="discoveredModelRows.length === 0" class="model-mapping-empty">未发现模型</div>
+        <div v-for="row in discoveredModelRows" :key="row.model" class="discover-model-card">
+          <el-checkbox
+            :model-value="isDiscoveredModelSelected(row.model)"
+            :disabled="row.exists"
+            @change="(checked) => setDiscoveredModelSelection(row, checked)"
+          />
+          <span class="discover-model-card__name">{{ row.model }}</span>
+          <el-tag size="small" :type="row.exists ? 'info' : 'success'">
+            {{ row.exists ? "已存在" : "可添加" }}
+          </el-tag>
+        </div>
+      </div>
 
       <template #footer>
         <div class="drawer-footer">
@@ -591,7 +833,13 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="batchEditVisible" title="批量编辑模型映射" width="640px">
+    <el-dialog
+      v-model="batchEditVisible"
+      title="批量编辑模型映射"
+      width="640px"
+      :fullscreen="isMobile"
+      class="channel-mobile-dialog"
+    >
       <el-input
         v-model="batchEditText"
         type="textarea"
@@ -606,8 +854,15 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="channelPricingVisible" :title="channelPricingTitle" width="1080px">
+    <el-dialog
+      v-model="channelPricingVisible"
+      :title="channelPricingTitle"
+      width="1080px"
+      :fullscreen="isMobile"
+      class="channel-mobile-dialog channel-pricing-dialog"
+    >
       <el-table
+        v-if="!isMobile"
         v-loading="channelPricingLoading"
         :data="channelPricingRows"
         row-key="upstream_model"
@@ -662,6 +917,42 @@
           </template>
         </el-table-column>
       </el-table>
+      <div v-else v-loading="channelPricingLoading" class="pricing-model-list">
+        <div v-if="channelPricingRows.length === 0" class="model-mapping-empty">暂无上游模型</div>
+        <article v-for="row in channelPricingRows" :key="row.upstream_model" class="pricing-model-card">
+          <div class="pricing-model-card__header">
+            <strong>{{ row.upstream_model }}</strong>
+            <el-tag size="small" :type="row.overridden ? 'warning' : 'info'">
+              {{ row.overridden ? "覆盖全局" : "继承全局" }}
+            </el-tag>
+          </div>
+          <div class="pricing-model-card__info">{{ formatChannelPricingModel(row) }}</div>
+          <dl class="pricing-model-card__rules">
+            <div><dt>输入</dt><dd>{{ pricingRuleSummary(effectiveChannelPricingModel(row), "input") }}</dd></div>
+            <div><dt>输出</dt><dd>{{ pricingRuleSummary(effectiveChannelPricingModel(row), "output") }}</dd></div>
+            <div><dt>缓存写</dt><dd>{{ pricingRuleSummary(effectiveChannelPricingModel(row), "cache_write") }}</dd></div>
+            <div><dt>缓存读</dt><dd>{{ pricingRuleSummary(effectiveChannelPricingModel(row), "cache_read") }}</dd></div>
+          </dl>
+          <div class="mobile-channel-card__actions">
+            <el-button size="small" :icon="Edit" @click="openChannelPricingEditor(row)">编辑</el-button>
+            <el-popconfirm
+              v-if="row.overridden && row.override_model?.id"
+              title="恢复为全局配置？"
+              @confirm="restoreChannelPricing(row)"
+            >
+              <template #reference>
+                <el-button
+                  size="small"
+                  :icon="Refresh"
+                  :loading="channelPricingRestoringId === row.override_model.id"
+                >
+                  恢复默认
+                </el-button>
+              </template>
+            </el-popconfirm>
+          </div>
+        </article>
+      </div>
 
       <template #footer>
         <div class="drawer-footer">
@@ -675,6 +966,8 @@
       v-model="channelPricingEditorVisible"
       :title="channelPricingEditorTitle"
       width="880px"
+      :fullscreen="isMobile"
+      class="channel-mobile-dialog channel-pricing-editor-dialog"
       append-to-body
     >
       <el-form label-position="top" :model="channelPricingDraft">
@@ -761,7 +1054,13 @@
         </el-row>
 
         <el-divider content-position="left">计费规则</el-divider>
-        <el-table :data="channelPricingDraft.pricing.rules" border size="small" class="pricing-rule-table">
+        <el-table
+          v-if="!isMobile"
+          :data="channelPricingDraft.pricing.rules"
+          border
+          size="small"
+          class="pricing-rule-table"
+        >
           <el-table-column label="计费项" width="110">
             <template #default="{ row }">{{ formatBillingItem(row.billing_item) }}</template>
           </el-table-column>
@@ -795,6 +1094,32 @@
             </template>
           </el-table-column>
         </el-table>
+        <div v-else class="pricing-rule-list">
+          <div v-for="rule in channelPricingDraft.pricing.rules" :key="rule.billing_item" class="pricing-rule-card">
+            <div class="pricing-rule-card__header">
+              <strong>{{ formatBillingItem(rule.billing_item) }}</strong>
+              <el-switch v-model="rule.enabled" inline-prompt active-text="启用" inactive-text="停用" />
+            </div>
+            <el-form-item label="模式">
+              <el-select v-model="rule.billing_mode" class="full-width">
+                <el-option label="按次" value="per_request" />
+                <el-option label="每百万 token" value="per_million_tokens" />
+                <el-option label="阶梯 token" value="tiered_tokens" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="单价">
+              <el-input-number v-model="rule.unit_price" :min="0" :precision="8" :step="0.01" class="full-width" />
+            </el-form-item>
+            <el-form-item label="阶梯">
+              <el-input
+                v-model="rule.tiers_text"
+                type="textarea"
+                :rows="2"
+                :disabled="rule.billing_mode !== 'tiered_tokens'"
+              />
+            </el-form-item>
+          </div>
+        </div>
 
         <el-collapse class="advanced-collapse">
           <el-collapse-item title="Catalog JSON" name="catalog">
@@ -811,7 +1136,13 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="bulkEditVisible" title="批量编辑渠道" width="640px">
+    <el-dialog
+      v-model="bulkEditVisible"
+      title="批量编辑渠道"
+      width="640px"
+      :fullscreen="isMobile"
+      class="channel-mobile-dialog"
+    >
       <el-alert
         class="bulk-edit-alert"
         type="info"
@@ -909,12 +1240,14 @@
       v-model="bulkTestVisible"
       title="批量测试渠道"
       width="960px"
+      :fullscreen="isMobile"
+      class="channel-mobile-dialog bulk-test-dialog"
       :close-on-click-modal="!bulkTestRunning"
       :before-close="handleBulkTestBeforeClose"
     >
       <el-form label-position="top" :model="bulkTestForm" class="channel-test-form">
         <el-row :gutter="12">
-          <el-col :span="12">
+          <el-col :span="12" :xs="24">
             <el-form-item label="提示词">
               <el-input
                 v-model="bulkTestForm.prompt"
@@ -924,7 +1257,7 @@
               />
             </el-form-item>
           </el-col>
-          <el-col :span="6">
+          <el-col :span="6" :xs="24">
             <el-form-item label="最大输出 Tokens">
               <el-input-number
                 v-model="bulkTestForm.max_output_tokens"
@@ -935,7 +1268,7 @@
               />
             </el-form-item>
           </el-col>
-          <el-col :span="6">
+          <el-col :span="6" :xs="24">
             <el-form-item label="并发数">
               <el-input-number
                 v-model="bulkTestForm.concurrency"
@@ -960,6 +1293,7 @@
       </div>
 
       <el-table
+        v-if="!isMobile"
         :data="bulkTestRows"
         row-key="key"
         max-height="460"
@@ -999,6 +1333,23 @@
           </template>
         </el-table-column>
       </el-table>
+      <div v-else class="bulk-test-card-list">
+        <div v-if="bulkTestRows.length === 0" class="model-mapping-empty">暂无测试渠道</div>
+        <article v-for="row in bulkTestRows" :key="row.key" class="bulk-test-card">
+          <div class="bulk-test-card__header">
+            <strong>{{ row.channel.name || row.channel.id }}</strong>
+            <el-tag size="small" :type="bulkTestStatusTagType(row.status)">
+              {{ formatBulkTestStatus(row.status) }}
+            </el-tag>
+          </div>
+          <dl class="bulk-test-card__details">
+            <div><dt>服务类型</dt><dd>{{ row.channel.type }}</dd></div>
+            <div><dt>模型</dt><dd>{{ row.model || "-" }}</dd></div>
+            <div><dt>耗时</dt><dd>{{ displayMs(row.result?.duration_ms) }}</dd></div>
+          </dl>
+          <div class="bulk-test-output">{{ formatBulkTestResult(row) }}</div>
+        </article>
+      </div>
 
       <template #footer>
         <div class="drawer-footer">
@@ -1017,8 +1368,14 @@
     </el-dialog>
 
     <!-- 渠道测试 Dialog -->
-    <el-dialog v-model="channelTestVisible" :title="channelTestTitle" width="640px">
-      <el-descriptions v-if="testingChannel" :column="2" border class="channel-test-summary">
+    <el-dialog
+      v-model="channelTestVisible"
+      :title="channelTestTitle"
+      width="640px"
+      :fullscreen="isMobile"
+      class="channel-mobile-dialog channel-test-dialog"
+    >
+      <el-descriptions v-if="testingChannel" :column="isMobile ? 1 : 2" border class="channel-test-summary">
         <el-descriptions-item label="渠道">{{ testingChannel.name || testingChannel.id }}</el-descriptions-item>
         <el-descriptions-item label="服务类型">{{ testingChannel.type }}</el-descriptions-item>
         <el-descriptions-item label="ID">{{ testingChannel.id }}</el-descriptions-item>
@@ -1102,7 +1459,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, nextTick, onMounted } from "vue";
+import { ref, reactive, computed, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
 import { ElMessageBox } from "element-plus/es/components/message-box/index.mjs";
 import {
@@ -1205,8 +1562,28 @@ const channelToggleSavingKeys = reactive(new Set());
 const resetChannelHealthLoadingId = ref("");
 const bulkTestAbortControllers = new Set();
 
+const isMobile = ref(false);
+let mobileMediaQuery;
+
+function updateMobileViewport(event) {
+  const nextMobile = Boolean(event?.matches ?? mobileMediaQuery?.matches);
+  const changed = isMobile.value !== nextMobile;
+  isMobile.value = nextMobile;
+
+  if (changed && !nextMobile) {
+    restoreDesktopSelections();
+  }
+}
+
 const channels = computed(() => config.channels || []);
 const enabledChannelCount = computed(() => channels.value.filter((c) => c.enabled !== false).length);
+const selectedChannelIds = computed(() => new Set(selectedChannels.value.map((channel) => channel.id)));
+const allMobileChannelsSelected = computed(() =>
+  channels.value.length > 0 && channels.value.every((channel) => selectedChannelIds.value.has(channel.id))
+);
+const someMobileChannelsSelected = computed(() =>
+  selectedChannels.value.length > 0 && !allMobileChannelsSelected.value
+);
 const selectedChannelsContainImages = computed(() => selectedChannels.value.some(isImagesChannel));
 const bulkChannelTestDisabledReason = computed(() => {
   if (selectedChannels.value.length === 0) return "请先选择渠道";
@@ -1352,6 +1729,7 @@ async function persistChannel(channel, method = "POST") {
     body: JSON.stringify(channel)
   });
   config.channels = Array.isArray(data?.channels) ? data.channels : config.channels;
+  reconcileSelectedChannels();
 }
 
 async function openChannelDrawer(channel = null, index = -1) {
@@ -1378,6 +1756,64 @@ function openChannelTest(channel) {
 
 function handleChannelSelectionChange(selection) {
   selectedChannels.value = Array.isArray(selection) ? selection : [];
+}
+
+function reconcileSelectedChannels() {
+  const selectedIds = new Set(selectedChannels.value.map((channel) => channel.id));
+  selectedChannels.value = channels.value.filter((channel) => selectedIds.has(channel.id));
+}
+
+async function restoreDesktopSelections() {
+  const selectedIds = new Set(selectedChannels.value.map((channel) => channel.id));
+  const selectedModels = new Set(selectedDiscoveredModels.value);
+
+  if (channelView.value !== "raw") {
+    selectedChannels.value = [];
+  }
+
+  await nextTick();
+
+  if (channelView.value === "raw" && channelTableRef.value) {
+    channelTableRef.value.clearSelection();
+    for (const channel of channels.value) {
+      if (selectedIds.has(channel.id)) {
+        channelTableRef.value.toggleRowSelection(channel, true);
+      }
+    }
+  }
+
+  if (discoverModelsVisible.value && discoveredModelsTableRef.value) {
+    discoveredModelsTableRef.value.clearSelection();
+    for (const row of discoveredModelRows.value) {
+      if (!row.exists && selectedModels.has(row.model)) {
+        discoveredModelsTableRef.value.toggleRowSelection(row, true);
+      }
+    }
+  }
+}
+
+function isChannelSelected(channel) {
+  return selectedChannelIds.value.has(channel?.id);
+}
+
+function setMobileChannelSelection(channel, checked) {
+  const channelId = channel?.id;
+  if (!channelId) {
+    return;
+  }
+
+  if (checked) {
+    if (!selectedChannelIds.value.has(channelId)) {
+      selectedChannels.value = [...selectedChannels.value, channel];
+    }
+    return;
+  }
+
+  selectedChannels.value = selectedChannels.value.filter((item) => item.id !== channelId);
+}
+
+function toggleAllMobileChannels(checked) {
+  selectedChannels.value = checked ? [...channels.value] : [];
 }
 
 async function handleChannelViewChange() {
@@ -1617,6 +2053,7 @@ async function deleteChannel(index) {
     method: "DELETE"
   });
   config.channels = Array.isArray(data?.channels) ? data.channels : channels.value.filter((_, i) => i !== index);
+  selectedChannels.value = selectedChannels.value.filter((item) => item.id !== channel.id);
   ElMessage.success("渠道已删除");
 }
 
@@ -1627,6 +2064,23 @@ async function deleteChannelById(channelId) {
   }
 
   await deleteChannel(index);
+}
+
+async function confirmDeleteChannel(channel) {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除渠道“${channel?.name || channel?.id}”？`,
+      "删除渠道",
+      {
+        type: "warning",
+        confirmButtonText: "删除",
+        cancelButtonText: "取消"
+      }
+    );
+  } catch {
+    return;
+  }
+  await deleteChannelById(channel.id);
 }
 
 async function toggleChannelEnabled(channel, index, enabled) {
@@ -1643,11 +2097,13 @@ async function toggleChannelEnabled(channel, index, enabled) {
   );
 
   config.channels = nextChannels;
+  reconcileSelectedChannels();
   try {
     await persistChannel({ ...channel, enabled: nextEnabled }, "PUT");
     ElMessage.success(nextEnabled ? "渠道已启用" : "渠道已停用");
   } catch (error) {
     config.channels = previousChannels;
+    reconcileSelectedChannels();
     ElMessage.error(error.message);
   } finally {
     channelToggleSavingKeys.delete(key);
@@ -2062,13 +2518,35 @@ function handleDiscoveredModelSelectionChange(rows) {
   selectedDiscoveredModels.value = rows.map((row) => row.model);
 }
 
+function isDiscoveredModelSelected(model) {
+  return selectedDiscoveredModels.value.includes(model);
+}
+
+function setDiscoveredModelSelection(row, checked) {
+  if (row.exists) {
+    return;
+  }
+
+  if (checked) {
+    selectedDiscoveredModels.value = uniqueStringList([...selectedDiscoveredModels.value, row.model]);
+    return;
+  }
+
+  selectedDiscoveredModels.value = selectedDiscoveredModels.value.filter((model) => model !== row.model);
+}
+
 function isDiscoveredModelSelectable(row) {
   return !row.exists;
 }
 
 function selectDefaultDiscoveredModels() {
   const table = discoveredModelsTableRef.value;
-  if (!table) return;
+  if (!table) {
+    selectedDiscoveredModels.value = discoveredModelRows.value
+      .filter((row) => !row.exists)
+      .map((row) => row.model);
+    return;
+  }
   table.clearSelection();
   for (const row of discoveredModelRows.value) {
     if (!row.exists) {
@@ -2751,7 +3229,14 @@ function isPlainObject(value) {
 
 // Expose loadConfig so App can call it on init
 onMounted(async () => {
+  mobileMediaQuery = window.matchMedia("(max-width: 767px)");
+  updateMobileViewport(mobileMediaQuery);
+  mobileMediaQuery.addEventListener("change", updateMobileViewport);
   await loadConfig();
+});
+
+onBeforeUnmount(() => {
+  mobileMediaQuery?.removeEventListener("change", updateMobileViewport);
 });
 </script>
 
@@ -2860,6 +3345,195 @@ onMounted(async () => {
   width: 100%;
 }
 
+.mobile-channel-list,
+.model-mapping-list,
+.discover-model-list,
+.pricing-model-list,
+.pricing-rule-list,
+.bulk-test-card-list {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.mobile-selection-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 2px 8px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+
+.mobile-channel-card,
+.model-mapping-card,
+.pricing-model-card,
+.pricing-rule-card,
+.bulk-test-card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  background: var(--el-bg-color);
+}
+
+.mobile-channel-card__header,
+.pricing-model-card__header,
+.pricing-rule-card__header,
+.bulk-test-card__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.mobile-channel-card__identity {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mobile-channel-card__identity strong,
+.pricing-model-card__header strong,
+.bulk-test-card__header strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mobile-channel-card__identity span {
+  overflow: hidden;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-channel-card__tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.mobile-channel-card__details,
+.pricing-model-card__rules,
+.bulk-test-card__details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+  margin: 12px 0;
+}
+
+.mobile-channel-card__details > div,
+.pricing-model-card__rules > div,
+.bulk-test-card__details > div {
+  min-width: 0;
+}
+
+.mobile-channel-card__details dt,
+.pricing-model-card__rules dt,
+.bulk-test-card__details dt {
+  margin-bottom: 3px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.mobile-channel-card__details dd,
+.pricing-model-card__rules dd,
+.bulk-test-card__details dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.mobile-channel-card__url {
+  grid-column: 1 / -1;
+}
+
+.mobile-channel-card__actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.mobile-channel-card__actions :deep(.el-button),
+.mobile-channel-card__actions :deep(.el-dropdown) {
+  width: 100%;
+  margin: 0;
+}
+
+.model-mapping-empty {
+  padding: 24px 12px;
+  color: var(--el-text-color-secondary);
+  text-align: center;
+}
+
+.model-mapping-card {
+  display: grid;
+  gap: 12px;
+}
+
+.model-mapping-card__field {
+  display: grid;
+  gap: 6px;
+}
+
+.model-mapping-card__field > span {
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.discover-model-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--el-border-color-extra-light);
+}
+
+.discover-model-card__name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pricing-model-card__header,
+.bulk-test-card__header {
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.pricing-model-card__info {
+  margin-top: 8px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.pricing-rule-card__header {
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.pricing-rule-card :deep(.el-form-item:last-child) {
+  margin-bottom: 0;
+}
+
+.bulk-test-card .bulk-test-output {
+  max-height: 180px;
+  padding: 10px;
+  border-radius: 4px;
+  background: var(--el-fill-color-light);
+}
+
 .bulk-edit-alert {
   margin-bottom: 14px;
 }
@@ -2918,6 +3592,211 @@ onMounted(async () => {
 
   .bulk-edit-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 767px) {
+  .channels-page {
+    min-width: 0;
+  }
+
+  .channels-page .toolbar {
+    margin-bottom: 14px;
+  }
+
+  .channels-page .toolbar-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    width: 100%;
+    padding-top: 12px;
+  }
+
+  .channel-stats {
+    row-gap: 12px;
+  }
+
+  .channels-page .toolbar-actions > *,
+  .channels-page .toolbar-actions > :deep(.el-button),
+  .channels-page .toolbar-actions > :deep(.el-tooltip__trigger),
+  .channels-page .toolbar-actions > span > :deep(.el-button) {
+    width: 100%;
+    margin: 0;
+  }
+
+  .channels-page :deep(.el-button) {
+    min-height: 44px;
+  }
+
+  .channels-page :deep(.el-input__inner),
+  .channels-page :deep(.el-textarea__inner) {
+    font-size: 16px;
+  }
+
+  .channel-view-tabs :deep(.el-tabs__header) {
+    margin-bottom: 12px;
+  }
+
+  .channel-group-section + .channel-group-section {
+    margin-top: 18px;
+  }
+
+  .channel-group-header {
+    padding-bottom: 10px;
+  }
+
+  .base-url-section {
+    padding: 12px 0 16px;
+  }
+
+  .base-url-main strong {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-channel-list--grouped {
+    margin-top: 10px;
+  }
+
+  .mobile-channel-card__header {
+    align-items: flex-start;
+  }
+
+  .mobile-channel-card__header :deep(.el-switch) {
+    flex-shrink: 0;
+  }
+
+  .mobile-channel-card__header > :deep(.el-checkbox),
+  .discover-model-card > :deep(.el-checkbox) {
+    min-width: 44px;
+    min-height: 44px;
+    margin-right: 0;
+    justify-content: center;
+  }
+
+  .mobile-channel-card__actions :deep(.el-button) {
+    padding-right: 8px;
+    padding-left: 8px;
+  }
+
+  .bulk-edit-row {
+    grid-template-columns: 104px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 360px) {
+  .mobile-channel-card__actions {
+    grid-template-columns: 1fr;
+  }
+
+  .mobile-channel-card__details,
+  .pricing-model-card__rules,
+  .bulk-test-card__details {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 767px) {
+  :global(.channel-editor-drawer) {
+    width: 100% !important;
+    max-width: 100vw;
+  }
+
+  :global(.channel-editor-drawer .el-drawer__header) {
+    min-height: 56px;
+    margin-bottom: 0;
+    padding: 14px 16px;
+  }
+
+  :global(.channel-editor-drawer .el-drawer__body) {
+    min-width: 0;
+    padding: 12px 16px 20px;
+    overflow-x: hidden;
+  }
+
+  :global(.channel-editor-drawer .el-drawer__footer) {
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--el-border-color-lighter);
+  }
+
+  :global(.channel-editor-drawer .el-col),
+  :global(.channel-pricing-editor-dialog .el-col) {
+    max-width: 100% !important;
+    flex: 0 0 100% !important;
+  }
+
+  :global(.channel-mobile-dialog.is-fullscreen) {
+    display: flex;
+    height: 100dvh;
+    max-width: 100vw;
+    margin: 0;
+    overflow: hidden;
+    flex-direction: column;
+  }
+
+  :global(.channel-mobile-dialog .el-dialog__header) {
+    flex-shrink: 0;
+    min-height: 56px;
+    margin-right: 0;
+    padding: 16px 52px 12px 16px;
+    border-bottom: 1px solid var(--el-border-color-lighter);
+  }
+
+  :global(.channel-mobile-dialog .el-dialog__title) {
+    display: block;
+    font-size: 16px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+
+  :global(.channel-mobile-dialog .el-dialog__body) {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    padding: 14px 16px;
+    overflow: auto;
+  }
+
+  :global(.channel-mobile-dialog .el-dialog__footer) {
+    flex-shrink: 0;
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--el-border-color-lighter);
+  }
+
+  :global(.channel-mobile-dialog .drawer-footer),
+  :global(.channel-editor-drawer .drawer-footer) {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  :global(.channel-mobile-dialog .el-button),
+  :global(.channel-editor-drawer .el-button) {
+    min-height: 44px;
+  }
+
+  :global(.channel-mobile-dialog .el-input__inner),
+  :global(.channel-mobile-dialog .el-textarea__inner),
+  :global(.channel-editor-drawer .el-input__inner),
+  :global(.channel-editor-drawer .el-textarea__inner) {
+    font-size: 16px;
+  }
+
+  :global(.channel-mobile-dialog .el-divider__text),
+  :global(.channel-editor-drawer .el-divider__text) {
+    max-width: calc(100vw - 64px);
+    white-space: normal;
+  }
+
+  :global(.channel-test-dialog .el-descriptions__cell) {
+    overflow-wrap: anywhere;
+  }
+
+  :global(.channel-test-dialog .channel-test-json) {
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-wrap: anywhere;
   }
 }
 </style>
