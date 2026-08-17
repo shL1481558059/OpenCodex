@@ -65,80 +65,324 @@
       </div>
     </div>
 
-    <el-form class="log-filter-form" inline>
-      <el-form-item label="开始时间">
-        <el-date-picker
-          v-model="logFilters.created_from"
-          type="datetime"
-          clearable
-          @change="refreshLogPageData(1)"
-        />
-      </el-form-item>
-      <el-form-item label="结束时间">
-        <el-date-picker
-          v-model="logFilters.created_to"
-          type="datetime"
-          clearable
-          @change="refreshLogPageData(1)"
-        />
-      </el-form-item>
-      <el-form-item label="请求 ID">
-        <el-autocomplete v-model="logFilters.request_id" :fetch-suggestions="requestIdSuggestions" clearable @focus="loadFilterOptions('request_id')" @select="refreshLogPageData(1)" @clear="refreshLogPageData(1)" />
-      </el-form-item>
-      <el-form-item label="会话">
-        <el-autocomplete v-model="logFilters.conversation_key" :fetch-suggestions="conversationKeySuggestions" clearable @focus="loadFilterOptions('conversation_key')" @select="refreshLogPageData(1)" @clear="refreshLogPageData(1)" />
-      </el-form-item>
-      <el-form-item label="Turn ID">
-        <el-autocomplete v-model="logFilters.conversation_turn_id" :fetch-suggestions="conversationTurnIdSuggestions" clearable @focus="loadFilterOptions('conversation_turn_id')" @select="refreshLogPageData(1)" @clear="refreshLogPageData(1)" />
-      </el-form-item>
-      <el-form-item label="窗口 ID">
-        <el-autocomplete v-model="logFilters.conversation_window_id" :fetch-suggestions="conversationWindowIdSuggestions" clearable @focus="loadFilterOptions('conversation_window_id')" @select="refreshLogPageData(1)" @clear="refreshLogPageData(1)" />
-      </el-form-item>
-      <el-form-item label="上一响应">
-        <el-autocomplete v-model="logFilters.previous_response_id" :fetch-suggestions="previousResponseIdSuggestions" clearable @focus="loadFilterOptions('previous_response_id')" @select="refreshLogPageData(1)" @clear="refreshLogPageData(1)" />
-      </el-form-item>
-      <el-form-item label="模型">
-        <el-autocomplete v-model="logFilters.model" :fetch-suggestions="modelSuggestions" clearable @focus="loadFilterOptions('model')" @select="refreshLogPageData(1)" @clear="refreshLogPageData(1)" />
-      </el-form-item>
-      <el-form-item label="渠道">
-        <el-select v-model="logFilters.channel_id" clearable filterable remote :remote-method="(query) => loadFilterOptions('channel_id', query)" :loading="filterOptionsLoading.channel_id" @visible-change="(visible) => handleFilterVisible('channel_id', visible)" @change="refreshLogPageData(1)">
-          <el-option v-for="item in filterOptions.channel_ids" :key="channelOptionValue(item)" :label="channelOptionLabel(item)" :value="channelOptionValue(item)" />
-        </el-select>
-      </el-form-item>
-      <el-form-item label="路径">
-        <el-select v-model="logFilters.path" clearable filterable remote :remote-method="(query) => loadFilterOptions('path', query)" :loading="filterOptionsLoading.path" @visible-change="(visible) => handleFilterVisible('path', visible)" @change="refreshLogPageData(1)">
-          <el-option v-for="item in filterOptions.paths" :key="item" :label="item" :value="item" />
-        </el-select>
-      </el-form-item>
-      <el-form-item label="状态">
-        <el-select v-model="logFilters.request_status" clearable @change="refreshLogPageData(1)">
-          <el-option v-for="item in filterOptions.request_statuses" :key="item" :label="formatRequestStatus(item)" :value="item" />
-        </el-select>
-      </el-form-item>
-      <el-form-item label="请求类型">
-        <el-select v-model="logFilters.request_type" clearable @change="refreshLogPageData(1)">
-          <el-option v-for="item in filterOptions.request_types" :key="item" :label="formatRequestType(item)" :value="item" />
-        </el-select>
-      </el-form-item>
-      <el-form-item label="状态码">
-        <el-select v-model="logFilters.status_code" clearable filterable remote :remote-method="(query) => loadFilterOptions('status_code', query)" :loading="filterOptionsLoading.status_code" @visible-change="(visible) => handleFilterVisible('status_code', visible)" @change="refreshLogPageData(1)">
-          <el-option v-for="item in filterOptions.status_codes" :key="item" :label="item" :value="String(item)" />
-        </el-select>
-      </el-form-item>
-      <el-form-item v-if="isSuperadmin" label="用户">
-        <el-select v-model="logFilters.owner_username" clearable filterable remote :remote-method="(query) => loadFilterOptions('owner_username', query)" :loading="filterOptionsLoading.owner_username" @visible-change="(visible) => handleFilterVisible('owner_username', visible)" @change="refreshLogPageData(1)">
-          <el-option v-for="item in filterOptions.owner_usernames" :key="item" :label="item" :value="item" />
-        </el-select>
-      </el-form-item>
-      <el-form-item label="Key 名称">
-        <el-select v-model="logFilters.api_key_id" clearable filterable remote :remote-method="(query) => loadFilterOptions('api_key_id', query)" :loading="filterOptionsLoading.api_key_id" @visible-change="(visible) => handleFilterVisible('api_key_id', visible)" @change="refreshLogPageData(1)">
-          <el-option v-for="item in filterOptions.api_key_ids" :key="apiKeyOptionValue(item)" :label="apiKeyOptionLabel(item)" :value="apiKeyOptionValue(item)" />
-        </el-select>
-      </el-form-item>
-      <el-form-item class="log-filter-actions">
-        <el-button type="primary" :icon="Search" @click="refreshLogPageData(1)">查询</el-button>
-      </el-form-item>
-    </el-form>
+    <div class="log-filter-shell">
+      <el-form class="log-filter-form log-filter-quick" @submit.prevent="submitLogFilters(1)">
+          <el-form-item label="时间范围" class="log-filter-quick__range">
+            <el-select v-model="draftLogTimePreset" @change="handleLogTimePresetChange">
+              <el-option
+                v-for="item in logTimePresetOptions"
+                :key="item.value"
+                :label="item.label"
+                :value="item.value"
+              />
+            </el-select>
+          </el-form-item>
+
+          <el-form-item label="标识" class="log-filter-quick__identity">
+            <div class="log-filter-identity-control">
+              <el-select
+                v-model="quickIdentifierField"
+                class="log-filter-identity-control__type"
+                @change="handleIdentifierFieldChange"
+              >
+                <el-option
+                  v-for="item in identifierFieldOptions"
+                  :key="item.value"
+                  :label="item.label"
+                  :value="item.value"
+                />
+              </el-select>
+              <el-autocomplete
+                v-model="identifierValue"
+                class="log-filter-identity-control__value"
+                :fetch-suggestions="identifierSuggestions"
+                :debounce="300"
+                :trigger-on-focus="false"
+                clearable
+                placeholder="输入标识值"
+                @keyup.enter.stop.prevent="submitLogFilters(1)"
+              />
+            </div>
+          </el-form-item>
+
+          <el-form-item label="状态">
+            <el-select v-model="draftLogFilters.request_status" clearable>
+              <el-option
+                v-for="item in filterOptions.request_statuses"
+                :key="item"
+                :label="formatRequestStatus(item)"
+                :value="item"
+              />
+            </el-select>
+          </el-form-item>
+
+          <el-form-item label="模型">
+            <el-autocomplete
+              v-model="draftLogFilters.model"
+              :fetch-suggestions="modelSuggestions"
+              :debounce="300"
+              :trigger-on-focus="false"
+              clearable
+              placeholder="全部模型"
+              @keyup.enter.stop.prevent="submitLogFilters(1)"
+            />
+          </el-form-item>
+
+          <el-form-item label="渠道">
+            <el-select
+              v-model="draftLogFilters.channel_id"
+              clearable
+              filterable
+              remote
+              :remote-method="(query) => loadFilterOptions('channel_id', query)"
+              :loading="filterOptionsLoading.channel_id"
+              @visible-change="(visible) => handleFilterVisible('channel_id', visible)"
+            >
+              <el-option
+                v-for="item in filterOptions.channel_ids"
+                :key="channelOptionValue(item)"
+                :label="channelOptionLabel(item)"
+                :value="channelOptionValue(item)"
+              />
+            </el-select>
+          </el-form-item>
+
+          <div class="log-filter-quick__actions log-filter-actions">
+            <el-button
+              type="primary"
+              :icon="Search"
+              native-type="submit"
+              :loading="refreshLoading"
+            >
+              查询
+            </el-button>
+            <el-button link @click="resetLogFilters">重置</el-button>
+            <el-button
+              class="log-filter-advanced-trigger"
+              :icon="Filter"
+              @click="advancedFiltersVisible = true"
+            >
+              更多筛选
+              <el-tag v-if="appliedAdvancedFilterCount" size="small" effect="plain">
+                {{ appliedAdvancedFilterCount }}
+              </el-tag>
+            </el-button>
+          </div>
+      </el-form>
+
+      <div
+        v-if="activeLogFilterChips.length || logFiltersDirty"
+        class="log-active-filters"
+        aria-live="polite"
+      >
+        <span class="log-active-filters__label">已应用</span>
+        <div class="log-active-filters__list">
+          <el-tag
+            v-for="chip in activeLogFilterChips"
+            :key="chip.key"
+            closable
+            effect="plain"
+            @close="clearAppliedFilterChip(chip.key)"
+          >
+            {{ chip.label }}
+          </el-tag>
+        </div>
+        <span v-if="logFiltersDirty" class="log-active-filters__pending">
+          有未应用更改
+        </span>
+      </div>
+    </div>
+
+    <el-drawer
+      v-model="advancedFiltersVisible"
+      title="更多筛选"
+      direction="rtl"
+      size="min(520px, 100vw)"
+      class="log-filter-drawer"
+    >
+      <el-alert
+        v-if="logFiltersDirty"
+        class="log-filter-drawer__pending"
+        title="条件修改后点击“应用筛选”才会刷新列表"
+        type="info"
+        :closable="false"
+      />
+
+      <el-form class="log-filter-advanced-form log-filter-advanced-form--drawer" label-position="top">
+        <div v-if="draftLogTimePreset === 'custom'" class="log-filter-section">
+          <div class="log-filter-section__title">自定义时间</div>
+          <el-form-item label="开始时间">
+            <el-date-picker
+              v-model="draftLogFilters.created_from"
+              type="datetime"
+              :clearable="false"
+            />
+          </el-form-item>
+          <el-form-item label="结束时间">
+            <el-date-picker
+              v-model="draftLogFilters.created_to"
+              type="datetime"
+              :clearable="false"
+            />
+          </el-form-item>
+        </div>
+
+        <div class="log-filter-section">
+          <div class="log-filter-section__title">关联链路</div>
+          <el-form-item v-if="quickIdentifierField !== 'request_id'" label="请求 ID">
+            <el-autocomplete
+              v-model="draftLogFilters.request_id"
+              :fetch-suggestions="requestIdSuggestions"
+              :debounce="300"
+              :trigger-on-focus="false"
+              clearable
+              @keyup.enter.stop.prevent="applyAdvancedFilters"
+            />
+          </el-form-item>
+          <el-form-item v-if="quickIdentifierField !== 'conversation_key'" label="会话键">
+            <el-autocomplete
+              v-model="draftLogFilters.conversation_key"
+              :fetch-suggestions="conversationKeySuggestions"
+              :debounce="300"
+              :trigger-on-focus="false"
+              clearable
+              @keyup.enter.stop.prevent="applyAdvancedFilters"
+            />
+          </el-form-item>
+          <el-form-item v-if="quickIdentifierField !== 'conversation_turn_id'" label="Turn ID">
+            <el-autocomplete
+              v-model="draftLogFilters.conversation_turn_id"
+              :fetch-suggestions="conversationTurnIdSuggestions"
+              :debounce="300"
+              :trigger-on-focus="false"
+              clearable
+              @keyup.enter.stop.prevent="applyAdvancedFilters"
+            />
+          </el-form-item>
+          <el-form-item v-if="quickIdentifierField !== 'conversation_window_id'" label="窗口 ID">
+            <el-autocomplete
+              v-model="draftLogFilters.conversation_window_id"
+              :fetch-suggestions="conversationWindowIdSuggestions"
+              :debounce="300"
+              :trigger-on-focus="false"
+              clearable
+              @keyup.enter.stop.prevent="applyAdvancedFilters"
+            />
+          </el-form-item>
+          <el-form-item v-if="quickIdentifierField !== 'previous_response_id'" label="上一响应 ID">
+            <el-autocomplete
+              v-model="draftLogFilters.previous_response_id"
+              :fetch-suggestions="previousResponseIdSuggestions"
+              :debounce="300"
+              :trigger-on-focus="false"
+              clearable
+              @keyup.enter.stop.prevent="applyAdvancedFilters"
+            />
+          </el-form-item>
+        </div>
+
+        <div class="log-filter-section">
+          <div class="log-filter-section__title">请求属性</div>
+          <el-form-item label="路径">
+            <el-select
+              v-model="draftLogFilters.path"
+              clearable
+              filterable
+              remote
+              :remote-method="(query) => loadFilterOptions('path', query)"
+              :loading="filterOptionsLoading.path"
+              @visible-change="(visible) => handleFilterVisible('path', visible)"
+            >
+              <el-option
+                v-for="item in filterOptions.paths"
+                :key="item"
+                :label="item"
+                :value="item"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="日志类型">
+            <el-select v-model="draftLogFilters.request_type" clearable>
+              <el-option
+                v-for="item in filterOptions.request_types"
+                :key="item"
+                :label="formatRequestType(item)"
+                :value="item"
+              />
+            </el-select>
+            <div class="log-filter-help">未选择时默认不含渠道尝试日志</div>
+          </el-form-item>
+        </div>
+
+        <div class="log-filter-section">
+          <div class="log-filter-section__title">结果与权限</div>
+          <el-form-item label="状态码">
+            <el-select
+              v-model="draftLogFilters.status_code"
+              clearable
+              filterable
+              remote
+              :remote-method="(query) => loadFilterOptions('status_code', query)"
+              :loading="filterOptionsLoading.status_code"
+              @visible-change="(visible) => handleFilterVisible('status_code', visible)"
+            >
+              <el-option
+                v-for="item in filterOptions.status_codes"
+                :key="item"
+                :label="item"
+                :value="String(item)"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="isSuperadmin" label="用户">
+            <el-select
+              v-model="draftLogFilters.owner_username"
+              clearable
+              filterable
+              remote
+              :remote-method="(query) => loadFilterOptions('owner_username', query)"
+              :loading="filterOptionsLoading.owner_username"
+              @visible-change="(visible) => handleFilterVisible('owner_username', visible)"
+            >
+              <el-option
+                v-for="item in filterOptions.owner_usernames"
+                :key="item"
+                :label="item"
+                :value="item"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="Key 名称">
+            <el-select
+              v-model="draftLogFilters.api_key_id"
+              clearable
+              filterable
+              remote
+              :remote-method="(query) => loadFilterOptions('api_key_id', query)"
+              :loading="filterOptionsLoading.api_key_id"
+              @visible-change="(visible) => handleFilterVisible('api_key_id', visible)"
+            >
+              <el-option
+                v-for="item in filterOptions.api_key_ids"
+                :key="apiKeyOptionValue(item)"
+                :label="apiKeyOptionLabel(item)"
+                :value="apiKeyOptionValue(item)"
+              />
+            </el-select>
+          </el-form-item>
+        </div>
+      </el-form>
+
+      <template #footer>
+        <div class="log-filter-advanced-actions">
+          <span>已选 {{ draftAdvancedFilterCount }} 项</span>
+          <el-button @click="clearAdvancedDraft">清空高级</el-button>
+          <el-button type="primary" :loading="refreshLoading" @click="applyAdvancedFilters">
+            应用筛选
+          </el-button>
+        </div>
+      </template>
+    </el-drawer>
 
     <div v-loading="initialStatsLoading" class="dashboard-summary-grid log-summary-grid">
       <div
@@ -158,6 +402,7 @@
 
     <div class="table-area">
       <el-table
+        v-if="!isMobile"
         class="log-table"
         v-loading="initialLogsLoading"
         :data="logs"
@@ -232,12 +477,89 @@
         </el-table-column>
       </el-table>
 
+      <div v-else v-loading="initialLogsLoading" class="log-mobile-list">
+        <el-empty v-if="!initialLogsLoading && logs.length === 0" description="暂无日志" />
+        <article
+          v-for="row in logs"
+          v-else
+          :key="row.id || row.request_log_id || `${row.request_id}-${row.created_at}`"
+          class="log-mobile-card"
+        >
+          <header class="log-mobile-card__header">
+            <div class="log-mobile-card__tags">
+              <el-tag :type="requestStatusTagType(resolveDisplayStatus(row))">
+                {{ formatRequestStatus(resolveDisplayStatus(row)) }}
+              </el-tag>
+              <el-tag effect="plain" :type="requestTypeTagType(row.request_type)">
+                {{ formatRequestType(row.request_type) || "未知类型" }}
+              </el-tag>
+            </div>
+            <time>{{ formatTimeOrDash(row.created_at) }}</time>
+          </header>
+
+          <div class="log-mobile-card__model">
+            <strong>{{ row.model || "-" }}</strong>
+            <span v-if="row.upstream_model && row.upstream_model !== row.model">
+              → {{ row.upstream_model }}
+            </span>
+          </div>
+
+          <dl class="log-mobile-card__grid">
+            <div>
+              <dt>用户 / Key</dt>
+              <dd>{{ row.owner_username || "-" }} / {{ formatApiKeyName(row) || "-" }}</dd>
+            </div>
+            <div>
+              <dt>渠道</dt>
+              <dd>{{ formatChannelName(row) || "-" }}</dd>
+            </div>
+            <div>
+              <dt>状态码</dt>
+              <dd>{{ row.status_code ?? "-" }}</dd>
+            </div>
+            <div>
+              <dt>耗时 / TTFT</dt>
+              <dd>{{ formatLatencyValue(row.duration_ms) }} / {{ formatLatencyValue(row.ttft_ms) }}</dd>
+            </div>
+            <div class="log-mobile-card__wide">
+              <dt>Token</dt>
+              <dd>{{ row.is_stream ? "流式 · " : "" }}{{ formatTokenSummary(row) }}</dd>
+            </div>
+            <div class="log-mobile-card__wide">
+              <dt>成本</dt>
+              <dd>{{ formatCost(row.cost) }}</dd>
+            </div>
+            <div class="log-mobile-card__wide">
+              <dt>请求 ID</dt>
+              <dd class="log-mobile-card__request-id">
+                <span :title="row.request_id || ''">{{ row.request_id || "-" }}</span>
+                <el-tooltip v-if="row.request_id" content="复制请求 ID">
+                  <el-button
+                    :icon="CopyDocument"
+                    circle
+                    text
+                    aria-label="复制请求 ID"
+                    @click="copyLogDetailContent('请求 ID', row.request_id)"
+                  />
+                </el-tooltip>
+              </dd>
+            </div>
+          </dl>
+
+          <el-button class="log-mobile-card__detail" :icon="View" @click="openLogDetail(row)">
+            查看详情
+          </el-button>
+        </article>
+      </div>
+
       <div class="pagination-bar">
         <el-pagination
           v-model:current-page="logPage"
           v-model:page-size="logPageSize"
           background
-          layout="total, sizes, prev, pager, next"
+          :layout="isMobile ? 'prev, pager, next' : 'total, sizes, prev, pager, next'"
+          :pager-count="isMobile ? 5 : 7"
+          :size="isMobile ? 'small' : 'default'"
           :page-sizes="[20, 50, 100, 200]"
           :total="logTotal"
           @current-change="refreshLogPageData"
@@ -247,11 +569,18 @@
     </div>
 
     <!-- 日志详情 Dialog -->
-    <el-dialog v-model="logDetailVisible" title="日志详情" width="900px" @closed="resetLogDetail">
+    <el-dialog
+      v-model="logDetailVisible"
+      title="日志详情"
+      width="900px"
+      :fullscreen="isMobile"
+      class="log-detail-dialog"
+      @closed="resetLogDetail"
+    >
       <div v-loading="logDetailLoading">
         <el-alert v-if="logDetailError" :title="logDetailError" type="error" :closable="false" />
         <template v-else-if="selectedLog">
-          <el-descriptions :column="2" border>
+          <el-descriptions :column="isMobile ? 1 : 2" border>
             <el-descriptions-item label="请求 ID">{{ selectedLog.request_id }}</el-descriptions-item>
             <el-descriptions-item label="请求状态">
             <el-tag :type="requestStatusTagType(resolveDisplayStatus(selectedLog))">
@@ -387,7 +716,8 @@
 <script setup>
 import { ref, reactive, computed, onBeforeUnmount, onMounted, watch } from "vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
-import { Box, Check, Coin, CopyDocument, DataLine, Delete, Lightning, Refresh, Search, Setting, Timer, View } from "@element-plus/icons-vue";
+import { ElRadioButton, ElRadioGroup } from "element-plus/es/components/radio/index.mjs";
+import { Box, Check, Coin, CopyDocument, DataLine, Delete, Filter, Lightning, Refresh, Search, Setting, Timer, View } from "@element-plus/icons-vue";
 import VueJsonPretty from "vue-json-pretty";
 import "vue-json-pretty/lib/styles.css";
 
@@ -397,6 +727,7 @@ const props = defineProps({
   active: { type: Boolean, required: true }
 });
 
+const isMobile = ref(false);
 const logsLoading = ref(false);
 const hasLoadedLogs = ref(false);
 const logs = ref([]);
@@ -408,6 +739,7 @@ const hasLoadedStats = ref(false);
 const logAutoRefreshOptions = [5, 10, 30, 60];
 const logAutoRefreshSeconds = ref(0);
 let logAutoRefreshTimer = null;
+let mobileMediaQuery = null;
 const statsData = reactive({
   currency_rate: 7.25,
   summary: defaultSummary()
@@ -456,6 +788,8 @@ const filterOptionsLoading = reactive({
   path: false,
   status_code: false
 });
+const filterSuggestionTokens = Object.create(null);
+const filterOptionRequestTokens = Object.create(null);
 
 function buildDefaultLogTimeRange() {
   const now = Date.now();
@@ -466,25 +800,109 @@ function buildDefaultLogTimeRange() {
   };
 }
 
-const defaultLogTimeRange = buildDefaultLogTimeRange();
+function buildRecentLogTimeRange(hours) {
+  const now = Date.now();
+  return [new Date(now - hours * 60 * 60 * 1000), new Date(now)];
+}
 
-const logFilters = reactive({
-  created_from: defaultLogTimeRange.created_from,
-  created_to: defaultLogTimeRange.created_to,
-  request_id: "",
-  conversation_key: "",
-  conversation_turn_id: "",
-  conversation_window_id: "",
-  previous_response_id: "",
-  model: "",
-  channel_id: "",
-  owner_username: "",
-  api_key_id: "",
-  status_code: "",
-  path: "",
-  request_status: "",
-  request_type: ""
+function buildDefaultLogFilters() {
+  return {
+    ...buildDefaultLogTimeRange(),
+    request_id: "",
+    conversation_key: "",
+    conversation_turn_id: "",
+    conversation_window_id: "",
+    previous_response_id: "",
+    model: "",
+    channel_id: "",
+    owner_username: "",
+    api_key_id: "",
+    status_code: "",
+    path: "",
+    request_status: "",
+    request_type: ""
+  };
+}
+
+function cloneLogFilters(source) {
+  return Object.fromEntries(Object.entries(source).map(([key, value]) => [
+    key,
+    value instanceof Date ? new Date(value.getTime()) : value
+  ]));
+}
+
+const logTimePresetOptions = [
+  { value: "default", label: "前后 3 小时" },
+  { value: "1h", label: "最近 1 小时", hours: 1 },
+  { value: "6h", label: "最近 6 小时", hours: 6 },
+  { value: "24h", label: "最近 24 小时", hours: 24 },
+  { value: "7d", label: "最近 7 天", hours: 24 * 7 },
+  { value: "custom", label: "自定义时间" }
+];
+const identifierFieldOptions = [
+  { value: "request_id", label: "请求 ID" },
+  { value: "conversation_key", label: "会话键" },
+  { value: "conversation_turn_id", label: "Turn ID" },
+  { value: "conversation_window_id", label: "窗口 ID" },
+  { value: "previous_response_id", label: "上一响应" }
+];
+const identifierFilterKeys = identifierFieldOptions.map((item) => item.value);
+const advancedFilterKeys = [
+  ...identifierFilterKeys,
+  "path",
+  "request_type",
+  "status_code",
+  "owner_username",
+  "api_key_id"
+];
+const filterChipLabels = {
+  request_id: "请求 ID",
+  conversation_key: "会话键",
+  conversation_turn_id: "Turn ID",
+  conversation_window_id: "窗口 ID",
+  previous_response_id: "上一响应",
+  model: "模型",
+  channel_id: "渠道",
+  owner_username: "用户",
+  api_key_id: "Key",
+  status_code: "状态码",
+  path: "路径",
+  request_status: "状态",
+  request_type: "日志类型"
+};
+
+const logFilters = reactive(buildDefaultLogFilters());
+const draftLogFilters = reactive(cloneLogFilters(logFilters));
+const logFilterKeys = Object.keys(logFilters);
+const appliedLogTimePreset = ref("default");
+const draftLogTimePreset = ref("default");
+const quickIdentifierField = ref("request_id");
+const appliedQuickIdentifierField = ref("request_id");
+const previousQuickIdentifierField = ref("request_id");
+const advancedFiltersVisible = ref(false);
+const identifierValue = computed({
+  get: () => draftLogFilters[quickIdentifierField.value] || "",
+  set: (value) => {
+    draftLogFilters[quickIdentifierField.value] = value || "";
+  }
 });
+const logFiltersDirty = computed(() =>
+  draftLogTimePreset.value !== appliedLogTimePreset.value
+  || logFilterKeys.some((key) =>
+    normalizeLogFilterValue(key, draftLogFilters[key]) !== normalizeLogFilterValue(key, logFilters[key]))
+);
+const activeLogFilterChips = computed(() =>
+  logFilterKeys
+    .filter((key) => key !== "created_from" && key !== "created_to" && hasLogFilterValue(logFilters[key]))
+    .map((key) => ({
+      key,
+      label: `${filterChipLabels[key] || key}: ${formatFilterChipValue(key, logFilters[key])}`
+    }))
+);
+const appliedAdvancedFilterCount = computed(() =>
+  countAdvancedFilters(logFilters, appliedQuickIdentifierField.value, appliedLogTimePreset.value));
+const draftAdvancedFilterCount = computed(() =>
+  countAdvancedFilters(draftLogFilters, quickIdentifierField.value, draftLogTimePreset.value));
 
 const selectedLog = ref(null);
 const logDetailVisible = ref(false);
@@ -612,8 +1030,10 @@ async function loadLogs(page = logPage.value) {
     logs.value = data.events || [];
     logTotal.value = data.total || 0;
     hasLoadedLogs.value = true;
+    return true;
   } catch (error) {
     ElMessage.error(error.message);
+    return false;
   } finally {
     logsLoading.value = false;
   }
@@ -638,8 +1058,10 @@ async function loadStats() {
     statsData.currency_rate = data.currency_rate || 7.25;
     statsData.summary = { ...defaultSummary(), ...(data.summary || {}) };
     hasLoadedStats.value = true;
+    return true;
   } catch (error) {
     ElMessage.error(error.message);
+    return false;
   } finally {
     statsLoading.value = false;
   }
@@ -664,7 +1086,7 @@ function stopLogAutoRefreshTimer() {
 
 async function refreshLogsFromAutoRefresh() {
   if (!props.active || logsLoading.value || statsLoading.value) return;
-  await Promise.all([loadLogs(), loadStats()]);
+  await refreshLogPageData();
 }
 
 function handleLogPageSizeChange() { logPage.value = 1; refreshLogPageData(1); }
@@ -673,24 +1095,156 @@ function handleFilterVisible(field, visible) {
   if (visible) loadFilterOptions(field);
 }
 
+function resolveLogTimePresetRange(preset) {
+  if (preset === "default") {
+    const range = buildDefaultLogTimeRange();
+    return [range.created_from, range.created_to];
+  }
+  const option = logTimePresetOptions.find((item) => item.value === preset);
+  return option?.hours ? buildRecentLogTimeRange(option.hours) : null;
+}
+
+function applyLogTimePreset(target, preset) {
+  const range = resolveLogTimePresetRange(preset);
+  if (!range) return;
+  target.created_from = range[0];
+  target.created_to = range[1];
+}
+
+function handleLogTimePresetChange(preset) {
+  if (preset === "custom") {
+    advancedFiltersVisible.value = true;
+    return;
+  }
+  applyLogTimePreset(draftLogFilters, preset);
+}
+
+function refreshAppliedLogTimeRange() {
+  if (appliedLogTimePreset.value === "custom") return;
+  applyLogTimePreset(logFilters, appliedLogTimePreset.value);
+  if (draftLogTimePreset.value === appliedLogTimePreset.value) {
+    draftLogFilters.created_from = new Date(logFilters.created_from.getTime());
+    draftLogFilters.created_to = new Date(logFilters.created_to.getTime());
+  }
+}
+
+function handleIdentifierFieldChange(nextField) {
+  filterSuggestionTokens.quick_identifier = (filterSuggestionTokens.quick_identifier || 0) + 1;
+  const previousField = previousQuickIdentifierField.value;
+  if (previousField !== nextField) {
+    draftLogFilters[previousField] = "";
+  }
+  previousQuickIdentifierField.value = nextField;
+}
+
+async function identifierSuggestions(query, callback) {
+  await loadTextFilterSuggestions(quickIdentifierField.value, query, callback, "quick_identifier");
+}
+
+function captureLogViewState() {
+  return {
+    logs: logs.value,
+    total: logTotal.value,
+    page: logPage.value,
+    hasLoadedLogs: hasLoadedLogs.value,
+    summary: statsData.summary,
+    currencyRate: statsData.currency_rate,
+    hasLoadedStats: hasLoadedStats.value
+  };
+}
+
+function restoreLogViewState(state) {
+  logs.value = state.logs;
+  logTotal.value = state.total;
+  logPage.value = state.page;
+  hasLoadedLogs.value = state.hasLoadedLogs;
+  statsData.summary = state.summary;
+  statsData.currency_rate = state.currencyRate;
+  hasLoadedStats.value = state.hasLoadedStats;
+}
+
+async function submitLogFilters(page = 1) {
+  if (draftLogTimePreset.value === "custom"
+    && (!draftLogFilters.created_from || !draftLogFilters.created_to
+      || new Date(draftLogFilters.created_from).getTime() >= new Date(draftLogFilters.created_to).getTime())) {
+    ElMessage.warning("自定义时间范围无效");
+    return false;
+  }
+  const previousFilters = cloneLogFilters(logFilters);
+  const previousTimePreset = appliedLogTimePreset.value;
+  const previousIdentifierField = appliedQuickIdentifierField.value;
+  const previousView = captureLogViewState();
+  if (draftLogTimePreset.value !== "custom") {
+    applyLogTimePreset(draftLogFilters, draftLogTimePreset.value);
+  }
+  Object.assign(logFilters, cloneLogFilters(draftLogFilters));
+  appliedLogTimePreset.value = draftLogTimePreset.value;
+  appliedQuickIdentifierField.value = quickIdentifierField.value;
+  const results = await refreshLogPageData(page);
+  if (!results.every(Boolean)) {
+    Object.assign(logFilters, previousFilters);
+    appliedLogTimePreset.value = previousTimePreset;
+    appliedQuickIdentifierField.value = previousIdentifierField;
+    restoreLogViewState(previousView);
+    return false;
+  }
+  return true;
+}
+
 function resetLogFilters() {
-  Object.assign(logFilters, {
-    ...buildDefaultLogTimeRange(),
-    request_id: "",
-    conversation_key: "",
-    conversation_turn_id: "",
-    conversation_window_id: "",
-    previous_response_id: "",
-    model: "",
-    channel_id: "",
-    owner_username: "",
-    api_key_id: "",
-    status_code: "",
-    path: "",
-    request_status: "",
-    request_type: ""
-  });
-  refreshLogPageData(1);
+  const defaults = buildDefaultLogFilters();
+  Object.assign(draftLogFilters, cloneLogFilters(defaults));
+  draftLogTimePreset.value = "default";
+  quickIdentifierField.value = "request_id";
+  previousQuickIdentifierField.value = "request_id";
+  return submitLogFilters(1);
+}
+
+function clearAdvancedDraft() {
+  for (const key of advancedFilterKeys) {
+    if (key !== quickIdentifierField.value) draftLogFilters[key] = "";
+  }
+  if (draftLogTimePreset.value === "custom") {
+    draftLogTimePreset.value = "default";
+    applyLogTimePreset(draftLogFilters, "default");
+  }
+}
+
+async function applyAdvancedFilters() {
+  if (await submitLogFilters(1)) advancedFiltersVisible.value = false;
+}
+
+async function clearAppliedFilterChip(key) {
+  const previousFilters = cloneLogFilters(logFilters);
+  const previousDraftValue = draftLogFilters[key];
+  const previousView = captureLogViewState();
+  logFilters[key] = "";
+  draftLogFilters[key] = "";
+  const results = await refreshLogPageData(1);
+  if (!results.every(Boolean)) {
+    Object.assign(logFilters, previousFilters);
+    draftLogFilters[key] = previousDraftValue;
+    restoreLogViewState(previousView);
+    return false;
+  }
+  return true;
+}
+
+function countAdvancedFilters(source, identifierField, timePreset) {
+  const count = advancedFilterKeys.filter((key) =>
+    key !== identifierField && hasLogFilterValue(source[key]))
+    .length;
+  return count + (timePreset === "custom" ? 1 : 0);
+}
+
+function hasLogFilterValue(value) {
+  return value !== "" && value !== null && value !== undefined;
+}
+
+function logFilterSignature(source) {
+  return logFilterKeys
+    .map((key) => `${key}=${normalizeLogFilterValue(key, source[key]) ?? ""}`)
+    .join("&");
 }
 
 function moveLogColumn(index, direction) {
@@ -703,7 +1257,7 @@ function moveLogColumn(index, direction) {
 }
 
 function resetLogColumns() {
-  logColumnOrder.value = defaultLogColumnKeys.slice();
+  logColumnOrder.value = logColumnDefinitions.map((column) => column.key);
   visibleLogColumnKeys.value = defaultLogColumnKeys.slice();
 }
 
@@ -730,10 +1284,17 @@ function openLogDetailById(logId) {
 }
 
 function openRelatedLogs(requestId, requestType) {
-  logFilters.request_id = requestId || "";
-  logFilters.request_type = requestType || "";
+  const nextFilters = buildDefaultLogFilters();
+  nextFilters.created_from = logFilters.created_from;
+  nextFilters.created_to = logFilters.created_to;
+  nextFilters.request_id = requestId || "";
+  nextFilters.request_type = requestType || "";
+  Object.assign(draftLogFilters, cloneLogFilters(nextFilters));
+  draftLogTimePreset.value = appliedLogTimePreset.value;
+  quickIdentifierField.value = "request_id";
+  previousQuickIdentifierField.value = "request_id";
   logDetailVisible.value = false;
-  refreshLogPageData(1);
+  submitLogFilters(1);
 }
 
 function resetLogDetail() {
@@ -791,47 +1352,68 @@ function fallbackCopyLogDetailText(text) {
 async function loadFilterOptions(field, query = "") {
   const optionKey = filterOptionFieldMap[field];
   if (!optionKey) return [];
+  const requestToken = (filterOptionRequestTokens[field] || 0) + 1;
+  filterOptionRequestTokens[field] = requestToken;
+  const contextSignature = logFilterSignature(draftLogFilters);
   filterOptionsLoading[field] = true;
   try {
     const params = new URLSearchParams({ field });
     const queryText = String(query || "").trim();
     if (queryText) params.set("q", queryText);
-    for (const [key, value] of Object.entries(logFilters)) {
+    for (const [key, value] of Object.entries(draftLogFilters)) {
       const normalized = normalizeLogFilterValue(key, value);
       if (normalized !== null) params.set(key, normalized);
     }
     const data = await props.api(`/log-filter-options?${params.toString()}`);
-    if (Array.isArray(data[optionKey])) filterOptions[optionKey] = data[optionKey];
+    if (requestToken === filterOptionRequestTokens[field]
+      && contextSignature === logFilterSignature(draftLogFilters)
+      && Array.isArray(data[optionKey])) {
+      filterOptions[optionKey] = data[optionKey];
+    }
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
-    filterOptionsLoading[field] = false;
+    if (requestToken === filterOptionRequestTokens[field]) filterOptionsLoading[field] = false;
   }
   return filterOptions[optionKey] || [];
 }
 
 async function requestIdSuggestions(query, callback) {
-  callback(buildSuggestions(await loadFilterOptions("request_id", query)));
+  await loadTextFilterSuggestions("request_id", query, callback);
 }
 
 async function conversationKeySuggestions(query, callback) {
-  callback(buildSuggestions(await loadFilterOptions("conversation_key", query)));
+  await loadTextFilterSuggestions("conversation_key", query, callback);
 }
 
 async function conversationTurnIdSuggestions(query, callback) {
-  callback(buildSuggestions(await loadFilterOptions("conversation_turn_id", query)));
+  await loadTextFilterSuggestions("conversation_turn_id", query, callback);
 }
 
 async function conversationWindowIdSuggestions(query, callback) {
-  callback(buildSuggestions(await loadFilterOptions("conversation_window_id", query)));
+  await loadTextFilterSuggestions("conversation_window_id", query, callback);
 }
 
 async function previousResponseIdSuggestions(query, callback) {
-  callback(buildSuggestions(await loadFilterOptions("previous_response_id", query)));
+  await loadTextFilterSuggestions("previous_response_id", query, callback);
 }
 
 async function modelSuggestions(query, callback) {
-  callback(buildSuggestions(await loadFilterOptions("model", query)));
+  await loadTextFilterSuggestions("model", query, callback);
+}
+
+async function loadTextFilterSuggestions(field, query, callback, requestKey = field) {
+  const token = (filterSuggestionTokens[requestKey] || 0) + 1;
+  filterSuggestionTokens[requestKey] = token;
+  const queryText = String(query || "").trim();
+  if (queryText.length < 2) {
+    callback([]);
+    return;
+  }
+  const values = await loadFilterOptions(field, queryText);
+  if (filterSuggestionTokens[requestKey] !== token) return;
+  if (requestKey === "quick_identifier" && quickIdentifierField.value !== field) return;
+  callback(buildSuggestions(values));
 }
 
 function buildSuggestions(values) {
@@ -863,6 +1445,20 @@ function channelOptionLabel(item) {
     return name || channelOptionValue(item);
   }
   return String(item ?? "");
+}
+
+function formatFilterChipValue(key, value) {
+  if (key === "request_status") return formatRequestStatus(value);
+  if (key === "request_type") return formatRequestType(value);
+  if (key === "channel_id") {
+    const option = filterOptions.channel_ids.find((item) => channelOptionValue(item) === String(value));
+    return option ? channelOptionLabel(option) : String(value);
+  }
+  if (key === "api_key_id") {
+    const option = filterOptions.api_key_ids.find((item) => apiKeyOptionValue(item) === String(value));
+    return option ? apiKeyOptionLabel(option) : String(value);
+  }
+  return String(value);
 }
 
 // --- Formatting helpers ---
@@ -1067,12 +1663,27 @@ function formatCurrencyNumber(value) {
 }
 
 function refreshLogPageData(page = logPage.value) {
+  refreshAppliedLogTimeRange();
   return Promise.all([loadLogs(page), loadStats()]);
 }
 
 // --- Visibility / auto-refresh ---
 
 const loaded = ref(false);
+
+function syncMobileViewport(event) {
+  const nextMobile = event.matches;
+  const shouldCompactPage = nextMobile && logPageSize.value > 20;
+  isMobile.value = nextMobile;
+
+  if (shouldCompactPage) {
+    logPageSize.value = 20;
+    logPage.value = 1;
+    if (props.active && loaded.value) {
+      refreshLogPageData(1);
+    }
+  }
+}
 
 watch(() => props.active, (now) => {
   if (now) {
@@ -1084,7 +1695,14 @@ watch(() => props.active, (now) => {
   }
 }, { immediate: true });
 
+onMounted(() => {
+  mobileMediaQuery = window.matchMedia("(max-width: 600px)");
+  isMobile.value = mobileMediaQuery.matches;
+  mobileMediaQuery.addEventListener("change", syncMobileViewport);
+});
+
 onBeforeUnmount(() => {
+  mobileMediaQuery?.removeEventListener("change", syncMobileViewport);
   stopLogAutoRefreshTimer();
 });
 </script>
@@ -1164,6 +1782,109 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 12px;
+}
+
+.log-mobile-list {
+  display: grid;
+  gap: 12px;
+}
+
+.log-mobile-card {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 8px;
+  background: var(--el-bg-color);
+}
+
+.log-mobile-card__header,
+.log-mobile-card__model {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.log-mobile-card__header time {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  text-align: right;
+}
+
+.log-mobile-card__tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.log-mobile-card__model {
+  justify-content: flex-start;
+  margin-top: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  overflow-wrap: anywhere;
+}
+
+.log-mobile-card__model span {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.log-mobile-card__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 12px 0 0;
+}
+
+.log-mobile-card__grid > div {
+  min-width: 0;
+}
+
+.log-mobile-card__request-id {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.log-mobile-card__request-id > span {
+  min-width: 0;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-mobile-card__request-id :deep(.el-button) {
+  flex: 0 0 44px;
+  width: 44px;
+  min-height: 44px;
+}
+
+.log-mobile-card__grid dt {
+  margin-bottom: 4px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.log-mobile-card__grid dd {
+  margin: 0;
+  color: var(--el-text-color-primary);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.log-mobile-card__wide {
+  grid-column: 1 / -1;
+}
+
+.log-mobile-card__detail {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 14px;
 }
 
 .log-summary-grid {
@@ -1262,9 +1983,63 @@ onBeforeUnmount(() => {
   }
 }
 
-@media (max-width: 640px) {
+@media (max-width: 600px) {
   .log-summary-grid {
     grid-template-columns: 1fr;
+  }
+
+  .pagination-bar {
+    display: flex;
+    justify-content: center;
+    min-width: 0;
+    padding-top: 14px;
+    overflow: hidden;
+  }
+
+  .pagination-bar .el-pagination {
+    min-width: 0;
+  }
+
+  .log-column-settings__actions .el-button {
+    min-height: 44px;
+  }
+
+  .log-detail-actions,
+  .stream-view-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .log-detail-actions .el-button,
+  .stream-view-toolbar .el-button {
+    width: 100%;
+    min-height: 44px;
+    margin-left: 0;
+  }
+
+  .stream-view-toolbar .el-radio-group {
+    width: 100%;
+  }
+
+  .stream-view-toolbar :deep(.el-radio-button) {
+    flex: 1 1 0;
+  }
+
+  .stream-view-toolbar :deep(.el-radio-button__inner) {
+    width: 100%;
+  }
+
+  :global(.log-detail-dialog .el-dialog__header) {
+    padding-right: max(48px, env(safe-area-inset-right));
+  }
+
+  :global(.log-detail-dialog .el-dialog__body) {
+    padding: 12px;
+  }
+
+  :global(.log-detail-dialog .el-descriptions__content),
+  :global(.log-detail-dialog .el-tabs__item) {
+    overflow-wrap: anywhere;
   }
 }
 </style>

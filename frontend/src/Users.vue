@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="users-page">
     <div class="toolbar">
       <div>
         <h2>用户管理</h2>
@@ -11,7 +11,7 @@
       </div>
     </div>
 
-    <div class="table-area">
+    <div class="table-area desktop-user-list">
       <el-table
         v-loading="usersLoading"
         :data="users"
@@ -78,8 +78,73 @@
       </el-table>
     </div>
 
+    <div v-loading="usersLoading" class="mobile-card-list mobile-user-list">
+      <el-empty
+        v-if="!usersLoading && users.length === 0"
+        description="暂无用户"
+        :image-size="64"
+      />
+      <article v-for="row in users" :key="row.username" class="mobile-data-card">
+        <header class="mobile-data-card__header">
+          <strong class="mobile-data-card__title">{{ row.username }}</strong>
+          <div class="mobile-data-card__tags">
+            <el-tag :type="row.role === 'superadmin' ? 'success' : 'info'">
+              {{ row.role === "superadmin" ? "超级管理员" : "普通用户" }}
+            </el-tag>
+            <el-tag :type="row.enabled === false ? 'warning' : 'success'">
+              {{ row.enabled === false ? "停用" : "启用" }}
+            </el-tag>
+          </div>
+        </header>
+
+        <dl class="mobile-data-card__details">
+          <div>
+            <dt>创建时间</dt>
+            <dd>{{ formatTime(row.created_at) || "-" }}</dd>
+          </div>
+        </dl>
+
+        <div class="mobile-card-actions">
+          <el-button
+            :disabled="isProtectedSuperadmin(row)"
+            :type="row.enabled === false ? 'success' : 'warning'"
+            plain
+            @click="toggleUser(row)"
+          >
+            {{ row.enabled === false ? "启用" : "停用" }}
+          </el-button>
+          <el-button
+            :disabled="row.role === 'superadmin'"
+            :icon="Edit"
+            @click="openResetPasswordDialog(row)"
+          >
+            重置密码
+          </el-button>
+          <el-popconfirm
+            :title="`删除用户 ${row.username}？`"
+            @confirm="deleteUser(row)"
+          >
+            <template #reference>
+              <el-button
+                type="danger"
+                :icon="Delete"
+                :disabled="isCurrentUser(row)"
+              >
+                删除
+              </el-button>
+            </template>
+          </el-popconfirm>
+        </div>
+      </article>
+    </div>
+
     <!-- 新增用户 Dialog -->
-    <el-dialog v-model="userDialogVisible" title="新增用户" width="520px">
+    <el-dialog
+      v-model="userDialogVisible"
+      class="user-form-dialog"
+      title="新增用户"
+      width="min(520px, calc(100vw - 24px))"
+    >
       <el-form label-position="top" :model="userDraft">
         <el-form-item label="用户名">
           <el-input v-model="userDraft.username" autocomplete="off" />
@@ -101,7 +166,12 @@
     </el-dialog>
 
     <!-- 重置密码 Dialog -->
-    <el-dialog v-model="resetPasswordDialogVisible" title="重置密码" width="520px">
+    <el-dialog
+      v-model="resetPasswordDialogVisible"
+      class="user-form-dialog"
+      title="重置密码"
+      width="min(520px, calc(100vw - 24px))"
+    >
       <el-form label-position="top" :model="resetPasswordDraft">
         <el-form-item label="用户名">
           <el-input v-model="resetPasswordDraft.username" disabled />
@@ -233,3 +303,135 @@ function formatTime(timestamp) {
 
 onMounted(() => loadUsers());
 </script>
+
+<style scoped>
+.mobile-user-list {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  .desktop-user-list {
+    display: none;
+  }
+
+  .mobile-user-list {
+    display: grid;
+  }
+
+  .mobile-card-list {
+    position: relative;
+    gap: 12px;
+    min-height: 96px;
+  }
+
+  .mobile-data-card {
+    min-width: 0;
+    padding: 14px;
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 6px;
+    background: var(--el-bg-color);
+  }
+
+  .mobile-data-card__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .mobile-data-card__title {
+    min-width: 0;
+    padding-top: 3px;
+    font-size: 15px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-data-card__tags {
+    display: flex;
+    flex: 0 0 auto;
+    justify-content: flex-end;
+    gap: 6px;
+    flex-wrap: wrap;
+    max-width: 62%;
+  }
+
+  .mobile-data-card__details {
+    margin: 14px 0;
+  }
+
+  .mobile-data-card__details > div {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .mobile-data-card__details dt {
+    color: var(--el-text-color-secondary);
+  }
+
+  .mobile-data-card__details dd {
+    min-width: 0;
+    margin: 0;
+    text-align: right;
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-card-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .mobile-card-actions :deep(.el-button) {
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    margin-left: 0;
+    padding-inline: 6px;
+  }
+
+  .users-page .toolbar-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .users-page .toolbar-actions :deep(.el-button) {
+    width: 100%;
+    min-height: 44px;
+    margin-left: 0;
+  }
+
+  :global(.user-form-dialog) {
+    max-height: calc(100dvh - 24px);
+    margin: 12px auto !important;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  :global(.user-form-dialog .el-dialog__body) {
+    min-height: 0;
+    padding: 12px 16px 16px;
+    overflow-y: auto;
+  }
+
+  :global(.user-form-dialog .el-dialog__footer) {
+    flex: 0 0 auto;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+  }
+
+  :global(.user-form-dialog .el-input__inner) {
+    font-size: 16px;
+  }
+
+  :global(.user-form-dialog .el-form-item) {
+    min-width: 0;
+  }
+
+  :global(.user-form-dialog .drawer-footer .el-button) {
+    min-height: 44px;
+  }
+}
+</style>

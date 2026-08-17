@@ -8,7 +8,7 @@
       <div class="dashboard-controls">
         <el-segmented v-model="range" :options="rangeOptions" size="small" @change="handleRangeChange" />
         <el-date-picker
-          v-if="range === 'custom'"
+          v-if="range === 'custom' && !isMobile"
           v-model="customRange"
           type="datetimerange"
           size="small"
@@ -19,6 +19,27 @@
           :clearable="false"
           @change="handleCustomRangeChange"
         />
+        <div v-else-if="range === 'custom'" class="dashboard-custom-range">
+          <el-date-picker
+            v-model="customRangeStart"
+            type="datetime"
+            size="small"
+            placeholder="开始时间"
+            value-format="x"
+            :clearable="false"
+          />
+          <el-date-picker
+            v-model="customRangeEnd"
+            type="datetime"
+            size="small"
+            placeholder="结束时间"
+            value-format="x"
+            :clearable="false"
+          />
+          <el-button type="primary" size="small" :icon="Check" @click="handleCustomRangeChange">
+            应用时间
+          </el-button>
+        </div>
         <el-button size="small" :icon="Refresh" :loading="loading" @click="fetchStats">刷新</el-button>
         <el-dropdown trigger="click" @command="setAutoRefreshSeconds">
           <el-button size="small" :type="autoRefreshSeconds ? 'primary' : 'default'" :icon="Refresh">
@@ -259,11 +280,18 @@
 
     </div>
 
-    <el-dialog v-model="errorDetailVisible" title="错误详情" width="800px" @closed="resetErrorDetail">
+    <el-dialog
+      v-model="errorDetailVisible"
+      title="错误详情"
+      width="800px"
+      :fullscreen="isMobile"
+      class="dashboard-error-dialog"
+      @closed="resetErrorDetail"
+    >
       <div v-loading="errorDetailLoading">
         <el-alert v-if="errorDetailError" :title="errorDetailError" type="error" :closable="false" />
         <template v-if="errorDetail">
-          <el-descriptions :column="2" border size="small">
+          <el-descriptions :column="isMobile ? 1 : 2" border size="small">
             <el-descriptions-item label="请求ID">{{ errorDetail.request_id || '-' }}</el-descriptions-item>
             <el-descriptions-item label="状态码">{{ errorDetail.status_code || '-' }}</el-descriptions-item>
             <el-descriptions-item label="模型">{{ errorDetail.model || '-' }}</el-descriptions-item>
@@ -297,13 +325,13 @@
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick, shallowRef } from "vue";
 import { LineChart, PieChart, BarChart } from "echarts/charts";
-import { GridComponent, LegendComponent, TooltipComponent } from "echarts/components";
+import { GridComponent, LegendComponent, TitleComponent, TooltipComponent } from "echarts/components";
 import { init, use } from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
 import { Box, Check, Coin, DataLine, Lightning, Refresh, Timer } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
 
-use([LineChart, PieChart, BarChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
+use([LineChart, PieChart, BarChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer]);
 
 const props = defineProps({
   api: { type: Function, required: true },
@@ -331,6 +359,19 @@ const tokenUnitOptions = [
 
 const range = ref("1h");
 const customRange = ref(defaultCustomRange());
+const isMobile = ref(false);
+const customRangeStart = computed({
+  get: () => customRange.value?.[0] ?? null,
+  set: (value) => {
+    customRange.value = [value, customRange.value?.[1] ?? null];
+  }
+});
+const customRangeEnd = computed({
+  get: () => customRange.value?.[1] ?? null,
+  set: (value) => {
+    customRange.value = [customRange.value?.[0] ?? null, value];
+  }
+});
 const autoRefreshSeconds = ref(0);
 const loading = ref(false);
 const hasLoadedStats = ref(false);
@@ -385,6 +426,7 @@ let queueEventSource = null;
 let queueStaleTimer = null;
 let errorsEventSource = null;
 let errorsStaleTimer = null;
+let mobileMediaQuery = null;
 const QUEUE_STALE_TIMEOUT_MS = 5000;
 const ERRORS_STALE_TIMEOUT_MS = 15000;
 const QUEUE_VISIBLE_MODEL_LIMIT = 2;
@@ -500,10 +542,24 @@ function handleRangeChange() {
 }
 
 function handleCustomRangeChange() {
-  if (range.value === "custom") {
-    fetchStats();
-    startRefreshTimer();
+  if (range.value !== "custom" || !customRange.value?.every((value) => value != null)) {
+    return;
   }
+
+  const [start, end] = customRange.value.map(Number);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end) {
+    ElMessage.warning("开始时间必须早于结束时间");
+    return;
+  }
+
+  fetchStats();
+  startRefreshTimer();
+}
+
+async function syncMobileViewport(event) {
+  isMobile.value = event.matches;
+  await nextTick();
+  resizeAllCharts();
 }
 
 function setAutoRefreshSeconds(seconds) {
@@ -831,6 +887,18 @@ function initAllCharts() {
   rpmChart.value = initChart(rpmChartRef.value);
   modelChart.value = initChart(modelChartRef.value);
   errorDistChart.value = initChart(errorDistChartRef.value);
+}
+
+function resizeAllCharts() {
+  [
+    costChart.value,
+    tokenChart.value,
+    ttftChart.value,
+    cacheChart.value,
+    rpmChart.value,
+    modelChart.value,
+    errorDistChart.value
+  ].forEach((chart) => chart?.resize());
 }
 
 function disposeAllCharts() {
@@ -1163,6 +1231,9 @@ watch(() => props.active, (now) => {
 });
 
 onMounted(async () => {
+  mobileMediaQuery = window.matchMedia("(max-width: 600px)");
+  isMobile.value = mobileMediaQuery.matches;
+  mobileMediaQuery.addEventListener("change", syncMobileViewport);
   await nextTick();
   initAllCharts();
   if (props.active) {
@@ -1174,6 +1245,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  mobileMediaQuery?.removeEventListener("change", syncMobileViewport);
   stopRefreshTimer();
   stopQueueStream();
   stopErrorsStream();
@@ -1205,6 +1277,12 @@ onBeforeUnmount(() => {
   gap: 12px;
   padding-top: 16px;
   flex-wrap: wrap;
+}
+
+.dashboard-custom-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .dashboard-summary-grid {
@@ -1619,15 +1697,82 @@ onBeforeUnmount(() => {
   }
 
   .dashboard-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .dashboard-top-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    min-width: 0;
   }
 
   .dashboard-summary-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .dashboard-toolbar {
+    margin-bottom: 16px;
+  }
+
+  .dashboard-controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    width: 100%;
+    padding-top: 12px;
+  }
+
+  .dashboard-controls > .el-segmented,
+  .dashboard-custom-range {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .dashboard-controls > .el-dropdown,
+  .dashboard-controls > .el-button,
+  .dashboard-controls > .el-dropdown .el-button {
+    width: 100%;
+  }
+
+  .dashboard-custom-range :deep(.el-date-editor),
+  .dashboard-custom-range :deep(.el-input__wrapper) {
+    width: 100%;
+    min-height: 44px;
+  }
+
+  .dashboard-custom-range {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dashboard-controls .el-button {
+    min-height: 44px;
+  }
+
+  .dashboard-controls :deep(.el-segmented__item) {
+    min-width: 0;
+    padding-right: 5px;
+    padding-left: 5px;
+  }
+
+  .dashboard-summary-card__meta,
+  .dashboard-queue__model-name,
+  .dashboard-errors__model,
+  .dashboard-errors__error {
+    overflow-wrap: anywhere;
+  }
+
+  .dashboard-errors__item {
+    min-height: 44px;
+  }
+
+  :global(.dashboard-error-dialog .el-dialog__body) {
+    padding: 12px;
+  }
+
+  :global(.dashboard-error-dialog .el-descriptions__content) {
+    overflow-wrap: anywhere;
   }
 }
 
