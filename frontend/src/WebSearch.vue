@@ -7,7 +7,7 @@
       </div>
       <div class="toolbar-actions">
         <el-button :icon="Refresh" :loading="webSearchLoading" :disabled="webSearchSaving" @click="loadWebSearch">刷新</el-button>
-        <el-button :icon="Download" :disabled="webSearchSaving" @click="exportWebSearch">导出</el-button>
+        <el-button :icon="Download" :loading="webSearchExporting" :disabled="webSearchSaving" @click="exportWebSearch">导出</el-button>
         <el-button :icon="Upload" :disabled="webSearchSaving" @click="triggerImportWebSearch">导入</el-button>
         <input
           ref="importWebSearchInput"
@@ -270,6 +270,7 @@ const props = defineProps({
 });
 const webSearchLoading = ref(false);
 const webSearchSaving = ref(false);
+const webSearchExporting = ref(false);
 const webSearchTestingId = ref(null);
 const webSearchTestResult = ref(null);
 const webSearchKeyDrawerVisible = ref(false);
@@ -310,6 +311,8 @@ async function loadWebSearch() {
 const importWebSearchInput = ref(null);
 
 function exportWebSearch() {
+  webSearchExporting.value = true;
+  try {
   const payload = {
     exported_at: new Date().toISOString(),
     type: "web_search",
@@ -333,6 +336,9 @@ function exportWebSearch() {
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
   ElMessage.success("Web Search 配置已导出（含明文，请妥善保管）");
+  } finally {
+    webSearchExporting.value = false;
+  }
 }
 
 function triggerImportWebSearch() {
@@ -378,8 +384,12 @@ async function persistWebSearchConfig(successMessage = "Web Search 配置已生�
       method: "POST",
       body: JSON.stringify(payload)
     });
-    const data = await props.api("/web-search");
-    assignWebSearchConfig(data);
+    try {
+      const data = await props.api("/web-search");
+      assignWebSearchConfig(data);
+    } catch (refreshError) {
+      // Save succeeded but refresh failed; keep local state without misleading error
+    }
     ElMessage.success(successMessage);
   } catch (error) {
     ElMessage.error(error.message);
@@ -430,7 +440,9 @@ async function testWebSearchKey(row) {
     if (result.key) {
       const idx = webSearchConfig.keys.findIndex((k) => k.id === result.key.id);
       if (idx !== -1) {
-        Object.assign(webSearchConfig.keys[idx], normalizeWebSearchKeys([result.key])[0]);
+        const normalized = normalizeWebSearchKeys([result.key])[0];
+        normalized.key = webSearchConfig.keys[idx].key;
+        Object.assign(webSearchConfig.keys[idx], normalized);
       }
     }
   } catch (error) {

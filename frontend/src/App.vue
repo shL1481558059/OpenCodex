@@ -115,7 +115,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, defineAsyncComponent } from "vue";
+import { ref, computed, onMounted, onUnmounted, defineAsyncComponent } from "vue";
 import {
   Connection,
   DArrowLeft,
@@ -244,6 +244,19 @@ function ensureAllowedActiveTab() {
 
 onMounted(async () => {
   initApp();
+});
+
+// Close mobile drawer automatically when viewport grows past mobile breakpoint
+let mobileBreakpoint = null;
+function handleViewportChange(event) {
+  if (!event.matches && mobileMenuVisible.value) {
+    mobileMenuVisible.value = false;
+  }
+}
+mobileBreakpoint = window.matchMedia("(max-width: 900px)");
+mobileBreakpoint.addEventListener("change", handleViewportChange);
+onUnmounted(() => {
+  mobileBreakpoint?.removeEventListener("change", handleViewportChange);
 });
 
 async function initApp() {

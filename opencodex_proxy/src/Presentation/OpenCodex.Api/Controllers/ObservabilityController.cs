@@ -43,6 +43,7 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         string? conversation_turn_id = null,
         string? conversation_window_id = null,
         string? previous_response_id = null,
+        string? parent_request_log_id = null,
         string page = "1",
         string page_size = "50")
     {
@@ -66,7 +67,8 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
             conversation_key,
             conversation_turn_id,
             conversation_window_id,
-            previous_response_id);
+            previous_response_id,
+            parent_request_log_id);
         var result = _observability.ReadLogsPage(
             page,
             page_size,
@@ -119,6 +121,7 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
             conversation_turn_id,
             conversation_window_id,
             previous_response_id,
+            null,
             field);
         var result = _observability.ReadLogFilterOption(
             field,
@@ -186,7 +189,8 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
             conversation_key,
             conversation_turn_id,
             conversation_window_id,
-            previous_response_id);
+            previous_response_id,
+            null);
         var result = _observability.ReadStats(
             range,
             start,
@@ -225,7 +229,7 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         var filters = BuildLogFilters(
             request_id, model, upstream_model, channel_id, owner_username, api_key_id, path,
             request_type, status_code, is_stream, client_ip, error, request_status, null, null,
-            conversation_key, conversation_turn_id, conversation_window_id, previous_response_id);
+            conversation_key, conversation_turn_id, conversation_window_id, previous_response_id, null);
         var result = _observability.ReadStatsSummary(range, start, end, filters);
         return Api(result);
     }
@@ -257,7 +261,7 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         var filters = BuildLogFilters(
             request_id, model, upstream_model, channel_id, owner_username, api_key_id, path,
             request_type, status_code, is_stream, client_ip, error, request_status, null, null,
-            conversation_key, conversation_turn_id, conversation_window_id, previous_response_id);
+            conversation_key, conversation_turn_id, conversation_window_id, previous_response_id, null);
         var result = _observability.ReadStatsTimeseries(range, start, end, filters);
         return Api(result);
     }
@@ -289,7 +293,7 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         var filters = BuildLogFilters(
             request_id, model, upstream_model, channel_id, owner_username, api_key_id, path,
             request_type, status_code, is_stream, client_ip, error, request_status, null, null,
-            conversation_key, conversation_turn_id, conversation_window_id, previous_response_id);
+            conversation_key, conversation_turn_id, conversation_window_id, previous_response_id, null);
         var result = _observability.ReadStatsModelDistribution(range, start, end, filters);
         return Api(result);
     }
@@ -321,7 +325,7 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         var filters = BuildLogFilters(
             request_id, model, upstream_model, channel_id, owner_username, api_key_id, path,
             request_type, status_code, is_stream, client_ip, error, request_status, null, null,
-            conversation_key, conversation_turn_id, conversation_window_id, previous_response_id);
+            conversation_key, conversation_turn_id, conversation_window_id, previous_response_id, null);
         var result = _observability.ReadStatsErrorDistribution(range, start, end, filters);
         return Api(result);
     }
@@ -429,6 +433,7 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         string? conversationTurnId,
         string? conversationWindowId,
         string? previousResponseId,
+        string? parentRequestLogId,
         string? excludedKey = null)
     {
         var filters = new Dictionary<string, object?>(StringComparer.Ordinal);
@@ -451,6 +456,7 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         AddFilter(filters, "conversation_turn_id", conversationTurnId, excludedKey);
         AddFilter(filters, "conversation_window_id", conversationWindowId, excludedKey);
         AddFilter(filters, "previous_response_id", previousResponseId, excludedKey);
+        AddFilter(filters, "parent_request_log_id", parentRequestLogId, excludedKey);
         return filters;
     }
 

@@ -627,27 +627,30 @@
               v-if="selectedLog.request_type === 'main' && selectedLog.request_id"
               size="small"
               type="primary"
-              plain
-              @click="openRelatedLogs(selectedLog.request_id, 'ocr')"
-            >
-              查看同请求 OCR 子日志
-            </el-button>
-            <el-button
-              v-if="selectedLog.request_type === 'main' && selectedLog.request_id"
-              size="small"
-              plain
-              @click="openRelatedLogs(selectedLog.request_id, 'attempt')"
-            >
-              查看渠道尝试记录
-            </el-button>
-            <el-button
-              v-if="(selectedLog.request_type === 'ocr' || selectedLog.request_type === 'attempt') && selectedLog.request_id"
-              size="small"
-              plain
-              @click="openRelatedLogs(selectedLog.request_id, 'main')"
-            >
-              查看主请求日志
-            </el-button>
+             plain
+             @click="openRelatedLogs(selectedLog.request_id, 'ocr')"
+             :disabled="!selectedLog.id"
+           >
+             查看同请求 OCR 子日志
+           </el-button>
+           <el-button
+             v-if="selectedLog.request_type === 'main' && selectedLog.request_id"
+             size="small"
+             plain
+             @click="openRelatedLogs(selectedLog.request_id, 'attempt')"
+             :disabled="!selectedLog.id"
+           >
+             查看渠道尝试记录
+           </el-button>
+           <el-button
+             v-if="(selectedLog.request_type === 'ocr' || selectedLog.request_type === 'attempt') && selectedLog.request_id"
+             size="small"
+             plain
+             @click="openRelatedLogs(selectedLog.request_id, 'main')"
+             :disabled="!selectedLog.id"
+           >
+             查看主请求日志
+           </el-button>
           </div>
           <el-alert v-if="selectedLog?.error" class="log-detail-error" title="错误" type="error" :closable="false">
             <pre class="json-view">{{ selectedLog.error }}</pre>
@@ -809,6 +812,7 @@ function buildDefaultLogFilters() {
     ...buildDefaultLogTimeRange(),
     request_id: "",
     conversation_key: "",
+    parent_request_log_id: "",
     conversation_turn_id: "",
     conversation_window_id: "",
     previous_response_id: "",
@@ -856,6 +860,7 @@ const advancedFilterKeys = [
 ];
 const filterChipLabels = {
   request_id: "请求 ID",
+  parent_request_log_id: "父日志",
   conversation_key: "会话键",
   conversation_turn_id: "Turn ID",
   conversation_window_id: "窗口 ID",
@@ -1283,15 +1288,32 @@ function openLogDetailById(logId) {
 }
 
 function openRelatedLogs(requestId, requestType) {
+  // When viewing child logs (attempt/ocr) from a main request, use the main
+  // request's database id as parent_request_log_id filter so the backend can
+  // match child logs via ParentRequestLogId. When navigating back to the main
+  // request from a child, use the child's request_id to find the parent.
+  const parentLogId = selectedLog.value?.id;
+  const isChildQuery = requestType === "attempt" || requestType === "ocr";
+
   const nextFilters = buildDefaultLogFilters();
   nextFilters.created_from = logFilters.created_from;
   nextFilters.created_to = logFilters.created_to;
-  nextFilters.request_id = requestId || "";
+  if (isChildQuery && parentLogId) {
+    nextFilters.parent_request_log_id = parentLogId;
+    nextFilters.request_id = "";
+  } else {
+    nextFilters.request_id = requestId || "";
+  }
   nextFilters.request_type = requestType || "";
   Object.assign(draftLogFilters, cloneLogFilters(nextFilters));
   draftLogTimePreset.value = appliedLogTimePreset.value;
-  quickIdentifierField.value = "request_id";
-  previousQuickIdentifierField.value = "request_id";
+  if (isChildQuery && parentLogId) {
+    quickIdentifierField.value = "parent_request_log_id";
+    previousQuickIdentifierField.value = "parent_request_log_id";
+  } else {
+    quickIdentifierField.value = "request_id";
+    previousQuickIdentifierField.value = "request_id";
+  }
   logDetailVisible.value = false;
   submitLogFilters(1);
 }

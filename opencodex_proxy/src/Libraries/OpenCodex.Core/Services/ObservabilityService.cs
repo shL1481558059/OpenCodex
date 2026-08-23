@@ -675,6 +675,7 @@ public sealed class ObservabilityService : IObservabilityService
             "request_status" => ApplyRequestStatusFilter(query, value),
             "created_from" => ApplyCreatedFromFilter(query, value),
             "created_to" => ApplyCreatedToFilter(query, value),
+            "parent_request_log_id" when text.Length > 0 && Guid.TryParse(text, out var parentId) => query.Where(log => log.ParentRequestLogId == parentId),
             _ => query
         };
     }

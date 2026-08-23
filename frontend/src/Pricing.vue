@@ -57,9 +57,20 @@
       <el-tab-pane
         v-for="provider in providers"
         :key="provider.code"
-        :label="provider.name"
         :name="provider.code"
-      />
+      >
+        <template #label>
+          <el-dropdown trigger="hover" @command="handleProviderCommand($event, provider)">
+            <span class="provider-tab-label">{{ provider.name }}</span>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="edit" :icon="Edit">编辑</el-dropdown-item>
+                <el-dropdown-item command="delete" :icon="Delete">删除</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </template>
+      </el-tab-pane>
     </el-tabs>
 
     <el-dialog
@@ -428,13 +439,13 @@
     <el-dialog
       v-model="providerDialogVisible"
       class="pricing-provider-dialog"
-      title="新增供应商"
+      :title="providerDraft.id ? '编辑供应商' : '新增供应商'"
       :width="isMobile ? undefined : '480px'"
       :fullscreen="isMobile"
     >
       <el-form label-position="top" :model="providerDraft">
         <el-form-item label="供应商编码">
-          <el-input v-model="providerDraft.code" autocomplete="off" placeholder="例如 custom-ai" />
+          <el-input v-model="providerDraft.code" autocomplete="off" placeholder="例如 custom-ai" :disabled="!!providerDraft.id" />
         </el-form-item>
         <el-form-item label="显示名称">
           <el-input v-model="providerDraft.name" autocomplete="off" placeholder="例如 Custom AI" />
@@ -466,6 +477,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
+import { ElMessageBox } from "element-plus/es/components/message-box/index.mjs";
 import { Delete, Download, Edit, Plus, Refresh, Search, Upload } from "@element-plus/icons-vue";
 import {
   createModelCatalogImportState,
@@ -698,31 +710,46 @@ async function saveProvider() {
   try {
     const code = normalizeProviderCode(providerDraft.code);
     const name = providerDraft.name.trim();
-    if (!code) throw new Error("供应商编码不能为空");
-    if (!/^[a-z0-9._-]+$/.test(code)) throw new Error("供应商编码仅支持字母、数字、点、下划线和连字符");
+   if (!code) throw new Error("供应商编码不能为空");
+   if (!/^[a-z0-9._-]+$/.test(code)) throw new Error("供应商编码仅支持字母、数字、点、下划线和连字符");
     if (!name) throw new Error("显示名称不能为空");
 
-    const data = await props.api("/model-providers", {
-      method: "POST",
-      body: JSON.stringify({
-        code,
-        name,
-        enabled: providerDraft.enabled !== false,
-        sort_order: Number(providerDraft.sort_order || 0)
-      })
-    });
-    const continueToModel = createModelAfterProvider.value;
-    createModelAfterProvider.value = false;
-    providerDialogVisible.value = false;
-    if (!await loadProviders()) return;
-    const createdCode = data.provider?.code || code;
-    if (activeProvider.value === createdCode) {
-      await loadModels();
+    const payload = {
+      code,
+      name,
+      enabled: providerDraft.enabled !== false,
+      sort_order: Number(providerDraft.sort_order || 0)
+    };
+
+    if (providerDraft.id) {
+      await props.api(`/model-providers/${providerDraft.id}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload)
+      });
+      providerDialogVisible.value = false;
+      if (!await loadProviders()) return;
+      if (activeProvider.value === code) {
+        await loadModels();
+      }
+      ElMessage.success("供应商已更新");
     } else {
-      activeProvider.value = createdCode;
+      const data = await props.api("/model-providers", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+      const continueToModel = createModelAfterProvider.value;
+      createModelAfterProvider.value = false;
+      providerDialogVisible.value = false;
+      if (!await loadProviders()) return;
+      const createdCode = data.provider?.code || code;
+      if (activeProvider.value === createdCode) {
+        await loadModels();
+      } else {
+        activeProvider.value = createdCode;
+      }
+      ElMessage.success("供应商已新增");
+      if (continueToModel) openModelDialog();
     }
-    ElMessage.success("供应商已新增");
-    if (continueToModel) openModelDialog();
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
@@ -813,11 +840,60 @@ function emptyModelDraft() {
 
 function emptyProviderDraft() {
   return {
+    id: null,
     code: "",
     name: "",
     sort_order: nextProviderSortOrder(),
     enabled: true
   };
+}
+function openEditProviderDialog(provider) {
+  createModelAfterProvider.value = false;
+  Object.assign(providerDraft, {
+    id: provider.id,
+    code: provider.code || "",
+    name: provider.name || "",
+    sort_order: Number(provider.sort_order || 0),
+    enabled: provider.enabled !== false
+  });
+  providerDialogVisible.value = true;
+}
+
+function handleProviderCommand(command, provider) {
+  if (command === "edit") {
+    openEditProviderDialog(provider);
+  } else if (command === "delete") {
+    confirmDeleteProvider(provider);
+  }
+}
+
+async function confirmDeleteProvider(provider) {
+  const modelCount = models.value.filter(
+    (m) => m.provider_code === provider.code
+  ).length;
+  if (modelCount > 0) {
+    ElMessage.warning(`该供应商下还有 ${modelCount} 个模型，请先删除或迁移模型后再删除供应商`);
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确定删除供应商"${provider.name}"？此操作不可恢复。`,
+      "删除供应商",
+      { type: "warning", confirmButtonText: "删除", cancelButtonText: "取消" }
+    );
+  } catch {
+    return;
+  }
+  try {
+    await props.api(`/model-providers/${provider.id}`, { method: "DELETE" });
+    if (activeProvider.value === provider.code) {
+      activeProvider.value = "all";
+    }
+    await loadProviders();
+    ElMessage.success("供应商已删除");
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
 }
 
 function nextProviderSortOrder() {
@@ -939,6 +1015,10 @@ onBeforeUnmount(() => {
 
 .provider-tabs {
   margin-bottom: 12px;
+}
+
+.provider-tab-label {
+  cursor: pointer;
 }
 
 .match-pattern {
