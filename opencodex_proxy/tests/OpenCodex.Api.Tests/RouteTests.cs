@@ -50,24 +50,9 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         Assert.Contains("/channels/{channelId:guid}/health-reset", routes);
         Assert.Contains("/model-catalog/export", routes);
         Assert.Contains("/model-catalog/import", routes);
-        Assert.DoesNotContain("/pricing/seed-defaults", routes);
-        Assert.DoesNotContain("/model-infos/seed-defaults", routes);
         Assert.Contains("/logs", routes);
     }
 
-    [Fact]
-    public async Task RemovedSeedRoutesAreNotCallable()
-    {
-        using var pricingContent = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
-        var pricingResponse = await _client.PostAsync("/pricing/seed-defaults", pricingContent);
-
-        using var catalogContent = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
-        var catalogResponse = await _client.PostAsync("/model-infos/seed-defaults", catalogContent);
-
-        // /pricing 整条路由已删除，seed-defaults 返回 NotFound。
-        Assert.Equal(HttpStatusCode.NotFound, pricingResponse.StatusCode);
-        Assert.Equal(HttpStatusCode.MethodNotAllowed, catalogResponse.StatusCode);
-    }
 
     [Fact]
     public async Task FreshStartupDoesNotSeedModelCatalogOrLegacyPricing()

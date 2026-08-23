@@ -136,7 +136,6 @@
 | `GET` | `/model-infos` | 管理 Cookie，服务层限定资源范围 | `ModelCatalogController.Models` |
 | `GET` | `/model-providers` | 管理 Cookie，服务层限定资源范围 | `ModelCatalogController.Providers` |
 | `DELETE` | `/channels/{channelId:guid}/model-infos/{id:guid}` | 管理 Cookie，服务层限定资源范围 | `ModelCatalogController.RestoreChannelModel` |
-| `POST` | `/model-infos/seed-defaults` | 超级管理员 Cookie | `ModelCatalogController.SeedDefaults` |
 | `PATCH` | `/model-infos/{id:guid}` | 超级管理员 Cookie | `ModelCatalogController.UpdateModel` |
 | `PUT` | `/channels/{channelId:guid}/model-infos` | 管理 Cookie，服务层限定资源范围 | `ModelCatalogController.UpsertChannelModel` |
 | `GET` | `/model-catalog/export` | 超级管理员 Cookie | `ModelCatalogController.ExportCatalog` |
@@ -152,7 +151,6 @@
 | `POST` | `/pricing` | 超级管理员 Cookie | `PricingController.CreatePrice` |
 | `DELETE` | `/pricing/{id:guid}` | 超级管理员 Cookie | `PricingController.DeletePrice` |
 | `GET` | `/pricing` | 超级管理员 Cookie | `PricingController.Prices` |
-| `POST` | `/pricing/seed-defaults` | 超级管理员 Cookie | `PricingController.SeedDefaults` |
 | `PATCH` | `/pricing/{id:guid}` | 超级管理员 Cookie | `PricingController.UpdatePrice` |
 | `POST` | `/chat/completions` | Bearer 访问 Key | `ProxyController.ChatCompletions` |
 | `POST` | `/v1/chat/completions` | Bearer 访问 Key | `ProxyController.ChatCompletions` |

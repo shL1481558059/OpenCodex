@@ -188,14 +188,10 @@ sequenceDiagram
     participant Host as WebApplication
     participant Init as OpenCodexDatabaseInitializer
     participant DB as Selected DbContext
-    participant Pricing as Pricing Seeder
-    participant Catalog as Model Catalog Seeder
 
     Host->>Init: UseOpenCodexApi()
     Init->>DB: Database.Migrate()
     DB-->>Init: 所有未应用 migration 完成
-    Init->>Pricing: 若 ModelPricings 为空则写入默认价格
-    Init->>Catalog: SeedDefaults()
     Init-->>Host: 初始化完成
     Host->>Host: 配置 middleware 与 endpoints
 ```
@@ -204,10 +200,8 @@ sequenceDiagram
 
 1. `OpenCodexDatabaseInitializer.Initialize(app)` 在 middleware 和 controller mapping 前同步执行；
 2. `Database.Migrate()` 失败会阻止应用正常启动；
-3. `ModelPricings` 只在表完全为空时写入默认值；已有任意记录时不会补齐缺失项；
-4. 模型目录执行 `SeedDefaults()`，其幂等和覆盖语义由服务实现与测试约束；
-5. 当前未见应用级“单迁移 leader”或显式分布式锁，多实例同时启动时依赖数据库/EF migration 自身行为；
-6. `/health` 当前不报告 migration 版本或 readiness，且仅静态返回 ok。
+3. 当前未见应用级"单迁移 leader"或显式分布式锁，多实例同时启动时依赖数据库/EF migration 自身行为；
+4. `/health` 当前不报告 migration 版本或 readiness，且仅静态返回 ok。
 
 ### 6.2 目标启动门禁
 

@@ -541,7 +541,7 @@ status, errorCode, message, requestId, retryAfter, details, isNetworkError, isAb
 - 仅超级管理员可见；
 - 搜索模型/名称/匹配键；
 - enabled筛选；
-- 刷新、更新默认目录、新增供应商、新增模型；
+- 刷新、新增供应商、新增模型；
 - 导出、导入全局模型目录；
 - 桌面用供应商Tabs，移动用Select；
 - 表格/卡片展示供应商、模型、名称、匹配规则、输入/输出/缓存价格、状态、来源；
@@ -566,8 +566,7 @@ status, errorCode, message, requestId, retryAfter, details, isNetworkError, isAb
 ### 14.3 当前限制
 
 - 列表从服务端加载全部匹配结果，再在前端分页；大数据量下性能和一致性有限。
-- “更新”实际调用 seed-defaults，但按钮文案未说明插入/更新范围和覆盖规则。
-- 停用操作使用“删除”图标和DELETE接口，但产品结果是停用，语义需要统一。
+- 停用操作使用"删除"图标和DELETE接口，但产品结果是停用，语义需要统一。
 - Catalog JSON和tiers错误主要在保存时Toast，没有字段定位。
 - 页面状态在切页/刷新后丢失。
 
@@ -1042,7 +1041,6 @@ flowchart LR
 
 **验收标准**：
 1. provider、model key、match规则、Catalog和pricing错误可定位。
-2. “更新默认目录”显示新增/更新范围和结果。
 3. 停用动作的按钮、确认和接口语义一致。
 4. 大数据量改用服务端分页或达到性能指标。
 
@@ -1202,7 +1200,7 @@ flowchart LR
 | API Key | `/api-keys`、`/api-keys/{id}`、`/api-keys/import`、超级管理员创建时 `/users` |
 | 用户 | `/users`、`/users/{username}` |
 | Web Search | `/web-search`、`/web-search/import`、`/web-search/test-key` |
-| 模型信息 | `/model-providers`、`/model-infos`、`/model-infos/{id}`、`/model-infos/seed-defaults`、`/model-catalog/export`、`/model-catalog/import` |
+| 模型信息 | `/model-providers`、`/model-infos`、`/model-infos/{id}`、`/model-catalog/export`、`/model-catalog/import` |
 | 系统设置 | `/system-settings`；Tauri `restart_backend` command |
 | 请求日志 | `/logs`、`/logs/{id}`、`/log-filter-options`、`/stats` |
 
