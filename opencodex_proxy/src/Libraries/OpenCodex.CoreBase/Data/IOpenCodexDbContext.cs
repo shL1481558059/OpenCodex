@@ -18,8 +18,6 @@ public interface IOpenCodexDbContext : IDisposable, IAsyncDisposable
 
     DbSet<TavilyKey> TavilyKeys { get; }
 
-    DbSet<ModelPricing> ModelPricings { get; }
-
     DbSet<ModelProvider> ModelProviders { get; }
 
     DbSet<ModelInfo> ModelInfos { get; }

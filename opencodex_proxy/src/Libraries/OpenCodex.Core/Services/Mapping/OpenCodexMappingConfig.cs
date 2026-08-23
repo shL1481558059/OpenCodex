@@ -13,17 +13,4 @@ public static class EntityDtoExtensions
         source.CreatedAt,
         source.UpdatedAt);
 
-    public static ModelPricingDto ToDto(this ModelPricing source) => new(
-        source.Id,
-        source.ModelId,
-        source.Vendor,
-        source.Name,
-        source.MatchPattern,
-        source.InputPrice,
-        source.CachedInputPrice,
-        source.OutputPrice,
-        source.Enabled,
-        source.Source,
-        source.CreatedAt,
-        source.UpdatedAt);
 }

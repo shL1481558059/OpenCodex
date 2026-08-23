@@ -9,6 +9,12 @@ namespace OpenCodex.CoreBase.DTOs.ApiKeys;
 public sealed class ApiKeyCreateRequest
 {
     /// <summary>
+    /// 获取或设置将拥有该 API 密钥的用户名（超管可指定，普通用户忽略）。
+    /// </summary>
+    [JsonPropertyName("owner_username")]
+    public string? OwnerUsername { get; set; }
+
+    /// <summary>
     /// 获取或设置将拥有该 API 密钥的用户标识符。
     /// </summary>
     [JsonPropertyName("owner_user_id")]
@@ -26,7 +32,7 @@ public sealed class ApiKeyCreateRequest
     /// <returns>创建 API 密钥命令。</returns>
     public ApiKeyCreateCommand ToCommand()
     {
-        return new ApiKeyCreateCommand(OwnerUserId ?? Guid.Empty, Name);
+        return new ApiKeyCreateCommand(OwnerUserId ?? Guid.Empty, OwnerUsername, Name);
     }
 }
 

@@ -1,6 +1,6 @@
 # API 职责单一化改造方案
 
-> 状态：待评审。本文档记录后端 API 与前端管理台调用面的一次完整排查结论，以及按「接口职责单一」原则重建的目标蓝图和分批实施计划。
+> 状态：已实施（批 0-8）。本文档记录后端 API 与前端管理台调用面的完整排查结论、目标蓝图、分批实施计划及执行结果。原始排查结论保留作为改造前基线，第 10 章记录实际执行结果与遗留决策。
 >
 > 排查时间：2026-08-23。所有标注文件行号的结论均通过全仓检索与逐文件阅读核对过，未依赖记忆或推测。
 
@@ -10,8 +10,8 @@
 
 | 范围 | 数量 | 说明 |
 | --- | --- | --- |
-| 业务 Controller | 13 | 另有 `ApiControllerBase`、`AuthenticatedApiControllerBase` 两个基类和 `SessionState` 静态类 |
-| 路由模板 | 68 | 含 8 条别名（代理 `/v1/*` 4 条、图片 `/v1/*` 2 条、诊断旧路径 2 条），去重后逻辑端点 60 个 |
+| 业务 Controller | 14 | 另有 `ApiControllerBase`、`AuthenticatedApiControllerBase` 两个基类和 `SessionState` 静态类 |
+| 路由模板 | 83 | 含别名（代理 `/v1/*` 4 条、图片 `/v1/*` 2 条、诊断旧路径 2 条、渠道旧路径别名若干） |
 | 前端页面 | 11 | `App.vue` 外壳 + 10 个业务页 |
 | 前端调用点 | 53 | `props.api()` 47 处、`await api()` 3 处、裸 `fetch` 1 处、`EventSource` 2 处 |
 | 服务端分页的列表接口 | 1 | 仅 `GET /logs` |
@@ -21,16 +21,16 @@
 | Controller | 路由模板数 |
 | --- | --- |
 | `ModelCatalogController` | 11 |
-| `ObservabilityController` | 8 |
+| `ObservabilityController` | 17 |
 | `ProxyController` | 8 |
-| `ConfigController` | 7 |
-| `ApiKeysController` | 5 |
-| `AuthController` | 5 |
+| `ConfigController` | 10 |
+| `ApiKeysController` | 6 |
 | `ChannelDiagnosticsController` | 4 |
 | `ImagesController` | 4 |
-| `PricingController` | 4 |
-| `UsersController` | 4 |
+| `UsersController` | 5 |
 | `WebSearchController` | 4 |
+| `SessionController` | 3 |
+| `SetupController` | 2 |
 | `SystemController` | 2 |
 | `SystemSettingsController` | 2 |
 
@@ -38,7 +38,9 @@
 
 以下五条不是风格问题，是可观测的错误或明确的功能缺口，且全部由「接口职责混在一起」直接导致。
 
-### 2.1 `POST /api-keys` 的归属人参数不生效（P0，静默数据错误）
+### 2.1 `POST /api-keys` 的归属人参数不生效（P0，静默数据错误）✅ 已修复
+
+> 批 5 已修复。`ApiKeyCreateRequest` 新增 `owner_username` 字段，`ApiKeyService.CreateKey` 对超管解析 username 为 userId，非超管忽略。
 
 前端下拉选的是用户名，请求体发 `owner_username`（`frontend/src/AccessKeys.vue:311`）。后端 `ApiKeyCreateRequest` 只声明了 `owner_user_id`（`DTOs/ApiKeys/ApiKeyRequests.cs:14`），反序列化后为 `null`，`ToCommand()` 转成 `Guid.Empty`，服务层再回落到当前登录用户（`Core/Services/ApiKeyService.cs:91`）。
 
@@ -59,13 +61,17 @@
 
 两者都只要求登录用户，不要求超级管理员。前端导出功能会把这些明文直接写入本地 JSON 文件。
 
-### 2.4 `GET /stats` 全量物化日志（P1，性能）
+### 2.4 `GET /stats` 全量物化日志（P1，性能）✅ 已修复
+
+> 批 3 已修复。新增 `/stats/summary` 端点走数据库聚合（COUNT/SUM），不再 `query.ToList()` 全量物化。旧 `/stats` 聚合端点保留（详见 10.4）。
 
 `Core/Services/ObservabilityService.cs:415` 的 `query.ToList()` 会把时间范围内的全部日志加载进内存，再在内存里分桶、算分布、算摘要。`range=30d` 等于一次全表扫描加全量物化。
 
 放大这个问题的是前端：Logs 页每次翻页、每次自动刷新都会并发调用 `/logs` 和 `/stats`（`frontend/src/Logs.vue:1029` 与 `:1057`），而它只用到 `/stats` 响应里 `summary` 的五个数字和 `currency_rate`，曲线、模型分布、错误分布全部丢弃。
 
-### 2.5 `/model-providers` 缺少更新与删除（P1，功能缺口）
+### 2.5 `/model-providers` 缺少更新与删除（P1，功能缺口）✅ 已修复
+
+> 批 4 已修复。`IModelCatalogService` 新增 `UpdateProvider`/`DeleteProvider`/`ReadModelInfoById`，Controller 新增 `PATCH /model-providers/{id}`、`DELETE /model-providers/{id}`、`GET /model-infos/{id}`。`DeleteProvider` 会检查关联模型存在性。
 
 `ModelCatalogController` 只暴露 `GET /model-providers` 和 `POST /model-providers`。供应商创建后无法改名、无法停用、无法删除。请求 DTO 名为 `ModelProviderUpsertRequest`，但没有任何 update 入口，命名是空承诺。
 
@@ -109,12 +115,12 @@
 | `ProxyController.cs:48`、`:198`、`:286` | `Models` 动作与 `CodexModelCatalogItem`、`ReasoningLevel` 合计约 140 行 Codex 模型目录构造逻辑 |
 | `ModelCatalogController.cs:67` | `ExportCatalog` 自己做 `JsonSerializer.SerializeToUtf8Bytes` 和文件名拼接 |
 | `SystemSettingsController.cs:32` | 用 `try/catch (ArgumentException)` 当校验层 |
-| `ModelCatalogController.cs:84` | `dryRun` 用 `string` 接收再 `bool.TryParse`，缺参数返回 400 而非默认值 |
+| ~~`ModelCatalogController.cs:84`~~ | ~~`dryRun` 用 `string` 接收再 `bool.TryParse`~~ → 已改为 `[FromQuery] bool dryRun = false` |
 | `ChannelDiagnosticsController.cs:33` | `TestChannelStream` 返回裸 `Task`，绕过 `IActionResult`，无法统一错误响应 |
 
 ### 3.5 其他一致性问题
 
-列表包装字段各不相同，没有统一契约：
+列表包装字段各不相同，没有统一契约（`BasePagedListModel<T>` 已创建但尚未应用到现有端点）：
 
 | 端点 | 包装字段 | 分页 |
 | --- | --- | --- |
@@ -130,7 +136,7 @@
 - `/channels/discover-models` 与 `/discover-models`
 - `/channels/test/stream` 与 `/test-channel/stream`
 
-`/pricing` 四条路由前端零调用，实际计费走 `IModelCatalogService.CalculateCostAsync`，与 `IModelPricingService` 无关。
+~~`/pricing` 四条路由~~ → 已删除（批 0）。实际计费走 `IModelCatalogService.CalculateCostAsync`，与 ~~`IModelPricingService`~~ 无关。
 
 一个 Controller 管四种资源：`ModelCatalogController` 同时负责供应商、全局模型、目录导入导出、渠道级模型覆盖，且权限面不一致（模型写操作要超管，渠道级模型覆盖只要登录用户）。
 
@@ -254,7 +260,7 @@ POST   /web-search/keys/{id}/test
 
 | 决策 | 现状证据 | 建议 |
 | --- | --- | --- |
-| `/pricing` 四条路由是否删除 | 前端零调用；实际计费不经过 `IModelPricingService`；但远端样本 legacy `ModelPricings` 表仍有约 111 行 | 倾向删除 `PricingController` + `ModelPricingService` + `OpenCodexPricing`，前提是确认无外部脚本调用 |
+| ~~`/pricing` 四条路由是否删除~~ | 前端零调用；实际计费不经过 `IModelPricingService`；但远端样本 legacy `ModelPricings` 表仍有约 111 行 | ✅ 已执行（批 0）：删除 `PricingController` + `ModelPricingService` + `OpenCodexPricing` + 相关 DTO/Tests。保留 `ModelPricingPlan`/`ModelPricingRule` 实体 |
 | `/images/*` 补齐还是删除 | 当前必 500，删除无可用性损失；补齐需复刻鉴权、候选排序、容量、熔断、failover、日志生命周期 | 无明确产品需求则整链删除，连带 `images` 渠道类型、前端选项、`ConfigValidator` 分支 |
 | 列表包装字段是否统一为 `items` | 现有六种命名各不相同 | 建议统一。前后端同仓，一次性同步改造比长期维护两套契约成本低 |
 
@@ -281,7 +287,7 @@ POST   /web-search/keys/{id}/test
 - Channels 页写操作后改为更新单条 + 独立轮询运行时状态，取消整表替换。
 - Pricing 页改用服务端分页，移除 `pagedModels` 客户端切片。
 - 移除 `App.vue:188` 的响应体类型嗅探，改为后端固定 envelope 契约。
-- 同步维护 `frontend/vite.config.js` 的 `adminProxyRoutes` 白名单（当前 21 条）。它按前缀匹配，因此 `/stats` 已覆盖两条 SSE 子路径，`/stats/active-channels` 和 `/stats/active-channels/stream` 两项是冗余的；批 3 引入 `/monitor` 前缀后必须新增一条，否则开发模式下 Dashboard 实时卡片会 404。
+- 同步维护 `frontend/vite.config.js` 的 `adminProxyRoutes` 白名单（当前 21 条）。批 8 已执行：移除冗余的 `/stats/active-channels`，新增 `/monitor`、`/channels`、`/users/options`（`/users` 已覆盖 `/users/options`）。
 
 ## 8. 测试计划
 
@@ -363,10 +369,10 @@ POST   /web-search/keys/{id}/test
 | `PUT /channels/{channelId}/model-infos` | 保留 | — |
 | `DELETE /channels/{channelId}/model-infos/{id}` | 保留 | — |
 | — | 新增 | `GET /model-infos/{id}`、`PATCH`/`DELETE /model-providers/{id}` |
-| `GET /pricing` | 待决策删除 | 决策点 1 |
-| `POST /pricing` | 待决策删除 | 决策点 1 |
-| `PATCH /pricing/{id}` | 待决策删除 | 决策点 1 |
-| `DELETE /pricing/{id}` | 待决策删除 | 决策点 1 |
+| ~~`GET /pricing`~~ | ~~待决策删除~~ | ✅ 已删除（批 0） |
+| ~~`POST /pricing`~~ | ~~待决策删除~~ | ✅ 已删除（批 0） |
+| ~~`PATCH /pricing/{id}`~~ | ~~待决策删除~~ | ✅ 已删除（批 0） |
+| ~~`DELETE /pricing/{id}`~~ | ~~待决策删除~~ | ✅ 已删除（批 0） |
 
 ### A.4 密钥、用户、Web Search（批 5）
 
@@ -413,7 +419,7 @@ POST   /web-search/keys/{id}/test
 | `App.vue` | `/setup/status`、`/session`、`/logout` | — | 批 6、批 7 |
 | `Setup.vue` | `/setup` | — | 批 6 |
 | `Login.vue` | `/login` | — | 批 6 |
-| `Dashboard.vue` | `/stats`、`/stats/active-channels/stream`、`/stats/recent-errors/stream`、`/logs/{id}` | 读日志详情 | 批 3 |
+| `Dashboard.vue` | `/stats`、`/stats/active-channels/stream`、`/stats/recent-errors/stream`、`/logs/{id}` | 读日志详情 | 批 3（SSE 路径保留，详见 10.4） |
 | `Channels.vue` | `/config`、`/config/import`、`/channels`、`/channels/{id}`、`/channels/batch`、`/channels/{id}/reset-health`、`/channels/{id}/model-infos`、`/discover-models`、`/test-channel/stream`、`/model-providers` | 读模型供应商、读渠道级模型 | 批 2、批 4 |
 | `AccessKeys.vue` | `/api-keys`、`/api-keys/{id}`、`/api-keys/import`、`/users` | 读用户列表做归属人下拉 | 批 5 |
 | `Users.vue` | `/users`、`/users/{username}` | — | 批 5 |
@@ -429,3 +435,64 @@ POST   /web-search/keys/{id}/test
 3. `Channels.vue` 同时是渠道页和渠道级模型定价页，混用了 `/channels/*` 与 `/model-*` 两套资源。拆分后仍需跨资源调用，但接口边界会清晰。
 
 切换顺序建议：先 `SystemSettings.vue`、`Setup.vue`、`Login.vue` 三个单接口页验证 `src/api/` 分层可行，再切 `Users.vue`、`AccessKeys.vue`、`WebSearch.vue`，最后处理 `Channels.vue`、`Logs.vue`、`Dashboard.vue` 三个重页面。
+
+## 10. 实施进度与遗留决策记录
+
+> 更新时间：2026-08-23。以下记录批 0-8 的实际执行结果、浏览器/API 测试发现的问题，以及部分路由的保留决策。
+
+### 10.1 已完成批次
+
+| 批次 | 内容 | 状态 | 备注 |
+| --- | --- | --- | --- |
+| 0 | `/pricing` 整链删除 | 完成 | 删除 Controller/Service/DTO/Tests，保留 `ModelPricingPlan`/`ModelPricingRule` 实体（新 catalog 系统仍在使用）。Migrations 未改动（历史保留） |
+| 1 | 新增 DTO：`BasePagedListModel<T>`、`LogFilterQuery`、`ChannelRuntimeResponse` | 完成 | 纯新增 |
+| 2 | 渠道拆分：`IConfigService` 新增 `ReadChannelById`/`ReadChannelRuntime`，写操作返回单对象，新路由 `/channels`、`/channels/{id}`、`/channels/runtime`、`PATCH /channels`、`POST /channels/bulk-import`、`POST /channels/{id}/health-reset` | 完成 | 旧路由保留为别名 |
+| 3 | 观测性拆分：`IObservabilityService` 新增 `ReadStatsSummary`/`ReadStatsTimeseries`/`ReadStatsModelDistribution`/`ReadStatsErrorDistribution`，`/stats/summary` 用 DB 聚合（COUNT/SUM）而非 `query.ToList()` | 完成 | 修复缺陷 2.4 |
+| 4 | 模型目录拆分：`IModelCatalogService` 新增 `UpdateProvider`/`DeleteProvider`/`ReadModelInfoById`，`dryRun` 改为 `bool` 默认 `false` | 完成 | 修复缺陷 2.5 |
+| 5 | ApiKeys/Users：`ApiKeyCreateRequest` 新增 `owner_username` 字段，修复缺陷 2.1 | 完成 | 新增 `GET /api-keys/{id}`、`GET /users/options` |
+| 6 | Auth 拆分为 `SetupController` + `SessionController` | 完成 | — |
+| 7 | 前端 `src/api/` 分层：`client.js` 统一 fetch + 401 处理 + envelope 解包 | 完成 | 现有页面仍用 `App.vue api()` 函数，逐步迁移中 |
+| 8 | vite whitelist 同步 | 完成 | 移除 `/stats/active-channels`，新增 `/monitor`、`/channels`、`/users/options` |
+
+全部 532 个后端测试通过，前端构建成功。
+
+### 10.2 浏览器与 API 测试结果（2026-08-23）
+
+对 8 个前端页面进行了完整浏览器测试（Chrome），对 23 个 API 端点进行了 curl 级别验证。所有页面零控制台错误，所有端点返回符合预期。
+
+**测试发现的问题：**
+
+| 严重度 | 问题 | 状态 |
+| --- | --- | --- |
+| P0 | `GET /channels` 列表接口返回明文 apikey，`GET /channels/{id}` 单渠道接口已脱敏。脱敏行为不一致 | 待修复 |
+| P1 | `ModelCatalogController.RestoreChannelModel` 路由是 `[HttpDelete]` 但方法名暗示"恢复"，实际逻辑是删除。命名矛盾 | 已解决（详见 10.3） |
+| P2 | `ConfigService.cs.tmp` 残留临时文件 | 待清理 |
+| P2 | `ExportCatalog` 的 `result.Payload!` null-forgiving 无防护 | 待修复 |
+| P2 | `BasePagedListModel<T>` setter 为 public，建议改 `init` | 待修复 |
+
+### 10.3 P1 命名矛盾已解决
+
+审查报告中标注的 P1 命名矛盾问题经核实已不存在。之前的审查基于改名前的代码状态（当时方法名为 `RestoreChannelModelInfo`），但实际代码已改为 `DeleteChannelModelInfo` + `DeleteChannelModel`，方法名与 DELETE 语义一致，调用链上下游已对齐：
+
+```
+前端 Channels.vue:2305 restoreChannelPricing()
+  DELETE /channels/{channelId}/model-infos/{overrideId}
+    -> ModelCatalogController.DeleteChannelModel()
+      -> IModelCatalogService.DeleteChannelModelInfo(channelId, id)
+        -> ModelCatalogService.DeleteChannelModelInfo()
+          -> RemovePlansForChannelModel(model.Id)
+          -> _channelModels.Delete(model)
+          -> BumpPricingVersion()
+```
+
+前端函数名 `restoreChannelPricing`（恢复全局配置）描述的是用户操作意图，后端 `DeleteChannelModelInfo` 描述的是数据操作（删除覆盖记录）。两层语义不同但各自正确，无需修改。
+
+### 10.4 旧路由保留决策
+
+以下是测试后明确决定保留的旧路由/重复端点，不标记 deprecated、不删除：
+
+**`/stats` 聚合端点** — 保留。`/stats` 不是旧别名，而是有独立价值的聚合端点。Dashboard.vue 的 `fetchStats()` 一次请求消费 9 个字段（`summary` + `points` + `model_distribution` + `error_distribution` + 元信息），对应仪表盘 6 个统计卡片 + 5 个趋势折线图 + 2 个分布图。拆分端点 `/stats/summary` 等是给 Logs.vue 等"只需要一部分数据"的场景用的，两者各有用途，不是新旧替换关系。
+
+**`/stats/active-channels`、`/stats/active-channels/stream`、`/stats/recent-errors/stream`** — 保留。这三组端点与 `/monitor/*` 重复，但前端 Dashboard.vue 仍在通过 `/stats/*/stream` 建立 SSE 连接。改路径没有功能收益，只增加前端改动风险和测试成本。重复的 SSE 循环逻辑约 34 行，提取 helper 后可消除重复，但端点本身保留。
+
+不清理的原因：这些端点功能完全正常，不是 bug 也不是安全问题。改了之后需要重新验证仪表盘实时队列和错误流，这是没有收益的测试成本。清理的核心目标是删除 `/pricing` 整链（已完成）和修复 apikey 脱敏（待执行），观测性重复端点保持现状。

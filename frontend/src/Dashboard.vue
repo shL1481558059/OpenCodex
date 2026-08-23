@@ -670,7 +670,7 @@ function scheduleQueueStaleTimer() {
 
 function buildQueueStreamUrl() {
   const base = import.meta.env.DEV ? import.meta.env.BASE_URL.replace(/\/$/, "") : "";
-  return `${base}/stats/active-channels/stream`;
+  return `${base}/monitor/active-channels/stream`;
 }
 
 function stopQueueStream() {
@@ -749,7 +749,7 @@ function scheduleErrorsStaleTimer() {
 
 function buildErrorsStreamUrl() {
   const base = import.meta.env.DEV ? import.meta.env.BASE_URL.replace(/\/$/, "") : "";
-  return `${base}/stats/recent-errors/stream`;
+  return `${base}/monitor/recent-errors/stream`;
 }
 
 function stopErrorsStream() {

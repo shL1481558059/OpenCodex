@@ -18,6 +18,12 @@ public interface IApiKeyService
         string? requestedOwnerUsername);
 
     /// <summary>
+    /// 读取指定访问密钥的详情。
+    /// </summary>
+    /// <param name="keyId">访问密钥标识。</param>
+    ApiOpResult<ApiKeyResponsePayload> ReadKeyById(Guid keyId);
+
+    /// <summary>
     /// 创建新的访问密钥。
     /// </summary>
     /// <param name="command">创建访问密钥命令。</param>

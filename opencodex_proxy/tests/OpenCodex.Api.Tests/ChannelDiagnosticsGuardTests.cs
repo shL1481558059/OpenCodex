@@ -358,17 +358,8 @@ public sealed class ChannelDiagnosticsGuardTests : IDisposable
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
-        var channels = document.RootElement.GetProperty("Data").GetProperty("channels");
-        foreach (var channel in channels.EnumerateArray())
-        {
-            if (channel.GetProperty("enabled").GetBoolean() == (enabled ?? true)
-                && channel.GetProperty("type").GetString() == (type ?? ProtocolConverter.Responses))
-            {
-                return channel.GetProperty("id").GetGuid();
-            }
-        }
-
-        throw new InvalidOperationException("channel not found in response");
+        var channel = document.RootElement.GetProperty("Data");
+        return channel.GetProperty("id").GetGuid();
     }
 
     private async Task<(HttpStatusCode StatusCode, string Body)> SendStreamRequestWithCookie(

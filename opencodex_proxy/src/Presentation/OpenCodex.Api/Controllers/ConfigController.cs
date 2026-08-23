@@ -25,6 +25,43 @@ public sealed class ConfigController : AuthenticatedApiControllerBase
         return Api(result);
     }
 
+    [HttpGet("/channels")]
+    public IActionResult Channels()
+    {
+        RequireUser();
+        var result = _config.ReadConfig();
+        return Api(result);
+    }
+
+    [HttpGet("/channels/{channelId:guid}")]
+    public IActionResult Channel(Guid channelId)
+    {
+        RequireUser();
+        var result = _config.ReadChannelById(channelId);
+        return Api(result);
+    }
+
+    [HttpGet("/channels/runtime")]
+    public IActionResult ChannelRuntime([FromQuery] string? ids)
+    {
+        RequireUser();
+        IReadOnlyList<Guid>? idList = null;
+        if (!string.IsNullOrWhiteSpace(ids))
+        {
+            // 宽松解析: 无法解析为 Guid 的值会被静默忽略, 不返回错误。
+            idList = ids.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(id => Guid.TryParse(id, out var guid) ? guid : Guid.Empty)
+                .Where(guid => guid != Guid.Empty)
+                .ToList();
+            if (idList.Count == 0)
+            {
+                idList = null;
+            }
+        }
+        var result = _config.ReadChannelRuntime(idList);
+        return Api(result);
+    }
+
     [HttpPost("/channels")]
     public async Task<IActionResult> CreateChannel(ChannelRequest request)
     {
@@ -41,6 +78,7 @@ public sealed class ConfigController : AuthenticatedApiControllerBase
         return Api(result);
     }
 
+    [HttpPatch("/channels")]
     [HttpPatch("/channels/batch")]
     public async Task<IActionResult> BatchUpdateChannels(ChannelBatchUpdateRequest request)
     {
@@ -57,6 +95,7 @@ public sealed class ConfigController : AuthenticatedApiControllerBase
         return Api(result);
     }
 
+    [HttpPost("/channels/bulk-import")]
     [HttpPost("/config/import")]
     public async Task<IActionResult> ImportConfig(ConfigSaveRequest request)
     {
@@ -65,6 +104,7 @@ public sealed class ConfigController : AuthenticatedApiControllerBase
         return Api(result);
     }
 
+    [HttpPost("/channels/{channelId:guid}/health-reset")]
     [HttpPost("/channels/{channelId:guid}/reset-health")]
     public async Task<IActionResult> ResetChannelHealth(Guid channelId)
     {

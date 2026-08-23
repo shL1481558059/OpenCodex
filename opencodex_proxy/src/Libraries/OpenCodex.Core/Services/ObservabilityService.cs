@@ -267,6 +267,150 @@ public sealed class ObservabilityService : IObservabilityService
             contentBlockCount));
     }
 
+    public ApiOpResult<StatsSummaryResponse> ReadStatsSummary(
+        string rangeKey,
+        object? startTs,
+        object? endTs,
+        IReadOnlyDictionary<string, object?> filters)
+    {
+        var (currentUsername, isSuperadmin) = CurrentScope();
+        var resolved = ResolveStatsRange(rangeKey, startTs, endTs);
+        var scopedFilters = ScopedFilters(filters, currentUsername, isSuperadmin);
+        var baseQuery = ApplyLogFilters(
+            _logRepository.TableNoTracking
+                .Where(log => log.CreatedAt >= resolved.StartTs && log.CreatedAt < resolved.EndTs),
+            scopedFilters);
+
+        // 走数据库聚合，不物化全量日志。
+        var requestCount = baseQuery.Count();
+        var successCount = baseQuery.Count(IsSuccessfulLog);
+        var inputTokens = baseQuery.Sum(log => log.InputTokens);
+        var cachedTokens = baseQuery.Sum(log => log.CachedTokens);
+        var outputTokens = baseQuery.Sum(log => log.OutputTokens);
+        var cost = baseQuery.Sum(log => log.Cost);
+
+        // 最近 1 小时统计。
+        var effectiveEndTs = Math.Min(resolved.EndTs, UnixTimeSeconds());
+        var recentStartTs = Math.Max(resolved.StartTs, effectiveEndTs - 3600);
+        var recentQuery = baseQuery.Where(log => log.CreatedAt >= recentStartTs && log.CreatedAt < effectiveEndTs);
+        var recentRequestCount = recentQuery.Count();
+        var recentInputTokens = recentQuery.Sum(log => log.InputTokens);
+        var recentCachedTokens = recentQuery.Sum(log => log.CachedTokens);
+        var recentOutputTokens = recentQuery.Sum(log => log.OutputTokens);
+        var recentCost = recentQuery.Sum(log => log.Cost);
+
+        // 最后一窗口的 RPM/TPM。
+        var latestWindowStartTs = Math.Max(resolved.StartTs, effectiveEndTs - resolved.GranularityMinutes * 60.0);
+        var latestQuery = baseQuery.Where(log => log.CreatedAt >= latestWindowStartTs && log.CreatedAt < effectiveEndTs);
+        var latestWindowCount = latestQuery.Count();
+        var latestTokens = latestQuery.Sum(log => log.InputTokens + log.CachedTokens + log.OutputTokens);
+
+        var summary = new StatsSummaryDto(
+            requestCount,
+            successCount,
+            recentRequestCount,
+            inputTokens,
+            cachedTokens,
+            outputTokens,
+            inputTokens + cachedTokens + outputTokens,
+            recentInputTokens + recentCachedTokens + recentOutputTokens,
+            Math.Round(cost, 6),
+            Math.Round(recentCost, 6),
+            latestWindowCount > 0 ? Math.Round((double)latestWindowCount / resolved.GranularityMinutes, 2) : 0,
+            latestTokens > 0 ? Math.Round((double)latestTokens / resolved.GranularityMinutes, 2) : 0);
+
+        return ApiOpResult<StatsSummaryResponse>.Succeed(StatsSummaryResponse.From(summary));
+    }
+
+    public ApiOpResult<IReadOnlyList<StatsPointResponse>> ReadStatsTimeseries(
+        string rangeKey,
+        object? startTs,
+        object? endTs,
+        IReadOnlyDictionary<string, object?> filters)
+    {
+        var (currentUsername, isSuperadmin) = CurrentScope();
+        var resolved = ResolveStatsRange(rangeKey, startTs, endTs);
+        var scopedFilters = ScopedFilters(filters, currentUsername, isSuperadmin);
+        var query = ApplyLogFilters(
+            _logRepository.TableNoTracking
+                .Where(log => log.CreatedAt >= resolved.StartTs && log.CreatedAt < resolved.EndTs),
+            scopedFilters);
+        var logs = query.ToList();
+        var bucketSeconds = resolved.GranularityMinutes * 60.0;
+        var bucketCount = Math.Max(
+            1,
+            (int)Math.Floor((resolved.EndTs - resolved.StartTs + bucketSeconds - 1) / bucketSeconds));
+        var points = new List<StatsPointDto>();
+        for (var index = 0; index < bucketCount; index++)
+        {
+            var bucketStart = resolved.StartTs + index * bucketSeconds;
+            var bucketEnd = resolved.StartTs + (index + 1) * bucketSeconds;
+            var bucketLogs = logs
+                .Where(log => log.CreatedAt >= bucketStart && log.CreatedAt < bucketEnd)
+                .ToList();
+            var cost = bucketLogs.Sum(log => log.Cost);
+            var inputTokens = bucketLogs.Sum(log => log.InputTokens);
+            var cachedTokens = bucketLogs.Sum(log => log.CachedTokens);
+            var outputTokens = bucketLogs.Sum(log => log.OutputTokens);
+            var ttftValues = bucketLogs
+                .Where(log => log.TtftMs is > 0)
+                .Select(log => log.TtftMs!.Value)
+                .ToList();
+            var avgTtft = ttftValues.Count == 0 ? (double?)null : ttftValues.Average();
+            var cacheDenominator = inputTokens + cachedTokens;
+            points.Add(new StatsPointDto(
+                TimestampToIso(bucketEnd),
+                Math.Round(cost, 6),
+                inputTokens,
+                cachedTokens,
+                outputTokens,
+                avgTtft is null ? null : Math.Round(avgTtft.Value, 1),
+                cacheDenominator > 0 ? Math.Round((double)cachedTokens / cacheDenominator, 4) : null,
+                bucketLogs.Count > 0 ? Math.Round((double)bucketLogs.Count / resolved.GranularityMinutes, 2) : 0));
+        }
+
+        return ApiOpResult<IReadOnlyList<StatsPointResponse>>.Succeed(
+            points.Select(StatsPointResponse.From).ToList());
+    }
+
+    public ApiOpResult<IReadOnlyList<StatsModelDistributionResponse>> ReadStatsModelDistribution(
+        string rangeKey,
+        object? startTs,
+        object? endTs,
+        IReadOnlyDictionary<string, object?> filters)
+    {
+        var (currentUsername, isSuperadmin) = CurrentScope();
+        var resolved = ResolveStatsRange(rangeKey, startTs, endTs);
+        var scopedFilters = ScopedFilters(filters, currentUsername, isSuperadmin);
+        var query = ApplyLogFilters(
+            _logRepository.TableNoTracking
+                .Where(log => log.CreatedAt >= resolved.StartTs && log.CreatedAt < resolved.EndTs),
+            scopedFilters);
+        var logs = query.ToList();
+        var distribution = ReadModelDistribution(logs);
+        return ApiOpResult<IReadOnlyList<StatsModelDistributionResponse>>.Succeed(
+            distribution.Select(StatsModelDistributionResponse.From).ToList());
+    }
+
+    public ApiOpResult<IReadOnlyList<ErrorDistributionResponse>> ReadStatsErrorDistribution(
+        string rangeKey,
+        object? startTs,
+        object? endTs,
+        IReadOnlyDictionary<string, object?> filters)
+    {
+        var (currentUsername, isSuperadmin) = CurrentScope();
+        var resolved = ResolveStatsRange(rangeKey, startTs, endTs);
+        var scopedFilters = ScopedFilters(filters, currentUsername, isSuperadmin);
+        var query = ApplyLogFilters(
+            _logRepository.TableNoTracking
+                .Where(log => log.CreatedAt >= resolved.StartTs && log.CreatedAt < resolved.EndTs),
+            scopedFilters);
+        var logs = query.ToList();
+        var distribution = ReadErrorDistribution(logs);
+        return ApiOpResult<IReadOnlyList<ErrorDistributionResponse>>.Succeed(
+            distribution.Select(ErrorDistributionResponse.From).ToList());
+    }
+
     private Dictionary<Guid, string> BuildOwnerMap(IReadOnlyList<RequestLog> logs)
 {
     var ownerIds = logs.Select(log => log.OwnerUserId).Distinct().ToList();

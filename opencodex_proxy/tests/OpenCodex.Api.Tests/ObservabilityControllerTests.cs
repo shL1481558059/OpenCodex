@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using OpenCodex.Api.Controllers;
+using OpenCodex.Core.Services.Events;
+using OpenCodex.CoreBase.Events;
 using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.DTOs.Observability;
 using OpenCodex.CoreBase.Results;
@@ -97,7 +99,7 @@ public sealed class ObservabilityControllerTests
 
     private static ObservabilityController CreateController(CapturingObservabilityService service)
     {
-        return new ObservabilityController(new TestWorkContext(), service)
+        return new ObservabilityController(new TestWorkContext(), service, new EventBus())
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
         };
@@ -128,6 +130,16 @@ public sealed class ObservabilityControllerTests
         public ApiOpResult<ActiveChannelQueueResponse> ReadActiveChannelQueue() => throw new NotSupportedException();
         public ApiOpResult<IReadOnlyList<RecentErrorItemResponse>> ReadRecentErrors(int limit) => throw new NotSupportedException();
         public ApiOpResult<ClearLogsResponse> ClearLogs() => throw new NotSupportedException();
+
+        public ApiOpResult<StatsSummaryResponse> ReadStatsSummary(string rangeKey, object? startTs, object? endTs, IReadOnlyDictionary<string, object?> filters)
+        {
+            LastFilters = filters;
+            return ApiOpResult<StatsSummaryResponse>.Fail(500, "captured");
+        }
+
+        public ApiOpResult<IReadOnlyList<StatsPointResponse>> ReadStatsTimeseries(string rangeKey, object? startTs, object? endTs, IReadOnlyDictionary<string, object?> filters) => throw new NotSupportedException();
+        public ApiOpResult<IReadOnlyList<StatsModelDistributionResponse>> ReadStatsModelDistribution(string rangeKey, object? startTs, object? endTs, IReadOnlyDictionary<string, object?> filters) => throw new NotSupportedException();
+        public ApiOpResult<IReadOnlyList<ErrorDistributionResponse>> ReadStatsErrorDistribution(string rangeKey, object? startTs, object? endTs, IReadOnlyDictionary<string, object?> filters) => throw new NotSupportedException();
     }
 
     private sealed class TestWorkContext : IWorkContext

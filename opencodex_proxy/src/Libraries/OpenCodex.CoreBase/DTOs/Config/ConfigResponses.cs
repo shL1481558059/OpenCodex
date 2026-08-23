@@ -254,3 +254,27 @@ public sealed class ChannelResponse
             healthStatus);
     }
 }
+
+/// <summary>
+/// 表示批量更新渠道的结果。
+/// </summary>
+public sealed class ChannelBatchUpdateResult
+{
+    [JsonPropertyName("updated_ids")]
+    public IReadOnlyList<Guid> UpdatedIds { get; init; } = [];
+
+    [JsonPropertyName("count")]
+    public int Count { get; init; }
+}
+
+/// <summary>
+/// 表示删除渠道的结果。
+/// </summary>
+public sealed class ChannelDeleteResult
+{
+    [JsonPropertyName("deleted")]
+    public bool Deleted { get; init; }
+
+    [JsonPropertyName("id")]
+    public Guid Id { get; init; }
+}

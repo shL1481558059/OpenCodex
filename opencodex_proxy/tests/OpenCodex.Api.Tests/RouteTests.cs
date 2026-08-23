@@ -43,7 +43,11 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         Assert.Contains("/session", routes);
         Assert.Contains("/login", routes);
         Assert.Contains("/config", routes);
-        Assert.Contains("/pricing", routes);
+        Assert.Contains("/channels", routes);
+        Assert.Contains("/channels/{channelId:guid}", routes);
+        Assert.Contains("/channels/runtime", routes);
+        Assert.Contains("/channels/bulk-import", routes);
+        Assert.Contains("/channels/{channelId:guid}/health-reset", routes);
         Assert.Contains("/model-catalog/export", routes);
         Assert.Contains("/model-catalog/import", routes);
         Assert.DoesNotContain("/pricing/seed-defaults", routes);
@@ -60,7 +64,8 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         using var catalogContent = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
         var catalogResponse = await _client.PostAsync("/model-infos/seed-defaults", catalogContent);
 
-        Assert.Equal(HttpStatusCode.MethodNotAllowed, pricingResponse.StatusCode);
+        // /pricing 整条路由已删除，seed-defaults 返回 NotFound。
+        Assert.Equal(HttpStatusCode.NotFound, pricingResponse.StatusCode);
         Assert.Equal(HttpStatusCode.MethodNotAllowed, catalogResponse.StatusCode);
     }
 
@@ -78,7 +83,6 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         Assert.Empty(context.ModelInfos);
         Assert.Empty(context.ModelPricingPlans);
         Assert.Empty(context.ModelPricingRules);
-        Assert.Empty(context.ModelPricings);
     }
 
     [Fact]
@@ -142,20 +146,6 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
                 TiersJson = "[]",
                 Enabled = true
             });
-            context.ModelPricings.Add(new OpenCodex.Core.Domain.ModelPricing
-            {
-                Id = Guid.NewGuid(),
-                ModelId = "legacy-only-model",
-                Vendor = "legacy-vendor",
-                Name = "Legacy Only Model",
-                MatchPattern = "legacy-only-model",
-                InputPrice = 1,
-                OutputPrice = 2,
-                Enabled = true,
-                Source = "legacy",
-                CreatedAt = 1,
-                UpdatedAt = 1
-            });
             context.SaveChanges();
         }
 
@@ -169,7 +159,6 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         Assert.Contains(verify.ModelInfos, model => model.Id == modelId);
         Assert.Contains(verify.ModelPricingPlans, plan => plan.Id == planId);
         Assert.Contains(verify.ModelPricingRules, rule => rule.PricingPlanId == planId);
-        Assert.Contains(verify.ModelPricings, price => price.ModelId == "legacy-only-model");
         Assert.DoesNotContain(verify.ModelInfos, model => model.ModelKey == "legacy-only-model");
     }
 
@@ -186,9 +175,6 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
 
         var logs = await SendWithCookie(HttpMethod.Get, "/logs?page=1&page_size=5", cookie);
         Assert.Equal(HttpStatusCode.OK, logs.StatusCode);
-
-        var pricing = await SendWithCookie(HttpMethod.Get, "/pricing", cookie);
-        Assert.Equal(HttpStatusCode.OK, pricing.StatusCode);
     }
 
     [Fact]
@@ -527,7 +513,7 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         Assert.Equal(HttpStatusCode.OK, update.StatusCode);
 
         using var document = await JsonDocument.ParseAsync(await update.Content.ReadAsStreamAsync());
-        var channel = document.RootElement.GetProperty("Data").GetProperty("channels")[0];
+        var channel = document.RootElement.GetProperty("Data");
         Assert.Equal("Grouped Updated", channel.GetProperty("name").GetString());
         Assert.Equal("Primary", channel.GetProperty("group_name").GetString());
     }
@@ -601,7 +587,16 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
             });
         Assert.Equal(HttpStatusCode.OK, batch.StatusCode);
 
-        using var document = await JsonDocument.ParseAsync(await batch.Content.ReadAsStreamAsync());
+        // 批量更新返回 { updated_ids, count }，不再返回渠道列表。通过 GET /config 验证。
+        using var batchDocument = await JsonDocument.ParseAsync(await batch.Content.ReadAsStreamAsync());
+        var updatedIds = batchDocument.RootElement.GetProperty("Data").GetProperty("updated_ids").EnumerateArray()
+            .Select(id => id.GetGuid()).ToList();
+        Assert.Single(updatedIds);
+        Assert.Equal(firstId, updatedIds[0]);
+
+        var config = await SendWithCookie(client, HttpMethod.Get, "/config", cookie);
+        Assert.Equal(HttpStatusCode.OK, config.StatusCode);
+        using var document = await JsonDocument.ParseAsync(await config.Content.ReadAsStreamAsync());
         var channels = document.RootElement.GetProperty("Data").GetProperty("channels").EnumerateArray().ToList();
         var first = channels.Single(item => item.GetProperty("id").GetString() == firstId.ToString());
         var second = channels.Single(item => item.GetProperty("id").GetString() == secondId.ToString());
@@ -872,75 +867,6 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         var cookie = await LoginAndReadSessionCookie();
         var log = await SendWithCookie(HttpMethod.Get, "/logs/00000000-0000-0000-0000-000000000001", cookie);
         await AssertResponseCode(log, HttpStatusCode.NotFound);
-    }
-
-    [Fact]
-    public async Task PricingCrudRemainsAvailableForSuperadmin()
-    {
-        var cookie = await LoginAndReadSessionCookie();
-        var list = await SendWithCookie(HttpMethod.Get, "/pricing", cookie);
-        Assert.Equal(HttpStatusCode.OK, list.StatusCode);
-
-        var modelId = $"test-model-{Guid.NewGuid():N}";
-        var created = await SendJsonWithCookie(
-            HttpMethod.Post,
-            "/pricing",
-            cookie,
-            new
-            {
-                model_id = modelId,
-                vendor = "test",
-                name = "Test Model",
-                input_price = 1.5,
-                cached_input_price = 0.5,
-                output_price = 3,
-                enabled = true
-            });
-        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
-
-        var priceId = await ReadIdProperty(created, "Data", "price", "id");
-        var updated = await SendJsonWithCookie(
-            HttpMethod.Patch,
-            $"/pricing/{priceId}",
-            cookie,
-            new
-            {
-                cached_input_price = (double?)null,
-                enabled = false
-            });
-        Assert.Equal(HttpStatusCode.OK, updated.StatusCode);
-        using (var document = await JsonDocument.ParseAsync(await updated.Content.ReadAsStreamAsync()))
-        {
-            var price = document.RootElement.GetProperty("Data").GetProperty("price");
-            Assert.False(price.GetProperty("enabled").GetBoolean());
-            Assert.Equal(JsonValueKind.Null, price.GetProperty("cached_input_price").ValueKind);
-        }
-
-        var deleted = await SendWithCookie(HttpMethod.Delete, $"/pricing/{priceId}", cookie);
-        Assert.Equal(HttpStatusCode.OK, deleted.StatusCode);
-    }
-
-    [Fact]
-    public async Task PricingRoutesRequireSuperadmin()
-    {
-        var adminCookie = await LoginAndReadSessionCookie();
-        var username = $"pricing-user-{Guid.NewGuid():N}";
-        var password = "user-password";
-        var createdUser = await SendJsonWithCookie(
-            HttpMethod.Post,
-            "/users",
-            adminCookie,
-            new
-            {
-                username,
-                password,
-                enabled = true
-            });
-        Assert.Equal(HttpStatusCode.Created, createdUser.StatusCode);
-
-        var userCookie = await LoginAndReadSessionCookie(username, password);
-        var pricing = await SendWithCookie(HttpMethod.Get, "/pricing", userCookie);
-        await AssertResponseCode(pricing, HttpStatusCode.Forbidden);
     }
 
     [Fact]

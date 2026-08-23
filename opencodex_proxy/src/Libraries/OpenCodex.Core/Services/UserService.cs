@@ -53,6 +53,15 @@ public sealed class UserService : IUserService
         return ApiOpResult<UsersResponse>.Succeed(UsersResponse.From(users));
     }
 
+    public ApiOpResult<IReadOnlyList<SelectOption<string>>> ListUserOptions()
+    {
+        var options = _userRepository.TableNoTracking
+            .OrderBy(user => user.Username)
+            .Select(user => new SelectOption<string>(user.Username, user.Username))
+            .ToList();
+        return ApiOpResult<IReadOnlyList<SelectOption<string>>>.Succeed(options);
+    }
+
     public ApiOpResult<UserResponsePayload> CreateUser(UserCreateCommand command)
     {
         try

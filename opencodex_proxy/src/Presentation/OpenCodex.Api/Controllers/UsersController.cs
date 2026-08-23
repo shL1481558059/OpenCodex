@@ -24,6 +24,14 @@ public sealed class UsersController : AuthenticatedApiControllerBase
         return Api(result);
     }
 
+    [HttpGet("/users/options")]
+    public IActionResult UserOptions()
+    {
+        RequireUser();
+        var result = _users.ListUserOptions();
+        return Api(result);
+    }
+
     [HttpPost("/users")]
     public IActionResult CreateUser(UserCreateRequest request)
     {

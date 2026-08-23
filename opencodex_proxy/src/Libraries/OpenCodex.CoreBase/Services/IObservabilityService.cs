@@ -73,4 +73,40 @@ public interface IObservabilityService
     /// </summary>
     /// <returns>清除操作结果，载荷为已删除的记录总数。</returns>
     ApiOpResult<ClearLogsResponse> ClearLogs();
+
+    /// <summary>
+    /// 读取统计摘要（只走数据库聚合，不物化全量日志）。
+    /// </summary>
+    ApiOpResult<StatsSummaryResponse> ReadStatsSummary(
+        string rangeKey,
+        object? startTs,
+        object? endTs,
+        IReadOnlyDictionary<string, object?> filters);
+
+    /// <summary>
+    /// 读取统计时间序列（曲线）。
+    /// </summary>
+    ApiOpResult<IReadOnlyList<StatsPointResponse>> ReadStatsTimeseries(
+        string rangeKey,
+        object? startTs,
+        object? endTs,
+        IReadOnlyDictionary<string, object?> filters);
+
+    /// <summary>
+    /// 读取模型分布统计。
+    /// </summary>
+    ApiOpResult<IReadOnlyList<StatsModelDistributionResponse>> ReadStatsModelDistribution(
+        string rangeKey,
+        object? startTs,
+        object? endTs,
+        IReadOnlyDictionary<string, object?> filters);
+
+    /// <summary>
+    /// 读取错误分布统计。
+    /// </summary>
+    ApiOpResult<IReadOnlyList<ErrorDistributionResponse>> ReadStatsErrorDistribution(
+        string rangeKey,
+        object? startTs,
+        object? endTs,
+        IReadOnlyDictionary<string, object?> filters);
 }

@@ -10,9 +10,10 @@ public sealed class ApiKeyCreateCommand
     /// </summary>
     /// <param name="ownerUserId">将拥有该访问密钥的用户标识符。</param>
     /// <param name="name">访问密钥的显示名称。</param>
-    public ApiKeyCreateCommand(Guid ownerUserId, string name)
+    public ApiKeyCreateCommand(Guid ownerUserId, string? ownerUsername, string name)
     {
         OwnerUserId = ownerUserId;
+        OwnerUsername = ownerUsername;
         Name = name;
     }
 
@@ -20,6 +21,11 @@ public sealed class ApiKeyCreateCommand
     /// 获取将拥有该访问密钥的用户标识符。
     /// </summary>
     public Guid OwnerUserId { get; }
+
+    /// <summary>
+    /// 获取将拥有该访问密钥的用户名（超管可指定）。
+    /// </summary>
+    public string? OwnerUsername { get; }
 
     /// <summary>
     /// 获取访问密钥的显示名称。

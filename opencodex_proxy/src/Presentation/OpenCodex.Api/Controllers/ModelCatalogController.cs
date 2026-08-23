@@ -33,6 +33,20 @@ public sealed class ModelCatalogController : AuthenticatedApiControllerBase
         return Api(_catalog.CreateProvider(request), StatusCodes.Status201Created);
     }
 
+    [HttpPatch("/model-providers/{id:guid}")]
+    public IActionResult UpdateProvider(Guid id, ModelProviderUpsertRequest request)
+    {
+        RequireSuperadmin();
+        return Api(_catalog.UpdateProvider(id, request));
+    }
+
+    [HttpDelete("/model-providers/{id:guid}")]
+    public IActionResult DeleteProvider(Guid id)
+    {
+        RequireSuperadmin();
+        return Api(_catalog.DeleteProvider(id));
+    }
+
     [HttpGet("/model-infos")]
     public IActionResult Models(
         [FromQuery] string? query,
@@ -41,6 +55,13 @@ public sealed class ModelCatalogController : AuthenticatedApiControllerBase
     {
         RequireUser();
         return Api(_catalog.ListModels(query, provider, enabled));
+    }
+
+    [HttpGet("/model-infos/{id:guid}")]
+    public IActionResult ModelInfo(Guid id)
+    {
+        RequireUser();
+        return Api(_catalog.ReadModelInfoById(id));
     }
 
     [HttpPost("/model-infos")]
@@ -74,23 +95,23 @@ public sealed class ModelCatalogController : AuthenticatedApiControllerBase
             return StatusCode(result.Code, result);
         }
 
+        if (result.Payload is null)
+        {
+            return StatusCode(500, ApiOpResult.Fail(500, "export payload is empty"));
+        }
+
         Response.ContentType = "application/json";
         return File(
-            JsonSerializer.SerializeToUtf8Bytes(result.Payload!),
+            JsonSerializer.SerializeToUtf8Bytes(result.Payload),
             "application/json",
             $"model-catalog-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}.json");
     }
 
     [HttpPost("/model-catalog/import")]
-    public IActionResult ImportCatalog([FromQuery] string? dryRun, ModelCatalogTransferDocument request)
+    public IActionResult ImportCatalog(ModelCatalogTransferDocument request, [FromQuery] bool dryRun = false)
     {
         RequireSuperadmin();
-        if (!bool.TryParse(dryRun, out var parsedDryRun))
-        {
-            return Api(ApiOpResult<ModelCatalogImportResult>.Fail(400, "dryRun must be true or false"));
-        }
-
-        return Api(_catalog.ImportModelCatalog(request, parsedDryRun));
+        return Api(_catalog.ImportModelCatalog(request, dryRun));
     }
 
     [HttpGet("/channels/{channelId:guid}/model-infos")]
@@ -108,10 +129,10 @@ public sealed class ModelCatalogController : AuthenticatedApiControllerBase
     }
 
     [HttpDelete("/channels/{channelId:guid}/model-infos/{id:guid}")]
-    public IActionResult RestoreChannelModel(Guid channelId, Guid id)
+    public IActionResult DeleteChannelModel(Guid channelId, Guid id)
     {
         RequireUser();
-        return Api(_catalog.RestoreChannelModelInfo(channelId, id));
+        return Api(_catalog.DeleteChannelModelInfo(channelId, id));
     }
 
 }

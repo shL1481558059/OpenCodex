@@ -11,6 +11,8 @@ using OpenCodex.Api.Infrastructure;
 using OpenCodex.Core.ExternalIntegrations;
 using OpenCodex.Core.Services;
 using OpenCodex.Core.Services.Caching;
+using OpenCodex.Core.Services.Events;
+using OpenCodex.CoreBase.Events;
 using OpenCodex.CoreBase.Caching;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.Core.Services.WebSearch;
@@ -139,7 +141,6 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<IConfigService, ConfigService>();
         services.AddScoped<IUserService, UserService>();
         services.AddScoped<IApiKeyService, ApiKeyService>();
-        services.AddScoped<IModelPricingService, ModelPricingService>();
         services.AddScoped<IModelCatalogService, ModelCatalogService>();
         services.AddScoped<IObservabilityService, ObservabilityService>();
         services.AddScoped<IWebSearchService, WebSearchService>();
@@ -158,6 +159,11 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<IProxyStreamService, ProxyStreamService>();
         services.AddScoped<IWebSearchSimulator, WebSearchSimulator>();
         services.AddSingleton<ICodexOfficialModelCatalogFactory, CodexOfficialModelCatalogFactory>();
+        services.AddSingleton<IEventBus>(serviceProvider =>
+        {
+            var redis = serviceProvider.GetService<IRedisConnectionProvider>();
+            return new EventBus(redis);
+        });
 
         return services;
     }

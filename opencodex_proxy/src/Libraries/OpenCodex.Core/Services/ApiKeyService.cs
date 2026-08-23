@@ -78,6 +78,33 @@ public sealed class ApiKeyService : IApiKeyService
         return ApiOpResult<ApiKeysResponse>.Succeed(ApiKeysResponse.From(dtos));
     }
 
+    public ApiOpResult<ApiKeyResponsePayload> ReadKeyById(Guid keyId)
+    {
+        if (keyId == Guid.Empty)
+        {
+            return ApiOpResult<ApiKeyResponsePayload>.Fail(400, "api key id is required");
+        }
+
+        var currentUser = _workContext.RequireUser();
+        var isSuperadmin = currentUser.Role == "superadmin";
+
+        var query = _keyRepository.TableNoTracking.Where(key => key.Id == keyId);
+        if (!isSuperadmin)
+        {
+            query = query.Where(key => key.OwnerUserId == currentUser.UserId);
+        }
+
+        var existing = query.FirstOrDefault();
+        if (existing is null)
+        {
+            return ApiOpResult<ApiKeyResponsePayload>.Fail(404, "api key not found");
+        }
+
+        var owner = _userRepository.TableNoTracking.FirstOrDefault(u => u.Id == existing.OwnerUserId);
+        return ApiOpResult<ApiKeyResponsePayload>.Succeed(
+            ApiKeyResponsePayload.From(MapToDto(existing, owner?.Username ?? string.Empty)));
+    }
+
     public ApiOpResult<ApiKeyResponsePayload> CreateKey(
         ApiKeyCreateCommand command)
     {
@@ -86,6 +113,19 @@ public sealed class ApiKeyService : IApiKeyService
             var currentUser = _workContext.RequireUser();
             var isSuperadmin = currentUser.Role == "superadmin";
             var ownerUserId = command.OwnerUserId;
+
+            // 缺陷 2.1 修复：超管通过 owner_username 指定归属人。
+            if (isSuperadmin && !string.IsNullOrWhiteSpace(command.OwnerUsername))
+            {
+                var ownerUser = _userRepository.TableNoTracking
+                    .FirstOrDefault(u => u.Username == command.OwnerUsername.Trim());
+                if (ownerUser is null)
+                {
+                    return ApiOpResult<ApiKeyResponsePayload>.Fail(400, $"owner user '{command.OwnerUsername}' not found");
+                }
+                ownerUserId = ownerUser.Id;
+            }
+
             if (ownerUserId == Guid.Empty)
             {
                 ownerUserId = currentUser.UserId;

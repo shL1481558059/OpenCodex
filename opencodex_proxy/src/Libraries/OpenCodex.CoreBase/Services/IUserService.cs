@@ -1,4 +1,5 @@
 using OpenCodex.CoreBase.Domain;
+using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.Users;
 using OpenCodex.CoreBase.Results;
 
@@ -14,6 +15,12 @@ public interface IUserService
     /// </summary>
     /// <returns>后台用户列表结果。</returns>
     ApiOpResult<UsersResponse> ListUsers();
+
+    /// <summary>
+    /// 读取用户下拉选项（轻量端点，只返回用户名和角色，不含时间戳）。
+    /// </summary>
+    /// <returns>用户选项列表。</returns>
+    ApiOpResult<IReadOnlyList<SelectOption<string>>> ListUserOptions();
 
     /// <summary>
     /// 创建后台用户。

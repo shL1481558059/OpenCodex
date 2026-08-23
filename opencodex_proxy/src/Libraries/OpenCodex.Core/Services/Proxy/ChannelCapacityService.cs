@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using OpenCodex.Core.Config;
 using OpenCodex.Core.Services.Caching;
+using OpenCodex.CoreBase.Events;
 using OpenCodex.CoreBase.Services.Proxy;
 using StackExchange.Redis;
 
@@ -25,11 +26,13 @@ public sealed class ChannelCapacityService : IChannelCapacityService
     private static readonly TimeSpan LockRetryDelay = TimeSpan.FromMilliseconds(10);
 
     private readonly IRedisConnectionProvider? _redis;
+    private readonly IEventBus? _eventBus;
     private readonly ConcurrentDictionary<string, CounterEntry> _entries = new(StringComparer.Ordinal);
 
-    public ChannelCapacityService(IRedisConnectionProvider? redis = null)
+    public ChannelCapacityService(IRedisConnectionProvider? redis = null, IEventBus? eventBus = null)
     {
         _redis = redis;
+        _eventBus = eventBus;
     }
 
     /// <inheritdoc />
@@ -88,6 +91,8 @@ public sealed class ChannelCapacityService : IChannelCapacityService
                 entry.ActiveModelRequests[modelUsageKey] = count + 1;
             }
         }
+
+        PublishCapacityChanged(ownerUsername, channelId);
 
         return new Lease(this, ownerUsername, channelId, modelUsageKey, tracksModelUsage, leaseId, db);
     }
@@ -180,6 +185,17 @@ public sealed class ChannelCapacityService : IChannelCapacityService
         {
             _entries.TryRemove(key, out _);
         }
+
+        PublishCapacityChanged(ownerUsername, channelId);
+    }
+
+    private void PublishCapacityChanged(string ownerUsername, string channelId)
+    {
+        _eventBus?.Publish(new ChannelCapacityChangedEvent
+        {
+            OwnerUsername = ownerUsername,
+            ChannelId = channelId
+        });
     }
 
     /// <summary>

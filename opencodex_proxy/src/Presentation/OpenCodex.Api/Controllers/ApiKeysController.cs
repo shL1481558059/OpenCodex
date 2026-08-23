@@ -25,6 +25,14 @@ public sealed class ApiKeysController : AuthenticatedApiControllerBase
         return Api(result);
     }
 
+    [HttpGet("/api-keys/{keyId:guid}")]
+    public IActionResult ApiKey(Guid keyId)
+    {
+        RequireUser();
+        var result = _apiKeys.ReadKeyById(keyId);
+        return Api(result);
+    }
+
     [HttpPost("/api-keys")]
     public IActionResult CreateApiKey(ApiKeyCreateRequest request)
     {
