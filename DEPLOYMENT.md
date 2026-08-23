@@ -237,12 +237,6 @@ docker run --rm \
   shl148155/opencodexp:ocxp
 ```
 
-如果 `.env` 里使用容器路径，请保持：
-
-```env
-OPENCODEX_DB_PATH=/app/logs/opencodex.db
-```
-
 手动 `docker run` 不会拉起 PostgreSQL 和 Redis，仅适合临时单进程验证。生产部署请使用 `./update_remote_image.sh` 或 `docker-compose-pgsql.yml`。
 
 ## Codex CLI 隔离测试

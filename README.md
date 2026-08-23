@@ -36,7 +36,6 @@ npm --prefix frontend run dev -- --host 127.0.0.1 --port 5173
 ```env
 OPENCODEX_ADMIN_USERNAME=admin
 OPENCODEX_ADMIN_PASSWORD=change-me
-OPENCODEX_DB_PATH=logs/opencodex.db
 OPENCODEX_DEFAULT_TIMEOUT=120
 OPENCODEX_ADMIN_COOKIE_DAYS=30
 OPENCODEX_SECRET_KEY=change-me-session-secret

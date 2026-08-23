@@ -1,6 +1,6 @@
 # OpenCodex 代码清理与重构改造清单
 
-> 状态：待实施。本文档用于记录后端代码清理、业务逻辑整理和维护性改进的分阶段方案。
+> 状态：部分实施中。本文档用于记录后端代码清理、业务逻辑整理和维护性改进的分阶段方案。已完成项标注 ✅，详见各节实施记录。
 >
 > 最近一次实证排查：2026-08-08（数据库体积核验截至 2026-08-07）。新增 Phase A / Phase B 两组候选，并修正了原清单中多处与代码/部署实际不符的判断，详见「清单修正说明」。凡标注「已实证」的结论均通过 `rg` 全仓检索、运行时请求或只读部署核验过。
 
@@ -28,7 +28,7 @@
 7. `/pricing` 这 5 个路由是否有外部脚本或运维工具在调用？（前端已确认零调用，见 B.2）
 8. 是否增加 Controller 激活 smoke test？是否进一步接受 `AddControllersAsServices()` + DI `ValidateOnBuild`？（见 A.5）
 9. `OPENCODEX_LOG_PATH` / `OPENCODEX_LOG_LEVEL` / `OPENCODEX_LOG_VIEW_LEVEL` 是要**真做日志落盘**，还是**删掉文档宣传**？（当前项目无日志框架，三者是死配置，见 A.1）
-10. 管理台的渠道/API Key/Web Search 配置导入导出是否保留？（当前导出包含明文密钥，见 B.4）
+10. 管理台的渠道/API Key/Web Search 配置导入导出是否保留？（当前导出包含明文密钥，见 B.4）— 明文密钥为业务需要保留，不修改。
 11. 请求详情、原始 SSE 行和渠道 attempt 日志要保留到什么粒度？是否接受大小上限、失败请求留存和 TTL？（见 B.5）
 12. Dashboard 的请求队列和请求错误是否属于刚需的实时运维视图？（若不是，删除两张卡片及伪 SSE，见 B.3）
 13. 渠道批量测试、批量编辑和归并视图的实际使用频率如何？（见 B.6）
@@ -74,7 +74,7 @@
 
 A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证、数据库列和前端行为，需按各自风险完成迁移与回归，不能把整组视为无条件零风险。预计可减少 400+ 行代码、多个误导性配置项和无效字段。
 
-### A.1 `OpenCodexSettings` + `OpenCodexSettingsLoader` 整类死代码
+### A.1 `OpenCodexSettings` + `OpenCodexSettingsLoader` 整类死代码 ✅ 已完成
 
 - 现状（已实证）：`rg OpenCodexSettingsLoader` 只命中自身定义行，**全仓零引用**，tests 亦零引用。实际生效的是 `OpenCodexRuntimeSettingsProvider`（80 行，读 `IConfiguration`）+ `OpenCodexHostBuilderExtensions.AddOpenCodexConfiguration` → `DotEnvDefaults.Load`。两套 dotenv 解析逻辑（`OpenCodexSettingsLoader.LoadDotEnvFile` 与 `DotEnvDefaults.Load`）重复实现。
 - 涉及范围：
@@ -85,7 +85,9 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 - 风险：低。纯删无引用类型。
 - 验证：`dotnet build` 通过；启动后 `.env` 解析行为不变（仍由 `DotEnvDefaults` 负责）。
 
-### A.3 OCR 残留死配置与空壳引擎
+> 实施记录（2026-08-23）：已删除 `OpenCodexSettingsLoader.cs` 和 `OpenCodexSettings.cs`，全仓 `rg` 零命中。`OPENCODEX_LOG_PATH` / `OPENCODEX_LOG_LEVEL` / `OPENCODEX_LOG_VIEW_LEVEL` 在 README、DEPLOYMENT 和 Tauri 中的文档残留也已清理。`OPENCODEX_SECRET_KEY` 保留（`OpenCodexServiceCollectionExtensions.cs` 仍在使用）。`dotnet build` 通过。
+
+### A.3 OCR 残留死配置与空壳引擎 ✅ 已完成
 
 - 现状（已实证）：
   - `ProxyOcrEngines.PaddleOcr = "paddleocr"`（`ProxyImageFallbackModels.cs:17`）只在 `ProxyOcrService.cs:530 IsSupportedCacheEngine` 出现一次；`OpenCodex.Core.csproj` 无任何 OCR 包（只有 EFCore.Relational / Caching.Memory / StackExchange.Redis）。当前新请求执行路径固定走 `ProxyOcrEngines.Vision`（:52 硬编码 + :57/78/80/101/122/136），`ProxyImageFallbackTests.cs:233` 那条 paddle 测试**已被注释掉**，但 `ReadCache`/`IsSupportedCacheEngine` 仍接受历史 `engine=paddleocr` 缓存。删除该常量前必须决定旧缓存的兼容或清理策略。
@@ -95,7 +97,8 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 - 风险：低。
 - 验证：OCR 回退链路行为不变；`OPENCODEX_OCR_CACHE_DIR` 仍生效。
 
-### A.4 `ApplyCompat` 重复实现 + `CompatDetails` 死数据链
+> 实施记录（2026-08-23）：已删除 `ProxyOcrEngines.PaddleOcr` 常量、`LocalOcrModel` / `OPENCODEX_TESSERACT_LANG` / `OPENCODEX_LOCAL_OCR_MODEL` 死配置链路。全仓 `rg` 零命中。`OcrCacheDir` / `OPENCODEX_OCR_CACHE_DIR` 保留（`ProxyOcrService.cs:510`、`lib.rs:170` 仍正常使用）。
+### A.4 `ApplyCompat` 重复实现 + `CompatDetails` 死数据链 ✅ 已完成
 
 - 现状（已实证）：`opencodex_proxy/src/Libraries/OpenCodex.Core/Services/ChannelDiagnosticsService.Compat.cs:9 ApplyCompat` 把 `default_params` / `rename_params` / `drop_params` / `force_params` / `unsupported_params` 五步全实现一遍（约 50 行），随后在 `:57` **又调用 `ChannelCompatRequestRewriter.Apply` 把同样五步再跑一遍**——幂等但纯冗余，两处逻辑逐字重复。
 - 其返回的 `Details` 一路传进 `TestChannelPreparedRequest.CompatDetails`（`ChannelDiagnosticsService.cs:309/366/374/386`），但该属性**全仓零读取**，`BuildTestCompletedEvent` 不输出它，前端无 `compatDetails` / `compat_details` 字样 → 整条 details 收集链是死数据。
@@ -104,6 +107,7 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 - 风险：低。唯一权威实现变为 `ChannelCompatRequestRewriter`（代理主链路 `ProxyEndpointService.cs:223` 用的就是它，行为天然一致）。
 - 验证：`ProxyCompatibilityTests` / `ProtocolStructuralCompatibilityTests` 全绿；测试渠道输出不变。
 
+> 实施记录（2026-08-23）：`ChannelDiagnosticsService.Compat.cs` 已退化为一行 `return ChannelCompatRequestRewriter.Apply(payload, compat).Payload;`。`CompatDetails` 属性及 details 参数链已删除，全仓 `rg` 零命中。唯一权威实现为 `ChannelCompatRequestRewriter`（代理主链路 `ProxyEndpointService.cs:223` 使用的就是它）。
 ### A.5 Controller 激活 smoke test（可选启用 DI 验证）
 
 - 现状（已实证）：DI 全部手写集中在 `opencodex_proxy/src/Presentation/OpenCodex.Api/Hosting/OpenCodexServiceCollectionExtensions.cs`（37 处注册，无 Scrutor / 无程序集扫描），且 `ValidateOnBuild` / `ValidateScopes` 全仓 0 命中。当前 `services.AddControllers()` 不保证 Controller 构造参数会参与普通服务构建验证。
@@ -117,15 +121,15 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 - `AccessApiKey.LastUsedAt` 没有任何生产持久化写入点；认证响应会临时计算一个 `lastUsedAt`，但管理列表读取的实体字段长期为空。若不实现真实追踪，应同步删除实体/迁移、Auth DTO 的瞬时字段和“最近使用”展示。
 - `RequestLogDetail` 继承 `BaseEntity<Guid>` 产生额外 `Id` 列，但实体配置以 `RequestLogId` 为主键；写入、查询和 API 均不使用 `Id`。可改为非泛型基类并为 SQLite/Postgres 各加删列迁移。
 - `IModelCatalogService.CalculateCostAsync` 的 `responseModel` 参数在方法体中完全不读取，`ProxyLogService` 却为此额外从响应提取/回退该值；删除参数及两处提取逻辑，并同步测试夹具。
-- 另有零调用私有/内部方法：`ObservabilityService.EmptyLogFilterOptions()`、`EmptyStatsResponse(...)`、`ProxyStreamService.CaptureRawStreamLines(...)` 和 `TryExtractObject(...)`；先确认无反射调用，再连同专用测试/using 删除。
-- `ModelInfoScopes.Channel` 除常量定义外零引用；`ChannelModelPricingModes.PrivateModel` 除定义外零引用；`OverridePricing` 仅测试夹具赋值。应在模型目录收敛时清理，避免继续扩大旧设计。
+- 另有零调用私有/内部方法：`ObservabilityService.EmptyLogFilterOptions()`、`EmptyStatsResponse(...)`、`ProxyStreamService.CaptureRawStreamLines(...)` 和 `TryExtractObject(...)`；先确认无反射调用，再连同专用测试/using 删除。 ✅ 四个方法全部已删除，全仓 `rg` 零命中。
+- `ModelInfoScopes.Channel` 除常量定义外零引用；`ChannelModelPricingModes.PrivateModel` 除定义外零引用；`OverridePricing` 仅测试夹具赋值。应在模型目录收敛时清理，避免继续扩大旧设计。 ✅ `ModelInfoScopes.Channel` 和 `ChannelModelPricingModes.PrivateModel` 已删除，全仓零命中。`OverridePricing` 仍保留，待后续清理。
 - `OpenCodexConfig.CompatFields` 仍接受 `intercept_probe_requests`，但该设置已迁移到 `/system-settings`；保留一版兼容剥离后删除白名单项，避免配置导入继续宣称该字段有效。
 - `OPENCODEX_ACCESS_API_KEY` 与 `OPENCODEX_DB_PATH` 目前只有 README/DEPLOYMENT 文档引用；`OPENCODEX_LOG_*` 已在 A.1 处理。应核对外部脚本后清理文档和示例，避免误导用户。
-- `Program.cs` 每次启动无条件写 `opencodex-startup-diagnostic.txt`，全仓没有读取方；`ProxyStreamService`、`SseStreamConverter` 中约 10 条无条件 `[OCXP-DEBUG] Console.Error.WriteLine` 也没有级别控制。建议删除启动文件，或只在显式诊断开关下写入；调试输出统一移除或接入真正的日志级别。
-- 历史文档残留：`opencodex_proxy/stream_fix_plan.md` 更像已完成方案；`opencodex_proxy/tests/OpenCodex.Api.Tests/README_STREAMING_TESTS.md` 虽对应的 `StreamingIntegrationTests.cs` 实际存在，但 README 夸大了覆盖范围，引用已删除文件和过时事件名，并保留已不存在的 OCR 编译前置条件。应按当前实现逐条校对，标记历史归档或删除过时段落，不能把文档描述当作测试现状。
-- 过时脚本残留：`scripts/capture_real_sse.sh` 仍调用旧 `/api/auth/login` + Bearer 流程，`scripts/extract_sse_test_data.sh` 查询旧 `ProxyLogs`/SQLite 列，`scripts/test_streaming.sh` 默认把启动密码当访问 API Key，`switch_backend.sh` 写死个人域名和端口且未被文档/CI 引用。应逐个验证后删除或明确标记为个人历史脚本。
+- `Program.cs` 每次启动无条件写 `opencodex-startup-diagnostic.txt`，全仓没有读取方；`ProxyStreamService`、`SseStreamConverter` 中约 10 条无条件 `[OCXP-DEBUG] Console.Error.WriteLine` 也没有级别控制。建议删除启动文件，或只在显式诊断开关下写入；调试输出统一移除或接入真正的日志级别。 ✅ 启动诊断文件和 `OCXP-DEBUG` Console 输出均已删除，全仓 `rg` 零命中。
+- 历史文档残留：`opencodex_proxy/stream_fix_plan.md` 更像已完成方案；`opencodex_proxy/tests/OpenCodex.Api.Tests/README_STREAMING_TESTS.md` 虽对应的 `StreamingIntegrationTests.cs` 实际存在，但 README 夸大了覆盖范围，引用已删除文件和过时事件名，并保留已不存在的 OCR 编译前置条件。应按当前实现逐条校对，标记历史归档或删除过时段落，不能把文档描述当作测试现状。 ✅ 两个文件均已删除。`stream_fix_plan.md` 是已完成方案，`README_STREAMING_TESTS.md` 内容过时且引用已删除文件。对应的 `StreamingIntegrationTests.cs` 仍存在且测试通过。
+- 过时脚本残留：`scripts/capture_real_sse.sh` 仍调用旧 `/api/auth/login` + Bearer 流程，`scripts/extract_sse_test_data.sh` 查询旧 `ProxyLogs`/SQLite 列，`scripts/test_streaming.sh` 默认把启动密码当访问 API Key，`switch_backend.sh` 写死个人域名和端口且未被文档/CI 引用。应逐个验证后删除或明确标记为个人历史脚本。 ✅ `switch_backend.sh` 已删除。其余三个旧脚本（`capture_real_sse.sh`、`extract_sse_test_data.sh`、`test_streaming.sh`）及 `test_streaming.py` 仍存在，待清理。
 - `scripts/test_streaming.py` 同样未被引用，依赖未声明的 `requests`，默认使用管理员密码作为 API Key，且 payload 与当前 Responses 契约不符；应与上述历史诊断脚本一起处理。
-- `src-tauri/src/lib.rs:211` 在发布窗口无条件开启 `.devtools(true)`，疑似白屏诊断残留；应改为 debug 构建或显式开关，避免生产桌面暴露开发者工具。
+- `src-tauri/src/lib.rs:215` 在发布窗口无条件开启 `.devtools(true)`，疑似白屏诊断残留；应改为 debug 构建或显式开关，避免生产桌面暴露开发者工具。 ✅ 已改为 `cfg!(debug_assertions)`，仅 debug 构建开启。同时修复了 Rust `DesktopSettings` 缺失 `intercept_probe_requests` 字段导致重启后设置丢失的跨语言覆盖 Bug。
 - 前端零作用残留：`Logs.vue.resetLogFilters`、`Logs.vue.filterOptions.upstream_models`、`WebSearch.vue.defaultWebSearchKey`、未使用的 `onMounted`、`main.js` 的 `ElUpload` 注册、`.input-with-action` CSS、Dashboard/Logs 的无效 `active` 状态机和 `App.vue` 无对应样式的 `mobile-menu-drawer` `custom-class`。
 - `Logs.vue` 的列设置没有 localStorage/后端持久化，组件离开页面即销毁；若不打算实现持久化，应删除设置状态和入口，固定默认列。
 - 前端未读取的观测字段（如 `LogDetailResponse.client_ip`、清理日志返回的 `deleted_details/deleted_stream_lines`、队列响应的 `generated_at`）可在 DTO 瘦身时核对；先确认没有外部 API 消费者，不要只凭前端零引用删掉公开契约。
@@ -159,7 +163,7 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 - 当前远端样本中 `images` 渠道数为 0，日志窗口也未命中 `%images%`；这降低该样本实例的整链删除迁移风险，但仍需核对目标生产配置文件和客户端调用。
 - 验证：选 ① 则 4 条路由能正常代理并落日志；选 ② 则路由返回 404 且 `dotnet test` 全绿，旧配置迁移测试通过。
 
-### B.2 `/pricing` 是死计费半边
+### B.2 `/pricing` 是死计费半边 ✅ 已完成
 
 - 现状（已实证）：实际计费走 `IModelCatalogService.CalculateCostAsync`，生产调用点仅 `ProxyLogService.cs:214` 和 `:370`。`IModelPricingService.CalculateCost` 除 `ModelPricingServiceTests.cs:40` 外**零生产调用**；其底层 `OpenCodexPricing.cs`（exact/contains 匹配算法）只服务于它。
 - 前端**完全不调 `/pricing`**：`Pricing.vue` 只使用 `/model-providers`、`/model-infos`及其 CRUD；内置目录 seed 入口已删除。现存 4 个 `/pricing*` CRUD 路由仅被兼容性测试覆盖。
@@ -175,11 +179,13 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 - 远端样本中 legacy `ModelPricings` 仍有约 111 行数据，`ChannelModelMappings` 约 161 行；删除旧表/整表迁移前必须完成并核验真实数据迁移，不能按“表空/已迁移”处理。
 - 旧的远端更新路由、联网客户端、解析器和内嵌价格快照已全部删除，运行时不再为模型目录主动出网。
 - 属决策点 7。
+
+> 实施记录（2026-08-23）：已删除 `PricingController.cs`、`ModelPricingService.cs`、`OpenCodexPricing.cs`、`IModelPricingService.cs`，全仓 `rg` 零命中。`RouteTests.cs:53` 断言 `/pricing/seed-defaults` 返回 404。`ModelPricing` 实体已删除。保留 `ModelPricingPlan` / `ModelPricingRule` 实体（新目录系统仍在使用）。
 - 验证：`/pricing/seed-defaults` 不可调用；新目录 CRUD 后计费立即生效；旧 `/pricing` CRUD 不影响实际代理计费。
 
-### B.3 Dashboard 两条伪 SSE（先评估删除，不默认改轮询）
+### B.3 Dashboard 两条伪 SSE（先评估删除，不默认改轮询）— SSE 已从轮询改为事件驱动，端点仍保留
 
-- 现状（已实证）：`ObservabilityController.cs:178 /stats/active-channels/stream`（2s）和 `:205 /stats/recent-errors/stream`（5s）都是手写 `while (!RequestAborted)` + `Task.Delay` + `Response.WriteAsync`，本质是服务端定时查库，却背着常驻连接状态机。前端 `frontend/src/Dashboard.vue:617` 与 `:696` 两个 `EventSource`。
+- 现状（已实证）：`ObservabilityController.cs:178 /stats/active-channels/stream`（2s）和 `:205 /stats/recent-errors/stream`（5s）已从手写 `while + Task.Delay` 循环重构为基于 `_eventBus.Subscribe` + `SseEventWriter.StreamAsync` 的事件驱动模式（`ObservabilityController.cs:383-440`），不再定时轮询查库。但端点本身仍保留，前端 `Dashboard.vue` 仍有 2 个 `EventSource`。原始描述保留供参考：~~手写 `while (!RequestAborted)` + `Task.Delay` + `Response.WriteAsync`，本质是服务端定时查库，却背着常驻连接状态机。~~前端 `frontend/src/Dashboard.vue:617` 与 `:696` 两个 `EventSource`。
 - ⚠️ `/stats/active-channels` 有非流版本（`:170`），但 `/stats/recent-errors` **没有** → 改成前端轮询需先新增 `GET /stats/recent-errors`。
 - Dashboard 实际只消费 `/stats/active-channels/stream`；普通 `/stats/active-channels` 在前端、文档和测试外部调用矩阵中没有消费方。若删除队列 SSE，可连同该 GET 和 Vite proxy 白名单一起清理。
 - 更低复杂度的选项：若没有实时运维刚需，直接删除“请求队列”和“请求错误”卡片、两条 SSE 端点及对应前端状态机；保留 Dashboard 统计图、Channels 容量/健康状态和 Logs 错误详情。
@@ -188,7 +194,7 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 - 风险：删除会失去首页即时速览；保留并轮询则会增加 API 和前端定时器复杂度。
 - 验证：选删除则后端不再建立长连接且首页核心图表正常；选保留则数据、权限和刷新频率与原行为一致。
 
-### B.4 管理台配置导入/导出与明文密钥
+### B.4 管理台配置导入/导出与明文密钥 — 明文密钥返回为业务需要保留，不修改
 
 - 现状：`Channels.vue:1300-1343`、`AccessKeys.vue:172-221`、`WebSearch.vue:247-306` 各自实现 Blob 导出、文件解析、格式兼容和错误提示；后端对应 `ConfigService.ImportConfigAsync`、`ApiKeyService.ImportKeysAsync`、`WebSearchService.ImportConfig`。
 - 提交 `6d7e66e0` 一次增加约 996 行代码，仓库没有相应端到端导入/导出测试。
@@ -199,16 +205,17 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 - 风险：失去管理台便捷迁移；安全收益明显。实施前核对是否存在外部备份脚本。
 - 验证：删除后管理台 CRUD、数据库备份恢复和密钥一次性展示全绿；保留时补充恶意/重复导入、权限和密钥泄露测试。
 
+> 业务决策（2026-08-23）：明文密钥返回（渠道 `apikey`、Access API Key `KeyPlaintext`、Tavily Key）为业务需要保留，不进行脱敏或移除。管理台需要完整密钥用于编辑、导入导出和配置迁移。以下各节中涉及「停止明文密钥返回」「改为 hash-only」「GET/list 永不返回原文」「metadata-only 导出」等建议均不再适用，仅保留导入/导出的权限、schema 校验和审计相关改进。
 > 备注：模型信息页的全局目录导入导出（`/model-catalog/export`、`/model-catalog/import`）已于 v1 实现，采用 dryRun 预检 + 事务导入 + 超级管理员权限，不含明文密钥。渠道级覆盖暂未纳入导出范围。
 
-### B.5 观测日志写放大、原始 SSE 留存与保留策略
+### B.5 观测日志写放大、原始 SSE 留存与保留策略 ✅ 内容寻址存储已完成，attempt 瘦身待实施
 
 > 实施状态（2026-08-12）：已按当前产品决策完成内容寻址存储重构。请求头、原始请求、转换后请求、上下游响应、OCR、Web Search 与完整 SSE 逻辑行改为基于 SHA-256 的内容定义分块、Brotli 压缩、manifest/引用存储；历史宽表与逐行 SSE 表在新迁移中直接删除，不迁移历史数据。完整 SSE 仍保留，细粒度“流式时序 JSON”已移除，仅保留统计所需 TTFT。会话键、Turn ID、窗口 ID、`previous_response_id` 已建立索引并接入列表、统计、补全和前端筛选，以支持追加、编辑及新分支定位。不做脱敏，也不截断请求或 SSE 正文；下列旧宽表体积数据保留为改造前基线，原“限额/TTL/脱敏”建议不代表本轮实现。
 
 - **成功 attempt 子日志**：`ProxyEndpointService.WriteChannelAttemptLogAsync` 在成功流式/非流式分支（`:279/:331`）和失败分支（`:375/:405/:445`）都会写一条 `request_type=attempt`。每条子日志还复制请求体和上游请求；读取侧默认排除 attempt，只聚合次数（`ObservabilityService.cs:182/486/1073`）。建议仅保留失败、实际 failover 或父日志摘要。
-- **完整详情重复保存**：`RequestLogDetail` 同时保存请求头、原始请求、转换后请求、上下游响应、Web Search/OCR 诊断和流时序；流请求还同时保存 `UpstreamResponseBody` 与 `RequestLogStreamLines.RawLine`。
+- **完整详情重复保存**：~~`RequestLogDetail` 同时保存请求头、原始请求、转换后请求、上下游响应、Web Search/OCR 诊断和流时序；流请求还同时保存 `UpstreamResponseBody` 与 `RequestLogStreamLines.RawLine`。~~ ✅ 旧宽表 `RequestLogDetail` 和 `RequestLogStreamLines` 实体已删除，替换为内容寻址存储 `LogContentBlock` + `LogContentManifest`（SHA-256 分块 + Brotli 压缩 + manifest 引用）。
 - **计费溯源字段零观测收益**：`RequestLog` 写入 `PricingModelInfoId`、`PricingPlanId`、`PricingSnapshotJson`、`CostCurrency`、`CacheWriteTokens`、`CacheReadTokens`，但观测响应和前端没有对应读取；若不提供计费审计，可删持久化字段及索引，保留运行时 `ModelUsageVector` 计算所需数据。
-- **SSE 无总预算（当前为 P0/P1 运维风险）**：`StreamResponseCapture` 的 1 MB/256 项预算只限制响应重建；`ProxyStreamService.cs:95/493-534/725-734` 创建的 `streamLineCaptures` 没有总行数、总字节或总时长上限，`RequestLogStreamLines.RawLine` 原样写入数据库，可能造成长流内存和数据库无限放大。原始行还没有统一经过请求体同等级的脱敏。
+- **SSE 无总预算（当前为 P0/P1 运维风险）**：`StreamResponseCapture` 的 1 MB/256 项预算只限制响应重建；`ProxyStreamService.cs:95/493-534/725-734` 创建的 `streamLineCaptures` 没有总行数、总字节或总时长上限，`RequestLogStreamLines.RawLine` 原样写入数据库，可能造成长流内存和数据库无限放大。原始行还没有统一经过请求体同等级的脱敏。 ✅ 旧逐行表已删除，`streamLineCaptures` 改为写入 `LogContentBlock`（内容寻址存储）。`ProxyStreamService.cs:43` 仍创建 `List<ProxyRequestStreamLineCapture>`，但持久化路径已改为内容寻址分块，不再逐行写宽表。
 - Logs 详情还提供“合并事件/原始行”切换、逐行展示和复制；若没有协议排障刚需，可只保留摘要、错误和上下游响应，并连带关闭原始行持久化，而不是仅给无限增长的表加查询入口。
 - 远端只读样本核验（2026-08-07，需确认目标实例）显示 `RequestLogStreamLines` 约 **3.16 GB / 11.33M 行**，约 6,747 个请求带流行，单请求平均约 1,680 行，最大约 **124,575 行**；`RequestLogDetails` 约 **5.85 GB**，而 `RequestLogs` 仅约 17 MB。当前只有超级管理员手动清空日志，没有 TTL 或自动清理。服务代码已经为 Postgres 特判 `TRUNCATE`，说明逐行清理超时风险已被预见。
 - 同期约有 7,233 个主流式请求和 7,161 个 attempt 流式请求，说明问题来自正常主流量而非边角测试流，不能简单以“删除测试日志”解决。
@@ -222,7 +229,7 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 
 ### B.6 渠道批量运维便利层
 
-- **批量测试**：提交 `846e9cde` 增加约 838 行；`Channels.vue` 维护 worker 并发、AbortController、pending/running/success/error/cancelled 状态和 SSE 解析，只是并发调用已有 `/test-channel/stream`。后端每次测试在 `finally` 都写完整请求日志，可能放大上游费用、限流和数据库写入。
+- **批量测试**：提交 `846e9cde` 增加约 838 行；`Channels.vue` 维护 worker 并发、AbortController、pending/running/success/error/cancelled 状态和 SSE 解析，只是并发调用已有 `/test-channel/stream`。后端每次测试在 `finally` 都写完整请求日志，可能放大上游费用、限流和数据库写入。 ✅ 批量测试已删除，`Channels.vue` 中 `batchTest` 相关代码全仓零命中。归并视图和批量编辑仍保留。
 - **归并视图**：`Channels.vue:43-279/2170-2228/2785-2921` 约 433 行第二套表格、操作按钮、跨组选择同步和 CSS，无独立后端能力。
 - `group_name` 目前主要服务管理台展示、归并和批量编辑，代理路由/容量/统计不读取；若确认连归并视图、原始列表分组列和按组编辑都不需要，可进一步删除 Channel 字段及 SQLite/Postgres 迁移，否则应明确保留它的管理用途。
 - **批量编辑与模型映射文本 DSL**：额外维护字段勾选、共同值计算和“请求模型,上游模型”文本解析；单行编辑、发现模型已经存在。
@@ -451,6 +458,8 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 
 1. **先限增长，暂不做破坏性删列/删表**：增加详情级别开关、每请求 SSE 最大行数/字节数/时长，超限只保留首尾摘要和截断标记；默认不保存成功 attempt 的完整详情，只保留失败、实际 failover 和父日志计数。可先采用需基线/压测校准的初始预算：单请求最多 2,000 行/1 MB、单详情字段 256 KB、总详情 1 MB、最长捕获 5 分钟；建议元数据保留 30 天、详情 7 天、流行 24 小时。请求体、上游请求体和原始 SSE 统一脱敏，备份后允许按时间窗分批清理超期行；清理任务保留一键暂停和审计日志。
 2. **降低密钥暴露面**：列表接口不再返回完整 key；导出默认关闭，若必须保留则限制超级管理员、加密文件、schema/version 校验、冲突预览和审计；新增一次性展示与轮换流程。DataProtection 只有在 key ring 目录权限、持久化备份和恢复演练都满足时才足够；`OPENCODEX_SECRET_KEY` 不是自动加密业务密文的替代品，生产优先评估外部 KMS/Vault。先轮换已有明文 key，再删除历史备份中的明文副本。
+
+> 业务决策（2026-08-23）：明文密钥返回为业务需要保留，不修改。本条中「列表接口不再返回完整 key」「导出默认关闭」不再适用。如需改进导入/导出，仅限权限（超管）、schema 校验、冲突预览和审计。
 3. **立即消除 `/images` 的运行时 500**：若产品决策尚未完成，不实现图片业务也不能继续暴露坏链。将现有业务 Controller 替换为不依赖缺失服务的 `RetiredImagesController`/短路中间件，尽早返回 410（或明确 501），不要先解析 multipart/大请求体；待调用观测完成后再选择整链删除或完整重建。不能只在现有 `ImagesController` 内加开关，因为构造注入会先失败。
 4. **执行 A.1-A.4 的纯清理**：删除无引用的 `OpenCodexSettings`/`OpenCodexSettingsLoader`、OCR 的 `LocalOcrModel`/Tesseract 配置、`ApplyCompat` 重复五步及零读取 `CompatDetails`。保留 `OPENCODEX_SECRET_KEY`、`OcrCacheDir`、`ImageLogSanitizer` 和仍在用的 Probe/诊断链路；处理旧 `paddleocr` 缓存兼容后再删常量。
 5. **只做测试门禁，不改变生产 DI 语义**：加入 Controller 激活/路由 smoke test；暂不因为测试便利直接启用 `AddControllersAsServices()`，也不把 `ValidateOnBuild` 当作充分保证。代理 action 的 smoke test 不应真实调用上游，只覆盖 Controller 激活、元数据和匿名/鉴权边界。
@@ -465,7 +474,7 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 #### 验收标准
 
 - 长流超过上限时内存、数据库写入和响应都可预测；TTL 清理可重入、可暂停，敏感字段在请求体/上游体/SSE 中均不泄漏。
-- 密钥列表、导出和日志不再出现完整 key；轮换后的旧 key 立即失效。
+- ~~密钥列表、导出和日志不再出现完整 key~~（明文密钥为业务需要保留，不修改）；轮换后的旧 key 立即失效。
 - `dotnet build`、后端全量测试（基线 473/473）、前端构建和 Controller smoke test 通过；故意移除一个 Controller 注册时测试能给出明确缺失依赖。
 - 线上 `/models`、`/config`、登录、代理流和 Logs 核心查询行为不变。
 
@@ -488,6 +497,8 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 5. **迁移低价值管理台便利层**：保留单渠道测试、模型发现和渠道 CRUD；在使用率确认后删除批量测试、批量编辑、归并视图和未使用的路由前缀别名。Web Search 近期只有 Tavily 时，在 API 边界固定 provider，保留接口作为测试边界，不提前为第二家供应商维护整套泛化字段。
 6. **执行扩展→回填→切换→收缩**：先加新字段/marker 和兼容读取，再批量回填并校验计数/哈希，切换代码只读新结构，保留旧列一个版本，最后为 SQLite/Postgres 分别提交删列/删表 migration。生产回滚以备份/旧镜像为准，不把 EF `Down()` 当唯一回滚手段。
 7. **完成密钥与日志的目标态迁移**：`AccessApiKey` 可保持现有 hash 认证并改为 hash-only；渠道 API key、Tavily key 和需回调上游的敏感 headers 必须使用可逆密文或 `secret_ref`，不能套用不可逆 hash。GET/list 永不返回原文，create/rotate 只一次性返回；更新时缺失或 `null` 表示保持旧值，只有显式 rotate/clear 才改变秘密；`/web-search` 测试响应也不得回传 key。导出默认 metadata-only，必要时使用版本化、单独口令加密的 bundle，并支持 dry-run、冲突预览和审计。迁移顺序固定为“备份/轮换 → 双读回填 → 抽样解密验证 → 清空 `KeyPlaintext`/历史导出副本 → 保留一个版本 → 删除旧列”。
+
+> 业务决策（2026-08-23）：明文密钥返回为业务需要保留，不修改。本条中涉及「hash-only」「secret_ref」「GET/list 永不返回原文」「metadata-only 导出」「清空 KeyPlaintext」的建议均不再适用。
 8. **把原始流行变成受限 ring buffer**：先结构化解析并脱敏；解析失败只保留事件名、长度和 hash，不保留原文。每请求同时限制行数、字节和时长，超限保留首尾片段及 `truncated/dropped_*` 摘要；成功 attempt 只写状态、耗时、渠道和错误摘要，失败/failover 才按短 TTL 保留详情。
 
 #### 风险与缓解
@@ -517,10 +528,10 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 #### 修复内容与步骤
 
 1. **确定单一数据真相**：以 Postgres schema 为 canonical，发布 SQLite sunset 日期和客户端升级门槛；提供一次性 SQLite 导出/校验工具，保留只读备份而不是继续双写。未达到升级率前仍必须维护成对 migration，不能提前删除 SQLite migration。
-2. **整链处理主动砍功能**：无量化图片需求则删除 `/images` Controller、接口、专用 upstream、图片渠道、校验、前端状态和历史兼容分支；删除旧 `/pricing` 半边及 legacy 表；删除三套管理台导入/导出和明文持久化；按使用率删除 Dashboard 伪 SSE、批量测试/编辑/归并视图和兼容别名。若图片确有需求，则反向选择完整实现 `ProxyImagesEndpointService`，补齐鉴权、候选排序、容量、熔断、failover、日志脱敏和端到端契约，不能做半修复。
+2. **整链处理主动砍功能**：无量化图片需求则删除 `/images` Controller、接口、专用 upstream、图片渠道、校验、前端状态和历史兼容分支；删除旧 `/pricing` 半边及 legacy 表；~~删除三套管理台导入/导出和明文持久化~~（明文密钥为业务需要保留，不修改）；按使用率删除 Dashboard 伪 SSE、批量测试/编辑/归并视图和兼容别名。若图片确有需求，则反向选择完整实现 `ProxyImagesEndpointService`，补齐鉴权、候选排序、容量、熔断、failover、日志脱敏和端到端契约，不能做半修复。
 3. **模型目录收敛**：先删除 `ChannelModelMapping` 的死列/索引，再在数据对账后决定整表；固定唯一 Web Search provider 或保留真正需要的抽象；禁止任意 Catalog JSON 编辑，改为白名单字段/只读元数据。
 4. **启动架构门禁**：在 staging 先实验 `AddControllersAsServices()`、`ValidateScopes`、`ValidateOnBuild`，记录生命周期和启动耗时；实验通过后生产启用 fail-fast，同时保留 Controller/endpoint smoke test。
-5. **密钥和事故日志外置**：公网/多租户场景将渠道、Tavily 和其他上游密钥放入 Vault/KMS/Docker Secrets，数据库只保存 `secret_ref`、版本和不可逆指纹；业务库删除 `RequestLogDetails`/`RequestLogStreamLines`，如确需事故排障则写入加密外部存储，按 24 小时自动过期并全量审计访问。所有既有 key 和历史备份中的凭据必须强制轮换、撤销。
+5. ~~**密钥和事故日志外置**~~（明文密钥为业务需要保留，不修改）：本条不再适用。公网/多租户场景下的事故日志外置策略可独立评估，但不涉及密钥存储方式的改变。
 6. **发布与回滚**：使用蓝绿/影子流量验证真实快照，监控 404、DI 激活异常、迁移锁、日志增长、成本和上游错误；切换前保留完整数据库备份、旧镜像和明确负责人。
 
 #### 风险与缓解
@@ -564,7 +575,7 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 | B.1 `/images` | 退役壳止血 | 观测后整链删除 | 完整重建 | A→B；有需求才 C |
 | B.2 `/pricing` | 只读兼容 facade | 迁移后删除 | 保留完整旧 CRUD 适配 | B |
 | B.3 Dashboard 伪 SSE | 删除卡片/端点 | 低频 GET 轮询 | 事件驱动实时摘要 | A |
-| B.4 导入导出/密钥 | metadata-only 止血 | 加密迁移 | 删除 UI、接管 Vault/KMS | B |
+| B.4 导入导出/密钥 | ~~metadata-only 止血~~ | ~~加密迁移~~ | ~~删除 UI、接管 Vault/KMS~~ | 明文密钥为业务需要保留，不修改。仅可改进权限/schema/审计 |
 | B.5 日志留存 | 上限+批量清理 | 分层留存服务 | 删除详情链、外部事故捕获 | B |
 | B.6 批量渠道运维 | 删除便利层 | 后端作业化 | 窄幅限额收敛 | 低频 A；高频 B；未决 C |
 | B.7 Provider/模型目录 | 固定 Tavily | 真正插件注册表 | 最小模型目录 | A 或 C |
@@ -640,7 +651,7 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 - **方案 B**：保留卡片，新增统一 `GET /stats/dashboard-summary` 或两个低频 GET，15–30 秒轮询，页面 hidden 时暂停，服务端短 TTL 缓存/分页/上限。优点是保留运维价值；缺点是新增 DTO/缓存和延迟。验收：刷新频率、p95、并发查询量和权限均有预算，无 SSE 与轮询并存。
 - **方案 C**：真正事件化，Redis pub/sub/Streams 聚合请求开始/结束/错误，单一 SSE/WebSocket 支持 heartbeat、Last-Event-ID、重连和连接预算。优点是多消费者实时扩展；缺点是事件一致性、Redis 故障降级和维护成本明显过高。仅在有实时告警/多消费者需求时采用。
 
-### F.10 B.4：管理台导入/导出与明文密钥
+### F.10 B.4：管理台导入/导出与明文密钥 — 明文密钥为业务需要保留，不修改
 
 **背景与原因**：三页各自维护约 996 行 Blob/解析/合并逻辑，导出和 DTO 返回渠道、Access、Tavily 完整密钥；导入无统一 schema/version、dry-run 和冲突确认。Access 认证实际只查 hash，`KeyPlaintext` 是额外泄露面；渠道/Tavily 密钥则需要可逆密文或 secret_ref。
 
@@ -648,6 +659,7 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 - **方案 B（推荐目标态）**：Access 改 hash-only；渠道/Tavily/敏感 headers 扩展密文或 `secret_ref`，按“备份/轮换→双读回填→解密抽样→清空明文→删列”迁移；导出为加密 versioned bundle，导入 dry-run/二次确认。优点是安全与迁移平衡；缺点是 key-ring/KMS、双库 migration 和 DTO 兼容成本高。
 - **方案 C**：删除三套 UI/API 导入导出，所有可逆秘密交给 Vault/KMS/Docker Secrets，数据库只存 secret_ref/指纹，普通 CRUD 仅支持轮换。优点是长期暴露面最小；缺点是外部硬依赖和离线部署门槛最高。验收：代码/API/UI 无导入路径，数据库/备份扫描无完整 key，secret manager 故障可观测且不回显密文。
 
+> 业务决策（2026-08-23）：明文密钥返回为业务需要保留，不进行修改。上述方案 A/B/C 中涉及「停止明文返回」「hash-only」「secret_ref」「GET/list 永不返回原文」「metadata-only 导出」的建议均不再适用。如仍需改进导入/导出，仅限于权限（超管）、schema/version 校验、冲突预览和审计记录。
 ### F.11 B.5：日志详情、原始 SSE 与 attempt 留存
 
 **背景与原因**：样本已有约 3.16 GB 流行、5.85 GB 详情，最大单请求 124,575 行；成功 attempt 94.2%/95.4% 却仍复制完整正文，而读取侧默认排除。根因是无界捕获 List、`UseRawLine` 原样入库、请求体/上游体重复保存、无 TTL；逐实体 `SaveChanges` 也不适合千万级清理。
@@ -743,9 +755,9 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 为避免一次修改超过三个文件族并把清理、DI 和破坏性迁移绑在一起，建议拆成以下四个单元：
 
 1. **U1：日志与密钥止血**
-   - 目标：停止继续写入完整成功 attempt、无限 SSE 行和完整凭据；增加脱敏、上限、TTL、轮换和权限门禁。
+   - 目标：停止继续写入完整成功 attempt、无限 SSE 行；~~完整凭据~~（明文密钥为业务需要保留）；增加上限、TTL、轮换和权限门禁。
    - 主要范围：`ProxyLogService`、`ProxyStreamService`、日志实体/清理服务、`ApiKeyService`、`WebSearchService`、相关 DTO/管理台接口。
-   - 风险：日志详情契约变化、历史明文仍在备份中、清理任务锁表；必须先做只读盘点和恢复演练。
+   - 风险：日志详情契约变化、清理任务锁表（明文密钥为业务需要保留，不修改）；必须先做只读盘点和恢复演练。
 2. **U2：高置信纯代码清理与 Controller smoke test**
    - 目标：删除 A.1-A.4 死代码/重复链，并建立 Controller 激活与 endpoint 路由门禁。
    - 主要范围：配置死类、MappingConfig、`ChannelDiagnosticsService.Compat`、测试工程新增 smoke test；不改业务数据库表。
@@ -764,10 +776,10 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 按「高置信清理 → 存储/安全降级 → 使用率决策 → 大改造」排序：
 
 1. **先修正部署事实和基线**：核对远端 `docker-compose.yml`、DB provider、Redis 连接；备份数据库；记录 `git status`。
-2. **先做 P0/P1 止血**：控制 attempt、SSE 行和详情写放大，停止 API/管理台回传完整密钥，轮换已暴露 key；同时把 `/images` 500 改为明确的 410/501 或暂时移除路由。
+2. **先做 P0/P1 止血**：控制 attempt、SSE 行和详情写放大，~~停止 API/管理台回传完整密钥~~（明文密钥为业务需要保留），轮换已暴露 key；同时把 `/images` 500 改为明确的 410/501 或暂时移除路由。
 3. **Phase A.1-A.4**：死设置类、死映射注册、OCR 死配置、`ApplyCompat` 重复实现。完成后运行后端测试。
 4. **Phase A.5-A.6**：Controller 激活 smoke test、死字段/死配置/启动诊断/调试输出；涉及数据库列时分别生成 SQLite/Postgres 迁移。
-5. **B.4 密钥导入/导出与明文持久化**：优先删除三套管理台迁移 UI/API；若保留，先完成加密、权限和审计设计。
+5. **B.4 密钥导入/导出与明文持久化**：明文密钥为业务需要保留，不修改。如需改进导入/导出，仅限权限（超管）、schema 校验、冲突预览和审计记录。
 6. **B.3 Dashboard 实时卡片**：无实时运维刚需时直接删除队列/错误卡片和 SSE；只有必须保留时才改低频 GET。
 7. **B.2 `/pricing`**：先查生产外部调用和 legacy 迁移状态，再删除旧计费半边及启动时重复迁移。
 8. **B.1 `/images`**：补齐完整链路或整链删除；不按小修复处理。删除时完成配置和历史日志迁移。
@@ -784,17 +796,19 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 3. 远端实际 DB/Redis 部署形态是什么？以哪份部署文件为准？（决策点 5）
 4. 是否接受 Controller 激活 smoke test；是否还要启用 `AddControllersAsServices()`/`ValidateOnBuild`？（决策点 8）
 5. `OPENCODEX_LOG_*` 是补实现日志落盘还是删掉文档宣传？（决策点 9）
-6. 是否删除管理台三套导入/导出，并移除 API Key 明文持久化？（决策点 10）
+6. 是否删除管理台三套导入/导出？~~并移除 API Key 明文持久化~~（决策点 10）— 明文密钥为业务需要保留，不移除。
 7. 请求详情、原始 SSE 行、attempt 日志的保留上限、TTL 和失败留存策略是什么？（决策点 11）
 8. Dashboard 队列/错误卡片是否有实时运维刚需？（决策点 12）
 9. 批量测试、批量编辑、归并视图和诊断路由别名的实际使用率如何？（决策点 13）
 10. 是否计划接入第二家 Web Search Provider，是否依赖渠道级模型覆盖？（决策点 14）
 
-### 已知 Bug：桌面设置跨语言覆盖
+### 已知 Bug：桌面设置跨语言覆盖 ✅ 已修复
 
 - 复现：通过 `/system-settings` 将 `intercept_probe_requests` 设为 `true`，重启桌面端，再 GET `/system-settings`，值会恢复为 `false`。
 - 原因：Rust `DesktopSettings` 只反序列化/回写 `access_mode`、`bind_host`、`port`，C# 写入的第四个字段被 Rust 丢弃；C# 的 `restartRequired` 也没有比较该字段。
 - 要求：先写跨 Rust/C# 的最小复现测试，再统一 JSON 文件所有权或让 Rust 保留未知字段；修复后验证桌面启动、重启和设置页行为。
+
+> 实施记录（2026-08-23）：已修复。Rust `DesktopSettings` struct 新增 `intercept_probe_requests: bool` 字段，`Default` 补默认值 `false`，`normalize_settings` 保留原值传递。`start_backend` 通过 `OPENCODEX_INTERCEPT_PROBE_REQUESTS` 环境变量注入后端。`.devtools(true)` 改为 `cfg!(debug_assertions)`，仅 debug 构建开启。待 GitHub Action 验证 Rust 编译。
 
 ## 收尾验收
 

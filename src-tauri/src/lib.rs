@@ -33,6 +33,7 @@ struct DesktopSettings {
     access_mode: String,
     bind_host: String,
     port: u16,
+    intercept_probe_requests: bool,
 }
 
 #[derive(Serialize)]
@@ -46,6 +47,7 @@ impl Default for DesktopSettings {
             access_mode: LOCALHOST_MODE.to_string(),
             bind_host: LOCALHOST_BIND_HOST.to_string(),
             port: DEFAULT_PORT,
+            intercept_probe_requests: false,
         }
     }
 }
@@ -166,8 +168,12 @@ fn start_backend(app: &AppHandle, state: &BackendState) -> Result<DesktopSetting
         .env("OPENCODEX_DESKTOP_PORT", settings.port.to_string())
         .env("OPENCODEX_DB_PROVIDER", "sqlite")
         .env("OPENCODEX_DB_CONNECTION_STRING", db_connection)
-        .env("OPENCODEX_DATA_PROTECTION_KEYS_PATH", keys_path)
-        .env("OPENCODEX_OCR_CACHE_DIR", ocr_path);
+       .env("OPENCODEX_DATA_PROTECTION_KEYS_PATH", keys_path)
+        .env("OPENCODEX_OCR_CACHE_DIR", ocr_path)
+        .env(
+            "OPENCODEX_INTERCEPT_PROBE_REQUESTS",
+            settings.intercept_probe_requests.to_string(),
+        );
 
     let (mut rx, child) = command.spawn().map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn(async move {
@@ -206,7 +212,7 @@ fn open_admin_window(app: &AppHandle, port: u16) -> Result<(), String> {
         .title("OpenCodex")
        .inner_size(1280.0, 820.0)
        .min_inner_size(960.0, 640.0)
-        .devtools(true)
+        .devtools(cfg!(debug_assertions))
        .build()
         .map_err(|error| error.to_string())?;
     Ok(())
@@ -285,6 +291,7 @@ fn normalize_settings(settings: DesktopSettings) -> DesktopSettings {
             LOCALHOST_BIND_HOST.to_string()
         },
         port,
+        intercept_probe_requests: settings.intercept_probe_requests,
     }
 }
 
