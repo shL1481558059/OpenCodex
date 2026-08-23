@@ -8,6 +8,7 @@ using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain.Models;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs;
+using OpenCodex.CoreBase.Events;
 using OpenCodex.CoreBase.Services;
 using OpenCodex.CoreBase.Services.Proxy;
 
@@ -25,19 +26,22 @@ public sealed class ProxyLogService : IProxyLogService
     private readonly IRepository<RequestLog> _logRepository;
     private readonly IRepository<User> _userRepository;
     private readonly LogContentStore _contentStore;
+    private readonly IEventBus? _eventBus;
 
     public ProxyLogService(
         IOpenCodexRuntimeSettingsProvider settingsProvider,
         IModelCatalogService catalog,
         IOpenCodexDbContext dbContext,
         IRepository<RequestLog> logRepository,
-        IRepository<User> userRepository)
+        IRepository<User> userRepository,
+        IEventBus? eventBus = null)
     {
         _settingsProvider = settingsProvider;
         _catalog = catalog;
         _logRepository = logRepository;
         _userRepository = userRepository;
         _contentStore = new LogContentStore(dbContext);
+        _eventBus = eventBus;
     }
 
     public Guid CreateQueuedLog(ProxyRequestLogQueuedContext context)
@@ -179,14 +183,9 @@ public sealed class ProxyLogService : IProxyLogService
         var responseForUsage = context.UpstreamResponse ?? [];
         var usage = context.ChannelType is null
             ? new UsageDto(0, 0, 0)
-            : ExtractUsage(responseForUsage, context.ChannelType);
-        var responseModel = JsonDictionaryValue.String(responseForUsage, "model");
-        if (responseModel.Length == 0)
-        {
-            responseModel = context.UpstreamModel ?? context.RequestModel ?? string.Empty;
-        }
+           : ExtractUsage(responseForUsage, context.ChannelType);
 
-        var log = _logRepository.Table.FirstOrDefault(item => item.Id == requestLogId);
+       var log = _logRepository.Table.FirstOrDefault(item => item.Id == requestLogId);
         if (log is null)
         {
             return await WriteCompletedLogAsync(settings, context);
@@ -200,7 +199,6 @@ public sealed class ProxyLogService : IProxyLogService
             channelId,
             context.RequestModel,
             context.UpstreamModel,
-            responseModel,
             new ModelUsageVector(
                 usage.InputTokens,
                 usage.OutputTokens,
@@ -263,6 +261,9 @@ public sealed class ProxyLogService : IProxyLogService
             }
         }
 
+
+        PublishLogWritten(log.Id, ownerUsername, context.StatusCode, context.Error);
+
         return log.Id;
     }
 
@@ -275,26 +276,20 @@ public sealed class ProxyLogService : IProxyLogService
         var responseForUsage = context.UpstreamResponse ?? [];
         var usage = context.ChannelType is null
             ? new UsageDto(0, 0, 0)
-            : ExtractUsage(responseForUsage, context.ChannelType);
-        var responseModel = JsonDictionaryValue.String(responseForUsage, "model");
-        if (responseModel.Length == 0)
-        {
-            responseModel = context.UpstreamModel ?? context.RequestModel ?? string.Empty;
-        }
+           : ExtractUsage(responseForUsage, context.ChannelType);
 
-        var channelId = ParseChannelId(context.ChannelId);
-        var pricing = await _catalog.CalculateCostAsync(
-            channelId,
-            context.RequestModel,
-            context.UpstreamModel,
-            responseModel,
-            new ModelUsageVector(
+       var channelId = ParseChannelId(context.ChannelId);
+       var pricing = await _catalog.CalculateCostAsync(
+           channelId,
+           context.RequestModel,
+           context.UpstreamModel,
+           new ModelUsageVector(
                 usage.InputTokens,
                 usage.OutputTokens,
                 usage.CacheWriteTokens,
                 usage.CacheReadTokens));
 
-        return WriteRequestLog(
+        var logId = WriteRequestLog(
             settings,
             new RequestLogWriteDto(
                 context.RequestId,
@@ -335,6 +330,9 @@ public sealed class ProxyLogService : IProxyLogService
                 context.Error,
                 context.OcrDetails is null ? null : SerializeForLog(context.OcrDetails),
                 context.StreamLines));
+
+        PublishLogWritten(logId, ownerUsername, context.StatusCode, context.Error);
+        return logId;
     }
 
     private static UsageDto ExtractUsage(IReadOnlyDictionary<string, object?> response, string protocol)
@@ -473,6 +471,19 @@ public sealed class ProxyLogService : IProxyLogService
                 : SerializeForLog(context.OcrDetails),
             [RequestLogContentSlot.StreamLinesJson] = SerializeStreamLines(context.StreamLines)
         };
+    }
+
+    private void PublishLogWritten(Guid logId, string ownerUsername, int statusCode, string? error)
+    {
+        var isError = !string.IsNullOrEmpty(error) || statusCode >= 400;
+        _eventBus?.Publish(new RequestLogWrittenEvent
+        {
+            OwnerUsername = ownerUsername,
+            LogId = logId,
+            IsError = isError
+
+
+        });
     }
 
     private static string? SerializeStreamLines(

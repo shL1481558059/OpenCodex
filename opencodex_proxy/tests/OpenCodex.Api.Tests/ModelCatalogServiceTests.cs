@@ -95,42 +95,6 @@ public sealed class ModelCatalogServiceTests
     }
 
     [Fact]
-    public void ListModelsDoesNotReadLegacyPricing()
-    {
-        var dbPath = CreateDbPath();
-        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
-        {
-            context.Database.Migrate();
-            context.ModelPricings.Add(new ModelPricing
-            {
-                ModelId = "legacy-only-model",
-                Vendor = "legacy-vendor",
-                Name = "Legacy Only Model",
-                MatchPattern = "legacy-only-model",
-                InputPrice = 1,
-                CachedInputPrice = null,
-                OutputPrice = 2,
-                Enabled = true,
-                Source = "legacy",
-                CreatedAt = 1,
-                UpdatedAt = 1
-            });
-            context.SaveChanges();
-        }
-
-        var service = CreateService(dbPath);
-        var result = service.ListModels(null, null, null);
-
-        using var verify = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
-        Assert.True(result.Succeeded);
-        Assert.NotNull(result.Payload);
-        Assert.Empty(result.Payload!.Models);
-        Assert.Contains(verify.ModelPricings, price => price.ModelId == "legacy-only-model");
-        Assert.DoesNotContain(verify.ModelInfos, model => model.ModelKey == "legacy-only-model");
-        Assert.DoesNotContain(verify.ModelProviders, provider => provider.Code == "legacy-vendor");
-    }
-
-    [Fact]
     public async Task CalculateCostUsesMatchPriority()
     {
         var dbPath = CreateDbPath();
@@ -147,10 +111,10 @@ public sealed class ModelCatalogServiceTests
 
         var service = CreateService(dbPath);
 
-        Assert.Equal(1m, (await service.CalculateCostAsync(null, null, "model-x", null, Tokens(1_000_000))).Cost);
-        Assert.Equal(2m, (await service.CalculateCostAsync(null, null, "model-y", null, Tokens(1_000_000))).Cost);
-        Assert.Equal(3m, (await service.CalculateCostAsync(null, null, "other-x", null, Tokens(1_000_000))).Cost);
-        Assert.Equal(4m, (await service.CalculateCostAsync(null, null, "other-x-other", null, Tokens(1_000_000))).Cost);
+        Assert.Equal(1m, (await service.CalculateCostAsync(null, null, "model-x", Tokens(1_000_000))).Cost);
+        Assert.Equal(2m, (await service.CalculateCostAsync(null, null, "model-y", Tokens(1_000_000))).Cost);
+        Assert.Equal(3m, (await service.CalculateCostAsync(null, null, "other-x", Tokens(1_000_000))).Cost);
+        Assert.Equal(4m, (await service.CalculateCostAsync(null, null, "other-x-other", Tokens(1_000_000))).Cost);
     }
 
     [Fact]
@@ -180,7 +144,6 @@ public sealed class ModelCatalogServiceTests
             null,
             "cache-model",
             "cache-model",
-            null,
             Tokens(1_000_000));
         Assert.Equal(1m, first.Cost);
 
@@ -191,7 +154,6 @@ public sealed class ModelCatalogServiceTests
             null,
             "cache-model",
             "cache-model",
-            null,
             Tokens(1_000_000));
         Assert.Equal(2m, second.Cost);
     }
@@ -223,7 +185,6 @@ public sealed class ModelCatalogServiceTests
             null,
             "cache-model",
             "cache-model",
-            null,
             Tokens(1_000_000));
         Assert.Equal(1m, first.Cost);
         var redisVersionBeforeDisconnect = redis.Version;
@@ -236,7 +197,6 @@ public sealed class ModelCatalogServiceTests
             null,
             "cache-model",
             "cache-model",
-            null,
             Tokens(1_000_000));
         Assert.Equal(2m, whileDisconnected.Cost);
 
@@ -245,7 +205,6 @@ public sealed class ModelCatalogServiceTests
             null,
             "cache-model",
             "cache-model",
-            null,
             Tokens(1_000_000));
         Assert.Equal(2m, afterReconnect.Cost);
         Assert.True(redis.Version > redisVersionBeforeDisconnect);
@@ -281,7 +240,6 @@ public sealed class ModelCatalogServiceTests
             null,
             "cache-model",
             "cache-model",
-            null,
             Tokens(1_000_000))).Cost);
 
         using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
@@ -302,7 +260,6 @@ public sealed class ModelCatalogServiceTests
             null,
             "cache-model",
             "cache-model",
-            null,
             Tokens(1_000_000));
         Assert.Equal(3m, afterReconnect.Cost);
     }
@@ -329,7 +286,6 @@ public sealed class ModelCatalogServiceTests
             null,
             "new-cache-model",
             "new-cache-model",
-            null,
             Tokens(1_000_000));
         Assert.Equal(0m, beforeCreate.Cost);
 
@@ -341,7 +297,6 @@ public sealed class ModelCatalogServiceTests
             null,
             "new-cache-model",
             "new-cache-model",
-            null,
             Tokens(1_000_000));
         Assert.Equal(3m, afterCreate.Cost);
 
@@ -352,7 +307,6 @@ public sealed class ModelCatalogServiceTests
             null,
             "new-cache-model",
             "new-cache-model",
-            null,
             Tokens(1_000_000));
         Assert.Equal(0m, afterDelete.Cost);
     }
@@ -371,16 +325,16 @@ public sealed class ModelCatalogServiceTests
         }
 
         var service = CreateService(dbPath);
-        var result = await service.CalculateCostAsync(null, "request-model", "upstream-model", null, Tokens(1_000_000));
+        var result = await service.CalculateCostAsync(null, "request-model", "upstream-model", Tokens(1_000_000));
 
         Assert.Equal(7m, result.Cost);
         Assert.Equal("global_model_match", result.Resolution);
         Assert.Equal("upstream-model", result.ModelKey);
     }
 
-    [Fact]
-    public async Task CalculateCostIgnoresResponseModelForPricing()
-    {
+   [Fact]
+    public async Task CalculateCostUsesUpstreamModelForPricing()
+   {
         var dbPath = CreateDbPath();
         using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
         {
@@ -392,7 +346,7 @@ public sealed class ModelCatalogServiceTests
         }
 
         var service = CreateService(dbPath);
-        var result = await service.CalculateCostAsync(null, "request-model", "upstream-model", "response-model", Tokens(1_000_000));
+        var result = await service.CalculateCostAsync(null, "request-model", "upstream-model", Tokens(1_000_000));
 
         Assert.Equal(2m, result.Cost);
         Assert.Equal("global_model_match", result.Resolution);
@@ -422,7 +376,7 @@ public sealed class ModelCatalogServiceTests
         }
 
         var service = CreateService(dbPath);
-        var result = await service.CalculateCostAsync(channelId, "request-alias", "upstream-model", "response-model", Tokens(1_000_000));
+        var result = await service.CalculateCostAsync(channelId, "request-alias", "upstream-model", Tokens(1_000_000));
 
         Assert.Equal(9m, result.Cost);
         Assert.Equal("channel_model_override", result.Resolution);
@@ -444,7 +398,7 @@ public sealed class ModelCatalogServiceTests
         }
 
         var service = CreateService(dbPath);
-        var result = await service.CalculateCostAsync(null, "request-model", "missing-upstream-model", null, Tokens(1_000_000));
+        var result = await service.CalculateCostAsync(null, "request-model", "missing-upstream-model", Tokens(1_000_000));
 
         Assert.Equal(0m, result.Cost);
         Assert.Equal("model_not_matched", result.Resolution);
@@ -465,13 +419,9 @@ public sealed class ModelCatalogServiceTests
             {
                 ChannelId = channelId,
                 Position = 0,
-                RequestModel = "model-a",
-                UpstreamModel = "model-a",
-                SupportsImage = false,
-                ModelInfoId = model.Id,
-                PricingMode = ChannelModelPricingModes.OverridePricing,
-                PricingPlanId = overridePlan.Id,
-                Enabled = true,
+               RequestModel = "model-a",
+               UpstreamModel = "model-a",
+               Enabled = true,
                 CreatedAt = 1,
                 UpdatedAt = 1
             });
@@ -479,7 +429,7 @@ public sealed class ModelCatalogServiceTests
         }
 
         var service = CreateService(dbPath);
-        var result = await service.CalculateCostAsync(channelId, "model-a", "model-a", null, Tokens(1_000_000));
+        var result = await service.CalculateCostAsync(channelId, "model-a", "model-a", Tokens(1_000_000));
 
         Assert.Equal(1m, result.Cost);
         Assert.Equal("global_model_match", result.Resolution);
@@ -511,7 +461,6 @@ public sealed class ModelCatalogServiceTests
             channelId,
             "request-model",
             "upstream-model",
-            null,
             Tokens(1_000_000));
         Assert.Equal(1m, initialCost.Cost);
 
@@ -541,7 +490,7 @@ public sealed class ModelCatalogServiceTests
         });
 
         Assert.True(saved.Succeeded);
-        var overrideCost = await service.CalculateCostAsync(channelId, "request-model", "upstream-model", null, Tokens(1_000_000));
+        var overrideCost = await service.CalculateCostAsync(channelId, "request-model", "upstream-model", Tokens(1_000_000));
         Assert.Equal(7m, overrideCost.Cost);
         Assert.Equal("channel_model_override", overrideCost.Resolution);
 
@@ -550,10 +499,10 @@ public sealed class ModelCatalogServiceTests
         Assert.True(item.Overridden);
         Assert.Equal("channel-model", item.OverrideModel?.ModelKey);
 
-        var restored = service.RestoreChannelModelInfo(channelId, saved.Payload!.Model.Id);
+        var restored = service.DeleteChannelModelInfo(channelId, saved.Payload!.Model.Id);
 
         Assert.True(restored.Succeeded);
-        var globalCost = await service.CalculateCostAsync(channelId, "request-model", "upstream-model", null, Tokens(1_000_000));
+        var globalCost = await service.CalculateCostAsync(channelId, "request-model", "upstream-model", Tokens(1_000_000));
         Assert.Equal(1m, globalCost.Cost);
         Assert.Equal("global_model_match", globalCost.Resolution);
 
@@ -814,7 +763,6 @@ public sealed class ModelCatalogServiceTests
             null,
             null,
             "cache-model",
-            null,
             new ModelUsageVector(
                 inputTokens: 100,
                 outputTokens: 10,
@@ -964,13 +912,9 @@ public sealed class ModelCatalogServiceTests
         {
             ChannelId = channelId,
             Position = 0,
-            RequestModel = "request-model",
-            UpstreamModel = upstreamModel,
-            SupportsImage = false,
-            ModelInfoId = null,
-            PricingMode = ChannelModelPricingModes.InheritGlobal,
-            PricingPlanId = null,
-            Enabled = true,
+           RequestModel = "request-model",
+           UpstreamModel = upstreamModel,
+           Enabled = true,
             CreatedAt = 1,
             UpdatedAt = 1
         });

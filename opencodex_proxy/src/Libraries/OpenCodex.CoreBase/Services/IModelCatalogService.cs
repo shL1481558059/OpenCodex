@@ -10,10 +10,16 @@ public interface IModelCatalogService
 
     ApiOpResult<ModelProviderResponsePayload> CreateProvider(ModelProviderUpsertRequest request);
 
+    ApiOpResult<ModelProviderResponsePayload> UpdateProvider(Guid id, ModelProviderUpsertRequest request);
+
+    ApiOpResult<ModelProviderResponsePayload> DeleteProvider(Guid id);
+
     ApiOpResult<ModelInfoListResponse> ListModels(
         string? query,
         string? providerCode,
         bool? enabled);
+
+    ApiOpResult<ModelInfoResponsePayload> ReadModelInfoById(Guid id);
 
     ApiOpResult<ModelInfoResponsePayload> CreateModel(ModelInfoCreateRequest request);
 
@@ -31,14 +37,13 @@ public interface IModelCatalogService
         Guid channelId,
         ChannelModelInfoUpsertRequest request);
 
-    ApiOpResult RestoreChannelModelInfo(Guid channelId, Guid id);
+    ApiOpResult DeleteChannelModelInfo(Guid channelId, Guid id);
 
     bool SupportsImage(Guid? channelId, string? upstreamModel, bool legacyMappingValue);
 
-    Task<ModelPricingCalculationResult> CalculateCostAsync(
-        Guid? channelId,
-        string? requestModel,
-        string? upstreamModel,
-        string? responseModel,
-        ModelUsageVector usage);
+   Task<ModelPricingCalculationResult> CalculateCostAsync(
+       Guid? channelId,
+       string? requestModel,
+       string? upstreamModel,
+       ModelUsageVector usage);
 }

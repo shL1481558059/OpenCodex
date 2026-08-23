@@ -120,20 +120,20 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 
 - `AccessApiKey.LastUsedAt` 没有任何生产持久化写入点；认证响应会临时计算一个 `lastUsedAt`，但管理列表读取的实体字段长期为空。若不实现真实追踪，应同步删除实体/迁移、Auth DTO 的瞬时字段和“最近使用”展示。
 - `RequestLogDetail` 继承 `BaseEntity<Guid>` 产生额外 `Id` 列，但实体配置以 `RequestLogId` 为主键；写入、查询和 API 均不使用 `Id`。可改为非泛型基类并为 SQLite/Postgres 各加删列迁移。
-- `IModelCatalogService.CalculateCostAsync` 的 `responseModel` 参数在方法体中完全不读取，`ProxyLogService` 却为此额外从响应提取/回退该值；删除参数及两处提取逻辑，并同步测试夹具。
+- `IModelCatalogService.CalculateCostAsync` 的 `responseModel` 参数在方法体中完全不读取，`ProxyLogService` 却为此额外从响应提取/回退该值；删除参数及两处提取逻辑，并同步测试夹具。 ✅ 已完成。`IModelCatalogService.CalculateCostAsync`、`ModelCatalogService.CalculateCostAsync`、`ProxyLogService`（两处调用点）的 `responseModel` 参数及提取逻辑已全部删除。`ModelCatalogServiceTests` 和 `ProxyControllerTests` 的调用已同步更新。测试方法 `CalculateCostIgnoresResponseModelForPricing` 更名为 `CalculateCostUsesUpstreamModelForPricing`。7 个 CalculateCost 测试全绿。
 - 另有零调用私有/内部方法：`ObservabilityService.EmptyLogFilterOptions()`、`EmptyStatsResponse(...)`、`ProxyStreamService.CaptureRawStreamLines(...)` 和 `TryExtractObject(...)`；先确认无反射调用，再连同专用测试/using 删除。 ✅ 四个方法全部已删除，全仓 `rg` 零命中。
-- `ModelInfoScopes.Channel` 除常量定义外零引用；`ChannelModelPricingModes.PrivateModel` 除定义外零引用；`OverridePricing` 仅测试夹具赋值。应在模型目录收敛时清理，避免继续扩大旧设计。 ✅ `ModelInfoScopes.Channel` 和 `ChannelModelPricingModes.PrivateModel` 已删除，全仓零命中。`OverridePricing` 仍保留，待后续清理。
-- `OpenCodexConfig.CompatFields` 仍接受 `intercept_probe_requests`，但该设置已迁移到 `/system-settings`；保留一版兼容剥离后删除白名单项，避免配置导入继续宣称该字段有效。
+- `ModelInfoScopes.Channel` 除常量定义外零引用；`ChannelModelPricingModes.PrivateModel` 除定义外零引用；`OverridePricing` 仅测试夹具赋值。应在模型目录收敛时清理，避免继续扩大旧设计。 ✅ `ModelInfoScopes.Channel` 和 `ChannelModelPricingModes.PrivateModel` 已删除，全仓零命中。`OverridePricing` 仍保留，待后续清理。 ✅ `OverridePricing` 已删除。`ChannelModelPricingModes.OverridePricing`、`ChannelModelPricingModes.PrivateModel` 全部已删除。由于删除后 `ChannelModelPricingModes` 类仅剩 `InheritGlobal` 且无任何引用，整个类已删除。全仓零命中。
+- `OpenCodexConfig.CompatFields` 仍接受 `intercept_probe_requests`，但该设置已迁移到 `/system-settings`；保留一版兼容剥离后删除白名单项，避免配置导入继续宣称该字段有效。 ✅ 已从 `OpenCodexConfig.CompatFields` HashSet 中删除 `intercept_probe_requests`。
 - `OPENCODEX_ACCESS_API_KEY` 与 `OPENCODEX_DB_PATH` 目前只有 README/DEPLOYMENT 文档引用；`OPENCODEX_LOG_*` 已在 A.1 处理。应核对外部脚本后清理文档和示例，避免误导用户。
 - `Program.cs` 每次启动无条件写 `opencodex-startup-diagnostic.txt`，全仓没有读取方；`ProxyStreamService`、`SseStreamConverter` 中约 10 条无条件 `[OCXP-DEBUG] Console.Error.WriteLine` 也没有级别控制。建议删除启动文件，或只在显式诊断开关下写入；调试输出统一移除或接入真正的日志级别。 ✅ 启动诊断文件和 `OCXP-DEBUG` Console 输出均已删除，全仓 `rg` 零命中。
 - 历史文档残留：`opencodex_proxy/stream_fix_plan.md` 更像已完成方案；`opencodex_proxy/tests/OpenCodex.Api.Tests/README_STREAMING_TESTS.md` 虽对应的 `StreamingIntegrationTests.cs` 实际存在，但 README 夸大了覆盖范围，引用已删除文件和过时事件名，并保留已不存在的 OCR 编译前置条件。应按当前实现逐条校对，标记历史归档或删除过时段落，不能把文档描述当作测试现状。 ✅ 两个文件均已删除。`stream_fix_plan.md` 是已完成方案，`README_STREAMING_TESTS.md` 内容过时且引用已删除文件。对应的 `StreamingIntegrationTests.cs` 仍存在且测试通过。
-- 过时脚本残留：`scripts/capture_real_sse.sh` 仍调用旧 `/api/auth/login` + Bearer 流程，`scripts/extract_sse_test_data.sh` 查询旧 `ProxyLogs`/SQLite 列，`scripts/test_streaming.sh` 默认把启动密码当访问 API Key，`switch_backend.sh` 写死个人域名和端口且未被文档/CI 引用。应逐个验证后删除或明确标记为个人历史脚本。 ✅ `switch_backend.sh` 已删除。其余三个旧脚本（`capture_real_sse.sh`、`extract_sse_test_data.sh`、`test_streaming.sh`）及 `test_streaming.py` 仍存在，待清理。
-- `scripts/test_streaming.py` 同样未被引用，依赖未声明的 `requests`，默认使用管理员密码作为 API Key，且 payload 与当前 Responses 契约不符；应与上述历史诊断脚本一起处理。
+- 过时脚本残留：`scripts/capture_real_sse.sh` 仍调用旧 `/api/auth/login` + Bearer 流程，`scripts/extract_sse_test_data.sh` 查询旧 `ProxyLogs`/SQLite 列，`scripts/test_streaming.sh` 默认把启动密码当访问 API Key，`switch_backend.sh` 写死个人域名和端口且未被文档/CI 引用。应逐个验证后删除或明确标记为个人历史脚本。 ✅ 全部 5 个旧脚本（`switch_backend.sh`、`capture_real_sse.sh`、`extract_sse_test_data.sh`、`test_streaming.sh`、`test_streaming.py`）均已删除。SSE 流式测试意图已被现有 `StreamingIntegrationTests.cs` 覆盖。
+- `scripts/test_streaming.py` 同样未被引用，依赖未声明的 `requests`，默认使用管理员密码作为 API Key，且 payload 与当前 Responses 契约不符；应与上述历史诊断脚本一起处理。 ✅ 已删除。
 - `src-tauri/src/lib.rs:215` 在发布窗口无条件开启 `.devtools(true)`，疑似白屏诊断残留；应改为 debug 构建或显式开关，避免生产桌面暴露开发者工具。 ✅ 已改为 `cfg!(debug_assertions)`，仅 debug 构建开启。同时修复了 Rust `DesktopSettings` 缺失 `intercept_probe_requests` 字段导致重启后设置丢失的跨语言覆盖 Bug。
-- 前端零作用残留：`Logs.vue.resetLogFilters`、`Logs.vue.filterOptions.upstream_models`、`WebSearch.vue.defaultWebSearchKey`、未使用的 `onMounted`、`main.js` 的 `ElUpload` 注册、`.input-with-action` CSS、Dashboard/Logs 的无效 `active` 状态机和 `App.vue` 无对应样式的 `mobile-menu-drawer` `custom-class`。
+- 前端零作用残留：`Logs.vue.resetLogFilters`、`Logs.vue.filterOptions.upstream_models`、`WebSearch.vue.defaultWebSearchKey`、未使用的 `onMounted`、`main.js` 的 `ElUpload` 注册、`.input-with-action` CSS、Dashboard/Logs 的无效 `active` 状态机和 `App.vue` 无对应样式的 `mobile-menu-drawer` `custom-class`。 ✅ `Logs.vue.filterOptions.upstream_models`、`main.js` 的 `ElUpload` 注册、`style.css` 的 `.input-with-action` CSS、`App.vue` 的 `mobile-menu-drawer` custom-class 已删除。`Logs.vue.resetLogFilters`、`WebSearch.vue.defaultWebSearchKey`、未使用的 `onMounted`、Dashboard/Logs 的无效 `active` 状态机待后续确认后清理。
 - `Logs.vue` 的列设置没有 localStorage/后端持久化，组件离开页面即销毁；若不打算实现持久化，应删除设置状态和入口，固定默认列。
 - 前端未读取的观测字段（如 `LogDetailResponse.client_ip`、清理日志返回的 `deleted_details/deleted_stream_lines`、队列响应的 `generated_at`）可在 DTO 瘦身时核对；先确认没有外部 API 消费者，不要只凭前端零引用删掉公开契约。
-- 风险：低；涉及数据库列时为低-中（双数据库迁移）。
+- `ChannelModelMapping` 实体的 `SupportsImage`、`ModelInfoId`、`PricingMode`、`PricingPlanId` 四个死列已删除（含 `OpenCodexDbContextBase` 索引和属性配置、`ConfigService` 赋值代码、测试夹具）。EF Core 迁移已通过 `dotnet ef migrations add` 生成（SQLite + Postgres 双份）。迁移同时删除了已无实体的 `ModelPricings` 表。539 个测试全绿。- 风险：低；涉及数据库列时为低-中（双数据库迁移）。
 - 验证：`rg` 确认零读取；迁移后旧数据库可启动；前端构建通过。
 
 ## Phase B：需决策的低收益链路与运行时风险（新增）
@@ -183,7 +183,7 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 > 实施记录（2026-08-23）：已删除 `PricingController.cs`、`ModelPricingService.cs`、`OpenCodexPricing.cs`、`IModelPricingService.cs`，全仓 `rg` 零命中。`RouteTests.cs:53` 断言 `/pricing/seed-defaults` 返回 404。`ModelPricing` 实体已删除。保留 `ModelPricingPlan` / `ModelPricingRule` 实体（新目录系统仍在使用）。
 - 验证：`/pricing/seed-defaults` 不可调用；新目录 CRUD 后计费立即生效；旧 `/pricing` CRUD 不影响实际代理计费。
 
-### B.3 Dashboard 两条伪 SSE（先评估删除，不默认改轮询）— SSE 已从轮询改为事件驱动，端点仍保留
+### B.3 Dashboard 两条伪 SSE ✅ 已清理 — SSE 已改为事件驱动，前端已迁移到 /monitor/* 路径，/stats/active-channels、/stats/active-channels/stream、/stats/recent-errors/stream 三条 deprecated 路由已删除
 
 - 现状（已实证）：`ObservabilityController.cs:178 /stats/active-channels/stream`（2s）和 `:205 /stats/recent-errors/stream`（5s）已从手写 `while + Task.Delay` 循环重构为基于 `_eventBus.Subscribe` + `SseEventWriter.StreamAsync` 的事件驱动模式（`ObservabilityController.cs:383-440`），不再定时轮询查库。但端点本身仍保留，前端 `Dashboard.vue` 仍有 2 个 `EventSource`。原始描述保留供参考：~~手写 `while (!RequestAborted)` + `Task.Delay` + `Response.WriteAsync`，本质是服务端定时查库，却背着常驻连接状态机。~~前端 `frontend/src/Dashboard.vue:617` 与 `:696` 两个 `EventSource`。
 - ⚠️ `/stats/active-channels` 有非流版本（`:170`），但 `/stats/recent-errors` **没有** → 改成前端轮询需先新增 `GET /stats/recent-errors`。

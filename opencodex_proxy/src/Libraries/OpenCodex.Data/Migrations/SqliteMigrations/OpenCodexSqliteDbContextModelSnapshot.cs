@@ -236,25 +236,12 @@ namespace OpenCodex.Data.Migrations.SqliteMigrations
                     b.Property<bool>("Enabled")
                         .HasColumnType("INTEGER");
 
-                    b.Property<Guid?>("ModelInfoId")
-                        .HasColumnType("TEXT");
-
                     b.Property<int>("Position")
                         .HasColumnType("INTEGER");
-
-                    b.Property<string>("PricingMode")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<Guid?>("PricingPlanId")
-                        .HasColumnType("TEXT");
 
                     b.Property<string>("RequestModel")
                         .IsRequired()
                         .HasColumnType("TEXT");
-
-                    b.Property<bool>("SupportsImage")
-                        .HasColumnType("INTEGER");
 
                     b.Property<double>("UpdatedAt")
                         .HasColumnType("REAL");
@@ -266,10 +253,6 @@ namespace OpenCodex.Data.Migrations.SqliteMigrations
                     b.HasKey("Id");
 
                     b.HasIndex("Enabled");
-
-                    b.HasIndex("ModelInfoId");
-
-                    b.HasIndex("PricingPlanId");
 
                     b.HasIndex("ChannelId", "Position");
 
@@ -443,64 +426,6 @@ namespace OpenCodex.Data.Migrations.SqliteMigrations
                     b.HasIndex("Scope", "ProviderId", "ModelKey");
 
                     b.ToTable("ModelInfos", (string)null);
-                });
-
-            modelBuilder.Entity("OpenCodex.Core.Domain.ModelPricing", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("TEXT");
-
-                    b.Property<double?>("CachedInputPrice")
-                        .HasColumnType("REAL");
-
-                    b.Property<double>("CreatedAt")
-                        .HasColumnType("REAL");
-
-                    b.Property<bool>("Enabled")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<double>("InputPrice")
-                        .HasColumnType("REAL");
-
-                    b.Property<string>("MatchPattern")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("ModelId")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<double>("OutputPrice")
-                        .HasColumnType("REAL");
-
-                    b.Property<string>("Source")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<double>("UpdatedAt")
-                        .HasColumnType("REAL");
-
-                    b.Property<string>("Vendor")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("Enabled");
-
-                    b.HasIndex("MatchPattern");
-
-                    b.HasIndex("ModelId")
-                        .IsUnique();
-
-                    b.HasIndex("Vendor");
-
-                    b.ToTable("ModelPricings", (string)null);
                 });
 
             modelBuilder.Entity("OpenCodex.Core.Domain.ModelPricingPlan", b =>

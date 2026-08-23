@@ -21,8 +21,6 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
 
     public DbSet<TavilyKey> TavilyKeys => Set<TavilyKey>();
 
-    public DbSet<ModelPricing> ModelPricings => Set<ModelPricing>();
-
     public DbSet<ModelProvider> ModelProviders => Set<ModelProvider>();
 
     public DbSet<ModelInfo> ModelInfos => Set<ModelInfo>();
@@ -51,7 +49,6 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         ConfigureChannels(modelBuilder);
         ConfigureAccessApiKeys(modelBuilder);
         ConfigureWebSearch(modelBuilder);
-        ConfigureModelPricings(modelBuilder);
         ConfigureModelCatalog(modelBuilder);
         ConfigureRequestLogs(modelBuilder);
     }
@@ -119,23 +116,6 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         keys.Property(key => key.Provider).IsRequired();
         keys.Property(key => key.ApiKey).IsRequired();
         keys.HasIndex(key => key.Position);
-    }
-
-    private static void ConfigureModelPricings(ModelBuilder modelBuilder)
-    {
-        var entity = modelBuilder.Entity<ModelPricing>();
-        entity.ToTable("ModelPricings");
-        entity.HasKey(pricing => pricing.Id);
-        entity.Property(pricing => pricing.Id).ValueGeneratedOnAdd();
-        entity.Property(pricing => pricing.ModelId).IsRequired();
-        entity.Property(pricing => pricing.Vendor).IsRequired();
-        entity.Property(pricing => pricing.Name).IsRequired();
-        entity.Property(pricing => pricing.MatchPattern).IsRequired();
-        entity.Property(pricing => pricing.Source).IsRequired();
-        entity.HasIndex(pricing => pricing.ModelId).IsUnique();
-        entity.HasIndex(pricing => pricing.Vendor);
-        entity.HasIndex(pricing => pricing.Enabled);
-        entity.HasIndex(pricing => pricing.MatchPattern);
     }
 
     private static void ConfigureModelCatalog(ModelBuilder modelBuilder)
@@ -219,13 +199,10 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         mappings.HasKey(mapping => mapping.Id);
         mappings.Property(mapping => mapping.Id).ValueGeneratedOnAdd();
         mappings.Property(mapping => mapping.RequestModel).IsRequired();
-        mappings.Property(mapping => mapping.UpstreamModel).IsRequired();
-        mappings.Property(mapping => mapping.PricingMode).IsRequired();
-        mappings.HasIndex(mapping => new { mapping.ChannelId, mapping.Position });
-        mappings.HasIndex(mapping => new { mapping.ChannelId, mapping.RequestModel });
-        mappings.HasIndex(mapping => mapping.ModelInfoId);
-        mappings.HasIndex(mapping => mapping.PricingPlanId);
-        mappings.HasIndex(mapping => mapping.Enabled);
+       mappings.Property(mapping => mapping.UpstreamModel).IsRequired();
+       mappings.HasIndex(mapping => new { mapping.ChannelId, mapping.Position });
+       mappings.HasIndex(mapping => new { mapping.ChannelId, mapping.RequestModel });
+       mappings.HasIndex(mapping => mapping.Enabled);
     }
 
     private static void ConfigureRequestLogs(ModelBuilder modelBuilder)

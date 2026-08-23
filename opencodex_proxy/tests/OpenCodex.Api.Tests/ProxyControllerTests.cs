@@ -288,9 +288,24 @@ public sealed class ProxyControllerTests
             throw new NotSupportedException();
         }
 
+        public ApiOpResult<ModelProviderResponsePayload> UpdateProvider(Guid id, ModelProviderUpsertRequest request)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ApiOpResult<ModelProviderResponsePayload> DeleteProvider(Guid id)
+        {
+            throw new NotSupportedException();
+        }
+
         public ApiOpResult<ModelInfoListResponse> ListModels(string? query, string? providerCode, bool? enabled)
         {
             return ApiOpResult<ModelInfoListResponse>.Succeed(new ModelInfoListResponse([]));
+        }
+
+        public ApiOpResult<ModelInfoResponsePayload> ReadModelInfoById(Guid id)
+        {
+            throw new NotSupportedException();
         }
 
         public ApiOpResult<ModelInfoResponsePayload> CreateModel(ModelInfoCreateRequest request)
@@ -332,7 +347,7 @@ public sealed class ProxyControllerTests
             throw new NotSupportedException();
         }
 
-        public ApiOpResult RestoreChannelModelInfo(Guid channelId, Guid id)
+        public ApiOpResult DeleteChannelModelInfo(Guid channelId, Guid id)
         {
             throw new NotSupportedException();
         }
@@ -342,12 +357,11 @@ public sealed class ProxyControllerTests
             throw new NotSupportedException();
         }
 
-        public Task<ModelPricingCalculationResult> CalculateCostAsync(
-            Guid? channelId,
-            string? requestModel,
-            string? upstreamModel,
-            string? responseModel,
-            ModelUsageVector usage)
+       public Task<ModelPricingCalculationResult> CalculateCostAsync(
+           Guid? channelId,
+           string? requestModel,
+           string? upstreamModel,
+           ModelUsageVector usage)
         {
             throw new NotSupportedException();
         }

@@ -26,9 +26,8 @@ public static class OpenCodexConfig
     public static readonly HashSet<string> CompatFields = new(StringComparer.Ordinal)
     {
         "enable_apply_patch_prompt_compat",
-        "preserve_thinking_history",
-        "intercept_probe_requests",
-        "rename_params",
+       "preserve_thinking_history",
+       "rename_params",
         "drop_params",
         "drop_tool_types",
         "force_params",

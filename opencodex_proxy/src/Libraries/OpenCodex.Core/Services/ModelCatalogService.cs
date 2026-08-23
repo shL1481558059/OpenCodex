@@ -122,6 +122,68 @@ public sealed class ModelCatalogService : IModelCatalogService
         }
     }
 
+    public ApiOpResult<ModelProviderResponsePayload> UpdateProvider(Guid id, ModelProviderUpsertRequest request)
+    {
+        try
+        {
+            if (id == Guid.Empty)
+            {
+                return ProviderValidationFailure("provider id is required");
+            }
+
+            var provider = _providers.Table.FirstOrDefault(p => p.Id == id);
+            if (provider is null)
+            {
+                return ApiOpResult<ModelProviderResponsePayload>.Fail(404, "provider not found");
+            }
+
+            var code = NormalizeProviderCodeRequired(request.Code);
+            if (_providers.TableNoTracking.Any(p => p.Code == code && p.Id != id))
+            {
+                return ProviderValidationFailure("provider_code already exists");
+            }
+
+            provider.Code = code;
+            provider.Name = DisplayName(request.Name, code);
+            provider.Enabled = request.Enabled;
+            provider.SortOrder = request.SortOrder > 0 ? request.SortOrder : provider.SortOrder;
+            provider.UpdatedAt = UnixTimeSeconds();
+            _providers.Update(provider);
+
+            return ApiOpResult<ModelProviderResponsePayload>.Succeed(
+                new ModelProviderResponsePayload(ToProviderResponse(provider)));
+        }
+        catch (ArgumentException exception)
+        {
+            return ProviderValidationFailure(exception.Message);
+        }
+    }
+
+    public ApiOpResult<ModelProviderResponsePayload> DeleteProvider(Guid id)
+    {
+        if (id == Guid.Empty)
+        {
+            return ProviderValidationFailure("provider id is required");
+        }
+
+        var provider = _providers.Table.FirstOrDefault(p => p.Id == id);
+        if (provider is null)
+        {
+            return ApiOpResult<ModelProviderResponsePayload>.Fail(404, "provider not found");
+        }
+
+        // 检查是否有关联的模型
+        var hasModels = _models.TableNoTracking.Any(m => m.ProviderId == id);
+        if (hasModels)
+        {
+            return ProviderValidationFailure("cannot delete provider with existing models; disable or reassign models first");
+        }
+
+        _providers.Delete(provider);
+        return ApiOpResult<ModelProviderResponsePayload>.Succeed(
+            new ModelProviderResponsePayload(ToProviderResponse(provider)));
+    }
+
     public ApiOpResult<ModelInfoListResponse> ListModels(
         string? query,
         string? providerCode,
@@ -168,6 +230,25 @@ public sealed class ModelCatalogService : IModelCatalogService
 
         return ApiOpResult<ModelInfoListResponse>.Succeed(new ModelInfoListResponse(
             models.Select(model => ToModelResponse(model, providerById)).ToList()));
+    }
+
+    public ApiOpResult<ModelInfoResponsePayload> ReadModelInfoById(Guid id)
+    {
+        if (id == Guid.Empty)
+        {
+            return ApiOpResult<ModelInfoResponsePayload>.Fail(400, "model id is required");
+        }
+
+        var providerById = _providers.TableNoTracking
+            .ToDictionary(provider => provider.Id);
+        var model = _models.TableNoTracking.FirstOrDefault(m => m.Id == id);
+        if (model is null)
+        {
+            return ApiOpResult<ModelInfoResponsePayload>.Fail(404, "model not found");
+        }
+
+        return ApiOpResult<ModelInfoResponsePayload>.Succeed(
+            new ModelInfoResponsePayload(ToModelResponse(model, providerById)));
     }
 
     public ApiOpResult<ModelInfoResponsePayload> CreateModel(ModelInfoCreateRequest request)
@@ -675,7 +756,7 @@ public sealed class ModelCatalogService : IModelCatalogService
         }
     }
 
-    public ApiOpResult RestoreChannelModelInfo(Guid channelId, Guid id)
+    public ApiOpResult DeleteChannelModelInfo(Guid channelId, Guid id)
     {
         var channel = FindChannelInScope(channelId);
         if (channel is null)
@@ -721,12 +802,11 @@ public sealed class ModelCatalogService : IModelCatalogService
         return globalModel is not null && SupportsImage(globalModel.CapabilitiesJson);
     }
 
-    public async Task<ModelPricingCalculationResult> CalculateCostAsync(
-        Guid? channelId,
-        string? requestModel,
-        string? upstreamModel,
-        string? responseModel,
-        ModelUsageVector usage)
+   public async Task<ModelPricingCalculationResult> CalculateCostAsync(
+       Guid? channelId,
+       string? requestModel,
+       string? upstreamModel,
+       ModelUsageVector usage)
     {
         // 缓存定价解析(按 channelId + upstreamModel),扁平 DTO 规避 PricingResolution 不可序列化的问题。
         // rules/provider 为索引小查询,每次现查;usage 计算每请求不同,不可缓存。

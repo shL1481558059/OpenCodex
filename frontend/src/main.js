@@ -34,7 +34,6 @@ import { ElTable, ElTableColumn } from "element-plus/es/components/table/index.m
 import { ElTabPane, ElTabs } from "element-plus/es/components/tabs/index.mjs";
 import { ElTag } from "element-plus/es/components/tag/index.mjs";
 import { ElTooltip } from "element-plus/es/components/tooltip/index.mjs";
-import { ElUpload } from "element-plus/es/components/upload/index.mjs";
 import "element-plus/es/components/alert/style/css.mjs";
 import "element-plus/es/components/aside/style/css.mjs";
 import "element-plus/es/components/autocomplete/style/css.mjs";
@@ -139,7 +138,6 @@ const elementComponents = [
   ElTabs,
   ElTag,
   ElTooltip,
-  ElUpload
 ];
 
 for (const component of elementComponents) {

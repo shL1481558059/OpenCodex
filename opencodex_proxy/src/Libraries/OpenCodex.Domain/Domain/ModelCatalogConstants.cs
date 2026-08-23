@@ -8,8 +8,6 @@ public static class ModelCatalogSources
 public static class ModelInfoScopes
 {
     public const string Global = "global";
-
-    public const string Channel = "channel";
 }
 
 public static class ModelMatchTypes
@@ -41,13 +39,4 @@ public static class ModelBillingModes
     public const string PerMillionTokens = "per_million_tokens";
 
     public const string TieredTokens = "tiered_tokens";
-}
-
-public static class ChannelModelPricingModes
-{
-    public const string InheritGlobal = "inherit_global";
-
-    public const string OverridePricing = "override_pricing";
-
-    public const string PrivateModel = "private_model";
 }

@@ -102,9 +102,8 @@
       v-model="mobileMenuVisible"
       title="菜单"
       direction="ltr"
-      size="280px"
-      custom-class="mobile-menu-drawer"
-    >
+     size="280px"
+   >
       <el-menu class="mobile-drawer-menu" :default-active="activeTab" @select="handleMobileMenuSelect">
         <el-menu-item v-for="item in visibleMenuItems" :key="item.index" :index="item.index">
           <el-icon><component :is="item.icon" /></el-icon>

@@ -101,24 +101,27 @@ public sealed class ProxyAccessService : IProxyAccessService
             new AccessApiKeyUserDto(cachedUser.Id, cachedUser.Username, cachedUser.Role, cachedUser.Enabled));
     }
 
-    private Task<CachedAccessKey?> LoadAccessKeyByHash(string hash)
-    {
-        var key = _keyRepository.Table
-            .FirstOrDefault(item => item.KeyHash == hash);
-        if (key is null || !key.Enabled)
-        {
-            return Task.FromResult<CachedAccessKey?>(null);
-        }
+   private async Task<CachedAccessKey?> LoadAccessKeyByHash(string hash)
+   {
+       var key = _keyRepository.Table
+           .FirstOrDefault(item => item.KeyHash == hash);
+       if (key is null || !key.Enabled)
+       {
+           return null;
+       }
 
-        return Task.FromResult<CachedAccessKey?>(new CachedAccessKey(
-            key.Id,
-            key.OwnerUserId,
-            key.Name,
-            key.KeyPrefix,
-            key.KeySuffix,
-            key.Enabled,
-            key.CreatedAt));
-    }
+       key.LastUsedAt = UnixTimeSeconds();
+       await _keyRepository.UpdateAsync(key, nameof(AccessApiKey.LastUsedAt));
+
+       return new CachedAccessKey(
+           key.Id,
+           key.OwnerUserId,
+           key.Name,
+           key.KeyPrefix,
+           key.KeySuffix,
+           key.Enabled,
+           key.CreatedAt);
+   }
 
     private Task<CachedAccessUser?> LoadUserById(Guid userId)
     {

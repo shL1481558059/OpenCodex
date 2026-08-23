@@ -60,108 +60,155 @@ public sealed class ConfigService : IConfigService
             ResolveHealthStatus));
     }
 
-    public async Task<ApiOpResult<ConfigResponse>> CreateChannelAsync(ChannelRequest request)
-    {
-        var (currentUsername, isSuperadmin) = CurrentScope();
-        var saved = SaveSingleChannel(null, request, currentUsername, isSuperadmin);
-        if (!saved.Succeeded)
-        {
-            return ApiOpResult<ConfigResponse>.Fail(saved.Code, saved.Description);
-        }
-        await InvalidateRouteCache(currentUsername);
-        return ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
-            ReadChannels(currentUsername, isSuperadmin),
-            ResolveActiveRequests,
-            ResolveHealthStatus));
-    }
-
-    public async Task<ApiOpResult<ConfigResponse>> UpdateChannelAsync(Guid channelId, ChannelRequest request)
-    {
-        var (currentUsername, isSuperadmin) = CurrentScope();
-        var saved = SaveSingleChannel(channelId, request, currentUsername, isSuperadmin);
-        if (!saved.Succeeded)
-        {
-            return ApiOpResult<ConfigResponse>.Fail(saved.Code, saved.Description);
-        }
-        await InvalidateRouteCache(currentUsername);
-        return ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
-            ReadChannels(currentUsername, isSuperadmin),
-            ResolveActiveRequests,
-            ResolveHealthStatus));
-    }
-
-    public async Task<ApiOpResult<ConfigResponse>> BatchUpdateChannelsAsync(ChannelBatchUpdateRequest request)
-    {
-        var (currentUsername, isSuperadmin) = CurrentScope();
-        var updated = PatchChannels(request, currentUsername, isSuperadmin);
-        if (!updated.Succeeded)
-        {
-            return ApiOpResult<ConfigResponse>.Fail(updated.Code, updated.Description);
-        }
-        await InvalidateRouteCache(currentUsername);
-        return ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
-            ReadChannels(currentUsername, isSuperadmin),
-            ResolveActiveRequests,
-            ResolveHealthStatus));
-    }
-
-    public async Task<ApiOpResult<ConfigResponse>> DeleteChannelAsync(Guid channelId)
+    public ApiOpResult<ChannelResponse> ReadChannelById(Guid channelId)
     {
         if (channelId == Guid.Empty)
         {
-            return ApiOpResult<ConfigResponse>.Fail(400, "channel id is required");
+            return ApiOpResult<ChannelResponse>.Fail(400, "channel id is required");
         }
 
         var (currentUsername, isSuperadmin) = CurrentScope();
         var channel = FindChannelInScope(channelId, currentUsername, isSuperadmin);
         if (channel is null)
         {
-            return ApiOpResult<ConfigResponse>.Fail(404, "channel not found");
+            return ApiOpResult<ChannelResponse>.Fail(404, "channel not found");
+        }
+
+        var ownerUsername = ResolveOwnerUsername(channel.OwnerUserId);
+        var dto = MapToChannelDto(channel, ownerUsername);
+        return ApiOpResult<ChannelResponse>.Succeed(ChannelResponse.From(
+            dto,
+            ResolveActiveRequests(dto),
+            ResolveHealthStatus(dto)));
+    }
+
+    public ApiOpResult<ChannelRuntimeListResponse> ReadChannelRuntime(IReadOnlyList<Guid>? ids = null)
+    {
+        var (currentUsername, isSuperadmin) = CurrentScope();
+        var channels = ReadChannels(currentUsername, isSuperadmin);
+        if (ids is not null && ids.Count > 0)
+        {
+            var idSet = ids.ToHashSet();
+            channels = channels.Where(ch => idSet.Contains(ch.Id)).ToList();
+        }
+
+        var runtimeChannels = channels
+            .Select(dto => new ChannelRuntimeResponse
+            {
+                Id = dto.Id,
+                ActiveRequests = ResolveActiveRequests(dto),
+                HealthStatus = ResolveHealthStatus(dto),
+                Capacity = dto.Capacity,
+                Enabled = dto.Enabled
+            })
+            .ToList();
+
+        return ApiOpResult<ChannelRuntimeListResponse>.Succeed(
+            new ChannelRuntimeListResponse { Channels = runtimeChannels });
+    }
+
+    public async Task<ApiOpResult<ChannelResponse>> CreateChannelAsync(ChannelRequest request)
+    {
+        var (currentUsername, isSuperadmin) = CurrentScope();
+        var saved = SaveSingleChannel(null, request, currentUsername, isSuperadmin);
+        if (!saved.Succeeded)
+        {
+            return ApiOpResult<ChannelResponse>.Fail(saved.Code, saved.Description);
+        }
+        var createdChannelId = saved.Payload;
+        await InvalidateRouteCache(currentUsername);
+
+        return ReadChannelById(createdChannelId);
+    }
+
+    public async Task<ApiOpResult<ChannelResponse>> UpdateChannelAsync(Guid channelId, ChannelRequest request)
+    {
+        var (currentUsername, isSuperadmin) = CurrentScope();
+        var saved = SaveSingleChannel(channelId, request, currentUsername, isSuperadmin);
+        if (!saved.Succeeded)
+        {
+            return ApiOpResult<ChannelResponse>.Fail(saved.Code, saved.Description);
+        }
+        await InvalidateRouteCache(currentUsername);
+        return ReadChannelById(channelId);
+    }
+
+    public async Task<ApiOpResult<ChannelBatchUpdateResult>> BatchUpdateChannelsAsync(ChannelBatchUpdateRequest request)
+    {
+        var (currentUsername, isSuperadmin) = CurrentScope();
+        var updatedIds = PatchChannels(request, currentUsername, isSuperadmin);
+        if (!updatedIds.Succeeded)
+        {
+            return ApiOpResult<ChannelBatchUpdateResult>.Fail(updatedIds.Code, updatedIds.Description);
+        }
+        await InvalidateRouteCache(currentUsername);
+        var ids = updatedIds.Payload ?? [];
+        return ApiOpResult<ChannelBatchUpdateResult>.Succeed(new ChannelBatchUpdateResult
+        {
+            UpdatedIds = ids,
+            Count = ids.Count
+        });
+    }
+
+    public async Task<ApiOpResult<ChannelDeleteResult>> DeleteChannelAsync(Guid channelId)
+    {
+        if (channelId == Guid.Empty)
+        {
+            return ApiOpResult<ChannelDeleteResult>.Fail(400, "channel id is required");
+        }
+
+        var (currentUsername, isSuperadmin) = CurrentScope();
+        var channel = FindChannelInScope(channelId, currentUsername, isSuperadmin);
+        if (channel is null)
+        {
+            return ApiOpResult<ChannelDeleteResult>.Fail(404, "channel not found");
         }
 
         DeleteMappingsForChannels([channel.Id]);
         _channelRepository.Delete(channel);
         await InvalidateRouteCache(currentUsername);
 
-        return ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
-            ReadChannels(currentUsername, isSuperadmin),
-            ResolveActiveRequests,
-            ResolveHealthStatus));
+        return ApiOpResult<ChannelDeleteResult>.Succeed(new ChannelDeleteResult
+        {
+            Deleted = true,
+            Id = channelId
+        });
     }
 
-    public async Task<ApiOpResult<ConfigResponse>> ImportConfigAsync(
+    public async Task<ApiOpResult<ChannelBatchUpdateResult>> ImportConfigAsync(
         IReadOnlyDictionary<string, object?> body)
     {
         var (currentUsername, isSuperadmin) = CurrentScope();
         var merged = MergeChannels(body, currentUsername, isSuperadmin);
         if (!merged.Succeeded)
         {
-            return ApiOpResult<ConfigResponse>.Fail(merged.Code, merged.Description);
+            return ApiOpResult<ChannelBatchUpdateResult>.Fail(merged.Code, merged.Description);
         }
         await InvalidateRouteCache(currentUsername);
-        return ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
-            ReadChannels(currentUsername, isSuperadmin),
-            ResolveActiveRequests,
-            ResolveHealthStatus));
+        return ApiOpResult<ChannelBatchUpdateResult>.Succeed(new ChannelBatchUpdateResult
+        {
+            UpdatedIds = [],
+            Count = 0
+        });
     }
 
-    public async Task<ApiOpResult> ResetChannelHealthAsync(Guid channelId)
+    public async Task<ApiOpResult<object>> ResetChannelHealthAsync(Guid channelId)
     {
         if (channelId == Guid.Empty)
         {
-            return ApiOpResult.Fail(400, "channel id is required");
+            return ApiOpResult<object>.Fail(400, "channel id is required");
         }
 
         var (currentUsername, isSuperadmin) = CurrentScope();
         var channel = FindChannelInScope(channelId, currentUsername, isSuperadmin);
         if (channel is null)
         {
-            return ApiOpResult.Fail(404, "channel not found");
+            return ApiOpResult<object>.Fail(404, "channel not found");
         }
 
         var ownerUsername = ResolveOwnerUsername(channel.OwnerUserId);
         await _channelCircuitBreaker.ResetAsync(ownerUsername, channel.Id.ToString());
-        return ApiOpResult.Succeed();
+        return ApiOpResult<object>.Succeed(new { reset = true, id = channelId });
     }
 
     public Task<ApiOpResult<ChannelDto>> ReadChannelForDiagnostics(Guid channelId)
@@ -217,7 +264,7 @@ public sealed class ConfigService : IConfigService
         await _cache.RemoveAsync(CacheKeys.RouteChannels(ownerUsername));
     }
 
-    private ApiOpResult SaveSingleChannel(
+    private ApiOpResult<Guid> SaveSingleChannel(
         Guid? channelId,
         ChannelRequest request,
         string currentUsername,
@@ -253,7 +300,7 @@ public sealed class ConfigService : IConfigService
                 .FirstOrDefault();
             if (validated is null)
             {
-                return ValidationFailure("channel must be an object");
+                return ValidationFailureGuid("channel must be an object");
             }
 
             ConfigValidator.ValidateChannel(validated, settings.DefaultTimeout);
@@ -264,7 +311,7 @@ public sealed class ConfigService : IConfigService
                 var existing = FindChannelInScope(channelId.Value, currentUsername, isSuperadmin);
                 if (existing is null)
                 {
-                    return ApiOpResult.Fail(404, "channel not found");
+                    return ApiOpResult<Guid>.Fail(404, "channel not found");
                 }
 
                 var nextName = JsonDictionaryValue.String(validated, "name");
@@ -274,7 +321,7 @@ public sealed class ConfigService : IConfigService
                     && candidate.Name == nextName);
                 if (duplicatedNameChannel is not null)
                 {
-                    return ValidationFailure($"duplicated channel name: {nextName}");
+                    return ValidationFailureGuid($"duplicated channel name: {nextName}");
                 }
 
                 existing.Name = nextName;
@@ -303,7 +350,7 @@ public sealed class ConfigService : IConfigService
                 existing.UpdatedAt = now;
                 _channelRepository.Update(existing);
                 SyncChannelModelMappings(existing);
-                return ApiOpResult.Succeed();
+                return ApiOpResult<Guid>.Succeed(existing.Id);
             }
 
             var channelOwnerUsername = NormalizeUsername(JsonDictionaryValue.Get(validated, "owner_username"));
@@ -316,7 +363,7 @@ public sealed class ConfigService : IConfigService
                 .FirstOrDefault(u => u.Username == channelOwnerUsername);
             if (channelOwnerUser is null)
             {
-                return ValidationFailure($"owner user not found: {channelOwnerUsername}");
+                return ValidationFailureGuid($"owner user not found: {channelOwnerUsername}");
             }
 
             var idText = JsonDictionaryValue.String(validated, "id");
@@ -327,7 +374,7 @@ public sealed class ConfigService : IConfigService
                 .FirstOrDefault(existing => existing.OwnerUserId == channelOwnerUser.Id && existing.Id == parsedId);
             if (duplicatedChannel is not null)
             {
-                return ValidationFailure($"duplicated channel id: {parsedId}");
+                return ValidationFailureGuid($"duplicated channel id: {parsedId}");
             }
 
             var channelName = JsonDictionaryValue.String(validated, "name");
@@ -335,7 +382,7 @@ public sealed class ConfigService : IConfigService
                 .FirstOrDefault(existing => existing.OwnerUserId == channelOwnerUser.Id && existing.Name == channelName);
             if (duplicatedName is not null)
             {
-                return ValidationFailure($"duplicated channel name: {channelName}");
+                return ValidationFailureGuid($"duplicated channel name: {channelName}");
             }
 
             var newChannel = new Channel
@@ -372,26 +419,26 @@ public sealed class ConfigService : IConfigService
 
             _channelRepository.Insert(newChannel);
             SyncChannelModelMappings(newChannel);
-            return ApiOpResult.Succeed();
+            return ApiOpResult<Guid>.Succeed(newChannel.Id);
         }
         catch (ConfigException exception)
         {
-            return ValidationFailure(exception.Message);
+            return ValidationFailureGuid(exception.Message);
         }
         catch (ArgumentException exception)
         {
-            return ValidationFailure(exception.Message);
+            return ValidationFailureGuid(exception.Message);
         }
     }
 
-    private ApiOpResult PatchChannels(
+    private ApiOpResult<IReadOnlyList<Guid>> PatchChannels(
         ChannelBatchUpdateRequest request,
         string currentUsername,
         bool isSuperadmin)
     {
         if (request is null)
         {
-            return ApiOpResult.Fail(400, "request body is required");
+            return ApiOpResult<IReadOnlyList<Guid>>.Fail(400, "request body is required");
         }
 
         var ids = (request.ChannelIds ?? [])
@@ -400,13 +447,13 @@ public sealed class ConfigService : IConfigService
             .ToList();
         if (ids.Count == 0)
         {
-            return ApiOpResult.Fail(400, "channel_ids is required");
+            return ApiOpResult<IReadOnlyList<Guid>>.Fail(400, "channel_ids is required");
         }
 
         var patch = request.Patch;
         if (patch is null)
         {
-            return ApiOpResult.Fail(400, "patch is required");
+            return ApiOpResult<IReadOnlyList<Guid>>.Fail(400, "patch is required");
         }
 
         var changes = 0;
@@ -426,7 +473,7 @@ public sealed class ConfigService : IConfigService
         {
             if (patch.Priority.Value < 0)
             {
-                return ApiOpResult.Fail(400, "priority must be a non-negative integer");
+                return ApiOpResult<IReadOnlyList<Guid>>.Fail(400, "priority must be a non-negative integer");
             }
             changes++;
         }
@@ -435,7 +482,7 @@ public sealed class ConfigService : IConfigService
         {
             if (patch.Capacity.Value <= 0)
             {
-                return ApiOpResult.Fail(400, "capacity must be a positive integer");
+                return ApiOpResult<IReadOnlyList<Guid>>.Fail(400, "capacity must be a positive integer");
             }
             changes++;
         }
@@ -444,7 +491,7 @@ public sealed class ConfigService : IConfigService
         {
             if (patch.TimeoutSeconds.Value <= 0)
             {
-                return ApiOpResult.Fail(400, "timeout_seconds must be positive");
+                return ApiOpResult<IReadOnlyList<Guid>>.Fail(400, "timeout_seconds must be positive");
             }
             changes++;
         }
@@ -453,7 +500,7 @@ public sealed class ConfigService : IConfigService
         {
             if (patch.RetryCount.Value < 0)
             {
-                return ApiOpResult.Fail(400, "retry_count must be a non-negative integer");
+                return ApiOpResult<IReadOnlyList<Guid>>.Fail(400, "retry_count must be a non-negative integer");
             }
             changes++;
         }
@@ -462,14 +509,14 @@ public sealed class ConfigService : IConfigService
         {
             if (patch.CircuitBreakDurationSeconds.Value < 0)
             {
-                return ApiOpResult.Fail(400, "circuit_break_duration_seconds must be a non-negative integer");
+                return ApiOpResult<IReadOnlyList<Guid>>.Fail(400, "circuit_break_duration_seconds must be a non-negative integer");
             }
             changes++;
         }
 
         if (changes == 0)
         {
-            return ApiOpResult.Fail(400, "patch must include at least one supported field");
+            return ApiOpResult<IReadOnlyList<Guid>>.Fail(400, "patch must include at least one supported field");
         }
 
         var ownerUsername = OwnerScope(currentUsername, isSuperadmin);
@@ -483,7 +530,7 @@ public sealed class ConfigService : IConfigService
             var ownerUser = _userRepository.TableNoTracking.FirstOrDefault(user => user.Username == normalizedOwnerUsername);
             if (ownerUser is null)
             {
-                return ApiOpResult.Fail(404, "channel not found");
+                return ApiOpResult<IReadOnlyList<Guid>>.Fail(404, "channel not found");
             }
 
             query = query.Where(channel => channel.OwnerUserId == ownerUser.Id);
@@ -492,7 +539,7 @@ public sealed class ConfigService : IConfigService
         var channels = query.ToList();
         if (channels.Count != ids.Count)
         {
-            return ApiOpResult.Fail(404, "one or more channels not found");
+            return ApiOpResult<IReadOnlyList<Guid>>.Fail(404, "one or more channels not found");
         }
 
         var now = UnixTimeSeconds();
@@ -537,7 +584,7 @@ public sealed class ConfigService : IConfigService
         }
 
         _channelRepository.SaveChanges();
-        return ApiOpResult.Succeed();
+        return ApiOpResult<IReadOnlyList<Guid>>.Succeed(channels.Select(ch => ch.Id).ToList());
     }
 
     private ApiOpResult MergeChannels(
@@ -921,6 +968,11 @@ public sealed class ConfigService : IConfigService
         return ApiOpResult.Fail(400, message);
     }
 
+    private static ApiOpResult<Guid> ValidationFailureGuid(string message)
+    {
+        return ApiOpResult<Guid>.Fail(400, message);
+    }
+
     private void SyncChannelModelMappings(Channel channel)
     {
         DeleteMappingsForChannels([channel.Id]);
@@ -951,13 +1003,9 @@ public sealed class ConfigService : IConfigService
             {
                 ChannelId = channel.Id,
                 Position = position++,
-                RequestModel = requestModel,
-                UpstreamModel = upstreamModel,
-                SupportsImage = false,
-                ModelInfoId = null,
-                PricingMode = ChannelModelPricingModes.InheritGlobal,
-                PricingPlanId = null,
-                Enabled = true,
+               RequestModel = requestModel,
+               UpstreamModel = upstreamModel,
+               Enabled = true,
                 CreatedAt = now,
                 UpdatedAt = now
             });
