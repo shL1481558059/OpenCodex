@@ -8,11 +8,12 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using OpenCodex.Core.Errors;
 using OpenCodex.Core.Domain;
+using OpenCodex.Core.Errors;
 using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.Data;
 using Xunit;
 
@@ -39,34 +40,14 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
     public async Task TestChannelStreamWritesCompleteRequestLogContent()
     {
         var cookie = await LoginAndReadSessionCookie();
+        var channelId = await CreateChannelAsync(cookie);
 
         var (statusCode, body) = await SendStreamRequestWithCookie(
             "/test-channel/stream",
             cookie,
             new
             {
-                id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-                name = "Diagnostics Channel",
-                type = ProtocolConverter.Responses,
-                baseurl = "https://upstream.example/v1",
-                apikey = SecretApiKey,
-                auth_mode = "config",
-                capacity = 3,
-                headers = new Dictionary<string, object?>
-                {
-                    ["Authorization"] = $"Bearer {SecretHeaderValue}",
-                    ["x-api-key"] = SecretHeaderValue,
-                    ["X-Normal"] = "visible"
-                },
-                models = new[]
-                {
-                    new
-                    {
-                        model = "public-model",
-                        upstream_model = "upstream-model",
-                        supports_image = false
-                    }
-                },
+                channel_id = channelId,
                 model = "public-model",
                 input = "你好",
                 max_output_tokens = 32
@@ -87,6 +68,7 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
         Assert.Null(log.ApiKeyId);
         Assert.True(log.IsStream);
         Assert.Equal(200, log.StatusCode);
+        Assert.Equal(ProxyRequestTypes.Diagnostic, log.RequestType);
 
         var detail = new LogContentStore(context).Read(log.Id);
         var persistedDetail = string.Concat(
@@ -107,33 +89,14 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
     public async Task TestChannelStreamEmitsDiagnosticDetailEvent()
     {
         var cookie = await LoginAndReadSessionCookie();
+        var channelId = await CreateChannelAsync(cookie);
 
         var (statusCode, body) = await SendStreamRequestWithCookie(
             "/test-channel/stream",
             cookie,
             new
             {
-                id = "detail-channel",
-                name = "Detail Channel",
-                type = ProtocolConverter.Responses,
-                baseurl = "https://upstream.example/v1",
-                apikey = SecretApiKey,
-                auth_mode = "config",
-                capacity = 3,
-                headers = new Dictionary<string, object?>
-                {
-                    ["Authorization"] = $"Bearer {SecretHeaderValue}",
-                    ["X-Normal"] = "visible"
-                },
-                models = new[]
-                {
-                    new
-                    {
-                        model = "public-model",
-                        upstream_model = "upstream-model",
-                        supports_image = false
-                    }
-                },
+                channel_id = channelId,
                 model = "public-model",
                 input = "你好",
                 max_output_tokens = 32
@@ -162,40 +125,24 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
     {
         _factory.UpstreamClient = new ChatUpstreamClient();
         var cookie = await LoginAndReadSessionCookie();
+        var channelId = await CreateChannelAsync(cookie, type: ProtocolConverter.Chat);
 
         var (statusCode, body) = await SendStreamRequestWithCookie(
             "/test-channel/stream",
             cookie,
             new
             {
-                id = "chat-channel",
-                name = "Chat Channel",
-                type = ProtocolConverter.Chat,
-                baseurl = "https://upstream.example/v1",
-                apikey = SecretApiKey,
-                auth_mode = "config",
-                capacity = 3,
-                models = new[]
-                {
-                    new
-                    {
-                        model = "gpt-4o",
-                        upstream_model = "gpt-4o-2024-08-06",
-                        supports_image = false
-                    }
-                },
-                model = "gpt-4o",
+                channel_id = channelId,
+                model = "public-model",
                 input = "你好",
                 max_output_tokens = 32
             });
 
         Assert.Equal(HttpStatusCode.OK, statusCode);
-        // 客户端仍收到 Responses 协议事件。
         Assert.Contains("response.output_text.delta", body, StringComparison.Ordinal);
         Assert.Contains("pong", body, StringComparison.Ordinal);
         Assert.Contains("response.completed", body, StringComparison.Ordinal);
 
-        // 日志保存转换前的 Chat 标准响应，而不是转换后的 Responses 响应。
         using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={_factory.DbPath}");
         context.Database.Migrate();
         var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
@@ -211,29 +158,15 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
     {
         _factory.UpstreamClient = new MessagesUpstreamClient();
         var cookie = await LoginAndReadSessionCookie();
+        var channelId = await CreateChannelAsync(cookie, type: ProtocolConverter.Messages);
 
         var (statusCode, body) = await SendStreamRequestWithCookie(
             "/test-channel/stream",
             cookie,
             new
             {
-                id = "messages-channel",
-                name = "Messages Channel",
-                type = ProtocolConverter.Messages,
-                baseurl = "https://upstream.example/v1",
-                apikey = SecretApiKey,
-                auth_mode = "config",
-                capacity = 3,
-                models = new[]
-                {
-                    new
-                    {
-                        model = "claude-sonnet",
-                        upstream_model = "claude-sonnet-upstream",
-                        supports_image = false
-                    }
-                },
-                model = "claude-sonnet",
+                channel_id = channelId,
+                model = "public-model",
                 input = "你好",
                 max_output_tokens = 32
             });
@@ -255,24 +188,30 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
     }
 
     [Fact]
-    public async Task TestChannelStreamForConfigErrorEmitsErrorEvent()
+    public async Task TestChannelStreamForMissingChannelEmitsErrorEvent()
     {
         var cookie = await LoginAndReadSessionCookie();
 
         var (statusCode, body) = await SendStreamRequestWithCookie(
             "/test-channel/stream",
             cookie,
-            new { });
+            new
+            {
+                channel_id = Guid.NewGuid(),
+                model = "public-model",
+                input = "你好",
+                max_output_tokens = 32
+            });
 
         Assert.Equal(HttpStatusCode.OK, statusCode);
         Assert.Contains("channel_test.error", body, StringComparison.Ordinal);
-        Assert.Contains("config_error", body, StringComparison.Ordinal);
+        Assert.Contains("404", body, StringComparison.Ordinal);
 
         using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={_factory.DbPath}");
         context.Database.Migrate();
         var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
-        Assert.Equal(400, log.StatusCode);
-        Assert.False(string.IsNullOrEmpty(log.Error));
+        Assert.Equal(404, log.StatusCode);
+        Assert.Equal(ProxyRequestTypes.Diagnostic, log.RequestType);
     }
 
     [Fact]
@@ -281,23 +220,15 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
         _factory.UpstreamClient = new FailingUpstreamClient(
             new UpstreamException("upstream returned 429", 429));
         var cookie = await LoginAndReadSessionCookie();
+        var channelId = await CreateChannelAsync(cookie);
 
         var (statusCode, body) = await SendStreamRequestWithCookie(
             "/test-channel/stream",
             cookie,
             new
             {
-                id = "fail-channel",
-                type = ProtocolConverter.Responses,
-                baseurl = "https://upstream.example/v1",
-                apikey = SecretApiKey,
-                auth_mode = "config",
-                capacity = 3,
-                models = new[]
-                {
-                    new { model = "m", upstream_model = "m", supports_image = false }
-                },
-                model = "m",
+                channel_id = channelId,
+                model = "public-model",
                 input = "你好",
                 max_output_tokens = 32
             });
@@ -311,6 +242,7 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
         context.Database.Migrate();
         var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
         Assert.Equal(429, log.StatusCode);
+        Assert.Equal(ProxyRequestTypes.Diagnostic, log.RequestType);
     }
 
     public void Dispose()
@@ -340,6 +272,62 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
         return cookie;
     }
 
+    private async Task<Guid> CreateChannelAsync(string cookie, string? type = null)
+    {
+        var response = await SendJsonWithCookie(
+            HttpMethod.Post,
+            "/channels",
+            cookie,
+            new
+            {
+                id = Guid.NewGuid().ToString(),
+                name = "Diagnostics Channel",
+                type = type ?? ProtocolConverter.Responses,
+                baseurl = "https://upstream.example/v1",
+                apikey = SecretApiKey,
+                auth_mode = "config",
+                capacity = 3,
+                headers = new Dictionary<string, object?>
+                {
+                    ["Authorization"] = $"Bearer {SecretHeaderValue}",
+                    ["x-api-key"] = SecretHeaderValue,
+                    ["X-Normal"] = "visible"
+                },
+                models = new[]
+                {
+                    new
+                    {
+                        model = "public-model",
+                        upstream_model = type == ProtocolConverter.Chat
+                            ? "gpt-4o-2024-08-06"
+                            : type == ProtocolConverter.Messages
+                                ? "claude-sonnet-upstream"
+                                : "upstream-model",
+                        supports_image = false
+                    }
+                }
+            });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return await ReadChannelIdFromConfigResponse(cookie, "Diagnostics Channel");
+    }
+
+    private async Task<Guid> ReadChannelIdFromConfigResponse(string cookie, string channelName)
+    {
+        var config = await SendJsonWithCookie(HttpMethod.Get, "/config", cookie, null);
+        Assert.Equal(HttpStatusCode.OK, config.StatusCode);
+        using var document = await JsonDocument.ParseAsync(await config.Content.ReadAsStreamAsync());
+        foreach (var channel in document.RootElement.GetProperty("Data").GetProperty("channels").EnumerateArray())
+        {
+            if (channel.GetProperty("name").GetString() == channelName)
+            {
+                return channel.GetProperty("id").GetGuid();
+            }
+        }
+
+        throw new InvalidOperationException($"channel {channelName} not found");
+    }
+
     private async Task<(HttpStatusCode StatusCode, string Body)> SendStreamRequestWithCookie(
         string requestUri,
         string cookie,
@@ -353,6 +341,21 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
         var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
         var responseBody = await response.Content.ReadAsStringAsync();
         return (response.StatusCode, responseBody);
+    }
+
+    private Task<HttpResponseMessage> SendJsonWithCookie(
+        HttpMethod method,
+        string requestUri,
+        string cookie,
+        object? body)
+    {
+        var request = new HttpRequestMessage(method, requestUri);
+        if (body is not null)
+        {
+            request.Content = JsonContent.Create(body);
+        }
+        request.Headers.Add("Cookie", cookie);
+        return _client.SendAsync(request);
     }
 
     private sealed class ChannelDiagnosticsApiFactory : WebApplicationFactory<Program>
@@ -387,9 +390,6 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
         }
     }
 
-    /// <summary>
-    /// 上游返回 Responses 协议流式事件。
-    /// </summary>
     private sealed class ResponsesUpstreamClient : IUpstreamClient
     {
         public Task<Dictionary<string, object?>> PostJsonAsync(
@@ -417,9 +417,6 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
         }
     }
 
-    /// <summary>
-    /// 上游返回 Chat 协议流式事件（chat.completion.chunk）。
-    /// </summary>
     private sealed class ChatUpstreamClient : IUpstreamClient
     {
         public Task<Dictionary<string, object?>> PostJsonAsync(
@@ -486,9 +483,6 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
         }
     }
 
-    /// <summary>
-    /// 上游返回 Messages 协议流式事件。
-    /// </summary>
     private sealed class MessagesUpstreamClient : IUpstreamClient
     {
         public Task<Dictionary<string, object?>> PostJsonAsync(
@@ -528,9 +522,6 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
         }
     }
 
-    /// <summary>
-    /// 上游抛出异常，用于测试错误路径。
-    /// </summary>
     private sealed class FailingUpstreamClient : IUpstreamClient
     {
         private readonly UpstreamException _exception;

@@ -11,6 +11,7 @@ using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs.Proxy;
 using OpenCodex.CoreBase.DTOs.ChannelDiagnostics;
+using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
 using OpenCodex.CoreBase.Services.Proxy;
@@ -28,17 +29,20 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
     private readonly IUpstreamClient _upstreamClient;
     private readonly IUpstreamModelClient _upstreamModelClient;
     private readonly IProxyLogService _logs;
+    private readonly IConfigService _config;
 
     public ChannelDiagnosticsService(
         IOpenCodexRuntimeSettingsProvider settingsProvider,
         IUpstreamClient upstreamClient,
         IUpstreamModelClient upstreamModelClient,
-        IProxyLogService logs)
+        IProxyLogService logs,
+        IConfigService config)
     {
         _settingsProvider = settingsProvider;
         _upstreamClient = upstreamClient;
         _upstreamModelClient = upstreamModelClient;
         _logs = logs;
+        _config = config;
     }
 
     public async Task<ApiOpResult<DiscoverModelsResponse>> DiscoverModelsAsync(
@@ -48,8 +52,13 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
         var started = Stopwatch.GetTimestamp();
         try
         {
+            var draft = ExtractChannelFromBody(body);
+            RejectEnvironmentPlaceholders(draft);
+            EnsurePublicBaseUrl(draft);
+            var validated = ConfigValidator.ValidateChannel(draft, DefaultTimeout());
+            var clamped = ClampDiagnosticsChannel(validated);
             var raw = await _upstreamModelClient.ListModelsAsync(
-                DraftChannelFromBody(body),
+                clamped,
                 DefaultTimeout(),
                 cancellationToken);
             return ApiOpResult<DiscoverModelsResponse>.Succeed(DiscoverModelsResponse.From(
@@ -95,7 +104,31 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
         writer.PrepareSse();
         try
         {
-            var prepared = PrepareTestChannel(body, requestMetadata);
+            var channelIdGuid = ReadChannelId(body);
+            var channelResult = await _config.ReadChannelForDiagnostics(channelIdGuid);
+            if (!channelResult.Succeeded || channelResult.Payload is null)
+            {
+                throw new ProxyException("channel not found", 404);
+            }
+
+            var channelConfig = ChannelDtoToConfig(channelResult.Payload);
+            var expanded = ConfigEnvironmentExpander.Expand(channelConfig);
+            if (!ConfigValue.TryAsObject(expanded, out var expandedChannel))
+            {
+                throw new ConfigException("expanded config must be an object");
+            }
+
+            var validated = ConfigValidator.ValidateChannel(expandedChannel, DefaultTimeout());
+            var clampedChannel = ClampDiagnosticsChannel(validated);
+            var clampedBody = body.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value,
+                StringComparer.Ordinal);
+            ClampDiagnosticsPayloadInputs(clampedBody);
+            var testPayload = BuildPayloadFromFlat(
+                clampedBody,
+                JsonDictionaryValue.String(clampedChannel, "type"));
+            var prepared = PrepareTestChannel(clampedChannel, testPayload, requestMetadata);
             channel = prepared.Channel;
             payload = prepared.Payload;
             compatibleRequest = prepared.CompatibleRequest;
@@ -249,7 +282,7 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
             }
 
             await WriteTestChannelLogAsync(
-                body,
+                channel,
                 user,
                 requestMetadata,
                 started,
@@ -279,10 +312,10 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
     }
 
     private TestChannelPreparedRequest PrepareTestChannel(
-        IReadOnlyDictionary<string, object?> body,
+        Dictionary<string, object?> channel,
+        Dictionary<string, object?> payload,
         ProxyRequestMetadata requestMetadata)
     {
-        var (channel, payload) = ParseTestChannelBody(body);
         var channelType = JsonDictionaryValue.String(channel, "type");
         var (originalModel, upstreamModel) = TestModels(channel, JsonDictionaryValue.Get(payload, "model"));
         var route = new ProxyRouteDto(
@@ -304,18 +337,16 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
             channelType,
             channelType,
             upstreamModel,
-                        channelCompat);
+            channelCompat);
         upstreamRequest["stream"] = true;
-        var compatResult = ApplyCompat(
+        var compatibleRequest = ApplyCompat(
             upstreamRequest,
             channelCompat);
-        var compatibleRequest = compatResult.Payload;
         compatibleRequest["stream"] = true;
         return new TestChannelPreparedRequest(
             channel,
             payload,
             compatibleRequest,
-            compatResult.Details,
             originalModel,
             upstreamModel,
             channelType);
@@ -363,7 +394,6 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
             Dictionary<string, object?> channel,
             Dictionary<string, object?> payload,
             Dictionary<string, object?> compatibleRequest,
-            List<string> compatDetails,
             string originalModel,
             string upstreamModel,
             string channelType)
@@ -371,7 +401,6 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
             Channel = channel;
             Payload = payload;
             CompatibleRequest = compatibleRequest;
-            CompatDetails = compatDetails;
             OriginalModel = originalModel;
             UpstreamModel = upstreamModel;
             ChannelType = channelType;
@@ -382,8 +411,6 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
         public Dictionary<string, object?> Payload { get; }
 
         public Dictionary<string, object?> CompatibleRequest { get; }
-
-        public List<string> CompatDetails { get; }
 
         public string OriginalModel { get; }
 
@@ -463,7 +490,7 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
     };
 
     private async Task WriteTestChannelLogAsync(
-        IReadOnlyDictionary<string, object?> originalBody,
+        Dictionary<string, object?>? channelConfig,
         SessionUser user,
         ProxyRequestMetadata requestMetadata,
         long started,
@@ -486,7 +513,7 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
                 RandomNumberGenerator.GetHexString(12).ToLowerInvariant(),
                 user.Username,
                 ApiKeyId: null,
-                Payload: originalBody.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
+                Payload: channelConfig,
                 UpstreamRequest: compatibleRequest,
                 UpstreamResponse: upstreamResponse,
                 ResponsePayload: responsePayload,
@@ -500,7 +527,8 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
                 StatusCode: statusCode,
                 DurationMs: ElapsedMilliseconds(started),
                 Error: error,
-                WebSearchDetails: null),
+                WebSearchDetails: null,
+                RequestType: ProxyRequestTypes.Diagnostic),
             requestMetadata);
     }
 

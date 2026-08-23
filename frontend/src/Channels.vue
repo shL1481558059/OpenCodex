@@ -1312,7 +1312,22 @@
         </el-table-column>
         <el-table-column prop="model" label="模型" min-width="170" show-overflow-tooltip>
           <template #default="{ row }">
-            {{ row.model || "-" }}
+            <el-select
+              v-model="row.model"
+              size="small"
+              filterable
+              allow-create
+              default-first-option
+              placeholder="选择模型"
+              class="bulk-test-model-select"
+            >
+              <el-option
+                v-for="model in row.modelOptions"
+                :key="model"
+                :label="model"
+                :value="model"
+              />
+            </el-select>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="100">
@@ -1343,9 +1358,26 @@
             </el-tag>
           </div>
           <dl class="bulk-test-card__details">
-            <div><dt>服务类型</dt><dd>{{ row.channel.type }}</dd></div>
-            <div><dt>模型</dt><dd>{{ row.model || "-" }}</dd></div>
-            <div><dt>耗时</dt><dd>{{ displayMs(row.result?.duration_ms) }}</dd></div>
+           <div><dt>服务类型</dt><dd>{{ row.channel.type }}</dd></div>
+            <div><dt>模型</dt><dd>
+              <el-select
+                v-model="row.model"
+                size="small"
+                filterable
+                allow-create
+                default-first-option
+                placeholder="选择模型"
+                class="bulk-test-model-select"
+              >
+                <el-option
+                  v-for="model in row.modelOptions"
+                  :key="model"
+                  :label="model"
+                  :value="model"
+                />
+              </el-select>
+            </dd></div>
+           <div><dt>耗时</dt><dd>{{ displayMs(row.result?.duration_ms) }}</dd></div>
           </dl>
           <div class="bulk-test-output">{{ formatBulkTestResult(row) }}</div>
         </article>
@@ -1476,6 +1508,7 @@ import {
   canUseChatStreamTest,
   isImagesChannel
 } from "./channelImagesState.js";
+import { streamChannelTest } from "./channelTestStream.js";
 import {
   Connection,
   Delete,
@@ -1492,7 +1525,6 @@ const props = defineProps({
   api: { type: Function, required: true },
   isSuperadmin: { type: Boolean, default: false },
 });
-const devApiPrefix = import.meta.env.DEV ? import.meta.env.BASE_URL.replace(/\/$/, "") : "";
 const configLoading = ref(false);
 const saveLoading = ref(false);
 const testLoading = ref(false);
@@ -1747,6 +1779,10 @@ function openChannelTest(channel) {
     ElMessage.warning("图片渠道使用 generation / edit 非流式接口，不能使用聊天流测试");
     return;
   }
+  if (!channel?.id) {
+    ElMessage.warning("请先保存渠道后再测试连接");
+    return;
+  }
   testingChannel.value = channel;
   channelTestForm.model = normalizeModels(channel.models)[0]?.model || "";
   channelTestForm.prompt = "你好";
@@ -1947,12 +1983,20 @@ function closeBulkTestDialog() {
 }
 
 function createBulkTestRow(channel, index) {
-  const copiedChannel = cloneChannelForTest(channel);
-  const model = normalizeModels(copiedChannel.models)[0]?.model || "";
+ const testChannel = {
+   id: channel?.id,
+   name: channel?.name,
+   type: channel?.type,
+   enabled: channel?.enabled !== false,
+   models: normalizeModels(channel?.models)
+ };
+  const modelOptions = testChannel.models.map((item) => item.model);
+  const model = modelOptions[0] || "";
   return {
-    key: `${copiedChannel.id || "channel"}:${index}`,
-    channel: copiedChannel,
+    key: `${testChannel.id || "channel"}:${index}`,
+    channel: testChannel,
     model,
+    modelOptions,
     status: "pending",
     result: createChannelTestState()
   };
@@ -1961,6 +2005,9 @@ function createBulkTestRow(channel, index) {
 function resetBulkTestRows() {
   for (const row of bulkTestRows.value) {
     row.result = createChannelTestState();
+    if (!row.model && row.modelOptions?.length) {
+      row.model = row.modelOptions[0];
+    }
     if (!row.model) {
       row.status = "error";
       row.result.phase = "error";
@@ -1981,10 +2028,15 @@ async function runBulkChannelTestRow(row) {
   const startedAt = performance.now();
   bulkTestAbortControllers.add(controller);
   try {
-    const payload = buildChannelTestPayload(row.channel);
-    payload.model = row.model;
-    payload.input = bulkTestForm.prompt || "你好";
-    payload.max_output_tokens = normalizeBulkMaxOutputTokens();
+    if (!row.channel?.id) {
+      throw new Error("渠道 id 不存在，请先保存渠道");
+    }
+    const payload = buildChannelTestRequest(
+      row.channel.id,
+      row.model,
+      bulkTestForm.prompt || "你好",
+      normalizeBulkMaxOutputTokens()
+    );
     await streamChannelTest(
       payload,
       (event) => {
@@ -2431,15 +2483,21 @@ async function discoverModels() {
 }
 
 async function testChannel() {
+  const channel = testingChannel.value;
+  if (!channel?.id) {
+    ElMessage.warning("请先保存渠道后再测试连接");
+    return;
+  }
   testLoading.value = true;
   const startedAt = performance.now();
   testResult.value = createChannelTestState();
   try {
-    const channel = testingChannel.value;
-    const payload = buildChannelTestPayload(channel);
-    payload.model = channelTestForm.model || normalizeModels(channel.models)[0]?.model || "";
-    payload.input = channelTestForm.prompt || "你好";
-    payload.max_output_tokens = 256;
+    const payload = buildChannelTestRequest(
+      channel.id,
+      channelTestForm.model || normalizeModels(channel.models)[0]?.model || "",
+      channelTestForm.prompt || "你好",
+      256
+    );
     await streamChannelTest(payload, (event) => {
       applyChannelTestStreamEvent(testResult.value, event);
     });
@@ -2577,72 +2635,17 @@ function buildChannelTestPayload(channel) {
   };
 }
 
+function buildChannelTestRequest(channelId, model, prompt, maxOutputTokens) {
+  return {
+    channel_id: channelId,
+    model,
+    input: prompt,
+    max_output_tokens: maxOutputTokens
+  };
+}
+
 function channelTestModelSuggestions(query, callback) {
   callback(buildSuggestions(channelTestModelOptions.value, query));
-}
-
-async function streamChannelTest(payload, onEvent, options = {}) {
-  const response = await fetch(`${devApiPrefix}/test-channel/stream`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-    signal: options.signal
-  });
-  if (!response.ok) {
-    throw new Error(await response.text() || response.statusText);
-  }
-  if (!response.body) {
-    throw new Error("浏览器不支持流式响应读取");
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    buffer = consumeSseBuffer(buffer, onEvent);
-  }
-  buffer += decoder.decode();
-  consumeSseBuffer(`${buffer}\n\n`, onEvent);
-}
-
-function consumeSseBuffer(buffer, onEvent) {
-  let remaining = buffer;
-  while (true) {
-    const separator = remaining.indexOf("\n\n");
-    if (separator === -1) {
-      return remaining;
-    }
-    const chunk = remaining.slice(0, separator);
-    remaining = remaining.slice(separator + 2);
-    const event = parseSseChunk(chunk);
-    if (event) onEvent(event);
-  }
-}
-
-function parseSseChunk(chunk) {
-  const lines = chunk.split(/\r?\n/);
-  let eventName = "message";
-  const data = [];
-  for (const line of lines) {
-    if (line.startsWith("event:")) {
-      eventName = line.slice("event:".length).trim();
-    } else if (line.startsWith("data:")) {
-      data.push(line.slice("data:".length).trimStart());
-    }
-  }
-  if (data.length === 0) return null;
-  const text = data.join("\n");
-  if (text === "[DONE]") {
-    return { event: eventName, data: text };
-  }
-  try {
-    return { event: eventName, data: JSON.parse(text), raw: text };
-  } catch {
-    return { event: eventName, data: text, raw: text };
-  }
 }
 
 function buildGroupedChannelSections(sourceChannels) {
@@ -3162,10 +3165,6 @@ function normalizeBulkConcurrency() {
   }
 
   return Math.min(value, 10);
-}
-
-function cloneChannelForTest(channel) {
-  return JSON.parse(JSON.stringify(channel || {}));
 }
 
 function isAbortError(error) {

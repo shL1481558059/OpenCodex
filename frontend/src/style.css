@@ -778,6 +778,10 @@ body {
   width: 100%;
 }
 
+.bulk-test-model-select {
+  width: 100%;
+}
+
 .bulk-test-output {
   max-height: 96px;
   overflow: auto;

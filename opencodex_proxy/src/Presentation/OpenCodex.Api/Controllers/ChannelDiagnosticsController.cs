@@ -19,7 +19,7 @@ public sealed class ChannelDiagnosticsController : AuthenticatedApiControllerBas
 
     [HttpPost("/channels/discover-models")]
     [HttpPost("/discover-models")]
-    public async Task<IActionResult> DiscoverModels(ChannelDiagnosticsRequest request)
+    public async Task<IActionResult> DiscoverModels(ChannelDiscoverRequest request)
     {
         RequireUser();
         var result = await _channelDiagnostics.DiscoverModelsAsync(
@@ -30,7 +30,7 @@ public sealed class ChannelDiagnosticsController : AuthenticatedApiControllerBas
 
     [HttpPost("/channels/test/stream")]
     [HttpPost("/test-channel/stream")]
-    public async Task TestChannelStream(ChannelDiagnosticsRequest request)
+    public async Task TestChannelStream(ChannelTestRequest request)
     {
         var user = RequireUser();
         await _channelDiagnostics.StreamTestChannelAsync(

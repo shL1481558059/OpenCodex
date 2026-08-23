@@ -1,6 +1,7 @@
 using OpenCodex.Core.Config;
 using OpenCodex.Core.Protocols;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.DTOs;
 
 namespace OpenCodex.Core.Services;
 
@@ -25,7 +26,7 @@ public sealed partial class ChannelDiagnosticsService
         "enabled"
     ];
 
-    private Dictionary<string, object?> DraftChannelFromBody(IReadOnlyDictionary<string, object?> body)
+    private Dictionary<string, object?> ExtractChannelFromBody(IReadOnlyDictionary<string, object?> body)
     {
         Dictionary<string, object?> channel;
         if (JsonDictionaryValue.Get(body, "channel") is IReadOnlyDictionary<string, object?> channelObject)
@@ -50,32 +51,53 @@ public sealed partial class ChannelDiagnosticsService
         {
             ["channels"] = new List<object?> { channel }
         });
-        var expanded = ConfigEnvironmentExpander.Expand(normalized);
-        if (!ConfigValue.TryAsObject(expanded, out var expandedObject))
+        var channels = JsonDictionaryValue.List(normalized, "channels");
+        var extractedChannel = channels.Count > 0 ? channels[0] : null;
+        if (!ConfigValue.TryAsObject(extractedChannel, out var channelDict))
         {
-            throw new ConfigException("expanded config must be an object");
+            throw new ConfigException("channel must be a JSON object");
         }
 
-        var channels = JsonDictionaryValue.List(expandedObject, "channels");
-        var expandedChannel = channels.Count > 0 ? channels[0] : null;
-        return ConfigValidator.ValidateChannel(expandedChannel, DefaultTimeout());
+        return channelDict;
     }
 
-    private (Dictionary<string, object?> Channel, Dictionary<string, object?> Payload) ParseTestChannelBody(
-        IReadOnlyDictionary<string, object?> body)
+    private static Guid ReadChannelId(IReadOnlyDictionary<string, object?> body)
     {
-        if (JsonDictionaryValue.Get(body, "payload") is IReadOnlyDictionary<string, object?> payload)
+        var value = JsonDictionaryValue.Get(body, "channel_id");
+        if (value is Guid guid)
         {
-            return (DraftChannelFromBody(body), CloneObject(payload));
+            return guid;
         }
 
-        if (body.ContainsKey("baseurl") || body.ContainsKey("type"))
+        if (value is string text && Guid.TryParse(text, out var parsed))
         {
-            var channel = DraftChannelFromBody(body);
-            return (channel, BuildPayloadFromFlat(body, JsonDictionaryValue.String(channel, "type")));
+            return parsed;
         }
 
-        throw new ConfigException("payload must be a JSON object or a flat channel+payload body is required");
+        return Guid.Empty;
+    }
+
+    private static Dictionary<string, object?> ChannelDtoToConfig(ChannelDto channel)
+    {
+        return new Dictionary<string, object?>
+        {
+            ["owner_username"] = channel.OwnerUsername,
+            ["id"] = channel.Id,
+            ["name"] = channel.Name,
+            ["type"] = channel.Type,
+            ["baseurl"] = channel.BaseUrl,
+            ["apikey"] = channel.ApiKey,
+            ["auth_mode"] = channel.AuthMode,
+            ["headers"] = channel.Headers,
+            ["timeout_seconds"] = channel.TimeoutSeconds,
+            ["circuit_break_duration_seconds"] = channel.CircuitBreakDurationSeconds,
+            ["retry_count"] = channel.RetryCount,
+            ["priority"] = channel.Priority,
+            ["capacity"] = channel.Capacity,
+            ["compat"] = channel.Compat,
+            ["models"] = channel.Models,
+            ["enabled"] = channel.Enabled
+        };
     }
 
     private static Dictionary<string, object?> BuildPayloadFromFlat(

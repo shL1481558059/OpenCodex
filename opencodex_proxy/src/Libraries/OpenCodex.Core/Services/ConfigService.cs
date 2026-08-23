@@ -164,6 +164,25 @@ public sealed class ConfigService : IConfigService
         return ApiOpResult.Succeed();
     }
 
+    public Task<ApiOpResult<ChannelDto>> ReadChannelForDiagnostics(Guid channelId)
+    {
+        if (channelId == Guid.Empty)
+        {
+            return Task.FromResult(ApiOpResult<ChannelDto>.Fail(404, "channel not found"));
+        }
+
+        var (currentUsername, isSuperadmin) = CurrentScope();
+        var channel = FindChannelInScope(channelId, currentUsername, isSuperadmin);
+        if (channel is null)
+        {
+            return Task.FromResult(ApiOpResult<ChannelDto>.Fail(404, "channel not found"));
+        }
+
+        var ownerUsername = ResolveOwnerUsername(channel.OwnerUserId);
+        return Task.FromResult(ApiOpResult<ChannelDto>.Succeed(
+            MapToChannelDto(channel, ownerUsername)));
+    }
+
     private int ResolveActiveRequests(ChannelDto channel)
     {
         return _channelCapacity.GetActiveRequests(channel.OwnerUsername, channel.Id.ToString());

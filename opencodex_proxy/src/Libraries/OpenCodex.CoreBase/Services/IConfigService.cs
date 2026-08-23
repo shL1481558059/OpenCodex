@@ -1,4 +1,5 @@
 using OpenCodex.CoreBase.DTOs.Config;
+using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.Results;
 
 namespace OpenCodex.CoreBase.Services;
@@ -50,4 +51,10 @@ public interface IConfigService
     /// </summary>
     /// <param name="channelId">渠道标识符。</param>
     Task<ApiOpResult> ResetChannelHealthAsync(Guid channelId);
+
+    /// <summary>
+    /// 按渠道标识符读取当前登录用户 owner 范围内的渠道配置，供诊断使用。
+    /// </summary>
+    /// <param name="channelId">渠道标识符。</param>
+    Task<ApiOpResult<ChannelDto>> ReadChannelForDiagnostics(Guid channelId);
 }

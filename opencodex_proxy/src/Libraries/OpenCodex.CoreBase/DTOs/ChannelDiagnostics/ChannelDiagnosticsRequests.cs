@@ -1,25 +1,83 @@
 using System.Text.Json.Serialization;
-using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.Config;
 
 namespace OpenCodex.CoreBase.DTOs.ChannelDiagnostics;
 
 /// <summary>
-/// 表示通道诊断请求。
+/// 表示按已保存渠道标识符进行流式测试的请求。
 /// </summary>
-public sealed class ChannelDiagnosticsRequest
+public sealed class ChannelTestRequest
 {
     /// <summary>
-    /// 获取或设置嵌套的通道配置请求。
+    /// 获取或设置要测试的已保存渠道标识符。
     /// </summary>
-    [JsonPropertyName("channel")]
-    public ChannelRequest? Channel { get; set; }
+    [JsonPropertyName("channel_id")]
+    public Guid ChannelId { get; set; }
 
+    /// <summary>
+    /// 获取或设置诊断使用的模型名称。
+    /// </summary>
+    [JsonPropertyName("model")]
+    public string? Model { get; set; }
+
+    /// <summary>
+    /// 获取或设置诊断输入文本。
+    /// </summary>
+    [JsonPropertyName("input")]
+    public string? Input { get; set; }
+
+    /// <summary>
+    /// 获取或设置诊断请求的最大输出令牌数。
+    /// </summary>
+    [JsonPropertyName("max_output_tokens")]
+    public int? MaxOutputTokens { get; set; }
+
+    /// <summary>
+    /// 将请求转换为可供诊断服务使用的请求字典。
+    /// </summary>
+    /// <returns>诊断请求字典。</returns>
+    public Dictionary<string, object?> ToDictionary()
+    {
+        var body = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["channel_id"] = ChannelId
+        };
+
+        if (Model is not null)
+        {
+            body["model"] = Model;
+        }
+
+        if (Input is not null)
+        {
+            body["input"] = Input;
+        }
+
+        if (MaxOutputTokens.HasValue)
+        {
+            body["max_output_tokens"] = MaxOutputTokens.Value;
+        }
+
+        return body;
+    }
+}
+
+/// <summary>
+/// 表示使用未保存渠道草稿进行模型发现的请求。
+/// </summary>
+public sealed class ChannelDiscoverRequest
+{
     /// <summary>
     /// 获取或设置诊断时发送给上游的原始载荷。
     /// </summary>
     [JsonPropertyName("payload")]
     public Dictionary<string, object?>? Payload { get; set; }
+
+    /// <summary>
+    /// 获取或设置嵌套的通道配置请求。
+    /// </summary>
+    [JsonPropertyName("channel")]
+    public ChannelRequest? Channel { get; set; }
 
     /// <summary>
     /// 获取或设置通道标识符。
@@ -100,27 +158,9 @@ public sealed class ChannelDiagnosticsRequest
     public bool? Enabled { get; set; }
 
     /// <summary>
-    /// 获取或设置诊断使用的模型名称。
+    /// 将请求转换为可供诊断服务使用的请求字典。
     /// </summary>
-    [JsonPropertyName("model")]
-    public string? Model { get; set; }
-
-    /// <summary>
-    /// 获取或设置诊断输入文本。
-    /// </summary>
-    [JsonPropertyName("input")]
-    public string? Input { get; set; }
-
-    /// <summary>
-    /// 获取或设置诊断请求的最大输出令牌数。
-    /// </summary>
-    [JsonPropertyName("max_output_tokens")]
-    public int? MaxOutputTokens { get; set; }
-
-    /// <summary>
-    /// 将诊断请求转换为字典结构。
-    /// </summary>
-    /// <returns>可供诊断服务使用的请求字典。</returns>
+    /// <returns>诊断请求字典。</returns>
     public Dictionary<string, object?> ToDictionary()
     {
         var body = new Dictionary<string, object?>(StringComparer.Ordinal);
@@ -137,21 +177,6 @@ public sealed class ChannelDiagnosticsRequest
         if (Payload is not null)
         {
             body["payload"] = JsonRequestValue.Object(Payload);
-        }
-
-        if (Model is not null)
-        {
-            body["model"] = Model;
-        }
-
-        if (Input is not null)
-        {
-            body["input"] = Input;
-        }
-
-        if (MaxOutputTokens.HasValue)
-        {
-            body["max_output_tokens"] = MaxOutputTokens.Value;
         }
 
         return body;

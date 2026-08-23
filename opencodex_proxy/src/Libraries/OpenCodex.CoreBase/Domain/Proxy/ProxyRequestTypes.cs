@@ -10,4 +10,9 @@ public static class ProxyRequestTypes
     public const string Ocr = "ocr";
 
     public const string Attempt = "attempt";
+
+    /// <summary>
+    /// 管理台渠道诊断（测试渠道/发现模型）产生的日志，不计入业务统计。
+    /// </summary>
+    public const string Diagnostic = "diagnostic";
 }

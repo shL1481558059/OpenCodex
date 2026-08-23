@@ -28,7 +28,8 @@ public sealed class ObservabilityService : IObservabilityService
     [
         ProxyRequestTypes.Main,
         ProxyRequestTypes.Ocr,
-        ProxyRequestTypes.Attempt
+        ProxyRequestTypes.Attempt,
+        ProxyRequestTypes.Diagnostic
     ];
 
     private static readonly IReadOnlyDictionary<string, (string OptionKey, string OptionType)> LogFilterFields =
@@ -180,7 +181,7 @@ public sealed class ObservabilityService : IObservabilityService
         bool isSuperadmin)
     {
         var query = _logRepository.TableNoTracking
-            .Where(log => log.RequestType == null || log.RequestType != ProxyRequestTypes.Attempt);
+            .Where(ExcludedRequestTypePredicate());
 
         if (!isSuperadmin)
         {
@@ -489,10 +490,18 @@ public sealed class ObservabilityService : IObservabilityService
 
         if (excludeAttemptsByDefault && !hasRequestTypeFilter)
         {
-            query = query.Where(log => log.RequestType == null || log.RequestType != ProxyRequestTypes.Attempt);
+            query = query.Where(ExcludedRequestTypePredicate());
         }
 
         return query;
+    }
+
+    private static System.Linq.Expressions.Expression<Func<RequestLog, bool>> ExcludedRequestTypePredicate()
+    {
+        // 保持显式的 != 链，确保 EF Core 能将条件翻译成 SQL（SQLite / PostgreSQL 均可）。
+        return log => log.RequestType == null
+            || (log.RequestType != ProxyRequestTypes.Attempt
+                && log.RequestType != ProxyRequestTypes.Diagnostic);
     }
 
     private IQueryable<RequestLog> ApplyLogFilter(
