@@ -75,6 +75,7 @@ public sealed class ProxyLogService : IProxyLogService
             [RequestLogContentSlot.RequestHeaders] = SerializeForLog(context.RequestHeaders),
             [RequestLogContentSlot.RequestBody] = context.RawRequestBody ?? SerializeForLog(context.Payload)
         });
+        PublishLogWritten(log.Id, ownerUsername, 0, null);
         return log.Id;
     }
 
@@ -105,6 +106,7 @@ public sealed class ProxyLogService : IProxyLogService
         {
             [RequestLogContentSlot.UpstreamRequestBody] = SerializeForLog(context.UpstreamRequest)
         });
+        PublishLogWritten(requestLogId, ownerUsername, 0, null);
     }
 
     public async Task CompleteLogAsync(Guid requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
