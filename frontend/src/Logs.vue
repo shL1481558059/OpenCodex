@@ -25,30 +25,30 @@
               </div>
             </el-checkbox-group>
           </div>
-        </el-popover>
-        <el-dropdown trigger="click" @command="setLogAutoRefreshSeconds">
-          <el-button :type="logAutoRefreshSeconds ? 'primary' : 'default'" :icon="Refresh">
-            {{ logAutoRefreshLabel }}
+    </el-popover>
+        <el-dropdown trigger="click" @command="setLogSseMode">
+          <el-button :type="logSseEnabled ? 'primary' : 'default'" :icon="Lightning">
+            {{ logSseLabel }}
           </el-button>
           <template #dropdown>
             <el-dropdown-menu class="log-auto-refresh-menu">
-              <div class="log-auto-refresh-menu__title">启用自动刷新</div>
-              <el-dropdown-item :command="0">
+              <div class="log-auto-refresh-menu__title">实时更新</div>
+              <el-dropdown-item :command="true">
                 <span class="log-auto-refresh-menu__item">
-                  <span>关闭</span>
-                  <el-icon v-if="logAutoRefreshSeconds === 0"><Check /></el-icon>
+                  <span>开启</span>
+                  <el-icon v-if="logSseEnabled"><Check /></el-icon>
                 </span>
               </el-dropdown-item>
-              <el-dropdown-item v-for="seconds in logAutoRefreshOptions" :key="seconds" :command="seconds">
+              <el-dropdown-item :command="false">
                 <span class="log-auto-refresh-menu__item">
-                  <span>{{ seconds }} 秒</span>
-                  <el-icon v-if="logAutoRefreshSeconds === seconds"><Check /></el-icon>
+                  <span>关闭</span>
+                  <el-icon v-if="!logSseEnabled"><Check /></el-icon>
                 </span>
               </el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
-       <el-button :icon="Refresh" :loading="refreshLoading" @click="refreshLogPageData()">刷新</el-button>
+  <el-button :icon="Refresh" :loading="refreshLoading" @click="refreshLogPageData()">刷新</el-button>
         <el-popconfirm
           v-if="isSuperadmin"
           title="确定清除全部请求日志？此操作不可恢复，将删除所有日志、内容引用及 SSE 流。"
@@ -739,9 +739,6 @@ const logPageSize = ref(20);
 const logTotal = ref(0);
 const statsLoading = ref(false);
 const hasLoadedStats = ref(false);
-const logAutoRefreshOptions = [5, 10, 30, 60];
-const logAutoRefreshSeconds = ref(0);
-let logAutoRefreshTimer = null;
 let mobileMediaQuery = null;
 const statsData = reactive({
   currency_rate: 7.25,
@@ -951,9 +948,12 @@ const orderedLogColumns = computed(() =>
 const visibleLogColumns = computed(() =>
   orderedLogColumns.value.filter((c) => visibleLogColumnKeys.value.includes(c.key))
 );
-const logAutoRefreshLabel = computed(() =>
-  logAutoRefreshSeconds.value ? `${logAutoRefreshSeconds.value} 秒刷新` : "自动刷新"
-);
+// --- SSE: 日志实时更新 ---
+const logSseEnabled = ref(true);
+let logEventSource = null;
+let logSseStaleTimer = null;
+const LOG_SSE_STALE_TIMEOUT_MS = 30000;
+const logSseLabel = computed(() => logSseEnabled.value ? "实时更新" : "已暂停");
 const refreshLoading = computed(() => logsLoading.value || statsLoading.value);
 const initialLogsLoading = computed(() => logsLoading.value && !hasLoadedLogs.value);
 const initialStatsLoading = computed(() => statsLoading.value && !hasLoadedStats.value);
@@ -1071,26 +1071,59 @@ async function loadStats() {
   }
 }
 
-function setLogAutoRefreshSeconds(seconds) {
-  const next = Number(seconds || 0);
-  logAutoRefreshSeconds.value = logAutoRefreshOptions.includes(next) ? next : 0;
-  restartLogAutoRefreshTimer();
-  if (logAutoRefreshSeconds.value > 0) refreshLogsFromAutoRefresh();
+function buildLogStreamUrl() {
+  const base = import.meta.env.DEV ? import.meta.env.BASE_URL.replace(/\/$/, "") : "";
+  return `${base}/logs/stream`;
 }
 
-function restartLogAutoRefreshTimer() {
-  stopLogAutoRefreshTimer();
-  if (logAutoRefreshSeconds.value === 0) return;
-  logAutoRefreshTimer = window.setInterval(refreshLogsFromAutoRefresh, logAutoRefreshSeconds.value * 1000);
+function stopLogSseStaleTimer() {
+  if (logSseStaleTimer !== null) {
+    clearTimeout(logSseStaleTimer);
+    logSseStaleTimer = null;
+  }
 }
 
-function stopLogAutoRefreshTimer() {
-  if (logAutoRefreshTimer !== null) { clearInterval(logAutoRefreshTimer); logAutoRefreshTimer = null; }
+function scheduleLogSseStaleTimer() {
+  stopLogSseStaleTimer();
+  logSseStaleTimer = window.setTimeout(stopLogSseStream, LOG_SSE_STALE_TIMEOUT_MS);
 }
 
-async function refreshLogsFromAutoRefresh() {
-  if (!props.active || logsLoading.value || statsLoading.value) return;
-  await refreshLogPageData();
+function startLogSseStream() {
+  stopLogSseStream();
+  if (!logSseEnabled.value || !props.active) return;
+
+  const source = new EventSource(buildLogStreamUrl(), { withCredentials: true });
+  logEventSource = source;
+
+  source.addEventListener("logs", () => {
+    scheduleLogSseStaleTimer();
+    if (!props.active || logsLoading.value || statsLoading.value) return;
+    refreshLogPageData();
+  });
+
+  source.onerror = () => {
+    stopLogSseStaleTimer();
+    if (logEventSource === source) {
+      logEventSource = null;
+    }
+  };
+}
+
+function stopLogSseStream() {
+  stopLogSseStaleTimer();
+  if (logEventSource) {
+    logEventSource.close();
+    logEventSource = null;
+  }
+}
+
+function setLogSseMode(enabled) {
+  logSseEnabled.value = enabled === true;
+  if (logSseEnabled.value) {
+    startLogSseStream();
+  } else {
+    stopLogSseStream();
+  }
 }
 
 function handleLogPageSizeChange() { logPage.value = 1; refreshLogPageData(1); }
@@ -1710,9 +1743,9 @@ watch(() => props.active, (now) => {
   if (now) {
     if (!loaded.value) refreshLogPageData();
     loaded.value = true;
-    restartLogAutoRefreshTimer();
+    startLogSseStream();
   } else {
-    stopLogAutoRefreshTimer();
+    stopLogSseStream();
   }
 }, { immediate: true });
 
@@ -1724,7 +1757,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   mobileMediaQuery?.removeEventListener("change", syncMobileViewport);
-  stopLogAutoRefreshTimer();
+  stopLogSseStream();
 });
 </script>
 

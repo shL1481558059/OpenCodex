@@ -50,8 +50,3 @@ export function buildQuery(params = {}) {
   }
   return `?${search.toString()}`;
 }
-
-export function createEventSource(path) {
-  const url = `${devApiPrefix}${path}`;
-  return new EventSource(url);
-}

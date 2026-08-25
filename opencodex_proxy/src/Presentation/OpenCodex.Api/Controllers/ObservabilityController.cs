@@ -359,6 +359,13 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         RequireUser();
         await WriteRecentErrorsStream();
     }
+
+    [HttpGet("/logs/stream")]
+    public async Task LogsStream()
+    {
+        RequireUser();
+        await WriteLogsStream();
+    }
     private async Task WriteActiveChannelStream()
     {
         var user = RequireUser();
@@ -407,6 +414,32 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
                 var payload = result.Payload ?? [];
                 var data = JsonSerializer.Serialize(payload);
                 await Response.WriteAsync($"event: errors\n", ct);
+                await Response.WriteAsync($"data: {data}\n\n", ct);
+                await Response.Body.FlushAsync(ct);
+            },
+            HttpContext.RequestAborted);
+    }
+
+    private async Task WriteLogsStream()
+    {
+        var user = RequireUser();
+        var isSuperadmin = user.Role == "superadmin";
+        var username = user.Username;
+
+        ProxyStreamResponseWriter.PrepareSse(Response);
+
+        var reader = _eventBus.Subscribe<RequestLogWrittenEvent>(
+            e => isSuperadmin || string.Equals(e.OwnerUsername, username, StringComparison.Ordinal),
+            HttpContext.RequestAborted);
+
+        await SseEventWriter.StreamAsync(
+            Response,
+            reader,
+            async ct =>
+            {
+                // 轻量通知：前端收到后自行刷新当前页（保留筛选与分页）
+                var data = JsonSerializer.Serialize(new { });
+                await Response.WriteAsync($"event: logs\n", ct);
                 await Response.WriteAsync($"data: {data}\n\n", ct);
                 await Response.Body.FlushAsync(ct);
             },

@@ -1,4 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
+using System.Text.Json;
+using OpenCodex.Api.Infrastructure;
+using OpenCodex.CoreBase.Events;
 using OpenCodex.CoreBase.DTOs.Config;
 using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
@@ -8,13 +11,16 @@ namespace OpenCodex.Api.Controllers;
 public sealed class ConfigController : AuthenticatedApiControllerBase
 {
     private readonly IConfigService _config;
+    private readonly IEventBus _eventBus;
 
     public ConfigController(
         IWorkContext workContext,
-        IConfigService config)
+        IConfigService config,
+        IEventBus eventBus)
         : base(workContext)
     {
         _config = config;
+        _eventBus = eventBus;
     }
 
     [HttpGet("/config")]
@@ -111,5 +117,39 @@ public sealed class ConfigController : AuthenticatedApiControllerBase
         RequireUser();
         var result = await _config.ResetChannelHealthAsync(channelId);
         return Api(result);
+    }
+
+    [HttpGet("/channels/runtime/stream")]
+    public async Task ChannelRuntimeStream()
+    {
+        RequireUser();
+        await WriteChannelRuntimeStream();
+    }
+
+    private async Task WriteChannelRuntimeStream()
+    {
+        var user = RequireUser();
+        var isSuperadmin = user.Role == "superadmin";
+        var username = user.Username;
+
+        ProxyStreamResponseWriter.PrepareSse(Response);
+
+        var reader = _eventBus.Subscribe<ChannelCapacityChangedEvent>(
+            e => isSuperadmin || string.Equals(e.OwnerUsername, username, StringComparison.Ordinal),
+            HttpContext.RequestAborted);
+
+        await SseEventWriter.StreamAsync(
+            Response,
+            reader,
+            async ct =>
+            {
+                var result = _config.ReadChannelRuntime(null);
+                var payload = result.Payload ?? new ChannelRuntimeListResponse();
+                var data = JsonSerializer.Serialize(payload);
+                await Response.WriteAsync($"event: runtime\n", ct);
+                await Response.WriteAsync($"data: {data}\n\n", ct);
+                await Response.Body.FlushAsync(ct);
+            },
+            HttpContext.RequestAborted);
     }
 }

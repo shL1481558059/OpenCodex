@@ -1526,6 +1526,12 @@ const props = defineProps({
   isSuperadmin: { type: Boolean, default: false },
 });
 const configLoading = ref(false);
+
+// --- SSE: 渠道运行时实时更新 ---
+let runtimeEventSource = null;
+let runtimeStaleTimer = null;
+const RUNTIME_STALE_TIMEOUT_MS = 30000;
+
 const saveLoading = ref(false);
 const testLoading = ref(false);
 const discoverLoading = ref(false);
@@ -1899,6 +1905,7 @@ async function applyBulkChannelEdit() {
     await nextTick();
     channelTableRef.value?.clearSelection();
     bulkEditVisible.value = false;
+    await loadConfig();
     ElMessage.success(`已更新 ${channelIds.length} 个渠道`);
   } catch (error) {
     ElMessage.error(error.message);
@@ -2089,6 +2096,7 @@ async function saveChannel() {
     }
     channelDrawerVisible.value = false;
     ElMessage.success("渠道配置已保存并生效");
+    await loadConfig();
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
@@ -2104,8 +2112,8 @@ async function deleteChannel(index) {
   const data = await props.api(`/channels/${channel.id}`, {
     method: "DELETE"
   });
-  config.channels = Array.isArray(data?.channels) ? data.channels : channels.value.filter((_, i) => i !== index);
   selectedChannels.value = selectedChannels.value.filter((item) => item.id !== channel.id);
+  await loadConfig();
   ElMessage.success("渠道已删除");
 }
 
@@ -3222,6 +3230,75 @@ function normalizeCapacityValue(value) {
   return Number.isInteger(capacity) && capacity > 0 ? capacity : null;
 }
 
+// --- SSE: 渠道运行时实时更新 ---
+function buildRuntimeStreamUrl() {
+  const base = import.meta.env.DEV ? import.meta.env.BASE_URL.replace(/\/$/, "") : "";
+  return `${base}/channels/runtime/stream`;
+}
+
+function stopRuntimeStaleTimer() {
+  if (runtimeStaleTimer !== null) {
+    clearTimeout(runtimeStaleTimer);
+    runtimeStaleTimer = null;
+  }
+}
+
+function scheduleRuntimeStaleTimer() {
+  stopRuntimeStaleTimer();
+  runtimeStaleTimer = window.setTimeout(stopRuntimeStream, RUNTIME_STALE_TIMEOUT_MS);
+}
+
+function applyRuntimePayload(payload) {
+  const list = Array.isArray(payload?.channels) ? payload.channels : [];
+  const runtimeMap = new Map();
+  for (const item of list) {
+    if (item?.id) runtimeMap.set(String(item.id), item);
+  }
+  if (runtimeMap.size === 0) return;
+
+  config.channels = config.channels.map((channel) => {
+    const runtime = runtimeMap.get(String(channel.id));
+    if (!runtime) return channel;
+    return {
+      ...channel,
+      active_requests: runtime.active_requests ?? channel.active_requests ?? 0,
+      health_status: runtime.health_status ?? channel.health_status,
+      capacity: runtime.capacity ?? channel.capacity,
+      enabled: runtime.enabled ?? channel.enabled
+    };
+  });
+}
+
+function startRuntimeStream() {
+  stopRuntimeStream();
+  const source = new EventSource(buildRuntimeStreamUrl(), { withCredentials: true });
+  runtimeEventSource = source;
+
+  source.addEventListener("runtime", (event) => {
+    try {
+      applyRuntimePayload(JSON.parse(event.data || "{}"));
+      scheduleRuntimeStaleTimer();
+    } catch {
+      stopRuntimeStaleTimer();
+    }
+  });
+
+  source.onerror = () => {
+    stopRuntimeStaleTimer();
+    if (runtimeEventSource === source) {
+      runtimeEventSource = null;
+    }
+  };
+}
+
+function stopRuntimeStream() {
+  stopRuntimeStaleTimer();
+  if (runtimeEventSource) {
+    runtimeEventSource.close();
+    runtimeEventSource = null;
+  }
+}
+
 function isPlainObject(value) {
   return value && typeof value === "object" && !Array.isArray(value);
 }
@@ -3232,10 +3309,12 @@ onMounted(async () => {
   updateMobileViewport(mobileMediaQuery);
   mobileMediaQuery.addEventListener("change", updateMobileViewport);
   await loadConfig();
+  startRuntimeStream();
 });
 
 onBeforeUnmount(() => {
   mobileMediaQuery?.removeEventListener("change", updateMobileViewport);
+  stopRuntimeStream();
 });
 </script>
 

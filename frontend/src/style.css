@@ -563,6 +563,11 @@ body {
   gap: 4px;
 }
 
+.pagination-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
 .log-auto-refresh-menu {
   min-width: 180px;
 }
@@ -585,12 +590,6 @@ body {
 
 .log-auto-refresh-menu__item .el-icon {
   color: var(--el-color-primary);
-}
-
-.pagination-bar {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 16px;
 }
 
 .el-drawer__body {
