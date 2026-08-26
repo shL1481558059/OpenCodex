@@ -330,6 +330,7 @@ import { init, use } from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
 import { Box, Check, Coin, DataLine, Lightning, Refresh, Timer } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
+import { createSseStream } from "./api/sseClient.js";
 
 use([LineChart, PieChart, BarChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer]);
 
@@ -385,6 +386,23 @@ const recentErrors = ref([]);
 const errorsConnected = ref(false);
 const errorsLoading = ref(true);
 
+function applyStreamStatus(connectedRef, loadingRef, status) {
+  connectedRef.value = status === "live";
+  loadingRef.value = status === "connecting" || status === "idle";
+}
+
+const queueStream = createSseStream({
+  path: "/monitor/active-channels/stream",
+  events: { queue: applyQueuePayload },
+  onStatus: (status) => applyStreamStatus(queueConnected, queueLoading, status)
+});
+
+const errorsStream = createSseStream({
+  path: "/monitor/recent-errors/stream",
+  events: { errors: applyErrorsPayload },
+  onStatus: (status) => applyStreamStatus(errorsConnected, errorsLoading, status)
+});
+
 const errorDetailVisible = ref(false);
 const errorDetailLoading = ref(false);
 const errorDetailError = ref("");
@@ -422,13 +440,7 @@ const modelChart = shallowRef(null);
 const errorDistChart = shallowRef(null);
 
 let refreshTimer = null;
-let queueEventSource = null;
-let queueStaleTimer = null;
-let errorsEventSource = null;
-let errorsStaleTimer = null;
 let mobileMediaQuery = null;
-const QUEUE_STALE_TIMEOUT_MS = 5000;
-const ERRORS_STALE_TIMEOUT_MS = 15000;
 const QUEUE_VISIBLE_MODEL_LIMIT = 2;
 
 const autoRefreshLabel = computed(() =>
@@ -654,62 +666,16 @@ function resetQueueState(loadingState = false) {
   queueLoading.value = loadingState;
 }
 
-function stopQueueStaleTimer() {
-  if (queueStaleTimer !== null) {
-    clearTimeout(queueStaleTimer);
-    queueStaleTimer = null;
-  }
-}
-
-function scheduleQueueStaleTimer() {
-  stopQueueStaleTimer();
-  queueStaleTimer = window.setTimeout(() => {
-    resetQueueState(false);
-  }, QUEUE_STALE_TIMEOUT_MS);
-}
-
-function buildQueueStreamUrl() {
-  const base = import.meta.env.DEV ? import.meta.env.BASE_URL.replace(/\/$/, "") : "";
-  return `${base}/monitor/active-channels/stream`;
-}
-
 function stopQueueStream() {
-  stopQueueStaleTimer();
-  if (queueEventSource) {
-    queueEventSource.close();
-    queueEventSource = null;
-  }
-  resetQueueState(true);
+  queueStream.stop();
 }
 
 function startQueueStream() {
-  stopQueueStream();
   if (!props.active) {
     resetQueueState(true);
     return;
   }
-
-  resetQueueState(true);
-  const source = new EventSource(buildQueueStreamUrl(), { withCredentials: true });
-  queueEventSource = source;
-
-  source.addEventListener("queue", (event) => {
-    try {
-      applyQueuePayload(JSON.parse(event.data || "{}"));
-      queueConnected.value = true;
-      scheduleQueueStaleTimer();
-    } catch {
-      stopQueueStaleTimer();
-      resetQueueState(false);
-    }
-  });
-
-  source.onerror = () => {
-    stopQueueStaleTimer();
-    if (queueEventSource === source) {
-      resetQueueState(false);
-    }
-  };
+  queueStream.start();
 }
 
 // --- Recent errors SSE stream ---
@@ -733,62 +699,16 @@ function resetErrorsState(loadingState = false) {
   errorsLoading.value = loadingState;
 }
 
-function stopErrorsStaleTimer() {
-  if (errorsStaleTimer !== null) {
-    clearTimeout(errorsStaleTimer);
-    errorsStaleTimer = null;
-  }
-}
-
-function scheduleErrorsStaleTimer() {
-  stopErrorsStaleTimer();
-  errorsStaleTimer = window.setTimeout(() => {
-    errorsConnected.value = false;
-  }, ERRORS_STALE_TIMEOUT_MS);
-}
-
-function buildErrorsStreamUrl() {
-  const base = import.meta.env.DEV ? import.meta.env.BASE_URL.replace(/\/$/, "") : "";
-  return `${base}/monitor/recent-errors/stream`;
-}
-
 function stopErrorsStream() {
-  stopErrorsStaleTimer();
-  if (errorsEventSource) {
-    errorsEventSource.close();
-    errorsEventSource = null;
-  }
-  resetErrorsState(true);
+  errorsStream.stop();
 }
 
 function startErrorsStream() {
-  stopErrorsStream();
   if (!props.active) {
     resetErrorsState(true);
     return;
   }
-
-  resetErrorsState(true);
-  const source = new EventSource(buildErrorsStreamUrl(), { withCredentials: true });
-  errorsEventSource = source;
-
-  source.addEventListener("errors", (event) => {
-    try {
-      applyErrorsPayload(JSON.parse(event.data || "[]"));
-      errorsConnected.value = true;
-      scheduleErrorsStaleTimer();
-    } catch {
-      stopErrorsStaleTimer();
-      errorsConnected.value = false;
-    }
-  });
-
-  source.onerror = () => {
-    stopErrorsStaleTimer();
-    if (errorsEventSource === source) {
-      errorsConnected.value = false;
-    }
-  };
+  errorsStream.start();
 }
 
 // --- Error detail dialog ---

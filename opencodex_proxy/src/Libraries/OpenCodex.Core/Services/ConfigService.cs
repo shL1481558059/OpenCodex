@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using Microsoft.Extensions.Caching.Memory;
 using OpenCodex.Core.Config;
 using OpenCodex.Core.Domain;
 using OpenCodex.CoreBase.Abstractions;
@@ -30,6 +31,7 @@ public sealed class ConfigService : IConfigService
     private readonly IRepository<User> _userRepository;
     private readonly IRepository<ChannelModelMapping> _channelModelMappings;
     private readonly ICacheService _cache;
+    private readonly IMemoryCache _memoryCache;
 
     public ConfigService(
         IOpenCodexRuntimeSettingsProvider settingsProvider,
@@ -39,7 +41,8 @@ public sealed class ConfigService : IConfigService
         IRepository<Channel> channelRepository,
         IRepository<User> userRepository,
         IRepository<ChannelModelMapping> channelModelMappings,
-        ICacheService cache)
+        ICacheService cache,
+        IMemoryCache memoryCache)
     {
         _settingsProvider = settingsProvider;
         _channelCapacity = channelCapacity;
@@ -49,6 +52,7 @@ public sealed class ConfigService : IConfigService
         _userRepository = userRepository;
         _channelModelMappings = channelModelMappings;
         _cache = cache;
+        _memoryCache = memoryCache;
     }
 
     public ApiOpResult<ConfigResponse> ReadConfig()
@@ -262,6 +266,7 @@ public sealed class ConfigService : IConfigService
         // 非超管只能改自己的渠道,currentUsername 即受影响 owner,精确失效。
         // 超管改他人渠道时,他人缓存靠 60s TTL + 路由 failover 兜底(删除的渠道路由失败会自动切下一个候选)。
         await _cache.RemoveAsync(CacheKeys.RouteChannels(ownerUsername));
+        _memoryCache.Remove(CacheKeys.ChannelConfig);
     }
 
     private ApiOpResult<Guid> SaveSingleChannel(
@@ -768,25 +773,27 @@ public sealed class ConfigService : IConfigService
         string currentUsername,
         bool isSuperadmin)
     {
-        var ownerUsername = OwnerScope(currentUsername, isSuperadmin);
-        var normalizedOwnerUsername = string.IsNullOrWhiteSpace(ownerUsername)
-            ? string.Empty
-            : ownerUsername.Trim();
-
-        var query = _channelRepository.TableNoTracking;
-        Guid? scopeUserId = null;
-        if (normalizedOwnerUsername.Length > 0)
+        var allChannels = _memoryCache.GetOrCreate(CacheKeys.ChannelConfig, entry =>
         {
-            var ownerUser = _userRepository.TableNoTracking.FirstOrDefault(u => u.Username == normalizedOwnerUsername);
-            if (ownerUser is null)
-            {
-                return [];
-            }
-            scopeUserId = ownerUser.Id;
-            query = query.Where(channel => channel.OwnerUserId == scopeUserId.Value);
+            entry.AbsoluteExpirationRelativeToNow = ChannelConfigCacheTtl;
+            return LoadAllChannelDtos();
+        });
+
+        if (isSuperadmin || allChannels is null)
+        {
+            return allChannels ?? [];
         }
 
-        var channels = query.ToList();
+        return allChannels
+            .Where(dto => string.Equals(dto.OwnerUsername, currentUsername, StringComparison.Ordinal))
+            .ToList();
+    }
+
+    private static readonly TimeSpan ChannelConfigCacheTtl = TimeSpan.FromSeconds(10);
+
+    private IReadOnlyList<ChannelDto> LoadAllChannelDtos()
+    {
+        var channels = _channelRepository.TableNoTracking.ToList();
         var ownerIds = channels.Select(ch => ch.OwnerUserId).Distinct().ToList();
         var owners = ownerIds.Count > 0
             ? _userRepository.TableNoTracking
@@ -794,18 +801,11 @@ public sealed class ConfigService : IConfigService
                 .ToDictionary(u => u.Id, u => u.Username)
             : new Dictionary<Guid, string>();
 
-        var orderedChannels = scopeUserId.HasValue
-            ? channels
-                .OrderByDescending(channel => channel.Enabled)
-                .ThenByDescending(channel => channel.UpdatedAt)
-                .ThenBy(channel => channel.Id)
-            : channels
-                .OrderBy(channel => owners.TryGetValue(channel.OwnerUserId, out var name) ? name : string.Empty, StringComparer.Ordinal)
-                .ThenByDescending(channel => channel.Enabled)
-                .ThenByDescending(channel => channel.UpdatedAt)
-                .ThenBy(channel => channel.Id);
-
-        return orderedChannels
+        return channels
+            .OrderBy(channel => owners.TryGetValue(channel.OwnerUserId, out var name) ? name : string.Empty, StringComparer.Ordinal)
+            .ThenByDescending(channel => channel.Enabled)
+            .ThenByDescending(channel => channel.UpdatedAt)
+            .ThenBy(channel => channel.Id)
             .Select(channel => MapToChannelDto(channel,
                 owners.TryGetValue(channel.OwnerUserId, out var name) ? name : string.Empty))
             .ToList();

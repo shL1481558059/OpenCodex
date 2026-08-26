@@ -1,6 +1,8 @@
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Services;
 using OpenCodex.Core.Services.Proxy;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Data;
@@ -115,7 +117,8 @@ public sealed class ObservabilityDiagnosticLogFilterTests
             new EfRepository<AccessApiKey>(context),
             new EfRepository<User>(context),
             new EfRepository<Channel>(context),
-            new ChannelCapacityService());
+            new ChannelCapacityService(),
+            new ServiceCollection().AddMemoryCache().BuildServiceProvider().GetRequiredService<IMemoryCache>());
     }
 
     private static string NewDbPath()

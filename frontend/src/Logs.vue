@@ -723,6 +723,7 @@ import { ElRadioButton, ElRadioGroup } from "element-plus/es/components/radio/in
 import { Box, Check, Coin, CopyDocument, DataLine, Delete, Filter, Lightning, Refresh, Search, Setting, Timer, View } from "@element-plus/icons-vue";
 import VueJsonPretty from "vue-json-pretty";
 import "vue-json-pretty/lib/styles.css";
+import { createSseStream } from "./api/sseClient.js";
 
 const props = defineProps({
   api: { type: Function, required: true },
@@ -950,10 +951,16 @@ const visibleLogColumns = computed(() =>
 );
 // --- SSE: 日志实时更新 ---
 const logSseEnabled = ref(true);
-let logEventSource = null;
-let logSseStaleTimer = null;
-const LOG_SSE_STALE_TIMEOUT_MS = 30000;
 const logSseLabel = computed(() => logSseEnabled.value ? "实时更新" : "已暂停");
+const logStream = createSseStream({
+  path: "/logs/stream",
+  events: {
+    logs: () => {
+      if (!props.active || logsLoading.value || statsLoading.value) return;
+      refreshLogPageData();
+    }
+  }
+});
 const refreshLoading = computed(() => logsLoading.value || statsLoading.value);
 const initialLogsLoading = computed(() => logsLoading.value && !hasLoadedLogs.value);
 const initialStatsLoading = computed(() => statsLoading.value && !hasLoadedStats.value);
@@ -1071,50 +1078,13 @@ async function loadStats() {
   }
 }
 
-function buildLogStreamUrl() {
-  const base = import.meta.env.DEV ? import.meta.env.BASE_URL.replace(/\/$/, "") : "";
-  return `${base}/logs/stream`;
-}
-
-function stopLogSseStaleTimer() {
-  if (logSseStaleTimer !== null) {
-    clearTimeout(logSseStaleTimer);
-    logSseStaleTimer = null;
-  }
-}
-
-function scheduleLogSseStaleTimer() {
-  stopLogSseStaleTimer();
-  logSseStaleTimer = window.setTimeout(stopLogSseStream, LOG_SSE_STALE_TIMEOUT_MS);
-}
-
 function startLogSseStream() {
-  stopLogSseStream();
   if (!logSseEnabled.value || !props.active) return;
-
-  const source = new EventSource(buildLogStreamUrl(), { withCredentials: true });
-  logEventSource = source;
-
-  source.addEventListener("logs", () => {
-    scheduleLogSseStaleTimer();
-    if (!props.active || logsLoading.value || statsLoading.value) return;
-    refreshLogPageData();
-  });
-
-  source.onerror = () => {
-    stopLogSseStaleTimer();
-    if (logEventSource === source) {
-      logEventSource = null;
-    }
-  };
+  logStream.start();
 }
 
 function stopLogSseStream() {
-  stopLogSseStaleTimer();
-  if (logEventSource) {
-    logEventSource.close();
-    logEventSource = null;
-  }
+  logStream.stop();
 }
 
 function setLogSseMode(enabled) {

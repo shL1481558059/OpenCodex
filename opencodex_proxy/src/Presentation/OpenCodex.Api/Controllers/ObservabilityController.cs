@@ -1,7 +1,4 @@
 using Microsoft.AspNetCore.Mvc;
-using System.Text.Json;
-using OpenCodex.Api.Infrastructure;
-using OpenCodex.CoreBase.Events;
 using OpenCodex.CoreBase.DTOs.Observability;
 using OpenCodex.CoreBase.Services;
 
@@ -10,16 +7,13 @@ namespace OpenCodex.Api.Controllers;
 public sealed class ObservabilityController : AuthenticatedApiControllerBase
 {
     private readonly IObservabilityService _observability;
-    private readonly IEventBus _eventBus;
 
     public ObservabilityController(
         IWorkContext workContext,
-        IObservabilityService observability,
-        IEventBus eventBus)
+        IObservabilityService observability)
         : base(workContext)
     {
         _observability = observability;
-        _eventBus = eventBus;
     }
 
     [HttpGet("/logs")]
@@ -346,106 +340,7 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         return Api(result);
     }
 
-    [HttpGet("/monitor/active-channels/stream")]
-    public async Task MonitorActiveChannelsStream()
-    {
-        RequireUser();
-        await WriteActiveChannelStream();
-    }
-
-    [HttpGet("/monitor/recent-errors/stream")]
-    public async Task MonitorRecentErrorsStream()
-    {
-        RequireUser();
-        await WriteRecentErrorsStream();
-    }
-
-    [HttpGet("/logs/stream")]
-    public async Task LogsStream()
-    {
-        RequireUser();
-        await WriteLogsStream();
-    }
-    private async Task WriteActiveChannelStream()
-    {
-        var user = RequireUser();
-        var isSuperadmin = user.Role == "superadmin";
-        var username = user.Username;
-
-        ProxyStreamResponseWriter.PrepareSse(Response);
-
-        var reader = _eventBus.Subscribe<ChannelCapacityChangedEvent>(
-            e => isSuperadmin || string.Equals(e.OwnerUsername, username, StringComparison.Ordinal),
-            HttpContext.RequestAborted);
-
-        await SseEventWriter.StreamAsync(
-            Response,
-            reader,
-            async ct =>
-            {
-                var result = _observability.ReadActiveChannelQueue();
-                var payload = result.Payload ?? new ActiveChannelQueueResponse(string.Empty, []);
-                var data = JsonSerializer.Serialize(payload);
-                await Response.WriteAsync($"event: queue\n", ct);
-                await Response.WriteAsync($"data: {data}\n\n", ct);
-                await Response.Body.FlushAsync(ct);
-            },
-            HttpContext.RequestAborted);
-    }
-
-    private async Task WriteRecentErrorsStream()
-    {
-        var user = RequireUser();
-        var isSuperadmin = user.Role == "superadmin";
-        var username = user.Username;
-
-        ProxyStreamResponseWriter.PrepareSse(Response);
-
-        var reader = _eventBus.Subscribe<RequestLogWrittenEvent>(
-            e => e.IsError && (isSuperadmin || string.Equals(e.OwnerUsername, username, StringComparison.Ordinal)),
-            HttpContext.RequestAborted);
-
-        await SseEventWriter.StreamAsync(
-            Response,
-            reader,
-            async ct =>
-            {
-                var result = _observability.ReadRecentErrors(5);
-                var payload = result.Payload ?? [];
-                var data = JsonSerializer.Serialize(payload);
-                await Response.WriteAsync($"event: errors\n", ct);
-                await Response.WriteAsync($"data: {data}\n\n", ct);
-                await Response.Body.FlushAsync(ct);
-            },
-            HttpContext.RequestAborted);
-    }
-
-    private async Task WriteLogsStream()
-    {
-        var user = RequireUser();
-        var isSuperadmin = user.Role == "superadmin";
-        var username = user.Username;
-
-        ProxyStreamResponseWriter.PrepareSse(Response);
-
-        var reader = _eventBus.Subscribe<RequestLogWrittenEvent>(
-            e => isSuperadmin || string.Equals(e.OwnerUsername, username, StringComparison.Ordinal),
-            HttpContext.RequestAborted);
-
-        await SseEventWriter.StreamAsync(
-            Response,
-            reader,
-            async ct =>
-            {
-                // 轻量通知：前端收到后自行刷新当前页（保留筛选与分页）
-                var data = JsonSerializer.Serialize(new { });
-                await Response.WriteAsync($"event: logs\n", ct);
-                await Response.WriteAsync($"data: {data}\n\n", ct);
-                await Response.Body.FlushAsync(ct);
-            },
-            HttpContext.RequestAborted);
-    }
-
+    // 实时流端点已迁移至 RealtimeStreamController。
     private static Dictionary<string, object?> BuildLogFilters(
         string? requestId,
         string? model,

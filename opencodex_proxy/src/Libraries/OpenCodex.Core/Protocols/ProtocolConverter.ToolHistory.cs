@@ -27,6 +27,7 @@ public static partial class ProtocolConverter
                 if (folded.Count > 0 && TryAsObject(folded[^1], out var previous) && GetString(previous, "role") == "assistant")
                 {
                     AppendReasoningContent(previous, GetValue(message, "reasoning_content"));
+                    MergeThinkingEncrypted(previous, message);
                 }
                 else if (pendingReasoning is null)
                 {
@@ -35,6 +36,7 @@ public static partial class ProtocolConverter
                 else
                 {
                     AppendReasoningContent(pendingReasoning, GetValue(message, "reasoning_content"));
+                    MergeThinkingEncrypted(pendingReasoning, message);
                 }
 
                 continue;
@@ -44,6 +46,7 @@ public static partial class ProtocolConverter
             {
                 message = AsObject(DeepCopy(message));
                 AppendReasoningContent(message, GetValue(pendingReasoning, "reasoning_content"));
+                MergeThinkingEncrypted(message, pendingReasoning);
                 pendingReasoning = null;
             }
             else if (pendingReasoning is not null)
@@ -58,6 +61,37 @@ public static partial class ProtocolConverter
         // 末尾孤儿 reasoning 丢弃：没有后续 assistant 可关联，保留只会产生空 content 消息
 
         return folded;
+    }
+
+    /// <summary>
+    /// 将 source 消息的 anthropic_thinking_encrypted（带签名的 thinking block）
+    /// 合并到 target 消息中。双方都有时合并 thinking blocks 数组后重新编码；
+    /// 解码失败时保守保留 target 已有的内容。
+    /// </summary>
+    private static void MergeThinkingEncrypted(
+        Dictionary<string, object?> target,
+        Dictionary<string, object?> source)
+    {
+        var sourceEncrypted = GetString(source, "anthropic_thinking_encrypted") ?? string.Empty;
+        if (string.IsNullOrEmpty(sourceEncrypted))
+        {
+            return;
+        }
+
+        var targetEncrypted = GetString(target, "anthropic_thinking_encrypted") ?? string.Empty;
+        if (string.IsNullOrEmpty(targetEncrypted))
+        {
+            target["anthropic_thinking_encrypted"] = sourceEncrypted;
+            return;
+        }
+
+        if (TryDecodeAnthropicThinkingBlocks(targetEncrypted, out var targetBlocks)
+            && TryDecodeAnthropicThinkingBlocks(sourceEncrypted, out var sourceBlocks))
+        {
+            var merged = new List<object?>(targetBlocks);
+            merged.AddRange(sourceBlocks);
+            target["anthropic_thinking_encrypted"] = EncodeAnthropicThinkingBlocks(merged);
+        }
     }
 
     private static List<object?> MergeConsecutiveAssistantToolCallMessages(List<object?> messages)

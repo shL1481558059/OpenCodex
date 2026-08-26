@@ -1,5 +1,7 @@
 using OpenCodex.Core.Domain;
 using System.Text.Json;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.DependencyInjection;
 using OpenCodex.Core.Services.Proxy;
 using Microsoft.EntityFrameworkCore;
 using OpenCodex.Core.Services;
@@ -28,7 +30,7 @@ public sealed class ObservabilityServiceTests
         string currentUsername = "admin",
         string currentRole = "superadmin")
     {
-        var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+       var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         return new ObservabilityService(
             new TestSettingsProvider(dbPath),
             new TestWorkContext(currentUserId ?? AdminUserId, currentUsername, currentRole),
@@ -37,7 +39,8 @@ public sealed class ObservabilityServiceTests
             new EfRepository<AccessApiKey>(context),
             new EfRepository<User>(context),
             new EfRepository<Channel>(context),
-            channelCapacity ?? new ChannelCapacityService());
+            channelCapacity ?? new ChannelCapacityService(),
+            new ServiceCollection().AddMemoryCache().BuildServiceProvider().GetRequiredService<IMemoryCache>());
     }
 
     [Fact]
