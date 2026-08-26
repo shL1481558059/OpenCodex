@@ -1509,6 +1509,7 @@ import {
   isImagesChannel
 } from "./channelImagesState.js";
 import { streamChannelTest } from "./channelTestStream.js";
+import { createSseStream } from "./api/sseClient.js";
 import {
   Connection,
   Delete,
@@ -1528,9 +1529,10 @@ const props = defineProps({
 const configLoading = ref(false);
 
 // --- SSE: 渠道运行时实时更新 ---
-let runtimeEventSource = null;
-let runtimeStaleTimer = null;
-const RUNTIME_STALE_TIMEOUT_MS = 30000;
+const runtimeStream = createSseStream({
+  path: "/channels/runtime/stream",
+  events: { runtime: applyRuntimePayload }
+});
 
 const saveLoading = ref(false);
 const testLoading = ref(false);
@@ -3230,24 +3232,6 @@ function normalizeCapacityValue(value) {
   return Number.isInteger(capacity) && capacity > 0 ? capacity : null;
 }
 
-// --- SSE: 渠道运行时实时更新 ---
-function buildRuntimeStreamUrl() {
-  const base = import.meta.env.DEV ? import.meta.env.BASE_URL.replace(/\/$/, "") : "";
-  return `${base}/channels/runtime/stream`;
-}
-
-function stopRuntimeStaleTimer() {
-  if (runtimeStaleTimer !== null) {
-    clearTimeout(runtimeStaleTimer);
-    runtimeStaleTimer = null;
-  }
-}
-
-function scheduleRuntimeStaleTimer() {
-  stopRuntimeStaleTimer();
-  runtimeStaleTimer = window.setTimeout(stopRuntimeStream, RUNTIME_STALE_TIMEOUT_MS);
-}
-
 function applyRuntimePayload(payload) {
   const list = Array.isArray(payload?.channels) ? payload.channels : [];
   const runtimeMap = new Map();
@@ -3269,36 +3253,6 @@ function applyRuntimePayload(payload) {
   });
 }
 
-function startRuntimeStream() {
-  stopRuntimeStream();
-  const source = new EventSource(buildRuntimeStreamUrl(), { withCredentials: true });
-  runtimeEventSource = source;
-
-  source.addEventListener("runtime", (event) => {
-    try {
-      applyRuntimePayload(JSON.parse(event.data || "{}"));
-      scheduleRuntimeStaleTimer();
-    } catch {
-      stopRuntimeStaleTimer();
-    }
-  });
-
-  source.onerror = () => {
-    stopRuntimeStaleTimer();
-    if (runtimeEventSource === source) {
-      runtimeEventSource = null;
-    }
-  };
-}
-
-function stopRuntimeStream() {
-  stopRuntimeStaleTimer();
-  if (runtimeEventSource) {
-    runtimeEventSource.close();
-    runtimeEventSource = null;
-  }
-}
-
 function isPlainObject(value) {
   return value && typeof value === "object" && !Array.isArray(value);
 }
@@ -3309,12 +3263,12 @@ onMounted(async () => {
   updateMobileViewport(mobileMediaQuery);
   mobileMediaQuery.addEventListener("change", updateMobileViewport);
   await loadConfig();
-  startRuntimeStream();
+  runtimeStream.start();
 });
 
 onBeforeUnmount(() => {
   mobileMediaQuery?.removeEventListener("change", updateMobileViewport);
-  stopRuntimeStream();
+  runtimeStream.stop();
 });
 </script>
 

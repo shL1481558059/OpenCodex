@@ -99,7 +99,7 @@ public sealed class ObservabilityControllerTests
 
     private static ObservabilityController CreateController(CapturingObservabilityService service)
     {
-        return new ObservabilityController(new TestWorkContext(), service, new EventBus())
+        return new ObservabilityController(new TestWorkContext(), service)
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
         };

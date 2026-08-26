@@ -1090,13 +1090,132 @@ public sealed class ProtocolStructuralCompatibilityTests
         return ProtocolConverter.ConvertRequest(
             rewritten,
             ProtocolConverter.Responses,
-            targetProtocol,
-            "upstream",
-            compat);
+           targetProtocol,
+           "upstream",
+           compat);
+   }
+
+    /// <summary>
+    /// 构造一个带 encrypted_content（ocxp-thinking-v1 签名 thinking block）的
+    /// reasoning fold 请求，用于验证折叠后签名数据不丢失。
+    /// </summary>
+    private static Dictionary<string, object?> ReasoningFoldWithEncryptedContentRequest(
+        string reasoningSummary, string encryptedContent, string assistantText)
+    {
+        return new Dictionary<string, object?>
+        {
+            ["model"] = "public",
+            ["input"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "message",
+                    ["role"] = "user",
+                    ["content"] = new List<object?>
+                    {
+                        new Dictionary<string, object?> { ["type"] = "input_text", ["text"] = "开始" }
+                    }
+                },
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "reasoning",
+                    ["summary"] = new List<object?>
+                    {
+                        new Dictionary<string, object?> { ["type"] = "summary_text", ["text"] = reasoningSummary }
+                    },
+                    ["encrypted_content"] = encryptedContent,
+                    ["status"] = "completed"
+                },
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "message",
+                    ["role"] = "assistant",
+                    ["content"] = new List<object?>
+                    {
+                        new Dictionary<string, object?> { ["type"] = "output_text", ["text"] = assistantText }
+                    }
+                },
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "message",
+                    ["role"] = "user",
+                    ["content"] = new List<object?>
+                    {
+                        new Dictionary<string, object?> { ["type"] = "input_text", ["text"] = "好的" }
+                    }
+                }
+            }
+        };
+    }
+
+    /// <summary>
+    /// ocxp-thinking-v1 编码的 thinking block，内容为单个 thinking 块带签名。
+    /// </summary>
+    private static string SampleEncryptedThinking(string thinking, string signature)
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(new List<object?>
+        {
+            new Dictionary<string, object?>
+            {
+                ["type"] = "thinking",
+                ["thinking"] = thinking,
+                ["signature"] = signature
+            }
+        });
+        return "ocxp-thinking-v1:" + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(json));
     }
 
     [Fact]
-    public void ResponsesToMessages_ReasoningFoldedIntoAssistant_NoConsecutiveAssistant()
+    public void ResponsesToMessages_ReasoningFolded_PreservesEncryptedThinkingAsNativeBlock()
+    {
+        var encrypted = SampleEncryptedThinking("测试思考", "sig_abc");
+        var request = ReasoningFoldWithEncryptedContentRequest("测试思考", encrypted, "回答");
+        var converted = ConvertFoldRequest(request, ProtocolConverter.Messages, preserveThinkingHistory: true);
+
+        // 应以原生 thinking block（带 signature）发送，而非降级为文本
+        var assistant = Object(List(converted, "messages")[1]);
+        var content = Assert.IsType<List<object?>>(assistant["content"]);
+        var thinkingBlock = content
+            .Select(Object)
+            .FirstOrDefault(b => String(b, "type") == "thinking");
+        Assert.NotNull(thinkingBlock);
+        Assert.Equal("测试思考", String(thinkingBlock, "thinking"));
+        Assert.Equal("sig_abc", String(thinkingBlock, "signature"));
+
+        // 应自动注入 thinking param（因为注入了带签名的 thinking block）
+        Assert.True(converted.ContainsKey("thinking"));
+
+        // 不应包含降级的 <previous_thinking> 文本块
+        Assert.DoesNotContain(content, b =>
+        {
+            var block = Object(b);
+            return String(block, "type") == "text" && String(block, "text").Contains("<previous_thinking>", StringComparison.Ordinal);
+        });
+    }
+
+    [Fact]
+    public void ResponsesToMessages_ReasoningFolded_NoEncryptedContent_DegradesToTextBlock()
+    {
+        var request = ReasoningFoldRequest("我的思考", "回答");
+        var converted = ConvertFoldRequest(request, ProtocolConverter.Messages, preserveThinkingHistory: true);
+
+        // 没有 encrypted_content 时应降级为 <previous_thinking> 文本块
+        var assistant = Object(List(converted, "messages")[1]);
+        var content = Assert.IsType<List<object?>>(assistant["content"]);
+        var textBlocks = content
+            .Select(Object)
+            .Where(b => String(b, "type") == "text")
+            .Select(b => String(b, "text"))
+            .ToList();
+        Assert.Contains(textBlocks, t => t.Contains("<previous_thinking>", StringComparison.Ordinal));
+
+        // 不应有原生 thinking block
+        Assert.DoesNotContain(content, b => String(Object(b), "type") == "thinking");
+        Assert.False(converted.ContainsKey("thinking"));
+    }
+
+   [Fact]
+   public void ResponsesToMessages_ReasoningFoldedIntoAssistant_NoConsecutiveAssistant()
     {
         var converted = ConvertFoldRequest(
             ReasoningFoldRequest("我的思考", "回答"), ProtocolConverter.Messages, preserveThinkingHistory: true);

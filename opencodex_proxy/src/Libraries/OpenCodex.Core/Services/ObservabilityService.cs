@@ -1,9 +1,11 @@
 using System.Globalization;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Caching;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs;
@@ -79,6 +81,8 @@ public sealed class ObservabilityService : IObservabilityService
     private readonly IRepository<Channel> _channelRepository;
     private readonly IChannelCapacityService _channelCapacity;
     private readonly LogContentStore _contentStore;
+    private readonly IMemoryCache _memoryCache;
+    private static readonly TimeSpan ChannelConfigCacheTtl = TimeSpan.FromSeconds(10);
 
     public ObservabilityService(
         IOpenCodexRuntimeSettingsProvider settingsProvider,
@@ -88,7 +92,8 @@ public sealed class ObservabilityService : IObservabilityService
         IRepository<AccessApiKey> keyRepository,
         IRepository<User> userRepository,
         IRepository<Channel> channelRepository,
-        IChannelCapacityService channelCapacity)
+        IChannelCapacityService channelCapacity,
+        IMemoryCache memoryCache)
     {
         _settingsProvider = settingsProvider;
         _workContext = workContext;
@@ -98,6 +103,7 @@ public sealed class ObservabilityService : IObservabilityService
         _userRepository = userRepository;
         _channelRepository = channelRepository;
         _channelCapacity = channelCapacity;
+        _memoryCache = memoryCache;
         _contentStore = new LogContentStore(dbContext);
     }
 
@@ -1004,22 +1010,27 @@ public sealed class ObservabilityService : IObservabilityService
 
     private IReadOnlyList<ChannelDto> ReadScopedChannels(string currentUsername, bool isSuperadmin)
     {
-        var query = _channelRepository.TableNoTracking;
-        if (!isSuperadmin)
+        var allChannels = _memoryCache.GetOrCreate(CacheKeys.ChannelConfig, entry =>
         {
-            var ownerUserId = _userRepository.TableNoTracking
-                .Where(user => user.Username == currentUsername)
-                .Select(user => (Guid?)user.Id)
-                .FirstOrDefault();
-            if (!ownerUserId.HasValue)
-            {
-                return [];
-            }
+            entry.AbsoluteExpirationRelativeToNow = ChannelConfigCacheTtl;
+            return LoadAllScopedChannelDtos();
+        });
 
-            query = query.Where(channel => channel.OwnerUserId == ownerUserId.Value);
+        if (allChannels is null)
+        {
+            return [];
         }
 
-        var channels = query.ToList();
+        return isSuperadmin
+            ? allChannels
+            : allChannels
+                .Where(dto => string.Equals(dto.OwnerUsername, currentUsername, StringComparison.Ordinal))
+                .ToList();
+    }
+
+    private IReadOnlyList<ChannelDto> LoadAllScopedChannelDtos()
+    {
+        var channels = _channelRepository.TableNoTracking.ToList();
         if (channels.Count == 0)
         {
             return [];
@@ -1053,7 +1064,6 @@ public sealed class ObservabilityService : IObservabilityService
                 channel.Enabled))
             .ToList();
     }
-
     private static StatsSummaryDto ReadStatsSummary(
         IReadOnlyList<RequestLog> logs,
         double startTs,
