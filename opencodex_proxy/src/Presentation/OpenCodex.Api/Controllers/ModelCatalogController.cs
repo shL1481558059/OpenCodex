@@ -85,6 +85,13 @@ public sealed class ModelCatalogController : AuthenticatedApiControllerBase
         return Api(_catalog.DeleteModel(id));
     }
 
+    [HttpPost("/model-infos/batch")]
+    public IActionResult BatchModels(ModelBatchActionRequest request)
+    {
+        RequireSuperadmin();
+        return Api(_catalog.BatchModels(request));
+    }
+
     [HttpGet("/model-catalog/export")]
     public IActionResult ExportCatalog()
     {

@@ -440,3 +440,30 @@ public sealed class ModelProviderResponsePayload
     [JsonPropertyName("provider")]
     public ModelProviderResponse Provider { get; }
 }
+
+public sealed class ModelBatchActionResult
+{
+    public ModelBatchActionResult(
+        string action,
+        IReadOnlyList<Guid> updatedIds,
+        IReadOnlyList<Guid> deletedIds,
+        IReadOnlyList<string> errors)
+    {
+        Action = action;
+        UpdatedIds = updatedIds;
+        DeletedIds = deletedIds;
+        Errors = errors;
+    }
+
+    [JsonPropertyName("action")]
+    public string Action { get; }
+
+    [JsonPropertyName("updated_ids")]
+    public IReadOnlyList<Guid> UpdatedIds { get; }
+
+    [JsonPropertyName("deleted_ids")]
+    public IReadOnlyList<Guid> DeletedIds { get; }
+
+    [JsonPropertyName("errors")]
+    public IReadOnlyList<string> Errors { get; }
+}

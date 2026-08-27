@@ -323,6 +323,11 @@ public sealed class ProxyControllerTests
             throw new NotSupportedException();
         }
 
+        public ApiOpResult<ModelBatchActionResult> BatchModels(ModelBatchActionRequest request)
+        {
+            throw new NotSupportedException();
+        }
+
         public ApiOpResult<ModelCatalogTransferDocument> ExportModelCatalog()
         {
             throw new NotSupportedException();

@@ -312,6 +312,123 @@ public sealed class ModelCatalogServiceTests
     }
 
     [Fact]
+    public void BatchModelsDisablesAndEnablesModels()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+        }
+
+        var service = CreateService(dbPath);
+        var provider = service.CreateProvider(new ModelProviderUpsertRequest
+        {
+            Code = "batch-test",
+            Name = "Batch Test",
+            Enabled = true
+        });
+        Assert.True(provider.Succeeded);
+
+        var first = service.CreateModel(BatchModelRequest("batch-a", true));
+        var second = service.CreateModel(BatchModelRequest("batch-b", true));
+        Assert.True(first.Succeeded);
+        Assert.True(second.Succeeded);
+
+        var disable = service.BatchModels(new ModelBatchActionRequest
+        {
+            Action = "disable",
+            Ids = [first.Payload!.Model.Id, second.Payload!.Model.Id]
+        });
+        Assert.True(disable.Succeeded);
+        Assert.Equal(2, disable.Payload!.UpdatedIds.Count);
+        Assert.Empty(disable.Payload.DeletedIds);
+        Assert.Empty(disable.Payload.Errors);
+
+        var listedAfterDisable = service.ListModels(null, null, false);
+        Assert.NotNull(listedAfterDisable.Payload);
+        Assert.Equal(2, listedAfterDisable.Payload!.Models.Count(model => !model.Enabled));
+
+        var enable = service.BatchModels(new ModelBatchActionRequest
+        {
+            Action = "enable",
+            Ids = [first.Payload.Model.Id, second.Payload.Model.Id]
+        });
+        Assert.True(enable.Succeeded);
+        Assert.Equal(2, enable.Payload!.UpdatedIds.Count);
+
+        var listedAfterEnable = service.ListModels(null, null, true);
+        Assert.NotNull(listedAfterEnable.Payload);
+        Assert.Equal(2, listedAfterEnable.Payload!.Models.Count(model => model.Enabled));
+    }
+
+    [Fact]
+    public void BatchModelsDeleteOnlyDisabledModelsAndSkipsEnabledOnes()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+        }
+
+        var service = CreateService(dbPath);
+        var provider = service.CreateProvider(new ModelProviderUpsertRequest
+        {
+            Code = "batch-test",
+            Name = "Batch Test",
+            Enabled = true
+        });
+        Assert.True(provider.Succeeded);
+
+        var disabled = service.CreateModel(BatchModelRequest("batch-del", false));
+        var enabled = service.CreateModel(BatchModelRequest("batch-keep", true));
+        Assert.True(disabled.Succeeded);
+        Assert.True(enabled.Succeeded);
+
+        var result = service.BatchModels(new ModelBatchActionRequest
+        {
+            Action = "delete",
+            Ids = [disabled.Payload!.Model.Id, enabled.Payload!.Model.Id]
+        });
+        Assert.True(result.Succeeded);
+        Assert.Equal(1, result.Payload!.DeletedIds.Count);
+        Assert.Contains(disabled.Payload.Model.Id, result.Payload.DeletedIds);
+        Assert.Single(result.Payload.Errors);
+        Assert.Contains("enabled", result.Payload.Errors[0]);
+
+        var models = service.ListModels(null, null, null);
+        Assert.NotNull(models.Payload);
+        Assert.Single(models.Payload!.Models);
+        Assert.Equal("batch-keep", models.Payload.Models[0].ModelKey);
+    }
+
+    [Fact]
+    public void BatchModelsRejectsInvalidActionAndEmptyIds()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+        }
+
+        var service = CreateService(dbPath);
+        var invalidAction = service.BatchModels(new ModelBatchActionRequest
+        {
+            Action = "explode",
+            Ids = [Guid.NewGuid()]
+        });
+        Assert.False(invalidAction.Succeeded);
+        Assert.Equal(400, invalidAction.Code);
+
+        var emptyIds = service.BatchModels(new ModelBatchActionRequest
+        {
+            Action = "disable",
+            Ids = []
+        });
+        Assert.False(emptyIds.Succeeded);
+        Assert.Equal(400, emptyIds.Code);
+    }
+
+    [Fact]
     public async Task CalculateCostUsesUpstreamModelForGlobalPricing()
     {
         var dbPath = CreateDbPath();
@@ -1088,6 +1205,34 @@ public sealed class ModelCatalogServiceTests
                         BillingItem = ModelBillingItems.Input,
                         BillingMode = ModelBillingModes.PerMillionTokens,
                         UnitPrice = inputPrice,
+                        Enabled = true
+                    }
+                ]
+            }
+        };
+    }
+
+    private static ModelInfoUpdateRequest BatchModelRequest(string modelKey, bool enabled)
+    {
+        return new ModelInfoUpdateRequest
+        {
+            ProviderCode = "batch-test",
+            ModelKey = modelKey,
+            DisplayName = modelKey,
+            MatchType = ModelMatchTypes.Exact,
+            MatchPattern = modelKey,
+            Enabled = enabled,
+            Pricing = new ModelPricingPlanRequest
+            {
+                Currency = "USD",
+                Enabled = true,
+                Rules =
+                [
+                    new ModelPricingRuleRequest
+                    {
+                        BillingItem = ModelBillingItems.Input,
+                        BillingMode = ModelBillingModes.PerMillionTokens,
+                        UnitPrice = 1m,
                         Enabled = true
                     }
                 ]
