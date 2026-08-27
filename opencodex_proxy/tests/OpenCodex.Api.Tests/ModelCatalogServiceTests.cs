@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Services;
@@ -8,6 +9,7 @@ using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.Domain.Models;
 using OpenCodex.CoreBase.DTOs.Models;
+using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
 using OpenCodex.Data;
 using StackExchange.Redis;
@@ -673,7 +675,7 @@ public sealed class ModelCatalogServiceTests
         Assert.True(exported.Succeeded);
         Assert.NotNull(exported.Payload);
         Assert.Equal("model_catalog", exported.Payload.Type);
-        Assert.Equal(1, exported.Payload.Version);
+        Assert.Equal(2, exported.Payload.Version);
         Assert.Equal(2, exported.Payload.Providers.Count);
         Assert.Contains(exported.Payload.Providers, item => item.Code == "disabled" && !item.Enabled);
         var exportedModel = Assert.Single(exported.Payload.Models, item => item.ModelKey == "gpt-test");
@@ -805,7 +807,7 @@ public sealed class ModelCatalogServiceTests
         var invalidDocuments = new List<(string Name, ModelCatalogTransferDocument Document)>
         {
             ("unknown type", MutateImport(payload => payload.Type = "other")),
-            ("unknown version", MutateImport(payload => payload.Version = 2)),
+            ("unknown version", MutateImport(payload => payload.Version = 3)),
             ("unknown provider", MutateImport(payload => payload.Models[0].ProviderCode = "missing")),
             ("invalid match type", MutateImport(payload => payload.Models[0].MatchType = "regex")),
             ("negative unit price", MutateImport(payload => payload.Models[0].Pricing!.Rules[0].UnitPrice = -1m)),
@@ -892,6 +894,563 @@ public sealed class ModelCatalogServiceTests
     private static ModelUsageVector Tokens(int inputTokens)
     {
         return new ModelUsageVector(inputTokens, 0, 0, 0);
+    }
+
+    [Fact]
+    public async Task OffPeakWindowSwitchesUnitPrice()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddOffPeakModel(
+                context,
+                provider.Id,
+                "night-model",
+                "UTC",
+                [Window("22:00", "24:00")],
+                peakUnitPrice: 1m,
+                offPeakUnitPrice: 0.5m);
+        }
+
+        var service = CreateService(dbPath);
+
+        var offPeak = await service.CalculateCostAsync(
+            null,
+            null,
+            "night-model",
+            Tokens(1_000_000),
+            Utc(2026, 1, 5, 22, 30));
+        var peak = await service.CalculateCostAsync(
+            null,
+            null,
+            "night-model",
+            Tokens(1_000_000),
+            Utc(2026, 1, 5, 21, 30));
+
+        Assert.Equal(0.5m, offPeak.Cost);
+        Assert.Equal(PricingPhases.OffPeak, offPeak.PricingPhase);
+        Assert.Equal(PricingPhaseSources.WindowHit, offPeak.PhaseSource);
+        Assert.Equal(1m, peak.Cost);
+        Assert.Equal(PricingPhases.Peak, peak.PricingPhase);
+        Assert.Equal(PricingPhaseSources.WindowMiss, peak.PhaseSource);
+    }
+
+    [Fact]
+    public async Task OffPeakWindowUsesHalfOpenBoundaries()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddOffPeakModel(
+                context,
+                provider.Id,
+                "edge-model",
+                "UTC",
+                [Window("22:00", "23:00")],
+                peakUnitPrice: 1m,
+                offPeakUnitPrice: 0.5m);
+        }
+
+        var service = CreateService(dbPath);
+
+        Assert.Equal(0.5m, (await service.CalculateCostAsync(
+            null, null, "edge-model", Tokens(1_000_000), Utc(2026, 1, 5, 22, 0))).Cost);
+        Assert.Equal(0.5m, (await service.CalculateCostAsync(
+            null, null, "edge-model", Tokens(1_000_000), Utc(2026, 1, 5, 22, 59))).Cost);
+        Assert.Equal(1m, (await service.CalculateCostAsync(
+            null, null, "edge-model", Tokens(1_000_000), Utc(2026, 1, 5, 23, 0))).Cost);
+        Assert.Equal(1m, (await service.CalculateCostAsync(
+            null, null, "edge-model", Tokens(1_000_000), Utc(2026, 1, 5, 21, 59))).Cost);
+    }
+
+    [Fact]
+    public async Task CrossMidnightWindowFollowsStartDayWeekdays()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            // 只在周一晚间起算的跨午夜窗口:规范化后为周一 22:00-24:00 与周二 00:00-06:00。
+            AddOffPeakModel(
+                context,
+                provider.Id,
+                "cross-model",
+                "UTC",
+                [Window("22:00", "06:00", 1)],
+                peakUnitPrice: 1m,
+                offPeakUnitPrice: 0.5m);
+        }
+
+        var service = CreateService(dbPath);
+
+        // 2026-01-05 是周一,2026-01-06 是周二。
+        Assert.Equal(0.5m, (await service.CalculateCostAsync(
+            null, null, "cross-model", Tokens(1_000_000), Utc(2026, 1, 5, 22, 30))).Cost);
+        Assert.Equal(0.5m, (await service.CalculateCostAsync(
+            null, null, "cross-model", Tokens(1_000_000), Utc(2026, 1, 6, 1, 0))).Cost);
+        Assert.Equal(1m, (await service.CalculateCostAsync(
+            null, null, "cross-model", Tokens(1_000_000), Utc(2026, 1, 5, 1, 0))).Cost);
+        Assert.Equal(1m, (await service.CalculateCostAsync(
+            null, null, "cross-model", Tokens(1_000_000), Utc(2026, 1, 6, 22, 30))).Cost);
+    }
+
+    [Fact]
+    public async Task TimeZoneDecidesPricingPhase()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddOffPeakModel(
+                context,
+                provider.Id,
+                "utc-model",
+                "UTC",
+                [Window("22:00", "24:00")],
+                peakUnitPrice: 1m,
+                offPeakUnitPrice: 0.5m);
+            AddOffPeakModel(
+                context,
+                provider.Id,
+                "shanghai-model",
+                "Asia/Shanghai",
+                [Window("22:00", "24:00")],
+                peakUnitPrice: 1m,
+                offPeakUnitPrice: 0.5m);
+        }
+
+        var service = CreateService(dbPath);
+        // 14:30 UTC 就是 22:30 Asia/Shanghai。
+        var instant = Utc(2026, 1, 5, 14, 30);
+
+        Assert.Equal(1m, (await service.CalculateCostAsync(
+            null, null, "utc-model", Tokens(1_000_000), instant)).Cost);
+        Assert.Equal(0.5m, (await service.CalculateCostAsync(
+            null, null, "shanghai-model", Tokens(1_000_000), instant)).Cost);
+    }
+
+    [Fact]
+    public async Task RuleWithoutOffPeakKeepsBasePriceInOffPeakWindow()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddOffPeakModel(
+                context,
+                provider.Id,
+                "flat-model",
+                "UTC",
+                [Window("22:00", "24:00")],
+                peakUnitPrice: 1m,
+                offPeakUnitPrice: 0.5m,
+                offPeakEnabled: false);
+        }
+
+        var service = CreateService(dbPath);
+        var result = await service.CalculateCostAsync(
+            null,
+            null,
+            "flat-model",
+            Tokens(1_000_000),
+            Utc(2026, 1, 5, 22, 30));
+
+        Assert.Equal(1m, result.Cost);
+        Assert.Equal(PricingPhases.OffPeak, result.PricingPhase);
+        using var snapshot = JsonDocument.Parse(result.SnapshotJson);
+        Assert.Equal(
+            PricingPhases.Peak,
+            snapshot.RootElement.GetProperty("rules")[0].GetProperty("applied_phase").GetString());
+    }
+
+    [Fact]
+    public async Task TieredOffPeakUsesOffPeakTiers()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            var model = AddOffPeakModel(
+                context,
+                provider.Id,
+                "tier-model",
+                "UTC",
+                [Window("22:00", "24:00")],
+                peakUnitPrice: 0m,
+                offPeakUnitPrice: 0m);
+            var plan = context.ModelPricingPlans.Single(item => item.ModelInfoId == model.Id);
+            var rule = context.ModelPricingRules.Single(item => item.PricingPlanId == plan.Id);
+            rule.BillingMode = ModelBillingModes.TieredTokens;
+            rule.TiersJson = """[{"up_to":500000,"unit_price":2},{"up_to":null,"unit_price":1}]""";
+            rule.OffPeakTiersJson = """[{"up_to":500000,"unit_price":1},{"up_to":null,"unit_price":0.5}]""";
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+
+        Assert.Equal(1.5m, (await service.CalculateCostAsync(
+            null, null, "tier-model", Tokens(1_000_000), Utc(2026, 1, 5, 21, 0))).Cost);
+        Assert.Equal(0.75m, (await service.CalculateCostAsync(
+            null, null, "tier-model", Tokens(1_000_000), Utc(2026, 1, 5, 22, 30))).Cost);
+    }
+
+    [Fact]
+    public async Task PerRequestOffPeakSwitchesUnitPrice()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            var model = AddOffPeakModel(
+                context,
+                provider.Id,
+                "per-request-model",
+                "UTC",
+                [Window("22:00", "24:00")],
+                peakUnitPrice: 0.02m,
+                offPeakUnitPrice: 0.01m);
+            var plan = context.ModelPricingPlans.Single(item => item.ModelInfoId == model.Id);
+            var rule = context.ModelPricingRules.Single(item => item.PricingPlanId == plan.Id);
+            rule.BillingMode = ModelBillingModes.PerRequest;
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+        var usage = new ModelUsageVector(0, 0, 0, 0);
+
+        Assert.Equal(0.02m, (await service.CalculateCostAsync(
+            null, null, "per-request-model", usage, Utc(2026, 1, 5, 21, 0))).Cost);
+        Assert.Equal(0.01m, (await service.CalculateCostAsync(
+            null, null, "per-request-model", usage, Utc(2026, 1, 5, 22, 30))).Cost);
+    }
+
+    [Fact]
+    public async Task PricingCacheDoesNotFreezePricingPhase()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddOffPeakModel(
+                context,
+                provider.Id,
+                "cached-phase-model",
+                "UTC",
+                [Window("22:00", "24:00")],
+                peakUnitPrice: 1m,
+                offPeakUnitPrice: 0.5m);
+        }
+
+        // 同一个缓存实例、同一个 (channelId, upstreamModel):定价解析会命中缓存,
+        // 但时段必须每次现算,否则跨越窗口边界的请求会按旧时段计费。
+        var service = CreateService(dbPath, new InMemoryCacheService());
+
+        var peak = await service.CalculateCostAsync(
+            null, null, "cached-phase-model", Tokens(1_000_000), Utc(2026, 1, 5, 21, 59));
+        var offPeak = await service.CalculateCostAsync(
+            null, null, "cached-phase-model", Tokens(1_000_000), Utc(2026, 1, 5, 22, 0));
+
+        Assert.Equal(1m, peak.Cost);
+        Assert.Equal(0.5m, offPeak.Cost);
+    }
+
+    [Fact]
+    public async Task UnresolvableTimeZoneFallsBackToPeakPrice()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            var model = AddOffPeakModel(
+                context,
+                provider.Id,
+                "bad-zone-model",
+                "UTC",
+                [Window("00:00", "24:00")],
+                peakUnitPrice: 1m,
+                offPeakUnitPrice: 0.5m);
+            var plan = context.ModelPricingPlans.Single(item => item.ModelInfoId == model.Id);
+            // 绕过写入校验模拟运行环境缺少时区数据的情况。
+            plan.TimeZoneId = "Not/AZone";
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+        var result = await service.CalculateCostAsync(
+            null,
+            null,
+            "bad-zone-model",
+            Tokens(1_000_000),
+            Utc(2026, 1, 5, 12, 0));
+
+        Assert.Equal(1m, result.Cost);
+        Assert.Equal(PricingPhases.Peak, result.PricingPhase);
+        Assert.Equal(PricingPhaseSources.TimeZoneUnresolved, result.PhaseSource);
+    }
+
+    [Fact]
+    public async Task PricingSnapshotRecordsPhaseDetails()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddOffPeakModel(
+                context,
+                provider.Id,
+                "snapshot-model",
+                "Asia/Shanghai",
+                [Window("22:00", "24:00")],
+                peakUnitPrice: 1m,
+                offPeakUnitPrice: 0.5m);
+        }
+
+        var service = CreateService(dbPath);
+        var instant = Utc(2026, 1, 5, 14, 30);
+        var result = await service.CalculateCostAsync(
+            null,
+            null,
+            "snapshot-model",
+            Tokens(1_000_000),
+            instant);
+
+        using var snapshot = JsonDocument.Parse(result.SnapshotJson);
+        var root = snapshot.RootElement;
+        Assert.Equal(PricingPhases.OffPeak, root.GetProperty("pricing_phase").GetString());
+        Assert.Equal(PricingPhaseSources.WindowHit, root.GetProperty("phase_source").GetString());
+        Assert.Equal("Asia/Shanghai", root.GetProperty("time_zone").GetString());
+        Assert.Equal(
+            instant.ToUnixTimeMilliseconds() / 1000.0,
+            root.GetProperty("billing_instant").GetDouble());
+        Assert.Equal("22:00", root.GetProperty("matched_window").GetProperty("start").GetString());
+        Assert.Equal("24:00", root.GetProperty("matched_window").GetProperty("end").GetString());
+        var ruleSnapshot = root.GetProperty("rules")[0];
+        Assert.Equal(PricingPhases.OffPeak, ruleSnapshot.GetProperty("applied_phase").GetString());
+        Assert.Equal(0.5m, ruleSnapshot.GetProperty("unit_price").GetDecimal());
+    }
+
+    [Fact]
+    public async Task PlanWithoutPeakOffPeakKeepsLegacyCost()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddModel(context, provider.Id, "legacy", ModelMatchTypes.Exact, "legacy-model", 3m);
+        }
+
+        var service = CreateService(dbPath);
+        var result = await service.CalculateCostAsync(
+            null,
+            null,
+            "legacy-model",
+            Tokens(1_000_000),
+            Utc(2026, 1, 5, 22, 30));
+
+        Assert.Equal(3m, result.Cost);
+        Assert.Equal(PricingPhases.Peak, result.PricingPhase);
+        Assert.Equal(PricingPhaseSources.Disabled, result.PhaseSource);
+    }
+
+    [Fact]
+    public void CreateModelNormalizesCrossMidnightOffPeakWindows()
+    {
+        var service = CreatePeakOffPeakService();
+        var created = service.CreateModel(
+            OffPeakModelRequest("night-model", "Asia/Shanghai", [Window("22:00", "06:00", 1)]));
+
+        Assert.True(created.Succeeded);
+        var pricing = created.Payload!.Model.Pricing;
+        Assert.NotNull(pricing);
+        Assert.Equal("Asia/Shanghai", pricing!.TimeZone);
+        Assert.Collection(
+            pricing.OffPeakWindows,
+            first =>
+            {
+                Assert.Equal("00:00", first.Start);
+                Assert.Equal("06:00", first.End);
+                Assert.Equal(new[] { 2 }, first.Days);
+            },
+            second =>
+            {
+                Assert.Equal("22:00", second.Start);
+                Assert.Equal("24:00", second.End);
+                Assert.Equal(new[] { 1 }, second.Days);
+            });
+        var rule = pricing.Rules.Single(item => item.BillingItem == ModelBillingItems.Input);
+        Assert.True(rule.OffPeakEnabled);
+        Assert.Equal(0.5m, rule.OffPeakUnitPrice);
+    }
+
+    [Fact]
+    public void PeakOffPeakConfigRoundTripIsStable()
+    {
+        var service = CreatePeakOffPeakService();
+        var created = service.CreateModel(
+            OffPeakModelRequest("stable-model", "UTC", [Window("22:00", "06:00", 5)]));
+        Assert.True(created.Succeeded);
+        var first = created.Payload!.Model.Pricing!;
+
+        // 把读回的规范化结果原样再提交,结果必须稳定,否则每次保存都会漂移。
+        var resubmitted = service.UpdateModel(
+            created.Payload.Model.Id,
+            OffPeakModelRequest("stable-model", "UTC", first.OffPeakWindows));
+
+        Assert.True(resubmitted.Succeeded);
+        var second = resubmitted.Payload!.Model.Pricing!;
+        Assert.Equal(
+            first.OffPeakWindows.Select(window => (window.Start, window.End, string.Join(",", window.Days))),
+            second.OffPeakWindows.Select(window => (window.Start, window.End, string.Join(",", window.Days))));
+    }
+
+    [Fact]
+    public void InvalidPeakOffPeakConfigIsRejected()
+    {
+        var service = CreatePeakOffPeakService();
+
+        AssertBadRequest(service.CreateModel(
+            OffPeakModelRequest("bad-zone", "Not/AZone", [Window("22:00", "24:00")])));
+        AssertBadRequest(service.CreateModel(
+            OffPeakModelRequest("bad-time", "UTC", [Window("2200", "24:00")])));
+        AssertBadRequest(service.CreateModel(
+            OffPeakModelRequest("bad-minute", "UTC", [Window("22:70", "24:00")])));
+        AssertBadRequest(service.CreateModel(
+            OffPeakModelRequest("start-as-end-of-day", "UTC", [Window("24:00", "06:00")])));
+        AssertBadRequest(service.CreateModel(
+            OffPeakModelRequest("same-time", "UTC", [Window("22:00", "22:00")])));
+        AssertBadRequest(service.CreateModel(
+            OffPeakModelRequest("bad-day", "UTC", [Window("22:00", "24:00", 8)])));
+        AssertBadRequest(service.CreateModel(OffPeakModelRequest(
+            "too-many-windows",
+            "UTC",
+            Enumerable.Range(0, PricingWindowCalendar.MaxWindows + 1)
+                .Select(index => Window("01:00", "02:00", (index % 7) + 1))
+                .ToList())));
+
+        // 校验必须发生在写库之前,否则会留下没有价格计划的模型。
+        Assert.Empty(service.ListModels(null, null, null).Payload!.Models);
+    }
+
+    [Fact]
+    public void OffPeakTieredRuleWithoutOffPeakTiersIsRejected()
+    {
+        var service = CreatePeakOffPeakService();
+        var request = OffPeakModelRequest("tier-guard", "UTC", [Window("22:00", "24:00")]);
+        request.Pricing!.Rules[0].BillingMode = ModelBillingModes.TieredTokens;
+        request.Pricing.Rules[0].Tiers = [new ModelPricingTierRequest { UpTo = null, UnitPrice = 1m }];
+        request.Pricing.Rules[0].OffPeakTiers = [];
+
+        AssertBadRequest(service.CreateModel(request));
+    }
+
+    [Fact]
+    public async Task ConfiguredPeakOffPeakPlanChangesBilledCost()
+    {
+        var service = CreatePeakOffPeakService();
+        // 管理台配置:上海时区,周一 22:00 起的跨午夜谷段。
+        Assert.True(service.CreateModel(
+            OffPeakModelRequest("e2e-model", "Asia/Shanghai", [Window("22:00", "06:00", 1)]))
+            .Succeeded);
+
+        // 周一 22:30 上海 = 14:30 UTC
+        Assert.Equal(0.5m, (await service.CalculateCostAsync(
+            null, null, "e2e-model", Tokens(1_000_000), Utc(2026, 1, 5, 14, 30))).Cost);
+        // 周二 01:00 上海 = 周一 17:00 UTC,属于周一晚间那一段
+        Assert.Equal(0.5m, (await service.CalculateCostAsync(
+            null, null, "e2e-model", Tokens(1_000_000), Utc(2026, 1, 5, 17, 0))).Cost);
+        // 周二 07:00 上海 = 周一 23:00 UTC,已出谷段
+        Assert.Equal(1m, (await service.CalculateCostAsync(
+            null, null, "e2e-model", Tokens(1_000_000), Utc(2026, 1, 5, 23, 0))).Cost);
+        // 周二 22:30 上海 = 周二 14:30 UTC,周二晚间未选中
+        Assert.Equal(1m, (await service.CalculateCostAsync(
+            null, null, "e2e-model", Tokens(1_000_000), Utc(2026, 1, 6, 14, 30))).Cost);
+    }
+
+    [Fact]
+    public void ExportImportRoundTripPreservesPeakOffPeakAndReportsUnchanged()
+    {
+        var service = CreatePeakOffPeakService();
+        Assert.True(service.CreateModel(
+            OffPeakModelRequest("round-trip", "Asia/Shanghai", [Window("22:00", "24:00", 1, 2, 3, 4, 5)]))
+            .Succeeded);
+
+        var exported = service.ExportModelCatalog();
+        Assert.True(exported.Succeeded);
+        Assert.Equal(2, exported.Payload!.Version);
+        var pricing = exported.Payload.Models.Single().Pricing!;
+        Assert.Equal("Asia/Shanghai", pricing.TimeZone);
+        Assert.Equal("22:00", pricing.OffPeakWindows.Single().Start);
+        Assert.Equal(new[] { 1, 2, 3, 4, 5 }, pricing.OffPeakWindows.Single().Days);
+        Assert.Equal(0.5m, pricing.Rules.Single(rule => rule.BillingItem == ModelBillingItems.Input).OffPeakUnitPrice);
+
+        var reimported = service.ImportModelCatalog(exported.Payload, dryRun: false);
+        Assert.True(reimported.Succeeded);
+        Assert.Equal(1, reimported.Payload!.Models.Unchanged);
+        Assert.Equal(0, reimported.Payload.Models.Updated);
+    }
+
+    [Fact]
+    public void ImportVersion1DocumentWithoutPeakOffPeakSucceeds()
+    {
+        var service = CreatePeakOffPeakService();
+        var document = new ModelCatalogTransferDocument
+        {
+            Type = "model_catalog",
+            Version = 1,
+            Providers =
+            [
+                new ModelCatalogProviderTransfer { Code = "peak-test", Name = "Peak Test", Enabled = true }
+            ],
+            Models =
+            [
+                new ModelCatalogModelTransfer
+                {
+                    ProviderCode = "peak-test",
+                    ModelKey = "legacy-doc",
+                    DisplayName = "legacy-doc",
+                    MatchType = ModelMatchTypes.Exact,
+                    MatchPattern = "legacy-doc",
+                    Enabled = true,
+                    Pricing = new ModelCatalogPricingTransfer
+                    {
+                        Currency = "USD",
+                        Enabled = true,
+                        Rules =
+                        [
+                            new ModelCatalogPricingRuleTransfer
+                            {
+                                BillingItem = ModelBillingItems.Input,
+                                BillingMode = ModelBillingModes.PerMillionTokens,
+                                UnitPrice = 1m,
+                                Enabled = true
+                            }
+                        ]
+                    }
+                }
+            ]
+        };
+
+        var result = service.ImportModelCatalog(document, dryRun: false);
+
+        Assert.True(result.Succeeded);
+        var model = service.ListModels(null, null, null).Payload!.Models
+            .Single(item => item.ModelKey == "legacy-doc");
+        Assert.Equal(string.Empty, model.Pricing!.TimeZone);
+        Assert.Empty(model.Pricing.OffPeakWindows);
+        Assert.False(model.Pricing.Rules.Single().OffPeakEnabled);
     }
 
     private static ModelCatalogTransferDocument ImportPayload()
@@ -1163,6 +1722,134 @@ public sealed class ModelCatalogServiceTests
             TiersJson = "[]",
             Enabled = true
         };
+    }
+
+    private static PricingOffPeakWindow Window(string start, string end, params int[] days)
+    {
+        return new PricingOffPeakWindow
+        {
+            Start = start,
+            End = end,
+            Days = days.ToList()
+        };
+    }
+
+    private static void AssertBadRequest<T>(ApiOpResult<T> result)
+    {
+        Assert.False(result.Succeeded);
+        Assert.Equal(400, result.Code);
+    }
+
+    private static ModelCatalogService CreatePeakOffPeakService()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+        }
+
+        var service = CreateService(dbPath);
+        var provider = service.CreateProvider(new ModelProviderUpsertRequest
+        {
+            Code = "peak-test",
+            Name = "Peak Test",
+            Enabled = true
+        });
+        Assert.True(provider.Succeeded);
+        return service;
+    }
+
+    private static ModelInfoUpdateRequest OffPeakModelRequest(
+        string modelKey,
+        string timeZone,
+        IEnumerable<PricingOffPeakWindow> windows)
+    {
+        return new ModelInfoUpdateRequest
+        {
+            ProviderCode = "peak-test",
+            ModelKey = modelKey,
+            DisplayName = modelKey,
+            MatchType = ModelMatchTypes.Exact,
+            MatchPattern = modelKey,
+            Enabled = true,
+            Pricing = new ModelPricingPlanRequest
+            {
+                Currency = "USD",
+                Enabled = true,
+                TimeZone = timeZone,
+                OffPeakWindows = windows.ToList(),
+                Rules =
+                [
+                    new ModelPricingRuleRequest
+                    {
+                        BillingItem = ModelBillingItems.Input,
+                        BillingMode = ModelBillingModes.PerMillionTokens,
+                        UnitPrice = 1m,
+                        OffPeakEnabled = true,
+                        OffPeakUnitPrice = 0.5m,
+                        Enabled = true
+                    }
+                ]
+            }
+        };
+    }
+
+    private static DateTimeOffset Utc(int year, int month, int day, int hour, int minute)
+    {
+        return new DateTimeOffset(year, month, day, hour, minute, 0, TimeSpan.Zero);
+    }
+
+    private static ModelInfo AddOffPeakModel(
+        IOpenCodexDbContext context,
+        Guid providerId,
+        string modelKey,
+        string timeZoneId,
+        IEnumerable<PricingOffPeakWindow> windows,
+        decimal peakUnitPrice,
+        decimal offPeakUnitPrice,
+        bool offPeakEnabled = true)
+    {
+        var model = new ModelInfo
+        {
+            Scope = ModelInfoScopes.Global,
+            ProviderId = providerId,
+            ChannelId = null,
+            ModelKey = modelKey,
+            DisplayName = modelKey,
+            Description = string.Empty,
+            MatchType = ModelMatchTypes.Exact,
+            MatchPattern = modelKey,
+            CatalogJson = "{}",
+            CapabilitiesJson = "{}",
+            Enabled = true,
+            Source = "test",
+            CreatedAt = 1,
+            UpdatedAt = 1
+        };
+        context.ModelInfos.Add(model);
+        context.SaveChanges();
+
+        var plan = new ModelPricingPlan
+        {
+            ModelInfoId = model.Id,
+            ChannelId = null,
+            Currency = "USD",
+            TimeZoneId = timeZoneId,
+            OffPeakWindowsJson = PricingWindowCalendar.Serialize(windows),
+            Enabled = true,
+            Source = "test",
+            CreatedAt = 1,
+            UpdatedAt = 1
+        };
+        context.ModelPricingPlans.Add(plan);
+        context.SaveChanges();
+
+        var rule = Rule(plan.Id, ModelBillingItems.Input, peakUnitPrice);
+        rule.OffPeakEnabled = offPeakEnabled;
+        rule.OffPeakUnitPrice = offPeakUnitPrice;
+        context.ModelPricingRules.Add(rule);
+        context.SaveChanges();
+        return model;
     }
 
     private static ModelCatalogService CreateService(
@@ -1817,5 +2504,28 @@ public sealed class ModelCatalogServiceTests
             $"{Guid.NewGuid():N}.db");
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
         return dbPath;
+    }
+}
+
+internal static class ModelCatalogServiceCostExtensions
+{
+    /// 与时段无关的测试统一用这个固定时刻:2026-01-05 周一 12:00 UTC。
+    /// 未配置峰谷的价格计划在任何时刻都按基础单价计费,因此该值只是让签名完整。
+    internal static readonly DateTimeOffset DefaultBillingInstant =
+        new(2026, 1, 5, 12, 0, 0, TimeSpan.Zero);
+
+    internal static Task<ModelPricingCalculationResult> CalculateCostAsync(
+        this ModelCatalogService service,
+        Guid? channelId,
+        string? requestModel,
+        string? upstreamModel,
+        ModelUsageVector usage)
+    {
+        return service.CalculateCostAsync(
+            channelId,
+            requestModel,
+            upstreamModel,
+            usage,
+            DefaultBillingInstant);
     }
 }

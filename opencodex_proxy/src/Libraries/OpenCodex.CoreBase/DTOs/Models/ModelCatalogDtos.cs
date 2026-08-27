@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using OpenCodex.CoreBase.Domain.Models;
 
 namespace OpenCodex.CoreBase.DTOs.Models;
 
@@ -57,6 +58,9 @@ public sealed class ModelPricingRuleResponse
         string billingMode,
         decimal unitPrice,
         IReadOnlyList<object?> tiers,
+        bool offPeakEnabled,
+        decimal offPeakUnitPrice,
+        IReadOnlyList<object?> offPeakTiers,
         bool enabled)
     {
         Id = id;
@@ -64,6 +68,9 @@ public sealed class ModelPricingRuleResponse
         BillingMode = billingMode;
         UnitPrice = unitPrice;
         Tiers = tiers;
+        OffPeakEnabled = offPeakEnabled;
+        OffPeakUnitPrice = offPeakUnitPrice;
+        OffPeakTiers = offPeakTiers;
         Enabled = enabled;
     }
 
@@ -82,6 +89,15 @@ public sealed class ModelPricingRuleResponse
     [JsonPropertyName("tiers")]
     public IReadOnlyList<object?> Tiers { get; }
 
+    [JsonPropertyName("off_peak_enabled")]
+    public bool OffPeakEnabled { get; }
+
+    [JsonPropertyName("off_peak_unit_price")]
+    public decimal OffPeakUnitPrice { get; }
+
+    [JsonPropertyName("off_peak_tiers")]
+    public IReadOnlyList<object?> OffPeakTiers { get; }
+
     [JsonPropertyName("enabled")]
     public bool Enabled { get; }
 }
@@ -94,6 +110,8 @@ public sealed class ModelPricingPlanResponse
         Guid? channelModelInfoId,
         Guid? channelId,
         string currency,
+        string timeZone,
+        IReadOnlyList<PricingOffPeakWindow> offPeakWindows,
         bool enabled,
         string source,
         IReadOnlyList<ModelPricingRuleResponse> rules,
@@ -105,6 +123,8 @@ public sealed class ModelPricingPlanResponse
         ChannelModelInfoId = channelModelInfoId;
         ChannelId = channelId;
         Currency = currency;
+        TimeZone = timeZone;
+        OffPeakWindows = offPeakWindows;
         Enabled = enabled;
         Source = source;
         Rules = rules;
@@ -126,6 +146,12 @@ public sealed class ModelPricingPlanResponse
 
     [JsonPropertyName("currency")]
     public string Currency { get; }
+
+    [JsonPropertyName("time_zone")]
+    public string TimeZone { get; }
+
+    [JsonPropertyName("off_peak_windows")]
+    public IReadOnlyList<PricingOffPeakWindow> OffPeakWindows { get; }
 
     [JsonPropertyName("enabled")]
     public bool Enabled { get; }

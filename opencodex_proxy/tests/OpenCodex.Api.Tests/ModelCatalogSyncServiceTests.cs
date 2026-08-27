@@ -143,7 +143,7 @@ public sealed class ModelCatalogSyncServiceTests
     }
 
     [Fact]
-    public async Task Version2Returns400()
+    public async Task UnknownVersionReturns400()
     {
         var dbPath = CreateDbPath();
         using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
@@ -153,7 +153,7 @@ public sealed class ModelCatalogSyncServiceTests
 
         var catalog = CreateCatalogService(dbPath);
         var document = CreateSyncDocument();
-        document.Version = 2;
+        document.Version = 3;
         var syncClient = new StubSyncClient(document);
         var service = new ModelCatalogSyncService(catalog, syncClient, CreateSettingsProvider());
 

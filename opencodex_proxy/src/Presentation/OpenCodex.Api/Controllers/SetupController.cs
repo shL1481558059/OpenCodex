@@ -58,14 +58,13 @@ public sealed class SetupController : ApiControllerBase
         }
 
         var savedSettings = _systemSettings.Save(settingsDraft);
-        await SessionState.SetUserAsync(
-            HttpContext,
+        await _authService.SetUserAsync(
             new SessionUser(
                 result.Payload.User.UserId,
                 result.Payload.User.Username,
                 result.Payload.User.Role,
                 result.Payload.User.Enabled),
-            _cookieOptions.Get(SessionState.AuthenticationScheme).ExpireTimeSpan);
+            _cookieOptions.Get(IAuthService.AuthenticationScheme).ExpireTimeSpan);
 
         return ApiResponse(
             ApiOpResult<SetupCompleteResponse>.Succeed(new SetupCompleteResponse(result.Payload, savedSettings)),

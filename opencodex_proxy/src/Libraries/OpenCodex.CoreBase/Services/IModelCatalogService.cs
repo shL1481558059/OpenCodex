@@ -53,5 +53,6 @@ public interface IModelCatalogService
        Guid? channelId,
        string? requestModel,
        string? upstreamModel,
-       ModelUsageVector usage);
+       ModelUsageVector usage,
+       DateTimeOffset billingInstant);
 }

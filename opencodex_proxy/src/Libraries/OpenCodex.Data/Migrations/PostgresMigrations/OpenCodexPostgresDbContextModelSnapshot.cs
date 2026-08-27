@@ -458,7 +458,15 @@ namespace OpenCodex.Data.Migrations.PostgresMigrations
                     b.Property<Guid?>("ModelInfoId")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("OffPeakWindowsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<string>("Source")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("TimeZoneId")
                         .IsRequired()
                         .HasColumnType("text");
 
@@ -494,6 +502,17 @@ namespace OpenCodex.Data.Migrations.PostgresMigrations
 
                     b.Property<bool>("Enabled")
                         .HasColumnType("boolean");
+
+                    b.Property<bool>("OffPeakEnabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("OffPeakTiersJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<decimal>("OffPeakUnitPrice")
+                        .HasPrecision(18, 8)
+                        .HasColumnType("numeric(18,8)");
 
                     b.Property<Guid>("PricingPlanId")
                         .HasColumnType("uuid");

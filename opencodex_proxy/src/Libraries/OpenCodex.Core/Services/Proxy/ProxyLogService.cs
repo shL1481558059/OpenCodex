@@ -179,6 +179,30 @@ public sealed class ProxyLogService : IProxyLogService
         return await WriteCompletedLogAsync(settings, context);
     }
 
+    // 计费时刻取请求进入网关的时刻(日志 CreatedAt):账单可复算,
+    // 长流式请求与多次 attempt 不会因为完成时间不同而落进不同的计费时段。
+    // 时间戳缺失或超出可表示范围时退回当前时刻,实际使用的时刻会写进价格快照。
+    private static DateTimeOffset BillingInstant(double? unixSeconds)
+    {
+        if (unixSeconds is not { } seconds || !double.IsFinite(seconds) || seconds <= 0)
+        {
+            return DateTimeOffset.UtcNow;
+        }
+
+        var milliseconds = seconds * 1000d;
+        if (milliseconds > DateTimeOffset.MaxValue.ToUnixTimeMilliseconds())
+        {
+            return DateTimeOffset.UtcNow;
+        }
+
+        return DateTimeOffset.FromUnixTimeMilliseconds((long)Math.Round(milliseconds));
+    }
+
+    private static double BillingInstantSeconds(DateTimeOffset value)
+    {
+        return value.ToUnixTimeMilliseconds() / 1000.0;
+    }
+
     private async Task<Guid> CompleteLogAsync(Guid requestLogId, ProxyRequestLogContext context)
     {
         var settings = _settingsProvider.GetSettings();
@@ -205,7 +229,8 @@ public sealed class ProxyLogService : IProxyLogService
                 usage.InputTokens,
                 usage.OutputTokens,
                 usage.CacheWriteTokens,
-                usage.CacheReadTokens));
+                usage.CacheReadTokens),
+            BillingInstant(log.CreatedAt));
         log.OwnerUserId = ResolveOwnerUserId(ownerUsername);
         log.ApiKeyId = context.ApiKeyId;
         log.Model = context.RequestModel ?? log.Model;
@@ -281,6 +306,8 @@ public sealed class ProxyLogService : IProxyLogService
            : ExtractUsage(responseForUsage, context.ChannelType);
 
        var channelId = ParseChannelId(context.ChannelId);
+       // 计费时刻与即将落库的 CreatedAt 用同一个值,保证账单可按日志时间原样复算。
+       var billingInstant = DateTimeOffset.UtcNow;
        var pricing = await _catalog.CalculateCostAsync(
            channelId,
            context.RequestModel,
@@ -289,13 +316,14 @@ public sealed class ProxyLogService : IProxyLogService
                 usage.InputTokens,
                 usage.OutputTokens,
                 usage.CacheWriteTokens,
-                usage.CacheReadTokens));
+                usage.CacheReadTokens),
+           billingInstant);
 
         var logId = WriteRequestLog(
             settings,
             new RequestLogWriteDto(
                 context.RequestId,
-                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+                BillingInstantSeconds(billingInstant),
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
                 DetermineLifecycleStatus(context.StatusCode, context.Error),

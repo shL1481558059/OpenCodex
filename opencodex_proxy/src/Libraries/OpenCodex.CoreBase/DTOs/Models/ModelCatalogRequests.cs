@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using OpenCodex.CoreBase.Domain.Models;
 
 namespace OpenCodex.CoreBase.DTOs.Models;
 
@@ -25,6 +26,16 @@ public sealed class ModelPricingRuleRequest
     [JsonPropertyName("tiers")]
     public List<ModelPricingTierRequest> Tiers { get; set; } = [];
 
+    /// 该计费项是否参与峰谷；为 false 时谷段同样使用基础单价。
+    [JsonPropertyName("off_peak_enabled")]
+    public bool OffPeakEnabled { get; set; }
+
+    [JsonPropertyName("off_peak_unit_price")]
+    public decimal OffPeakUnitPrice { get; set; }
+
+    [JsonPropertyName("off_peak_tiers")]
+    public List<ModelPricingTierRequest> OffPeakTiers { get; set; } = [];
+
     [JsonPropertyName("enabled")]
     public bool Enabled { get; set; } = true;
 }
@@ -33,6 +44,14 @@ public sealed class ModelPricingPlanRequest
 {
     [JsonPropertyName("currency")]
     public string Currency { get; set; } = "USD";
+
+    /// 峰谷判定使用的 IANA 时区 ID；留空表示不启用峰谷。
+    [JsonPropertyName("time_zone")]
+    public string TimeZone { get; set; } = string.Empty;
+
+    /// 谷段窗口；留空表示不启用峰谷。窗口外一律按峰价计费。
+    [JsonPropertyName("off_peak_windows")]
+    public List<PricingOffPeakWindow> OffPeakWindows { get; set; } = [];
 
     [JsonPropertyName("enabled")]
     public bool Enabled { get; set; } = true;

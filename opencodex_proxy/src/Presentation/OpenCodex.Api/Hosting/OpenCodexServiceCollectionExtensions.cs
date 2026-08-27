@@ -6,7 +6,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.OpenApi;
 using OpenCodex.Api.Configuration;
-using OpenCodex.Api.Controllers;
 using OpenCodex.Api.Infrastructure;
 using OpenCodex.Core.ExternalIntegrations;
 using OpenCodex.Core.Services;
@@ -191,10 +190,10 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddDataProtection()
             .PersistKeysToFileSystem(new DirectoryInfo(ResolveDataProtectionKeysPath(configuration)))
             .SetApplicationName(BuildDataProtectionApplicationName(configuration));
-        services.AddAuthentication(SessionState.AuthenticationScheme)
-            .AddCookie(SessionState.AuthenticationScheme, options =>
+        services.AddAuthentication(IAuthService.AuthenticationScheme)
+            .AddCookie(IAuthService.AuthenticationScheme, options =>
             {
-                options.Cookie.Name = SessionState.CookieName;
+                options.Cookie.Name = IAuthService.CookieName;
                 options.Cookie.HttpOnly = true;
                 options.Cookie.SameSite = SameSiteMode.Lax;
                 options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;

@@ -1,6 +1,9 @@
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Security;
 using OpenCodex.Core.Services.Mapping;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Http;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain;
@@ -13,15 +16,21 @@ namespace OpenCodex.Core.Services;
 
 public sealed class AuthService : IAuthService
 {
+    private const string UserIdClaimType = "opencodex_admin_user_id";
+    private const string EnabledClaimType = "opencodex_admin_enabled";
+
     private readonly IRepository<User> _userRepository;
     private readonly IOpenCodexRuntimeSettingsProvider _settingsProvider;
+    private readonly IHttpContextAccessor _httpContextAccessor;
 
     public AuthService(
         IRepository<User> userRepository,
-        IOpenCodexRuntimeSettingsProvider settingsProvider)
+        IOpenCodexRuntimeSettingsProvider settingsProvider,
+        IHttpContextAccessor httpContextAccessor)
     {
         _userRepository = userRepository;
         _settingsProvider = settingsProvider;
+        _httpContextAccessor = httpContextAccessor;
     }
 
     public ApiOpResult<SetupStateResponse> GetSetupState()
@@ -165,8 +174,49 @@ public sealed class AuthService : IAuthService
         return settings.AdminPassword.Length > 0;
     }
 
-    private static double UnixTimeSeconds()
+   private static double UnixTimeSeconds()
+   {
+       return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
+   }
+
+    public Task SetUserAsync(SessionUser user, TimeSpan persistentLifetime)
     {
-        return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
+        var context = _httpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HTTP context is not available");
+
+        var claims = new[]
+        {
+            new Claim(UserIdClaimType, user.UserId.ToString()),
+            new Claim(ClaimTypes.Name, user.Username),
+            new Claim(ClaimTypes.Role, user.Role),
+            new Claim(EnabledClaimType, user.Enabled ? "true" : "false")
+        };
+        var identity = new ClaimsIdentity(
+            claims,
+            IAuthService.AuthenticationScheme,
+            ClaimTypes.Name,
+            ClaimTypes.Role);
+        var principal = new ClaimsPrincipal(identity);
+        var now = DateTimeOffset.UtcNow;
+        context.User = principal;
+        return context.SignInAsync(
+            IAuthService.AuthenticationScheme,
+            principal,
+            new AuthenticationProperties
+            {
+                IsPersistent = true,
+                AllowRefresh = true,
+                IssuedUtc = now,
+                ExpiresUtc = now.Add(persistentLifetime)
+            });
+    }
+
+    public Task ClearUserAsync()
+    {
+        var context = _httpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HTTP context is not available");
+
+        context.User = new ClaimsPrincipal(new ClaimsIdentity());
+        return context.SignOutAsync(IAuthService.AuthenticationScheme);
     }
 }

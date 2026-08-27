@@ -1010,7 +1010,9 @@ public sealed class ObservabilityService : IObservabilityService
 
     private IReadOnlyList<ChannelDto> ReadScopedChannels(string currentUsername, bool isSuperadmin)
     {
-        var allChannels = _memoryCache.GetOrCreate(CacheKeys.ChannelConfig, entry =>
+        // ObservabilityService 只需要渠道的 id/name/owner/容量等轻量字段,
+        // 不应污染 ConfigService 的 ChannelConfig 缓存(后者含完整 models/headers/compat)。
+        var allChannels = _memoryCache.GetOrCreate(CacheKeys.ChannelObservation, entry =>
         {
             entry.AbsoluteExpirationRelativeToNow = ChannelConfigCacheTtl;
             return LoadAllScopedChannelDtos();

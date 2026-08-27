@@ -25,6 +25,9 @@ public sealed class ModelCatalogService : IModelCatalogService
 
     private static readonly TimeSpan PricingCacheTtl = TimeSpan.FromSeconds(60);
 
+    /// 导入导出文档版本。v2 起携带峰谷字段,导入仍兼容 v1。
+    internal const int ModelCatalogDocumentVersion = 2;
+
     private static int _localPricingVersion;
     private static int _lastKnownRedisPricingVersion;
     private static int _pendingRedisPricingVersionBump;
@@ -255,6 +258,7 @@ public sealed class ModelCatalogService : IModelCatalogService
     {
         try
         {
+            ValidatePricingRequest(request.Pricing);
             var now = UnixTimeSeconds();
             var provider = ResolveProvider(request.ProviderId, request.ProviderCode);
             var modelKey = NormalizeRequired(request.ModelKey, "model_key");
@@ -301,6 +305,7 @@ public sealed class ModelCatalogService : IModelCatalogService
     {
         try
         {
+            ValidatePricingRequest(request.Pricing);
             var model = _models.Table.FirstOrDefault(item => item.Id == id);
             if (model is null)
             {
@@ -507,7 +512,7 @@ public sealed class ModelCatalogService : IModelCatalogService
         return ApiOpResult<ModelCatalogTransferDocument>.Succeed(new ModelCatalogTransferDocument
         {
             Type = "model_catalog",
-            Version = 1,
+            Version = ModelCatalogDocumentVersion,
             ExportedAt = DateTimeOffset.UtcNow.ToString("O"),
             Providers = providers,
             Models = models
@@ -894,6 +899,7 @@ public sealed class ModelCatalogService : IModelCatalogService
     {
         try
         {
+            ValidatePricingRequest(request.Pricing);
             var channel = FindChannelInScope(channelId);
             if (channel is null)
             {
@@ -991,14 +997,15 @@ public sealed class ModelCatalogService : IModelCatalogService
        Guid? channelId,
        string? requestModel,
        string? upstreamModel,
-       ModelUsageVector usage)
+       ModelUsageVector usage,
+       DateTimeOffset billingInstant)
     {
         // 缓存定价解析(按 channelId + upstreamModel),扁平 DTO 规避 PricingResolution 不可序列化的问题。
         // rules/provider 为索引小查询,每次现查;usage 计算每请求不同,不可缓存。
         var cached = await ResolvePricingCachedAsync(channelId, upstreamModel);
         if (cached is null || !cached.HasModel || !cached.HasPlan)
         {
-            return EmptyCalculation(cached?.Reason ?? "model_not_matched");
+            return EmptyCalculation(cached?.Reason ?? "model_not_matched", billingInstant);
         }
 
         var planId = cached.PlanId!.Value;
@@ -1007,7 +1014,7 @@ public sealed class ModelCatalogService : IModelCatalogService
             .ToList();
         if (rules.Count == 0)
         {
-            return EmptyCalculation("pricing_plan_has_no_rules");
+            return EmptyCalculation("pricing_plan_has_no_rules", billingInstant);
         }
 
         var providerId = cached.ProviderId!.Value;
@@ -1016,19 +1023,29 @@ public sealed class ModelCatalogService : IModelCatalogService
         var modelKey = cached.ModelKey!;
         var matchType = cached.MatchType!;
         var matchPattern = cached.MatchPattern!;
+        // 时段判定必须每请求现算:定价缓存 TTL 内可能跨越窗口边界,一旦缓存 phase 就会静默算错。
+        // 同一请求只判定一次,四个计费项共用,避免 input 落峰段而 output 落谷段。
+        var phase = PricingWindowCalendar.Evaluate(
+            cached.TimeZoneId,
+            cached.OffPeakWindowsJson,
+            billingInstant);
         var total = 0m;
         var snapshotRules = new List<ModelPricingSnapshotRule>();
         foreach (var rule in rules)
         {
+            var useOffPeak = phase.IsOffPeak && rule.OffPeakEnabled;
             var quantity = Quantity(rule, usage);
-            var cost = CalculateRuleCost(rule, quantity);
+            var unitPrice = useOffPeak ? rule.OffPeakUnitPrice : rule.UnitPrice;
+            var tiersJson = useOffPeak ? rule.OffPeakTiersJson : rule.TiersJson;
+            var cost = CalculateRuleCost(rule.BillingMode, quantity, unitPrice, tiersJson);
             total += cost;
             snapshotRules.Add(new ModelPricingSnapshotRule(
                 rule.BillingItem,
                 rule.BillingMode,
                 quantity,
-                rule.UnitPrice,
-                cost));
+                unitPrice,
+                cost,
+                useOffPeak ? PricingPhases.OffPeak : PricingPhases.Peak));
         }
 
         var provider = _providers.TableNoTracking.FirstOrDefault(item => item.Id == providerId);
@@ -1043,6 +1060,11 @@ public sealed class ModelCatalogService : IModelCatalogService
             modelKey,
             matchType,
             matchPattern,
+            phase.Phase,
+            phase.Source,
+            ToUnixSeconds(billingInstant),
+            phase.TimeZoneId,
+            phase.MatchedWindow,
             snapshotRules);
         var snapshotJson = JsonSerializer.Serialize(snapshot);
 
@@ -1057,6 +1079,8 @@ public sealed class ModelCatalogService : IModelCatalogService
             matchType,
             matchPattern,
             cached.Reason,
+            phase.Phase,
+            phase.Source,
             snapshotJson);
     }
 
@@ -1173,6 +1197,8 @@ public sealed class ModelCatalogService : IModelCatalogService
             resolution.Plan is not null,
             resolution.Plan?.Id,
             resolution.Plan?.Currency,
+            resolution.Plan?.TimeZoneId ?? string.Empty,
+            resolution.Plan?.OffPeakWindowsJson ?? "[]",
             hasModel ? resolution.ProviderId : null,
             resolution.Model?.Id,
             resolution.ChannelModel?.Id,
@@ -1187,6 +1213,8 @@ public sealed class ModelCatalogService : IModelCatalogService
         bool HasPlan,
         Guid? PlanId,
         string? PlanCurrency,
+        string TimeZoneId,
+        string OffPeakWindowsJson,
         Guid? ProviderId,
         Guid? ModelInfoId,
         Guid? ChannelModelInfoId,
@@ -1348,18 +1376,22 @@ public sealed class ModelCatalogService : IModelCatalogService
         };
     }
 
-    private static decimal CalculateRuleCost(ModelPricingRule rule, int quantity)
+    private static decimal CalculateRuleCost(
+        string billingMode,
+        int quantity,
+        decimal unitPrice,
+        string tiersJson)
     {
         if (quantity <= 0)
         {
             return 0m;
         }
 
-        return rule.BillingMode switch
+        return billingMode switch
         {
-            ModelBillingModes.PerRequest => quantity * rule.UnitPrice,
-            ModelBillingModes.PerMillionTokens => quantity * rule.UnitPrice / 1_000_000m,
-            ModelBillingModes.TieredTokens => CalculateTieredCost(quantity, rule.TiersJson),
+            ModelBillingModes.PerRequest => quantity * unitPrice,
+            ModelBillingModes.PerMillionTokens => quantity * unitPrice / 1_000_000m,
+            ModelBillingModes.TieredTokens => CalculateTieredCost(quantity, tiersJson),
             _ => 0m
         };
     }
@@ -1428,6 +1460,8 @@ public sealed class ModelCatalogService : IModelCatalogService
             ModelInfoId = model.Id,
             ChannelId = model.ChannelId,
             Currency = NormalizeCurrency(request.Currency),
+            TimeZoneId = PricingWindowCalendar.NormalizeTimeZoneId(request.TimeZone),
+            OffPeakWindowsJson = PricingWindowCalendar.Serialize(request.OffPeakWindows),
             Enabled = request.Enabled,
             Source = source,
             CreatedAt = now,
@@ -1436,15 +1470,7 @@ public sealed class ModelCatalogService : IModelCatalogService
         _plans.Insert(plan);
 
         var rules = NormalizeRules(request.Rules)
-            .Select(rule => new ModelPricingRule
-            {
-                PricingPlanId = plan.Id,
-                BillingItem = NormalizeBillingItem(rule.BillingItem),
-                BillingMode = NormalizeBillingMode(rule.BillingMode),
-                UnitPrice = ValidatePrice(rule.UnitPrice, "unit_price"),
-                TiersJson = SerializeTiers(rule.Tiers),
-                Enabled = rule.Enabled
-            })
+            .Select(rule => ToPricingRule(plan.Id, rule))
             .ToList();
         if (rules.Count > 0)
         {
@@ -1470,6 +1496,8 @@ public sealed class ModelCatalogService : IModelCatalogService
             ChannelModelInfoId = model.Id,
             ChannelId = model.ChannelId,
             Currency = NormalizeCurrency(request.Currency),
+            TimeZoneId = PricingWindowCalendar.NormalizeTimeZoneId(request.TimeZone),
+            OffPeakWindowsJson = PricingWindowCalendar.Serialize(request.OffPeakWindows),
             Enabled = request.Enabled,
             Source = source,
             CreatedAt = now,
@@ -1478,15 +1506,7 @@ public sealed class ModelCatalogService : IModelCatalogService
         _plans.Insert(plan);
 
         var rules = NormalizeRules(request.Rules)
-            .Select(rule => new ModelPricingRule
-            {
-                PricingPlanId = plan.Id,
-                BillingItem = NormalizeBillingItem(rule.BillingItem),
-                BillingMode = NormalizeBillingMode(rule.BillingMode),
-                UnitPrice = ValidatePrice(rule.UnitPrice, "unit_price"),
-                TiersJson = SerializeTiers(rule.Tiers),
-                Enabled = rule.Enabled
-            })
+            .Select(rule => ToPricingRule(plan.Id, rule))
             .ToList();
         if (rules.Count > 0)
         {
@@ -1554,6 +1574,8 @@ public sealed class ModelCatalogService : IModelCatalogService
             ChannelModelInfoId = null,
             ChannelId = null,
             Currency = NormalizeCurrency(pricing.Currency),
+            TimeZoneId = PricingWindowCalendar.NormalizeTimeZoneId(pricing.TimeZone),
+            OffPeakWindowsJson = PricingWindowCalendar.Serialize(pricing.OffPeakWindows),
             Enabled = pricing.Enabled,
             Source = opts.Source,
             CreatedAt = now,
@@ -1562,15 +1584,7 @@ public sealed class ModelCatalogService : IModelCatalogService
         _plans.Insert(plan);
 
         var rules = pricing.Rules
-            .Select(rule => new ModelPricingRule
-            {
-                PricingPlanId = plan.Id,
-                BillingItem = NormalizeBillingItem(rule.BillingItem),
-                BillingMode = NormalizeBillingMode(rule.BillingMode),
-                UnitPrice = ValidatePrice(rule.UnitPrice, "unit_price"),
-                TiersJson = SerializeImportTiers(rule.Tiers),
-                Enabled = rule.Enabled
-            })
+            .Select(rule => ToImportedPricingRule(plan.Id, rule))
             .ToList();
         if (rules.Count > 0)
         {
@@ -1766,6 +1780,9 @@ public sealed class ModelCatalogService : IModelCatalogService
                 rule.BillingMode,
                 rule.UnitPrice,
                 DeserializeList(rule.TiersJson),
+                rule.OffPeakEnabled,
+                rule.OffPeakUnitPrice,
+                DeserializeList(rule.OffPeakTiersJson),
                 rule.Enabled))
             .ToList();
 
@@ -1775,6 +1792,8 @@ public sealed class ModelCatalogService : IModelCatalogService
             plan.ChannelModelInfoId,
             plan.ChannelId,
             plan.Currency,
+            plan.TimeZoneId,
+            PricingWindowCalendar.Deserialize(plan.OffPeakWindowsJson),
             plan.Enabled,
             plan.Source,
             rules,
@@ -1828,6 +1847,8 @@ public sealed class ModelCatalogService : IModelCatalogService
                 : new ModelCatalogPricingTransfer
                 {
                     Currency = plan.Currency,
+                    TimeZone = plan.TimeZoneId,
+                    OffPeakWindows = PricingWindowCalendar.Deserialize(plan.OffPeakWindowsJson).ToList(),
                     Enabled = plan.Enabled,
                     Rules = rulesForPlan(plan).Select(ToPricingRuleTransfer).ToList()
                 }
@@ -1842,6 +1863,15 @@ public sealed class ModelCatalogService : IModelCatalogService
             BillingMode = rule.BillingMode,
             UnitPrice = rule.UnitPrice,
             Tiers = DeserializeTiers(rule.TiersJson)
+                .Select(tier => new ModelCatalogPricingTierTransfer
+                {
+                    UpTo = tier.UpTo,
+                    UnitPrice = tier.UnitPrice
+                })
+                .ToList(),
+            OffPeakEnabled = rule.OffPeakEnabled,
+            OffPeakUnitPrice = rule.OffPeakUnitPrice,
+            OffPeakTiers = DeserializeTiers(rule.OffPeakTiersJson)
                 .Select(tier => new ModelCatalogPricingTierTransfer
                 {
                     UpTo = tier.UpTo,
@@ -1867,6 +1897,82 @@ public sealed class ModelCatalogService : IModelCatalogService
             new ModelPricingRuleRequest { BillingItem = ModelBillingItems.CacheWrite, BillingMode = ModelBillingModes.PerMillionTokens },
             new ModelPricingRuleRequest { BillingItem = ModelBillingItems.CacheRead, BillingMode = ModelBillingModes.PerMillionTokens }
         ];
+    }
+
+    private static ModelPricingRule ToPricingRule(Guid planId, ModelPricingRuleRequest rule)
+    {
+        var billingMode = NormalizeBillingMode(rule.BillingMode);
+        ValidateOffPeakTierCoverage(
+            rule.OffPeakEnabled,
+            billingMode,
+            rule.OffPeakTiers.Count);
+        return new ModelPricingRule
+        {
+            PricingPlanId = planId,
+            BillingItem = NormalizeBillingItem(rule.BillingItem),
+            BillingMode = billingMode,
+            UnitPrice = ValidatePrice(rule.UnitPrice, "unit_price"),
+            TiersJson = SerializeTiers(rule.Tiers),
+            OffPeakEnabled = rule.OffPeakEnabled,
+            OffPeakUnitPrice = ValidatePrice(rule.OffPeakUnitPrice, "off_peak_unit_price"),
+            OffPeakTiersJson = SerializeTiers(rule.OffPeakTiers),
+            Enabled = rule.Enabled
+        };
+    }
+
+    // 价格计划的校验必须在写库之前跑完:仓储的 Insert 会立即 SaveChanges,
+    // 校验失败若发生在插入之后,会留下一个没有价格的模型,该模型后续请求会静默按 0 成本记账。
+    private static void ValidatePricingRequest(ModelPricingPlanRequest? request)
+    {
+        if (request is null)
+        {
+            return;
+        }
+
+        NormalizeCurrency(request.Currency);
+        PricingWindowCalendar.NormalizeTimeZoneId(request.TimeZone);
+        PricingWindowCalendar.Normalize(request.OffPeakWindows);
+        foreach (var rule in NormalizeRules(request.Rules))
+        {
+            ToPricingRule(Guid.Empty, rule);
+        }
+    }
+
+    private static ModelPricingRule ToImportedPricingRule(Guid planId, ModelCatalogPricingRuleTransfer rule)
+    {
+        var billingMode = NormalizeBillingMode(rule.BillingMode);
+        ValidateOffPeakTierCoverage(
+            rule.OffPeakEnabled,
+            billingMode,
+            rule.OffPeakTiers.Count);
+        return new ModelPricingRule
+        {
+            PricingPlanId = planId,
+            BillingItem = NormalizeBillingItem(rule.BillingItem),
+            BillingMode = billingMode,
+            UnitPrice = ValidatePrice(rule.UnitPrice, "unit_price"),
+            TiersJson = SerializeImportTiers(rule.Tiers),
+            OffPeakEnabled = rule.OffPeakEnabled,
+            OffPeakUnitPrice = ValidatePrice(rule.OffPeakUnitPrice, "off_peak_unit_price"),
+            OffPeakTiersJson = SerializeImportTiers(rule.OffPeakTiers),
+            Enabled = rule.Enabled
+        };
+    }
+
+    // 阶梯计价开了峰谷却没有谷段阶梯,金额会静默算成 0,直接拒绝而不是猜一个回退。
+    private static void ValidateOffPeakTierCoverage(
+        bool offPeakEnabled,
+        string billingMode,
+        int offPeakTierCount)
+    {
+        if (offPeakEnabled
+            && billingMode == ModelBillingModes.TieredTokens
+            && offPeakTierCount == 0)
+        {
+            throw new ArgumentException(
+                "off_peak_tiers is required when off_peak_enabled is true and billing_mode is tiered_tokens",
+                "off_peak_tiers");
+        }
     }
 
     private static string NormalizeMatchType(string? value)
@@ -2111,9 +2217,10 @@ public sealed class ModelCatalogService : IModelCatalogService
             errors.Add("type must be 'model_catalog'");
         }
 
-        if (document.Version != 1)
+        // v1 没有峰谷字段,导入时按未启用处理;v2 起带 time_zone 与 off_peak_windows。
+        if (document.Version is not (1 or ModelCatalogDocumentVersion))
         {
-            errors.Add("version must be 1");
+            errors.Add($"version must be 1 or {ModelCatalogDocumentVersion}");
         }
 
         var providerCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -2173,12 +2280,16 @@ public sealed class ModelCatalogService : IModelCatalogService
         }
 
         NormalizeCurrency(model.Pricing.Currency);
+        PricingWindowCalendar.NormalizeTimeZoneId(model.Pricing.TimeZone);
+        PricingWindowCalendar.Normalize(model.Pricing.OffPeakWindows);
         foreach (var rule in model.Pricing.Rules)
         {
             NormalizeBillingItem(rule.BillingItem);
-            NormalizeBillingMode(rule.BillingMode);
+            var billingMode = NormalizeBillingMode(rule.BillingMode);
             ValidatePrice(rule.UnitPrice, "unit_price");
-            foreach (var tier in rule.Tiers)
+            ValidatePrice(rule.OffPeakUnitPrice, "off_peak_unit_price");
+            ValidateOffPeakTierCoverage(rule.OffPeakEnabled, billingMode, rule.OffPeakTiers.Count);
+            foreach (var tier in rule.Tiers.Concat(rule.OffPeakTiers))
             {
                 if (tier.UpTo.HasValue && tier.UpTo.Value < 0)
                 {
@@ -2236,6 +2347,8 @@ public sealed class ModelCatalogService : IModelCatalogService
         IReadOnlyDictionary<Guid, List<ModelPricingRule>> rulesByPlanId)
     {
         if (plan.Currency != NormalizeCurrency(transfer.Currency)
+            || plan.TimeZoneId != PricingWindowCalendar.NormalizeTimeZoneId(transfer.TimeZone)
+            || plan.OffPeakWindowsJson != PricingWindowCalendar.Serialize(transfer.OffPeakWindows)
             || plan.Enabled != transfer.Enabled
             || plan.ModelInfoId != model.Id
             || plan.ChannelModelInfoId != null
@@ -2261,6 +2374,9 @@ public sealed class ModelCatalogService : IModelCatalogService
                 BillingMode = NormalizeBillingMode(rule.BillingMode),
                 UnitPrice = rule.UnitPrice,
                 TiersJson = SerializeImportTiers(rule.Tiers),
+                OffPeakEnabled = rule.OffPeakEnabled,
+                OffPeakUnitPrice = rule.OffPeakUnitPrice,
+                OffPeakTiersJson = SerializeImportTiers(rule.OffPeakTiers),
                 Enabled = rule.Enabled
             })
             .ToList();
@@ -2270,9 +2386,19 @@ public sealed class ModelCatalogService : IModelCatalogService
                 NormalizeBillingMode(rule.BillingMode),
                 rule.UnitPrice,
                 rule.TiersJson,
+                rule.OffPeakEnabled,
+                rule.OffPeakUnitPrice,
+                rule.OffPeakTiersJson,
                 rule.Enabled))
             .SequenceEqual(expected.Select(rule =>
-                (rule.BillingItem, rule.BillingMode, rule.UnitPrice, rule.TiersJson, rule.Enabled)));
+                (rule.BillingItem,
+                    rule.BillingMode,
+                    rule.UnitPrice,
+                    rule.TiersJson,
+                    rule.OffPeakEnabled,
+                    rule.OffPeakUnitPrice,
+                    rule.OffPeakTiersJson,
+                    rule.Enabled)));
     }
 
     private static ModelCatalogImportCounts ImportCounts(
@@ -2309,7 +2435,9 @@ public sealed class ModelCatalogService : IModelCatalogService
             .SingleOrDefault();
     }
 
-    private static ModelPricingCalculationResult EmptyCalculation(string resolution)
+    private static ModelPricingCalculationResult EmptyCalculation(
+        string resolution,
+        DateTimeOffset billingInstant)
     {
         var snapshot = new ModelPricingSnapshot(
             resolution,
@@ -2321,6 +2449,11 @@ public sealed class ModelCatalogService : IModelCatalogService
             null,
             null,
             null,
+            null,
+            PricingPhases.Peak,
+            PricingPhaseSources.Disabled,
+            ToUnixSeconds(billingInstant),
+            string.Empty,
             null,
             []);
         return new ModelPricingCalculationResult(
@@ -2334,7 +2467,14 @@ public sealed class ModelCatalogService : IModelCatalogService
             null,
             null,
             resolution,
+            PricingPhases.Peak,
+            PricingPhaseSources.Disabled,
             JsonSerializer.Serialize(snapshot));
+    }
+
+    private static double ToUnixSeconds(DateTimeOffset value)
+    {
+        return value.ToUnixTimeMilliseconds() / 1000.0;
     }
 
     private static double UnixTimeSeconds()

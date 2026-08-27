@@ -1,5 +1,7 @@
 export const MODEL_CATALOG_TYPE = "model_catalog";
-export const MODEL_CATALOG_VERSION = 1;
+export const MODEL_CATALOG_VERSION = 2;
+// v1 没有峰谷字段，读入后按未启用处理，再以 v2 提交给后端。
+export const SUPPORTED_MODEL_CATALOG_VERSIONS = [1, 2];
 
 export function createModelCatalogImportState() {
   return {
@@ -29,8 +31,8 @@ export function parseModelCatalogFile(text, fileName) {
   if (parsed.type !== MODEL_CATALOG_TYPE) {
     throw new Error("文件类型必须是 model_catalog");
   }
-  if (parsed.version !== MODEL_CATALOG_VERSION) {
-    throw new Error("仅支持版本 1 的导入文件");
+  if (!SUPPORTED_MODEL_CATALOG_VERSIONS.includes(parsed.version)) {
+    throw new Error("仅支持版本 1 或 2 的导入文件");
   }
   if (!Array.isArray(parsed.providers)) {
     throw new Error("providers 必须是数组");
@@ -141,6 +143,10 @@ function normalizeModel(item) {
     : {
         currency: String(item.pricing?.currency || "USD").trim().toUpperCase() || "USD",
         enabled: item.pricing?.enabled !== false,
+        time_zone: String(item.pricing?.time_zone || "").trim(),
+        off_peak_windows: Array.isArray(item.pricing?.off_peak_windows)
+          ? item.pricing.off_peak_windows.map((window) => normalizeOffPeakWindow(window))
+          : [],
         rules: Array.isArray(item.pricing?.rules)
           ? item.pricing.rules.map((rule) => normalizeRule(rule))
           : []
@@ -177,6 +183,25 @@ function normalizeRule(rule) {
           unit_price: Number(tier?.unit_price || 0)
         }))
       : [],
+    off_peak_enabled: rule.off_peak_enabled === true,
+    off_peak_unit_price: Number(rule.off_peak_unit_price || 0),
+    off_peak_tiers: Array.isArray(rule.off_peak_tiers)
+      ? rule.off_peak_tiers.map((tier) => ({
+          up_to: tier?.up_to == null || tier?.up_to === "" ? null : Number(tier.up_to),
+          unit_price: Number(tier?.unit_price || 0)
+        }))
+      : [],
     enabled: rule.enabled !== false
+  };
+}
+
+function normalizeOffPeakWindow(window) {
+  if (!window || typeof window !== "object" || Array.isArray(window)) {
+    throw new Error("pricing.off_peak_windows 内存在非法条目");
+  }
+  return {
+    start: String(window.start || "").trim(),
+    end: String(window.end || "").trim(),
+    days: Array.isArray(window.days) ? window.days.map((day) => Number(day)) : []
   };
 }

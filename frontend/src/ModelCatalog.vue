@@ -18,11 +18,6 @@
           <el-option label="启用" :value="true" />
           <el-option label="停用" :value="false" />
         </el-select>
-        <el-button
-          v-if="models.length > 0"
-          :icon="selectAllIcon"
-          @click="toggleSelectAll"
-        >{{ selectedAll ? "取消全选" : "全选当前筛选" }}</el-button>
         <template v-if="selectedModels.length > 0">
           <el-button
             class="batch-action-button"
@@ -56,7 +51,6 @@
             <el-dropdown-menu>
               <el-dropdown-item command="sync" :icon="RefreshRight">同步最新模型</el-dropdown-item>
               <el-dropdown-item command="file" :icon="Upload">导入本地 json</el-dropdown-item>
-              <el-dropdown-item command="overwrite" :icon="Warning" divided>覆盖已有模型</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
@@ -185,7 +179,28 @@
 
         <div v-if="catalogImportState.origin === 'overwrite'" class="catalog-overwrite-confirm">
         <el-checkbox v-model="catalogImportState.overwriteConfirmed">我已了解本地修改将被覆盖</el-checkbox>
+       </div>
+     </template>
+
+      <template v-else-if="catalogImportState.phase === 'confirm'">
+        <el-alert
+          type="info"
+          show-icon
+          :closable="false"
+          title="即将从远端同步模型目录"
+          description="将拉取远端目录并与本地对比，确认前不会修改任何数据。"
+        />
+        <div class="catalog-sync-confirm">
+          <el-checkbox v-model="syncOverwrite">覆盖已有模型</el-checkbox>
         </div>
+        <el-alert
+          v-if="syncOverwrite"
+          type="warning"
+          show-icon
+          :closable="false"
+          title="覆盖模式"
+          description="将按远端改写已存在模型的名称、匹配规则、能力与价格，本地修改不可恢复；启用状态、供应商信息、本地独有模型不受影响。"
+        />
       </template>
 
       <template v-else-if="catalogImportState.phase === 'loading'">
@@ -205,6 +220,12 @@
       <template #footer>
         <div class="drawer-footer">
           <el-button @click="closeCatalogImportDialog">取消</el-button>
+          <el-button
+            v-if="catalogImportState.phase === 'confirm'"
+            type="primary"
+            :loading="catalogSyncing"
+            @click="beginSync"
+          >开始同步</el-button>
           <el-button
             v-if="catalogImportState.origin === 'overwrite' && catalogImportState.phase === 'preview'"
             :loading="catalogExporting"
@@ -274,8 +295,8 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="source" label="来源" width="140" show-overflow-tooltip />
-        <el-table-column label="操作" width="210" align="center">
+       <el-table-column prop="source" label="来源" width="140" show-overflow-tooltip />
+        <el-table-column label="操作" width="210" align="center" fixed="right">
         <template #default="{ row }">
           <div class="inline-actions channel-table-actions">
             <el-button size="small" :icon="Edit" @click="openModelDialog(row)">编辑</el-button>
@@ -472,6 +493,64 @@
         </el-row>
 
         <el-divider content-position="left">计费规则</el-divider>
+        <div class="off-peak-panel">
+          <div class="off-peak-panel__head">
+            <el-select
+              v-model="modelDraft.pricing.time_zone"
+              filterable
+              allow-create
+              default-first-option
+              clearable
+              placeholder="峰谷时区，留空表示不启用"
+              class="off-peak-zone"
+            >
+              <el-option v-for="zone in offPeakTimeZones" :key="zone" :label="zone" :value="zone" />
+            </el-select>
+            <span class="off-peak-panel__hint">{{ offPeakHint }}</span>
+          </div>
+
+          <div
+            v-for="(window, index) in modelDraft.pricing.off_peak_windows"
+            :key="index"
+            class="off-peak-window"
+          >
+            <el-select v-model="window.start" filterable allow-create default-first-option class="off-peak-time">
+              <el-option v-for="time in offPeakTimeOptions" :key="`s-${time}`" :label="time" :value="time" />
+            </el-select>
+            <span class="off-peak-window__sep">至</span>
+            <el-select v-model="window.end" filterable allow-create default-first-option class="off-peak-time">
+              <el-option v-for="time in offPeakTimeOptions" :key="`e-${time}`" :label="time" :value="time" />
+            </el-select>
+            <el-select
+              v-model="window.days"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              placeholder="每天"
+              class="off-peak-days"
+            >
+              <el-option v-for="day in offPeakWeekdays" :key="day.value" :label="day.label" :value="day.value" />
+            </el-select>
+            <el-button link type="danger" :icon="Delete" @click="removeOffPeakWindow(index)" />
+            <span v-if="crossesMidnight(window)" class="off-peak-window__note">保存后按起始日拆成两段</span>
+          </div>
+
+          <div class="off-peak-panel__actions">
+            <el-button link type="primary" :icon="Plus" @click="addOffPeakWindow">添加谷段窗口</el-button>
+            <div class="off-peak-discount">
+              <span>谷段折扣</span>
+              <el-input-number
+                v-model="offPeakDiscount"
+                :min="0"
+                :max="1"
+                :step="0.05"
+                :precision="2"
+                size="small"
+              />
+              <el-button size="small" @click="fillOffPeakDiscount">按折扣填充谷价</el-button>
+            </div>
+          </div>
+        </div>
         <el-table
           v-if="!isMobile"
           :data="modelDraft.pricing.rules"
@@ -496,6 +575,23 @@
               <el-input-number v-model="row.unit_price" :min="0" :precision="8" :step="0.01" class="full-width" />
             </template>
           </el-table-column>
+          <el-table-column label="峰谷" width="70" align="center">
+            <template #default="{ row }">
+              <el-switch v-model="row.off_peak_enabled" :disabled="!offPeakEnabledForDraft" />
+            </template>
+          </el-table-column>
+          <el-table-column label="谷段单价" width="160">
+            <template #default="{ row }">
+              <el-input-number
+                v-model="row.off_peak_unit_price"
+                :min="0"
+                :precision="8"
+                :step="0.01"
+                :disabled="!offPeakEnabledForDraft || row.off_peak_enabled !== true"
+                class="full-width"
+              />
+            </template>
+          </el-table-column>
           <el-table-column label="阶梯">
             <template #default="{ row }">
               <el-input
@@ -503,6 +599,14 @@
                 type="textarea"
                 :rows="2"
                 :disabled="row.billing_mode !== 'tiered_tokens'"
+              />
+              <el-input
+                v-if="row.billing_mode === 'tiered_tokens' && row.off_peak_enabled === true"
+                v-model="row.off_peak_tiers_text"
+                type="textarea"
+                :rows="2"
+                class="off-peak-tiers"
+                placeholder="谷段阶梯 JSON"
               />
             </template>
           </el-table-column>
@@ -540,9 +644,31 @@
                 class="full-width"
               />
             </label>
+            <div class="model-catalog-rule-switch">
+              <span>峰谷计费</span>
+              <el-switch v-model="rule.off_peak_enabled" :disabled="!offPeakEnabledForDraft" />
+            </div>
+            <label v-if="rule.off_peak_enabled === true" class="model-catalog-rule-field">
+              <span>谷段单价</span>
+              <el-input-number
+                v-model="rule.off_peak_unit_price"
+                :min="0"
+                :precision="8"
+                :step="0.01"
+                :disabled="!offPeakEnabledForDraft"
+                class="full-width"
+              />
+            </label>
             <label v-if="rule.billing_mode === 'tiered_tokens'" class="model-catalog-rule-field">
               <span>阶梯 JSON</span>
               <el-input v-model="rule.tiers_text" type="textarea" :rows="4" />
+            </label>
+            <label
+              v-if="rule.billing_mode === 'tiered_tokens' && rule.off_peak_enabled === true"
+              class="model-catalog-rule-field"
+            >
+              <span>谷段阶梯 JSON</span>
+              <el-input v-model="rule.off_peak_tiers_text" type="textarea" :rows="4" />
             </label>
           </section>
         </div>
@@ -614,6 +740,17 @@ import {
   resetModelCatalogImport,
   syncModelKeys
 } from "./modelCatalogImportState.js";
+import {
+  OFF_PEAK_TIME_OPTIONS,
+  OFF_PEAK_TIME_ZONES,
+  OFF_PEAK_WEEKDAYS,
+  applyOffPeakDiscount,
+  crossesMidnight,
+  currentPhaseLabel,
+  emptyOffPeakWindow,
+  normalizeOffPeakWindows,
+  offPeakConfigured
+} from "./pricingOffPeak.js";
 
 const props = defineProps({
   api: { type: Function, required: true }
@@ -628,9 +765,15 @@ const catalogExporting = ref(false);
 const catalogImporting = ref(false);
 const catalogSyncing = ref(false);
 const catalogImportVisible = ref(false);
+const syncOverwrite = ref(false);
 const catalogFileInput = ref(null);
 const catalogImportState = reactive(createModelCatalogImportState());
 const modelDialogVisible = ref(false);
+const offPeakDiscount = ref(0.5);
+const offPeakClock = ref(Date.now());
+const offPeakTimeZones = OFF_PEAK_TIME_ZONES;
+const offPeakTimeOptions = OFF_PEAK_TIME_OPTIONS;
+const offPeakWeekdays = OFF_PEAK_WEEKDAYS;
 const modelSaving = ref(false);
 const providerDialogVisible = ref(false);
 const providerSaving = ref(false);
@@ -661,6 +804,7 @@ const filters = reactive({
 const modelDraft = reactive(emptyModelDraft());
 const providerDraft = reactive(emptyProviderDraft());
 let mobileMediaQuery = null;
+let offPeakTimer = null;
 
 const pagedModels = computed(() => {
   const start = (page.value - 1) * pageSize.value;
@@ -682,8 +826,6 @@ const selectedModels = computed(() => {
 const selectedAll = computed(() =>
   models.value.length > 0 && selectedModels.value.length === models.value.length
 );
-
-const selectAllIcon = computed(() => (selectedAll.value ? Close : Select));
 
 watch(activeProvider, () => {
   loadModels();
@@ -785,10 +927,16 @@ function handleCatalogImportCommand(command) {
   if (command === "file") {
     selectCatalogFile();
   } else if (command === "sync") {
-    startSync("incremental");
-  } else if (command === "overwrite") {
-    startSync("overwrite");
+    syncOverwrite.value = false;
+    resetModelCatalogImport(catalogImportState);
+    catalogImportState.origin = "sync";
+    catalogImportState.phase = "confirm";
+    catalogImportVisible.value = true;
   }
+}
+
+function beginSync() {
+  startSync(syncOverwrite.value ? "overwrite" : "incremental");
 }
 
 async function startSync(mode) {
@@ -1072,6 +1220,11 @@ function buildModelPayload() {
     tiers: rule.billing_mode === "tiered_tokens"
       ? parseTiers(rule.tiers_text)
       : [],
+    off_peak_enabled: rule.off_peak_enabled === true,
+    off_peak_unit_price: Number(rule.off_peak_unit_price || 0),
+    off_peak_tiers: rule.billing_mode === "tiered_tokens" && rule.off_peak_enabled === true
+      ? parseTiers(rule.off_peak_tiers_text)
+      : [],
     enabled: rule.enabled !== false
   }));
   return {
@@ -1089,6 +1242,10 @@ function buildModelPayload() {
     pricing: {
       currency: modelDraft.pricing.currency || "USD",
       enabled: modelDraft.pricing.enabled !== false,
+      time_zone: modelDraft.pricing.time_zone || "",
+      off_peak_windows: modelDraft.pricing.time_zone
+        ? normalizeOffPeakWindows(modelDraft.pricing.off_peak_windows)
+        : [],
       rules
     },
     enabled: modelDraft.enabled !== false
@@ -1189,6 +1346,8 @@ function normalizePricing(pricing) {
   return {
     currency: pricing?.currency || "USD",
     enabled: pricing?.enabled !== false,
+    time_zone: pricing?.time_zone || "",
+    off_peak_windows: normalizeOffPeakWindows(pricing?.off_peak_windows),
     rules: billingItems.map((item) => rulesByItem.get(item.value) || defaultRule(item.value))
   };
 }
@@ -1199,6 +1358,9 @@ function normalizeRule(rule) {
     billing_mode: rule.billing_mode || "per_million_tokens",
     unit_price: Number(rule.unit_price || 0),
     tiers_text: JSON.stringify(rule.tiers || [], null, 2),
+    off_peak_enabled: rule.off_peak_enabled === true,
+    off_peak_unit_price: Number(rule.off_peak_unit_price || 0),
+    off_peak_tiers_text: JSON.stringify(rule.off_peak_tiers || [], null, 2),
     enabled: rule.enabled !== false
   };
 }
@@ -1209,6 +1371,9 @@ function defaultRule(item) {
     billing_mode: "per_million_tokens",
     unit_price: 0,
     tiers_text: "[]",
+    off_peak_enabled: false,
+    off_peak_unit_price: 0,
+    off_peak_tiers_text: "[]",
     enabled: true
   };
 }
@@ -1216,9 +1381,13 @@ function defaultRule(item) {
 function pricingSummary(row, item) {
   const rule = (row.pricing?.rules || []).find((entry) => entry.billing_item === item && entry.enabled !== false);
   if (!rule) return "-";
-  if (rule.billing_mode === "tiered_tokens") return "阶梯";
-  if (rule.billing_mode === "per_request") return `${formatPrice(rule.unit_price)} / 次`;
-  return formatPrice(rule.unit_price);
+  const offPeak = offPeakConfigured(row.pricing) && rule.off_peak_enabled === true;
+  if (rule.billing_mode === "tiered_tokens") return offPeak ? "阶梯（峰/谷）" : "阶梯";
+  const suffix = rule.billing_mode === "per_request" ? " / 次" : "";
+  const peakPrice = `${formatPrice(rule.unit_price)}${suffix}`;
+  return offPeak
+    ? `${peakPrice} 峰 / ${formatPrice(rule.off_peak_unit_price)} 谷`
+    : peakPrice;
 }
 
 function parseTiers(text) {
@@ -1230,6 +1399,27 @@ function parseTiers(text) {
     up_to: tier.up_to === null || tier.up_to === undefined || tier.up_to === "" ? null : Number(tier.up_to),
     unit_price: Number(tier.unit_price || 0)
   }));
+}
+
+const offPeakEnabledForDraft = computed(() => offPeakConfigured(modelDraft.pricing));
+
+const offPeakHint = computed(() => currentPhaseLabel(modelDraft.pricing, new Date(offPeakClock.value)));
+
+function addOffPeakWindow() {
+  modelDraft.pricing.off_peak_windows.push(emptyOffPeakWindow());
+}
+
+function removeOffPeakWindow(index) {
+  modelDraft.pricing.off_peak_windows.splice(index, 1);
+}
+
+function fillOffPeakDiscount() {
+  const changed = applyOffPeakDiscount(modelDraft.pricing.rules, offPeakDiscount.value);
+  if (changed === 0) {
+    ElMessage.warning("先为需要打折的计费项打开峰谷开关");
+    return;
+  }
+  ElMessage.success(`已按峰价的 ${offPeakDiscount.value} 倍填充 ${changed} 项谷价`);
 }
 
 function parseJson(text, label) {
@@ -1273,10 +1463,17 @@ onMounted(() => {
   syncMobileState(mobileMediaQuery);
   mobileMediaQuery.addEventListener("change", syncMobileState);
   loadAll();
+  offPeakTimer = window.setInterval(() => {
+    offPeakClock.value = Date.now();
+  }, 30000);
 });
 
 onBeforeUnmount(() => {
   mobileMediaQuery?.removeEventListener("change", syncMobileState);
+  if (offPeakTimer) {
+    window.clearInterval(offPeakTimer);
+    offPeakTimer = null;
+  }
 });
 </script>
 
@@ -1303,6 +1500,73 @@ onBeforeUnmount(() => {
 
 .model-catalog-rule-table {
   margin-bottom: 16px;
+}
+
+.off-peak-panel {
+  margin-bottom: 12px;
+}
+
+.off-peak-panel__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.off-peak-panel__hint {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.off-peak-panel__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.off-peak-window {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.off-peak-window__sep {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.off-peak-window__note {
+  font-size: 12px;
+  color: var(--el-color-warning);
+}
+
+.off-peak-zone {
+  width: 240px;
+}
+
+.off-peak-time {
+  width: 110px;
+}
+
+.off-peak-days {
+  width: 220px;
+}
+
+.off-peak-discount {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.off-peak-tiers {
+  margin-top: 6px;
 }
 
 .model-card-select {
@@ -1394,6 +1658,10 @@ onBeforeUnmount(() => {
   background: var(--el-bg-color-page);
 }
 
+.catalog-sync-confirm {
+  margin: 16px 0;
+}
+
 .catalog-import-loading {
   min-height: 120px;
   display: flex;
@@ -1414,6 +1682,17 @@ onBeforeUnmount(() => {
   .model-catalog-page .toolbar {
     display: block;
     margin-bottom: 16px;
+  }
+
+  .off-peak-zone,
+  .off-peak-days,
+  .off-peak-time {
+    width: 100%;
+  }
+
+  .off-peak-window {
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--el-border-color-lighter);
   }
 
   .model-catalog-page .toolbar-actions {

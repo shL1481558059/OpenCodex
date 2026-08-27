@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using OpenCodex.CoreBase.Domain.Models;
 
 namespace OpenCodex.CoreBase.DTOs.Models;
 
@@ -40,6 +41,15 @@ public sealed class ModelCatalogPricingRuleTransfer
     [JsonPropertyName("tiers")]
     public List<ModelCatalogPricingTierTransfer> Tiers { get; set; } = [];
 
+    [JsonPropertyName("off_peak_enabled")]
+    public bool OffPeakEnabled { get; set; }
+
+    [JsonPropertyName("off_peak_unit_price")]
+    public decimal OffPeakUnitPrice { get; set; }
+
+    [JsonPropertyName("off_peak_tiers")]
+    public List<ModelCatalogPricingTierTransfer> OffPeakTiers { get; set; } = [];
+
     [JsonPropertyName("enabled")]
     public bool Enabled { get; set; } = true;
 }
@@ -48,6 +58,12 @@ public sealed class ModelCatalogPricingTransfer
 {
     [JsonPropertyName("currency")]
     public string Currency { get; set; } = "USD";
+
+    [JsonPropertyName("time_zone")]
+    public string TimeZone { get; set; } = string.Empty;
+
+    [JsonPropertyName("off_peak_windows")]
+    public List<PricingOffPeakWindow> OffPeakWindows { get; set; } = [];
 
     [JsonPropertyName("enabled")]
     public bool Enabled { get; set; } = true;

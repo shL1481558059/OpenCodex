@@ -58,8 +58,8 @@ test("非法文件抛错", () => {
     () => parseModelCatalogFile(JSON.stringify({ type: "other", version: 1 }), "x.json"),
     /model_catalog/);
   assert.throws(
-    () => parseModelCatalogFile(JSON.stringify({ type: MODEL_CATALOG_TYPE, version: 2 }), "x.json"),
-    /版本 1/);
+    () => parseModelCatalogFile(JSON.stringify({ type: MODEL_CATALOG_TYPE, version: 3 }), "x.json"),
+    /版本 1 或 2/);
   assert.throws(
     () => parseModelCatalogFile(JSON.stringify({
       type: MODEL_CATALOG_TYPE,
@@ -68,6 +68,52 @@ test("非法文件抛错", () => {
       models: [null]
     }), "x.json"),
     /非法条目/);
+});
+
+test("v2 文件保留峰谷配置，v1 文件按未启用处理", () => {
+  const v2 = parseModelCatalogFile(JSON.stringify({
+    type: MODEL_CATALOG_TYPE,
+    version: 2,
+    providers: [],
+    models: [{
+      provider_code: "p",
+      model_key: "m",
+      pricing: {
+        currency: "usd",
+        time_zone: "Asia/Shanghai",
+        off_peak_windows: [{ start: "22:00", end: "24:00", days: [1, 2, 3, 4, 5] }],
+        rules: [{
+          billing_item: "output",
+          unit_price: 1.1,
+          off_peak_enabled: true,
+          off_peak_unit_price: 0.55
+        }]
+      }
+    }]
+  }), "catalog.json");
+
+  assert.equal(v2.models[0].pricing.time_zone, "Asia/Shanghai");
+  assert.deepEqual(v2.models[0].pricing.off_peak_windows, [
+    { start: "22:00", end: "24:00", days: [1, 2, 3, 4, 5] }
+  ]);
+  assert.equal(v2.models[0].pricing.rules[0].off_peak_enabled, true);
+  assert.equal(v2.models[0].pricing.rules[0].off_peak_unit_price, 0.55);
+
+  const v1 = parseModelCatalogFile(JSON.stringify({
+    type: MODEL_CATALOG_TYPE,
+    version: 1,
+    providers: [],
+    models: [{
+      provider_code: "p",
+      model_key: "m",
+      pricing: { currency: "usd", rules: [{ billing_item: "input", unit_price: 1 }] }
+    }]
+  }), "catalog.json");
+
+  assert.equal(v1.version, MODEL_CATALOG_VERSION);
+  assert.equal(v1.models[0].pricing.time_zone, "");
+  assert.deepEqual(v1.models[0].pricing.off_peak_windows, []);
+  assert.equal(v1.models[0].pricing.rules[0].off_peak_enabled, false);
 });
 
 test("dry run 预览与正式导入推进状态", () => {

@@ -894,7 +894,7 @@
         <el-table-column label="缓存读" width="115" align="right">
           <template #default="{ row }">{{ pricingRuleSummary(effectiveChannelPricingModel(row), "cache_read") }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="210" align="center">
+        <el-table-column label="操作" width="210" align="center" fixed="right">
           <template #default="{ row }">
             <div class="inline-actions channel-table-actions">
               <el-button size="small" :icon="Edit" @click="openChannelPricingEditor(row)">编辑</el-button>
@@ -1054,6 +1054,64 @@
         </el-row>
 
         <el-divider content-position="left">计费规则</el-divider>
+        <div class="off-peak-panel">
+          <div class="off-peak-panel__head">
+            <el-select
+              v-model="channelPricingDraft.pricing.time_zone"
+              filterable
+              allow-create
+              default-first-option
+              clearable
+              placeholder="峰谷时区，留空表示不启用"
+              class="off-peak-zone"
+            >
+              <el-option v-for="zone in offPeakTimeZones" :key="zone" :label="zone" :value="zone" />
+            </el-select>
+            <span class="off-peak-panel__hint">{{ channelOffPeakHint }}</span>
+          </div>
+
+          <div
+            v-for="(window, index) in channelPricingDraft.pricing.off_peak_windows"
+            :key="index"
+            class="off-peak-window"
+          >
+            <el-select v-model="window.start" filterable allow-create default-first-option class="off-peak-time">
+              <el-option v-for="time in offPeakTimeOptions" :key="`s-${time}`" :label="time" :value="time" />
+            </el-select>
+            <span class="off-peak-window__sep">至</span>
+            <el-select v-model="window.end" filterable allow-create default-first-option class="off-peak-time">
+              <el-option v-for="time in offPeakTimeOptions" :key="`e-${time}`" :label="time" :value="time" />
+            </el-select>
+            <el-select
+              v-model="window.days"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              placeholder="每天"
+              class="off-peak-days"
+            >
+              <el-option v-for="day in offPeakWeekdays" :key="day.value" :label="day.label" :value="day.value" />
+            </el-select>
+            <el-button link type="danger" :icon="Delete" @click="removeChannelOffPeakWindow(index)" />
+            <span v-if="crossesMidnight(window)" class="off-peak-window__note">保存后按起始日拆成两段</span>
+          </div>
+
+          <div class="off-peak-panel__actions">
+            <el-button link type="primary" :icon="Plus" @click="addChannelOffPeakWindow">添加谷段窗口</el-button>
+            <div class="off-peak-discount">
+              <span>谷段折扣</span>
+              <el-input-number
+                v-model="channelOffPeakDiscount"
+                :min="0"
+                :max="1"
+                :step="0.05"
+                :precision="2"
+                size="small"
+              />
+              <el-button size="small" @click="fillChannelOffPeakDiscount">按折扣填充谷价</el-button>
+            </div>
+          </div>
+        </div>
         <el-table
           v-if="!isMobile"
           :data="channelPricingDraft.pricing.rules"
@@ -1078,6 +1136,23 @@
               <el-input-number v-model="row.unit_price" :min="0" :precision="8" :step="0.01" class="full-width" />
             </template>
           </el-table-column>
+          <el-table-column label="峰谷" width="70" align="center">
+            <template #default="{ row }">
+              <el-switch v-model="row.off_peak_enabled" :disabled="!channelOffPeakEnabled" />
+            </template>
+          </el-table-column>
+          <el-table-column label="谷段单价" width="160">
+            <template #default="{ row }">
+              <el-input-number
+                v-model="row.off_peak_unit_price"
+                :min="0"
+                :precision="8"
+                :step="0.01"
+                :disabled="!channelOffPeakEnabled || row.off_peak_enabled !== true"
+                class="full-width"
+              />
+            </template>
+          </el-table-column>
           <el-table-column label="阶梯">
             <template #default="{ row }">
               <el-input
@@ -1085,6 +1160,14 @@
                 type="textarea"
                 :rows="2"
                 :disabled="row.billing_mode !== 'tiered_tokens'"
+              />
+              <el-input
+                v-if="row.billing_mode === 'tiered_tokens' && row.off_peak_enabled === true"
+                v-model="row.off_peak_tiers_text"
+                type="textarea"
+                :rows="2"
+                class="off-peak-tiers"
+                placeholder="谷段阶梯 JSON"
               />
             </template>
           </el-table-column>
@@ -1110,6 +1193,19 @@
             <el-form-item label="单价">
               <el-input-number v-model="rule.unit_price" :min="0" :precision="8" :step="0.01" class="full-width" />
             </el-form-item>
+            <el-form-item label="峰谷计费">
+              <el-switch v-model="rule.off_peak_enabled" :disabled="!channelOffPeakEnabled" />
+            </el-form-item>
+            <el-form-item v-if="rule.off_peak_enabled === true" label="谷段单价">
+              <el-input-number
+                v-model="rule.off_peak_unit_price"
+                :min="0"
+                :precision="8"
+                :step="0.01"
+                :disabled="!channelOffPeakEnabled"
+                class="full-width"
+              />
+            </el-form-item>
             <el-form-item label="阶梯">
               <el-input
                 v-model="rule.tiers_text"
@@ -1117,6 +1213,12 @@
                 :rows="2"
                 :disabled="rule.billing_mode !== 'tiered_tokens'"
               />
+            </el-form-item>
+            <el-form-item
+              v-if="rule.billing_mode === 'tiered_tokens' && rule.off_peak_enabled === true"
+              label="谷段阶梯"
+            >
+              <el-input v-model="rule.off_peak_tiers_text" type="textarea" :rows="2" />
             </el-form-item>
           </div>
         </div>
@@ -1511,6 +1613,17 @@ import {
 import { streamChannelTest } from "./channelTestStream.js";
 import { createSseStream } from "./api/sseClient.js";
 import {
+  OFF_PEAK_TIME_OPTIONS,
+  OFF_PEAK_TIME_ZONES,
+  OFF_PEAK_WEEKDAYS,
+  applyOffPeakDiscount,
+  crossesMidnight,
+  currentPhaseLabel,
+  emptyOffPeakWindow,
+  normalizeOffPeakWindows,
+  offPeakConfigured
+} from "./pricingOffPeak.js";
+import {
   Connection,
   Delete,
   Download,
@@ -1581,6 +1694,11 @@ const channelPricingRows = ref([]);
 const channelPricingChannel = ref(null);
 const channelPricingCatalogText = ref("{}");
 const channelPricingDraft = reactive(emptyChannelPricingDraft());
+const channelOffPeakDiscount = ref(0.5);
+const channelOffPeakClock = ref(Date.now());
+const offPeakTimeZones = OFF_PEAK_TIME_ZONES;
+const offPeakTimeOptions = OFF_PEAK_TIME_OPTIONS;
+const offPeakWeekdays = OFF_PEAK_WEEKDAYS;
 const config = reactive({ channels: [] });
 const channelTableRef = ref(null);
 const selectedChannels = ref([]);
@@ -1604,6 +1722,7 @@ const bulkTestAbortControllers = new Set();
 
 const isMobile = ref(false);
 let mobileMediaQuery;
+let channelOffPeakTimer = null;
 
 function updateMobileViewport(event) {
   const nextMobile = Boolean(event?.matches ?? mobileMediaQuery?.matches);
@@ -2344,11 +2463,20 @@ function buildChannelPricingPayload() {
     pricing: {
       currency: channelPricingDraft.pricing.currency || "USD",
       enabled: channelPricingDraft.pricing.enabled !== false,
+      time_zone: channelPricingDraft.pricing.time_zone || "",
+      off_peak_windows: channelPricingDraft.pricing.time_zone
+        ? normalizeOffPeakWindows(channelPricingDraft.pricing.off_peak_windows)
+        : [],
       rules: channelPricingDraft.pricing.rules.map((rule) => ({
         billing_item: rule.billing_item,
         billing_mode: rule.billing_mode,
         unit_price: Number(rule.unit_price || 0),
         tiers: rule.billing_mode === "tiered_tokens" ? parsePricingTiers(rule.tiers_text) : [],
+        off_peak_enabled: rule.off_peak_enabled === true,
+        off_peak_unit_price: Number(rule.off_peak_unit_price || 0),
+        off_peak_tiers: rule.billing_mode === "tiered_tokens" && rule.off_peak_enabled === true
+          ? parsePricingTiers(rule.off_peak_tiers_text)
+          : [],
         enabled: rule.enabled !== false
       }))
     },
@@ -2376,9 +2504,13 @@ function formatChannelPricingModel(row) {
 function pricingRuleSummary(model, item) {
   const rule = (model?.pricing?.rules || []).find((entry) => entry.billing_item === item && entry.enabled !== false);
   if (!rule) return "-";
-  if (rule.billing_mode === "tiered_tokens") return "阶梯";
-  if (rule.billing_mode === "per_request") return `${formatPrice(rule.unit_price)} / 次`;
-  return formatPrice(rule.unit_price);
+  const offPeak = offPeakConfigured(model?.pricing) && rule.off_peak_enabled === true;
+  if (rule.billing_mode === "tiered_tokens") return offPeak ? "阶梯（峰/谷）" : "阶梯";
+  const suffix = rule.billing_mode === "per_request" ? " / 次" : "";
+  const peakPrice = `${formatPrice(rule.unit_price)}${suffix}`;
+  return offPeak
+    ? `${peakPrice} 峰 / ${formatPrice(rule.off_peak_unit_price)} 谷`
+    : peakPrice;
 }
 
 function normalizeChannelPricing(pricing) {
@@ -2390,6 +2522,8 @@ function normalizeChannelPricing(pricing) {
   return {
     currency: pricing?.currency || "USD",
     enabled: pricing?.enabled !== false,
+    time_zone: pricing?.time_zone || "",
+    off_peak_windows: normalizeOffPeakWindows(pricing?.off_peak_windows),
     rules: billingItems.map((item) => rulesByItem.get(item.value) || defaultPricingRule(item.value))
   };
 }
@@ -2400,6 +2534,9 @@ function normalizePricingRule(rule) {
     billing_mode: rule.billing_mode || "per_million_tokens",
     unit_price: Number(rule.unit_price || 0),
     tiers_text: JSON.stringify(rule.tiers || [], null, 2),
+    off_peak_enabled: rule.off_peak_enabled === true,
+    off_peak_unit_price: Number(rule.off_peak_unit_price || 0),
+    off_peak_tiers_text: JSON.stringify(rule.off_peak_tiers || [], null, 2),
     enabled: rule.enabled !== false
   };
 }
@@ -2410,8 +2547,35 @@ function defaultPricingRule(item) {
     billing_mode: "per_million_tokens",
     unit_price: 0,
     tiers_text: "[]",
+    off_peak_enabled: false,
+    off_peak_unit_price: 0,
+    off_peak_tiers_text: "[]",
     enabled: true
   };
+}
+
+const channelOffPeakEnabled = computed(() => offPeakConfigured(channelPricingDraft.pricing));
+
+const channelOffPeakHint = computed(
+  () => currentPhaseLabel(channelPricingDraft.pricing, new Date(channelOffPeakClock.value)));
+
+function addChannelOffPeakWindow() {
+  channelPricingDraft.pricing.off_peak_windows.push(emptyOffPeakWindow());
+}
+
+function removeChannelOffPeakWindow(index) {
+  channelPricingDraft.pricing.off_peak_windows.splice(index, 1);
+}
+
+function fillChannelOffPeakDiscount() {
+  const changed = applyOffPeakDiscount(
+    channelPricingDraft.pricing.rules,
+    channelOffPeakDiscount.value);
+  if (changed === 0) {
+    ElMessage.warning("先为需要打折的计费项打开峰谷开关");
+    return;
+  }
+  ElMessage.success(`已按峰价的 ${channelOffPeakDiscount.value} 倍填充 ${changed} 项谷价`);
 }
 
 function parsePricingTiers(text) {
@@ -3264,11 +3428,18 @@ onMounted(async () => {
   mobileMediaQuery.addEventListener("change", updateMobileViewport);
   await loadConfig();
   runtimeStream.start();
+  channelOffPeakTimer = window.setInterval(() => {
+    channelOffPeakClock.value = Date.now();
+  }, 30000);
 });
 
 onBeforeUnmount(() => {
   mobileMediaQuery?.removeEventListener("change", updateMobileViewport);
   runtimeStream.stop();
+  if (channelOffPeakTimer) {
+    window.clearInterval(channelOffPeakTimer);
+    channelOffPeakTimer = null;
+  }
 });
 </script>
 
@@ -3593,6 +3764,73 @@ onBeforeUnmount(() => {
   margin-top: 8px;
 }
 
+.off-peak-panel {
+  margin: 8px 0 12px;
+}
+
+.off-peak-panel__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.off-peak-panel__hint {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.off-peak-panel__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.off-peak-window {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.off-peak-window__sep {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.off-peak-window__note {
+  font-size: 12px;
+  color: var(--el-color-warning);
+}
+
+.off-peak-zone {
+  width: 240px;
+}
+
+.off-peak-time {
+  width: 110px;
+}
+
+.off-peak-days {
+  width: 220px;
+}
+
+.off-peak-discount {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.off-peak-tiers {
+  margin-top: 6px;
+}
+
 .advanced-collapse {
   margin-top: 12px;
 }
@@ -3630,6 +3868,17 @@ onBeforeUnmount(() => {
 @media (max-width: 767px) {
   .channels-page {
     min-width: 0;
+  }
+
+  .off-peak-zone,
+  .off-peak-days,
+  .off-peak-time {
+    width: 100%;
+  }
+
+  .off-peak-window {
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--el-border-color-lighter);
   }
 
   .channels-page .toolbar {

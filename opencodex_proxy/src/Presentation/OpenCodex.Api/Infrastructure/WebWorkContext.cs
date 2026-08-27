@@ -1,4 +1,4 @@
-using OpenCodex.Api.Controllers;
+using System.Security.Claims;
 using OpenCodex.Core.Errors;
 using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.Services;
@@ -9,13 +9,19 @@ public sealed class WebWorkContext : IWorkContext
 {
     private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly ISessionService _session;
+    private readonly IAuthService _authService;
+
+    private const string UserIdClaimType = "opencodex_admin_user_id";
+    private const string EnabledClaimType = "opencodex_admin_enabled";
 
     public WebWorkContext(
         IHttpContextAccessor httpContextAccessor,
-        ISessionService session)
+        ISessionService session,
+        IAuthService authService)
     {
         _httpContextAccessor = httpContextAccessor;
         _session = session;
+        _authService = authService;
     }
 
     public SessionUser? CurrentUser
@@ -23,13 +29,33 @@ public sealed class WebWorkContext : IWorkContext
         get
         {
             var context = _httpContextAccessor.HttpContext;
-            return context is null ? null : SessionState.CurrentUser(context);
+            if (context is null) return null;
+
+            var principal = context.User;
+            if (principal?.Identity?.IsAuthenticated != true) return null;
+
+            var userIdString = principal.FindFirstValue(UserIdClaimType);
+            var username = principal.FindFirstValue(ClaimTypes.Name);
+            var role = principal.FindFirstValue(ClaimTypes.Role);
+            if (string.IsNullOrWhiteSpace(userIdString)
+                || string.IsNullOrWhiteSpace(username)
+                || string.IsNullOrWhiteSpace(role)
+                || !Guid.TryParse(userIdString, out var userId))
+            {
+                return null;
+            }
+
+            return new SessionUser(
+                userId,
+                username.Trim(),
+                role.Trim(),
+                !string.Equals(principal.FindFirstValue(EnabledClaimType), "false", StringComparison.OrdinalIgnoreCase));
         }
     }
 
     public bool IsSignedIn => CurrentUser is not null;
 
-    public bool IsSuperadmin => CurrentUser is not null && SessionState.IsSuperadmin(CurrentUser);
+    public bool IsSuperadmin => CurrentUser is not null && CurrentUser.Role == "superadmin";
 
     public SessionUser RequireUser()
     {
@@ -44,18 +70,20 @@ public sealed class WebWorkContext : IWorkContext
     private SessionUser Require(
         Func<SessionUser?, SessionUser> require)
     {
-        var context = _httpContextAccessor.HttpContext
-            ?? throw new BadRequestException(
+        if (_httpContextAccessor.HttpContext is null)
+        {
+            throw new BadRequestException(
                 "admin authentication required",
                 StatusCodes.Status401Unauthorized);
+        }
 
         try
         {
-            return require(SessionState.CurrentUser(context));
+            return require(CurrentUser);
         }
         catch (BadRequestException exception) when (exception.StatusCode == StatusCodes.Status401Unauthorized)
         {
-            SessionState.ClearUserAsync(context).GetAwaiter().GetResult();
+            _authService.ClearUserAsync().GetAwaiter().GetResult();
             throw;
         }
     }

@@ -176,6 +176,8 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         plans.HasKey(plan => plan.Id);
         plans.Property(plan => plan.Id).ValueGeneratedOnAdd();
         plans.Property(plan => plan.Currency).IsRequired();
+        plans.Property(plan => plan.TimeZoneId).IsRequired();
+        plans.Property(plan => plan.OffPeakWindowsJson).IsRequired();
         plans.Property(plan => plan.Source).IsRequired();
         plans.HasIndex(plan => plan.ModelInfoId);
         plans.HasIndex(plan => plan.ChannelModelInfoId);
@@ -190,6 +192,8 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         rules.Property(rule => rule.BillingMode).IsRequired();
         rules.Property(rule => rule.UnitPrice).HasPrecision(18, 8);
         rules.Property(rule => rule.TiersJson).IsRequired();
+        rules.Property(rule => rule.OffPeakUnitPrice).HasPrecision(18, 8);
+        rules.Property(rule => rule.OffPeakTiersJson).IsRequired();
         rules.HasIndex(rule => rule.PricingPlanId);
         rules.HasIndex(rule => rule.BillingItem);
         rules.HasIndex(rule => rule.Enabled);

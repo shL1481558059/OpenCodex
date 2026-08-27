@@ -374,7 +374,8 @@ public sealed class ProxyControllerTests
            Guid? channelId,
            string? requestModel,
            string? upstreamModel,
-           ModelUsageVector usage)
+           ModelUsageVector usage,
+           DateTimeOffset billingInstant)
         {
             throw new NotSupportedException();
         }
