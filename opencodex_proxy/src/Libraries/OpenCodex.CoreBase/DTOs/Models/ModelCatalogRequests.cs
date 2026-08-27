@@ -134,3 +134,12 @@ public sealed class ModelProviderUpsertRequest
     [JsonPropertyName("sort_order")]
     public int SortOrder { get; set; }
 }
+
+public sealed class ModelBatchActionRequest
+{
+    [JsonPropertyName("action")]
+    public string Action { get; set; } = string.Empty;
+
+    [JsonPropertyName("ids")]
+    public List<Guid> Ids { get; set; } = [];
+}

@@ -84,8 +84,8 @@
             <section v-if="isSuperadmin && activeTab === 'web-search'">
               <WebSearch :api="api"  />
             </section>
-            <section v-if="isSuperadmin && activeTab === 'pricing'">
-              <Pricing :api="api" />
+            <section v-if="isSuperadmin && activeTab === 'model-catalog'">
+              <ModelCatalog :api="api" />
             </section>
             <section v-if="isSuperadmin && activeTab === 'system-settings'">
               <SystemSettings :api="api" />
@@ -137,7 +137,7 @@ const Channels = defineAsyncComponent(() => import("./Channels.vue"));
 const AccessKeys = defineAsyncComponent(() => import("./AccessKeys.vue"));
 const Users = defineAsyncComponent(() => import("./Users.vue"));
 const WebSearch = defineAsyncComponent(() => import("./WebSearch.vue"));
-const Pricing = defineAsyncComponent(() => import("./Pricing.vue"));
+const ModelCatalog = defineAsyncComponent(() => import("./ModelCatalog.vue"));
 const SystemSettings = defineAsyncComponent(() => import("./SystemSettings.vue"));
 const Logs = defineAsyncComponent(() => import("./Logs.vue"));
 
@@ -162,7 +162,7 @@ const menuItems = [
   { index: "api-keys", label: "API Key 管理", icon: Key },
   { index: "users", label: "用户管理", icon: User, superadminOnly: true },
   { index: "web-search", label: "Web Search", icon: Search, superadminOnly: true },
-  { index: "pricing", label: "模型信息", icon: Money, superadminOnly: true },
+  { index: "model-catalog", label: "模型信息", icon: Money, superadminOnly: true },
   { index: "system-settings", label: "系统设置", icon: Setting, superadminOnly: true },
   { index: "logs", label: "请求日志", icon: Tickets }
 ];
@@ -237,7 +237,7 @@ function setAuthenticatedUser(data) {
 }
 
 function ensureAllowedActiveTab() {
-  if (!isSuperadmin.value && ["users", "web-search", "pricing", "system-settings"].includes(activeTab.value)) {
+  if (!isSuperadmin.value && ["users", "web-search", "model-catalog", "system-settings"].includes(activeTab.value)) {
     activeTab.value = "dashboard";
   }
 }

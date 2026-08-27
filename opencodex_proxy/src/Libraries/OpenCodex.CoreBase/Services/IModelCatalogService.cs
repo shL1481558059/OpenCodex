@@ -27,6 +27,9 @@ public interface IModelCatalogService
 
     ApiOpResult<ModelInfoResponsePayload> DeleteModel(Guid id);
 
+    ApiOpResult<ModelBatchActionResult> BatchModels(
+        ModelBatchActionRequest request);
+
     ApiOpResult<ModelCatalogTransferDocument> ExportModelCatalog();
 
     ApiOpResult<ModelCatalogImportResult> ImportModelCatalog(ModelCatalogTransferDocument document, bool dryRun);

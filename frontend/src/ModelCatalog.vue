@@ -1,5 +1,5 @@
 <template>
-  <div class="pricing-page">
+  <div class="model-catalog-page">
     <div class="toolbar">
       <div>
         <h2>模型信息</h2>
@@ -18,6 +18,33 @@
           <el-option label="启用" :value="true" />
           <el-option label="停用" :value="false" />
         </el-select>
+        <el-button
+          v-if="models.length > 0"
+          :icon="selectAllIcon"
+          @click="toggleSelectAll"
+        >{{ selectedAll ? "取消全选" : "全选当前筛选" }}</el-button>
+        <template v-if="selectedModels.length > 0">
+          <el-button
+            class="batch-action-button"
+            :icon="Select"
+            :loading="batchAction === 'enable'"
+            @click="batchEnable"
+          >批量启用 ({{ selectedModels.length }})</el-button>
+          <el-button
+            class="batch-action-button"
+            :icon="CircleClose"
+            :loading="batchAction === 'disable'"
+            @click="batchDisable"
+          >批量停用 ({{ selectedModels.length }})</el-button>
+          <el-button
+            class="batch-action-button batch-delete-button"
+            type="danger"
+            :icon="Delete"
+            :loading="batchAction === 'delete'"
+            @click="batchDelete"
+          >批量删除 ({{ selectedModels.length }})</el-button>
+          <el-button :icon="Close" @click="clearSelection">清空</el-button>
+        </template>
         <el-button :icon="Search" @click="loadModels">搜索</el-button>
         <el-button :icon="Refresh" @click="loadAll">刷新</el-button>
         <el-button :icon="Download" :loading="catalogExporting" @click="exportCatalog">导出</el-button>
@@ -204,6 +231,21 @@
         style="width: 100%"
         empty-text="暂无模型信息"
       >
+        <el-table-column width="48" align="center">
+          <template #header>
+            <el-checkbox
+              :model-value="selectedAll"
+              :indeterminate="selection.length > 0 && !selectedAll"
+              @change="toggleSelectAll"
+            />
+          </template>
+          <template #default="{ row }">
+            <el-checkbox
+              :model-value="selection.includes(row.id)"
+              @change="(value) => toggleModelSelection(row, value)"
+            />
+          </template>
+        </el-table-column>
         <el-table-column prop="provider_name" label="供应商" width="120" show-overflow-tooltip />
         <el-table-column prop="model_key" label="模型" min-width="190" show-overflow-tooltip />
         <el-table-column prop="display_name" label="名称" min-width="170" show-overflow-tooltip />
@@ -254,6 +296,11 @@
 
     <div v-else v-loading="modelsLoading" class="mobile-model-list">
       <article v-for="model in pagedModels" :key="model.id" class="model-card">
+        <el-checkbox
+          :model-value="selection.includes(model.id)"
+          class="model-card-select"
+          @change="(value) => toggleModelSelection(model, value)"
+        />
         <div class="model-card-header">
             <div class="model-card-title-wrap">
               <strong class="model-card-title">{{ model.display_name || model.model_key }}</strong>
@@ -340,7 +387,7 @@
 
     <el-dialog
       v-model="modelDialogVisible"
-      class="pricing-model-dialog"
+      class="model-catalog-model-dialog"
       :title="modelDraft.id ? '编辑模型' : '新增模型'"
       :width="isMobile ? undefined : '880px'"
       :fullscreen="isMobile"
@@ -430,7 +477,7 @@
           :data="modelDraft.pricing.rules"
           border
           size="small"
-          class="pricing-rule-table"
+          class="model-catalog-rule-table"
         >
           <el-table-column label="计费项" width="110">
             <template #default="{ row }">{{ formatBillingItem(row.billing_item) }}</template>
@@ -466,16 +513,16 @@
           </el-table-column>
         </el-table>
 
-        <div v-else class="mobile-pricing-rules">
-          <section v-for="rule in modelDraft.pricing.rules" :key="rule.billing_item" class="pricing-rule-card">
-            <div class="pricing-rule-heading">
+        <div v-else class="mobile-model-catalog-rules">
+          <section v-for="rule in modelDraft.pricing.rules" :key="rule.billing_item" class="model-catalog-rule-card">
+            <div class="model-catalog-rule-heading">
               <strong>{{ formatBillingItem(rule.billing_item) }}</strong>
-              <div class="pricing-rule-switch">
+              <div class="model-catalog-rule-switch">
                 <span>{{ rule.enabled ? "启用" : "停用" }}</span>
                 <el-switch v-model="rule.enabled" />
               </div>
             </div>
-            <label class="pricing-rule-field">
+            <label class="model-catalog-rule-field">
               <span>计费模式</span>
               <el-select v-model="rule.billing_mode" class="full-width">
                 <el-option label="按次" value="per_request" />
@@ -483,7 +530,7 @@
                 <el-option label="阶梯 token" value="tiered_tokens" />
               </el-select>
             </label>
-            <label class="pricing-rule-field">
+            <label class="model-catalog-rule-field">
               <span>单价</span>
               <el-input-number
                 v-model="rule.unit_price"
@@ -493,7 +540,7 @@
                 class="full-width"
               />
             </label>
-            <label v-if="rule.billing_mode === 'tiered_tokens'" class="pricing-rule-field">
+            <label v-if="rule.billing_mode === 'tiered_tokens'" class="model-catalog-rule-field">
               <span>阶梯 JSON</span>
               <el-input v-model="rule.tiers_text" type="textarea" :rows="4" />
             </label>
@@ -517,7 +564,7 @@
 
     <el-dialog
       v-model="providerDialogVisible"
-      class="pricing-provider-dialog"
+      class="model-catalog-provider-dialog"
       :title="providerDraft.id ? '编辑供应商' : '新增供应商'"
       :width="isMobile ? undefined : '480px'"
       :fullscreen="isMobile"
@@ -557,7 +604,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
 import { ElMessageBox } from "element-plus/es/components/message-box/index.mjs";
-import { ArrowDown, Delete, Download, Edit, Plus, Refresh, RefreshRight, Search, Upload, Warning } from "@element-plus/icons-vue";
+import { ArrowDown, CircleClose, Close, Delete, Download, Edit, Plus, Refresh, RefreshRight, Search, Select, Upload, Warning } from "@element-plus/icons-vue";
 import {
   createModelCatalogImportState,
   parseModelCatalogFile,
@@ -591,6 +638,8 @@ const isMobile = ref(false);
 const activeProvider = ref("all");
 const page = ref(1);
 const pageSize = ref(25);
+const selection = ref([]);
+const batchAction = ref("");
 const catalogText = ref("{}");
 const createModelAfterProvider = ref(false);
 const matchTypes = {
@@ -624,6 +673,17 @@ const catalogDialogTitle = computed(() => {
   if (origin === "overwrite") return "覆盖已有模型";
   return "导入模型目录";
 });
+
+const selectedModels = computed(() => {
+  const selectedIds = new Set(selection.value);
+  return models.value.filter((model) => selectedIds.has(model.id));
+});
+
+const selectedAll = computed(() =>
+  models.value.length > 0 && selectedModels.value.length === models.value.length
+);
+
+const selectAllIcon = computed(() => (selectedAll.value ? Close : Select));
 
 watch(activeProvider, () => {
   loadModels();
@@ -664,6 +724,7 @@ async function loadModels() {
     const data = await props.api(`/model-infos${suffix}`);
     models.value = Array.isArray(data.models) ? data.models : [];
     page.value = 1;
+    clearSelection();
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
@@ -924,6 +985,84 @@ async function deleteModel(row) {
   }
 }
 
+function clearSelection() {
+  selection.value = [];
+}
+
+function toggleModelSelection(model, checked) {
+  const index = selection.value.indexOf(model.id);
+  if (checked && index === -1) {
+    selection.value.push(model.id);
+  } else if (!checked && index !== -1) {
+    selection.value.splice(index, 1);
+  }
+}
+
+function toggleSelectAll() {
+  if (selectedAll.value) {
+    clearSelection();
+  } else {
+    selection.value = models.value.map((model) => model.id);
+  }
+}
+
+async function batchEnable() {
+  await runBatch("enable");
+}
+
+async function batchDisable() {
+  await runBatch("disable");
+}
+
+async function batchDelete() {
+  const targetIds = selection.value;
+  const enabledCount = selectedModels.value.filter((model) => model.enabled !== false).length;
+  const willDelete = selectedModels.value.filter((model) => model.enabled === false);
+  if (enabledCount > 0) {
+    ElMessage.warning(`批量删除仅支持停用状态模型，其中 ${enabledCount} 个启用模型请先停用`);
+    return;
+  }
+  if (willDelete.length === 0) return;
+  try {
+    await ElMessageBox.confirm(
+      `确定删除 ${willDelete.length} 个模型？删除后不可恢复。`,
+      "批量删除",
+      { type: "warning", confirmButtonText: "删除", cancelButtonText: "取消" }
+    );
+  } catch {
+    return;
+  }
+  await runBatch("delete", targetIds);
+}
+
+async function runBatch(action, ids = selection.value) {
+  if (ids.length === 0) return;
+  batchAction.value = action;
+  try {
+    const data = await props.api("/model-infos/batch", {
+      method: "POST",
+      body: JSON.stringify({ action, ids })
+    });
+    const updated = data?.updated_ids?.length || 0;
+    const deleted = data?.deleted_ids?.length || 0;
+    const errors = data?.errors || [];
+    if (action === "delete") {
+      ElMessage.success(`已删除 ${deleted} 个模型`);
+    } else {
+      ElMessage.success(`已${action === "enable" ? "启用" : "停用"} ${updated} 个模型`);
+    }
+    if (errors.length > 0) {
+      ElMessage.warning(errors.join("；"));
+    }
+    clearSelection();
+    await loadModels();
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    batchAction.value = "";
+  }
+}
+
 function buildModelPayload() {
   const catalog = parseJson(catalogText.value || "{}", "Catalog JSON");
   const rules = modelDraft.pricing.rules.map((rule) => ({
@@ -1162,8 +1301,20 @@ onBeforeUnmount(() => {
   margin-left: 8px;
 }
 
-.pricing-rule-table {
+.model-catalog-rule-table {
   margin-bottom: 16px;
+}
+
+.model-card-select {
+  margin-bottom: 8px;
+}
+
+.batch-action-button {
+  margin-left: 8px;
+}
+
+.batch-delete-button {
+  margin-left: 8px;
 }
 
 .advanced-collapse {
@@ -1260,12 +1411,12 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 767px) {
-  .pricing-page .toolbar {
+  .model-catalog-page .toolbar {
     display: block;
     margin-bottom: 16px;
   }
 
-  .pricing-page .toolbar-actions {
+  .model-catalog-page .toolbar-actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
@@ -1282,7 +1433,7 @@ onBeforeUnmount(() => {
     width: 100%;
   }
 
-  .pricing-page .toolbar-actions > :deep(.el-button) {
+  .model-catalog-page .toolbar-actions > :deep(.el-button) {
     width: 100%;
     min-height: 44px;
     margin-left: 0;
@@ -1312,8 +1463,8 @@ onBeforeUnmount(() => {
     text-align: left;
   }
 
-  .pricing-page .toolbar-actions > :deep(.el-input),
-  .pricing-page .toolbar-actions > :deep(.el-select) {
+  .model-catalog-page .toolbar-actions > :deep(.el-input),
+  .model-catalog-page .toolbar-actions > :deep(.el-select) {
     min-width: 0;
   }
 
@@ -1478,12 +1629,12 @@ onBeforeUnmount(() => {
     margin: 0;
   }
 
-  .mobile-pricing-rules {
+  .mobile-model-catalog-rules {
     display: grid;
     gap: 12px;
   }
 
-  .pricing-rule-card {
+  .model-catalog-rule-card {
     min-width: 0;
     padding: 14px;
     border: 1px solid var(--el-border-color-lighter);
@@ -1491,25 +1642,25 @@ onBeforeUnmount(() => {
     background: var(--el-fill-color-extra-light);
   }
 
-  .pricing-rule-heading,
-  .pricing-rule-switch {
+  .model-catalog-rule-heading,
+  .model-catalog-rule-switch {
     display: flex;
     align-items: center;
   }
 
-  .pricing-rule-heading {
+  .model-catalog-rule-heading {
     justify-content: space-between;
     gap: 12px;
     margin-bottom: 14px;
   }
 
-  .pricing-rule-switch {
+  .model-catalog-rule-switch {
     gap: 8px;
     color: var(--el-text-color-secondary);
     font-size: 13px;
   }
 
-  .pricing-rule-field {
+  .model-catalog-rule-field {
     display: grid;
     gap: 7px;
     margin-top: 12px;
@@ -1517,12 +1668,12 @@ onBeforeUnmount(() => {
     font-size: 13px;
   }
 
-  .pricing-rule-field:first-of-type {
+  .model-catalog-rule-field:first-of-type {
     margin-top: 0;
   }
 
-  .pricing-page :deep(.el-input__inner),
-  .pricing-page :deep(.el-textarea__inner) {
+  .model-catalog-page :deep(.el-input__inner),
+  .model-catalog-page :deep(.el-textarea__inner) {
     font-size: 16px;
   }
 }
@@ -1534,8 +1685,8 @@ onBeforeUnmount(() => {
   }
 }
 
-:global(.pricing-model-dialog.is-fullscreen),
-:global(.pricing-provider-dialog.is-fullscreen) {
+:global(.model-catalog-model-dialog.is-fullscreen),
+:global(.model-catalog-provider-dialog.is-fullscreen) {
   display: flex;
   flex-direction: column;
   height: 100dvh;
@@ -1543,16 +1694,16 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
-:global(.pricing-model-dialog.is-fullscreen .el-dialog__header),
-:global(.pricing-provider-dialog.is-fullscreen .el-dialog__header) {
+:global(.model-catalog-model-dialog.is-fullscreen .el-dialog__header),
+:global(.model-catalog-provider-dialog.is-fullscreen .el-dialog__header) {
   flex: none;
   padding: 16px;
   padding-top: max(16px, env(safe-area-inset-top));
   border-bottom: 1px solid var(--el-border-color-lighter);
 }
 
-:global(.pricing-model-dialog.is-fullscreen .el-dialog__body),
-:global(.pricing-provider-dialog.is-fullscreen .el-dialog__body) {
+:global(.model-catalog-model-dialog.is-fullscreen .el-dialog__body),
+:global(.model-catalog-provider-dialog.is-fullscreen .el-dialog__body) {
   flex: 1;
   min-height: 0;
   overflow: auto;
@@ -1560,8 +1711,8 @@ onBeforeUnmount(() => {
   padding: 14px 16px;
 }
 
-:global(.pricing-model-dialog.is-fullscreen .el-dialog__footer),
-:global(.pricing-provider-dialog.is-fullscreen .el-dialog__footer) {
+:global(.model-catalog-model-dialog.is-fullscreen .el-dialog__footer),
+:global(.model-catalog-provider-dialog.is-fullscreen .el-dialog__footer) {
   flex: none;
   padding: 12px 16px;
   padding-bottom: max(12px, env(safe-area-inset-bottom));
@@ -1569,23 +1720,23 @@ onBeforeUnmount(() => {
   background: var(--el-bg-color);
 }
 
-:global(.pricing-model-dialog.is-fullscreen .drawer-footer),
-:global(.pricing-provider-dialog.is-fullscreen .drawer-footer) {
+:global(.model-catalog-model-dialog.is-fullscreen .drawer-footer),
+:global(.model-catalog-provider-dialog.is-fullscreen .drawer-footer) {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
-:global(.pricing-model-dialog.is-fullscreen .drawer-footer .el-button),
-:global(.pricing-provider-dialog.is-fullscreen .drawer-footer .el-button) {
+:global(.model-catalog-model-dialog.is-fullscreen .drawer-footer .el-button),
+:global(.model-catalog-provider-dialog.is-fullscreen .drawer-footer .el-button) {
   width: 100%;
   min-height: 44px;
   margin-left: 0;
 }
 
-:global(.pricing-model-dialog.is-fullscreen .el-input__inner),
-:global(.pricing-model-dialog.is-fullscreen .el-textarea__inner),
-:global(.pricing-provider-dialog.is-fullscreen .el-input__inner) {
+:global(.model-catalog-model-dialog.is-fullscreen .el-input__inner),
+:global(.model-catalog-model-dialog.is-fullscreen .el-textarea__inner),
+:global(.model-catalog-provider-dialog.is-fullscreen .el-input__inner) {
   font-size: 16px;
 }
 </style>

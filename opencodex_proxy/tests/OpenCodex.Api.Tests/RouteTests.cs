@@ -51,6 +51,7 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         Assert.Contains("/model-catalog/export", routes);
         Assert.Contains("/model-catalog/import", routes);
         Assert.Contains("/model-catalog/sync", routes);
+        Assert.Contains("/model-infos/batch", routes);
         Assert.Contains("/logs", routes);
     }
 

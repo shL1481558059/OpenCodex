@@ -376,6 +376,98 @@ public sealed class ModelCatalogService : IModelCatalogService
         return ApiOpResult<ModelInfoResponsePayload>.Succeed(null);
     }
 
+    public ApiOpResult<ModelBatchActionResult> BatchModels(ModelBatchActionRequest request)
+    {
+        var action = Normalize(request.Action).ToLowerInvariant();
+        if (action is not ("enable" or "disable" or "delete"))
+        {
+            return ApiOpResult<ModelBatchActionResult>.Fail(
+                400,
+                "action must be one of 'enable', 'disable' or 'delete'");
+        }
+
+        var ids = (request.Ids ?? [])
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+        {
+            return ApiOpResult<ModelBatchActionResult>.Fail(400, "ids is required");
+        }
+
+        var models = _models.Table
+            .Where(model => model.Scope == ModelInfoScopes.Global
+                && model.ChannelId == null
+                && ids.Contains(model.Id))
+            .ToList();
+        if (models.Count == 0)
+        {
+            return ApiOpResult<ModelBatchActionResult>.Fail(404, "no model found");
+        }
+
+        var now = UnixTimeSeconds();
+        var updatedIds = new List<Guid>();
+        var deletedIds = new List<Guid>();
+        var errors = new List<string>();
+
+        using var transaction = _dbContext.Database.BeginTransaction();
+        try
+        {
+            foreach (var model in models)
+            {
+                if (action == "enable")
+                {
+                    if (!model.Enabled)
+                    {
+                        model.Enabled = true;
+                        model.UpdatedAt = now;
+                        _models.Update(model);
+                        updatedIds.Add(model.Id);
+                    }
+                }
+                else if (action == "disable")
+                {
+                    if (model.Enabled)
+                    {
+                        model.Enabled = false;
+                        model.UpdatedAt = now;
+                        _models.Update(model);
+                        updatedIds.Add(model.Id);
+                    }
+                }
+                else
+                {
+                    if (model.Enabled)
+                    {
+                        errors.Add($"model '{model.ModelKey}' is enabled; disable it first");
+                    }
+                    else
+                    {
+                        RemovePlans(model.Id, model.ChannelId);
+                        _models.Delete(model);
+                        deletedIds.Add(model.Id);
+                    }
+                }
+            }
+
+            _dbContext.SaveChanges();
+            transaction.Commit();
+        }
+        catch (Exception exception) when (exception is DbUpdateException or InvalidOperationException)
+        {
+            transaction.Rollback();
+            return ApiOpResult<ModelBatchActionResult>.Fail(500, exception.Message);
+        }
+
+        if (updatedIds.Count > 0 || deletedIds.Count > 0)
+        {
+            BumpPricingVersion();
+        }
+
+        return ApiOpResult<ModelBatchActionResult>.Succeed(
+            new ModelBatchActionResult(action, updatedIds, deletedIds, errors));
+    }
+
     public ApiOpResult<ModelCatalogTransferDocument> ExportModelCatalog()
     {
         var providerById = _providers.TableNoTracking.ToDictionary(provider => provider.Id);
