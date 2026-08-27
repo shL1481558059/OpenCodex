@@ -1225,6 +1225,445 @@ public sealed class ModelCatalogServiceTests
         }
     }
 
+    // --- Sync mode tests (batch 1) ---
+
+    private static ModelCatalogImportOptions IncrementalSyncOptions() => new()
+    {
+        SkipExistingModels = true,
+        SkipExistingProviders = true,
+        PreserveLocalEnabled = true,
+        KeepLocalPricingWhenRemoteNull = true,
+        Source = ModelCatalogSources.Sync
+    };
+
+    private static ModelCatalogImportOptions OverwriteSyncOptions() => new()
+    {
+        SkipExistingModels = false,
+        SkipExistingProviders = true,
+        PreserveLocalEnabled = true,
+        KeepLocalPricingWhenRemoteNull = true,
+        Source = ModelCatalogSources.Sync
+    };
+
+    private static ModelCatalogTransferDocument SyncPayloadWithNewAndExisting()
+    {
+        return new ModelCatalogTransferDocument
+        {
+            Type = "model_catalog",
+            Version = 1,
+            ExportedAt = "2026-08-27T02:00:00Z",
+            Providers =
+            [
+                new ModelCatalogProviderTransfer
+                {
+                    Code = "test",
+                    Name = "Test Renamed",
+                    Enabled = false,
+                    SortOrder = 99
+                },
+                new ModelCatalogProviderTransfer
+                {
+                    Code = "new-sync-provider",
+                    Name = "New Sync Provider",
+                    Enabled = true,
+                    SortOrder = 50
+                }
+            ],
+            Models =
+            [
+                new ModelCatalogModelTransfer
+                {
+                    ProviderCode = "test",
+                    ModelKey = "existing",
+                    DisplayName = "Existing Renamed",
+                    Description = "remote desc",
+                    MatchType = ModelMatchTypes.Exact,
+                    MatchPattern = "existing",
+                    Catalog = [],
+                    Capabilities = [],
+                    Enabled = false,
+                    Pricing = new ModelCatalogPricingTransfer
+                    {
+                        Currency = "USD",
+                        Enabled = true,
+                        Rules =
+                        [
+                            new ModelCatalogPricingRuleTransfer
+                            {
+                                BillingItem = ModelBillingItems.Input,
+                                BillingMode = ModelBillingModes.PerMillionTokens,
+                                UnitPrice = 9m,
+                                Enabled = true
+                            }
+                        ]
+                    }
+                },
+                new ModelCatalogModelTransfer
+                {
+                    ProviderCode = "new-sync-provider",
+                    ModelKey = "sync-new-model",
+                    DisplayName = "Sync New Model",
+                    Description = string.Empty,
+                    MatchType = ModelMatchTypes.Exact,
+                    MatchPattern = "sync-new-model",
+                    Catalog = [],
+                    Capabilities = [],
+                    Enabled = true,
+                    Pricing = new ModelCatalogPricingTransfer
+                    {
+                        Currency = "USD",
+                        Enabled = true,
+                        Rules =
+                        [
+                            new ModelCatalogPricingRuleTransfer
+                            {
+                                BillingItem = ModelBillingItems.Input,
+                                BillingMode = ModelBillingModes.PerMillionTokens,
+                                UnitPrice = 2m,
+                                Enabled = true
+                            }
+                        ]
+                    }
+                }
+            ]
+        };
+    }
+
+    [Fact]
+    public void SyncIncrementalCreatesNewModelsAndSkipsExisting()
+    {
+        var dbPath = CreateDbPath();
+        Guid existingModelId;
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context, "test", "Test", ModelCatalogSources.Manual, 1);
+            var model = AddModel(context, provider.Id, "existing", ModelMatchTypes.Exact, "existing", 1m);
+            existingModelId = model.Id;
+        }
+
+        var service = CreateService(dbPath);
+        var document = SyncPayloadWithNewAndExisting();
+        var dryRun = service.ImportModelCatalog(document, dryRun: true, IncrementalSyncOptions());
+
+        Assert.True(dryRun.Succeeded);
+        Assert.True(dryRun.Payload!.DryRun);
+        Assert.Equal(1, dryRun.Payload.Models.Created);
+        Assert.Equal(1, dryRun.Payload.Skipped);
+        Assert.Single(dryRun.Payload.CreatedModelKeys, "sync-new-model");
+        Assert.Single(dryRun.Payload.SkippedModelKeys, "existing");
+        Assert.Empty(dryRun.Payload.OverwrittenModelKeys);
+        Assert.Equal(0, dryRun.Payload.PricingDeleted);
+
+        // dry run: no DB changes
+        using (var verify = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            Assert.DoesNotContain(verify.ModelInfos, item => item.ModelKey == "sync-new-model");
+        }
+
+        var imported = service.ImportModelCatalog(document, dryRun: false, IncrementalSyncOptions());
+        Assert.True(imported.Succeeded);
+        Assert.False(imported.Payload!.DryRun);
+        Assert.Equal(1, imported.Payload.Models.Created);
+        Assert.Equal(1, imported.Payload.Skipped);
+
+        using (var verify = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            // New model created with source=sync
+            var newModel = verify.ModelInfos.Single(item => item.ModelKey == "sync-new-model");
+            Assert.Equal(ModelCatalogSources.Sync, newModel.Source);
+            var newPlan = verify.ModelPricingPlans.Single(item => item.ModelInfoId == newModel.Id);
+            Assert.Equal(2m, verify.ModelPricingRules
+                .Single(rule => rule.PricingPlanId == newPlan.Id).UnitPrice);
+
+            // Existing model untouched: name, price, enabled, source all preserved
+            var existing = verify.ModelInfos.Single(item => item.Id == existingModelId);
+            Assert.Equal("existing", existing.DisplayName);
+            Assert.True(existing.Enabled);
+            Assert.Equal("test", existing.Source); // AddProvider helper uses "test"
+            var existingPlan = verify.ModelPricingPlans.Single(item => item.ModelInfoId == existingModelId);
+            Assert.Equal(1m, verify.ModelPricingRules
+                .Single(rule => rule.PricingPlanId == existingPlan.Id).UnitPrice);
+        }
+    }
+
+    [Fact]
+    public void SyncIncrementalSkipsDisabledExistingModel()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context, "test", "Test", ModelCatalogSources.Manual, 1);
+            var model = AddModel(context, provider.Id, "existing", ModelMatchTypes.Exact, "existing", 1m);
+            model.Enabled = false;
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+        var result = service.ImportModelCatalog(
+            SyncPayloadWithNewAndExisting(), dryRun: false, IncrementalSyncOptions());
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(1, result.Payload!.Skipped);
+        Assert.Single(result.Payload.SkippedModelKeys, "existing");
+
+        using (var verify = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            var model = verify.ModelInfos.Single(item => item.ModelKey == "existing");
+            Assert.False(model.Enabled); // still disabled, not revived (Q13)
+        }
+    }
+
+    [Fact]
+    public void SyncIncrementalDoesNotModifyExistingProviders()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            AddProvider(context, "test", "Test", ModelCatalogSources.Manual, 1);
+        }
+
+        var service = CreateService(dbPath);
+        var result = service.ImportModelCatalog(
+            SyncPayloadWithNewAndExisting(), dryRun: false, IncrementalSyncOptions());
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(1, result.Payload!.Providers.Created); // new-sync-provider
+        Assert.Equal(0, result.Payload.Providers.Updated);
+
+        using (var verify = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            var provider = verify.ModelProviders.Single(item => item.Code == "test");
+            Assert.Equal("Test", provider.Name);
+            Assert.True(provider.Enabled);
+            Assert.Equal(1, provider.SortOrder);
+            Assert.Equal(ModelCatalogSources.Manual, provider.Source);
+
+            var newProvider = verify.ModelProviders.Single(item => item.Code == "new-sync-provider");
+            Assert.Equal(ModelCatalogSources.Sync, newProvider.Source);
+        }
+    }
+
+    [Fact]
+    public void SyncOverwriteUpdatesExistingModelMetadataAndPricing()
+    {
+        var dbPath = CreateDbPath();
+        Guid existingModelId;
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context, "test", "Test", ModelCatalogSources.Manual, 1);
+            var model = AddModel(context, provider.Id, "existing", ModelMatchTypes.Exact, "existing", 1m);
+            existingModelId = model.Id;
+        }
+
+        var service = CreateService(dbPath);
+        var result = service.ImportModelCatalog(
+            SyncPayloadWithNewAndExisting(), dryRun: false, OverwriteSyncOptions());
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(1, result.Payload!.Models.Created);
+        Assert.Equal(0, result.Payload.Skipped);
+        Assert.Single(result.Payload.OverwrittenModelKeys, "existing");
+        Assert.Equal(0, result.Payload.PricingDeleted);
+
+        using (var verify = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            var existing = verify.ModelInfos.Single(item => item.Id == existingModelId);
+            Assert.Equal("Existing Renamed", existing.DisplayName);
+            Assert.Equal("remote desc", existing.Description);
+            Assert.Equal(ModelCatalogSources.Sync, existing.Source);
+            // PreserveLocalEnabled: remote Enabled=false but local was true -> stays true (Q21-3)
+            Assert.True(existing.Enabled);
+
+            var plan = verify.ModelPricingPlans.Single(item => item.ModelInfoId == existingModelId);
+            Assert.Equal(9m, verify.ModelPricingRules
+                .Single(rule => rule.PricingPlanId == plan.Id).UnitPrice);
+        }
+    }
+
+    [Fact]
+    public void SyncOverwriteKeepsDisabledModelDisabled()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context, "test", "Test", ModelCatalogSources.Manual, 1);
+            var model = AddModel(context, provider.Id, "existing", ModelMatchTypes.Exact, "existing", 1m);
+            model.Enabled = false;
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+        var result = service.ImportModelCatalog(
+            SyncPayloadWithNewAndExisting(), dryRun: false, OverwriteSyncOptions());
+
+        Assert.True(result.Succeeded);
+
+        using (var verify = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            var model = verify.ModelInfos.Single(item => item.ModelKey == "existing");
+            Assert.False(model.Enabled); // remote Enabled=true but local was false -> stays false
+        }
+    }
+
+    [Fact]
+    public void SyncKeepLocalPricingWhenRemoteNull()
+    {
+        var dbPath = CreateDbPath();
+        Guid modelId;
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context, "test", "Test", ModelCatalogSources.Manual, 1);
+            var model = AddModel(context, provider.Id, "existing", ModelMatchTypes.Exact, "existing", 1m);
+            modelId = model.Id;
+        }
+
+        var service = CreateService(dbPath);
+        var document = SyncPayloadWithNewAndExisting();
+        document.Models[0].Pricing = null; // remote says: no pricing
+
+        var result = service.ImportModelCatalog(document, dryRun: false, OverwriteSyncOptions());
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(0, result.Payload!.PricingDeleted);
+
+        using (var verify = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            // Local pricing plan still exists
+            Assert.Single(verify.ModelPricingPlans, item => item.ModelInfoId == modelId);
+        }
+    }
+
+    [Fact]
+    public void SyncDoesNotDeleteRemoteMissingModels()
+    {
+        var dbPath = CreateDbPath();
+        Guid localOnlyModelId;
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context, "test", "Test", ModelCatalogSources.Manual, 1);
+            var model = AddModel(context, provider.Id, "local-only", ModelMatchTypes.Exact, "local-only", 5m);
+            localOnlyModelId = model.Id;
+        }
+
+        var service = CreateService(dbPath);
+        // Document has "existing" and "sync-new-model" but NOT "local-only"
+        var result = service.ImportModelCatalog(
+            SyncPayloadWithNewAndExisting(), dryRun: false, OverwriteSyncOptions());
+
+        Assert.True(result.Succeeded);
+
+        using (var verify = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            // local-only model still exists (Q21-1 / Q4)
+            Assert.Single(verify.ModelInfos, item => item.Id == localOnlyModelId);
+        }
+    }
+
+    [Fact]
+    public void ImportLocalJsonStillUsesOldSemantics()
+    {
+        var dbPath = CreateDbPath();
+        Guid modelId;
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context, "test", "Test", ModelCatalogSources.Manual, 1);
+            var model = AddModel(context, provider.Id, "existing", ModelMatchTypes.Exact, "existing", 1m);
+            modelId = model.Id;
+        }
+
+        var service = CreateService(dbPath);
+        var document = SyncPayloadWithNewAndExisting();
+
+        // Old 2-arg overload: SkipExistingModels=false, PreserveLocalEnabled=false,
+        // KeepLocalPricingWhenRemoteNull=false, Source=manual
+        var result = service.ImportModelCatalog(document, dryRun: false);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(0, result.Payload!.Skipped);
+
+        using (var verify = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            var model = verify.ModelInfos.Single(item => item.Id == modelId);
+            // Old semantics: Enabled overwritten by remote (was true -> now false)
+            Assert.False(model.Enabled);
+            Assert.Equal(ModelCatalogSources.Manual, model.Source);
+        }
+    }
+
+    [Fact]
+    public void ImportMissingProviderReturns400Not500()
+    {
+        // Regression: when a model references a provider that exists in DB
+        // but is not in the document's providers list, the old code threw
+        // KeyNotFoundException (500). Now it should return 400.
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            // Provider exists in DB but won't be in the document
+            var provider = AddProvider(context, "db-only", "DB Only", ModelCatalogSources.Manual, 1);
+            // Model under that provider
+            AddModel(context, provider.Id, "existing", ModelMatchTypes.Exact, "existing", 1m);
+        }
+
+        var service = CreateService(dbPath);
+        // Document only has provider "test" but model references "db-only"
+        var document = new ModelCatalogTransferDocument
+        {
+            Type = "model_catalog",
+            Version = 1,
+            ExportedAt = "2026-08-27T02:00:00Z",
+            Providers =
+            [
+                new ModelCatalogProviderTransfer
+                {
+                    Code = "test",
+                    Name = "Test",
+                    Enabled = true,
+                    SortOrder = 1
+                }
+            ],
+            Models =
+            [
+                new ModelCatalogModelTransfer
+                {
+                    ProviderCode = "db-only",
+                    ModelKey = "existing",
+                    MatchType = ModelMatchTypes.Exact,
+                    MatchPattern = "existing",
+                    Pricing = new ModelCatalogPricingTransfer
+                    {
+                        Currency = "USD",
+                        Enabled = true,
+                        Rules =
+                        [
+                            new ModelCatalogPricingRuleTransfer
+                            {
+                                BillingItem = ModelBillingItems.Input,
+                                BillingMode = ModelBillingModes.PerMillionTokens,
+                                UnitPrice = 1m,
+                                Enabled = true
+                            }
+                        ]
+                    }
+                }
+            ]
+        };
+
+        // Old 2-arg overload should also benefit from the fix
+        var result = service.ImportModelCatalog(document, dryRun: false);
+        Assert.False(result.Succeeded);
+        Assert.Equal(400, result.Code);
+    }
+
     private static string CreateDbPath()
     {
         var dbPath = Path.Combine(

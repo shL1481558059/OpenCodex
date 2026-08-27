@@ -40,6 +40,9 @@
 | RSK-021 | P2 | 管理台无全局会话过期处理 | App API helper | 操作失败但用户不知需重登 |
 | RSK-022 | P2 | 无 Router/深链/页面状态持久化 | `App.vue` | 刷新和导航体验差 |
 | RSK-023 | P2 | 导入缺少逐条预检和冲突预览 | 前端导入逻辑 | 部分失败和覆盖不可预测 |
+| RSK-024 | P2 | 模型目录同步为超管触发的出站请求，允许内网/回环地址 | `ModelCatalogSyncService` + `ModelCatalogSyncClient` | SSRF 面收敛于 superadmin-only，但无独立鉴权或 IP 白名单 |
+| RSK-025 | P2 | 覆盖模式改写已存在模型不可撤销 | `ModelCatalogService.ImportModelCatalog` | 本地对同名模型的名称、匹配规则、能力、价格与 source 被远端取代；对话框提供「先导出当前目录」作为唯一兜底 |
+| RSK-026 | P3 | 同步失败日志含完整响应体且不截断 | `ModelCatalogSyncClient.LogWarning` | 源站返回大体积错误页时单条日志可达 5 MB；靠 docker `json-file` 轮转兜底 |
 | RSK-024 | P2 | 实时流断开和真实新鲜度提示有限 | Dashboard | 旧数据被误认为实时 |
 | RSK-025 | P2 | 文档配置与当前源码漂移 | README/DEPLOYMENT | 部署错误 |
 | RSK-026 | P2 | 部署脚本无 readiness/冒烟/自动回滚 | update scripts | 部署失败仍显示完成 |

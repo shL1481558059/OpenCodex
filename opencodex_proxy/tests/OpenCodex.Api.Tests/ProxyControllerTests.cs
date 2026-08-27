@@ -335,6 +335,14 @@ public sealed class ProxyControllerTests
             throw new NotSupportedException();
         }
 
+        public ApiOpResult<ModelCatalogImportResult> ImportModelCatalog(
+            ModelCatalogTransferDocument document,
+            bool dryRun,
+            ModelCatalogImportOptions options)
+        {
+            throw new NotSupportedException();
+        }
+
         public ApiOpResult<ChannelModelInfoListResponse> ListChannelModelInfos(Guid channelId)
         {
             throw new NotSupportedException();

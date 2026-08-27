@@ -132,6 +132,10 @@ requires_openai_auth = false
 
 Windhub 的 `mimo-v2.5-pro` 建议通过管理接口把服务类型配置为 `messages`，并放在渠道列表首位。上游协议严格由渠道的服务类型决定：配置为 `chat` 就走 `/v1/chat/completions`，配置为 `responses` 就走 `/v1/responses`，配置为 `messages` 就走 `/v1/messages`。实测其 `chat` 渠道文本请求可用，但工具结果续轮会因上游 `reasoning_content` 校验返回 400 或偶发 500；`messages` 渠道在保留 thinking block 后可完成工具调用闭环。
 
+## 模型目录同步
+
+模型信息页的「导入」下拉提供「同步最新模型」与「覆盖已有模型」两项，从一份集中维护的远端 JSON 拉取模型目录。同步地址通过环境变量 `OPENCODEX_MODEL_CATALOG_SYNC_URL` 配置（留空使用内置默认地址 `https://ocxpmodel.shldev.me/model-catalog.json`），管理台不可修改。详见 `prd/10-admin-console.md` 14.4.1 节。
+
 ## 测试
 
 ```bash

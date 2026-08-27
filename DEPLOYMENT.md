@@ -281,3 +281,16 @@ rm -rf /tmp/opencodex-codex-home
 - `TRACE`：增加脱敏后的请求和响应正文片段，仅建议本地临时排障。
 
 所有等级都会脱敏 `Authorization`、`api_key`、`apikey`、`x-api-key`、cookie 和密码。
+
+## 模型目录同步源搭建
+
+同步源是一份集中维护的静态 JSON 文件，由 NGINX 对外提供，不进仓库。步骤：
+
+1. DNS：把 `ocxpmodel.shldev.me` 解析到部署服务器公网 IP。
+2. 静态目录：服务器上建 `/www/wwwroot/ocxpmodel`，与现有 `/www/wwwroot/ocxp` 同级。
+3. NGINX 站点：新增 server block，`server_name ocxpmodel.shldev.me`，`root /www/wwwroot/ocxpmodel`，只放行 `GET`，`location = /model-catalog.json` 设置 `default_type application/json`、`gzip on`、`add_header Cache-Control "public, max-age=300"`。
+4. 证书：签发 `ocxpmodel.shldev.me` 证书（或复用通配符证书）。
+5. 首版 JSON：从现网管理台点「导出」，复核后上传为 `/www/wwwroot/ocxpmodel/model-catalog.json`。
+6. 连通性验证：宿主 `curl -I https://ocxpmodel.shldev.me/model-catalog.json`，容器内 `docker exec ocxp-dev curl -sI https://ocxpmodel.shldev.me/model-catalog.json`，两者都要 200。
+
+同步地址通过环境变量 `OPENCODEX_MODEL_CATALOG_SYNC_URL` 配置（留空使用内置默认地址）。各实例管理员点「同步最新模型」补齐新模型；需要把改价下发到存量模型时走「覆盖已有模型」。

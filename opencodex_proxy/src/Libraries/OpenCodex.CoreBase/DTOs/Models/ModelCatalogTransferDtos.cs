@@ -124,11 +124,26 @@ public sealed class ModelCatalogImportResult
     [JsonPropertyName("dry_run")]
     public bool DryRun { get; init; }
 
+    [JsonPropertyName("mode")]
+    public string? Mode { get; init; }
+
     [JsonPropertyName("providers")]
     public ModelCatalogImportCounts Providers { get; init; } = new();
 
     [JsonPropertyName("models")]
     public ModelCatalogImportCounts Models { get; init; } = new();
+
+    [JsonPropertyName("skipped")]
+    public int Skipped { get; init; }
+
+    [JsonPropertyName("created_model_keys")]
+    public IReadOnlyList<string> CreatedModelKeys { get; init; } = [];
+
+    [JsonPropertyName("skipped_model_keys")]
+    public IReadOnlyList<string> SkippedModelKeys { get; init; } = [];
+
+    [JsonPropertyName("overwritten_model_keys")]
+    public IReadOnlyList<string> OverwrittenModelKeys { get; init; } = [];
 
     [JsonPropertyName("pricing_deleted")]
     public int PricingDeleted { get; init; }
@@ -138,4 +153,25 @@ public sealed class ModelCatalogImportResult
 
     [JsonPropertyName("errors")]
     public IReadOnlyList<string> Errors { get; init; } = [];
+}
+
+/// <summary>
+/// Controls how <see cref="IModelCatalogService.ImportModelCatalog"/> handles existing records.
+/// </summary>
+public sealed class ModelCatalogImportOptions
+{
+    /// <summary>When true, models whose model_key already exists locally are skipped (not modified).</summary>
+    public bool SkipExistingModels { get; init; }
+
+    /// <summary>When true, providers whose code already exists locally are skipped (name/sort/enabled not modified).</summary>
+    public bool SkipExistingProviders { get; init; }
+
+    /// <summary>When true, the local Enabled flag on existing models is never overwritten by the remote document.</summary>
+    public bool PreserveLocalEnabled { get; init; }
+
+    /// <summary>When true, a remote pricing: null does not delete the local pricing plan; the local plan is kept as-is.</summary>
+    public bool KeepLocalPricingWhenRemoteNull { get; init; }
+
+    /// <summary>The source tag to write on created/updated records (e.g. "manual", "sync").</summary>
+    public string Source { get; init; } = "manual";
 }

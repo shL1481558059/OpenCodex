@@ -10,13 +10,16 @@ namespace OpenCodex.Api.Controllers;
 public sealed class ModelCatalogController : AuthenticatedApiControllerBase
 {
     private readonly IModelCatalogService _catalog;
+    private readonly IModelCatalogSyncService _syncService;
 
     public ModelCatalogController(
         IWorkContext workContext,
-        IModelCatalogService catalog)
+        IModelCatalogService catalog,
+        IModelCatalogSyncService syncService)
         : base(workContext)
     {
         _catalog = catalog;
+        _syncService = syncService;
     }
 
     [HttpGet("/model-providers")]
@@ -112,6 +115,16 @@ public sealed class ModelCatalogController : AuthenticatedApiControllerBase
     {
         RequireSuperadmin();
         return Api(_catalog.ImportModelCatalog(request, dryRun));
+    }
+
+    [HttpPost("/model-catalog/sync")]
+    public async Task<IActionResult> SyncCatalog(
+        [FromQuery] string mode = "incremental",
+        [FromQuery] bool dryRun = true)
+    {
+        RequireSuperadmin();
+        var result = await _syncService.SyncAsync(mode, dryRun);
+        return Api(result);
     }
 
     [HttpGet("/channels/{channelId:guid}/model-infos")]

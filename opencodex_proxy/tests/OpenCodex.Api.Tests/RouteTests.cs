@@ -50,6 +50,7 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         Assert.Contains("/channels/{channelId:guid}/health-reset", routes);
         Assert.Contains("/model-catalog/export", routes);
         Assert.Contains("/model-catalog/import", routes);
+        Assert.Contains("/model-catalog/sync", routes);
         Assert.Contains("/logs", routes);
     }
 

@@ -426,6 +426,21 @@ public sealed class ModelCatalogService : IModelCatalogService
         ModelCatalogTransferDocument document,
         bool dryRun)
     {
+        return ImportModelCatalog(document, dryRun, new ModelCatalogImportOptions
+        {
+            SkipExistingModels = false,
+            SkipExistingProviders = false,
+            PreserveLocalEnabled = false,
+            KeepLocalPricingWhenRemoteNull = false,
+            Source = ModelCatalogSources.Manual
+        });
+    }
+
+    public ApiOpResult<ModelCatalogImportResult> ImportModelCatalog(
+        ModelCatalogTransferDocument document,
+        bool dryRun,
+        ModelCatalogImportOptions options)
+    {
         if (document is null)
         {
             return ImportFailure("request body is required");
@@ -556,26 +571,63 @@ public sealed class ModelCatalogService : IModelCatalogService
             providerPlans.Select(plan => plan.Entity is null),
             providerPlans.Select(plan => plan.Entity is null
                 ? false
-                : ProviderUnchanged(plan.Entity, plan.Transfer)));
-        var modelCounts = ImportCounts(
-            modelPlans.Select(plan => plan.Entity is null),
-            modelPlans.Select(plan => plan.Entity is null
-                ? false
-                : ModelUnchanged(
-                    plan.Entity,
-                    plan.Provider.Id,
-                    plan.Transfer,
+                : options.SkipExistingProviders || ProviderUnchanged(plan.Entity, plan.Transfer)));
+        // When SkipExistingModels is on, existing models are "skipped" rather than
+        // candidates for update/unchanged. Collect key lists for the response DTO.
+        var createdModelKeys = new List<string>();
+        var skippedModelKeys = new List<string>();
+        var overwrittenModelKeys = new List<string>();
+        var modelCreated = new List<bool>();
+        var modelUnchanged = new List<bool>();
+        foreach (var (transfer, entity, provider) in modelPlans)
+        {
+            if (entity is null)
+            {
+                createdModelKeys.Add(NormalizeRequired(transfer.ModelKey, "model_key"));
+                modelCreated.Add(true);
+                modelUnchanged.Add(false);
+            }
+            else if (options.SkipExistingModels)
+            {
+                skippedModelKeys.Add(entity.ModelKey);
+                modelCreated.Add(false);
+                modelUnchanged.Add(false);
+            }
+            else
+            {
+                var unchanged = ModelUnchanged(
+                    entity,
+                    provider.Id,
+                    transfer,
                     plansByModelId,
-                    rulesByPlanId)));
-        var pricingDeleted = modelPlans.Count(plan => plan.Entity is not null
-            && plan.Transfer.Pricing is null
-            && plansByModelId.ContainsKey(plan.Entity.Id));
+                    rulesByPlanId);
+                if (!unchanged)
+                {
+                    overwrittenModelKeys.Add(entity.ModelKey);
+                }
+                modelCreated.Add(false);
+                modelUnchanged.Add(unchanged);
+            }
+        }
+        var modelCounts = ImportCounts(modelCreated, modelUnchanged);
+        var skipped = skippedModelKeys.Count;
+
+        var pricingDeleted = options.KeepLocalPricingWhenRemoteNull
+            ? 0
+            : modelPlans.Count(plan => plan.Entity is not null
+                && plan.Transfer.Pricing is null
+                && plansByModelId.ContainsKey(plan.Entity.Id));
 
         var result = new ModelCatalogImportResult
         {
             DryRun = dryRun,
+            Mode = options.Source == ModelCatalogSources.Sync ? options.Source : null,
             Providers = providerCounts,
             Models = modelCounts,
+            Skipped = skipped,
+            CreatedModelKeys = createdModelKeys,
+            SkippedModelKeys = skippedModelKeys,
+            OverwrittenModelKeys = overwrittenModelKeys,
             PricingDeleted = pricingDeleted,
             ErrorCount = 0,
             Errors = []
@@ -605,71 +657,102 @@ public sealed class ModelCatalogService : IModelCatalogService
                         Code = NormalizeProviderCodeRequired(transfer.Code),
                         Name = DisplayName(transfer.Name, transfer.Code),
                         Enabled = transfer.Enabled,
-                        SortOrder = transfer.SortOrder,
-                        Source = ModelCatalogSources.Manual,
-                        CreatedAt = now,
-                        UpdatedAt = now
-                    };
-                    _providers.Insert(provider);
-                }
-                else
-                {
-                    provider.Name = DisplayName(transfer.Name, provider.Code);
-                    provider.Enabled = transfer.Enabled;
-                    provider.SortOrder = transfer.SortOrder;
-                    provider.UpdatedAt = now;
-                    _providers.Update(provider);
-                }
+                       SortOrder = transfer.SortOrder,
+                       Source = options.Source,
+                       CreatedAt = now,
+                       UpdatedAt = now
+                   };
+                   _providers.Insert(provider);
+               }
+               else
+               {
+                   if (!options.SkipExistingProviders)
+                   {
+                       provider.Name = DisplayName(transfer.Name, provider.Code);
+                       provider.Enabled = transfer.Enabled;
+                       provider.SortOrder = transfer.SortOrder;
+                       provider.UpdatedAt = now;
+                       _providers.Update(provider);
+                   }
+               }
 
-                trackedProvidersByCode[provider.Code] = provider;
-            }
+               trackedProvidersByCode[provider.Code] = provider;
+           }
 
-            foreach (var (transfer, existing, _) in modelPlans)
-            {
-                var providerCode = NormalizeProviderCodeRequired(transfer.ProviderCode);
-                var provider = trackedProvidersByCode[providerCode];
-                var modelKey = NormalizeRequired(transfer.ModelKey, "model_key");
-                var model = _models.Table
-                    .AsEnumerable()
-                    .FirstOrDefault(item => item.Scope == ModelInfoScopes.Global
-                        && item.ChannelId == null
-                        && string.Equals(item.ModelKey, modelKey, StringComparison.OrdinalIgnoreCase))
-                    ?? new ModelInfo
-                {
-                    Scope = ModelInfoScopes.Global,
-                    ChannelId = null,
-                    ModelKey = modelKey,
-                    Source = ModelCatalogSources.Manual,
-                    CreatedAt = now
-                };
+           foreach (var (transfer, existing, _) in modelPlans)
+           {
+               // Skip existing models entirely when the option is set (incremental sync).
+               var modelKey = NormalizeRequired(transfer.ModelKey, "model_key");
+               if (options.SkipExistingModels)
+               {
+                   var exists = _models.TableNoTracking
+                       .AsEnumerable()
+                       .Any(item => item.Scope == ModelInfoScopes.Global
+                           && item.ChannelId == null
+                           && string.Equals(item.ModelKey, modelKey, StringComparison.OrdinalIgnoreCase));
+                   if (exists)
+                   {
+                       continue;
+                   }
+               }
 
-                model.ProviderId = provider.Id;
-                model.DisplayName = DisplayName(transfer.DisplayName, modelKey);
-                model.Description = Normalize(transfer.Description);
-                model.MatchType = NormalizeMatchType(transfer.MatchType);
-                model.MatchPattern = NormalizeMatchPattern(transfer.MatchPattern, modelKey);
-                model.CatalogJson = SerializeObject(JsonRequestValue.Object(transfer.Catalog));
-                model.CapabilitiesJson = SerializeObject(JsonRequestValue.Object(transfer.Capabilities));
-                model.Enabled = transfer.Enabled;
-                model.UpdatedAt = now;
-                _models.Update(model);
+               var providerCode = NormalizeProviderCodeRequired(transfer.ProviderCode);
+               // Fix: was trackedProvidersByCode[providerCode] which threw KeyNotFoundException
+               // when the provider existed in DB but wasn't in the document's providers list.
+               if (!trackedProvidersByCode.TryGetValue(providerCode, out var provider) || provider is null)
+               {
+                   return ImportFailure(
+                       $"provider_code '{transfer.ProviderCode}' is not found in the import document");
+               }
 
-                ReplaceImportedPricing(model, transfer.Pricing, now);
-            }
+               var model = _models.Table
+                   .AsEnumerable()
+                   .FirstOrDefault(item => item.Scope == ModelInfoScopes.Global
+                       && item.ChannelId == null
+                       && string.Equals(item.ModelKey, modelKey, StringComparison.OrdinalIgnoreCase))
+                   ?? new ModelInfo
+                   {
+                       Scope = ModelInfoScopes.Global,
+                       ChannelId = null,
+                       ModelKey = modelKey,
+                       Source = options.Source,
+                       CreatedAt = now
+                   };
 
-            _dbContext.SaveChanges();
-            transaction.Commit();
-            BumpPricingVersion();
-            return ApiOpResult<ModelCatalogImportResult>.Succeed(result);
-        }
-        catch (Exception exception) when (exception is ArgumentException or DbUpdateException or InvalidOperationException)
-        {
-            transaction.Rollback();
-            return ImportFailure(exception.Message);
-        }
-    }
+               model.ProviderId = provider.Id;
+               model.DisplayName = DisplayName(transfer.DisplayName, modelKey);
+               model.Description = Normalize(transfer.Description);
+               model.MatchType = NormalizeMatchType(transfer.MatchType);
+               model.MatchPattern = NormalizeMatchPattern(transfer.MatchPattern, modelKey);
+               model.CatalogJson = SerializeObject(JsonRequestValue.Object(transfer.Catalog));
+               model.CapabilitiesJson = SerializeObject(JsonRequestValue.Object(transfer.Capabilities));
+               // PreserveLocalEnabled: never overwrite enabled on existing models;
+               // new models always take the remote enabled value.
+               var isNewModel = model.CreatedAt == now;
+               if (isNewModel || !options.PreserveLocalEnabled)
+               {
+                   model.Enabled = transfer.Enabled;
+               }
+               model.Source = options.Source;
+               model.UpdatedAt = now;
+               _models.Update(model);
 
-    public ApiOpResult<ChannelModelInfoListResponse> ListChannelModelInfos(Guid channelId)
+               ReplaceImportedPricing(model, transfer.Pricing, now, options);
+           }
+
+           _dbContext.SaveChanges();
+           transaction.Commit();
+           BumpPricingVersion();
+           return ApiOpResult<ModelCatalogImportResult>.Succeed(result);
+       }
+       catch (Exception exception) when (exception is ArgumentException or DbUpdateException or InvalidOperationException)
+       {
+           transaction.Rollback();
+           return ImportFailure(exception.Message);
+       }
+   }
+
+   public ApiOpResult<ChannelModelInfoListResponse> ListChannelModelInfos(Guid channelId)
     {
         var channel = FindChannelInScope(channelId);
         if (channel is null)
@@ -1358,14 +1441,21 @@ public sealed class ModelCatalogService : IModelCatalogService
     private void ReplaceImportedPricing(
         ModelInfo model,
         ModelCatalogPricingTransfer? pricing,
-        double now)
+        double now,
+        ModelCatalogImportOptions? options = null)
     {
-        RemovePlans(model.Id, model.ChannelId);
+        var opts = options ?? new ModelCatalogImportOptions { Source = ModelCatalogSources.Manual };
         if (pricing is null)
         {
+            // KeepLocalPricingWhenRemoteNull: don't delete local pricing when remote is null.
+            if (!opts.KeepLocalPricingWhenRemoteNull)
+            {
+                RemovePlans(model.Id, model.ChannelId);
+            }
             return;
         }
 
+        RemovePlans(model.Id, model.ChannelId);
         var plan = new ModelPricingPlan
         {
             ModelInfoId = model.Id,
@@ -1373,7 +1463,7 @@ public sealed class ModelCatalogService : IModelCatalogService
             ChannelId = null,
             Currency = NormalizeCurrency(pricing.Currency),
             Enabled = pricing.Enabled,
-            Source = ModelCatalogSources.Manual,
+            Source = opts.Source,
             CreatedAt = now,
             UpdatedAt = now
         };

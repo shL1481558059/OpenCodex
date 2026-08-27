@@ -130,6 +130,20 @@ public static class OpenCodexServiceCollectionExtensions
                 PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
                 MaxConnectionsPerServer = 50
             });
+
+        // Model catalog sync: independent HttpClient with 60s timeout,
+        // automatic decompression, max 3 redirects, 5MB response cap.
+        services.AddHttpClient<IModelCatalogSyncClient, ModelCatalogSyncClient>()
+            .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(60))
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1),
+                MaxConnectionsPerServer = 10,
+                AllowAutoRedirect = true,
+                MaxAutomaticRedirections = 3,
+                AutomaticDecompression = System.Net.DecompressionMethods.All
+            });
         services.AddSingleton<IOpenCodexRuntimeSettingsProvider, OpenCodexRuntimeSettingsProvider>();
         services.AddSingleton<IDesktopSystemSettingsStore, DesktopSystemSettingsStore>();
         services.AddScoped<IRequestBodyReader, RequestBodyReader>();
@@ -142,6 +156,7 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<IUserService, UserService>();
         services.AddScoped<IApiKeyService, ApiKeyService>();
         services.AddScoped<IModelCatalogService, ModelCatalogService>();
+        services.AddScoped<IModelCatalogSyncService, ModelCatalogSyncService>();
         services.AddScoped<IObservabilityService, ObservabilityService>();
         services.AddScoped<IWebSearchService, WebSearchService>();
         services.AddScoped<IProxyAccessService, ProxyAccessService>();

@@ -21,7 +21,18 @@
         <el-button :icon="Search" @click="loadModels">搜索</el-button>
         <el-button :icon="Refresh" @click="loadAll">刷新</el-button>
         <el-button :icon="Download" :loading="catalogExporting" @click="exportCatalog">导出</el-button>
-        <el-button :icon="Upload" :loading="catalogImporting" @click="selectCatalogFile">导入</el-button>
+        <el-dropdown trigger="click" @command="handleCatalogImportCommand">
+          <el-button :icon="Upload" :loading="catalogImporting || catalogSyncing">
+            导入<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="sync" :icon="RefreshRight">同步最新模型</el-dropdown-item>
+              <el-dropdown-item command="file" :icon="Upload">导入本地 json</el-dropdown-item>
+              <el-dropdown-item command="overwrite" :icon="Warning" divided>覆盖已有模型</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
         <el-button :icon="Plus" @click="openProviderDialog(false)">新增供应商</el-button>
         <el-button
           class="create-model-button"
@@ -76,32 +87,84 @@
     <el-dialog
       v-model="catalogImportVisible"
       class="catalog-import-dialog"
-      title="导入模型目录"
+      :title="catalogDialogTitle"
       :width="isMobile ? undefined : '620px'"
       :fullscreen="isMobile"
     >
       <template v-if="catalogImportState.phase === 'preview'">
-        <el-alert
-          type="success"
-          show-icon
-          :closable="false"
-          title="预检通过，等待确认"
-          description="确认后写入数据库，未确认前不修改任何数据。"
-        />
-        <dl class="catalog-import-summary">
+        <template v-if="catalogImportState.origin === 'overwrite'">
+          <el-alert
+            type="warning"
+            show-icon
+            :closable="false"
+            title="覆盖已有模型"
+            description="将按远端改写已存在模型的名称、匹配规则、能力与价格，本地修改不可恢复；启用状态、供应商信息、本地独有模型不受影响。"
+          />
+        </template>
+        <template v-else>
+          <el-alert
+            type="success"
+            show-icon
+            :closable="false"
+            title="预检通过，等待确认"
+            description="确认后写入数据库，未确认前不修改任何数据。"
+          />
+        </template>
+
+        <dl v-if="catalogImportState.origin !== 'sync' || (catalogImportState.dryRun?.models?.created || 0) > 0" class="catalog-import-summary">
           <div>
             <dt>供应商</dt>
-            <dd>新增 {{ catalogImportState.dryRun?.providers?.created || 0 }}，更新 {{ catalogImportState.dryRun?.providers?.updated || 0 }}，无变化 {{ catalogImportState.dryRun?.providers?.unchanged || 0 }}</dd>
+            <dd>新增 {{ catalogImportState.dryRun?.providers?.created || 0 }}，无变化 {{ catalogImportState.dryRun?.providers?.unchanged || 0 }}</dd>
           </div>
           <div>
             <dt>模型</dt>
-            <dd>新增 {{ catalogImportState.dryRun?.models?.created || 0 }}，更新 {{ catalogImportState.dryRun?.models?.updated || 0 }}，无变化 {{ catalogImportState.dryRun?.models?.unchanged || 0 }}</dd>
-          </div>
-          <div v-if="(catalogImportState.dryRun?.pricing_deleted || 0) > 0">
-            <dt>价格删除</dt>
-            <dd>{{ catalogImportState.dryRun.pricing_deleted }} 个模型价格将被移除</dd>
+            <dd>
+              新增 {{ catalogImportState.dryRun?.models?.created || 0 }}
+              <template v-if="catalogImportState.origin === 'overwrite'">，覆盖 {{ (catalogImportState.dryRun?.overwritten_model_keys || []).length }}</template>
+              <template v-else>，跳过 {{ catalogImportState.dryRun?.skipped || 0 }}</template>
+            </dd>
           </div>
         </dl>
+
+        <div v-if="catalogImportState.origin !== 'file'" class="catalog-import-keys">
+          <template v-if="(catalogImportState.dryRun?.created_model_keys || []).length > 0">
+            <div class="catalog-import-key-section">
+              <span class="catalog-import-key-label">新增模型</span>
+              <div class="catalog-import-key-list">
+                <el-tag v-for="key in (catalogImportState.dryRun?.created_model_keys || []).slice(0, 20)" :key="key" size="small" type="success">{{ key }}</el-tag>
+                <span v-if="(catalogImportState.dryRun?.created_model_keys || []).length > 20" class="catalog-import-key-more">等 {{ (catalogImportState.dryRun?.created_model_keys || []).length }} 条</span>
+              </div>
+            </div>
+          </template>
+          <template v-if="catalogImportState.origin === 'overwrite' && (catalogImportState.dryRun?.overwritten_model_keys || []).length > 0">
+            <div class="catalog-import-key-section">
+              <span class="catalog-import-key-label">覆盖模型</span>
+              <div class="catalog-import-key-list">
+                <el-tag v-for="key in (catalogImportState.dryRun?.overwritten_model_keys || []).slice(0, 20)" :key="key" size="small" type="warning">{{ key }}</el-tag>
+                <span v-if="(catalogImportState.dryRun?.overwritten_model_keys || []).length > 20" class="catalog-import-key-more">等 {{ (catalogImportState.dryRun?.overwritten_model_keys || []).length }} 条</span>
+              </div>
+            </div>
+          </template>
+          <template v-if="catalogImportState.origin === 'sync' && (catalogImportState.dryRun?.skipped || 0) > 0">
+            <div class="catalog-import-key-section">
+              <span class="catalog-import-key-label">跳过模型</span>
+              <div class="catalog-import-key-list">
+                <el-tag v-for="key in (catalogImportState.dryRun?.skipped_model_keys || []).slice(0, 20)" :key="key" size="small" type="info">{{ key }}</el-tag>
+                <span v-if="(catalogImportState.dryRun?.skipped_model_keys || []).length > 20" class="catalog-import-key-more">等 {{ (catalogImportState.dryRun?.skipped_model_keys || []).length }} 条</span>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <div v-if="catalogImportState.origin === 'overwrite'" class="catalog-overwrite-confirm">
+        <el-checkbox v-model="catalogImportState.overwriteConfirmed">我已了解本地修改将被覆盖</el-checkbox>
+        </div>
+      </template>
+
+      <template v-else-if="catalogImportState.phase === 'loading'">
+        <div class="catalog-import-loading" v-loading="true" element-loading-text="正在拉取远端目录…">
+          <div class="catalog-import-loading-spacer"></div>
+        </div>
       </template>
 
       <template v-else-if="catalogImportState.phase === 'done'">
@@ -116,9 +179,15 @@
         <div class="drawer-footer">
           <el-button @click="closeCatalogImportDialog">取消</el-button>
           <el-button
+            v-if="catalogImportState.origin === 'overwrite' && catalogImportState.phase === 'preview'"
+            :loading="catalogExporting"
+            @click="exportCatalog"
+          >先导出当前目录</el-button>
+          <el-button
             v-if="catalogImportState.phase === 'preview'"
             type="primary"
-            :loading="catalogImporting"
+            :loading="catalogImporting || catalogSyncing"
+            :disabled="catalogImportState.origin === 'overwrite' && !catalogImportState.overwriteConfirmed"
             @click="confirmCatalogImport"
           >确认导入</el-button>
           <el-button v-else-if="catalogImportState.phase === 'done'" @click="closeCatalogImportDialog">完成</el-button>
@@ -488,14 +557,15 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
 import { ElMessageBox } from "element-plus/es/components/message-box/index.mjs";
-import { Delete, Download, Edit, Plus, Refresh, Search, Upload } from "@element-plus/icons-vue";
+import { ArrowDown, Delete, Download, Edit, Plus, Refresh, RefreshRight, Search, Upload, Warning } from "@element-plus/icons-vue";
 import {
   createModelCatalogImportState,
   parseModelCatalogFile,
   applyModelCatalogDryRun,
   applyModelCatalogImport,
   failModelCatalogImport,
-  resetModelCatalogImport
+  resetModelCatalogImport,
+  syncModelKeys
 } from "./modelCatalogImportState.js";
 
 const props = defineProps({
@@ -509,6 +579,7 @@ const providersLoadFailed = ref(false);
 const modelsLoading = ref(false);
 const catalogExporting = ref(false);
 const catalogImporting = ref(false);
+const catalogSyncing = ref(false);
 const catalogImportVisible = ref(false);
 const catalogFileInput = ref(null);
 const catalogImportState = reactive(createModelCatalogImportState());
@@ -545,6 +616,13 @@ let mobileMediaQuery = null;
 const pagedModels = computed(() => {
   const start = (page.value - 1) * pageSize.value;
   return models.value.slice(start, start + pageSize.value);
+});
+
+const catalogDialogTitle = computed(() => {
+  const origin = catalogImportState.origin;
+  if (origin === "sync") return "同步最新模型";
+  if (origin === "overwrite") return "覆盖已有模型";
+  return "导入模型目录";
 });
 
 watch(activeProvider, () => {
@@ -623,6 +701,7 @@ async function handleCatalogFileSelected(event) {
     const text = await file.text();
     const document = parseModelCatalogFile(text, file.name);
     catalogImportState.document = document;
+    catalogImportState.origin = "file";
     catalogImportVisible.value = true;
     catalogImporting.value = true;
     try {
@@ -641,14 +720,62 @@ async function handleCatalogFileSelected(event) {
   }
 }
 
+function handleCatalogImportCommand(command) {
+  if (command === "file") {
+    selectCatalogFile();
+  } else if (command === "sync") {
+    startSync("incremental");
+  } else if (command === "overwrite") {
+    startSync("overwrite");
+  }
+}
+
+async function startSync(mode) {
+  catalogSyncing.value = true;
+  catalogImportState.origin = mode === "overwrite" ? "overwrite" : "sync";
+  catalogImportVisible.value = true;
+  resetModelCatalogImport(catalogImportState);
+  catalogImportState.origin = mode === "overwrite" ? "overwrite" : "sync";
+  catalogImportState.phase = "loading";
+  try {
+    const data = await props.api(`/model-catalog/sync?mode=${mode}&dryRun=true`, {
+      method: "POST"
+    });
+    if (mode === "incremental" && (data.models?.created || 0) === 0 && (data.skipped || 0) >= 0) {
+      const hasNew = (data.created_model_keys || []).length > 0;
+      if (!hasNew) {
+        closeCatalogImportDialog();
+        ElMessage.info("没有新模型，已是最新");
+        return;
+      }
+    }
+    applyModelCatalogDryRun(catalogImportState, "", null, data);
+  } catch (error) {
+    failModelCatalogImport(catalogImportState, error.message);
+  } finally {
+    catalogSyncing.value = false;
+  }
+}
+
 async function confirmCatalogImport() {
-  if (!catalogImportState.document) return;
+  if (catalogImportState.origin === "file" && !catalogImportState.document) return;
+  if (catalogImportState.origin === "overwrite" && !catalogImportState.overwriteConfirmed) return;
+
+  const isSync = catalogImportState.origin === "sync" || catalogImportState.origin === "overwrite";
+  const mode = catalogImportState.origin === "overwrite" ? "overwrite" : "incremental";
   catalogImporting.value = true;
   try {
-    const data = await props.api("/model-catalog/import?dryRun=false", {
-      method: "POST",
-      body: JSON.stringify(catalogImportState.document)
-    });
+    let data;
+    if (isSync) {
+      data = await props.api(`/model-catalog/sync?mode=${mode}&dryRun=false`, {
+        method: "POST"
+      });
+    } else {
+      data = await props.api("/model-catalog/import?dryRun=false", {
+        method: "POST",
+        body: JSON.stringify(catalogImportState.document)
+      });
+    }
     applyModelCatalogImport(catalogImportState, data);
     await loadAll();
   } catch (error) {
@@ -1078,6 +1205,55 @@ onBeforeUnmount(() => {
   text-align: right;
 }
 
+.catalog-import-keys {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.catalog-import-key-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.catalog-import-key-label {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+
+.catalog-import-key-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.catalog-import-key-more {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  align-self: center;
+}
+
+.catalog-overwrite-confirm {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  background: var(--el-bg-color-page);
+}
+
+.catalog-import-loading {
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.catalog-import-loading-spacer {
+  height: 80px;
+}
+
 .mobile-provider-filter,
 .mobile-model-list {
   display: none;
@@ -1107,6 +1283,17 @@ onBeforeUnmount(() => {
   }
 
   .pricing-page .toolbar-actions > :deep(.el-button) {
+    width: 100%;
+    min-height: 44px;
+    margin-left: 0;
+  }
+
+  .pricing-page .toolbar-actions > :deep(.el-dropdown) {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .pricing-page .toolbar-actions > :deep(.el-dropdown) .el-button {
     width: 100%;
     min-height: 44px;
     margin-left: 0;

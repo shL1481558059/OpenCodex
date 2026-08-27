@@ -110,6 +110,7 @@ flowchart TD
 | Cookie 有效期 | `OpenCodex:AdminCookieDays` | `OPENCODEX_ADMIN_COOKIE_DAYS` | `30` 天 | 必须可解析且 `>0`，否则回退 30 | 中 | 管理台 Cookie 过期时间与滑动续期 |
 | Cookie 隔离秘密 | `OpenCodex:SecretKey` | `OPENCODEX_SECRET_KEY` | `change-me-session-secret` | trim；空白仍回退示例值 | 高 | 经 SHA-256 派生 Data Protection ApplicationName |
 | Data Protection key 目录 | `OpenCodex:DataProtectionKeysPath` | `OPENCODEX_DATA_PROTECTION_KEYS_PATH` | `logs/.keys` | 转绝对路径并自动创建目录 | 高 | Cookie 加解密密钥持久化 |
+| 模型目录同步地址 | `OpenCodex:ModelCatalogSyncUrl` | `OPENCODEX_MODEL_CATALOG_SYNC_URL` | `https://ocxpmodel.shldev.me/model-catalog.json` | trim；空白回退内置默认值；非 http/https 在同步时返回 400 | 中 | 远端模型目录 JSON 拉取地址；管理台只读、不展示 |
 
 ### 4.2 启动与桌面内部配置
 

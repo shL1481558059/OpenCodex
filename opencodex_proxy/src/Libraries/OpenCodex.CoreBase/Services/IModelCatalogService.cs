@@ -31,6 +31,11 @@ public interface IModelCatalogService
 
     ApiOpResult<ModelCatalogImportResult> ImportModelCatalog(ModelCatalogTransferDocument document, bool dryRun);
 
+    ApiOpResult<ModelCatalogImportResult> ImportModelCatalog(
+        ModelCatalogTransferDocument document,
+        bool dryRun,
+        ModelCatalogImportOptions options);
+
     ApiOpResult<ChannelModelInfoListResponse> ListChannelModelInfos(Guid channelId);
 
     ApiOpResult<ChannelModelInfoResponsePayload> UpsertChannelModelInfo(

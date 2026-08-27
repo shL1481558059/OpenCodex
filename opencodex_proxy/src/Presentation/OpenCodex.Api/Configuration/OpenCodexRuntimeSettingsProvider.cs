@@ -22,7 +22,8 @@ public sealed class OpenCodexRuntimeSettingsProvider : IOpenCodexRuntimeSettings
             ConfigValue("OpenCodex:OcrCacheDir", "OPENCODEX_OCR_CACHE_DIR") ?? "ocr-cache",
             ConfigValue("OpenCodex:RedisConnection", "OPENCODEX_REDIS_CONNECTION"),
             ConfigValue("OpenCodex:RedisPrefix", "OPENCODEX_REDIS_PREFIX"),
-            PositiveInt("OpenCodex:CacheDefaultTtlSeconds", "OPENCODEX_CACHE_DEFAULT_TTL_SECONDS", 300));
+            PositiveInt("OpenCodex:CacheDefaultTtlSeconds", "OPENCODEX_CACHE_DEFAULT_TTL_SECONDS", 300),
+            ConfigValue("OpenCodex:ModelCatalogSyncUrl", "OPENCODEX_MODEL_CATALOG_SYNC_URL"));
     }
 
     private string DbProvider()

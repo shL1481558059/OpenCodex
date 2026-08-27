@@ -9,7 +9,8 @@ import {
   applyModelCatalogImport,
   failModelCatalogImport,
   resetModelCatalogImport,
-  importSummary
+  importSummary,
+  syncModelKeys
 } from "./modelCatalogImportState.js";
 
 test("合法文件解析后保留 catalog 与 pricing", () => {
@@ -100,4 +101,74 @@ test("失败与重置", () => {
   resetModelCatalogImport(state);
   assert.equal(state.phase, "idle");
   assert.equal(state.document, null);
+});
+
+test("同步增量模式摘要包含跳过计数", () => {
+  const state = createModelCatalogImportState();
+  state.origin = "sync";
+  const result = {
+    dry_run: true,
+    providers: { created: 1, updated: 0, unchanged: 2 },
+    models: { created: 2, updated: 0, unchanged: 0 },
+    skipped: 5,
+    created_model_keys: ["model-a", "model-b"],
+    skipped_model_keys: ["existing-1", "existing-2", "existing-3", "existing-4", "existing-5"],
+    overwritten_model_keys: [],
+    errors: []
+  };
+  applyModelCatalogDryRun(state, "", null, result);
+
+  const summary = importSummary(state);
+  assert.ok(summary.includes("跳过 5"));
+  assert.ok(summary.includes("模型新增 2"));
+
+  const keys = syncModelKeys(state);
+  assert.equal(keys.created.length, 2);
+  assert.equal(keys.skipped.length, 5);
+  assert.equal(keys.overwritten.length, 0);
+});
+
+test("覆盖模式摘要包含覆盖计数", () => {
+  const state = createModelCatalogImportState();
+  state.origin = "overwrite";
+  const result = {
+    dry_run: true,
+    providers: { created: 0, updated: 0, unchanged: 3 },
+    models: { created: 1, updated: 0, unchanged: 0 },
+    skipped: 0,
+    created_model_keys: ["new-model"],
+    skipped_model_keys: [],
+    overwritten_model_keys: ["existing-1", "existing-2"],
+    errors: []
+  };
+  applyModelCatalogDryRun(state, "", null, result);
+
+  const summary = importSummary(state);
+  assert.ok(summary.includes("覆盖 2"));
+  assert.ok(summary.includes("模型新增 1"));
+
+  const keys = syncModelKeys(state);
+  assert.equal(keys.overwritten.length, 2);
+  assert.equal(keys.created.length, 1);
+});
+
+test("覆盖模式未勾选时 confirmed 为 false", () => {
+  const state = createModelCatalogImportState();
+  state.origin = "overwrite";
+  assert.equal(state.overwriteConfirmed, false);
+  state.overwriteConfirmed = true;
+  assert.equal(state.overwriteConfirmed, true);
+});
+
+test("同步失败保留 errors 且可 reset", () => {
+  const state = createModelCatalogImportState();
+  state.origin = "sync";
+  failModelCatalogImport(state, "远端不可达");
+  assert.equal(state.phase, "error");
+  assert.deepEqual(state.errors, ["远端不可达"]);
+  assert.equal(state.overwriteConfirmed, false);
+
+  resetModelCatalogImport(state);
+  assert.equal(state.phase, "idle");
+  assert.equal(state.origin, "file");
 });

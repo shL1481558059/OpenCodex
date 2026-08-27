@@ -14,7 +14,8 @@ public sealed class OpenCodexRuntimeSettings
         string? ocrCacheDir = null,
         string? redisConnection = null,
         string? redisPrefix = null,
-        int cacheDefaultTtlSeconds = 300)
+        int cacheDefaultTtlSeconds = 300,
+        string? modelCatalogSyncUrl = null)
     {
         DatabaseProvider = databaseProvider;
         ConnectionString = connectionString;
@@ -25,6 +26,7 @@ public sealed class OpenCodexRuntimeSettings
         RedisConnection = (redisConnection ?? string.Empty).Trim();
         RedisPrefix = string.IsNullOrWhiteSpace(redisPrefix) ? "opencodex" : redisPrefix.Trim();
         CacheDefaultTtlSeconds = cacheDefaultTtlSeconds > 0 ? cacheDefaultTtlSeconds : 300;
+        ModelCatalogSyncUrl = modelCatalogSyncUrl;
     }
 
     /// <summary>
@@ -71,4 +73,9 @@ public sealed class OpenCodexRuntimeSettings
     /// 获取缓存默认过期时长,单位为秒,默认 300。
     /// </summary>
     public int CacheDefaultTtlSeconds { get; }
+
+    /// <summary>
+    /// 获取模型目录同步源地址;为空表示使用内置默认值。
+    /// </summary>
+    public string? ModelCatalogSyncUrl { get; }
 }

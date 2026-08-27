@@ -9,7 +9,9 @@ export function createModelCatalogImportState() {
     dryRun: null,
     errors: [],
     confirmed: false,
-    preview: false
+    preview: false,
+    origin: "file",
+    overwriteConfirmed: false
   };
 }
 
@@ -54,6 +56,7 @@ export function applyModelCatalogDryRun(state, fileName, document, result) {
   state.errors = Array.isArray(result?.errors) ? result.errors.slice() : [];
   state.confirmed = false;
   state.preview = result?.dry_run === true;
+  state.overwriteConfirmed = false;
   return state;
 }
 
@@ -63,6 +66,7 @@ export function applyModelCatalogImport(state, result) {
   state.errors = Array.isArray(result?.errors) ? result.errors.slice() : [];
   state.confirmed = result?.dry_run === false;
   state.preview = false;
+  state.overwriteConfirmed = false;
   return state;
 }
 
@@ -72,6 +76,7 @@ export function failModelCatalogImport(state, message) {
   state.errors = [message].filter(Boolean);
   state.confirmed = false;
   state.preview = false;
+  state.overwriteConfirmed = false;
   return state;
 }
 
@@ -84,11 +89,35 @@ export function importSummary(state) {
   if (!state.dryRun) return "";
   const providers = state.dryRun.providers || {};
   const models = state.dryRun.models || {};
+  if (state.origin === "sync" || state.origin === "overwrite") {
+    const parts = [
+      `供应商新增 ${providers.created || 0}`,
+      `无变化 ${providers.unchanged || 0}`,
+      `模型新增 ${models.created || 0}`
+    ];
+    if (state.origin === "sync") {
+      parts.push(`跳过 ${state.dryRun.skipped || 0}`);
+    }
+    if (state.origin === "overwrite") {
+      const overwritten = (state.dryRun.overwritten_model_keys || []).length;
+      parts.push(`覆盖 ${overwritten}`);
+    }
+    return parts.join("，");
+  }
   return [
     `供应商新增 ${providers.created || 0}`,
     `更新 ${providers.updated || 0}`,
     `无变化 ${providers.unchanged || 0}`
   ].join("，");
+}
+
+export function syncModelKeys(state) {
+  if (!state.dryRun) return { created: [], skipped: [], overwritten: [] };
+  return {
+    created: state.dryRun.created_model_keys || [],
+    skipped: state.dryRun.skipped_model_keys || [],
+    overwritten: state.dryRun.overwritten_model_keys || []
+  };
 }
 
 function normalizeProvider(item) {

@@ -3,6 +3,8 @@ namespace OpenCodex.Core.Domain;
 public static class ModelCatalogSources
 {
     public const string Manual = "manual";
+
+    public const string Sync = "sync";
 }
 
 public static class ModelInfoScopes
