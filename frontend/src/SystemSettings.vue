@@ -3,7 +3,7 @@
     <div class="toolbar">
       <div>
         <h2>系统设置</h2>
-        <div class="text-muted">后端监听配置保存后需要重启服务生效</div>
+        <div v-if="tauriRuntime" class="text-muted">后端监听配置保存后需要重启服务生效</div>
       </div>
       <div class="toolbar-actions">
         <el-button :icon="Refresh" :loading="loading" @click="loadSettings">刷新</el-button>
@@ -11,12 +11,12 @@
     </div>
 
     <el-form v-loading="loading" class="settings-form" label-position="top">
-      <el-form-item label="访问范围">
+      <el-form-item v-if="tauriRuntime" label="访问范围">
         <el-segmented v-model="draft.access_mode" :options="accessModeOptions" />
       </el-form-item>
 
       <el-alert
-        v-if="draft.access_mode === 'lan'"
+        v-if="tauriRuntime && draft.access_mode === 'lan'"
         class="settings-alert"
         type="warning"
         title="局域网访问会允许同一网络内的设备连接当前服务"
@@ -24,7 +24,7 @@
         :closable="false"
       />
 
-      <el-form-item label="后端端口">
+      <el-form-item v-if="tauriRuntime" label="后端端口">
         <el-input-number
           v-model="draft.port"
           :min="1024"
@@ -44,7 +44,7 @@
 
       <div v-if="settings" class="settings-meta">
         <el-descriptions :column="1" border>
-          <el-descriptions-item label="监听地址">{{ bindHostLabel }}</el-descriptions-item>
+          <el-descriptions-item v-if="tauriRuntime" label="监听地址">{{ bindHostLabel }}</el-descriptions-item>
           <el-descriptions-item label="管理台地址">
             <code>{{ settings.admin_url }}</code>
           </el-descriptions-item>

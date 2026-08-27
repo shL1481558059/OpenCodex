@@ -358,12 +358,22 @@ public sealed class ModelCatalogService : IModelCatalogService
             return ApiOpResult<ModelInfoResponsePayload>.Fail(404, "model not found");
         }
 
-        model.Enabled = false;
-        model.UpdatedAt = UnixTimeSeconds();
-        _models.Update(model);
+        if (model.Enabled)
+        {
+            // 启用状态：执行停用（软删除）
+            model.Enabled = false;
+            model.UpdatedAt = UnixTimeSeconds();
+            _models.Update(model);
+            BumpPricingVersion();
+            return ApiOpResult<ModelInfoResponsePayload>.Succeed(
+                new ModelInfoResponsePayload(ToModelResponse(model, ProviderMap())));
+        }
+
+        // 停用状态：执行真正删除（硬删除）
+        RemovePlans(model.Id, model.ChannelId);
+        _models.Delete(model);
         BumpPricingVersion();
-        return ApiOpResult<ModelInfoResponsePayload>.Succeed(
-            new ModelInfoResponsePayload(ToModelResponse(model, ProviderMap())));
+        return ApiOpResult<ModelInfoResponsePayload>.Succeed(null);
     }
 
     public ApiOpResult<ModelCatalogTransferDocument> ExportModelCatalog()

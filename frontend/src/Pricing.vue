@@ -165,22 +165,27 @@
         </el-table-column>
         <el-table-column prop="source" label="来源" width="140" show-overflow-tooltip />
         <el-table-column label="操作" width="210" align="center">
-          <template #default="{ row }">
-            <div class="inline-actions channel-table-actions">
-              <el-button size="small" :icon="Edit" @click="openModelDialog(row)">编辑</el-button>
-              <el-popconfirm :title="`停用模型 ${row.model_key}？`" @confirm="deleteModel(row)">
-                <template #reference>
-                  <el-button size="small" type="danger" :icon="Delete">停用</el-button>
-                </template>
-              </el-popconfirm>
-            </div>
-          </template>
-        </el-table-column>
-      </el-table>
+        <template #default="{ row }">
+          <div class="inline-actions channel-table-actions">
+            <el-button size="small" :icon="Edit" @click="openModelDialog(row)">编辑</el-button>
+            <el-popconfirm
+              :title="row.enabled === false ? `删除模型 ${row.model_key}？删除后不可恢复` : `停用模型 ${row.model_key}？`"
+              @confirm="deleteModel(row)"
+            >
+              <template #reference>
+                <el-button size="small" type="danger" :icon="Delete">
+                  {{ row.enabled === false ? "删除" : "停用" }}
+                </el-button>
+              </template>
+            </el-popconfirm>
+          </div>
+        </template>
+      </el-table-column>
+    </el-table>
 
-      <div v-else v-loading="modelsLoading" class="mobile-model-list">
-        <article v-for="model in pagedModels" :key="model.id" class="model-card">
-          <div class="model-card-header">
+    <div v-else v-loading="modelsLoading" class="mobile-model-list">
+      <article v-for="model in pagedModels" :key="model.id" class="model-card">
+        <div class="model-card-header">
             <div class="model-card-title-wrap">
               <strong class="model-card-title">{{ model.display_name || model.model_key }}</strong>
               <span class="model-card-key">{{ model.model_key }}</span>
@@ -225,15 +230,20 @@
             </div>
           </dl>
 
-          <div class="model-card-actions">
-            <el-button :icon="Edit" @click="openModelDialog(model)">编辑</el-button>
-            <el-popconfirm :title="`停用模型 ${model.model_key}？`" @confirm="deleteModel(model)">
-              <template #reference>
-                <el-button type="danger" :icon="Delete">停用</el-button>
-              </template>
-            </el-popconfirm>
-          </div>
-        </article>
+        <div class="model-card-actions">
+          <el-button :icon="Edit" @click="openModelDialog(model)">编辑</el-button>
+          <el-popconfirm
+            :title="model.enabled === false ? `删除模型 ${model.model_key}？删除后不可恢复` : `停用模型 ${model.model_key}？`"
+            @confirm="deleteModel(model)"
+          >
+            <template #reference>
+              <el-button type="danger" :icon="Delete">
+                {{ model.enabled === false ? "删除" : "停用" }}
+              </el-button>
+            </template>
+          </el-popconfirm>
+        </div>
+      </article>
         <el-empty v-if="!modelsLoading && pagedModels.length === 0" description="暂无模型信息" />
       </div>
 
@@ -781,7 +791,7 @@ async function deleteModel(row) {
   try {
     await props.api(`/model-infos/${row.id}`, { method: "DELETE" });
     await loadModels();
-    ElMessage.success("模型已停用");
+    ElMessage.success(row.enabled === false ? "模型已删除" : "模型已停用");
   } catch (error) {
     ElMessage.error(error.message);
   }
