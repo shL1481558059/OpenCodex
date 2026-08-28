@@ -967,13 +967,8 @@ public sealed class ModelCatalogService : IModelCatalogService
         return ApiOpResult.Succeed();
     }
 
-    public bool SupportsImage(Guid? channelId, string? upstreamModel, bool legacyMappingValue)
+    public bool SupportsImage(Guid? channelId, string? upstreamModel)
     {
-        if (legacyMappingValue)
-        {
-            return true;
-        }
-
         var actualModel = Normalize(upstreamModel);
         if (actualModel.Length == 0)
         {

@@ -247,27 +247,16 @@ public sealed class ProxyControllerTests
 
     private sealed class StubProxyRouteService : IProxyRouteService
     {
-        public Task<ProxyRouteDto> ChooseRouteAsync(string ownerUsername, string? model, bool requestContainsImages = false)
-        {
-            throw new NotSupportedException();
-        }
-
         public Task<IReadOnlyList<ProxyRouteDto>> ListRouteCandidatesAsync(
             string ownerUsername,
-            string? model,
-            bool requestContainsImages = false)
+            string? model)
         {
             return Task.FromResult<IReadOnlyList<ProxyRouteDto>>([]);
         }
 
-        public Task<ProxyRouteDto?> ChooseOcrRouteAsync(string ownerUsername, string? model)
+        public Task<VisionTransferRoutesDto> ListVisionTransferRoutesAsync(string ownerUsername)
         {
-            return Task.FromResult<ProxyRouteDto?>(null);
-        }
-
-        public Task<IReadOnlyList<string>> ListModelsAsync(string ownerUsername)
-        {
-            return Task.FromResult<IReadOnlyList<string>>([]);
+            return Task.FromResult(VisionTransferRoutesDto.NotConfigured());
         }
 
         public Task<IReadOnlyList<ProxyModelCapabilityDto>> ListModelCapabilitiesAsync(string ownerUsername)
@@ -365,7 +354,7 @@ public sealed class ProxyControllerTests
             throw new NotSupportedException();
         }
 
-        public bool SupportsImage(Guid? channelId, string? upstreamModel, bool legacyMappingValue)
+        public bool SupportsImage(Guid? channelId, string? upstreamModel)
         {
             throw new NotSupportedException();
         }

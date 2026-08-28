@@ -85,7 +85,6 @@ public sealed class ImagesCoreContractTests
         var filtered = await routes.ListRouteCandidatesAsync(
             "admin",
             "model",
-            false,
             new HashSet<string>(StringComparer.Ordinal) { "images" });
 
         Assert.Single(filtered);
@@ -120,17 +119,11 @@ public sealed class ImagesCoreContractTests
 
     private sealed class LegacyRouteService(IReadOnlyList<ProxyRouteDto> routes) : IProxyRouteService
     {
-        public Task<ProxyRouteDto> ChooseRouteAsync(string ownerUsername, string? model, bool requestContainsImages = false)
-            => Task.FromResult(routes[0]);
-
-        public Task<IReadOnlyList<ProxyRouteDto>> ListRouteCandidatesAsync(string ownerUsername, string? model, bool requestContainsImages = false)
+        public Task<IReadOnlyList<ProxyRouteDto>> ListRouteCandidatesAsync(string ownerUsername, string? model)
             => Task.FromResult(routes);
 
-        public Task<ProxyRouteDto?> ChooseOcrRouteAsync(string ownerUsername, string? model)
-            => Task.FromResult<ProxyRouteDto?>(null);
-
-        public Task<IReadOnlyList<string>> ListModelsAsync(string ownerUsername)
-            => Task.FromResult<IReadOnlyList<string>>([]);
+        public Task<VisionTransferRoutesDto> ListVisionTransferRoutesAsync(string ownerUsername)
+            => Task.FromResult(VisionTransferRoutesDto.NotConfigured());
 
         public Task<IReadOnlyList<ProxyModelCapabilityDto>> ListModelCapabilitiesAsync(string ownerUsername)
             => Task.FromResult<IReadOnlyList<ProxyModelCapabilityDto>>([]);

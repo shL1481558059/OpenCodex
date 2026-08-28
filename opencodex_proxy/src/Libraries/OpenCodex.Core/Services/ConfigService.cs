@@ -28,6 +28,7 @@ public sealed class ConfigService : IConfigService
     private readonly IOpenCodexRuntimeSettingsProvider _settingsProvider;
     private readonly IWorkContext _workContext;
     private readonly IRepository<Channel> _channelRepository;
+    private readonly IRepository<VisionTransferSettings> _visionTransferSettings;
     private readonly IRepository<User> _userRepository;
     private readonly IRepository<ChannelModelMapping> _channelModelMappings;
     private readonly ICacheService _cache;
@@ -41,6 +42,7 @@ public sealed class ConfigService : IConfigService
         IRepository<Channel> channelRepository,
         IRepository<User> userRepository,
         IRepository<ChannelModelMapping> channelModelMappings,
+        IRepository<VisionTransferSettings> visionTransferSettings,
         ICacheService cache,
         IMemoryCache memoryCache)
     {
@@ -51,6 +53,7 @@ public sealed class ConfigService : IConfigService
         _channelRepository = channelRepository;
         _userRepository = userRepository;
         _channelModelMappings = channelModelMappings;
+        _visionTransferSettings = visionTransferSettings;
         _cache = cache;
         _memoryCache = memoryCache;
     }
@@ -169,7 +172,9 @@ public sealed class ConfigService : IConfigService
         }
 
         DeleteMappingsForChannels([channel.Id]);
+        CleanupVisionTransferReferences(channel.Id);
         _channelRepository.Delete(channel);
+        _channelRepository.SaveChanges();
         await InvalidateRouteCache(currentUsername);
 
         return ApiOpResult<ChannelDeleteResult>.Succeed(new ChannelDeleteResult
@@ -1031,6 +1036,35 @@ public sealed class ConfigService : IConfigService
         if (oldMappings.Count > 0)
         {
             _channelModelMappings.Delete(oldMappings);
+        }
+    }
+
+    /// <summary>
+    /// 清理引用被删除渠道的图片识别转移配置:主路由被删则整行作废,兜底被删只清空兜底两列。
+    /// </summary>
+    private void CleanupVisionTransferReferences(Guid channelId)
+    {
+        var affected = _visionTransferSettings.Table
+            .Where(item => item.PrimaryChannelId == channelId || item.FallbackChannelId == channelId)
+            .ToList();
+        if (affected.Count == 0)
+        {
+            return;
+        }
+
+        var now = UnixTimeSeconds();
+        var removals = affected.Where(item => item.PrimaryChannelId == channelId).ToList();
+        if (removals.Count > 0)
+        {
+            _visionTransferSettings.Delete(removals);
+        }
+
+        foreach (var item in affected.Where(item => item.PrimaryChannelId != channelId))
+        {
+            item.FallbackChannelId = null;
+            item.FallbackModel = null;
+            item.UpdatedAt = now;
+            _visionTransferSettings.Update(item);
         }
     }
 

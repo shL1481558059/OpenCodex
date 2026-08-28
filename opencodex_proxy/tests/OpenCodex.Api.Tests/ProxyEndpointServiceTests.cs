@@ -1031,27 +1031,16 @@ public sealed class ProxyEndpointServiceTests
             _candidates = candidates;
         }
 
-        public Task<ProxyRouteDto> ChooseRouteAsync(string ownerUsername, string? model, bool requestContainsImages = false)
-        {
-            return Task.FromResult(_candidates[0]);
-        }
-
         public Task<IReadOnlyList<ProxyRouteDto>> ListRouteCandidatesAsync(
             string ownerUsername,
-            string? model,
-            bool requestContainsImages = false)
+            string? model)
         {
             return Task.FromResult(_candidates);
         }
 
-        public Task<ProxyRouteDto?> ChooseOcrRouteAsync(string ownerUsername, string? model)
+        public Task<VisionTransferRoutesDto> ListVisionTransferRoutesAsync(string ownerUsername)
         {
-            return Task.FromResult<ProxyRouteDto?>(null);
-        }
-
-        public Task<IReadOnlyList<string>> ListModelsAsync(string ownerUsername)
-        {
-            return Task.FromResult<IReadOnlyList<string>>([]);
+            return Task.FromResult(VisionTransferRoutesDto.NotConfigured());
         }
 
         public Task<IReadOnlyList<ProxyModelCapabilityDto>> ListModelCapabilitiesAsync(string ownerUsername)

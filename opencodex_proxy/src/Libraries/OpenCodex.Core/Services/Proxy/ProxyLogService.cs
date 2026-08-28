@@ -545,7 +545,8 @@ public sealed class ProxyLogService : IProxyLogService
         var threadId = MetadataValue(turnMetadata, "thread_id")
             ?? HeaderValue(requestHeaders, "thread-id");
         var sessionId = MetadataValue(turnMetadata, "session_id")
-            ?? HeaderValue(requestHeaders, "session-id");
+            ?? HeaderValue(requestHeaders, "session-id")
+            ?? HeaderValue(requestHeaders, "x-claude-code-session-id");
         var promptCacheKey = payload is null
             ? null
             : NullIfEmpty(JsonDictionaryValue.String(payload, "prompt_cache_key"));
