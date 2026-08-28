@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
@@ -109,6 +110,7 @@ public sealed class ProxyImageFallbackTests
 
         var cookie = await LoginAndReadSessionCookie(client);
         await ConfigureModelsAsync(client, cookie, includeVisionModel: true);
+        ConfigureVisionTransfer(factory.DbPath);
         var apiKey = await CreateApiKeyAsync(client, cookie, "cli-fallback");
 
         var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
@@ -192,16 +194,6 @@ public sealed class ProxyImageFallbackTests
                 ResponsesOcrResponse("vision-upstream", "LIVE", "实时识别"),
                 ResponsesTextResponse("text-upstream", "done")
             ]);
-        var imageBytes = Convert.FromBase64String("AAAA");
-        var cacheKey = Convert.ToHexStringLower(SHA256.HashData(imageBytes));
-        var cacheDir = Path.Combine(factory.OcrCacheDir, "results");
-        Directory.CreateDirectory(cacheDir);
-        File.WriteAllText(
-            Path.Combine(cacheDir, $"{cacheKey}.json"),
-            """
-            {"Engine":"paddleocr","SourceKind":"data","Text":"STALE","Description":"旧缓存","CreatedAt":1,"Model":"old-model","UpstreamModel":"old-upstream","ChannelId":"old-channel","ChannelType":"responses"}
-            """);
-
         using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
         {
             AllowAutoRedirect = false,
@@ -210,6 +202,20 @@ public sealed class ProxyImageFallbackTests
 
         var cookie = await LoginAndReadSessionCookie(client);
         await ConfigureModelsAsync(client, cookie, includeVisionModel: true);
+        var visionChannelId = ConfigureVisionTransfer(factory.DbPath);
+
+        // 缓存键包含视觉路由身份,所以要用真实的渠道 id 和上游模型名生成。
+        var imageBytes = Convert.FromBase64String("AAAA");
+        var cacheKey = Convert.ToHexStringLower(SHA256.HashData(
+            [.. imageBytes, .. Encoding.UTF8.GetBytes($"|{visionChannelId}|vision-upstream")]));
+        var cacheDir = Path.Combine(factory.OcrCacheDir, "results");
+        Directory.CreateDirectory(cacheDir);
+        File.WriteAllText(
+            Path.Combine(cacheDir, $"{cacheKey}.json"),
+            """
+            {"Engine":"paddleocr","SourceKind":"data","Text":"STALE","Description":"旧缓存","CreatedAt":1,"Model":"old-model","UpstreamModel":"old-upstream","ChannelId":"old-channel","ChannelType":"responses"}
+            """);
+
         var apiKey = await CreateApiKeyAsync(client, cookie, "cli-paddle-cache");
 
         var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
@@ -289,7 +295,7 @@ public sealed class ProxyImageFallbackTests
         var body = await response.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Contains("requires a configured vision model", body, StringComparison.Ordinal);
+        Assert.Contains("vision transfer model is not configured", body, StringComparison.Ordinal);
         Assert.Empty(factory.Upstream.Requests);
 
         using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={factory.DbPath}");
@@ -440,6 +446,28 @@ public sealed class ProxyImageFallbackTests
         {
             await EnsureVisionModelInfoAsync(client, cookie);
         }
+    }
+
+    /// <summary>
+    /// 直接写入该 owner 的图片识别转移配置。移除自动发现后,OCR 链路只认显式配置,
+    /// 集成测试必须先落这一行才会触发视觉子请求。
+    /// </summary>
+    private static Guid ConfigureVisionTransfer(string dbPath, string primaryModel = "vision-model")
+    {
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        context.Database.Migrate();
+        var channel = context.Channels.OrderBy(item => item.Position).First();
+        context.VisionTransferSettings.Add(new VisionTransferSettings
+        {
+            Id = Guid.NewGuid(),
+            OwnerUserId = channel.OwnerUserId,
+            PrimaryChannelId = channel.Id,
+            PrimaryModel = primaryModel,
+            CreatedAt = 1,
+            UpdatedAt = 1
+        });
+        context.SaveChanges();
+        return channel.Id;
     }
 
     private static async Task EnsureVisionModelInfoAsync(HttpClient client, string cookie)

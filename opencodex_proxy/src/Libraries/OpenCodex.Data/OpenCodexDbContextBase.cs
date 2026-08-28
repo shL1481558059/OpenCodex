@@ -33,6 +33,8 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
 
     public DbSet<ChannelModelMapping> ChannelModelMappings => Set<ChannelModelMapping>();
 
+    public DbSet<VisionTransferSettings> VisionTransferSettings => Set<VisionTransferSettings>();
+
     public DbSet<RequestLog> RequestLogs => Set<RequestLog>();
 
     public DbSet<LogContentBlock> LogContentBlocks => Set<LogContentBlock>();
@@ -49,6 +51,7 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         ConfigureChannels(modelBuilder);
         ConfigureAccessApiKeys(modelBuilder);
         ConfigureWebSearch(modelBuilder);
+        ConfigureVisionTransfer(modelBuilder);
         ConfigureModelCatalog(modelBuilder);
         ConfigureRequestLogs(modelBuilder);
     }
@@ -116,6 +119,18 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         keys.Property(key => key.Provider).IsRequired();
         keys.Property(key => key.ApiKey).IsRequired();
         keys.HasIndex(key => key.Position);
+    }
+
+    private static void ConfigureVisionTransfer(ModelBuilder modelBuilder)
+    {
+        var settings = modelBuilder.Entity<VisionTransferSettings>();
+        settings.ToTable("VisionTransferSettings");
+        settings.HasKey(item => item.Id);
+        settings.Property(item => item.Id).ValueGeneratedOnAdd();
+        settings.Property(item => item.OwnerUserId).IsRequired();
+        settings.Property(item => item.PrimaryChannelId).IsRequired();
+        settings.Property(item => item.PrimaryModel).IsRequired();
+        settings.HasIndex(item => item.OwnerUserId).IsUnique();
     }
 
     private static void ConfigureModelCatalog(ModelBuilder modelBuilder)

@@ -160,51 +160,56 @@ data URL 会保存解码后的 `ImageBytes`；远程 URL 只保存引用。媒�
 
 ## 6. 视觉路由选择
 
-`ProxyRouteService.ChooseOcrRouteAsync(owner, requestModel)` 的顺序：
+视觉路由**只来自显式配置**，自动发现已整体移除。`ProxyRouteService.ListVisionTransferRoutesAsync(owner)` 读该 owner 的 `VisionTransferSettings` 单行，按主、兜底顺序返回 0 到 2 个候选：
 
-1. 找到原请求模型的候选主路由；
-2. 在主候选渠道内寻找最优的图片模型映射；
-3. 若同渠道没有，再在其他启用渠道中寻找最优图片模型；
-4. 没有任何视觉模型则返回 `null`。
+1. 用 owner username 解析 `OwnerUserId`，没有配置行直接返回 `not_configured`；
+2. 逐个校验主与兜底：渠道必须在该 owner 的启用渠道集合内、模型映射存在、`supports_image` 为真；
+3. 校验不过的候选被跳过，并记录失效原因。
 
-最优规则沿用模型路由比较：
-
-```text
-priority 升序
-→ position 升序
-→ channel id 字典序
-```
+失效原因取值见 `VisionTransferUnavailableReasons`：`not_configured`、`channel_unavailable`、`model_mapping_missing`、`image_capability_revoked`。运行时把"渠道被删、被禁用、已换 owner"合并为 `channel_unavailable`，因为渠道集合本身已按 owner 与启用状态过滤；管理端读取接口会给出更细的原因。
 
 ```mermaid
 flowchart TD
-    A["ChooseOcrRouteAsync"] --> B{"原请求模型是否非空"}
-    B -->|"否"| C["返回 null"]
-    B -->|"是"| D["查找原模型候选路由"]
-    D --> E{"是否存在主候选"}
-    E -->|"否"| C
-    E -->|"是"| F["在主渠道中找 supports image 的映射"]
-    F --> G{"找到"}
-    G -->|"是"| H["返回同渠道视觉路由"]
-    G -->|"否"| I["扫描其他启用渠道的视觉映射"]
-    I --> J{"找到"}
-    J -->|"是"| K["返回全局最优视觉路由"]
-    J -->|"否"| C
+    A["ListVisionTransferRoutesAsync"] --> B["username 解析为 userId"]
+    B --> C{"存在配置行"}
+    C -->|"否"| D["返回空候选 并标记 not_configured"]
+    C -->|"是"| E["校验主:属于该 owner、渠道启用、映射存在、图片能力为真"]
+    E --> F{"主可用"}
+    F -->|"是"| G["候选1 primary"]
+    F -->|"否"| H["记录失效原因"]
+    G --> I{"兜底已配置且同样通过校验"}
+    H --> I
+    I -->|"是"| J["候选2 fallback"]
+    I -->|"否"| K["跳过"]
+    J --> L["返回候选列表"]
+    K --> L
 ```
+
+配置的维护入口是 `/system-settings/vision-transfer` 四个端点，按 owner 各存一行，普通 user 可维护自己那一份，superadmin 可代任意 owner 配置。保存时严格校验（渠道归属、启用状态、映射存在、图片能力必须为真），运行时宽容降级。
 
 ---
 
 ## 7. OCR 执行
 
-`ProxyImageFallbackService` 按 `ImageNumber` 升序逐张调用 `ProxyOcrService.RecognizeAsync`。当前实现是串行执行，任何一张失败都会中止主请求。
+`ProxyImageFallbackService` 按 `ImageNumber` 升序逐张调用 `ProxyOcrService.RecognizeAsync`，串行执行。每张图片按主、兜底顺序尝试：
+
+- 上游类失败（`UpstreamException`：非 2xx、超时、非法 JSON）会把该路由记入**请求级失败集合**后换下一个候选；
+- 配置类失败（`BadRequestException`）不重试，直接上抛；
+- 所有候选都失败则抛出最后一次上游异常，主请求失败；
+- 失败集合由 `ProxyEndpointService` 在请求入口创建并通过 `ProxyImageFallbackContext.FailedVisionRoutes` 传入，所以主请求换渠道重试时不会重复撞同一个坏的视觉路由；OCR 失败不写缓存，这个记忆是必需的。
+
+每次尝试的 `ocr_details` 都带 `route_kind`（`primary` / `fallback` / `none`）与 `attempt`，兜底是否真的生效在日志里可见。
 
 ### 7.1 缓存优先
 
-缓存 key：
+缓存 key 由**图片内容与视觉路由身份**共同决定，SHA-256 的输入是图片字节后面拼上 `|<channelId>|<upstreamModel>`：
 
-| 来源 | SHA-256 输入 |
+| 来源 | 图片部分的字节 |
 |---|---|
 | data URL | 解码后的图片字节 |
 | URL | URL 字符串的 UTF-8 字节 |
+
+把路由身份纳入 key 之后，换视觉模型或走兜底路由都不会命中旧模型留下的识别结果；代价是改配置后旧缓存整体失效。
 
 缓存文件位于：
 
@@ -266,13 +271,14 @@ flowchart TD
 
 ### 7.5 无视觉路由
 
-当前源码明确要求配置视觉模型：
+候选为空时仍会以 `VisionRoute = null`、`route_kind = none` 调一次 `RecognizeAsync`，让失败日志与错误文案有统一出口，然后抛 400。文案按原因区分：
 
-```text
-OCR requires a configured vision model. Local OCR has been removed.
-```
+| 情形 | 错误文案 |
+|---|---|
+| 该 owner 没有配置行 | `vision transfer model is not configured for owner '<owner>'` |
+| 有配置行但主与兜底都失效 | `configured vision transfer route is unavailable: <reason>` |
 
-`ProxyOcrEngines` 仍保留 `paddleocr` 常量，缓存读取也接受历史 `paddleocr` 记录，但当前 `RecognizeAsync` 不再执行新的本地 OCR。
+`ProxyOcrEngines` 现在只有 `vision` 一个取值，缓存读取遇到其它 engine（含历史 `paddleocr` 记录）都按未命中处理，本地 OCR 不会再执行。
 
 ---
 
@@ -383,13 +389,16 @@ xAI 不支持字段包括：`size`、`quality`、`background`、`output_format`�
 ## 11. 关键边界条件
 
 1. 多张图片串行 OCR，延迟随图片数线性增加。
-2. 任一图片失败，主请求失败；当前没有“跳过失败图片继续”的策略。
+2. 单张图片最多尝试主与兜底两个路由，所以最坏情况是 2N 次视觉上游调用；任一图片在所有候选上都失败即主请求失败，没有“跳过失败图片继续”的策略。
 3. URL 缓存 key 基于 URL 字符串，不感知远程内容变化。
-4. data URL 缓存基于实际字节，相同图片即使命名不同也可命中。
+4. data URL 缓存基于实际字节，相同图片即使命名不同也可命中；但换视觉路由后 key 变化，不会跨路由复用。
 5. 非用户图片不会 OCR，只用占位文本保留历史结构。
 6. 图片检测只识别标准块类型，非标准供应商字段不会触发回退。
 7. 主模型支持图片时不会调用 OCR，也不会提前验证图片 URL 是否可访问。
 8. 历史测试名中可能仍出现本地 PaddleOCR 场景，维护判断应以当前 `ProxyOcrService` 源码为准。
+9. OCR 路径不看熔断与容量，配置的主视觉渠道即使正在熔断也会被试一次，靠失败后转兜底兜住。
+10. 缓存 key 仍不含 owner，跨租户复用未解决。
+11. 未配置视觉转移的 owner，带图请求直接 400；这是移除自动发现后的行为，升级后需要为有图片流量的 owner 逐个配置。
 
 ---
 
@@ -398,7 +407,9 @@ xAI 不支持字段包括：`size`、`quality`、`background`、`output_format`�
 | 文件 | 覆盖 |
 |---|---|
 | `ProxyImageFallbackTests.cs` | 三协议重写、占位、视觉 OCR、缓存与错误日志 |
-| `ProxyVisionRoutingTests.cs` | 图片检测、能力模型、视觉路由优先级 |
+| `ProxyVisionRoutingTests.cs` | 图片检测、能力模型、显式配置的视觉路由解析与失效原因 |
+| `ProxyVisionTransferFallbackTests.cs` | 主转兜底、请求级失败记忆、异常语义、无候选路径 |
+| `VisionTransferSettingsServiceTests.cs` | per-owner 配置的保存校验、owner 收敛、候选列表与运行时快照 |
 | `ProxyLogServiceTests.cs` | 图片/data/base64 日志脱敏 |
 | `ImagesCoreContractTests.cs` | 独立图片 API 的参数和文件契约 |
 | `ImagesControllerTests.cs` | Content-Type、stream 拒绝、multipart 入口 |

@@ -826,6 +826,42 @@ namespace OpenCodex.Data.Migrations.PostgresMigrations
                     b.ToTable("Users", (string)null);
                 });
 
+            modelBuilder.Entity("OpenCodex.Core.Domain.VisionTransferSettings", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<double>("CreatedAt")
+                        .HasColumnType("double precision");
+
+                    b.Property<Guid?>("FallbackChannelId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("FallbackModel")
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("OwnerUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("PrimaryChannelId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("PrimaryModel")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<double>("UpdatedAt")
+                        .HasColumnType("double precision");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OwnerUserId")
+                        .IsUnique();
+
+                    b.ToTable("VisionTransferSettings", (string)null);
+                });
+
             modelBuilder.Entity("OpenCodex.Core.Domain.WebSearchSettings", b =>
                 {
                     b.Property<Guid>("Id")

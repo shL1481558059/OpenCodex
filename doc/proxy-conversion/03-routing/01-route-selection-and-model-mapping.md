@@ -24,11 +24,10 @@
 | 路径 | 类型/方法 | 责任 |
 |---|---|---|
 | `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/ProxyRouteService.cs` | `ListRouteCandidatesAsync` | 读取 owner 渠道、类型过滤、模型匹配、生成候选 |
-| 同上 | `ChooseRouteAsync` | 返回候选列表第一个元素 |
 | 同上 | `ListModelCapabilitiesAsync` | 为 `/models` 聚合每个对外模型的最佳能力候选 |
-| 同上 | `ChooseOcrRouteAsync` | 为主模型寻找视觉 OCR 路由 |
+| 同上 | `ListVisionTransferRoutesAsync` | 解析该 owner 显式配置的主与兜底视觉路由 |
 | `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/ProxyEndpointService.cs` | `OrderCandidatesAsync` | 在初始候选上叠加亲和、priority 和活跃请求数排序 |
-| `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/ModelCatalogService.cs` | `SupportsImage` | 按渠道模型覆盖、全局模型目录和旧映射值判断图片能力 |
+| `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/ModelCatalogService.cs` | `SupportsImage` | 按渠道模型覆盖和全局模型目录判断图片能力 |
 | `opencodex_proxy/src/Libraries/OpenCodex.Domain/Domain/Channel.cs` | `Channel` | 渠道持久化字段 |
 | `opencodex_proxy/src/Libraries/OpenCodex.CoreBase/DTOs/Proxy/ProxyRouteDto.cs` | `ProxyRouteDto` | 路由结果契约 |
 
@@ -299,35 +298,36 @@ flowchart TD
     N --> O["返回全部显式映射候选"]
 ```
 
-## 9. OCR 视觉路由
+## 9. 图片识别转移路由
 
-`ChooseOcrRouteAsync(ownerUsername, model)` 与主路由不同：
+`ListVisionTransferRoutesAsync(ownerUsername)` 与主路由完全不同：它不看请求模型，也不做任何自动发现，只解析该 owner 显式配置的主与兜底。
 
-1. owner 没有启用渠道：返回 `null`，不抛异常；
-2. 请求模型 trim 后为空：返回 `null`；
-3. 先按请求模型获取主候选；无匹配返回 `null`；
-4. 以主候选第一个渠道为 primary；
-5. 优先在 primary 渠道的全部映射中寻找图片能力为 true 的最佳模型；
-6. 若同渠道没有，再在其他启用渠道中寻找全局最佳图片模型；
-7. 同一范围内仍按 priority → position → channel ID 比较。
+1. owner 解析不到：返回空候选，标记 `not_configured`，不抛异常；
+2. 没有 `VisionTransferSettings` 行：同上；
+3. 逐个校验主与兜底：渠道必须在该 owner 的启用渠道集合内、模型映射存在、图片能力为真；
+4. 通过校验的按主、兜底顺序进入候选，最多两个；
+5. 候选为空时返回失效原因，供上层生成 400 文案。
 
-OCR 视觉模型不要求对外模型名等于主请求模型；它的用途是内部图片识别。
+因为渠道集合已按 owner 与启用状态过滤，"渠道被删、被禁用、已换 owner"在运行时统一表现为 `channel_unavailable`；更细的原因由管理端 `/system-settings/vision-transfer` 的读取接口给出。
+
+视觉模型的对外模型名与主请求模型无关。由于保存时强制要求 `supports_image` 为真，而触发 OCR 的前提是主路由 `SupportsImage == false`，两者按同一 `(channelId, upstreamModel)` 判定，结构上不可能选中同一个路由，因此没有额外的自环保护代码。
 
 ```mermaid
 flowchart TD
-    A["ChooseOcrRouteAsync(owner, requestModel)"] --> B["读取启用渠道并 trim model"]
-    B --> C{"渠道为空或 model 为空？"}
-    C -- "是" --> Z["返回 null"]
-    C -- "否" --> D["查找 requestModel 主候选"]
-    D --> E{"有主候选？"}
-    E -- "否" --> Z
-    E -- "是" --> F["取首个主候选渠道"]
-    F --> G{"该渠道有 SupportsImage 的映射？"}
-    G -- "是" --> H["返回同渠道最佳视觉路由"]
-    G -- "否" --> I["扫描其他渠道最佳视觉路由"]
-    I --> J{"找到？"}
-    J -- "是" --> K["返回跨渠道视觉路由"]
-    J -- "否" --> Z
+    A["ListVisionTransferRoutesAsync(owner)"] --> B["username 解析为 userId"]
+    B --> C{"存在配置行？"}
+    C -- "否" --> Z["空候选 + not_configured"]
+    C -- "是" --> D["读取该 owner 的启用渠道集合"]
+    D --> E["校验主:渠道在集合内、映射存在、图片能力为真"]
+    E --> F{"主可用？"}
+    F -- "是" --> G["候选1 primary"]
+    F -- "否" --> H["记录失效原因"]
+    G --> I{"兜底已配置且通过校验？"}
+    H --> I
+    I -- "是" --> J["候选2 fallback"]
+    I -- "否" --> K["跳过"]
+    J --> L["返回候选"]
+    K --> L
 ```
 
 ## 10. `/models` 能力聚合
@@ -389,8 +389,9 @@ flowchart TD
 | `ProxyVisionRoutingTests.ChooseRoute_ModelMappings_SamePriorityFallsBackToPosition` | 同 priority 按 position |
 | `ProxyVisionRoutingTests.ChooseRoute_ImageInput_KeepsOriginalTextModel` | 含图不改变主请求模型 |
 | `ProxyVisionRoutingTests.ChooseRoute_ImageInput_KeepsOriginalVisionModel` | 已支持图片的原模型保持不变 |
-| `ProxyVisionRoutingTests.ChooseOcrRoute_ImageInput_UsesSameChannelVisionModelFirst` | OCR 同渠道视觉模型优先 |
-| `ProxyVisionRoutingTests.ChooseOcrRoute_ImageInput_FallsBackToLaterChannelVisionModel` | 同渠道无视觉模型时跨渠道寻找 |
+| `ProxyVisionRoutingTests.ListVisionTransferRoutes_ReturnsConfiguredPrimary_IgnoringOtherVisionModels` | 配置的主优先于任何其它视觉模型 |
+| `ProxyVisionRoutingTests.ListVisionTransferRoutes_ReturnsPrimaryThenFallback` | 候选顺序为主、兜底 |
+| `ProxyVisionRoutingTests.ListVisionTransferRoutes_WithoutConfiguration_ReportsNotConfigured_AndNeverAutoDiscovers` | 未配置时不做自动发现 |
 | `ProxyEndpointServiceTests.ProxyAsync_SamePriorityPrefersLessBusyChannel` | 最终排序在同 priority 下优先较少活跃请求 |
 | `ProxyEndpointServiceTests.ProxyAsync_StickyKeyRoutesToPreviouslyRememberedChannel` | 亲和优先于普通顺序 |
 | `ModelCatalogServiceTests` 中渠道模型能力相关用例 | 渠道模型目录与全局目录解析 |
@@ -405,6 +406,6 @@ flowchart TD
 - 是否改变模型匹配的大小写或 trim 语义；
 - 是否改变无映射模式返回候选数量；
 - 是否同步 `/models` 能力聚合；
-- 是否同步 OCR 路由的同渠道优先规则；
+- 是否同步图片识别转移路由的配置解析与失效原因；
 - 是否区分 `ProxyRouteService` 初始排序与 `ProxyEndpointService` 最终排序；
 - 是否为多实例下“排序近似、容量全局”语义补充测试。

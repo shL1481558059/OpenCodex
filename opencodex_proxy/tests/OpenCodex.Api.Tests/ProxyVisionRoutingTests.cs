@@ -8,6 +8,7 @@ using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain;
+using OpenCodex.CoreBase.DTOs.Proxy;
 using OpenCodex.CoreBase.Services;
 using OpenCodex.Data;
 using Xunit;
@@ -160,7 +161,6 @@ public sealed class ProxyVisionRoutingTests
         var routes = await service.ListRouteCandidatesAsync(
             "admin",
             "image-model",
-            requestContainsImages: false,
             allowedChannelTypes: new HashSet<string>(StringComparer.Ordinal) { "images" });
 
         var route = Assert.Single(routes);
@@ -185,7 +185,7 @@ public sealed class ProxyVisionRoutingTests
                 1,
                 [ModelConfig("other-vision", "other-vision-upstream", true)]));
 
-        var route = await service.ChooseRouteAsync("admin", "text-model", requestContainsImages: true);
+        var route = (await service.ListRouteCandidatesAsync("admin", "text-model"))[0];
 
         Assert.Equal("text-model", route.OriginalModel);
         Assert.Equal("text-upstream", route.UpstreamModel);
@@ -210,7 +210,7 @@ public sealed class ProxyVisionRoutingTests
                 [ModelConfig("shared-model", "shared-upstream-a")],
                 priority: 3));
 
-        var route = await service.ChooseRouteAsync("admin", "shared-model");
+        var route = (await service.ListRouteCandidatesAsync("admin", "shared-model"))[0];
 
         Assert.Equal("later-position-better-priority", route.Channel["name"]);
         Assert.Equal("shared-upstream-b", route.UpstreamModel);
@@ -233,61 +233,87 @@ public sealed class ProxyVisionRoutingTests
                 [ModelConfig("shared-model", "shared-upstream-a")],
                 priority: 2));
 
-        var route = await service.ChooseRouteAsync("admin", "shared-model");
+        var route = (await service.ListRouteCandidatesAsync("admin", "shared-model"))[0];
 
         Assert.Equal("position-0", route.Channel["name"]);
         Assert.Equal("shared-upstream-a", route.UpstreamModel);
     }
 
     [Fact]
-    public async Task ChooseOcrRoute_ImageInput_UsesSameChannelVisionModelFirst()
+    public async Task ListVisionTransferRoutes_ReturnsConfiguredPrimary_IgnoringOtherVisionModels()
     {
+        var primary = ChannelEntity("admin", "primary", 0, [ModelConfig("text-model", "text-upstream")]);
+        var configured = ChannelEntity("admin", "configured", 1, [ModelConfig("vision-a", "vision-a-upstream")]);
+        var other = ChannelEntity("admin", "other", 2, [ModelConfig("vision-b", "vision-b-upstream")]);
         var service = CreateRouteService(
-            ChannelEntity(
-                "admin",
-                "primary",
-                0,
-                [
-                    ModelConfig("text-model", "text-upstream", false),
-                    ModelConfig("same-vision", "same-vision-upstream", true)
-                ]),
-            ChannelEntity(
-                "admin",
-                "secondary",
-                1,
-                [ModelConfig("other-vision", "other-vision-upstream", true)]));
+            VisionSettings(configured.Id, "vision-a"),
+            [ImageCapableModel(configured.Id, "vision-a-upstream"), ImageCapableModel(other.Id, "vision-b-upstream")],
+            primary,
+            configured,
+            other);
 
-        var route = await service.ChooseOcrRouteAsync("admin", "text-model");
+        var routes = await service.ListVisionTransferRoutesAsync("admin");
 
-        Assert.NotNull(route);
-        Assert.Equal("same-vision", route!.OriginalModel);
-        Assert.Equal("same-vision-upstream", route.UpstreamModel);
-        Assert.Equal("primary", route.Channel["name"]);
+        Assert.True(routes.Configured);
+        var route = Assert.Single(routes.Candidates);
+        Assert.Equal("vision-a", route.OriginalModel);
+        Assert.Equal("vision-a-upstream", route.UpstreamModel);
+        Assert.Equal("configured", route.Channel["name"]);
         Assert.True(route.SupportsImage);
+        Assert.True(route.MatchedModelMapping);
     }
 
     [Fact]
-    public async Task ChooseOcrRoute_ImageInput_FallsBackToLaterChannelVisionModel()
+    public async Task ListVisionTransferRoutes_ReturnsPrimaryThenFallback()
     {
+        var primary = ChannelEntity("admin", "primary", 0, [ModelConfig("vision-a", "vision-a-upstream")]);
+        var fallback = ChannelEntity("admin", "fallback", 1, [ModelConfig("vision-b", "vision-b-upstream")]);
         var service = CreateRouteService(
-            ChannelEntity(
-                "admin",
-                "primary",
-                0,
-                [ModelConfig("text-model", "text-upstream", false)]),
-            ChannelEntity(
-                "admin",
-                "secondary",
-                1,
-                [ModelConfig("other-vision", "other-vision-upstream", true)]));
+            VisionSettings(primary.Id, "vision-a", fallback.Id, "vision-b"),
+            [ImageCapableModel(primary.Id, "vision-a-upstream"), ImageCapableModel(fallback.Id, "vision-b-upstream")],
+            primary,
+            fallback);
 
-        var route = await service.ChooseOcrRouteAsync("admin", "text-model");
+        var routes = await service.ListVisionTransferRoutesAsync("admin");
 
-        Assert.NotNull(route);
-        Assert.Equal("other-vision", route!.OriginalModel);
-        Assert.Equal("other-vision-upstream", route.UpstreamModel);
-        Assert.Equal("secondary", route.Channel["name"]);
-        Assert.True(route.SupportsImage);
+        Assert.Equal(2, routes.Candidates.Count);
+        Assert.Equal("vision-a", routes.Candidates[0].OriginalModel);
+        Assert.Equal("vision-b", routes.Candidates[1].OriginalModel);
+        Assert.Empty(routes.UnavailableReason);
+    }
+
+    [Fact]
+    public async Task ListVisionTransferRoutes_PrimaryChannelDisabled_UsesFallbackOnly()
+    {
+        var primary = ChannelEntity("admin", "primary", 0, [ModelConfig("vision-a", "vision-a-upstream")]);
+        primary.Enabled = false;
+        var fallback = ChannelEntity("admin", "fallback", 1, [ModelConfig("vision-b", "vision-b-upstream")]);
+        var service = CreateRouteService(
+            VisionSettings(primary.Id, "vision-a", fallback.Id, "vision-b"),
+            [ImageCapableModel(primary.Id, "vision-a-upstream"), ImageCapableModel(fallback.Id, "vision-b-upstream")],
+            primary,
+            fallback);
+
+        var routes = await service.ListVisionTransferRoutesAsync("admin");
+
+        var route = Assert.Single(routes.Candidates);
+        Assert.Equal("vision-b", route.OriginalModel);
+    }
+
+    [Fact]
+    public async Task ListVisionTransferRoutes_ImageCapabilityRevoked_ReportsReason()
+    {
+        var configured = ChannelEntity("admin", "configured", 0, [ModelConfig("vision-a", "vision-a-upstream")]);
+        var service = CreateRouteService(
+            VisionSettings(configured.Id, "vision-a"),
+            [],
+            configured);
+
+        var routes = await service.ListVisionTransferRoutesAsync("admin");
+
+        Assert.True(routes.Configured);
+        Assert.Empty(routes.Candidates);
+        Assert.Equal(VisionTransferUnavailableReasons.ImageCapabilityRevoked, routes.UnavailableReason);
     }
 
     [Fact]
@@ -303,7 +329,7 @@ public sealed class ProxyVisionRoutingTests
                     ModelConfig("same-vision", "same-vision-upstream", true)
                 ]));
 
-        var route = await service.ChooseRouteAsync("admin", "vision-model", requestContainsImages: true);
+        var route = (await service.ListRouteCandidatesAsync("admin", "vision-model"))[0];
 
         Assert.Equal("vision-model", route.OriginalModel);
         Assert.Equal("vision-upstream", route.UpstreamModel);
@@ -311,16 +337,32 @@ public sealed class ProxyVisionRoutingTests
     }
 
     [Fact]
-    public async Task ChooseOcrRoute_ImageInput_ReturnsNullWhenNoVisionModelExists()
+    public async Task ListVisionTransferRoutes_WithoutConfiguration_ReportsNotConfigured_AndNeverAutoDiscovers()
+    {
+        // 渠道里明明有一个已标注图片能力的模型,但没有配置行时不允许被自动选中。
+        var vision = ChannelEntity("admin", "vision", 0, [ModelConfig("vision-a", "vision-a-upstream")]);
+        var service = CreateRouteService(
+            null,
+            [ImageCapableModel(vision.Id, "vision-a-upstream")],
+            vision);
+
+        var routes = await service.ListVisionTransferRoutesAsync("admin");
+
+        Assert.False(routes.Configured);
+        Assert.Empty(routes.Candidates);
+        Assert.Equal(VisionTransferUnavailableReasons.NotConfigured, routes.UnavailableReason);
+    }
+
+    [Fact]
+    public async Task ListVisionTransferRoutes_UnknownOwner_ReportsNotConfigured()
     {
         var service = CreateRouteService(
-            ChannelEntity(
-                "admin",
-                "primary",
-                0,
-                [ModelConfig("text-model", "text-upstream", false)]));
+            ChannelEntity("admin", "primary", 0, [ModelConfig("text-model", "text-upstream")]));
 
-        Assert.Null(await service.ChooseOcrRouteAsync("admin", "text-model"));
+        var routes = await service.ListVisionTransferRoutesAsync("ghost");
+
+        Assert.False(routes.Configured);
+        Assert.Empty(routes.Candidates);
     }
 
     [Theory]
@@ -406,6 +448,14 @@ public sealed class ProxyVisionRoutingTests
 
     private static ProxyRouteService CreateRouteService(params Channel[] channels)
     {
+        return CreateRouteService(null, [], channels);
+    }
+
+    private static ProxyRouteService CreateRouteService(
+        VisionTransferSettings? visionSettings,
+        IReadOnlyList<ChannelModelInfo> imageCapableModels,
+        params Channel[] channels)
+    {
         var dbPath = Path.Combine(
             Path.GetTempPath(),
             "opencodex-vision-routing-tests",
@@ -415,6 +465,16 @@ public sealed class ProxyVisionRoutingTests
         {
             context.Database.Migrate();
 context.Channels.AddRange(channels);
+            if (imageCapableModels.Count > 0)
+            {
+                context.ChannelModelInfos.AddRange(imageCapableModels);
+            }
+
+            if (visionSettings is not null)
+            {
+                context.VisionTransferSettings.Add(visionSettings);
+            }
+
             context.SaveChanges();
         }
 
@@ -438,6 +498,7 @@ context.Channels.AddRange(channels);
         }
 
         var routeContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var workContext = new TestWorkContext(AdminUserId, "admin", "superadmin");
         var catalog = new ModelCatalogService(
             new EfRepository<ModelProvider>(routeContext),
             new EfRepository<ModelInfo>(routeContext),
@@ -446,16 +507,59 @@ context.Channels.AddRange(channels);
             new EfRepository<ModelPricingRule>(routeContext),
             new EfRepository<ChannelModelMapping>(routeContext),
             new EfRepository<Channel>(routeContext),
-            new TestWorkContext(AdminUserId, "admin", "superadmin"),
+            workContext,
             new TestCacheService());
         return new ProxyRouteService(
             new EfRepository<OpenCodex.Core.Domain.Channel>(routeContext),
             new EfRepository<OpenCodex.Core.Domain.User>(routeContext),
             catalog,
-            new TestCacheService());
+            new TestCacheService(),
+            new VisionTransferSettingsService(
+                workContext,
+                new EfRepository<VisionTransferSettings>(routeContext),
+                new EfRepository<OpenCodex.Core.Domain.User>(routeContext),
+                new EfRepository<OpenCodex.Core.Domain.Channel>(routeContext),
+                catalog));
     }
 
     private static readonly Guid AdminUserId = Guid.Parse("77777777-7777-7777-7777-777777777701");
+
+    private static VisionTransferSettings VisionSettings(
+        Guid primaryChannelId,
+        string primaryModel,
+        Guid? fallbackChannelId = null,
+        string? fallbackModel = null)
+    {
+        return new VisionTransferSettings
+        {
+            Id = Guid.NewGuid(),
+            OwnerUserId = AdminUserId,
+            PrimaryChannelId = primaryChannelId,
+            PrimaryModel = primaryModel,
+            FallbackChannelId = fallbackChannelId,
+            FallbackModel = fallbackModel,
+            CreatedAt = 1,
+            UpdatedAt = 1
+        };
+    }
+
+    private static ChannelModelInfo ImageCapableModel(Guid channelId, string upstreamModel)
+    {
+        return new ChannelModelInfo
+        {
+            Id = Guid.NewGuid(),
+            ChannelId = channelId,
+            UpstreamModel = upstreamModel,
+            ProviderId = Guid.NewGuid(),
+            ModelKey = upstreamModel,
+            DisplayName = upstreamModel,
+            MatchPattern = upstreamModel,
+            CapabilitiesJson = """{"supports_image":true}""",
+            Enabled = true,
+            CreatedAt = 1,
+            UpdatedAt = 1
+        };
+    }
 
     private static Channel ChannelEntity(
         string ownerUsername,

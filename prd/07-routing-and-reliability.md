@@ -735,7 +735,7 @@ queued -> processing -> success
 | SSE 延迟准备 | `ProxyStreamResponseWriter.cs`、`ProxyEndpointService.cs` | `ProxyAsync_StreamFailoverSuccess_PrepareSseOnlyCalledAfterFailoverSucceeds` |
 | 尝试子日志 | `ProxyEndpointService.WriteChannelAttemptLogAsync` | `ProxyAsync_NonStreamRetryableFailure_WritesAttemptChildLogs` |
 | 路由配置缓存 | `ProxyRouteService.ReadExpandedChannelValuesAsync`、`TwoLevelCacheService.cs` | 现有集成测试间接覆盖；建议补专门多实例测试 |
-| 图片 OCR 路由 | `ProxyRouteService.ChooseOcrRouteAsync`、`ProxyImageFallbackService.cs` | `ProxyVisionRoutingTests.cs`、`ProxyImageFallbackTests.cs` |
+| 图片识别转移路由 | `ProxyRouteService.ListVisionTransferRoutesAsync`、`ProxyImageFallbackService.cs`、`VisionTransferSettingsService.cs` | `ProxyVisionRoutingTests.cs`、`ProxyVisionTransferFallbackTests.cs`、`VisionTransferSettingsServiceTests.cs` |
 
 ---
 

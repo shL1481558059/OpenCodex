@@ -25,6 +25,7 @@ public sealed class UserService : IUserService
     private readonly IRepository<User> _userRepository;
     private readonly IRepository<AccessApiKey> _apiKeyRepository;
     private readonly IRepository<Channel> _channelRepository;
+    private readonly IRepository<VisionTransferSettings> _visionTransferSettings;
     private readonly ICacheService _cache;
 
     public UserService(
@@ -33,6 +34,7 @@ public sealed class UserService : IUserService
         IRepository<User> userRepository,
         IRepository<AccessApiKey> apiKeyRepository,
         IRepository<Channel> channelRepository,
+        IRepository<VisionTransferSettings> visionTransferSettings,
         ICacheService cache)
     {
         _settingsProvider = settingsProvider;
@@ -40,6 +42,7 @@ public sealed class UserService : IUserService
         _userRepository = userRepository;
         _apiKeyRepository = apiKeyRepository;
         _channelRepository = channelRepository;
+        _visionTransferSettings = visionTransferSettings;
         _cache = cache;
     }
 
@@ -269,6 +272,8 @@ public sealed class UserService : IUserService
 
         _apiKeyRepository.Delete(_apiKeyRepository.Table.Where(key => key.OwnerUserId == user.Id).ToList());
         _channelRepository.Delete(_channelRepository.Table.Where(channel => channel.OwnerUserId == user.Id).ToList());
+        _visionTransferSettings.Delete(
+            _visionTransferSettings.Table.Where(item => item.OwnerUserId == user.Id).ToList());
         _userRepository.Delete(user);
         return deleted;
     }

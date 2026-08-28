@@ -47,7 +47,7 @@ public interface IModelCatalogService
 
     ApiOpResult DeleteChannelModelInfo(Guid channelId, Guid id);
 
-    bool SupportsImage(Guid? channelId, string? upstreamModel, bool legacyMappingValue);
+    bool SupportsImage(Guid? channelId, string? upstreamModel);
 
    Task<ModelPricingCalculationResult> CalculateCostAsync(
        Guid? channelId,
