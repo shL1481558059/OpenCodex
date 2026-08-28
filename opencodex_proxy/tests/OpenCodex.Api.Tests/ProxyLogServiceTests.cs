@@ -310,6 +310,70 @@ public sealed class ProxyLogServiceTests
     }
 
     [Fact]
+    public async Task WriteLog_IndexesClaudeCodeSessionHeaderAsConversationKey()
+    {
+        // Claude Code CLI 直连 /v1/messages 时只携带 X-Claude-Code-Session-Id,
+        // 不带 x-codex-turn-metadata / thread-id / session-id 头,请求体也没有 prompt_cache_key。
+        var dbPath = Path.Combine(
+            Path.GetTempPath(),
+            "opencodex-proxy-log-tests",
+            $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        using (var bootstrap = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            bootstrap.Database.Migrate();
+        }
+
+        EnsureAdminUser(dbPath);
+        var headers = new Dictionary<string, string>
+        {
+            ["X-Claude-Code-Session-Id"] = "claude-session-42"
+        };
+        var service = CreateService(dbPath);
+        await service.WriteLogAsync(
+            new ProxyLogContext(
+                RequestId: "req-claude",
+                OwnerUsername: "admin",
+                ApiKeyId: null,
+                Payload: new Dictionary<string, object?>
+                {
+                    ["model"] = "claude-sonnet-4",
+                    ["messages"] = new List<object?>
+                    {
+                        new Dictionary<string, object?>
+                        {
+                            ["role"] = "user",
+                            ["content"] = "hello"
+                        }
+                    }
+                },
+                UpstreamRequest: new Dictionary<string, object?>(),
+                UpstreamResponse: new Dictionary<string, object?>(),
+                ResponsePayload: new Dictionary<string, object?>(),
+                ErrorResponse: null,
+                RequestModel: "claude-sonnet-4",
+                UpstreamModel: "claude-sonnet-4",
+                ChannelId: TestChannelId.ToString(),
+                ChannelType: "messages",
+                IsStream: false,
+                TtftMs: null,
+                StatusCode: 200,
+                DurationMs: 1,
+                Error: null,
+                WebSearchDetails: null),
+            new ProxyRequestMetadata(
+                "POST",
+                "/v1/messages",
+                "127.0.0.1",
+                headers,
+                null));
+
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var log = context.RequestLogs.Single();
+        Assert.Equal("session:claude-session-42", log.ConversationKey);
+    }
+
+    [Fact]
     public async Task LifecycleMethods_PersistStatusesAndStreamLines()
     {
         var dbPath = Path.Combine(
