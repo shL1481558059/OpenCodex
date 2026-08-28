@@ -1071,6 +1071,7 @@ public sealed class ModelCatalogServiceTests
     }
 
     [Fact]
+    // 阶梯 token 现按上下文窗口档位计费：用 InputTokens 选档，整段按该档单价计费，不再分段累乘。
     public async Task TieredOffPeakUsesOffPeakTiers()
     {
         var dbPath = CreateDbPath();
@@ -1096,10 +1097,87 @@ public sealed class ModelCatalogServiceTests
 
         var service = CreateService(dbPath);
 
-        Assert.Equal(1.5m, (await service.CalculateCostAsync(
+        // InputTokens=1_000_000 落在 up_to:null 兜底档：峰段单价 1、谷段单价 0.5，整段 100 万 token。
+        Assert.Equal(1m, (await service.CalculateCostAsync(
             null, null, "tier-model", Tokens(1_000_000), Utc(2026, 1, 5, 21, 0))).Cost);
-        Assert.Equal(0.75m, (await service.CalculateCostAsync(
+        Assert.Equal(0.5m, (await service.CalculateCostAsync(
             null, null, "tier-model", Tokens(1_000_000), Utc(2026, 1, 5, 22, 30))).Cost);
+    }
+
+    [Fact]
+    public async Task TieredTokensSelectsTierByContextWindow()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            var model = AddModel(
+                context,
+                provider.Id,
+                "ctx-tier-model",
+                ModelMatchTypes.Exact,
+                "ctx-tier-model",
+                inputPrice: 0m);
+            var plan = context.ModelPricingPlans.Single(item => item.ModelInfoId == model.Id);
+            var rule = context.ModelPricingRules.Single(item => item.PricingPlanId == plan.Id);
+            rule.BillingMode = ModelBillingModes.TieredTokens;
+            // 上限 32000：窗口 <32K 落第一档单价 6，>=32K 落兜底档单价 8。
+            rule.TiersJson = """[{"up_to":32000,"unit_price":6},{"up_to":null,"unit_price":8}]""";
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+
+        // 窗口 20000 < 32000：选第一档，整段按 6 计费：20000 * 6 / 1_000_000 = 0.12
+        Assert.Equal(0.12m, (await service.CalculateCostAsync(
+            null, null, "ctx-tier-model", Tokens(20_000))).Cost);
+        // 窗口 32000 命中上限边界：第一档 up_to=32000 >= 32000，选第一档，整段按 6 计费。
+        Assert.Equal(0.192m, (await service.CalculateCostAsync(
+            null, null, "ctx-tier-model", Tokens(32_000))).Cost);
+        // 窗口 50000 > 32000：选兜底档，整段按 8 计费：50000 * 8 / 1_000_000 = 0.4
+        Assert.Equal(0.4m, (await service.CalculateCostAsync(
+            null, null, "ctx-tier-model", Tokens(50_000))).Cost);
+    }
+
+    [Fact]
+    public async Task TieredTokensShareInputContextWindowAcrossBillingItems()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            var model = AddModel(
+                context,
+                provider.Id,
+                "ctx-shared-model",
+                ModelMatchTypes.Exact,
+                "ctx-shared-model",
+                inputPrice: 0m);
+            var plan = context.ModelPricingPlans.Single(item => item.ModelInfoId == model.Id);
+            context.ModelPricingRules.RemoveRange(context.ModelPricingRules.Where(item => item.PricingPlanId == plan.Id));
+            var inputRule = Rule(plan.Id, ModelBillingItems.Input, 0m);
+            inputRule.BillingMode = ModelBillingModes.TieredTokens;
+            inputRule.TiersJson = """[{"up_to":32000,"unit_price":6},{"up_to":null,"unit_price":8}]""";
+            var outputRule = Rule(plan.Id, ModelBillingItems.Output, 0m);
+            outputRule.BillingMode = ModelBillingModes.TieredTokens;
+            outputRule.TiersJson = """[{"up_to":32000,"unit_price":6},{"up_to":null,"unit_price":8}]""";
+            context.ModelPricingRules.AddRange(inputRule, outputRule);
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+        // input 20000 落第一档（单价 6）；output 50000 若按自己的 token 选档会落兜底档（单价 8），
+        // 但窗口档语义要求所有计费项都用 InputTokens 选档，因此 output 仍应取单价 6。
+        // input 20000 * 6 / 1M = 0.12，output 50000 * 6 / 1M = 0.30，合计 0.42。
+        var result = await service.CalculateCostAsync(
+            null,
+            null,
+            "ctx-shared-model",
+            new ModelUsageVector(inputTokens: 20_000, outputTokens: 50_000, cacheWriteTokens: 0, cacheReadTokens: 0));
+
+        Assert.Equal(0.42m, result.Cost);
     }
 
     [Fact]
@@ -1354,6 +1432,53 @@ public sealed class ModelCatalogServiceTests
         request.Pricing.Rules[0].OffPeakTiers = [];
 
         AssertBadRequest(service.CreateModel(request));
+    }
+
+    [Fact]
+    public void TieredRuleMustHaveAtLeastOneTier()
+    {
+        var service = CreatePeakOffPeakService();
+        var request = OffPeakModelRequest("tier-empty", "UTC", [Window("22:00", "24:00")]);
+        request.Pricing!.Rules[0].BillingMode = ModelBillingModes.TieredTokens;
+        request.Pricing.Rules[0].Tiers = [];
+        request.Pricing.Rules[0].OffPeakTiers = [new ModelPricingTierRequest { UpTo = null, UnitPrice = 1m }];
+
+        AssertBadRequest(service.CreateModel(request));
+        Assert.Empty(service.ListModels(null, null, null).Payload!.Models);
+    }
+
+    [Fact]
+    public void TieredRuleRejectsMultipleUnlimitedTiers()
+    {
+        var service = CreatePeakOffPeakService();
+        var request = OffPeakModelRequest("tier-multi-null", "UTC", [Window("22:00", "24:00")]);
+        request.Pricing!.Rules[0].BillingMode = ModelBillingModes.TieredTokens;
+        request.Pricing.Rules[0].Tiers =
+        [
+            new ModelPricingTierRequest { UpTo = null, UnitPrice = 1m },
+            new ModelPricingTierRequest { UpTo = null, UnitPrice = 2m }
+        ];
+        request.Pricing.Rules[0].OffPeakTiers = [new ModelPricingTierRequest { UpTo = null, UnitPrice = 1m }];
+
+        AssertBadRequest(service.CreateModel(request));
+        Assert.Empty(service.ListModels(null, null, null).Payload!.Models);
+    }
+
+    [Fact]
+    public void TieredRuleRejectsZeroUpTo()
+    {
+        var service = CreatePeakOffPeakService();
+        var request = OffPeakModelRequest("tier-zero-up", "UTC", [Window("22:00", "24:00")]);
+        request.Pricing!.Rules[0].BillingMode = ModelBillingModes.TieredTokens;
+        request.Pricing.Rules[0].Tiers =
+        [
+            new ModelPricingTierRequest { UpTo = 0, UnitPrice = 1m },
+            new ModelPricingTierRequest { UpTo = null, UnitPrice = 2m }
+        ];
+        request.Pricing.Rules[0].OffPeakTiers = [new ModelPricingTierRequest { UpTo = null, UnitPrice = 1m }];
+
+        AssertBadRequest(service.CreateModel(request));
+        Assert.Empty(service.ListModels(null, null, null).Payload!.Models);
     }
 
     [Fact]

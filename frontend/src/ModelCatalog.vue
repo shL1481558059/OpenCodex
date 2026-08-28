@@ -550,9 +550,9 @@
               <el-button size="small" @click="fillOffPeakDiscount">按折扣填充谷价</el-button>
             </div>
           </div>
-        </div>
+      </div>
+      <div v-if="!isMobile" class="rule-table-scroll">
         <el-table
-          v-if="!isMobile"
           :data="modelDraft.pricing.rules"
           border
           size="small"
@@ -566,7 +566,7 @@
               <el-select v-model="row.billing_mode" class="full-width">
                 <el-option label="按次" value="per_request" />
                 <el-option label="每百万 token" value="per_million_tokens" />
-                <el-option label="阶梯 token" value="tiered_tokens" />
+                <el-option label="上下文窗口档" value="tiered_tokens" />
               </el-select>
             </template>
           </el-table-column>
@@ -592,22 +592,62 @@
               />
             </template>
           </el-table-column>
-          <el-table-column label="阶梯">
+          <el-table-column label="阶梯" width="420">
             <template #default="{ row }">
-              <el-input
-                v-model="row.tiers_text"
-                type="textarea"
-                :rows="2"
-                :disabled="row.billing_mode !== 'tiered_tokens'"
-              />
-              <el-input
-                v-if="row.billing_mode === 'tiered_tokens' && row.off_peak_enabled === true"
-                v-model="row.off_peak_tiers_text"
-                type="textarea"
-                :rows="2"
-                class="off-peak-tiers"
-                placeholder="谷段阶梯 JSON"
-              />
+              <div v-if="row.billing_mode === 'tiered_tokens'" class="tier-editor">
+                <div class="tier-editor-section">
+                  <div class="tier-editor-head">窗口档（峰）</div>
+                  <div v-for="(tier, i) in tiersOf(row)" :key="i" class="tier-editor-row">
+                    <span class="tier-editor-label">≤</span>
+                    <el-input-number
+                      v-model="tier.up_to"
+                      :min="0"
+                      :step="1000"
+                      :controls="false"
+                      class="tier-editor-up-to"
+                      placeholder="不限留空"
+                      @change="syncTiers(row, '_tiers', 'tiers_text')"
+                    />
+                    <el-input-number
+                      v-model="tier.unit_price"
+                      :min="0"
+                      :precision="8"
+                      :step="0.01"
+                      :controls="false"
+                      class="tier-editor-price"
+                      @change="syncTiers(row, '_tiers', 'tiers_text')"
+                    />
+                    <el-button text type="danger" :icon="Delete" @click="removeTier(row, i)" />
+                  </div>
+                  <el-button text type="primary" :icon="Plus" @click="addTier(row)">添加档位</el-button>
+                </div>
+                <div v-if="row.off_peak_enabled === true" class="tier-editor-section off-peak-tiers">
+                  <div class="tier-editor-head">窗口档（谷）</div>
+                  <div v-for="(tier, i) in offPeakTiersOf(row)" :key="i" class="tier-editor-row">
+                    <span class="tier-editor-label">≤</span>
+                    <el-input-number
+                      v-model="tier.up_to"
+                      :min="0"
+                      :step="1000"
+                      :controls="false"
+                      class="tier-editor-up-to"
+                      placeholder="不限留空"
+                      @change="syncTiers(row, '_offPeakTiers', 'off_peak_tiers_text')"
+                    />
+                    <el-input-number
+                      v-model="tier.unit_price"
+                      :min="0"
+                      :precision="8"
+                      :step="0.01"
+                      :controls="false"
+                      class="tier-editor-price"
+                      @change="syncTiers(row, '_offPeakTiers', 'off_peak_tiers_text')"
+                    />
+                    <el-button text type="danger" :icon="Delete" @click="removeOffPeakTier(row, i)" />
+                  </div>
+                  <el-button text type="primary" :icon="Plus" @click="addOffPeakTier(row)">添加档位</el-button>
+                </div>
+              </div>
             </template>
           </el-table-column>
           <el-table-column label="启用" width="80" align="center">
@@ -616,6 +656,7 @@
             </template>
           </el-table-column>
         </el-table>
+      </div>
 
         <div v-else class="mobile-model-catalog-rules">
           <section v-for="rule in modelDraft.pricing.rules" :key="rule.billing_item" class="model-catalog-rule-card">
@@ -628,12 +669,12 @@
             </div>
             <label class="model-catalog-rule-field">
               <span>计费模式</span>
-              <el-select v-model="rule.billing_mode" class="full-width">
-                <el-option label="按次" value="per_request" />
-                <el-option label="每百万 token" value="per_million_tokens" />
-                <el-option label="阶梯 token" value="tiered_tokens" />
-              </el-select>
-            </label>
+             <el-select v-model="rule.billing_mode" class="full-width">
+               <el-option label="按次" value="per_request" />
+               <el-option label="每百万 token" value="per_million_tokens" />
+                <el-option label="上下文窗口档" value="tiered_tokens" />
+             </el-select>
+           </label>
             <label class="model-catalog-rule-field">
               <span>单价</span>
               <el-input-number
@@ -659,17 +700,60 @@
                 class="full-width"
               />
             </label>
-            <label v-if="rule.billing_mode === 'tiered_tokens'" class="model-catalog-rule-field">
-              <span>阶梯 JSON</span>
-              <el-input v-model="rule.tiers_text" type="textarea" :rows="4" />
-            </label>
-            <label
-              v-if="rule.billing_mode === 'tiered_tokens' && rule.off_peak_enabled === true"
-              class="model-catalog-rule-field"
-            >
-              <span>谷段阶梯 JSON</span>
-              <el-input v-model="rule.off_peak_tiers_text" type="textarea" :rows="4" />
-            </label>
+            <div v-if="rule.billing_mode === 'tiered_tokens'" class="tier-editor mobile-tier-editor">
+              <div class="tier-editor-section">
+                <div class="tier-editor-head">窗口档（峰）</div>
+                <div v-for="(tier, i) in tiersOf(rule)" :key="i" class="tier-editor-row">
+                  <span class="tier-editor-label">≤</span>
+                  <el-input-number
+                    v-model="tier.up_to"
+                    :min="0"
+                    :step="1000"
+                    :controls="false"
+                    class="tier-editor-up-to"
+                    placeholder="不限留空"
+                    @change="syncTiers(rule, '_tiers', 'tiers_text')"
+                  />
+                  <el-input-number
+                    v-model="tier.unit_price"
+                    :min="0"
+                    :precision="8"
+                    :step="0.01"
+                    :controls="false"
+                    class="tier-editor-price"
+                    @change="syncTiers(rule, '_tiers', 'tiers_text')"
+                  />
+                  <el-button text type="danger" :icon="Delete" @click="removeTier(rule, i)" />
+                </div>
+                <el-button text type="primary" :icon="Plus" @click="addTier(rule)">添加档位</el-button>
+              </div>
+              <div v-if="rule.off_peak_enabled === true" class="tier-editor-section off-peak-tiers">
+                <div class="tier-editor-head">窗口档（谷）</div>
+                <div v-for="(tier, i) in offPeakTiersOf(rule)" :key="i" class="tier-editor-row">
+                  <span class="tier-editor-label">≤</span>
+                  <el-input-number
+                    v-model="tier.up_to"
+                    :min="0"
+                    :step="1000"
+                    :controls="false"
+                    class="tier-editor-up-to"
+                    placeholder="不限留空"
+                    @change="syncTiers(rule, '_offPeakTiers', 'off_peak_tiers_text')"
+                  />
+                  <el-input-number
+                    v-model="tier.unit_price"
+                    :min="0"
+                    :precision="8"
+                    :step="0.01"
+                    :controls="false"
+                    class="tier-editor-price"
+                    @change="syncTiers(rule, '_offPeakTiers', 'off_peak_tiers_text')"
+                  />
+                  <el-button text type="danger" :icon="Delete" @click="removeOffPeakTier(rule, i)" />
+                </div>
+                <el-button text type="primary" :icon="Plus" @click="addOffPeakTier(rule)">添加档位</el-button>
+              </div>
+            </div>
           </section>
         </div>
 
@@ -1358,9 +1442,17 @@ function normalizeRule(rule) {
     billing_mode: rule.billing_mode || "per_million_tokens",
     unit_price: Number(rule.unit_price || 0),
     tiers_text: JSON.stringify(rule.tiers || [], null, 2),
+    _tiers: (rule.tiers || []).map((tier) => ({
+      up_to: tier.up_to === null || tier.up_to === undefined || tier.up_to === "" ? null : Number(tier.up_to),
+      unit_price: Number(tier.unit_price || 0)
+    })),
     off_peak_enabled: rule.off_peak_enabled === true,
     off_peak_unit_price: Number(rule.off_peak_unit_price || 0),
     off_peak_tiers_text: JSON.stringify(rule.off_peak_tiers || [], null, 2),
+    _offPeakTiers: (rule.off_peak_tiers || []).map((tier) => ({
+      up_to: tier.up_to === null || tier.up_to === undefined || tier.up_to === "" ? null : Number(tier.up_to),
+      unit_price: Number(tier.unit_price || 0)
+    })),
     enabled: rule.enabled !== false
   };
 }
@@ -1371,9 +1463,11 @@ function defaultRule(item) {
     billing_mode: "per_million_tokens",
     unit_price: 0,
     tiers_text: "[]",
+    _tiers: [],
     off_peak_enabled: false,
     off_peak_unit_price: 0,
     off_peak_tiers_text: "[]",
+    _offPeakTiers: [],
     enabled: true
   };
 }
@@ -1382,7 +1476,7 @@ function pricingSummary(row, item) {
   const rule = (row.pricing?.rules || []).find((entry) => entry.billing_item === item && entry.enabled !== false);
   if (!rule) return "-";
   const offPeak = offPeakConfigured(row.pricing) && rule.off_peak_enabled === true;
-  if (rule.billing_mode === "tiered_tokens") return offPeak ? "阶梯（峰/谷）" : "阶梯";
+  if (rule.billing_mode === "tiered_tokens") return offPeak ? "窗口档（峰/谷）" : "窗口档";
   const suffix = rule.billing_mode === "per_request" ? " / 次" : "";
   const peakPrice = `${formatPrice(rule.unit_price)}${suffix}`;
   return offPeak
@@ -1399,6 +1493,40 @@ function parseTiers(text) {
     up_to: tier.up_to === null || tier.up_to === undefined || tier.up_to === "" ? null : Number(tier.up_to),
     unit_price: Number(tier.unit_price || 0)
   }));
+}
+
+// 窗口档可视化编辑：tiers_text 是存储中间态，tiersOf 把它解析成可编辑数组并缓存到行上，
+// 增删改档位后用 syncTiers 写回 tiers_text，保持 buildRulePayload 提交链路不变。
+function tiersOf(rule) {
+  return rule._tiers || parseTiers(rule.tiers_text);
+}
+
+function offPeakTiersOf(rule) {
+  return rule._offPeakTiers || parseTiers(rule.off_peak_tiers_text);
+}
+
+function syncTiers(rule, cacheKey, textKey) {
+  rule[textKey] = JSON.stringify(rule[cacheKey] || [], null, 2);
+}
+
+function addTier(rule) {
+  tiersOf(rule).push({ up_to: null, unit_price: 0 });
+  syncTiers(rule, "_tiers", "tiers_text");
+}
+
+function removeTier(rule, index) {
+  tiersOf(rule).splice(index, 1);
+  syncTiers(rule, "_tiers", "tiers_text");
+}
+
+function addOffPeakTier(rule) {
+  offPeakTiersOf(rule).push({ up_to: null, unit_price: 0 });
+  syncTiers(rule, "_offPeakTiers", "off_peak_tiers_text");
+}
+
+function removeOffPeakTier(rule, index) {
+  offPeakTiersOf(rule).splice(index, 1);
+  syncTiers(rule, "_offPeakTiers", "off_peak_tiers_text");
 }
 
 const offPeakEnabledForDraft = computed(() => offPeakConfigured(modelDraft.pricing));
@@ -1502,6 +1630,23 @@ onBeforeUnmount(() => {
   margin-bottom: 16px;
 }
 
+/* 计费规则表格列总宽超过抽屉容器时整表横向滚动，表头表身一起移动、不错位。 */
+.rule-table-scroll {
+  overflow-x: auto;
+  margin-bottom: 16px;
+}
+.rule-table-scroll .model-catalog-rule-table {
+  min-width: 1090px;
+  margin-bottom: 0;
+}
+.rule-table-scroll::-webkit-scrollbar {
+  height: 8px;
+}
+.rule-table-scroll::-webkit-scrollbar-thumb {
+  background: var(--el-border-color);
+  border-radius: 4px;
+}
+
 .off-peak-panel {
   margin-bottom: 12px;
 }
@@ -1567,6 +1712,51 @@ onBeforeUnmount(() => {
 
 .off-peak-tiers {
   margin-top: 6px;
+}
+
+.tier-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tier-editor-section {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.tier-editor-head {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 6px;
+}
+
+.tier-editor-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.tier-editor-label {
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+}
+
+.tier-editor-up-to {
+  width: 110px;
+  flex-shrink: 0;
+}
+
+.tier-editor-price {
+  flex: 1;
+  min-width: 110px;
+}
+
+.mobile-tier-editor {
+  min-width: 0;
+  width: 100%;
 }
 
 .model-card-select {
@@ -1911,10 +2101,13 @@ onBeforeUnmount(() => {
   .mobile-model-catalog-rules {
     display: grid;
     gap: 12px;
+    overflow-x: auto;
+    max-width: 100%;
   }
 
   .model-catalog-rule-card {
     min-width: 0;
+    max-width: 100%;
     padding: 14px;
     border: 1px solid var(--el-border-color-lighter);
     border-radius: 6px;

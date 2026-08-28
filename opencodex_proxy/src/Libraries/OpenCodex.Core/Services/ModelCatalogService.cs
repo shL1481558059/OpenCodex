@@ -1037,7 +1037,7 @@ public sealed class ModelCatalogService : IModelCatalogService
             var quantity = Quantity(rule, usage);
             var unitPrice = useOffPeak ? rule.OffPeakUnitPrice : rule.UnitPrice;
             var tiersJson = useOffPeak ? rule.OffPeakTiersJson : rule.TiersJson;
-            var cost = CalculateRuleCost(rule.BillingMode, quantity, unitPrice, tiersJson);
+            var cost = CalculateRuleCost(rule.BillingMode, quantity, unitPrice, tiersJson, usage.InputTokens);
             total += cost;
             snapshotRules.Add(new ModelPricingSnapshotRule(
                 rule.BillingItem,
@@ -1380,7 +1380,8 @@ public sealed class ModelCatalogService : IModelCatalogService
         string billingMode,
         int quantity,
         decimal unitPrice,
-        string tiersJson)
+        string tiersJson,
+        int contextWindow)
     {
         if (quantity <= 0)
         {
@@ -1391,12 +1392,14 @@ public sealed class ModelCatalogService : IModelCatalogService
         {
             ModelBillingModes.PerRequest => quantity * unitPrice,
             ModelBillingModes.PerMillionTokens => quantity * unitPrice / 1_000_000m,
-            ModelBillingModes.TieredTokens => CalculateTieredCost(quantity, tiersJson),
+            ModelBillingModes.TieredTokens => CalculateContextWindowTierCost(quantity, contextWindow, tiersJson),
             _ => 0m
         };
     }
 
-    private static decimal CalculateTieredCost(int quantity, string tiersJson)
+    // 阶梯 token 现按「上下文窗口档位」计费:用本次请求的输入长度(contextWindow=usage.InputTokens)
+    // 选定档位,整段按该档单价计费,不再分段累乘。所有计费项共用 InputTokens 选档,各乘各 quantity。
+    private static decimal CalculateContextWindowTierCost(int quantity, int contextWindow, string tiersJson)
     {
         var tiers = DeserializeTiers(tiersJson);
         if (tiers.Count == 0)
@@ -1404,26 +1407,17 @@ public sealed class ModelCatalogService : IModelCatalogService
             return 0m;
         }
 
-        var remaining = quantity;
-        var previousLimit = 0L;
-        var total = 0m;
-        foreach (var tier in tiers.OrderBy(tier => tier.UpTo ?? long.MaxValue))
+        // 档位按 up_to 升序排列,取第一个 up_to >= contextWindow 的档;无上限档(up_to=null)兜底。
+        var ordered = tiers.OrderBy(tier => tier.UpTo ?? long.MaxValue).ToList();
+        var matched = ordered.FirstOrDefault(tier =>
+            tier.UpTo.HasValue && tier.UpTo.Value >= contextWindow);
+        matched ??= ordered.FirstOrDefault(tier => !tier.UpTo.HasValue);
+        if (matched is null)
         {
-            if (remaining <= 0)
-            {
-                break;
-            }
-
-            var tierLimit = tier.UpTo ?? long.MaxValue;
-            var tierSize = tierLimit == long.MaxValue
-                ? remaining
-                : (int)Math.Max(0, Math.Min(remaining, tierLimit - previousLimit));
-            total += tierSize * tier.UnitPrice / 1_000_000m;
-            remaining -= tierSize;
-            previousLimit = tierLimit;
+            return 0m;
         }
 
-        return total;
+        return quantity * matched.UnitPrice / 1_000_000m;
     }
 
     private static List<PricingTier> DeserializeTiers(string tiersJson)
@@ -1902,10 +1896,7 @@ public sealed class ModelCatalogService : IModelCatalogService
     private static ModelPricingRule ToPricingRule(Guid planId, ModelPricingRuleRequest rule)
     {
         var billingMode = NormalizeBillingMode(rule.BillingMode);
-        ValidateOffPeakTierCoverage(
-            rule.OffPeakEnabled,
-            billingMode,
-            rule.OffPeakTiers.Count);
+        ValidateTierRules(billingMode, rule.Tiers, rule.OffPeakEnabled, rule.OffPeakTiers);
         return new ModelPricingRule
         {
             PricingPlanId = planId,
@@ -1941,10 +1932,7 @@ public sealed class ModelCatalogService : IModelCatalogService
     private static ModelPricingRule ToImportedPricingRule(Guid planId, ModelCatalogPricingRuleTransfer rule)
     {
         var billingMode = NormalizeBillingMode(rule.BillingMode);
-        ValidateOffPeakTierCoverage(
-            rule.OffPeakEnabled,
-            billingMode,
-            rule.OffPeakTiers.Count);
+        ValidateTierRules(billingMode, rule.Tiers, rule.OffPeakEnabled, rule.OffPeakTiers);
         return new ModelPricingRule
         {
             PricingPlanId = planId,
@@ -1959,19 +1947,75 @@ public sealed class ModelCatalogService : IModelCatalogService
         };
     }
 
-    // 阶梯计价开了峰谷却没有谷段阶梯,金额会静默算成 0,直接拒绝而不是猜一个回退。
-    private static void ValidateOffPeakTierCoverage(
-        bool offPeakEnabled,
+    // 阶梯计价校验:峰/谷档位必须至少一档、至少保留一个无上限兜底档(up_to=null),
+    // 且最多一个兜底档,否则窗口可能落在任何档位之外而静默按 0 计费。
+    private static void ValidateTierRules(
         string billingMode,
-        int offPeakTierCount)
+        IEnumerable<ModelPricingTierRequest>? tiers,
+        bool offPeakEnabled,
+        IEnumerable<ModelPricingTierRequest>? offPeakTiers)
     {
-        if (offPeakEnabled
-            && billingMode == ModelBillingModes.TieredTokens
-            && offPeakTierCount == 0)
+        if (billingMode != ModelBillingModes.TieredTokens)
+        {
+            return;
+        }
+
+        ValidateTierList(
+            tiers?.Select(tier => new PricingTier { UpTo = tier.UpTo, UnitPrice = tier.UnitPrice }),
+            "tiers");
+        if (offPeakEnabled)
+        {
+            ValidateTierList(
+                offPeakTiers?.Select(tier => new PricingTier { UpTo = tier.UpTo, UnitPrice = tier.UnitPrice }),
+                "off_peak_tiers");
+        }
+    }
+
+    private static void ValidateTierRules(
+        string billingMode,
+        IEnumerable<ModelCatalogPricingTierTransfer>? tiers,
+        bool offPeakEnabled,
+        IEnumerable<ModelCatalogPricingTierTransfer>? offPeakTiers)
+    {
+        if (billingMode != ModelBillingModes.TieredTokens)
+        {
+            return;
+        }
+
+        ValidateTierList(
+            tiers?.Select(tier => new PricingTier { UpTo = tier.UpTo, UnitPrice = tier.UnitPrice }),
+            "tiers");
+        if (offPeakEnabled)
+        {
+            ValidateTierList(
+                offPeakTiers?.Select(tier => new PricingTier { UpTo = tier.UpTo, UnitPrice = tier.UnitPrice }),
+                "off_peak_tiers");
+        }
+    }
+
+    private static void ValidateTierList(IEnumerable<PricingTier>? tiers, string fieldName)
+    {
+        var list = tiers?.ToList() ?? [];
+        if (list.Count == 0)
         {
             throw new ArgumentException(
-                "off_peak_tiers is required when off_peak_enabled is true and billing_mode is tiered_tokens",
-                "off_peak_tiers");
+                $"{fieldName} is required when billing_mode is tiered_tokens",
+                fieldName);
+        }
+
+        var openEnded = list.Count(tier => tier.UpTo is null);
+        if (openEnded > 1)
+        {
+            throw new ArgumentException(
+                $"{fieldName} must have at most one unlimited tier (up_to: null)",
+                fieldName);
+        }
+
+        if (list.Any(tier => tier.UpTo is not null && tier.UpTo <= 0))
+        {
+            throw new ArgumentException(
+                $"{fieldName} up_to must be positive when set",
+                fieldName);
         }
     }
 
@@ -2288,7 +2332,7 @@ public sealed class ModelCatalogService : IModelCatalogService
             var billingMode = NormalizeBillingMode(rule.BillingMode);
             ValidatePrice(rule.UnitPrice, "unit_price");
             ValidatePrice(rule.OffPeakUnitPrice, "off_peak_unit_price");
-            ValidateOffPeakTierCoverage(rule.OffPeakEnabled, billingMode, rule.OffPeakTiers.Count);
+            ValidateTierRules(billingMode, rule.Tiers, rule.OffPeakEnabled, rule.OffPeakTiers);
             foreach (var tier in rule.Tiers.Concat(rule.OffPeakTiers))
             {
                 if (tier.UpTo.HasValue && tier.UpTo.Value < 0)
