@@ -87,8 +87,8 @@
             <section v-if="isSuperadmin && activeTab === 'model-catalog'">
               <ModelCatalog :api="api" />
             </section>
-            <section v-if="isSuperadmin && activeTab === 'system-settings'">
-              <SystemSettings :api="api" />
+            <section v-if="activeTab === 'system-settings'">
+              <SystemSettings :api="api" :is-superadmin="isSuperadmin" />
             </section>
             <section v-if="activeTab === 'logs'">
               <Logs :api="api" :is-superadmin="isSuperadmin" :active="activeTab === 'logs'" />
@@ -163,7 +163,7 @@ const menuItems = [
   { index: "users", label: "用户管理", icon: User, superadminOnly: true },
   { index: "web-search", label: "Web Search", icon: Search, superadminOnly: true },
   { index: "model-catalog", label: "模型信息", icon: Money, superadminOnly: true },
-  { index: "system-settings", label: "系统设置", icon: Setting, superadminOnly: true },
+  { index: "system-settings", label: "系统设置", icon: Setting },
   { index: "logs", label: "请求日志", icon: Tickets }
 ];
 

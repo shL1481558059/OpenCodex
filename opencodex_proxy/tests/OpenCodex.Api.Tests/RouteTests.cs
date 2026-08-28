@@ -906,6 +906,148 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
+    public async Task VisionTransferEndpointsAllowNormalUserWhileGlobalSettingsStaySuperadminOnly()
+    {
+        var adminCookie = await LoginAndReadSessionCookie();
+        var username = $"vision-user-{Guid.NewGuid():N}";
+        var password = "user-password";
+        var createdUser = await SendJsonWithCookie(
+            HttpMethod.Post,
+            "/users",
+            adminCookie,
+            new
+            {
+                username,
+                password,
+                enabled = true
+            });
+        Assert.Equal(HttpStatusCode.Created, createdUser.StatusCode);
+
+        var userCookie = await LoginAndReadSessionCookie(username, password);
+
+        // 全局项仍然只有 superadmin 能读写。
+        await AssertResponseCode(
+            await SendWithCookie(HttpMethod.Get, "/system-settings", userCookie),
+            HttpStatusCode.Forbidden);
+        await AssertResponseCode(
+            await SendJsonWithCookie(HttpMethod.Put, "/system-settings", userCookie, new { port = 18081 }),
+            HttpStatusCode.Forbidden);
+
+        // per-owner 项普通 user 可以自助维护。
+        var read = await SendWithCookie(HttpMethod.Get, "/system-settings/vision-transfer", userCookie);
+        Assert.Equal(HttpStatusCode.OK, read.StatusCode);
+        using var readPayload = JsonDocument.Parse(await read.Content.ReadAsStringAsync());
+        var readData = readPayload.RootElement.GetProperty("Data");
+        Assert.Equal(username, readData.GetProperty("owner_username").GetString());
+        Assert.False(readData.GetProperty("configured").GetBoolean());
+
+        var candidates = await SendWithCookie(
+            HttpMethod.Get,
+            "/system-settings/vision-transfer/candidates",
+            userCookie);
+        Assert.Equal(HttpStatusCode.OK, candidates.StatusCode);
+
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await SendWithCookie(HttpMethod.Delete, "/system-settings/vision-transfer", userCookie)).StatusCode);
+
+        // 越权收敛:普通 user 指定别人的 owner_username 时读到的仍是自己那一份。
+        var spoofed = await SendWithCookie(
+            HttpMethod.Get,
+            "/system-settings/vision-transfer?owner_username=admin",
+            userCookie);
+        Assert.Equal(HttpStatusCode.OK, spoofed.StatusCode);
+        using var spoofedPayload = JsonDocument.Parse(await spoofed.Content.ReadAsStringAsync());
+        Assert.Equal(
+            username,
+            spoofedPayload.RootElement.GetProperty("Data").GetProperty("owner_username").GetString());
+
+        // 引用不存在的渠道应该落到服务层校验的 400,而不是权限错误。
+        await AssertResponseCode(
+            await SendJsonWithCookie(
+                HttpMethod.Put,
+                "/system-settings/vision-transfer",
+                userCookie,
+                new
+                {
+                    primary = new { channel_id = Guid.NewGuid(), model = "vision-a" }
+                }),
+            HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task DeletingConfiguredVisionChannelClearsVisionTransferSettings()
+    {
+        var cookie = await LoginAndReadSessionCookie();
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var upstreamModel = $"vt-upstream-{suffix}";
+
+        var provider = await SendJsonWithCookie(
+            HttpMethod.Post,
+            "/model-providers",
+            cookie,
+            new { code = $"vt-provider-{suffix}", name = "Vision Transfer", enabled = true, sort_order = 10 });
+        Assert.Equal(HttpStatusCode.Created, provider.StatusCode);
+
+        var modelInfo = await SendJsonWithCookie(
+            HttpMethod.Post,
+            "/model-infos",
+            cookie,
+            new
+            {
+                provider_code = $"vt-provider-{suffix}",
+                model_key = upstreamModel,
+                display_name = upstreamModel,
+                match_type = "exact",
+                match_pattern = upstreamModel,
+                capabilities = new { supports_image = true },
+                enabled = true
+            });
+        Assert.Equal(HttpStatusCode.Created, modelInfo.StatusCode);
+
+        var createdChannel = await SendJsonWithCookie(
+            HttpMethod.Post,
+            "/channels",
+            cookie,
+            new
+            {
+                name = $"vt-channel-{suffix}",
+                type = "responses",
+                baseurl = "https://example.test/v1",
+                apikey = "secret",
+                auth_mode = "config",
+                timeout_seconds = 30,
+                retry_count = 0,
+                capacity = 3,
+                enabled = true,
+                models = new object[] { new { model = "vt-model", upstream_model = upstreamModel } }
+            });
+        Assert.Equal(HttpStatusCode.OK, createdChannel.StatusCode);
+        using var channelPayload = JsonDocument.Parse(await createdChannel.Content.ReadAsStringAsync());
+        var channelId = channelPayload.RootElement.GetProperty("Data").GetProperty("id").GetString();
+        Assert.False(string.IsNullOrEmpty(channelId));
+
+        var saved = await SendJsonWithCookie(
+            HttpMethod.Put,
+            "/system-settings/vision-transfer",
+            cookie,
+            new { primary = new { channel_id = channelId, model = "vt-model" } });
+        Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
+        using var savedPayload = JsonDocument.Parse(await saved.Content.ReadAsStringAsync());
+        var savedData = savedPayload.RootElement.GetProperty("Data");
+        Assert.True(savedData.GetProperty("configured").GetBoolean());
+        Assert.True(savedData.GetProperty("primary").GetProperty("available").GetBoolean());
+
+        var deleted = await SendWithCookie(HttpMethod.Delete, $"/channels/{channelId}", cookie);
+        Assert.Equal(HttpStatusCode.OK, deleted.StatusCode);
+
+        var afterDelete = await SendWithCookie(HttpMethod.Get, "/system-settings/vision-transfer", cookie);
+        Assert.Equal(HttpStatusCode.OK, afterDelete.StatusCode);
+        using var afterPayload = JsonDocument.Parse(await afterDelete.Content.ReadAsStringAsync());
+        Assert.False(afterPayload.RootElement.GetProperty("Data").GetProperty("configured").GetBoolean());
+    }
+
+    [Fact]
     public async Task LoginCookieIsPersistent()
     {
         var response = await Login("admin", OpenCodexApiFactory.AdminPassword);

@@ -20,48 +20,32 @@ public sealed class ProxyRouteService : IProxyRouteService
     private readonly IRepository<User> _userRepository;
     private readonly IModelCatalogService _catalog;
     private readonly ICacheService _cache;
+    private readonly IVisionTransferSettingsService _visionTransferSettings;
 
     public ProxyRouteService(
         IRepository<Channel> channelRepository,
         IRepository<User> userRepository,
         IModelCatalogService catalog,
-        ICacheService cache)
+        ICacheService cache,
+        IVisionTransferSettingsService visionTransferSettings)
     {
         _channelRepository = channelRepository;
         _userRepository = userRepository;
         _catalog = catalog;
         _cache = cache;
+        _visionTransferSettings = visionTransferSettings;
     }
 
-    public async Task<ProxyRouteDto> ChooseRouteAsync(
+    public async Task<IReadOnlyList<ProxyRouteDto>> ListRouteCandidatesAsync(
         string ownerUsername,
-        string? model,
-        bool requestContainsImages = false)
+        string? model)
     {
-        return (await ListRouteCandidatesAsync(ownerUsername, model, requestContainsImages))[0];
-    }
-
-    public async Task<ProxyRouteDto> ChooseRouteAsync(
-        string ownerUsername,
-        string? model,
-        bool requestContainsImages,
-        IReadOnlySet<string>? allowedChannelTypes)
-    {
-        return (await ListRouteCandidatesAsync(ownerUsername, model, requestContainsImages, allowedChannelTypes))[0];
+        return await ListRouteCandidatesAsync(ownerUsername, model, allowedChannelTypes: null);
     }
 
     public async Task<IReadOnlyList<ProxyRouteDto>> ListRouteCandidatesAsync(
         string ownerUsername,
         string? model,
-        bool requestContainsImages = false)
-    {
-        return await ListRouteCandidatesAsync(ownerUsername, model, requestContainsImages, allowedChannelTypes: null);
-    }
-
-    public async Task<IReadOnlyList<ProxyRouteDto>> ListRouteCandidatesAsync(
-        string ownerUsername,
-        string? model,
-        bool requestContainsImages,
         IReadOnlySet<string>? allowedChannelTypes)
     {
         var enabledChannels = await ListEnabledChannelConfigsAsync(ownerUsername);
@@ -101,42 +85,63 @@ public sealed class ProxyRouteService : IProxyRouteService
         ];
     }
 
-    public async Task<IReadOnlyList<string>> ListModelsAsync(string ownerUsername)
+    public async Task<VisionTransferRoutesDto> ListVisionTransferRoutesAsync(string ownerUsername)
     {
-        return (await ListModelCapabilitiesAsync(ownerUsername))
-            .Select(model => model.Model)
-            .ToList();
-    }
-
-    public async Task<ProxyRouteDto?> ChooseOcrRouteAsync(string ownerUsername, string? model)
-    {
-        var enabledChannels = await ListEnabledChannelConfigsAsync(ownerUsername);
-        if (enabledChannels.Count == 0)
+        var normalizedOwner = (ownerUsername ?? string.Empty).Trim();
+        var owner = normalizedOwner.Length == 0
+            ? null
+            : _userRepository.TableNoTracking.FirstOrDefault(user => user.Username == normalizedOwner);
+        if (owner is null)
         {
-            return null;
+            return VisionTransferRoutesDto.NotConfigured();
         }
 
-        var normalizedModel = (model ?? string.Empty).Trim();
-        if (normalizedModel.Length == 0)
+        var snapshot = _visionTransferSettings.GetSnapshot(owner.Id);
+        if (snapshot is null)
         {
-            return null;
+            return VisionTransferRoutesDto.NotConfigured();
         }
 
-        var candidates = ListMatchedRouteCandidates(enabledChannels, normalizedModel);
-        if (candidates.Count == 0)
+        var enabledChannels = await ListEnabledChannelConfigsAsync(normalizedOwner);
+        var candidates = new List<ProxyRouteDto>(2);
+        var reason = string.Empty;
+
+        var primary = ResolveConfiguredRoute(
+            enabledChannels,
+            snapshot.PrimaryChannelId,
+            snapshot.PrimaryModel,
+            out var primaryReason);
+        if (primary is not null)
         {
-            return null;
+            candidates.Add(primary);
+        }
+        else
+        {
+            reason = primaryReason;
         }
 
-        var primaryChannel = candidates[0].Channel;
-        var sameChannelRoute = FindImageRouteInChannel(primaryChannel);
-        if (sameChannelRoute is not null)
+        if (snapshot.FallbackChannelId.HasValue && !string.IsNullOrWhiteSpace(snapshot.FallbackModel))
         {
-            return sameChannelRoute.ToRoute();
+            var fallback = ResolveConfiguredRoute(
+                enabledChannels,
+                snapshot.FallbackChannelId.Value,
+                snapshot.FallbackModel!,
+                out var fallbackReason);
+            if (fallback is not null)
+            {
+                candidates.Add(fallback);
+            }
+            else if (candidates.Count == 0)
+            {
+                // 主与兜底都失效时,报告兜底的失效原因更贴近"最后一根稻草"。
+                reason = fallbackReason;
+            }
         }
 
-        return FindImageRoute(enabledChannels, primaryChannel)
-            ?.ToRoute();
+        return new VisionTransferRoutesDto(
+            configured: true,
+            candidates,
+            candidates.Count == 0 ? reason : string.Empty);
     }
 
     public async Task<IReadOnlyList<ProxyModelCapabilityDto>> ListModelCapabilitiesAsync(string ownerUsername)
@@ -234,59 +239,50 @@ public sealed class ProxyRouteService : IProxyRouteService
         return candidates;
     }
 
-    private ModelRouteCandidate? FindImageRouteInChannel(
-        Dictionary<string, object?> channel)
+    /// <summary>
+    /// 按显式配置解析一条视觉转移路由。渠道集合已按 owner 过滤且只含启用渠道,
+    /// 因此渠道被删、被禁用或换主都表现为在集合中找不到。
+    /// </summary>
+    private ProxyRouteDto? ResolveConfiguredRoute(
+        IReadOnlyList<Dictionary<string, object?>> enabledChannels,
+        Guid channelId,
+        string model,
+        out string reason)
     {
-        if (!channel.TryGetValue("models", out var modelsValue)
-            || !ConfigValue.TryAsList(modelsValue, out var models))
+        var channel = enabledChannels.FirstOrDefault(item => ParseChannelId(item) == channelId);
+        if (channel is null)
         {
+            reason = VisionTransferUnavailableReasons.ChannelDeletedOrDisabled;
             return null;
         }
 
-        ModelRouteCandidate? best = null;
-        foreach (var mappingValue in models)
+        var normalizedModel = (model ?? string.Empty).Trim();
+        if (channel.TryGetValue("models", out var modelsValue)
+            && ConfigValue.TryAsList(modelsValue, out var models))
         {
-            if (!ConfigValue.TryAsObject(mappingValue, out var mapping)
-                || !MappingSupportsImage(channel, mapping))
+            foreach (var mappingValue in models)
             {
-                continue;
-            }
+                if (!ConfigValue.TryAsObject(mappingValue, out var mapping)
+                    || !mapping.TryGetValue("model", out var value)
+                    || ConfigValue.PythonString(value).Trim() != normalizedModel)
+                {
+                    continue;
+                }
 
-            var candidate = ToCandidate(channel, mapping, string.Empty);
-            if (best is null || candidate.CompareTo(best) < 0)
-            {
-                best = candidate;
+                var candidate = ToCandidate(channel, mapping, normalizedModel);
+                if (!candidate.SupportsImage)
+                {
+                    reason = VisionTransferUnavailableReasons.ImageCapabilityRevoked;
+                    return null;
+                }
+
+                reason = string.Empty;
+                return candidate.ToRoute();
             }
         }
 
-        return best;
-    }
-
-    private ModelRouteCandidate? FindImageRoute(
-        IReadOnlyList<Dictionary<string, object?>> channels,
-        Dictionary<string, object?>? skipChannel = null)
-    {
-        ModelRouteCandidate? best = null;
-        foreach (var channel in channels)
-        {
-            if (skipChannel is not null && ReferenceEquals(channel, skipChannel))
-            {
-                continue;
-            }
-
-            var route = FindImageRouteInChannel(channel);
-            if (route is null)
-            {
-                continue;
-            }
-
-            if (best is null || route.CompareTo(best) < 0)
-            {
-                best = route;
-            }
-        }
-
-        return best;
+        reason = VisionTransferUnavailableReasons.ModelMappingMissing;
+        return null;
     }
 
     private ModelRouteCandidate ToCandidate(
@@ -324,7 +320,6 @@ public sealed class ProxyRouteService : IProxyRouteService
         IReadOnlyDictionary<string, object?> mapping,
         string? upstreamModel = null)
     {
-        var legacyMappingValue = mapping.TryGetValue("supports_image", out var value) && value is true;
         var actualUpstreamModel = string.IsNullOrWhiteSpace(upstreamModel)
             ? JsonDictionaryValue.String(mapping, "upstream_model")
             : upstreamModel;
@@ -333,7 +328,7 @@ public sealed class ProxyRouteService : IProxyRouteService
             actualUpstreamModel = JsonDictionaryValue.String(mapping, "model");
         }
 
-        return _catalog.SupportsImage(ParseChannelId(channel), actualUpstreamModel, legacyMappingValue);
+        return _catalog.SupportsImage(ParseChannelId(channel), actualUpstreamModel);
     }
 
     private static Guid? ParseChannelId(IReadOnlyDictionary<string, object?> channel)

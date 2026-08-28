@@ -47,7 +47,7 @@ public sealed class ProxyOcrService : IProxyOcrService
     {
         var started = Stopwatch.GetTimestamp();
         var settings = _settingsProvider.GetSettings();
-        var cacheKey = CacheKey(context.Image);
+        var cacheKey = CacheKey(context);
         var sourceKind = context.Image.SourceKind;
         var engine = ProxyOcrEngines.Vision;
         var requestPath = VisionPath;
@@ -138,7 +138,7 @@ public sealed class ProxyOcrService : IProxyOcrService
                     cacheHit: false);
             }
 
-            throw new BadRequestException("OCR requires a configured vision model.");
+            throw new BadRequestException(UnavailableMessage(context));
         }
         catch (BadRequestException exception)
         {
@@ -204,7 +204,9 @@ public sealed class ProxyOcrService : IProxyOcrService
                     sourceKind,
                     cacheHit,
                     context.RequestId,
-                    parentRequestLogId: null)));
+                    parentRequestLogId: null,
+                    context.RouteKind,
+                    context.Attempt)));
         }
     }
 
@@ -308,7 +310,9 @@ public sealed class ProxyOcrService : IProxyOcrService
         string sourceKind,
         bool cacheHit,
         string parentRequestId,
-        Guid? parentRequestLogId)
+        Guid? parentRequestLogId,
+        string routeKind,
+        int attempt)
     {
         return new Dictionary<string, object?>(StringComparer.Ordinal)
         {
@@ -317,8 +321,21 @@ public sealed class ProxyOcrService : IProxyOcrService
             ["image_sources"] = new List<object?> { sourceKind },
             ["cache_hit"] = cacheHit,
             ["parent_request_id"] = parentRequestId,
-            ["parent_request_log_id"] = parentRequestLogId
+            ["parent_request_log_id"] = parentRequestLogId,
+            ["route_kind"] = routeKind,
+            ["attempt"] = attempt
         };
+    }
+
+    /// <summary>
+    /// 生成没有可用视觉转移路由时的错误文案,区分"未配置"和"配置已失效"。
+    /// </summary>
+    private static string UnavailableMessage(ProxyOcrContext context)
+    {
+        return context.UnavailableReason == VisionTransferUnavailableReasons.NotConfigured
+            || context.UnavailableReason.Length == 0
+            ? $"vision transfer model is not configured for owner '{context.OwnerUsername}'"
+            : $"configured vision transfer route is unavailable: {context.UnavailableReason}";
     }
 
     private static string ExtractResponseText(Dictionary<string, object?> response)
@@ -516,12 +533,19 @@ public sealed class ProxyOcrService : IProxyOcrService
         return Path.GetFullPath(settings.OcrCacheDir);
     }
 
-    private static string CacheKey(ProxyImageInput image)
+    /// <summary>
+    /// 缓存键由图片内容与视觉路由身份共同决定。把渠道和上游模型纳入键,
+    /// 换视觉模型或走兜底路由时就不会命中旧模型留下的识别结果。
+    /// </summary>
+    private static string CacheKey(ProxyOcrContext context)
     {
-        var bytes = image.SourceKind == ProxyImageSourceKinds.Data
+        var image = context.Image;
+        var imageBytes = image.SourceKind == ProxyImageSourceKinds.Data
             ? image.ImageBytes ?? []
             : Encoding.UTF8.GetBytes(image.ImageReference);
-        return Convert.ToHexStringLower(SHA256.HashData(bytes));
+        var routeIdentity = Encoding.UTF8.GetBytes(
+            $"|{ChannelId(context.VisionRoute?.Channel)}|{context.VisionRoute?.UpstreamModel ?? string.Empty}");
+        return Convert.ToHexStringLower(SHA256.HashData([.. imageBytes, .. routeIdentity]));
     }
 
     private static bool IsSupportedCacheEngine(string? engine)

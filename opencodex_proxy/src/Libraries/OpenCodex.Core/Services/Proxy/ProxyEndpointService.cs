@@ -105,6 +105,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
 
             requestModel = JsonDictionaryValue.String(payload, "model");
             var requestContainsImages = ProxyImageRequestDetector.ContainsImageInput(payload, context.EntryProtocol);
+            // 请求级共享:主请求换渠道重试时不再重复尝试已失败的视觉转移路由。
+            var failedVisionRoutes = new HashSet<string>(StringComparer.Ordinal);
             var stickyKey = JsonDictionaryValue.String(payload, "prompt_cache_key");
             var isStream = payload.TryGetValue("stream", out var streamValue) && streamValue is true;
             requestLogId = _logs.CreateQueuedLog(new ProxyRequestLogQueuedContext(
@@ -122,7 +124,6 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             var candidates = await OrderCandidatesAsync(
                 ownerUsername,
                 requestModel,
-                requestContainsImages,
                 stickyKey);
 
             ProxyException? lastFailoverException = null;
@@ -212,7 +213,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                             requestModel,
                             defaultTimeout,
                             requestMetadata,
-                            context.CancellationToken));
+                            context.CancellationToken,
+                            failedVisionRoutes));
                         effectivePayload = fallback.Payload;
                     }
 
@@ -536,10 +538,9 @@ public sealed class ProxyEndpointService : IProxyEndpointService
     private async Task<IReadOnlyList<OrderedRouteCandidate>> OrderCandidatesAsync(
         string ownerUsername,
         string? requestModel,
-        bool requestContainsImages,
         string? stickyKey)
     {
-        var candidates = await _routes.ListRouteCandidatesAsync(ownerUsername, requestModel, requestContainsImages);
+        var candidates = await _routes.ListRouteCandidatesAsync(ownerUsername, requestModel);
         var preferredChannelId = string.IsNullOrEmpty(stickyKey)
             ? null
             : await _channelAffinity.GetPreferredChannelIdAsync(ownerUsername, stickyKey);

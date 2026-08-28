@@ -62,8 +62,8 @@ flowchart TD
 |---|---|---|
 | 图片检测 | `Services/Proxy/ProxyImageRequestDetector.cs` | 只认标准块：Responses `input_image`、Chat `image_url`、Messages `image` |
 | 降级编排 | `Services/Proxy/ProxyImageFallbackService.cs` | 解析一次视觉路由，逐图串行 OCR，任一失败即中止 |
-| 视觉路由发现 | `Services/Proxy/ProxyRouteService.cs` 第 111-137 行 | `ChooseOcrRouteAsync`：同渠道最优、跨渠道最优、null |
-| 能力判定 | `Services/ModelCatalogService.cs` 第 789 行 | `SupportsImage(channelId, upstreamModel, legacyMappingValue)`，读 `ChannelModelInfo` 与全局 `ModelInfo` 的 `capabilities.supports_image` |
+| 视觉路由发现（已删除） | `Services/Proxy/ProxyRouteService.cs` | 原 `ChooseOcrRouteAsync`：同渠道最优、跨渠道最优、null |
+| 能力判定 | `Services/ModelCatalogService.cs` | `SupportsImage(channelId, upstreamModel)`，读 `ChannelModelInfo` 与全局 `ModelInfo` 的 `capabilities.supports_image` |
 | OCR 执行 | `Services/Proxy/ProxyOcrService.cs` | 缓存、视觉子请求、JSON 解析、写 `request_type=ocr` 日志；`VisionRoute == null` 时抛 400 |
 | 载荷重写 | `Services/Proxy/ProxyImagePayloadRewriter.cs` | 只处理 `role=user` 图片，其余替换为占位文本 |
 
@@ -486,3 +486,36 @@ OCR 兜底执行（U3）：
 - 迁移单元额外要求：SQLite 与 Postgres 的 `dotnet ef migrations list` 均无 pending；
 - 涉及权限的单元（U4）必须带上 §5 的 20 到 28 号用例，缺一不算完成；
 - 全部单元完成后再按 4.9 同步 `doc/` 与 `prd/`，文档与代码不同步不算收尾。
+
+## 8. 实现记录
+
+分支 `codex/vision-transfer`，基线 `414e3aa`。U1 到 U7 全部落地，文档已同步。验证结果：`dotnet test` 618 通过（新增 36 个），`node --test frontend/src/*.test.js` 43 通过（新增 8 个），`npm run build` 通过，两个 provider 的迁移无 pending。
+
+### 8.1 与方案的差异
+
+| 项 | 方案原文 | 实际实现 | 原因 |
+|---|---|---|---|
+| `allowedChannelTypes` 重载 | 列入 2.6 死代码建议清掉 | **保留**，只删掉它上面的死参数 `requestContainsImages` | 它有测试保护（`ListRouteCandidates_AllowedTypesFilterRunsBeforeUnmappedFallback`），且是独立 images 端点的预留能力，删掉等于移除一个已测试行为 |
+| `SupportsImage` 签名 | 只提删除 `MappingSupportsImage` 里的 legacy 分支 | 连 `IModelCatalogService.SupportsImage` 的 `legacyMappingValue` 参数一起删 | `ConfigNormalizer` 已把映射规范成只剩两个字段，该参数恒为 false，留着就是新的死参数 |
+| `ListVisionTransferRoutesAsync` 参数 | `(ownerUsername, requestModel)` | `(ownerUsername)` | 配置是 per-owner 的，与请求模型无关；D6 已论证自环不可能，不需要拿请求模型做排除 |
+| 运行时失效原因 | 五种细粒度 reason | 运行时合并为 `channel_unavailable`、`model_mapping_missing`、`image_capability_revoked`、`not_configured` 四种 | 渠道集合已按 owner 与启用状态过滤，运行时再分辨"删除/禁用/换主"要多查库；管理端读取接口仍给细粒度 |
+| `ChooseRouteAsync` | 未提 | 两个便利重载删除，测试改用 `ListRouteCandidatesAsync(...)[0]` | 生产代码零调用 |
+
+### 8.2 落地清单
+
+| 单元 | 关键产出 |
+|---|---|
+| U1 | `VisionTransferSettings` 实体与单行表、双 provider 迁移（`20260828035005` / `20260828035018`）、`IVisionTransferSettingsService` 与实现、DI 注册 |
+| U2a | `ListVisionTransferRoutesAsync` 与 `VisionTransferRoutesDto`、删除 `ChooseOcrRouteAsync` 与 `FindImageRoute*` |
+| U2b | 删除死参数 `requestContainsImages`、`ChooseRouteAsync` 两个重载、`ListModelsAsync`、`legacyMappingValue` 分支 |
+| U3 | 主转兜底重试、请求级 `FailedVisionRoutes`、`ocr_details` 的 `route_kind` 与 `attempt`、按原因区分的 400 文案 |
+| U4 | `/system-settings/vision-transfer` 四端点，`RequireUser` 加服务层 owner 收敛 |
+| U5 | 删渠道清理引用（主被删删整行、兜底被删清兜底）、删用户清理配置行 |
+| U6 | 菜单放开 `system-settings`、页面按角色分区、`visionTransferState.js` 与单测 |
+| U7 | OCR 缓存键并入 `channelId` 与 `upstreamModel` |
+
+### 8.3 上线前仍需人工确认
+
+1. 为每个有图片流量的 owner 配置主与兜底，否则带图请求会 400；
+2. 视觉模型必须先在「模型信息」里标注 `supports_image`，否则候选列表为空、配不出来；
+3. 主工作树 `desktop-settings.json` 的持久化缺陷（2.4）未处理，仍是独立需求。

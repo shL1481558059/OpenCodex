@@ -15,6 +15,21 @@ public static class ProxyOcrEngines
     public const string Vision = "vision";
 }
 
+/// <summary>
+/// 定义视觉转移路由在一次 OCR 尝试中的角色标识,写入 ocr_details.route_kind。
+/// </summary>
+public static class ProxyVisionRouteKinds
+{
+    /// <summary>配置的主视觉路由。</summary>
+    public const string Primary = "primary";
+
+    /// <summary>配置的兜底视觉路由。</summary>
+    public const string Fallback = "fallback";
+
+    /// <summary>没有可用候选,本次尝试只用于留下失败日志。</summary>
+    public const string None = "none";
+}
+
 public sealed class ProxyImageInput(
     int imageNumber,
     string sourceKind,
@@ -66,7 +81,8 @@ public sealed class ProxyImageFallbackContext(
     string? requestModel,
     int defaultTimeout,
     ProxyRequestMetadata requestMetadata,
-    CancellationToken cancellationToken)
+    CancellationToken cancellationToken,
+    ISet<string> failedVisionRoutes)
 {
     public string RequestId { get; } = requestId;
 
@@ -85,6 +101,18 @@ public sealed class ProxyImageFallbackContext(
     public ProxyRequestMetadata RequestMetadata { get; } = requestMetadata;
 
     public CancellationToken CancellationToken { get; } = cancellationToken;
+
+    /// <summary>
+    /// 获取本请求内已发起的 OCR 尝试总数。主请求换渠道重试时共享同一上下文,
+    /// 累计计数保持递增,保证日志里的 attempt 不会在重试后重置。
+    /// </summary>
+    public int RequestAttemptCount { get; set; }
+
+    /// <summary>
+    /// 获取请求级的失败视觉路由集合。主请求换渠道重试时会再次进入本流程,
+    /// 共享这个集合可以避免对同一个已失败的视觉路由反复发起子请求。
+    /// </summary>
+    public ISet<string> FailedVisionRoutes { get; } = failedVisionRoutes;
 }
 
 public sealed class ProxyImageFallbackResult(
@@ -104,7 +132,10 @@ public sealed class ProxyOcrContext(
     ProxyImageInput image,
     ProxyRouteDto? visionRoute,
     int defaultTimeout,
-    CancellationToken cancellationToken)
+    CancellationToken cancellationToken,
+    string routeKind,
+    int attempt,
+    string unavailableReason)
 {
     public string RequestId { get; } = requestId;
 
@@ -121,6 +152,21 @@ public sealed class ProxyOcrContext(
     public int DefaultTimeout { get; } = defaultTimeout;
 
     public CancellationToken CancellationToken { get; } = cancellationToken;
+
+    /// <summary>
+    /// 获取本次尝试使用的路由角色,取值见 <see cref="ProxyVisionRouteKinds"/>。
+    /// </summary>
+    public string RouteKind { get; } = routeKind;
+
+    /// <summary>
+    /// 获取本张图片的第几次尝试,从 1 开始。
+    /// </summary>
+    public int Attempt { get; } = attempt;
+
+    /// <summary>
+    /// 获取没有可用候选时的原因标识;有候选时为空字符串。
+    /// </summary>
+    public string UnavailableReason { get; } = unavailableReason;
 }
 
 public sealed class ProxyOcrResult(
