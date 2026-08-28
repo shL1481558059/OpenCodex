@@ -167,7 +167,7 @@
       </el-form-item>
 
       <el-alert
-        v-if="!fallbackEmpty && !hasModelCapability(visionDraft.fallback)"
+        v-if="!fallbackEmpty && !hasModelCapability(visionState, visionDraft.fallback)"
         class="settings-alert"
         type="info"
         :title="fallbackHint"
@@ -363,7 +363,10 @@ async function loadOwnerOptions() {
 
   try {
     const data = await props.api("/users/options");
-    ownerOptions.value = Array.isArray(data) ? data : [];
+    ownerOptions.value = (Array.isArray(data) ? data : []).map((item) => ({
+      value: item.id,
+      label: item.name ?? String(item.id)
+    }));
   } catch (error) {
     ElMessage.error(error.message);
   }
