@@ -120,6 +120,18 @@ public class EfRepository<TEntity> : IRepository<TEntity> where TEntity : BaseEn
         return Entities.ExecuteDelete();
     }
 
+    public int DeleteWhere(System.Linq.Expressions.Expression<Func<TEntity, bool>> predicate)
+    {
+        if (predicate == null) throw new ArgumentNullException(nameof(predicate));
+        return Entities.Where(predicate).ExecuteDelete();
+    }
+
+    public Task<int> DeleteWhereAsync(System.Linq.Expressions.Expression<Func<TEntity, bool>> predicate)
+    {
+        if (predicate == null) throw new ArgumentNullException(nameof(predicate));
+        return Entities.Where(predicate).ExecuteDeleteAsync();
+    }
+
     public async Task DeleteAsync(IEnumerable<TEntity> entities)
     {
         if (entities == null) throw new ArgumentNullException(nameof(entities));

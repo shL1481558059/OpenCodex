@@ -369,9 +369,11 @@ public sealed class ConfigService : IConfigService
                 channelOwnerUsername = NormalizeUsername(settings.AdminUsername);
             }
 
-            var channelOwnerUser = _userRepository.TableNoTracking
-                .FirstOrDefault(u => u.Username == channelOwnerUsername);
-            if (channelOwnerUser is null)
+            var channelOwnerUserId = _userRepository.TableNoTracking
+                .Where(u => u.Username == channelOwnerUsername)
+                .Select(u => (Guid?)u.Id)
+                .FirstOrDefault();
+            if (!channelOwnerUserId.HasValue)
             {
                 return ValidationFailureGuid($"owner user not found: {channelOwnerUsername}");
             }
@@ -380,17 +382,18 @@ public sealed class ConfigService : IConfigService
             var parsedId = Guid.TryParse(idText, out var channelGuid) && channelGuid != Guid.Empty
                 ? channelGuid
                 : Guid.NewGuid();
-            var duplicatedChannel = _channelRepository.TableNoTracking
-                .FirstOrDefault(existing => existing.OwnerUserId == channelOwnerUser.Id && existing.Id == parsedId);
-            if (duplicatedChannel is not null)
+            var channelName = JsonDictionaryValue.String(validated, "name");
+            var conflicts = _channelRepository.TableNoTracking
+                .Where(existing => existing.OwnerUserId == channelOwnerUserId.Value
+                    && (existing.Id == parsedId || existing.Name == channelName))
+                .Select(existing => new { existing.Id, existing.Name })
+                .ToList();
+            if (conflicts.Any(existing => existing.Id == parsedId))
             {
                 return ValidationFailureGuid($"duplicated channel id: {parsedId}");
             }
 
-            var channelName = JsonDictionaryValue.String(validated, "name");
-            var duplicatedName = _channelRepository.TableNoTracking
-                .FirstOrDefault(existing => existing.OwnerUserId == channelOwnerUser.Id && existing.Name == channelName);
-            if (duplicatedName is not null)
+            if (conflicts.Any(existing => existing.Name == channelName))
             {
                 return ValidationFailureGuid($"duplicated channel name: {channelName}");
             }
@@ -398,7 +401,7 @@ public sealed class ConfigService : IConfigService
             var newChannel = new Channel
             {
                 Id = parsedId,
-                OwnerUserId = channelOwnerUser.Id,
+                OwnerUserId = channelOwnerUserId.Value,
                 Position = 15,
                 Name = channelName,
                 GroupName = GroupNameValue(validated),
@@ -415,7 +418,7 @@ public sealed class ConfigService : IConfigService
                 CircuitBreakDurationSeconds = CircuitBreakDurationSecondsValue(validated),
                 RetryCount = RetryCountValue(validated),
                 Priority = PriorityValue(validated, 15),
-                Capacity = CapacityValue(validated, null, (channelOwnerUser.Id, Guid.Empty), 3),
+                Capacity = CapacityValue(validated, null, (channelOwnerUserId.Value, Guid.Empty), 3),
                 CompatJson = JsonSerializer.Serialize(
                     JsonDictionaryValue.Get(validated, "compat") ?? new Dictionary<string, object?>(),
                     JsonOptions),
@@ -537,13 +540,16 @@ public sealed class ConfigService : IConfigService
         var query = _channelRepository.Table.Where(channel => ids.Contains(channel.Id));
         if (normalizedOwnerUsername.Length > 0)
         {
-            var ownerUser = _userRepository.TableNoTracking.FirstOrDefault(user => user.Username == normalizedOwnerUsername);
-            if (ownerUser is null)
+            var ownerUserId = _userRepository.TableNoTracking
+                .Where(user => user.Username == normalizedOwnerUsername)
+                .Select(user => (Guid?)user.Id)
+                .FirstOrDefault();
+            if (!ownerUserId.HasValue)
             {
                 return ApiOpResult<IReadOnlyList<Guid>>.Fail(404, "channel not found");
             }
 
-            query = query.Where(channel => channel.OwnerUserId == ownerUser.Id);
+            query = query.Where(channel => channel.OwnerUserId == ownerUserId.Value);
         }
 
         var channels = query.ToList();
@@ -648,18 +654,30 @@ public sealed class ConfigService : IConfigService
 
         var normalizedOwner = ownerUsername is null ? null : NormalizeUsername(ownerUsername);
 
-        Guid defaultOwnerUserId = Guid.Empty;
-        var defaultOwner = _userRepository.TableNoTracking.FirstOrDefault(u => u.Username == normalizedDefaultOwner);
-        if (defaultOwner is not null)
-        {
-            defaultOwnerUserId = defaultOwner.Id;
-        }
+        var channelList = channels.ToList();
+        var ownerUsernames = channelList
+            .Select(channel => NormalizeUsername(JsonDictionaryValue.Get(channel, "owner_username")))
+            .Where(username => username.Length > 0)
+            .Append(normalizedDefaultOwner)
+            .Concat(normalizedOwner is null or "" ? [] : [normalizedOwner])
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var ownerMap = ownerUsernames.Count > 0
+            ? _userRepository.TableNoTracking
+                .Where(user => ownerUsernames.Contains(user.Username))
+                .Select(user => new { user.Username, user.Id })
+                .ToDictionary(user => user.Username, user => user.Id, StringComparer.Ordinal)
+            : new Dictionary<string, Guid>(StringComparer.Ordinal);
+        var defaultOwnerUserId = ownerMap.TryGetValue(normalizedDefaultOwner, out var resolvedDefaultOwnerId)
+            ? resolvedDefaultOwnerId
+            : Guid.Empty;
 
         Guid? scopeUserId = null;
         if (normalizedOwner is not null)
         {
-            var scopeUser = _userRepository.TableNoTracking.FirstOrDefault(u => u.Username == normalizedOwner);
-            scopeUserId = scopeUser?.Id ?? Guid.Empty;
+            scopeUserId = ownerMap.TryGetValue(normalizedOwner, out var resolvedScopeUserId)
+                ? resolvedScopeUserId
+                : Guid.Empty;
         }
 
         // 合并键:(ownerUserId, name)
@@ -677,7 +695,7 @@ public sealed class ConfigService : IConfigService
         var toInsert = new List<Channel>();
         var toUpdate = new List<Channel>();
 
-        foreach (var channel in channels)
+        foreach (var channel in channelList)
         {
             var channelOwnerUsername = normalizedOwner
                 ?? NormalizeUsername(JsonDictionaryValue.Get(channel, "owner_username"));
@@ -686,9 +704,9 @@ public sealed class ConfigService : IConfigService
                 channelOwnerUsername = normalizedDefaultOwner;
             }
 
-            var channelOwnerUser = _userRepository.TableNoTracking
-                .FirstOrDefault(u => u.Username == channelOwnerUsername);
-            var channelOwnerUserId = channelOwnerUser?.Id ?? defaultOwnerUserId;
+            var channelOwnerUserId = ownerMap.TryGetValue(channelOwnerUsername, out var resolvedOwnerUserId)
+                ? resolvedOwnerUserId
+                : defaultOwnerUserId;
             var channelName = JsonDictionaryValue.String(channel, "name");
             var matchKey = (channelOwnerUserId, channelName);
 
@@ -803,6 +821,7 @@ public sealed class ConfigService : IConfigService
         var owners = ownerIds.Count > 0
             ? _userRepository.TableNoTracking
                 .Where(u => ownerIds.Contains(u.Id))
+                .Select(u => new { u.Id, u.Username })
                 .ToDictionary(u => u.Id, u => u.Username)
             : new Dictionary<Guid, string>();
 
@@ -829,13 +848,16 @@ public sealed class ConfigService : IConfigService
             return query.FirstOrDefault();
         }
 
-        var ownerUser = _userRepository.TableNoTracking.FirstOrDefault(u => u.Username == normalizedOwnerUsername);
-        if (ownerUser is null)
+        var ownerUserId = _userRepository.TableNoTracking
+            .Where(u => u.Username == normalizedOwnerUsername)
+            .Select(u => (Guid?)u.Id)
+            .FirstOrDefault();
+        if (!ownerUserId.HasValue)
         {
             return null;
         }
 
-        return query.FirstOrDefault(channel => channel.OwnerUserId == ownerUser.Id);
+        return query.FirstOrDefault(channel => channel.OwnerUserId == ownerUserId.Value);
     }
 
     private static ChannelDto MapToChannelDto(Channel channel, string ownerUsername)
@@ -1030,13 +1052,7 @@ public sealed class ConfigService : IConfigService
             return;
         }
 
-        var oldMappings = _channelModelMappings.Table
-            .Where(mapping => ids.Contains(mapping.ChannelId))
-            .ToList();
-        if (oldMappings.Count > 0)
-        {
-            _channelModelMappings.Delete(oldMappings);
-        }
+        _channelModelMappings.DeleteWhere(mapping => ids.Contains(mapping.ChannelId));
     }
 
     /// <summary>

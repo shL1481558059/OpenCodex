@@ -192,8 +192,7 @@ public sealed class ModelCatalogService : IModelCatalogService
         string? providerCode,
         bool? enabled)
     {
-        var providerById = _providers.TableNoTracking
-            .ToDictionary(provider => provider.Id);
+        var providerById = ProviderMap();
         var normalizedProvider = Normalize(providerCode).ToLowerInvariant();
         var providerIds = normalizedProvider.Length == 0
             ? null
@@ -231,8 +230,16 @@ public sealed class ModelCatalogService : IModelCatalogService
                 .ToList();
         }
 
+        var plansByModel = PlansByModelId(models.Select(model => model.Id).ToList());
+        var rulesByPlan = RulesByPlanIds(plansByModel.Values.Select(plan => plan.Id).ToList());
         return ApiOpResult<ModelInfoListResponse>.Succeed(new ModelInfoListResponse(
-            models.Select(model => ToModelResponse(model, providerById)).ToList()));
+            models
+                .Select(model => ToModelResponse(
+                    model,
+                    providerById,
+                    plansByModel.TryGetValue(model.Id, out var plan) ? plan : null,
+                    rulesByPlan))
+                .ToList()));
     }
 
     public ApiOpResult<ModelInfoResponsePayload> ReadModelInfoById(Guid id)
@@ -242,16 +249,21 @@ public sealed class ModelCatalogService : IModelCatalogService
             return ApiOpResult<ModelInfoResponsePayload>.Fail(400, "model id is required");
         }
 
-        var providerById = _providers.TableNoTracking
-            .ToDictionary(provider => provider.Id);
+        var providerById = ProviderMap();
         var model = _models.TableNoTracking.FirstOrDefault(m => m.Id == id);
         if (model is null)
         {
             return ApiOpResult<ModelInfoResponsePayload>.Fail(404, "model not found");
         }
 
+        var plansByModel = PlansByModelId([model.Id]);
+        var rulesByPlan = RulesByPlanIds(plansByModel.Values.Select(plan => plan.Id).ToList());
         return ApiOpResult<ModelInfoResponsePayload>.Succeed(
-            new ModelInfoResponsePayload(ToModelResponse(model, providerById)));
+            new ModelInfoResponsePayload(ToModelResponse(
+                model,
+                providerById,
+                plansByModel.TryGetValue(model.Id, out var plan) ? plan : null,
+                rulesByPlan)));
     }
 
     public ApiOpResult<ModelInfoResponsePayload> CreateModel(ModelInfoCreateRequest request)
@@ -293,7 +305,7 @@ public sealed class ModelCatalogService : IModelCatalogService
             BumpPricingVersion();
 
             return ApiOpResult<ModelInfoResponsePayload>.Succeed(
-                new ModelInfoResponsePayload(ToModelResponse(model, ProviderMap())));
+                new ModelInfoResponsePayload(ToModelResponseForSingle(model, ProviderMap())));
         }
         catch (ArgumentException exception)
         {
@@ -347,7 +359,7 @@ public sealed class ModelCatalogService : IModelCatalogService
             BumpPricingVersion();
 
             return ApiOpResult<ModelInfoResponsePayload>.Succeed(
-                new ModelInfoResponsePayload(ToModelResponse(model, ProviderMap())));
+                new ModelInfoResponsePayload(ToModelResponseForSingle(model, ProviderMap())));
         }
         catch (ArgumentException exception)
         {
@@ -371,7 +383,7 @@ public sealed class ModelCatalogService : IModelCatalogService
             _models.Update(model);
             BumpPricingVersion();
             return ApiOpResult<ModelInfoResponsePayload>.Succeed(
-                new ModelInfoResponsePayload(ToModelResponse(model, ProviderMap())));
+                new ModelInfoResponsePayload(ToModelResponseForSingle(model, ProviderMap())));
         }
 
         // 停用状态：执行真正删除（硬删除）
@@ -475,7 +487,9 @@ public sealed class ModelCatalogService : IModelCatalogService
 
     public ApiOpResult<ModelCatalogTransferDocument> ExportModelCatalog()
     {
-        var providerById = _providers.TableNoTracking.ToDictionary(provider => provider.Id);
+        var providerById = _providers.TableNoTracking
+            .Select(provider => new ProviderLookup(provider.Id, provider.Code, provider.Name))
+            .ToDictionary(provider => provider.Id);
         var plansByModel = _plans.TableNoTracking
             .Where(plan => plan.ModelInfoId != null && plan.ChannelModelInfoId == null && plan.ChannelId == null)
             .AsEnumerable()
@@ -873,19 +887,53 @@ public sealed class ModelCatalogService : IModelCatalogService
             upstreamModels.Add(upstreamModel);
         }
 
-        var items = upstreamModels
+        // 批量取回覆盖模型与全局模型的 plan/rules，避免每个上游模型各查一次。
+        var overrideModels = overrides.Values.DistinctBy(model => model.Id).ToList();
+        var plansByChannelModel = PlansByChannelModelId(
+            overrideModels.Select(model => model.Id).ToList(),
+            channel.Id);
+        var channelRulesByPlan = RulesByPlanIds(plansByChannelModel.Values.Select(plan => plan.Id).ToList());
+
+        var distinctUpstreamModels = upstreamModels
             .Where(model => Normalize(model).Length > 0)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(model => model, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // 每个上游模型还要做全局复合匹配(文档 C2 明确保留),匹配到的全局模型统一批量取 plan/rules。
+        var globalMatches = new Dictionary<Guid, ModelInfo>();
+        var perItemGlobalModel = new Dictionary<string, ModelInfo?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var upstreamModel in distinctUpstreamModels)
+        {
+            var globalModel = ResolveGlobalModel(upstreamModel);
+            perItemGlobalModel[upstreamModel] = globalModel;
+            if (globalModel is not null)
+            {
+                globalMatches.TryAdd(globalModel.Id, globalModel);
+            }
+        }
+
+        var plansByGlobalModel = PlansByModelId(globalMatches.Keys.ToList());
+        var globalRulesByPlan = RulesByPlanIds(plansByGlobalModel.Values.Select(plan => plan.Id).ToList());
+
+        var items = distinctUpstreamModels
             .Select(upstreamModel =>
             {
-                var globalModel = ResolveGlobalModel(upstreamModel);
+                var globalModel = perItemGlobalModel[upstreamModel];
                 overrides.TryGetValue(upstreamModel, out var overrideModel);
                 return new ChannelModelInfoListItemResponse(
                     upstreamModel,
                     overrideModel is not null,
-                    globalModel is null ? null : ToModelResponse(globalModel, providerById),
-                    overrideModel is null ? null : ToChannelModelResponse(overrideModel, providerById));
+                    globalModel is null ? null : ToModelResponse(
+                        globalModel,
+                        providerById,
+                        plansByGlobalModel.TryGetValue(globalModel.Id, out var plan) ? plan : null,
+                        globalRulesByPlan),
+                    overrideModel is null ? null : ToChannelModelResponse(
+                        overrideModel,
+                        providerById,
+                        plansByChannelModel.TryGetValue(overrideModel.Id, out var channelPlan) ? channelPlan : null,
+                        channelRulesByPlan));
             })
             .ToList();
 
@@ -939,7 +987,7 @@ public sealed class ModelCatalogService : IModelCatalogService
             BumpPricingVersion();
 
             return ApiOpResult<ChannelModelInfoResponsePayload>.Succeed(
-                new ChannelModelInfoResponsePayload(ToChannelModelResponse(existing, ProviderMap())));
+                new ChannelModelInfoResponsePayload(ToChannelModelResponseForSingle(existing, ProviderMap())));
         }
         catch (ArgumentException exception)
         {
@@ -994,9 +1042,10 @@ public sealed class ModelCatalogService : IModelCatalogService
        string? upstreamModel,
        ModelUsageVector usage,
        DateTimeOffset billingInstant)
-    {
-        // 缓存定价解析(按 channelId + upstreamModel),扁平 DTO 规避 PricingResolution 不可序列化的问题。
-        // rules/provider 为索引小查询,每次现查;usage 计算每请求不同,不可缓存。
+   {
+       // 缓存定价解析(按 channelId + upstreamModel),扁平 DTO 规避 PricingResolution 不可序列化的问题。
+        // rules 与 provider code 随解析结果一起缓存(失效时机与 plan/provider 完全一致,
+        // 见 BumpPricingVersion);usage 计算每请求不同,不可缓存。
         var cached = await ResolvePricingCachedAsync(channelId, upstreamModel);
         if (cached is null || !cached.HasModel || !cached.HasPlan)
         {
@@ -1004,15 +1053,12 @@ public sealed class ModelCatalogService : IModelCatalogService
         }
 
         var planId = cached.PlanId!.Value;
-        var rules = _rules.TableNoTracking
-            .Where(rule => rule.PricingPlanId == planId && rule.Enabled)
-            .ToList();
-        if (rules.Count == 0)
+        if (cached.Rules is null || cached.Rules.Count == 0)
         {
             return EmptyCalculation("pricing_plan_has_no_rules", billingInstant);
         }
 
-        var providerId = cached.ProviderId!.Value;
+        var rules = cached.Rules;
         var modelInfoId = cached.ModelInfoId;
         var channelModelInfoId = cached.ChannelModelInfoId;
         var modelKey = cached.ModelKey!;
@@ -1043,15 +1089,15 @@ public sealed class ModelCatalogService : IModelCatalogService
                 useOffPeak ? PricingPhases.OffPeak : PricingPhases.Peak));
         }
 
-        var provider = _providers.TableNoTracking.FirstOrDefault(item => item.Id == providerId);
+        var providerCode = cached.ProviderCode;
         var snapshot = new ModelPricingSnapshot(
             cached.Reason,
-            cached.PlanCurrency,
+            cached.PlanCurrency ?? "USD",
             total,
             modelInfoId,
             channelModelInfoId,
             planId,
-            provider?.Code,
+            providerCode,
             modelKey,
             matchType,
             matchPattern,
@@ -1065,11 +1111,11 @@ public sealed class ModelCatalogService : IModelCatalogService
 
         return new ModelPricingCalculationResult(
             total,
-            cached.PlanCurrency,
+            cached.PlanCurrency ?? "USD",
             modelInfoId,
             channelModelInfoId,
             planId,
-            provider?.Code,
+            providerCode,
             modelKey,
             matchType,
             matchPattern,
@@ -1184,9 +1230,13 @@ public sealed class ModelCatalogService : IModelCatalogService
         }
     }
 
-    private static CachedPricingResolution ToCached(PricingResolution resolution)
+    private CachedPricingResolution ToCached(PricingResolution resolution)
     {
         var hasModel = resolution.HasModel;
+        var providerCode = hasModel ? LoadProviderCode(resolution.ProviderId) : null;
+        var rules = resolution.Plan is null
+            ? null
+            : LoadEnabledRules(resolution.Plan.Id);
         return new CachedPricingResolution(
             hasModel,
             resolution.Plan is not null,
@@ -1195,12 +1245,38 @@ public sealed class ModelCatalogService : IModelCatalogService
             resolution.Plan?.TimeZoneId ?? string.Empty,
             resolution.Plan?.OffPeakWindowsJson ?? "[]",
             hasModel ? resolution.ProviderId : null,
+            providerCode,
             resolution.Model?.Id,
             resolution.ChannelModel?.Id,
+            rules,
             hasModel ? resolution.ModelKey : null,
             hasModel ? resolution.MatchType : null,
             hasModel ? resolution.MatchPattern : null,
             resolution.Reason);
+    }
+
+    private string? LoadProviderCode(Guid providerId)
+    {
+        return _providers.TableNoTracking
+            .Where(provider => provider.Id == providerId)
+            .Select(provider => provider.Code)
+            .FirstOrDefault();
+    }
+
+    private IReadOnlyList<CachedPricingRule>? LoadEnabledRules(Guid planId)
+    {
+        var rules = _rules.TableNoTracking
+            .Where(rule => rule.PricingPlanId == planId && rule.Enabled)
+            .Select(rule => new CachedPricingRule(
+                rule.BillingItem,
+                rule.BillingMode,
+                rule.UnitPrice,
+                rule.TiersJson,
+                rule.OffPeakEnabled,
+                rule.OffPeakUnitPrice,
+                rule.OffPeakTiersJson))
+            .ToList();
+        return rules.Count == 0 ? null : rules;
     }
 
     private sealed record CachedPricingResolution(
@@ -1211,12 +1287,26 @@ public sealed class ModelCatalogService : IModelCatalogService
         string TimeZoneId,
         string OffPeakWindowsJson,
         Guid? ProviderId,
+        string? ProviderCode,
         Guid? ModelInfoId,
         Guid? ChannelModelInfoId,
+        IReadOnlyList<CachedPricingRule>? Rules,
         string? ModelKey,
         string? MatchType,
         string? MatchPattern,
         string Reason);
+
+    private sealed record CachedPricingRule(
+        string BillingItem,
+        string BillingMode,
+        decimal UnitPrice,
+        string TiersJson,
+        bool OffPeakEnabled,
+        decimal OffPeakUnitPrice,
+        string OffPeakTiersJson);
+
+    /// <summary>响应/查询所需的 provider 轻量投影，避免把完整 <see cref="ModelProvider"/> 实体拉进内存。</summary>
+    private sealed record ProviderLookup(Guid Id, string Code, string Name);
 
     private PricingResolution ResolvePricing(
         Guid? channelId,
@@ -1260,6 +1350,19 @@ public sealed class ModelCatalogService : IModelCatalogService
             return null;
         }
 
+        // 数据库精确相等快路径:常见情况下只取回匹配行,不拉取该渠道全部模型。
+        // OrdinalIgnoreCase 与数据库 collation 语义不完全等价,未命中再退回内存比较兜底。
+        var exact = _channelModels.TableNoTracking
+            .Where(model => model.ChannelId == channelId
+                && model.Enabled
+                && model.UpstreamModel == normalized)
+            .OrderByDescending(model => model.UpdatedAt)
+            .FirstOrDefault();
+        if (exact is not null)
+        {
+            return exact;
+        }
+
         return _channelModels.TableNoTracking
             .Where(model => model.ChannelId == channelId && model.Enabled)
             .AsEnumerable()
@@ -1277,7 +1380,9 @@ public sealed class ModelCatalogService : IModelCatalogService
             return null;
         }
 
-        var providerSort = _providers.TableNoTracking.ToDictionary(provider => provider.Id, provider => provider.SortOrder);
+        var providerSort = _providers.TableNoTracking
+            .Select(provider => new { provider.Id, provider.SortOrder })
+            .ToDictionary(provider => provider.Id, provider => provider.SortOrder);
         return _models.TableNoTracking
             .Where(model => model.Enabled && model.Scope == ModelInfoScopes.Global && model.ChannelId == null)
             .AsEnumerable()
@@ -1355,6 +1460,23 @@ public sealed class ModelCatalogService : IModelCatalogService
     }
 
     private static int Quantity(ModelPricingRule rule, ModelUsageVector usage)
+    {
+        if (rule.BillingMode == ModelBillingModes.PerRequest)
+        {
+            return usage.RequestCount;
+        }
+
+        return rule.BillingItem switch
+        {
+            ModelBillingItems.Input => Math.Max(0, usage.InputTokens - usage.CacheWriteTokens - usage.CacheReadTokens),
+            ModelBillingItems.Output => usage.OutputTokens,
+            ModelBillingItems.CacheWrite => usage.CacheWriteTokens,
+            ModelBillingItems.CacheRead => usage.CacheReadTokens,
+            _ => 0
+        };
+    }
+
+    private static int Quantity(CachedPricingRule rule, ModelUsageVector usage)
     {
         if (rule.BillingMode == ModelBillingModes.PerRequest)
         {
@@ -1661,13 +1783,11 @@ public sealed class ModelCatalogService : IModelCatalogService
 
     private ChannelModelInfoResponse ToChannelModelResponse(
         ChannelModelInfo model,
-        IReadOnlyDictionary<Guid, ModelProvider> providerById)
+        IReadOnlyDictionary<Guid, ProviderLookup> providerById,
+        ModelPricingPlan? plan,
+        IReadOnlyDictionary<Guid, List<ModelPricingRule>> rulesByPlan)
     {
         providerById.TryGetValue(model.ProviderId, out var provider);
-        var plan = _plans.TableNoTracking
-            .Where(item => item.ChannelModelInfoId == model.Id && item.ChannelId == model.ChannelId)
-            .OrderByDescending(item => item.UpdatedAt)
-            .FirstOrDefault();
 
         return new ChannelModelInfoResponse(
             model.Id,
@@ -1685,7 +1805,7 @@ public sealed class ModelCatalogService : IModelCatalogService
             DeserializeObject(model.CapabilitiesJson),
             model.Enabled,
             model.Source,
-            plan is null ? null : ToPlanResponse(plan),
+            plan is null ? null : ToPlanResponse(plan, rulesByPlan),
             model.CreatedAt,
             model.UpdatedAt);
     }
@@ -1715,9 +1835,11 @@ public sealed class ModelCatalogService : IModelCatalogService
             && (!excludeId.HasValue || model.Id != excludeId.Value));
     }
 
-    private Dictionary<Guid, ModelProvider> ProviderMap()
+    private Dictionary<Guid, ProviderLookup> ProviderMap()
     {
-        return _providers.TableNoTracking.ToDictionary(provider => provider.Id);
+        return _providers.TableNoTracking
+            .Select(provider => new ProviderLookup(provider.Id, provider.Code, provider.Name))
+            .ToDictionary(provider => provider.Id);
     }
 
     private int NextProviderSortOrder()
@@ -1728,13 +1850,13 @@ public sealed class ModelCatalogService : IModelCatalogService
         return currentMax + 10;
     }
 
-    private ModelInfoResponse ToModelResponse(ModelInfo model, IReadOnlyDictionary<Guid, ModelProvider> providerById)
+    private ModelInfoResponse ToModelResponse(
+        ModelInfo model,
+        IReadOnlyDictionary<Guid, ProviderLookup> providerById,
+        ModelPricingPlan? plan,
+        IReadOnlyDictionary<Guid, List<ModelPricingRule>> rulesByPlan)
     {
         providerById.TryGetValue(model.ProviderId, out var provider);
-        var plan = _plans.TableNoTracking
-            .Where(item => item.ModelInfoId == model.Id && item.ChannelId == model.ChannelId)
-            .OrderByDescending(item => item.UpdatedAt)
-            .FirstOrDefault();
 
         return new ModelInfoResponse(
             model.Id,
@@ -1752,17 +1874,19 @@ public sealed class ModelCatalogService : IModelCatalogService
             DeserializeObject(model.CapabilitiesJson),
             model.Enabled,
             model.Source,
-            plan is null ? null : ToPlanResponse(plan),
+            plan is null ? null : ToPlanResponse(plan, rulesByPlan),
             model.CreatedAt,
             model.UpdatedAt);
     }
 
-    private ModelPricingPlanResponse ToPlanResponse(ModelPricingPlan plan)
+    private static ModelPricingPlanResponse ToPlanResponse(
+        ModelPricingPlan plan,
+        IReadOnlyDictionary<Guid, List<ModelPricingRule>> rulesByPlan)
     {
-        var rules = _rules.TableNoTracking
-            .Where(rule => rule.PricingPlanId == plan.Id)
+        var rules = (rulesByPlan.TryGetValue(plan.Id, out var raw)
+                ? raw
+                : [])
             .OrderBy(rule => rule.BillingItem)
-            .AsEnumerable()
             .Select(rule => new ModelPricingRuleResponse(
                 rule.Id,
                 rule.BillingItem,
@@ -1788,6 +1912,119 @@ public sealed class ModelCatalogService : IModelCatalogService
             rules,
             plan.CreatedAt,
             plan.UpdatedAt);
+    }
+
+    private ModelInfoResponse ToModelResponseForSingle(
+        ModelInfo model,
+        IReadOnlyDictionary<Guid, ProviderLookup> providerById)
+    {
+        var plansByModel = PlansByModelId([model.Id]);
+        var rulesByPlan = RulesByPlanIds(plansByModel.Values.Select(plan => plan.Id).ToList());
+        return ToModelResponse(
+            model,
+            providerById,
+            plansByModel.TryGetValue(model.Id, out var plan) ? plan : null,
+            rulesByPlan);
+    }
+
+    private ChannelModelInfoResponse ToChannelModelResponseForSingle(
+        ChannelModelInfo model,
+        IReadOnlyDictionary<Guid, ProviderLookup> providerById)
+    {
+        var plansByModel = PlansByChannelModelId([model.Id], model.ChannelId);
+        var rulesByPlan = RulesByPlanIds(plansByModel.Values.Select(plan => plan.Id).ToList());
+        return ToChannelModelResponse(
+            model,
+            providerById,
+            plansByModel.TryGetValue(model.Id, out var plan) ? plan : null,
+            rulesByPlan);
+    }
+
+    /// <summary>按 ModelInfoId 批量取回全局模型的最新启用计划，并按 Id 建索引。</summary>
+    private Dictionary<Guid, ModelPricingPlan> PlansByModelId(IReadOnlyCollection<Guid> modelIds)
+    {
+        if (modelIds.Count == 0)
+        {
+            return [];
+        }
+
+        var plans = new List<ModelPricingPlan>();
+        foreach (var page in Pages(modelIds))
+        {
+            plans.AddRange(_plans.TableNoTracking
+                .Where(plan => plan.ModelInfoId != null
+                    && plan.ChannelModelInfoId == null
+                    && plan.ChannelId == null
+                    && plan.Enabled
+                    && page.Contains(plan.ModelInfoId!.Value))
+                .ToList());
+        }
+
+        return plans
+            .GroupBy(plan => plan.ModelInfoId!.Value)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderByDescending(plan => plan.UpdatedAt).First());
+    }
+
+    /// <summary>按 ChannelModelInfoId 批量取回某渠道的最新启用计划，并按 Id 建索引。</summary>
+    private Dictionary<Guid, ModelPricingPlan> PlansByChannelModelId(
+        IReadOnlyCollection<Guid> channelModelIds,
+        Guid channelId)
+    {
+        if (channelModelIds.Count == 0)
+        {
+            return [];
+        }
+
+        var plans = new List<ModelPricingPlan>();
+        foreach (var page in Pages(channelModelIds))
+        {
+            plans.AddRange(_plans.TableNoTracking
+                .Where(plan => plan.ChannelModelInfoId != null
+                    && plan.ChannelId == channelId
+                    && plan.Enabled
+                    && page.Contains(plan.ChannelModelInfoId!.Value))
+                .ToList());
+        }
+
+        return plans
+            .GroupBy(plan => plan.ChannelModelInfoId!.Value)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderByDescending(plan => plan.UpdatedAt).First());
+    }
+
+    /// <summary>按 PricingPlanId 批量取回全部规则，并按 plan Id 分组。</summary>
+    private Dictionary<Guid, List<ModelPricingRule>> RulesByPlanIds(IReadOnlyCollection<Guid> planIds)
+    {
+        if (planIds.Count == 0)
+        {
+            return [];
+        }
+
+        var rules = new List<ModelPricingRule>();
+        foreach (var page in Pages(planIds))
+        {
+            rules.AddRange(_rules.TableNoTracking
+                .Where(rule => page.Contains(rule.PricingPlanId))
+                .ToList());
+        }
+
+        return rules
+            .GroupBy(rule => rule.PricingPlanId)
+            .ToDictionary(group => group.Key, group => group.ToList());
+    }
+
+    /// <summary>把 Guid 集合切成页，每页最多 900 个，规避 SQLite 单查询 999 参数上限。</summary>
+    private static IEnumerable<IReadOnlyCollection<Guid>> Pages(IReadOnlyCollection<Guid> ids)
+    {
+        const int pageSize = 900;
+        var list = ids as List<Guid> ?? ids.ToList();
+        for (var offset = 0; offset < list.Count; offset += pageSize)
+        {
+            yield return list.GetRange(offset, Math.Min(pageSize, list.Count - offset));
+        }
     }
 
     private static ModelProviderResponse ToProviderResponse(ModelProvider provider)
@@ -2207,7 +2444,7 @@ public sealed class ModelCatalogService : IModelCatalogService
     }
 
     private static string ProviderText(
-        IReadOnlyDictionary<Guid, ModelProvider> providerById,
+        IReadOnlyDictionary<Guid, ProviderLookup> providerById,
         Guid providerId)
     {
         return providerById.TryGetValue(providerId, out var provider)

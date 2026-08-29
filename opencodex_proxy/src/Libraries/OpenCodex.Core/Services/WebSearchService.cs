@@ -124,22 +124,11 @@ public sealed class WebSearchService : IWebSearchService
         }
 
         var now = UnixTimeSeconds();
-        var currentDefaultKeyUsageLimit = _settingsRepository.TableNoTracking.FirstOrDefault()
-            ?.KeyUsageLimit ?? DefaultWebSearchKeyUsageLimit;
-        var defaultKeyUsageLimit = ParseRequiredPositiveInt(
-            JsonDictionaryValue.Get(config, "key_usage_limit") ?? currentDefaultKeyUsageLimit,
-            "web search key_usage_limit");
-        var existing = _keyRepository.TableNoTracking
-            .ToDictionary(
-                key => key.Id,
-                key => new ExistingTavilyKey(
-                    key.Provider,
-                    key.ApiKey,
-                    key.UsageCount,
-                    key.UsageLimit,
-                    key.CreatedAt));
-
         var settings = _settingsRepository.Table.FirstOrDefault();
+        var defaultKeyUsageLimit = ParseRequiredPositiveInt(
+            JsonDictionaryValue.Get(config, "key_usage_limit")
+                ?? (settings?.KeyUsageLimit ?? DefaultWebSearchKeyUsageLimit),
+            "web search key_usage_limit");
         if (settings is null)
         {
             settings = new WebSearchSettings
@@ -149,17 +138,27 @@ public sealed class WebSearchService : IWebSearchService
             _settingsRepository.Insert(settings);
         }
 
+        var oldKeys = _keyRepository.Table.ToList();
+        var existing = oldKeys.ToDictionary(
+            key => key.Id,
+            key => new ExistingTavilyKey(
+                key.Provider,
+                key.ApiKey,
+                key.UsageCount,
+                key.UsageLimit,
+                key.CreatedAt));
+
         settings.Mode = ParseWebSearchMode(JsonDictionaryValue.Get(config, "mode"));
         settings.KeyUsageLimit = defaultKeyUsageLimit;
         settings.UpdatedAt = now;
-        _settingsRepository.Update(settings);
+        _settingsRepository.Update(
+            settings,
+            nameof(WebSearchSettings.Mode),
+            nameof(WebSearchSettings.KeyUsageLimit),
+            nameof(WebSearchSettings.UpdatedAt));
 
-       // 先删除全部旧 key,再插入新 key(不考虑历史数据,接受非原子)
-       var oldKeys = _keyRepository.Table.ToList();
-       if (oldKeys.Count > 0)
-       {
-           _keyRepository.Delete(oldKeys);
-       }
+        // 先删除全部旧 key,再插入新 key(不考虑历史数据,接受非原子)
+        _keyRepository.DeleteWhere(key => true);
 
         var newKeys = BuildNewKeys(keys, existing, defaultKeyUsageLimit, now);
         if (newKeys.Count > 0)
@@ -180,13 +179,11 @@ public sealed class WebSearchService : IWebSearchService
         }
 
         var now = UnixTimeSeconds();
-        var currentDefaultKeyUsageLimit = _settingsRepository.TableNoTracking.FirstOrDefault()
-            ?.KeyUsageLimit ?? DefaultWebSearchKeyUsageLimit;
-        var defaultKeyUsageLimit = ParseRequiredPositiveInt(
-            JsonDictionaryValue.Get(config, "key_usage_limit") ?? currentDefaultKeyUsageLimit,
-            "web search key_usage_limit");
-
         var settings = _settingsRepository.Table.FirstOrDefault();
+        var defaultKeyUsageLimit = ParseRequiredPositiveInt(
+            JsonDictionaryValue.Get(config, "key_usage_limit")
+                ?? (settings?.KeyUsageLimit ?? DefaultWebSearchKeyUsageLimit),
+            "web search key_usage_limit");
         if (settings is null)
         {
             settings = new WebSearchSettings
@@ -199,7 +196,11 @@ public sealed class WebSearchService : IWebSearchService
         settings.Mode = ParseWebSearchMode(JsonDictionaryValue.Get(config, "mode"));
         settings.KeyUsageLimit = defaultKeyUsageLimit;
         settings.UpdatedAt = now;
-        _settingsRepository.Update(settings);
+        _settingsRepository.Update(
+            settings,
+            nameof(WebSearchSettings.Mode),
+            nameof(WebSearchSettings.KeyUsageLimit),
+            nameof(WebSearchSettings.UpdatedAt));
 
         var existingKeys = _keyRepository.Table.ToList();
         // 合并键:(provider, api_key)
@@ -211,7 +212,7 @@ public sealed class WebSearchService : IWebSearchService
             ? existingKeys.Max(key => key.Position) + 1
             : 0;
         var toInsert = new List<TavilyKey>();
-        var toUpdate = new List<TavilyKey>();
+        var toUpdate = new List<(TavilyKey Key, string[] Props)>();
 
         for (var index = 0; index < keys.Count; index++)
         {
@@ -234,17 +235,24 @@ public sealed class WebSearchService : IWebSearchService
 
             if (existingByKey.TryGetValue(matchKey, out var existing))
             {
+                var props = new List<string>
+                {
+                    nameof(TavilyKey.Enabled),
+                    nameof(TavilyKey.UpdatedAt)
+                };
                 existing.Enabled = JsonDictionaryValue.Get(item, "enabled") is not false;
                 if (usageLimitSource is not null)
                 {
                     existing.UsageLimit = ParseRequiredPositiveInt(usageLimitSource, $"web search keys[{index + 1}].usage_limit");
+                    props.Add(nameof(TavilyKey.UsageLimit));
                 }
                 if (usageCountValue is not null)
                 {
                     existing.UsageCount = ParseRequiredNonNegativeInt(usageCountValue, $"web search keys[{index + 1}].usage_count");
+                    props.Add(nameof(TavilyKey.UsageCount));
                 }
                 existing.UpdatedAt = now;
-                toUpdate.Add(existing);
+                toUpdate.Add((existing, props.ToArray()));
             }
             else
             {
@@ -268,9 +276,9 @@ public sealed class WebSearchService : IWebSearchService
             }
         }
 
-        foreach (var key in toUpdate)
+        foreach (var item in toUpdate)
         {
-            _keyRepository.Update(key);
+            _keyRepository.Update(item.Key, item.Props);
         }
 
         if (toInsert.Count > 0)

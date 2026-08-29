@@ -5,7 +5,6 @@ using Microsoft.Extensions.DependencyInjection;
 using OpenCodex.Core.Services.Proxy;
 using Microsoft.EntityFrameworkCore;
 using OpenCodex.Core.Services;
-using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.Domain.Proxy;
@@ -13,6 +12,7 @@ using OpenCodex.CoreBase.DTOs.Observability;
 using OpenCodex.CoreBase.Services;
 using OpenCodex.CoreBase.Services.Proxy;
 using OpenCodex.Data;
+using OpenCodex.Api.Tests.Infrastructure;
 using Xunit;
 
 namespace OpenCodex.Api.Tests;
@@ -28,17 +28,21 @@ public sealed class ObservabilityServiceTests
         IChannelCapacityService? channelCapacity = null,
         Guid? currentUserId = null,
         string currentUsername = "admin",
-        string currentRole = "superadmin")
+        string currentRole = "superadmin",
+        IOpenCodexDbContext? injectedContext = null)
     {
-       var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var context = injectedContext ?? OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         return new ObservabilityService(
-            new TestSettingsProvider(dbPath),
             new TestWorkContext(currentUserId ?? AdminUserId, currentUsername, currentRole),
             context,
             new EfRepository<RequestLog>(context),
             new EfRepository<AccessApiKey>(context),
             new EfRepository<User>(context),
             new EfRepository<Channel>(context),
+            new EfRepository<RequestLogContentRef>(context),
+            new EfRepository<LogContentManifestChunk>(context),
+            new EfRepository<LogContentManifest>(context),
+            new EfRepository<LogContentBlock>(context),
             channelCapacity ?? new ChannelCapacityService(),
             new ServiceCollection().AddMemoryCache().BuildServiceProvider().GetRequiredService<IMemoryCache>());
     }
@@ -809,6 +813,246 @@ public sealed class ObservabilityServiceTests
     }
 
     [Fact]
+    public void StatsAggregations_ArePushedToDatabaseAndPadEmptyBuckets()
+    {
+        var dbPath = Path.Combine(
+            Path.GetTempPath(),
+            "opencodex-api-tests",
+            $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        var start = 1_699_999_000;
+        var end = 1_700_000_200;
+        var failedChannelId = Guid.Parse("44444444-4444-4444-4444-444444444455");
+
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            context.Users.Add(new User
+            {
+                Id = AdminUserId,
+                Username = "admin",
+                PasswordHash = "hash",
+                Role = "superadmin",
+                Enabled = true,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            context.RequestLogs.AddRange(
+                new RequestLog
+                {
+                    Id = Guid.Parse("33333333-3333-3333-3333-333333333371"),
+                    RequestId = "req-stats-a",
+                    CreatedAt = start + 1000,
+                    RequestType = ProxyRequestTypes.Main,
+                    LifecycleStatus = ProxyRequestLifecycleStatus.Success,
+                    Model = "gpt-a",
+                    StatusCode = 200,
+                    OwnerUserId = AdminUserId,
+                    TtftMs = 100,
+                    InputTokens = 10,
+                    CachedTokens = 1,
+                    OutputTokens = 5,
+                    Cost = 1
+                },
+                new RequestLog
+                {
+                    Id = Guid.Parse("33333333-3333-3333-3333-333333333372"),
+                    RequestId = "req-stats-a0",
+                    CreatedAt = start + 1000,
+                    RequestType = ProxyRequestTypes.Main,
+                    LifecycleStatus = ProxyRequestLifecycleStatus.Success,
+                    Model = "gpt-a",
+                    StatusCode = 200,
+                    OwnerUserId = AdminUserId,
+                    TtftMs = 0,
+                    InputTokens = 20,
+                    CachedTokens = 2,
+                    OutputTokens = 10,
+                    Cost = 2
+                },
+                new RequestLog
+                {
+                    Id = Guid.Parse("33333333-3333-3333-3333-333333333373"),
+                    RequestId = "req-stats-b",
+                    CreatedAt = start + 1100,
+                    RequestType = ProxyRequestTypes.Main,
+                    LifecycleStatus = ProxyRequestLifecycleStatus.Failed,
+                    Model = "gpt-b",
+                    UpstreamModel = "gpt-b-upstream",
+                    ChannelId = failedChannelId,
+                    StatusCode = 500,
+                    Error = "boom",
+                    OwnerUserId = AdminUserId,
+                    TtftMs = 300,
+                    InputTokens = 30,
+                    CachedTokens = 5,
+                    OutputTokens = 15,
+                    Cost = 3
+                });
+            context.SaveChanges();
+        }
+
+        var interceptor = new SqlCapture();
+        using var captureContext = CreateCapturingContext(dbPath, interceptor);
+        var service = CreateService(dbPath, injectedContext: captureContext);
+        interceptor.Reset();
+
+        var stats = service.ReadStats(
+            "custom",
+            start,
+            end,
+            new Dictionary<string, object?>());
+
+        Assert.True(stats.Succeeded);
+        var points = stats.Payload!.Points;
+        Assert.Equal(20, points.Count);
+        Assert.Equal(0, points[0].Cost);
+        Assert.Equal(0, points[0].Rpm);
+        var firstBucket = Assert.Single(points, item => item.CachedTokens == 3);
+        Assert.Equal(100, firstBucket.AvgTtftMs);
+        var secondBucket = Assert.Single(points, item => item.CachedTokens == 5);
+        Assert.Equal(300, secondBucket.AvgTtftMs);
+        Assert.Contains(
+            points,
+            item => item.InputTokens == 30 && item.CachedTokens == 3 && item.OutputTokens == 15);
+        Assert.Contains(
+            stats.Payload.ModelDistribution,
+            item => item.Model == "gpt-a" && item.Count == 2);
+        Assert.Contains(
+            stats.Payload.ModelDistribution,
+            item => item.Model == "gpt-b" && item.Count == 1);
+        var errorItem = Assert.Single(stats.Payload.ErrorDistribution);
+        Assert.Equal(failedChannelId.ToString(), errorItem.ChannelId);
+        Assert.Equal(500, errorItem.StatusCode);
+        Assert.Equal(1, errorItem.Count);
+        Assert.Contains(
+            interceptor.Commands,
+            command => command.Contains("GROUP BY", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void LogsPage_ProjectionDoesNotReadPricingSnapshotJson()
+    {
+        var dbPath = Path.Combine(
+            Path.GetTempPath(),
+            "opencodex-api-tests",
+            $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        var logId = Guid.Parse("33333333-3333-3333-3333-333333333381");
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            context.Users.Add(new User
+            {
+                Id = AdminUserId,
+                Username = "admin",
+                PasswordHash = "hash",
+                Role = "superadmin",
+                Enabled = true,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            context.RequestLogs.Add(new RequestLog
+            {
+                Id = logId,
+                RequestId = "req-project",
+                CreatedAt = 1_700_000_000,
+                RequestType = ProxyRequestTypes.Main,
+                LifecycleStatus = ProxyRequestLifecycleStatus.Success,
+                Model = "gpt-a",
+                StatusCode = 200,
+                OwnerUserId = AdminUserId,
+                PricingSnapshotJson = new string('x', 4096)
+            });
+            context.SaveChanges();
+        }
+
+        var interceptor = new SqlCapture();
+        using var captureContext = CreateCapturingContext(dbPath, interceptor);
+        var service = CreateService(dbPath, injectedContext: captureContext);
+        interceptor.Reset();
+
+        var logs = service.ReadLogsPage(1, 20, new Dictionary<string, object?>());
+
+        Assert.True(logs.Succeeded);
+        var log = Assert.Single(logs.Payload!.Events);
+        Assert.Equal(logId, log.Id);
+        Assert.DoesNotContain(
+            interceptor.Commands,
+            command => command.Contains("PricingSnapshotJson", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void LogsPage_OwnerUsernameFilter_ResolvesUserOnce()
+    {
+        var dbPath = Path.Combine(
+            Path.GetTempPath(),
+            "opencodex-api-tests",
+            $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            context.Users.Add(new User
+            {
+                Id = AdminUserId,
+                Username = "admin",
+                PasswordHash = "hash",
+                Role = "superadmin",
+                Enabled = true,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            context.RequestLogs.Add(new RequestLog
+            {
+                Id = Guid.Parse("33333333-3333-3333-3333-333333333391"),
+                RequestId = "req-owner-filter",
+                CreatedAt = 1_700_000_000,
+                Method = "POST",
+                Path = "/v1/chat/completions",
+                Model = "gpt-a",
+                StatusCode = 200,
+                OwnerUserId = AdminUserId
+            });
+            context.SaveChanges();
+        }
+
+        var interceptor = new SqlCapture();
+        using var captureContext = CreateCapturingContext(dbPath, interceptor);
+        var service = CreateService(dbPath, injectedContext: captureContext);
+        interceptor.Reset();
+
+        var logs = service.ReadLogsPage(
+            1,
+            20,
+            new Dictionary<string, object?>
+            {
+                ["owner_username"] = "admin"
+            });
+
+        Assert.True(logs.Succeeded);
+        var log = Assert.Single(logs.Payload!.Events);
+        Assert.Equal("admin", log.OwnerUsername);
+        // A6 落点：ReadLogsPage 内部构建 Count() 与分页两个查询，用户解析提到 lambda
+        // 之外后，两个查询共用同一次按 Username 解析。断言精确到「WHERE "u"."Username"」
+        // 的解析查询恰 1 条，不把 BuildOwnerMap 按 Id 查 Username 的那条算进来。
+        var userSql = interceptor.Commands
+            .Where(command => command.Contains("FROM \"Users\"", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        Assert.Equal(2, userSql.Count);
+        Assert.Single(
+            userSql,
+            command => command.Contains("WHERE \"u\".\"Username\"", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static OpenCodexSqliteDbContext CreateCapturingContext(
+        string dbPath,
+        SqlCapture interceptor)
+    {
+        return SqlCapture.CreateCapturingContext($"Data Source={dbPath}", interceptor);
+    }
+
+    [Fact]
     public void ClearLogs_RemovesContentRefsManifestsBlocksAndLogs()
     {
         var dbPath = Path.Combine(
@@ -858,26 +1102,6 @@ public sealed class ObservabilityServiceTests
         Assert.Empty(readContext.LogContentManifests);
         Assert.Empty(readContext.LogContentManifestChunks);
         Assert.Empty(readContext.LogContentBlocks);
-    }
-
-    private sealed class TestSettingsProvider : IOpenCodexRuntimeSettingsProvider
-    {
-        private readonly OpenCodexRuntimeSettings _settings;
-
-        public TestSettingsProvider(string dbPath)
-        {
-            _settings = new OpenCodexRuntimeSettings(
-                "sqlite",
-                $"Data Source={dbPath}",
-                "admin",
-                "password",
-                120);
-        }
-
-        public OpenCodexRuntimeSettings GetSettings()
-        {
-            return _settings;
-        }
     }
 
     private sealed class TestWorkContext : IWorkContext

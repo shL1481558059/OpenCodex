@@ -51,7 +51,14 @@ public sealed class UserService : IUserService
         var users = _userRepository.TableNoTracking
             .OrderBy(user => user.Role)
             .ThenBy(user => user.Username)
-            .Select(user => user.ToDto())
+            // 显式投影：只取 UserDto 需要的 6 列，PasswordHash 不进内存。
+            .Select(user => new UserDto(
+                user.Id,
+                user.Username,
+                user.Role,
+                user.Enabled,
+                user.CreatedAt,
+                user.UpdatedAt))
             .ToList();
         return ApiOpResult<UsersResponse>.Succeed(UsersResponse.From(users));
     }
@@ -199,8 +206,16 @@ public sealed class UserService : IUserService
             return null;
         }
 
-        var user = _userRepository.TableNoTracking.FirstOrDefault(item => item.Username == username);
-        return user is null ? null : user.ToDto();
+        return _userRepository.TableNoTracking
+            .Where(item => item.Username == username)
+            .Select(item => new UserDto(
+                item.Id,
+                item.Username,
+                item.Role,
+                item.Enabled,
+                item.CreatedAt,
+                item.UpdatedAt))
+            .FirstOrDefault();
     }
 
     private UserDto SetUserEnabled(string username, bool enabled)
@@ -222,7 +237,7 @@ public sealed class UserService : IUserService
             ?? throw new InvalidOperationException("user not found");
         user.Enabled = enabled;
         user.UpdatedAt = UnixTimeSeconds();
-        _userRepository.Update(user);
+        _userRepository.Update(user, nameof(User.Enabled), nameof(User.UpdatedAt));
         return user.ToDto();
     }
 
@@ -243,7 +258,7 @@ public sealed class UserService : IUserService
             ?? throw new InvalidOperationException("user not found");
         user.PasswordHash = OpenCodexSecurity.HashPassword(password);
         user.UpdatedAt = UnixTimeSeconds();
-        _userRepository.Update(user);
+        _userRepository.Update(user, nameof(User.PasswordHash), nameof(User.UpdatedAt));
         return user.ToDto();
     }
 
@@ -270,10 +285,10 @@ public sealed class UserService : IUserService
             ?? throw new InvalidOperationException("user not found");
         var deleted = user.ToDto();
 
-        _apiKeyRepository.Delete(_apiKeyRepository.Table.Where(key => key.OwnerUserId == user.Id).ToList());
-        _channelRepository.Delete(_channelRepository.Table.Where(channel => channel.OwnerUserId == user.Id).ToList());
-        _visionTransferSettings.Delete(
-            _visionTransferSettings.Table.Where(item => item.OwnerUserId == user.Id).ToList());
+        // ExecuteDelete 直接下推批量 DELETE,避免先加载无用实体。
+        _apiKeyRepository.DeleteWhere(key => key.OwnerUserId == user.Id);
+        _channelRepository.DeleteWhere(channel => channel.OwnerUserId == user.Id);
+        _visionTransferSettings.DeleteWhere(item => item.OwnerUserId == user.Id);
         _userRepository.Delete(user);
         return deleted;
     }

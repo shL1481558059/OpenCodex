@@ -4,7 +4,6 @@ using OpenCodex.Core.Services.Proxy;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
-using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.Domain.Proxy;
@@ -110,13 +109,16 @@ public sealed class ObservabilityDiagnosticLogFilterTests
     {
         var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         return new ObservabilityService(
-            new TestSettingsProvider(dbPath),
             new TestWorkContext(AdminUserId, "admin", "superadmin"),
             context,
             new EfRepository<RequestLog>(context),
             new EfRepository<AccessApiKey>(context),
             new EfRepository<User>(context),
             new EfRepository<Channel>(context),
+            new EfRepository<RequestLogContentRef>(context),
+            new EfRepository<LogContentManifestChunk>(context),
+            new EfRepository<LogContentManifest>(context),
+            new EfRepository<LogContentBlock>(context),
             new ChannelCapacityService(),
             new ServiceCollection().AddMemoryCache().BuildServiceProvider().GetRequiredService<IMemoryCache>());
     }
@@ -241,26 +243,6 @@ public sealed class ObservabilityDiagnosticLogFilterTests
                 Cost = 6
             });
         context.SaveChanges();
-    }
-
-    private sealed class TestSettingsProvider : IOpenCodexRuntimeSettingsProvider
-    {
-        private readonly OpenCodexRuntimeSettings _settings;
-
-        public TestSettingsProvider(string dbPath)
-        {
-            _settings = new OpenCodexRuntimeSettings(
-                "sqlite",
-                $"Data Source={dbPath}",
-                "admin",
-                "password",
-                120);
-        }
-
-        public OpenCodexRuntimeSettings GetSettings()
-        {
-            return _settings;
-        }
     }
 
     private sealed class TestWorkContext : IWorkContext

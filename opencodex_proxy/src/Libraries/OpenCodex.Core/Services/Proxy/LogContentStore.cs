@@ -154,7 +154,7 @@ internal sealed class LogContentStore
         return new LogContentSnapshot(values);
     }
 
-    private Dictionary<string, LogContentBlock> EnsureBlocks(
+    private Dictionary<string, BlockRef> EnsureBlocks(
         IEnumerable<EncodedLogContent> encodedValues)
     {
         var chunks = encodedValues
@@ -164,144 +164,192 @@ internal sealed class LogContentStore
             .ToList();
         if (chunks.Count == 0)
         {
-            return new Dictionary<string, LogContentBlock>(StringComparer.Ordinal);
+            return new Dictionary<string, BlockRef>(StringComparer.Ordinal);
         }
 
-        foreach (var chunk in chunks)
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            InsertBlockIfMissing(chunk);
-        }
-
-        var hashes = chunks.Select(chunk => chunk.Hash).ToList();
-        var blocks = _context.LogContentBlocks
-            .Where(block => hashes.Contains(block.Sha256))
-            .ToList()
-            .ToDictionary(block => block.Sha256, StringComparer.Ordinal);
-        if (blocks.Count != hashes.Count)
-        {
-            throw new InvalidDataException("One or more content-addressed log blocks could not be persisted.");
-        }
-
-        foreach (var chunk in chunks)
-        {
-            var block = blocks[chunk.Hash];
-            if (block.RawLength != chunk.OriginalLength)
+            var hashes = chunks.Select(chunk => chunk.Hash).ToList();
+            var existing = _context.LogContentBlocks
+                .AsNoTracking()
+                .Where(block => hashes.Contains(block.Sha256))
+                .Select(block => new BlockRef(block.Id, block.Sha256, block.RawLength))
+                .ToDictionary(block => block.Sha256, StringComparer.Ordinal);
+            var missing = chunks.Where(chunk => !existing.ContainsKey(chunk.Hash)).ToList();
+            if (missing.Count == 0)
             {
-                throw new InvalidDataException($"Content hash collision detected for block {chunk.Hash}.");
+                return ValidateBlocks(existing, chunks);
+            }
+
+            CreateSavepoint("log_content_blocks");
+            var missingBlocks = missing.Select(chunk => new LogContentBlock
+            {
+                Id = Guid.NewGuid(),
+                Sha256 = chunk.Hash,
+                RawLength = chunk.OriginalLength,
+                StoredLength = chunk.Data.Length,
+                Compression = chunk.Codec,
+                Data = chunk.Data,
+                CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0
+            }).ToList();
+            _context.LogContentBlocks.AddRange(missingBlocks);
+            try
+            {
+                _context.SaveChanges();
+                foreach (var block in missingBlocks)
+                {
+                    existing[block.Sha256] = new BlockRef(block.Id, block.Sha256, block.RawLength);
+                }
+
+                return ValidateBlocks(existing, chunks);
+            }
+            catch (DbUpdateException)
+            {
+                // 并发下另一事务可能已插入同一 Sha256。回滚到 savepoint 清掉本次
+                // 未提交的插入,Detach 新增实体后重查,以实际落库的行作为引用依据。
+                RollbackToSavepoint("log_content_blocks");
+                DetachEntities(missingBlocks);
             }
         }
 
-        return blocks;
+        throw new InvalidDataException("One or more content-addressed log blocks could not be persisted.");
     }
 
     private Dictionary<string, LogContentManifest> EnsureManifests(
         IEnumerable<EncodedLogContent> encodedValues,
-        IReadOnlyDictionary<string, LogContentBlock> blocksByHash)
+        IReadOnlyDictionary<string, BlockRef> blocksByHash)
     {
         var values = encodedValues
             .GroupBy(value => value.Hash, StringComparer.Ordinal)
             .Select(group => group.First())
             .ToList();
-        foreach (var value in values)
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            var manifest = new LogContentManifest
+            var existing = _context.LogContentManifests
+                .AsNoTracking()
+                .Where(manifest => values.Select(value => value.Hash).Contains(manifest.Sha256))
+                .ToDictionary(manifest => manifest.Sha256, StringComparer.Ordinal);
+            var missing = values.Where(value => !existing.ContainsKey(value.Hash)).ToList();
+            if (missing.Count == 0)
+            {
+                return ValidateManifests(existing, values);
+            }
+
+            CreateSavepoint("log_content_manifests");
+            var addedManifests = missing.Select(value => new LogContentManifest
             {
                 Id = Guid.NewGuid(),
                 Sha256 = value.Hash,
                 RawLength = value.OriginalLength,
                 ChunkCount = value.Chunks.Count,
                 Encoding = Utf8Encoding
-            };
-            var inserted = InsertManifestIfMissing(manifest);
-            if (!inserted)
+            }).ToList();
+            _context.LogContentManifests.AddRange(addedManifests);
+            foreach (var manifest in addedManifests)
             {
-                continue;
+                var value = missing.First(item => item.Hash == manifest.Sha256);
+                var manifestChunks = value.Chunks.Select((chunk, ordinal) => new LogContentManifestChunk
+                {
+                    Id = Guid.NewGuid(),
+                    ManifestId = manifest.Id,
+                    Ordinal = ordinal,
+                    BlockId = blocksByHash[chunk.Hash].Id,
+                    RawLength = chunk.OriginalLength
+                });
+                _context.LogContentManifestChunks.AddRange(manifestChunks);
             }
 
-            var manifestChunks = value.Chunks.Select((chunk, ordinal) => new LogContentManifestChunk
+            try
             {
-                Id = Guid.NewGuid(),
-                ManifestId = manifest.Id,
-                Ordinal = ordinal,
-                BlockId = blocksByHash[chunk.Hash].Id,
-                RawLength = chunk.OriginalLength
-            });
-            _context.LogContentManifestChunks.AddRange(manifestChunks);
-            _context.SaveChanges();
+                _context.SaveChanges();
+                foreach (var manifest in addedManifests)
+                {
+                    existing[manifest.Sha256] = manifest;
+                }
+
+                return ValidateManifests(existing, values);
+            }
+            catch (DbUpdateException)
+            {
+                // 并发下另一事务可能已插入同一 Sha256 manifest。回滚到 savepoint,
+                // Detach 本请求新增的 manifest 与 chunks 后重查。
+                RollbackToSavepoint("log_content_manifests");
+                var addedChunkIds = addedManifests.Select(manifest => manifest.Id).ToHashSet();
+                DetachEntities(addedManifests);
+                foreach (var chunk in _context.LogContentManifestChunks.Local
+                             .Where(chunk => addedChunkIds.Contains(chunk.ManifestId))
+                             .ToList())
+                {
+                    _context.Entry(chunk).State = EntityState.Detached;
+                }
+            }
         }
 
-        var hashes = values.Select(value => value.Hash).ToList();
-        var manifests = _context.LogContentManifests
-            .Where(manifest => hashes.Contains(manifest.Sha256))
-            .ToList()
-            .ToDictionary(manifest => manifest.Sha256, StringComparer.Ordinal);
-        if (manifests.Count != hashes.Count)
+        throw new InvalidDataException("One or more log content manifests could not be persisted.");
+    }
+
+    private static Dictionary<string, BlockRef> ValidateBlocks(
+        IReadOnlyDictionary<string, BlockRef> existing,
+        IReadOnlyList<EncodedLogContentChunk> chunks)
+    {
+        if (existing.Count != chunks.Count)
+        {
+            throw new InvalidDataException("One or more content-addressed log blocks could not be persisted.");
+        }
+
+        foreach (var chunk in chunks)
+        {
+            var block = existing[chunk.Hash];
+            if (block.RawLength != chunk.OriginalLength)
+            {
+                throw new InvalidDataException($"Content hash collision detected for block {chunk.Hash}.");
+            }
+        }
+
+        return existing.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+    }
+
+    private readonly record struct BlockRef(Guid Id, string Sha256, long RawLength);
+
+    private static Dictionary<string, LogContentManifest> ValidateManifests(
+        IReadOnlyDictionary<string, LogContentManifest> existing,
+        IReadOnlyList<EncodedLogContent> values)
+    {
+        if (existing.Count != values.Count)
         {
             throw new InvalidDataException("One or more log content manifests could not be persisted.");
         }
 
         foreach (var value in values)
         {
-            var manifest = manifests[value.Hash];
+            var manifest = existing[value.Hash];
             if (manifest.RawLength != value.OriginalLength)
             {
                 throw new InvalidDataException($"Content hash collision detected for manifest {value.Hash}.");
             }
         }
 
-        return manifests;
+        return existing.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
     }
 
-    private void InsertBlockIfMissing(EncodedLogContentChunk chunk)
+    private void CreateSavepoint(string name)
     {
-        var id = Guid.NewGuid();
-        var createdAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
-        var sql = ProviderKind() switch
-        {
-            LogDatabaseProvider.Sqlite =>
-                "INSERT OR IGNORE INTO \"LogContentBlocks\" "
-                + "(\"Id\", \"Sha256\", \"RawLength\", \"StoredLength\", \"Compression\", \"Data\", \"CreatedAt\") "
-                + "VALUES ({0}, {1}, {2}, {3}, {4}, {5}, {6});",
-            LogDatabaseProvider.Postgres =>
-                "INSERT INTO \"LogContentBlocks\" "
-                + "(\"Id\", \"Sha256\", \"RawLength\", \"StoredLength\", \"Compression\", \"Data\", \"CreatedAt\") "
-                + "VALUES ({0}, {1}, {2}, {3}, {4}, {5}, {6}) "
-                + "ON CONFLICT (\"Sha256\") DO NOTHING;",
-            _ => throw new InvalidOperationException("Unsupported log database provider.")
-        };
-        _context.Database.ExecuteSqlRaw(
-            sql,
-            id,
-            chunk.Hash,
-            (long)chunk.OriginalLength,
-            chunk.Data.Length,
-            chunk.Codec,
-            chunk.Data,
-            createdAt);
+        // 必须要在执行可能冲突的 SaveChanges 之前建 savepoint,冲突发生后才能回滚。
+        _context.Database.CurrentTransaction?.CreateSavepoint(name);
     }
 
-    private bool InsertManifestIfMissing(LogContentManifest manifest)
+    private void RollbackToSavepoint(string name)
     {
-        var sql = ProviderKind() switch
+        _context.Database.CurrentTransaction?.RollbackToSavepoint(name);
+    }
+
+    private void DetachEntities<TEntity>(IEnumerable<TEntity> entities)
+        where TEntity : class
+    {
+        foreach (var entity in entities)
         {
-            LogDatabaseProvider.Sqlite =>
-                "INSERT OR IGNORE INTO \"LogContentManifests\" "
-                + "(\"Id\", \"Sha256\", \"RawLength\", \"ChunkCount\", \"Encoding\") "
-                + "VALUES ({0}, {1}, {2}, {3}, {4});",
-            LogDatabaseProvider.Postgres =>
-                "INSERT INTO \"LogContentManifests\" "
-                + "(\"Id\", \"Sha256\", \"RawLength\", \"ChunkCount\", \"Encoding\") "
-                + "VALUES ({0}, {1}, {2}, {3}, {4}) "
-                + "ON CONFLICT (\"Sha256\") DO NOTHING;",
-            _ => throw new InvalidOperationException("Unsupported log database provider.")
-        };
-        return _context.Database.ExecuteSqlRaw(
-            sql,
-            manifest.Id,
-            manifest.Sha256,
-            manifest.RawLength,
-            manifest.ChunkCount,
-            manifest.Encoding) == 1;
+            _context.Entry(entity).State = EntityState.Detached;
+        }
     }
 
     private void RemoveOrphanedReplacedContent(IReadOnlyCollection<Guid> replacedManifestIds)
@@ -341,27 +389,6 @@ internal sealed class LogContentStore
             .ExecuteDelete();
     }
 
-    private LogDatabaseProvider ProviderKind()
-    {
-        var providerName = _context.Database.ProviderName ?? string.Empty;
-        if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
-        {
-            return LogDatabaseProvider.Sqlite;
-        }
-
-        if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
-        {
-            return LogDatabaseProvider.Postgres;
-        }
-
-        throw new InvalidOperationException($"Unsupported log database provider '{providerName}'.");
-    }
-
-    private enum LogDatabaseProvider
-    {
-        Sqlite,
-        Postgres
-    }
 }
 
 internal sealed class LogContentSnapshot

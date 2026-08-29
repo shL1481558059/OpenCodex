@@ -88,15 +88,18 @@ public sealed class ProxyRouteService : IProxyRouteService
     public async Task<VisionTransferRoutesDto> ListVisionTransferRoutesAsync(string ownerUsername)
     {
         var normalizedOwner = (ownerUsername ?? string.Empty).Trim();
-        var owner = normalizedOwner.Length == 0
-            ? null
-            : _userRepository.TableNoTracking.FirstOrDefault(user => user.Username == normalizedOwner);
-        if (owner is null)
+        var ownerId = normalizedOwner.Length == 0
+            ? (Guid?)null
+            : _userRepository.TableNoTracking
+                .Where(user => user.Username == normalizedOwner)
+                .Select(user => (Guid?)user.Id)
+                .FirstOrDefault();
+        if (!ownerId.HasValue)
         {
             return VisionTransferRoutesDto.NotConfigured();
         }
 
-        var snapshot = _visionTransferSettings.GetSnapshot(owner.Id);
+        var snapshot = _visionTransferSettings.GetSnapshot(ownerId.Value);
         if (snapshot is null)
         {
             return VisionTransferRoutesDto.NotConfigured();
@@ -426,13 +429,16 @@ public sealed class ProxyRouteService : IProxyRouteService
         if (normalizedOwnerUsername.Length > 0)
         {
             // 按 owner username 过滤:先查 User 拿 UserId
-            var ownerUser = _userRepository.TableNoTracking.FirstOrDefault(u => u.Username == normalizedOwnerUsername);
-            if (ownerUser is null)
+            var ownerUserId = _userRepository.TableNoTracking
+                .Where(u => u.Username == normalizedOwnerUsername)
+                .Select(u => (Guid?)u.Id)
+                .FirstOrDefault();
+            if (!ownerUserId.HasValue)
             {
                 // owner 不存在:不缓存(null),下次仍回源,避免新用户创建后读到陈旧空集。
                 return Task.FromResult<CachedChannelSet?>(null);
             }
-            query = query.Where(channel => channel.OwnerUserId == ownerUser.Id);
+            query = query.Where(channel => channel.OwnerUserId == ownerUserId.Value);
         }
 
         var channels = query
@@ -446,6 +452,7 @@ public sealed class ProxyRouteService : IProxyRouteService
         var owners = ownerIds.Count > 0
             ? _userRepository.TableNoTracking
                 .Where(u => ownerIds.Contains(u.Id))
+                .Select(u => new { u.Id, u.Username })
                 .ToDictionary(u => u.Id, u => u.Username)
             : new Dictionary<Guid, string>();
 

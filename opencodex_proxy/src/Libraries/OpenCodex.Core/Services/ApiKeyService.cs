@@ -47,8 +47,10 @@ public sealed class ApiKeyService : IApiKeyService
         }
         else if (!string.IsNullOrWhiteSpace(scopeUsername))
         {
-            var owner = _userRepository.TableNoTracking.FirstOrDefault(u => u.Username == scopeUsername!.Trim());
-            scopeUserId = owner?.Id ?? Guid.Empty;
+            scopeUserId = _userRepository.TableNoTracking
+                .Where(u => u.Username == scopeUsername!.Trim())
+                .Select(u => (Guid?)u.Id)
+                .FirstOrDefault() ?? Guid.Empty;
         }
         else
         {
@@ -69,6 +71,7 @@ public sealed class ApiKeyService : IApiKeyService
         var owners = ownerIds.Count > 0
             ? _userRepository.TableNoTracking
                 .Where(u => ownerIds.Contains(u.Id))
+                .Select(u => new { u.Id, u.Username })
                 .ToDictionary(u => u.Id, u => u.Username)
             : new Dictionary<Guid, string>();
 
@@ -100,9 +103,14 @@ public sealed class ApiKeyService : IApiKeyService
             return ApiOpResult<ApiKeyResponsePayload>.Fail(404, "api key not found");
         }
 
-        var owner = _userRepository.TableNoTracking.FirstOrDefault(u => u.Id == existing.OwnerUserId);
+        var ownerUsername = isSuperadmin
+            ? _userRepository.TableNoTracking
+                .Where(u => u.Id == existing.OwnerUserId)
+                .Select(u => u.Username)
+                .FirstOrDefault() ?? string.Empty
+            : currentUser.Username;
         return ApiOpResult<ApiKeyResponsePayload>.Succeed(
-            ApiKeyResponsePayload.From(MapToDto(existing, owner?.Username ?? string.Empty)));
+            ApiKeyResponsePayload.From(MapToDto(existing, ownerUsername)));
     }
 
     public ApiOpResult<ApiKeyResponsePayload> CreateKey(
@@ -118,7 +126,9 @@ public sealed class ApiKeyService : IApiKeyService
             if (isSuperadmin && !string.IsNullOrWhiteSpace(command.OwnerUsername))
             {
                 var ownerUser = _userRepository.TableNoTracking
-                    .FirstOrDefault(u => u.Username == command.OwnerUsername.Trim());
+                    .Where(u => u.Username == command.OwnerUsername.Trim())
+                    .Select(u => new { u.Id, u.Username })
+                    .FirstOrDefault();
                 if (ownerUser is null)
                 {
                     return ApiOpResult<ApiKeyResponsePayload>.Fail(400, $"owner user '{command.OwnerUsername}' not found");
@@ -135,10 +145,22 @@ public sealed class ApiKeyService : IApiKeyService
                 ownerUserId = currentUser.UserId;
             }
 
-            var owner = _userRepository.TableNoTracking.FirstOrDefault(u => u.Id == ownerUserId);
-            if (owner is null)
+            string ownerUsername;
+            if (!isSuperadmin)
             {
-                throw new InvalidOperationException("user not found");
+                ownerUsername = currentUser.Username;
+            }
+            else
+            {
+                var owner = _userRepository.TableNoTracking
+                    .Where(u => u.Id == ownerUserId)
+                    .Select(u => u.Username)
+                    .FirstOrDefault();
+                if (owner is null)
+                {
+                    throw new InvalidOperationException("user not found");
+                }
+                ownerUsername = owner;
             }
 
             var rawKey = OpenCodexSecurity.GenerateAccessApiKey();
@@ -158,7 +180,7 @@ public sealed class ApiKeyService : IApiKeyService
             _keyRepository.Insert(key);
 
             return ApiOpResult<ApiKeyResponsePayload>.Succeed(
-                ApiKeyResponsePayload.From(MapToDto(key, owner.Username)));
+                ApiKeyResponsePayload.From(MapToDto(key, ownerUsername)));
         }
         catch (ArgumentException exception)
         {
@@ -190,14 +212,19 @@ public sealed class ApiKeyService : IApiKeyService
                 ?? throw new InvalidOperationException("api key not found");
             existing.Enabled = command.Enabled;
             existing.UpdatedAt = UnixTimeSeconds();
-            _keyRepository.Update(existing);
+            _keyRepository.Update(existing, nameof(AccessApiKey.Enabled), nameof(AccessApiKey.UpdatedAt));
 
             // 仅改 Enabled,KeyHash 不变;失效该 hash 的鉴权快照,使下次请求重新回源。
             await _cache.RemoveAsync(CacheKeys.AuthApiKey(existing.KeyHash));
 
-            var owner = _userRepository.TableNoTracking.FirstOrDefault(u => u.Id == existing.OwnerUserId);
+            var ownerUsername = isSuperadmin
+                ? _userRepository.TableNoTracking
+                    .Where(u => u.Id == existing.OwnerUserId)
+                    .Select(u => u.Username)
+                    .FirstOrDefault() ?? string.Empty
+                : currentUser.Username;
             return ApiOpResult<ApiKeyResponsePayload>.Succeed(
-                ApiKeyResponsePayload.From(MapToDto(existing, owner?.Username ?? string.Empty)));
+                ApiKeyResponsePayload.From(MapToDto(existing, ownerUsername)));
         }
         catch (InvalidOperationException exception)
         {

@@ -1,5 +1,7 @@
 using System.Text.Json;
+using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Data;
@@ -154,6 +156,91 @@ public sealed class LogContentStoreTests
         Assert.Equal(0, manifest.ChunkCount);
     }
 
+    [Fact]
+    public void DeduplicatedBlockLookup_SqlDoesNotSelectDataColumn()
+    {
+        var (dbPath, firstLogId, secondLogId) = CreateDatabaseWithTwoLogs();
+        var value = BuildConversation(180);
+        var probe = new BlockSqlProbe();
+
+        using (var context = CreateCapturingContext(dbPath, probe))
+        {
+            var store = new LogContentStore(context);
+            store.Write(firstLogId, Values(value));
+        }
+
+        probe.Reset();
+        using (var context = CreateCapturingContext(dbPath, probe))
+        {
+            var store = new LogContentStore(context);
+            store.Write(secondLogId, Values(value));
+        }
+
+        var lookupSql = probe.Commands
+            .FirstOrDefault(command => command.Contains("LogContentBlocks", StringComparison.OrdinalIgnoreCase)
+                && command.StartsWith("SELECT", StringComparison.OrdinalIgnoreCase));
+        Assert.NotNull(lookupSql);
+        Assert.DoesNotContain("Data", lookupSql, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void IdenticalContentWrittenTwice_DoesNotAddBlocksAndSharesManifest()
+    {
+        var (dbPath, firstLogId, secondLogId) = CreateDatabaseWithTwoLogs();
+        var value = BuildConversation(120);
+
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var store = new LogContentStore(context);
+        store.Write(firstLogId, Values(value));
+        var blockCountAfterFirstWrite = context.LogContentBlocks.Count();
+        var firstManifestId = context.RequestLogContentRefs.Single(
+            reference => reference.RequestLogId == firstLogId).ManifestId;
+
+        store.Write(secondLogId, Values(value));
+
+        Assert.Equal(blockCountAfterFirstWrite, context.LogContentBlocks.Count());
+        Assert.Equal(2, context.RequestLogContentRefs.Count());
+        Assert.All(
+            context.RequestLogContentRefs.ToList(),
+            reference => Assert.Equal(firstManifestId, reference.ManifestId));
+    }
+
+    [Fact]
+    public void HashCollision_WithDifferentRawLength_ThrowsInvalidData()
+    {
+        var dbPath = CreateDatabase();
+        Guid logId;
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            logId = AddLog(context, "hash-collision");
+            context.SaveChanges();
+        }
+
+        var encoded = LogContentCodec.Encode(BuildConversation(10));
+        var collisionChunk = encoded.Chunks.First();
+        var collisionBlock = new LogContentBlock
+        {
+            Id = Guid.NewGuid(),
+            Sha256 = collisionChunk.Hash,
+            RawLength = collisionChunk.OriginalLength + 1,
+            StoredLength = collisionChunk.Data.Length,
+            Compression = collisionChunk.Codec,
+            Data = collisionChunk.Data,
+            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0
+        };
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.LogContentBlocks.Add(collisionBlock);
+            context.SaveChanges();
+        }
+
+        using var readContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var store = new LogContentStore(readContext);
+        var exception = Assert.Throws<InvalidDataException>(
+            () => store.Write(logId, Values(BuildConversation(10))));
+        Assert.Contains("Content hash collision detected for block", exception.Message);
+    }
+
     private static (string DbPath, Guid FirstLogId, Guid SecondLogId) CreateDatabaseWithTwoLogs()
     {
         var dbPath = CreateDatabase();
@@ -196,6 +283,14 @@ public sealed class LogContentStoreTests
         {
             [RequestLogContentSlot.RequestBody] = value
         };
+    }
+
+    private static OpenCodexSqliteDbContext CreateCapturingContext(string dbPath, BlockSqlProbe probe)
+    {
+        var builder = new DbContextOptionsBuilder<OpenCodexSqliteDbContext>();
+        OpenCodexDbContextFactory.ConfigureSqlite(builder, $"Data Source={dbPath}");
+        builder.AddInterceptors(probe);
+        return new OpenCodexSqliteDbContext(builder.Options);
     }
 
     private static List<Guid> ReadBlockIds(IOpenCodexDbContext context, Guid logId)
@@ -242,5 +337,57 @@ public sealed class LogContentStoreTests
         }
 
         return new string(chars);
+    }
+
+    private sealed class BlockSqlProbe : DbCommandInterceptor
+    {
+        private readonly object _sync = new();
+        private readonly List<string> _commands = [];
+
+        public IReadOnlyList<string> Commands
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _commands.ToArray();
+                }
+            }
+        }
+
+        public void Reset()
+        {
+            lock (_sync)
+            {
+                _commands.Clear();
+            }
+        }
+
+        public override InterceptionResult<DbDataReader> ReaderExecuting(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result)
+        {
+            lock (_sync)
+            {
+                _commands.Add(command.CommandText);
+            }
+
+            return result;
+        }
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            lock (_sync)
+            {
+                _commands.Add(command.CommandText);
+            }
+
+            return new ValueTask<InterceptionResult<DbDataReader>>(result);
+        }
     }
 }

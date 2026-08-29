@@ -126,7 +126,7 @@ public sealed class ProxyVisionTransferFallbackTests
         var routes = new VisionTransferRoutesDto(
             configured: true,
             [],
-            VisionTransferUnavailableReasons.ChannelUnavailable);
+            VisionTransferUnavailableReasons.ChannelDeletedOrDisabled);
         var service = CreateService(ocr, routes);
         var context = CreateContext(imageCount: 1);
 
@@ -145,7 +145,7 @@ public sealed class ProxyVisionTransferFallbackTests
         var routes = new VisionTransferRoutesDto(
             configured: true,
             [],
-            VisionTransferUnavailableReasons.ChannelUnavailable);
+            VisionTransferUnavailableReasons.ChannelDeletedOrDisabled);
         var service = CreateService(ocr, routes);
 
         await service.RewriteAsync(CreateContext(imageCount: 1));
@@ -153,7 +153,7 @@ public sealed class ProxyVisionTransferFallbackTests
         var call = Assert.Single(ocr.Calls);
         Assert.Null(call.VisionRoute);
         Assert.Equal(ProxyVisionRouteKinds.None, call.RouteKind);
-        Assert.Equal(VisionTransferUnavailableReasons.ChannelUnavailable, call.UnavailableReason);
+        Assert.Equal(VisionTransferUnavailableReasons.ChannelDeletedOrDisabled, call.UnavailableReason);
     }
 
     [Fact]

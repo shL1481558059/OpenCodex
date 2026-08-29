@@ -58,6 +58,19 @@ public interface IRepository<TEntity> where TEntity : BaseEntity
     /// <returns>受影响的行数。</returns>
     int ExecuteDeleteAll();
 
+    /// <summary>
+    /// 按条件批量删除（直接下推 DELETE ... WHERE，不把实体加载进内存）。
+    /// </summary>
+    /// <param name="predicate">删除条件。</param>
+    /// <returns>受影响的行数。</returns>
+    /// <remarks>
+    /// 立即执行、不参与外层 <see cref="SaveChanges"/>，与后续写操作需要显式事务保证原子性。
+    /// </remarks>
+    int DeleteWhere(Expression<Func<TEntity, bool>> predicate);
+
+    /// <summary>按条件批量删除的异步版本。语义同 <see cref="DeleteWhere"/>。</summary>
+    Task<int> DeleteWhereAsync(Expression<Func<TEntity, bool>> predicate);
+
     /// <summary>异步批量删除实体并保存。</summary>
     Task DeleteAsync(IEnumerable<TEntity> entities);
 

@@ -27,6 +27,7 @@ public sealed class ProxyLogService : IProxyLogService
     private readonly IRepository<User> _userRepository;
     private readonly LogContentStore _contentStore;
     private readonly IEventBus? _eventBus;
+    private readonly Dictionary<string, Guid> _ownerUserIdCache = new(StringComparer.Ordinal);
 
     public ProxyLogService(
         IOpenCodexRuntimeSettingsProvider settingsProvider,
@@ -100,7 +101,17 @@ public sealed class ProxyLogService : IProxyLogService
         log.IsStream = context.IsStream;
         log.LifecycleStatus = ProxyRequestLifecycleStatus.Processing;
         log.ProcessingStartedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
-        _logRepository.Update(log);
+        // 本方法只负责以下列,避免全实体 UPDATE 覆盖并发写入的其它字段。
+        _logRepository.Update(
+            log,
+            nameof(RequestLog.OwnerUserId),
+            nameof(RequestLog.ApiKeyId),
+            nameof(RequestLog.Model),
+            nameof(RequestLog.UpstreamModel),
+            nameof(RequestLog.ChannelId),
+            nameof(RequestLog.IsStream),
+            nameof(RequestLog.LifecycleStatus),
+            nameof(RequestLog.ProcessingStartedAt));
 
         _contentStore.Write(requestLogId, new Dictionary<RequestLogContentSlot, string?>
         {
@@ -256,7 +267,38 @@ public sealed class ProxyLogService : IProxyLogService
         log.LifecycleStatus = DetermineLifecycleStatus(context.StatusCode, context.Error);
         log.CompletedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
         ApplyConversationMetadata(log, context.RequestHeaders, context.Payload);
-        _logRepository.Update(log);
+        // 本方法负责落账与计费相关的全部列,不含 MarkProcessing 写入的
+        // ProcessingStartedAt(避免并发时把处理中的时间戳覆盖掉)。
+        _logRepository.Update(
+            log,
+            nameof(RequestLog.OwnerUserId),
+            nameof(RequestLog.ApiKeyId),
+            nameof(RequestLog.Model),
+            nameof(RequestLog.UpstreamModel),
+            nameof(RequestLog.ChannelId),
+            nameof(RequestLog.RequestType),
+            nameof(RequestLog.ParentRequestLogId),
+            nameof(RequestLog.IsStream),
+            nameof(RequestLog.TtftMs),
+            nameof(RequestLog.DurationMs),
+            nameof(RequestLog.StatusCode),
+            nameof(RequestLog.InputTokens),
+            nameof(RequestLog.CachedTokens),
+            nameof(RequestLog.CacheWriteTokens),
+            nameof(RequestLog.CacheReadTokens),
+            nameof(RequestLog.OutputTokens),
+            nameof(RequestLog.Cost),
+            nameof(RequestLog.CostCurrency),
+            nameof(RequestLog.PricingModelInfoId),
+            nameof(RequestLog.PricingPlanId),
+            nameof(RequestLog.PricingSnapshotJson),
+            nameof(RequestLog.Error),
+            nameof(RequestLog.LifecycleStatus),
+            nameof(RequestLog.CompletedAt),
+            nameof(RequestLog.ConversationKey),
+            nameof(RequestLog.ConversationTurnId),
+            nameof(RequestLog.ConversationWindowId),
+            nameof(RequestLog.PreviousResponseId));
 
         _contentStore.Write(requestLogId, BuildContentValues(context));
 
@@ -283,7 +325,8 @@ public sealed class ProxyLogService : IProxyLogService
                 }
                 foreach (var child in childLogs)
                 {
-                    _logRepository.Update(child);
+                    // OCR 子日志认领只负责 ParentRequestLogId 一列。
+                    _logRepository.Update(child, nameof(RequestLog.ParentRequestLogId));
                 }
             }
         }
@@ -475,7 +518,8 @@ public sealed class ProxyLogService : IProxyLogService
                 }
                 foreach (var child in childLogs)
                 {
-                    _logRepository.Update(child);
+                    // OCR 子日志认领只负责 ParentRequestLogId 一列。
+                    _logRepository.Update(child, nameof(RequestLog.ParentRequestLogId));
                 }
             }
         }
@@ -787,8 +831,18 @@ public sealed class ProxyLogService : IProxyLogService
         {
             normalized = "admin";
         }
-        var user = _userRepository.TableNoTracking.FirstOrDefault(u => u.Username == normalized);
-        return user?.Id ?? Guid.Empty;
+
+        if (_ownerUserIdCache.TryGetValue(normalized, out var cached))
+        {
+            return cached;
+        }
+
+        var id = _userRepository.TableNoTracking
+            .Where(u => u.Username == normalized)
+            .Select(u => u.Id)
+            .FirstOrDefault();
+        _ownerUserIdCache[normalized] = id;
+        return id;
     }
 
     private static Guid? ParseChannelId(string? channelId)

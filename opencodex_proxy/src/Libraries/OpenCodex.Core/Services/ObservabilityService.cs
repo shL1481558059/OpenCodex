@@ -4,7 +4,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Services.Proxy;
-using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Caching;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain.Proxy;
@@ -72,36 +71,45 @@ public sealed class ObservabilityService : IObservabilityService
             ["30d"] = 24 * 30
     };
 
-    private readonly IOpenCodexRuntimeSettingsProvider _settingsProvider;
     private readonly IWorkContext _workContext;
     private readonly IOpenCodexDbContext _dbContext;
     private readonly IRepository<RequestLog> _logRepository;
     private readonly IRepository<AccessApiKey> _keyRepository;
     private readonly IRepository<User> _userRepository;
     private readonly IRepository<Channel> _channelRepository;
+    private readonly IRepository<RequestLogContentRef> _contentRefRepository;
+    private readonly IRepository<LogContentManifestChunk> _manifestChunkRepository;
+    private readonly IRepository<LogContentManifest> _manifestRepository;
+    private readonly IRepository<LogContentBlock> _contentBlockRepository;
     private readonly IChannelCapacityService _channelCapacity;
     private readonly LogContentStore _contentStore;
     private readonly IMemoryCache _memoryCache;
     private static readonly TimeSpan ChannelConfigCacheTtl = TimeSpan.FromSeconds(10);
 
     public ObservabilityService(
-        IOpenCodexRuntimeSettingsProvider settingsProvider,
         IWorkContext workContext,
         IOpenCodexDbContext dbContext,
         IRepository<RequestLog> logRepository,
         IRepository<AccessApiKey> keyRepository,
         IRepository<User> userRepository,
         IRepository<Channel> channelRepository,
+        IRepository<RequestLogContentRef> contentRefRepository,
+        IRepository<LogContentManifestChunk> manifestChunkRepository,
+        IRepository<LogContentManifest> manifestRepository,
+        IRepository<LogContentBlock> contentBlockRepository,
         IChannelCapacityService channelCapacity,
         IMemoryCache memoryCache)
     {
-        _settingsProvider = settingsProvider;
         _workContext = workContext;
         _dbContext = dbContext;
         _logRepository = logRepository;
         _keyRepository = keyRepository;
         _userRepository = userRepository;
         _channelRepository = channelRepository;
+        _contentRefRepository = contentRefRepository;
+        _manifestChunkRepository = manifestChunkRepository;
+        _manifestRepository = manifestRepository;
+        _contentBlockRepository = contentBlockRepository;
         _channelCapacity = channelCapacity;
         _memoryCache = memoryCache;
         _contentStore = new LogContentStore(dbContext);
@@ -205,6 +213,16 @@ public sealed class ObservabilityService : IObservabilityService
                 || (log.LifecycleStatus == null && (log.StatusCode >= 400 || !string.IsNullOrEmpty(log.Error))))
             .OrderByDescending(log => log.CreatedAt)
             .Take(limit)
+            .Select(log => new RecentErrorRow
+            {
+                Id = log.Id,
+                CreatedAt = log.CreatedAt,
+                Model = log.Model,
+                UpstreamModel = log.UpstreamModel,
+                ChannelId = log.ChannelId,
+                StatusCode = log.StatusCode,
+                Error = log.Error
+            })
             .ToList();
 
         if (errorLogs.Count == 0)
@@ -243,34 +261,28 @@ public sealed class ObservabilityService : IObservabilityService
             return ApiOpResult<ClearLogsResponse>.Fail(403, "only superadmin can clear logs");
         }
 
-        // 先统计行数用于返回值：TRUNCATE 不返回受影响行数。
-        var contentRefCount = _dbContext.RequestLogContentRefs.Count();
-        var contentBlockCount = _dbContext.LogContentBlocks.Count();
-        var logCount = _logRepository.TableNoTracking.Count();
-
-        // 内容块由多个请求共享，清空时必须把引用、清单和物理块作为一个整体处理。
-        var provider = (_settingsProvider.GetSettings().DatabaseProvider ?? string.Empty)
-            .Trim()
-            .ToLowerInvariant();
-        if (provider is "postgres" or "postgresql" or "pgsql")
+        // 内容块由多个请求共享，清空时必须按外键依赖顺序删除：先删引用与清单块，
+        // 再删日志、清单，最后删物理块（LogContentManifestChunks.BlockId 与
+        // RequestLogContentRefs.ManifestId 均为 Restrict）。ExecuteDelete 的返回值即受影响行数。
+        // 全部删除放进同一个显式事务：ExecuteDelete 立即执行、不参与 SaveChanges 的隐式事务，
+        // 中途失败时回滚整批，避免留下孤儿 manifest / block。
+        int deletedContentRefs;
+        int deletedLogs;
+        int deletedContentBlocks;
+        using (var transaction = _dbContext.Database.BeginTransaction())
         {
-            _dbContext.Database.ExecuteSqlRaw(
-                "TRUNCATE TABLE \"RequestLogContentRefs\", \"LogContentManifestChunks\", "
-                + "\"LogContentManifests\", \"LogContentBlocks\", \"RequestLogs\" RESTART IDENTITY CASCADE;");
-        }
-        else
-        {
-            _dbContext.Database.ExecuteSqlRaw("DELETE FROM \"RequestLogContentRefs\";");
-            _dbContext.Database.ExecuteSqlRaw("DELETE FROM \"LogContentManifestChunks\";");
-            _dbContext.Database.ExecuteSqlRaw("DELETE FROM \"LogContentManifests\";");
-            _dbContext.Database.ExecuteSqlRaw("DELETE FROM \"LogContentBlocks\";");
-            _dbContext.Database.ExecuteSqlRaw("DELETE FROM \"RequestLogs\";");
+            deletedContentRefs = _contentRefRepository.ExecuteDeleteAll();
+            _manifestChunkRepository.ExecuteDeleteAll();
+            deletedLogs = _logRepository.ExecuteDeleteAll();
+            _manifestRepository.ExecuteDeleteAll();
+            deletedContentBlocks = _contentBlockRepository.ExecuteDeleteAll();
+            transaction.Commit();
         }
 
         return ApiOpResult<ClearLogsResponse>.Succeed(new ClearLogsResponse(
-            logCount,
-            contentRefCount,
-            contentBlockCount));
+            deletedLogs,
+            deletedContentRefs,
+            deletedContentBlocks));
     }
 
     public ApiOpResult<StatsSummaryResponse> ReadStatsSummary(
@@ -287,43 +299,7 @@ public sealed class ObservabilityService : IObservabilityService
                 .Where(log => log.CreatedAt >= resolved.StartTs && log.CreatedAt < resolved.EndTs),
             scopedFilters);
 
-        // 走数据库聚合，不物化全量日志。
-        var requestCount = baseQuery.Count();
-        var successCount = baseQuery.Count(IsSuccessfulLog);
-        var inputTokens = baseQuery.Sum(log => log.InputTokens);
-        var cachedTokens = baseQuery.Sum(log => log.CachedTokens);
-        var outputTokens = baseQuery.Sum(log => log.OutputTokens);
-        var cost = baseQuery.Sum(log => log.Cost);
-
-        // 最近 1 小时统计。
-        var effectiveEndTs = Math.Min(resolved.EndTs, UnixTimeSeconds());
-        var recentStartTs = Math.Max(resolved.StartTs, effectiveEndTs - 3600);
-        var recentQuery = baseQuery.Where(log => log.CreatedAt >= recentStartTs && log.CreatedAt < effectiveEndTs);
-        var recentRequestCount = recentQuery.Count();
-        var recentInputTokens = recentQuery.Sum(log => log.InputTokens);
-        var recentCachedTokens = recentQuery.Sum(log => log.CachedTokens);
-        var recentOutputTokens = recentQuery.Sum(log => log.OutputTokens);
-        var recentCost = recentQuery.Sum(log => log.Cost);
-
-        // 最后一窗口的 RPM/TPM。
-        var latestWindowStartTs = Math.Max(resolved.StartTs, effectiveEndTs - resolved.GranularityMinutes * 60.0);
-        var latestQuery = baseQuery.Where(log => log.CreatedAt >= latestWindowStartTs && log.CreatedAt < effectiveEndTs);
-        var latestWindowCount = latestQuery.Count();
-        var latestTokens = latestQuery.Sum(log => log.InputTokens + log.CachedTokens + log.OutputTokens);
-
-        var summary = new StatsSummaryDto(
-            requestCount,
-            successCount,
-            recentRequestCount,
-            inputTokens,
-            cachedTokens,
-            outputTokens,
-            inputTokens + cachedTokens + outputTokens,
-            recentInputTokens + recentCachedTokens + recentOutputTokens,
-            Math.Round(cost, 6),
-            Math.Round(recentCost, 6),
-            latestWindowCount > 0 ? Math.Round((double)latestWindowCount / resolved.GranularityMinutes, 2) : 0,
-            latestTokens > 0 ? Math.Round((double)latestTokens / resolved.GranularityMinutes, 2) : 0);
+        var summary = QueryStatsSummary(baseQuery, resolved);
 
         return ApiOpResult<StatsSummaryResponse>.Succeed(StatsSummaryResponse.From(summary));
     }
@@ -341,39 +317,7 @@ public sealed class ObservabilityService : IObservabilityService
             _logRepository.TableNoTracking
                 .Where(log => log.CreatedAt >= resolved.StartTs && log.CreatedAt < resolved.EndTs),
             scopedFilters);
-        var logs = query.ToList();
-        var bucketSeconds = resolved.GranularityMinutes * 60.0;
-        var bucketCount = Math.Max(
-            1,
-            (int)Math.Floor((resolved.EndTs - resolved.StartTs + bucketSeconds - 1) / bucketSeconds));
-        var points = new List<StatsPointDto>();
-        for (var index = 0; index < bucketCount; index++)
-        {
-            var bucketStart = resolved.StartTs + index * bucketSeconds;
-            var bucketEnd = resolved.StartTs + (index + 1) * bucketSeconds;
-            var bucketLogs = logs
-                .Where(log => log.CreatedAt >= bucketStart && log.CreatedAt < bucketEnd)
-                .ToList();
-            var cost = bucketLogs.Sum(log => log.Cost);
-            var inputTokens = bucketLogs.Sum(log => log.InputTokens);
-            var cachedTokens = bucketLogs.Sum(log => log.CachedTokens);
-            var outputTokens = bucketLogs.Sum(log => log.OutputTokens);
-            var ttftValues = bucketLogs
-                .Where(log => log.TtftMs is > 0)
-                .Select(log => log.TtftMs!.Value)
-                .ToList();
-            var avgTtft = ttftValues.Count == 0 ? (double?)null : ttftValues.Average();
-            var cacheDenominator = inputTokens + cachedTokens;
-            points.Add(new StatsPointDto(
-                TimestampToIso(bucketEnd),
-                Math.Round(cost, 6),
-                inputTokens,
-                cachedTokens,
-                outputTokens,
-                avgTtft is null ? null : Math.Round(avgTtft.Value, 1),
-                cacheDenominator > 0 ? Math.Round((double)cachedTokens / cacheDenominator, 4) : null,
-                bucketLogs.Count > 0 ? Math.Round((double)bucketLogs.Count / resolved.GranularityMinutes, 2) : 0));
-        }
+        var points = QueryStatsPoints(query, resolved);
 
         return ApiOpResult<IReadOnlyList<StatsPointResponse>>.Succeed(
             points.Select(StatsPointResponse.From).ToList());
@@ -392,8 +336,7 @@ public sealed class ObservabilityService : IObservabilityService
             _logRepository.TableNoTracking
                 .Where(log => log.CreatedAt >= resolved.StartTs && log.CreatedAt < resolved.EndTs),
             scopedFilters);
-        var logs = query.ToList();
-        var distribution = ReadModelDistribution(logs);
+        var distribution = QueryModelDistribution(query);
         return ApiOpResult<IReadOnlyList<StatsModelDistributionResponse>>.Succeed(
             distribution.Select(StatsModelDistributionResponse.From).ToList());
     }
@@ -411,18 +354,18 @@ public sealed class ObservabilityService : IObservabilityService
             _logRepository.TableNoTracking
                 .Where(log => log.CreatedAt >= resolved.StartTs && log.CreatedAt < resolved.EndTs),
             scopedFilters);
-        var logs = query.ToList();
-        var distribution = ReadErrorDistribution(logs);
+        var distribution = QueryErrorDistribution(query);
         return ApiOpResult<IReadOnlyList<ErrorDistributionResponse>>.Succeed(
             distribution.Select(ErrorDistributionResponse.From).ToList());
     }
 
-    private Dictionary<Guid, string> BuildOwnerMap(IReadOnlyList<RequestLog> logs)
-{
-    var ownerIds = logs.Select(log => log.OwnerUserId).Distinct().ToList();
-    return ownerIds.Count > 0
+    private Dictionary<Guid, string> BuildOwnerMap(IReadOnlyList<RequestLogRow> logs)
+    {
+        var ownerIds = logs.Select(log => log.OwnerUserId).Distinct().ToList();
+        return ownerIds.Count > 0
             ? _userRepository.TableNoTracking
                 .Where(u => ownerIds.Contains(u.Id))
+                .Select(u => new { u.Id, u.Username })
                 .ToDictionary(u => u.Id, u => u.Username)
             : new Dictionary<Guid, string>();
     }
@@ -434,7 +377,10 @@ public sealed class ObservabilityService : IObservabilityService
         {
             return Guid.Empty;
         }
-        return _userRepository.TableNoTracking.FirstOrDefault(u => u.Username == normalized)?.Id ?? Guid.Empty;
+        return _userRepository.TableNoTracking
+            .Where(u => u.Username == normalized)
+            .Select(u => u.Id)
+            .FirstOrDefault();
     }
 
     private (string Username, bool IsSuperadmin) CurrentScope()
@@ -457,6 +403,38 @@ public sealed class ObservabilityService : IObservabilityService
             .OrderByDescending(log => log.CreatedAt)
             .Skip(offset)
             .Take(parsedPageSize)
+            .Select(log => new RequestLogRow
+            {
+                Id = log.Id,
+                RequestId = log.RequestId,
+                CreatedAt = log.CreatedAt,
+                ProcessingStartedAt = log.ProcessingStartedAt,
+                CompletedAt = log.CompletedAt,
+                Method = log.Method,
+                Path = log.Path,
+                ClientIp = log.ClientIp,
+                Model = log.Model,
+                UpstreamModel = log.UpstreamModel,
+                ChannelId = log.ChannelId,
+                RequestType = log.RequestType,
+                ParentRequestLogId = log.ParentRequestLogId,
+                ConversationKey = log.ConversationKey,
+                ConversationTurnId = log.ConversationTurnId,
+                ConversationWindowId = log.ConversationWindowId,
+                PreviousResponseId = log.PreviousResponseId,
+                IsStream = log.IsStream,
+                TtftMs = log.TtftMs,
+                DurationMs = log.DurationMs,
+                StatusCode = log.StatusCode,
+                InputTokens = log.InputTokens,
+                CachedTokens = log.CachedTokens,
+                OutputTokens = log.OutputTokens,
+                Cost = log.Cost,
+                OwnerUserId = log.OwnerUserId,
+                ApiKeyId = log.ApiKeyId,
+                Error = log.Error,
+                LifecycleStatus = log.LifecycleStatus
+            })
             .ToList();
         var ownerMap = BuildOwnerMap(logs);
         var attemptStats = BuildAttemptStats(logs);
@@ -491,7 +469,41 @@ public sealed class ObservabilityService : IObservabilityService
             _logRepository.TableNoTracking,
             filters ?? new Dictionary<string, object?>(),
             excludeAttemptsByDefault: false);
-        var log = query.FirstOrDefault(item => item.Id == guidId);
+        var log = query
+            .Where(item => item.Id == guidId)
+            .Select(item => new RequestLogRow
+            {
+                Id = item.Id,
+                RequestId = item.RequestId,
+                CreatedAt = item.CreatedAt,
+                ProcessingStartedAt = item.ProcessingStartedAt,
+                CompletedAt = item.CompletedAt,
+                Method = item.Method,
+                Path = item.Path,
+                ClientIp = item.ClientIp,
+                Model = item.Model,
+                UpstreamModel = item.UpstreamModel,
+                ChannelId = item.ChannelId,
+                RequestType = item.RequestType,
+                ParentRequestLogId = item.ParentRequestLogId,
+                ConversationKey = item.ConversationKey,
+                ConversationTurnId = item.ConversationTurnId,
+                ConversationWindowId = item.ConversationWindowId,
+                PreviousResponseId = item.PreviousResponseId,
+                IsStream = item.IsStream,
+                TtftMs = item.TtftMs,
+                DurationMs = item.DurationMs,
+                StatusCode = item.StatusCode,
+                InputTokens = item.InputTokens,
+                CachedTokens = item.CachedTokens,
+                OutputTokens = item.OutputTokens,
+                Cost = item.Cost,
+                OwnerUserId = item.OwnerUserId,
+                ApiKeyId = item.ApiKeyId,
+                Error = item.Error,
+                LifecycleStatus = item.LifecycleStatus
+            })
+            .FirstOrDefault();
         if (log is null)
         {
             return null;
@@ -499,7 +511,9 @@ public sealed class ObservabilityService : IObservabilityService
 
         var content = _contentStore.Read(log.Id);
         var ownerUsername = _userRepository.TableNoTracking
-            .FirstOrDefault(u => u.Id == log.OwnerUserId)?.Username ?? string.Empty;
+            .Where(u => u.Id == log.OwnerUserId)
+            .Select(u => u.Username)
+            .FirstOrDefault() ?? string.Empty;
         var attemptStats = BuildAttemptStats([log]);
         return MapRequestLog(
             log,
@@ -562,48 +576,10 @@ public sealed class ObservabilityService : IObservabilityService
             .Where(log => log.CreatedAt >= resolved.StartTs && log.CreatedAt < resolved.EndTs),
             filters ?? new Dictionary<string, object?>());
 
-        var logs = query.ToList();
-        var bucketSeconds = resolved.GranularityMinutes * 60.0;
-        var bucketCount = Math.Max(
-            1,
-            (int)Math.Floor((resolved.EndTs - resolved.StartTs + bucketSeconds - 1) / bucketSeconds));
-        var points = new List<StatsPointDto>();
-
-        for (var index = 0; index < bucketCount; index++)
-        {
-            var bucketStart = resolved.StartTs + index * bucketSeconds;
-            var bucketEnd = resolved.StartTs + (index + 1) * bucketSeconds;
-            var bucketLogs = logs
-                .Where(log => log.CreatedAt >= bucketStart && log.CreatedAt < bucketEnd)
-                .ToList();
-            var cost = bucketLogs.Sum(log => log.Cost);
-            var inputTokens = bucketLogs.Sum(log => log.InputTokens);
-            var cachedTokens = bucketLogs.Sum(log => log.CachedTokens);
-            var outputTokens = bucketLogs.Sum(log => log.OutputTokens);
-            var ttftValues = bucketLogs
-                .Where(log => log.TtftMs is > 0)
-                .Select(log => log.TtftMs!.Value)
-                .ToList();
-            var avgTtft = ttftValues.Count == 0 ? (double?)null : ttftValues.Average();
-            var cacheDenominator = inputTokens + cachedTokens;
-            points.Add(new StatsPointDto(
-                TimestampToIso(bucketEnd),
-                Math.Round(cost, 6),
-                inputTokens,
-                cachedTokens,
-                outputTokens,
-                avgTtft is null ? null : Math.Round(avgTtft.Value, 1),
-                cacheDenominator > 0 ? Math.Round((double)cachedTokens / cacheDenominator, 4) : null,
-                bucketLogs.Count > 0 ? Math.Round((double)bucketLogs.Count / resolved.GranularityMinutes, 2) : 0));
-        }
-
-        var modelDistribution = ReadModelDistribution(logs);
-        var errorDistribution = ReadErrorDistribution(logs);
-        var summary = ReadStatsSummary(
-            logs,
-            resolved.StartTs,
-            resolved.EndTs,
-            resolved.GranularityMinutes);
+        var points = QueryStatsPoints(query, resolved);
+        var modelDistribution = QueryModelDistribution(query);
+        var errorDistribution = QueryErrorDistribution(query);
+        var summary = QueryStatsSummary(query, resolved);
 
         return new StatsDto(
             resolved.RangeKey,
@@ -670,7 +646,7 @@ public sealed class ObservabilityService : IObservabilityService
             "model" when text.Length > 0 => query.Where(log => log.Model != null && log.Model.Contains(text)),
             "upstream_model" when text.Length > 0 => query.Where(log => log.UpstreamModel != null && log.UpstreamModel.Contains(text)),
             "channel_id" when text.Length > 0 && Guid.TryParse(text, out var channelId) => query.Where(log => log.ChannelId == channelId),
-            "owner_username" when text.Length > 0 => query.Where(log => log.OwnerUserId == ResolveOwnerUserIdFilter(text)),
+            "owner_username" when text.Length > 0 => ApplyOwnerUsernameFilter(query, text),
             "path" when text.Length > 0 => query.Where(log => log.Path != null && log.Path.Contains(text)),
             "request_type" when text.Length > 0 => query.Where(log => log.RequestType == text),
             "client_ip" when text.Length > 0 => query.Where(log => log.ClientIp != null && log.ClientIp.Contains(text)),
@@ -684,6 +660,17 @@ public sealed class ObservabilityService : IObservabilityService
             "parent_request_log_id" when text.Length > 0 && Guid.TryParse(text, out var parentId) => query.Where(log => log.ParentRequestLogId == parentId),
             _ => query
         };
+    }
+
+    private IQueryable<RequestLog> ApplyOwnerUsernameFilter(
+        IQueryable<RequestLog> query,
+        string username)
+    {
+        // 在进入 lambda 之前解析一次用户，避免 EF 参数提取时在表达式内反复触发查询。
+        var ownerUserId = ResolveOwnerUserIdFilter(username);
+        return ownerUserId == Guid.Empty
+            ? query.Where(log => false)
+            : query.Where(log => log.OwnerUserId == ownerUserId);
     }
 
     private static IQueryable<RequestLog> ApplyStatusCodeFilter(IQueryable<RequestLog> query, object? value)
@@ -1041,6 +1028,7 @@ public sealed class ObservabilityService : IObservabilityService
         var ownerIds = channels.Select(channel => channel.OwnerUserId).Distinct().ToList();
         var ownerMap = _userRepository.TableNoTracking
             .Where(user => ownerIds.Contains(user.Id))
+            .Select(user => new { user.Id, user.Username })
             .ToDictionary(user => user.Id, user => user.Username);
 
         return channels
@@ -1066,106 +1054,230 @@ public sealed class ObservabilityService : IObservabilityService
                 channel.Enabled))
             .ToList();
     }
-    private static StatsSummaryDto ReadStatsSummary(
-        IReadOnlyList<RequestLog> logs,
-        double startTs,
-        double endTs,
-        int granularityMinutes)
+    private static StatsSummaryDto QueryStatsSummary(
+        IQueryable<RequestLog> query,
+        ResolvedStatsRange resolved)
     {
-        var requestCount = logs.Count;
-        var successCount = logs.Count(IsSuccessfulLog);
-        var inputTokens = logs.Sum(log => log.InputTokens);
-        var cachedTokens = logs.Sum(log => log.CachedTokens);
-        var outputTokens = logs.Sum(log => log.OutputTokens);
-        var cost = logs.Sum(log => log.Cost);
+        var effectiveEndTs = Math.Min(resolved.EndTs, UnixTimeSeconds());
+        var recentStartTs = Math.Max(resolved.StartTs, effectiveEndTs - 3600);
+        var latestWindowStartTs = Math.Max(
+            resolved.StartTs,
+            effectiveEndTs - resolved.GranularityMinutes * 60.0);
 
-        var effectiveEndTs = Math.Min(endTs, UnixTimeSeconds());
-        var recentStartTs = Math.Max(startTs, effectiveEndTs - 3600);
-        var recentLogs = logs
-            .Where(log => log.CreatedAt >= recentStartTs && log.CreatedAt < effectiveEndTs)
-            .ToList();
-        var recentRequestCount = recentLogs.Count;
-        var recentInputTokens = recentLogs.Sum(log => log.InputTokens);
-        var recentCachedTokens = recentLogs.Sum(log => log.CachedTokens);
-        var recentOutputTokens = recentLogs.Sum(log => log.OutputTokens);
-        var recentCost = recentLogs.Sum(log => log.Cost);
-
-        var latestWindowStartTs = Math.Max(startTs, effectiveEndTs - granularityMinutes * 60.0);
-        var latestWindowLogs = logs
-            .Where(log => log.CreatedAt >= latestWindowStartTs && log.CreatedAt < effectiveEndTs)
-            .ToList();
-        var latestTokens = latestWindowLogs.Sum(log => log.InputTokens + log.CachedTokens + log.OutputTokens);
-
-        return new StatsSummaryDto(
-            requestCount,
-            successCount,
-            recentRequestCount,
-            inputTokens,
-            cachedTokens,
-            outputTokens,
-            inputTokens + cachedTokens + outputTokens,
-            recentInputTokens + recentCachedTokens + recentOutputTokens,
-            Math.Round(cost, 6),
-            Math.Round(recentCost, 6),
-            latestWindowLogs.Count > 0 ? Math.Round((double)latestWindowLogs.Count / granularityMinutes, 2) : 0,
-            latestTokens > 0 ? Math.Round((double)latestTokens / granularityMinutes, 2) : 0);
-    }
-
-    private static List<ModelDistributionDto> ReadModelDistribution(IReadOnlyList<RequestLog> logs)
-    {
-        return logs
-            .GroupBy(log => string.IsNullOrEmpty(log.Model) ? "unknown" : log.Model)
-            .Select(group => new ModelDistributionDto(group.Key!, group.Count()))
-            .OrderByDescending(item => item.Count)
-            .Take(20)
-            .ToList();
-    }
-
-    private List<ErrorDistributionDto> ReadErrorDistribution(IReadOnlyList<RequestLog> logs)
-    {
-        var errorLogs = logs.Where(log => !IsSuccessfulLog(log)).ToList();
-        if (errorLogs.Count == 0)
+        // 一次条件聚合取回全部标量，recent / latest 窗口用 CASE WHEN 表达，
+        // 避免每个面板各发一条 SQL。GroupBy(_ => 1) 在空表时返回 0 行，
+        // FirstOrDefault() 得到 null，回退成全 0 的摘要。
+        var row = query
+            .GroupBy(_ => 1)
+            .Select(g => new
+            {
+                RequestCount = g.Count(),
+                InputTokens = g.Sum(log => log.InputTokens),
+                CachedTokens = g.Sum(log => log.CachedTokens),
+                OutputTokens = g.Sum(log => log.OutputTokens),
+                Cost = g.Sum(log => log.Cost),
+                RecentRequestCount = g.Count(log =>
+                    log.CreatedAt >= recentStartTs && log.CreatedAt < effectiveEndTs),
+                RecentInputTokens = g.Sum(log =>
+                    log.CreatedAt >= recentStartTs && log.CreatedAt < effectiveEndTs
+                        ? log.InputTokens
+                        : 0),
+                RecentCachedTokens = g.Sum(log =>
+                    log.CreatedAt >= recentStartTs && log.CreatedAt < effectiveEndTs
+                        ? log.CachedTokens
+                        : 0),
+                RecentOutputTokens = g.Sum(log =>
+                    log.CreatedAt >= recentStartTs && log.CreatedAt < effectiveEndTs
+                        ? log.OutputTokens
+                        : 0),
+                RecentCost = g.Sum(log =>
+                    log.CreatedAt >= recentStartTs && log.CreatedAt < effectiveEndTs
+                        ? log.Cost
+                        : 0),
+                LatestWindowCount = g.Count(log =>
+                    log.CreatedAt >= latestWindowStartTs && log.CreatedAt < effectiveEndTs),
+                LatestTokens = g.Sum(log =>
+                    log.CreatedAt >= latestWindowStartTs && log.CreatedAt < effectiveEndTs
+                        ? log.InputTokens + log.CachedTokens + log.OutputTokens
+                        : 0)
+            })
+            .FirstOrDefault();
+        if (row is null)
         {
-            return [];
+            return new StatsSummaryDto(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         }
 
-        var channelIdTexts = errorLogs
-            .Select(log => log.ChannelId?.ToString())
-            .Where(value => !string.IsNullOrWhiteSpace(value));
-        var channelNames = ReadChannelNames(channelIdTexts);
+        // IsSuccessfulPredicate() 是 Expression<Func<...>>，IGrouping 的 Count 只收
+        // Func<...>，表达式树里没法直接复用同一个 predicate，因此 successCount
+        // 保留为独立的第 2 条查询，口径不变。
+        var successCount = query.Count(IsSuccessfulPredicate());
 
-        return errorLogs
+        return new StatsSummaryDto(
+            row.RequestCount,
+            successCount,
+            row.RecentRequestCount,
+            row.InputTokens,
+            row.CachedTokens,
+            row.OutputTokens,
+            row.InputTokens + row.CachedTokens + row.OutputTokens,
+            row.RecentInputTokens + row.RecentCachedTokens + row.RecentOutputTokens,
+            Math.Round(row.Cost, 6),
+            Math.Round(row.RecentCost, 6),
+            row.LatestWindowCount > 0
+                ? Math.Round((double)row.LatestWindowCount / resolved.GranularityMinutes, 2)
+                : 0,
+            row.LatestTokens > 0
+                ? Math.Round((double)row.LatestTokens / resolved.GranularityMinutes, 2)
+                : 0);
+    }
+
+    private IReadOnlyList<StatsPointDto> QueryStatsPoints(
+        IQueryable<RequestLog> query,
+        ResolvedStatsRange resolved)
+    {
+        var bucketSeconds = resolved.GranularityMinutes * 60.0;
+        var bucketCount = Math.Max(
+            1,
+            (int)Math.Floor((resolved.EndTs - resolved.StartTs + bucketSeconds - 1) / bucketSeconds));
+
+        // 桶号在数据库端计算，SUM/COUNT 全部下推，只把聚合结果拉回内存。
+        // Math.Floor 保持 double 语义，避免 (long) 被翻译成 float->bigint 的
+        // PostgreSQL 四舍五入（与 SQLite 的截断不一致），到内存侧再转 int。
+        var grouped = query
+            .GroupBy(log => Math.Floor((log.CreatedAt!.Value - resolved.StartTs) / bucketSeconds))
+            .Select(group => new
+            {
+                Bucket = group.Key,
+                Count = group.Count(),
+                Cost = group.Sum(log => log.Cost),
+                InputTokens = group.Sum(log => log.InputTokens),
+                CachedTokens = group.Sum(log => log.CachedTokens),
+                OutputTokens = group.Sum(log => log.OutputTokens),
+                // 用 double 累加避免大桶内 TTFT 总和溢出 int，且与原内存 Average 的浮点语义一致。
+                TtftSum = group.Sum(log => log.TtftMs > 0 ? (double?)log.TtftMs : null),
+                TtftCount = group.Count(log => log.TtftMs > 0)
+            })
+            .ToList();
+        var byBucket = grouped.ToDictionary(item => (int)item.Bucket);
+
+        var points = new List<StatsPointDto>(bucketCount);
+        for (var index = 0; index < bucketCount; index++)
+        {
+            var bucketEnd = resolved.StartTs + (index + 1) * bucketSeconds;
+            if (!byBucket.TryGetValue(index, out var item))
+            {
+                // GroupBy 不会产生空桶，这里补零，保证曲线点数完整。
+                points.Add(new StatsPointDto(
+                    TimestampToIso(bucketEnd),
+                    0,
+                    0,
+                    0,
+                    0,
+                    null,
+                    null,
+                    0));
+                continue;
+            }
+
+            // TTFT 平均只统计 TtftMs > 0 的请求，与原来的内存 Average 语义一致。
+            var avgTtft = item.TtftCount > 0 && item.TtftSum.HasValue
+                ? item.TtftSum.Value / (double)item.TtftCount
+                : (double?)null;
+            var cacheDenominator = item.InputTokens + item.CachedTokens;
+            points.Add(new StatsPointDto(
+                TimestampToIso(bucketEnd),
+                Math.Round(item.Cost, 6),
+                item.InputTokens,
+                item.CachedTokens,
+                item.OutputTokens,
+                avgTtft is null ? null : Math.Round(avgTtft.Value, 1),
+                cacheDenominator > 0
+                    ? Math.Round((double)item.CachedTokens / cacheDenominator, 4)
+                    : null,
+                item.Count > 0
+                    ? Math.Round((double)item.Count / resolved.GranularityMinutes, 2)
+                    : 0));
+        }
+
+        return points;
+    }
+
+    private static List<ModelDistributionDto> QueryModelDistribution(
+        IQueryable<RequestLog> query)
+    {
+        return query
+            .GroupBy(log => log.Model == null || log.Model == "" ? "unknown" : log.Model)
+            .Select(group => new
+            {
+                Model = group.Key ?? "unknown",
+                Count = group.Count()
+            })
+            .OrderByDescending(item => item.Count)
+            .Take(20)
+            .ToList()
+            .Select(item => new ModelDistributionDto(item.Model, item.Count))
+            .ToList();
+    }
+
+    private List<ErrorDistributionDto> QueryErrorDistribution(
+        IQueryable<RequestLog> query)
+    {
+        var grouped = query
+            .Where(log => !(
+                log.LifecycleStatus == ProxyRequestLifecycleStatus.Success
+                || (log.LifecycleStatus == null && log.StatusCode != null && log.StatusCode < 400
+                    && (log.Error == null || log.Error == ""))))
             .GroupBy(log => new
             {
-                ChannelId = log.ChannelId?.ToString() ?? "",
+                ChannelId = log.ChannelId,
                 StatusCode = log.StatusCode ?? 0
             })
-            .Select(group =>
+            .Select(group => new
             {
-                var channelId = group.Key.ChannelId;
-                var channelName = Guid.TryParse(channelId, out var parsed)
-                    && channelNames.TryGetValue(parsed, out var name)
-                    ? name
-                    : "未知渠道";
-                return new ErrorDistributionDto(
-                    channelId,
-                    channelName,
-                    group.Key.StatusCode,
-                    group.Count());
+                ChannelId = group.Key.ChannelId,
+                StatusCode = group.Key.StatusCode,
+                Count = group.Count()
             })
             .OrderByDescending(item => item.Count)
             .Take(30)
             .ToList();
+        if (grouped.Count == 0)
+        {
+            return [];
+        }
+
+        var channelIds = grouped
+            .Where(item => item.ChannelId.HasValue)
+            .Select(item => item.ChannelId!.Value)
+            .Distinct()
+            .ToList();
+        var channelNames = ReadChannelNames(channelIds.Select(id => (Guid?)id));
+
+        return grouped
+            .Select(item =>
+            {
+                var channelName = item.ChannelId.HasValue
+                    && channelNames.TryGetValue(item.ChannelId.Value, out var name)
+                    ? name
+                    : "未知渠道";
+                return new ErrorDistributionDto(
+                    item.ChannelId?.ToString() ?? "",
+                    channelName,
+                    item.StatusCode,
+                    item.Count);
+            })
+            .ToList();
     }
 
-    private static bool IsSuccessfulLog(RequestLog log)
+    private static System.Linq.Expressions.Expression<Func<RequestLog, bool>> IsSuccessfulPredicate()
     {
-        return log.LifecycleStatus == ProxyRequestLifecycleStatus.Success
-            || (log.LifecycleStatus is null && log.StatusCode < 400 && string.IsNullOrEmpty(log.Error));
+        return log => log.LifecycleStatus == ProxyRequestLifecycleStatus.Success
+            || (log.LifecycleStatus == null && log.StatusCode != null && log.StatusCode < 400
+                && (log.Error == null || log.Error == ""));
     }
 
     private static RequestLogEventDto MapRequestLogEvent(
-        RequestLog log,
+        RequestLogRow log,
         string ownerUsername,
         (int AttemptCount, int FailedAttemptCount) attemptStats)
     {
@@ -1205,7 +1317,7 @@ public sealed class ObservabilityService : IObservabilityService
     }
 
     private Dictionary<Guid, (int AttemptCount, int FailedAttemptCount)> BuildAttemptStats(
-        IReadOnlyList<RequestLog> logs)
+        IReadOnlyList<RequestLogRow> logs)
     {
         var parentIds = logs
             .Where(log => log.RequestType == ProxyRequestTypes.Main)
@@ -1232,7 +1344,7 @@ public sealed class ObservabilityService : IObservabilityService
     }
 
     private static RequestLogDto MapRequestLog(
-        RequestLog log,
+        RequestLogRow log,
         LogContentSnapshot content,
         string ownerUsername,
         (int AttemptCount, int FailedAttemptCount) attemptStats)
@@ -1496,5 +1608,89 @@ public sealed class ObservabilityService : IObservabilityService
         public double EndTs { get; }
 
         public int GranularityMinutes { get; }
+    }
+
+    /// <summary>
+    /// 日志列表/详情查询的显式投影，避免把 PricingSnapshotJson 等大字段读进内存。
+    /// </summary>
+    private sealed class RequestLogRow
+    {
+        public Guid Id { get; set; }
+
+        public string? RequestId { get; set; }
+
+        public double? CreatedAt { get; set; }
+
+        public double? ProcessingStartedAt { get; set; }
+
+        public double? CompletedAt { get; set; }
+
+        public string? Method { get; set; }
+
+        public string? Path { get; set; }
+
+        public string? ClientIp { get; set; }
+
+        public string? Model { get; set; }
+
+        public string? UpstreamModel { get; set; }
+
+        public Guid? ChannelId { get; set; }
+
+        public string RequestType { get; set; } = string.Empty;
+
+        public Guid? ParentRequestLogId { get; set; }
+
+        public string? ConversationKey { get; set; }
+
+        public string? ConversationTurnId { get; set; }
+
+        public string? ConversationWindowId { get; set; }
+
+        public string? PreviousResponseId { get; set; }
+
+        public bool IsStream { get; set; }
+
+        public int? TtftMs { get; set; }
+
+        public int? DurationMs { get; set; }
+
+        public int? StatusCode { get; set; }
+
+        public int InputTokens { get; set; }
+
+        public int CachedTokens { get; set; }
+
+        public int OutputTokens { get; set; }
+
+        public double Cost { get; set; }
+
+        public Guid OwnerUserId { get; set; }
+
+        public Guid? ApiKeyId { get; set; }
+
+        public string? Error { get; set; }
+
+        public string? LifecycleStatus { get; set; }
+    }
+
+    /// <summary>
+    /// 最近错误列表的显式投影，只取展示需要的列。
+    /// </summary>
+    private sealed class RecentErrorRow
+    {
+        public Guid Id { get; set; }
+
+        public double? CreatedAt { get; set; }
+
+        public string? Model { get; set; }
+
+        public string? UpstreamModel { get; set; }
+
+        public Guid? ChannelId { get; set; }
+
+        public int? StatusCode { get; set; }
+
+        public string? Error { get; set; }
     }
 }
