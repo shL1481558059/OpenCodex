@@ -1,5 +1,5 @@
 using System.Text.Json.Serialization;
-using OpenCodex.CoreBase.DTOs.Config;
+using OpenCodex.CoreBase.DTOs.Channels;
 
 namespace OpenCodex.CoreBase.DTOs.ChannelDiagnostics;
 

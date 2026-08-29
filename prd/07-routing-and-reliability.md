@@ -364,7 +364,7 @@ queued -> processing -> success
 | `POST /messages`、`POST /v1/messages` | 使用 Messages 入口协议参与路由 |
 | `POST /images/generations`、`POST /v1/images/generations` | 仅选择 Images 类型渠道 |
 | `POST /images/edits`、`POST /v1/images/edits` | 仅选择 Images 类型渠道 |
-| `GET /config` | 返回渠道活跃数和健康状态 |
+| `GET /channels` | 返回渠道活跃数和健康状态 |
 | `POST /channels/{id}/reset-health` | 重置指定渠道熔断状态 |
 | `GET /stats/active-channels` | 查询活跃渠道队列 |
 | `GET /stats/active-channels/stream` | SSE 实时输出队列 |

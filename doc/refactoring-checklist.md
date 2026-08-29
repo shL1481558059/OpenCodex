@@ -13,7 +13,7 @@
 | 后端 `tests` | 21132 |
 | `frontend/src` | 8702 |
 
-- 最大源文件：`ModelCatalogService.cs` 1743、`ObservabilityResponses.cs` 1522、`ObservabilityService.cs` 1332、`ConfigService.cs` 1056。
+- 最大源文件：`ModelCatalogService.cs` 1743、`ObservabilityResponses.cs` 1522、`ObservabilityService.cs` 1332、`ChannelService.cs` 1056。
 - 最大测试：`ProxyCompatibilityTests` 4113、`SseStreamConverterTests` 2958、`ProxyEndpointServiceTests` 1260、`ProtocolStructuralCompatibilityTests` 1215、`RouteTests` 1100。
 - `dotnet build opencodex_proxy/OpenCodex.sln` 当前通过，仅 2 个既有 CS86xx nullable 警告（`ModelCatalogService.cs:476/509`）。
 
@@ -57,7 +57,7 @@
 4. **A.5 的 `ValidateOnBuild` 不能保证发现 `/images` 漏注册。** 当前只有 `services.AddControllers()`，默认 Controller 激活不等同于普通 DI 服务构建验证；应增加 Controller 激活/路由 smoke test，必要时再单独评估 `AddControllersAsServices()` 的行为变化。
 5. **B.1 的补齐实现工作量被低估。** `/images` 不是“补一个实现类和两处注册”即可完成，还要复刻鉴权、候选排序、容量、熔断、failover、响应写入和日志生命周期；若无明确产品需求，应按独立功能评审，而不是当作几十行修复。
 6. **B.3 不应默认改成轮询。** Dashboard 的错误和队列卡片分别只有一条 SSE 消费链，Logs/Channels 已有重叠信息；若没有实时运维刚需，删除卡片和端点比新增 GET + 轮询更低复杂度。
-7. **第 6 节的 `ChannelModelMapping` 不宜直接整表删除。** 它仍被 `ConfigService.SyncChannelModelMappings` 写入，并由 `ModelCatalogService.ListChannelUpstreamModels` 读取；可先删除确认无读取的列/常量，再评估整表迁移。
+7. **第 6 节的 `ChannelModelMapping` 不宜直接整表删除。** 它仍被 `ChannelService.SyncChannelModelMappings` 写入，并由 `ModelCatalogService.ListChannelUpstreamModels` 读取；可先删除确认无读取的列/常量，再评估整表迁移。
 8. **流行留存已有明确无上限风险。** `StreamResponseCapture` 的 1 MB 预算只限制响应重建，`ProxyStreamService` 的 `streamLineCaptures` 和 `RequestLogStreamLines.RawLine` 没有总行数/字节上限，也没有统一脱敏和 TTL（见 B.5）。
 9. **OCR 保留时还需管理缓存目录。** `ProxyOcrService` 会按图片哈希写 `OcrCacheDir/results`，当前只有读写，没有 TTL、容量上限或清理任务；删除 OCR 时随链路删除，保留 OCR 时必须单列运维策略。
 
@@ -133,7 +133,7 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 - 前端零作用残留：`Logs.vue.resetLogFilters`、`Logs.vue.filterOptions.upstream_models`、`WebSearch.vue.defaultWebSearchKey`、未使用的 `onMounted`、`main.js` 的 `ElUpload` 注册、`.input-with-action` CSS、Dashboard/Logs 的无效 `active` 状态机和 `App.vue` 无对应样式的 `mobile-menu-drawer` `custom-class`。 ✅ `Logs.vue.filterOptions.upstream_models`、`main.js` 的 `ElUpload` 注册、`style.css` 的 `.input-with-action` CSS、`App.vue` 的 `mobile-menu-drawer` custom-class 已删除。`Logs.vue.resetLogFilters`、`WebSearch.vue.defaultWebSearchKey`、未使用的 `onMounted`、Dashboard/Logs 的无效 `active` 状态机待后续确认后清理。
 - `Logs.vue` 的列设置没有 localStorage/后端持久化，组件离开页面即销毁；若不打算实现持久化，应删除设置状态和入口，固定默认列。
 - 前端未读取的观测字段（如 `LogDetailResponse.client_ip`、清理日志返回的 `deleted_details/deleted_stream_lines`、队列响应的 `generated_at`）可在 DTO 瘦身时核对；先确认没有外部 API 消费者，不要只凭前端零引用删掉公开契约。
-- `ChannelModelMapping` 实体的 `SupportsImage`、`ModelInfoId`、`PricingMode`、`PricingPlanId` 四个死列已删除（含 `OpenCodexDbContextBase` 索引和属性配置、`ConfigService` 赋值代码、测试夹具）。EF Core 迁移已通过 `dotnet ef migrations add` 生成（SQLite + Postgres 双份）。迁移同时删除了已无实体的 `ModelPricings` 表。539 个测试全绿。- 风险：低；涉及数据库列时为低-中（双数据库迁移）。
+- `ChannelModelMapping` 实体的 `SupportsImage`、`ModelInfoId`、`PricingMode`、`PricingPlanId` 四个死列已删除（含 `OpenCodexDbContextBase` 索引和属性配置、`ChannelService` 赋值代码、测试夹具）。EF Core 迁移已通过 `dotnet ef migrations add` 生成（SQLite + Postgres 双份）。迁移同时删除了已无实体的 `ModelPricings` 表。539 个测试全绿。- 风险：低；涉及数据库列时为低-中（双数据库迁移）。
 - 验证：`rg` 确认零读取；迁移后旧数据库可启动；前端构建通过。
 
 ## Phase B：需决策的低收益链路与运行时风险（新增）
@@ -196,9 +196,9 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 
 ### B.4 管理台配置导入/导出与明文密钥 — 明文密钥返回为业务需要保留，不修改
 
-- 现状：`Channels.vue:1300-1343`、`AccessKeys.vue:172-221`、`WebSearch.vue:247-306` 各自实现 Blob 导出、文件解析、格式兼容和错误提示；后端对应 `ConfigService.ImportConfigAsync`、`ApiKeyService.ImportKeysAsync`、`WebSearchService.ImportConfig`。
+- 现状：`Channels.vue:1300-1343`、`AccessKeys.vue:172-221`、`WebSearch.vue:247-306` 各自实现 Blob 导出、文件解析、格式兼容和错误提示；后端对应 `ChannelService.ImportChannelsAsync`、`ApiKeyService.ImportKeysAsync`、`WebSearchService.ImportConfig`。
 - 提交 `6d7e66e0` 一次增加约 996 行代码，仓库没有相应端到端导入/导出测试。
-- 导出内容包含渠道 `apikey`、Access API Key 明文和 Web Search Key 明文；`/web-search` 列表本身也返回 `TavilyKey.ApiKey` 明文。`/config/import`、`/api-keys/import` 只要求登录用户，导入还按名称或 `(provider, key)` 合并并可能覆盖现有配置。渠道导入会更新 Base URL、headers、models 等路由字段，API Key 导入会直接重算 hash 并替换明文 key。
+- 导出内容包含渠道 `apikey`、Access API Key 明文和 Web Search Key 明文；`/web-search` 列表本身也返回 `TavilyKey.ApiKey` 明文。`/channels/bulk-import`、`/api-keys/import` 只要求登录用户，导入还按名称或 `(provider, key)` 合并并可能覆盖现有配置。渠道导入会更新 Base URL、headers、models 等路由字段，API Key 导入会直接重算 hash 并替换明文 key。
 - 远端样本已确认规模：生产 `AccessApiKeys=10`、开发 `=16`，所有记录 `KeyPlaintext` 非空且 `LastUsedAt` 为空；Tavily 记录均为单一 `tavily` provider。整改前应先决定是否需要一次性密钥轮换，不能把“删除导出按钮”误当成已消除历史明文风险。
 - 导入文件没有统一 schema/version/source 校验，部分页面还接受“任意数组”作为输入；误选旧文件或其他 JSON 可能被当成线上配置合并。
 - 建议：优先删除三页导入/导出按钮、端点、请求 DTO 和服务分支，迁移改用数据库备份或专用加密 CLI。若必须保留，至少增加超级管理员权限、加密文件、预览/冲突确认、审计记录，并禁止列表接口回传完整密钥。
@@ -421,7 +421,7 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
   - 保留 `ModelInfo` + `ModelPricingPlan` + `ModelPricingRule` + `ModelProvider`。
   - 如渠道级模型覆盖确实需要，只保留 `ChannelModelInfo`。
   - 删除 `ModelPricing` + `PricingController` + `ModelPricingService` + `OpenCodexPricing`（即 B.2，需先确认外部无调用方与生产迁移已执行）。
-  - `ChannelModelMapping`（写多读少）：`ConfigService.SyncChannelModelMappings`（`ConfigService.cs:906`）每次存渠道全删重插，唯一读点是 `ModelCatalogService.cs:1222 ListChannelUpstreamModels`，而该方法在 mapping 为空时还有 `channel.ModelsJson` 回退路径 → 可考虑直接删表、统一读 `ModelsJson`。
+  - `ChannelModelMapping`（写多读少）：`ChannelService.SyncChannelModelMappings`（`ChannelService.cs:906`）每次存渠道全删重插，唯一读点是 `ModelCatalogService.cs:1222 ListChannelUpstreamModels`，而该方法在 mapping 为空时还有 `channel.ModelsJson` 回退路径 → 可考虑直接删表、统一读 `ModelsJson`。
   - 更窄的低风险步骤：运行时真正读取的只有 `ChannelId`、`Position`、`UpstreamModel`；`RequestModel`、`SupportsImage`、`ModelInfoId`、`PricingMode`、`PricingPlanId` 及其索引没有生产读取点，且同步逻辑把 `SupportsImage=false`、`PricingMode=InheritGlobal` 等值硬编码。可先删这些列/索引，再评估是否整表迁移。
   - 写数据迁移，把旧数据收敛到新结构。
   - 前端不再编辑任意 `Catalog JSON`。
@@ -476,7 +476,7 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 - 长流超过上限时内存、数据库写入和响应都可预测；TTL 清理可重入、可暂停，敏感字段在请求体/上游体/SSE 中均不泄漏。
 - ~~密钥列表、导出和日志不再出现完整 key~~（明文密钥为业务需要保留，不修改）；轮换后的旧 key 立即失效。
 - `dotnet build`、后端全量测试（基线 473/473）、前端构建和 Controller smoke test 通过；故意移除一个 Controller 注册时测试能给出明确缺失依赖。
-- 线上 `/models`、`/config`、登录、代理流和 Logs 核心查询行为不变。
+- 线上 `/models`、`/channels`、登录、代理流和 Logs 核心查询行为不变。
 
 #### 适用条件与评价
 

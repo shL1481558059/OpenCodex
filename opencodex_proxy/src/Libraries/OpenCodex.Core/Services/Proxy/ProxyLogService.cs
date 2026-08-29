@@ -841,7 +841,13 @@ public sealed class ProxyLogService : IProxyLogService
             .Where(u => u.Username == normalized)
             .Select(u => u.Id)
             .FirstOrDefault();
-        _ownerUserIdCache[normalized] = id;
+        // 不缓存 Guid.Empty：用户名解析不到时可能是用户尚未创建，
+        // 缓存空值会让同一实例内后续同名新用户永远映射为空。
+        if (id != Guid.Empty)
+        {
+            _ownerUserIdCache[normalized] = id;
+        }
+
         return id;
     }
 

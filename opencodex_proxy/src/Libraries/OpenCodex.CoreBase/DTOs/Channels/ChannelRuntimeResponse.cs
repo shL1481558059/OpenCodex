@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace OpenCodex.CoreBase.DTOs.Config;
+namespace OpenCodex.CoreBase.DTOs.Channels;
 
 /// <summary>
 /// 表示单个渠道的运行时状态快照。配置态与运行时态分离到不同端点，此响应不含任何配置字段。

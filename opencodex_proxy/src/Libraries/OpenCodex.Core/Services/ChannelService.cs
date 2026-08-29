@@ -9,14 +9,14 @@ using OpenCodex.CoreBase.Caching;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs;
-using OpenCodex.CoreBase.DTOs.Config;
+using OpenCodex.CoreBase.DTOs.Channels;
 using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
 using OpenCodex.CoreBase.Services.Proxy;
 
 namespace OpenCodex.Core.Services;
 
-public sealed class ConfigService : IConfigService
+public sealed class ChannelService : IChannelService
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -34,7 +34,7 @@ public sealed class ConfigService : IConfigService
     private readonly ICacheService _cache;
     private readonly IMemoryCache _memoryCache;
 
-    public ConfigService(
+    public ChannelService(
         IOpenCodexRuntimeSettingsProvider settingsProvider,
         IChannelCapacityService channelCapacity,
         IChannelCircuitBreakerService channelCircuitBreaker,
@@ -58,10 +58,10 @@ public sealed class ConfigService : IConfigService
         _memoryCache = memoryCache;
     }
 
-    public ApiOpResult<ConfigResponse> ReadConfig()
+    public ApiOpResult<ChannelListResponse> ReadChannels()
     {
         var (currentUsername, isSuperadmin) = CurrentScope();
-        return ApiOpResult<ConfigResponse>.Succeed(ConfigResponse.From(
+        return ApiOpResult<ChannelListResponse>.Succeed(ChannelListResponse.From(
             ReadChannels(currentUsername, isSuperadmin),
             ResolveActiveRequests,
             ResolveHealthStatus));
@@ -184,7 +184,7 @@ public sealed class ConfigService : IConfigService
         });
     }
 
-    public async Task<ApiOpResult<ChannelBatchUpdateResult>> ImportConfigAsync(
+    public async Task<ApiOpResult<ChannelBatchUpdateResult>> ImportChannelsAsync(
         IReadOnlyDictionary<string, object?> body)
     {
         var (currentUsername, isSuperadmin) = CurrentScope();
@@ -271,7 +271,7 @@ public sealed class ConfigService : IConfigService
         // 非超管只能改自己的渠道,currentUsername 即受影响 owner,精确失效。
         // 超管改他人渠道时,他人缓存靠 60s TTL + 路由 failover 兜底(删除的渠道路由失败会自动切下一个候选)。
         await _cache.RemoveAsync(CacheKeys.RouteChannels(ownerUsername));
-        _memoryCache.Remove(CacheKeys.ChannelConfig);
+        _memoryCache.Remove(CacheKeys.Channels);
     }
 
     private ApiOpResult<Guid> SaveSingleChannel(
@@ -796,9 +796,9 @@ public sealed class ConfigService : IConfigService
         string currentUsername,
         bool isSuperadmin)
     {
-        var allChannels = _memoryCache.GetOrCreate(CacheKeys.ChannelConfig, entry =>
+        var allChannels = _memoryCache.GetOrCreate(CacheKeys.Channels, entry =>
         {
-            entry.AbsoluteExpirationRelativeToNow = ChannelConfigCacheTtl;
+            entry.AbsoluteExpirationRelativeToNow = ChannelCacheTtl;
             return LoadAllChannelDtos();
         });
 
@@ -812,7 +812,7 @@ public sealed class ConfigService : IConfigService
             .ToList();
     }
 
-    private static readonly TimeSpan ChannelConfigCacheTtl = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan ChannelCacheTtl = TimeSpan.FromSeconds(10);
 
     private IReadOnlyList<ChannelDto> LoadAllChannelDtos()
     {

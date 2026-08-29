@@ -29,20 +29,20 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
     private readonly IUpstreamClient _upstreamClient;
     private readonly IUpstreamModelClient _upstreamModelClient;
     private readonly IProxyLogService _logs;
-    private readonly IConfigService _config;
+    private readonly IChannelService _channels;
 
     public ChannelDiagnosticsService(
         IOpenCodexRuntimeSettingsProvider settingsProvider,
         IUpstreamClient upstreamClient,
         IUpstreamModelClient upstreamModelClient,
         IProxyLogService logs,
-        IConfigService config)
+        IChannelService channels)
     {
         _settingsProvider = settingsProvider;
         _upstreamClient = upstreamClient;
         _upstreamModelClient = upstreamModelClient;
         _logs = logs;
-        _config = config;
+        _channels = channels;
     }
 
     public async Task<ApiOpResult<DiscoverModelsResponse>> DiscoverModelsAsync(
@@ -105,7 +105,7 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
         try
         {
             var channelIdGuid = ReadChannelId(body);
-            var channelResult = await _config.ReadChannelForDiagnostics(channelIdGuid);
+            var channelResult = await _channels.ReadChannelForDiagnostics(channelIdGuid);
             if (!channelResult.Succeeded || channelResult.Payload is null)
             {
                 throw new ProxyException("channel not found", 404);

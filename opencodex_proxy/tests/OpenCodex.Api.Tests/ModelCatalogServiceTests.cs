@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using OpenCodex.Api.Tests.Infrastructure;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Services;
 using OpenCodex.Core.Services.Caching;
@@ -628,6 +629,62 @@ public sealed class ModelCatalogServiceTests
         listed = service.ListChannelModelInfos(channelId);
         item = Assert.Single(listed.Payload!.Models);
         Assert.False(item.Overridden);
+    }
+
+    [Fact]
+    public void ListChannelModelInfos_GlobalModelLookupDoesNotGrowWithModelCount()
+    {
+        var dbPath = CreateDbPath();
+        var channelId = Guid.NewGuid();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddChannel(context, channelId, "many-models", "model-0");
+            for (var i = 1; i < 30; i++)
+            {
+                context.ChannelModelMappings.Add(new ChannelModelMapping
+                {
+                    ChannelId = channelId,
+                    Position = i,
+                    RequestModel = $"model-{i}",
+                    UpstreamModel = $"model-{i}",
+                    Enabled = true,
+                    CreatedAt = 1,
+                    UpdatedAt = 1
+                });
+            }
+
+            // 少量全局模型命中，避免命中数量本身影响查询次数。
+            AddModel(context, provider.Id, "global-0", ModelMatchTypes.Exact, "model-0", 1m);
+            AddModel(context, provider.Id, "global-1", ModelMatchTypes.Exact, "model-1", 1m);
+            context.SaveChanges();
+        }
+
+        var capture = new SqlCapture();
+        using var captureContext = SqlCapture.CreateCapturingContext($"Data Source={dbPath}", capture);
+        var service = new ModelCatalogService(
+            new EfRepository<ModelProvider>(captureContext),
+            new EfRepository<ModelInfo>(captureContext),
+            new EfRepository<ChannelModelInfo>(captureContext),
+            new EfRepository<ModelPricingPlan>(captureContext),
+            new EfRepository<ModelPricingRule>(captureContext),
+            new EfRepository<ChannelModelMapping>(captureContext),
+            new EfRepository<Channel>(captureContext),
+            new TestWorkContext(TestUserId, "admin", "superadmin"),
+            new TestCacheService());
+
+        capture.Reset();
+        var listed = service.ListChannelModelInfos(channelId);
+
+        Assert.True(listed.Succeeded);
+        Assert.Equal(30, listed.Payload!.Models.Count);
+        // 全局模型匹配不应随 upstream model 数量线性增长：修复后应只触发一次
+        // ModelInfos 全表加载（跨全部 enabled 全局模型），否则每个 upstream model
+        // 都会各查一次 ModelInfos + ModelProviders。
+        Assert.True(
+            capture.CountMatching("FROM \"ModelInfos\"") <= 2,
+            $"ModelInfos 查询次数 {capture.CountMatching("FROM \"ModelInfos\"")} 应随模型数保持恒定");
     }
 
     [Fact]

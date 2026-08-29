@@ -5,7 +5,7 @@
 - `/v1/responses`
 - `/v1/chat/completions`
 - `/v1/messages`
-- 管理接口：`/session`、`/login`、`/logout`、`/config`、`/api-keys`、`/users`、`/logs`、`/stats`、`/web-search` 等
+- 管理接口：`/session`、`/login`、`/logout`、`/channels`、`/api-keys`、`/users`、`/logs`、`/stats`、`/web-search` 等
 
 运行时依赖尽量少：ASP.NET Core、SQLite 和内置 HTTP 客户端。旧 Python 后端已移除；行为追溯以 Git 历史和 `.NET` 测试为准。
 
@@ -29,7 +29,7 @@ npm --prefix frontend install
 npm --prefix frontend run dev -- --host 127.0.0.1 --port 5173
 ```
 
-访问 `http://127.0.0.1:5173/admin/`。前端开发服务器会把浏览器里的 `/admin/login`、`/admin/config` 等请求转发到后端真实接口 `/login`、`/config` 等；直接调用后端 API 时不要加 `/admin` 或 `/admin/api` 前缀。
+访问 `http://127.0.0.1:5173/admin/`。前端开发服务器会把浏览器里的 `/admin/login`、`/admin/channels` 等请求转发到后端真实接口 `/login`、`/channels` 等；直接调用后端 API 时不要加 `/admin` 或 `/admin/api` 前缀。
 
 ## `.env`
 

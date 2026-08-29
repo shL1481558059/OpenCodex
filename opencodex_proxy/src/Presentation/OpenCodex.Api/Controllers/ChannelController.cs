@@ -1,35 +1,27 @@
 using Microsoft.AspNetCore.Mvc;
-using OpenCodex.CoreBase.DTOs.Config;
+using OpenCodex.CoreBase.DTOs.Channels;
 using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
 
 namespace OpenCodex.Api.Controllers;
 
-public sealed class ConfigController : AuthenticatedApiControllerBase
+public sealed class ChannelController : AuthenticatedApiControllerBase
 {
-    private readonly IConfigService _config;
+    private readonly IChannelService _channels;
 
-    public ConfigController(
+    public ChannelController(
         IWorkContext workContext,
-        IConfigService config)
+        IChannelService channels)
         : base(workContext)
     {
-        _config = config;
-    }
-
-    [HttpGet("/config")]
-    public IActionResult Config()
-    {
-        RequireUser();
-        var result = _config.ReadConfig();
-        return Api(result);
+        _channels = channels;
     }
 
     [HttpGet("/channels")]
     public IActionResult Channels()
     {
         RequireUser();
-        var result = _config.ReadConfig();
+        var result = _channels.ReadChannels();
         return Api(result);
     }
 
@@ -37,7 +29,7 @@ public sealed class ConfigController : AuthenticatedApiControllerBase
     public IActionResult Channel(Guid channelId)
     {
         RequireUser();
-        var result = _config.ReadChannelById(channelId);
+        var result = _channels.ReadChannelById(channelId);
         return Api(result);
     }
 
@@ -58,7 +50,7 @@ public sealed class ConfigController : AuthenticatedApiControllerBase
                 idList = null;
             }
         }
-        var result = _config.ReadChannelRuntime(idList);
+        var result = _channels.ReadChannelRuntime(idList);
         return Api(result);
     }
 
@@ -66,7 +58,7 @@ public sealed class ConfigController : AuthenticatedApiControllerBase
     public async Task<IActionResult> CreateChannel(ChannelRequest request)
     {
         RequireUser();
-        var result = await _config.CreateChannelAsync(request);
+        var result = await _channels.CreateChannelAsync(request);
         return Api(result);
     }
 
@@ -74,7 +66,7 @@ public sealed class ConfigController : AuthenticatedApiControllerBase
     public async Task<IActionResult> UpdateChannel(Guid channelId, ChannelRequest request)
     {
         RequireUser();
-        var result = await _config.UpdateChannelAsync(channelId, request);
+        var result = await _channels.UpdateChannelAsync(channelId, request);
         return Api(result);
     }
 
@@ -83,7 +75,7 @@ public sealed class ConfigController : AuthenticatedApiControllerBase
     public async Task<IActionResult> BatchUpdateChannels(ChannelBatchUpdateRequest request)
     {
         RequireUser();
-        var result = await _config.BatchUpdateChannelsAsync(request);
+        var result = await _channels.BatchUpdateChannelsAsync(request);
         return Api(result);
     }
 
@@ -91,16 +83,15 @@ public sealed class ConfigController : AuthenticatedApiControllerBase
     public async Task<IActionResult> DeleteChannel(Guid channelId)
     {
         RequireUser();
-        var result = await _config.DeleteChannelAsync(channelId);
+        var result = await _channels.DeleteChannelAsync(channelId);
         return Api(result);
     }
 
     [HttpPost("/channels/bulk-import")]
-    [HttpPost("/config/import")]
-    public async Task<IActionResult> ImportConfig(ConfigSaveRequest request)
+    public async Task<IActionResult> ImportChannels(ChannelSaveRequest request)
     {
         RequireUser();
-        var result = await _config.ImportConfigAsync(request.ToDictionary());
+        var result = await _channels.ImportChannelsAsync(request.ToDictionary());
         return Api(result);
     }
 
@@ -109,7 +100,7 @@ public sealed class ConfigController : AuthenticatedApiControllerBase
     public async Task<IActionResult> ResetChannelHealth(Guid channelId)
     {
         RequireUser();
-        var result = await _config.ResetChannelHealthAsync(channelId);
+        var result = await _channels.ResetChannelHealthAsync(channelId);
         return Api(result);
     }
 

@@ -116,14 +116,35 @@ public sealed class ServiceQueryGovernanceTests
     [Fact]
     public void CreateKey_SuperadminByUsername_ResolvesOwnerOnceAndProjectsFields()
     {
-        var db = NewDb(out _);
+        var db = NewDb(out var capture);
         var service = CreateApiKeyService(db, alice: false);
 
+        capture.Reset();
         var result = service.CreateKey(new ApiKeyCreateCommand(Guid.Empty, "alice", "alice-key"));
 
         Assert.True(result.Succeeded);
         Assert.Equal("alice", result.Payload!.Key.OwnerUsername);
         Assert.Equal(AliceId, db.AccessApiKeys.Single().OwnerUserId);
+        // 超管按 username 指定归属人时，Users 只应被查一次：首次解析拿到
+        // Id/Username 后直接复用，不应再按 Id 回查一次 Username。
+        Assert.Equal(1, capture.CountMatching("FROM \"Users\""));
+    }
+
+    [Fact]
+    public void CreateKey_SuperadminByOwnerUserId_ResolvesOwnerOnce()
+    {
+        var db = NewDb(out var capture);
+        var service = CreateApiKeyService(db, alice: false);
+
+        capture.Reset();
+        var result = service.CreateKey(new ApiKeyCreateCommand(AliceId, null, "alice-key"));
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("alice", result.Payload!.Key.OwnerUsername);
+        Assert.Equal(AliceId, db.AccessApiKeys.Single().OwnerUserId);
+        // 超管按 OwnerUserId 指定归属人时，一次投影 Id/Username 后复用，
+        // 不应再按 Id 回查一次 Username。
+        Assert.Equal(1, capture.CountMatching("FROM \"Users\""));
     }
 
     [Fact]
@@ -509,6 +530,63 @@ public sealed class ServiceQueryGovernanceTests
         // 连续三次 CreateQueuedLog 只触发一次 Users SELECT。
         Assert.Equal(1, capture.CountMatching("FROM \"Users\""));
         Assert.Equal(3, db.RequestLogs.Count());
+    }
+
+    [Fact]
+    public void ProxyLog_ResolveOwnerUserId_DoesNotCacheMissingUser()
+    {
+        var db = NewDb(out var capture);
+        var service = new ProxyLogService(
+            new StubSettingsProvider(),
+            CreateEmptyCatalog(db),
+            db,
+            new EfRepository<RequestLog>(db),
+            new EfRepository<User>(db));
+
+        // 第一次解析 bob 时用户尚不存在，不应把 Guid.Empty 记进请求内缓存。
+        capture.Reset();
+        service.CreateQueuedLog(new ProxyRequestLogQueuedContext(
+            requestId: "req-missing-bob",
+            ownerUsername: "bob",
+            apiKeyId: null,
+            payload: null,
+            requestModel: null,
+            isStream: false,
+            method: "POST",
+            path: "/v1/chat/completions",
+            clientIp: "127.0.0.1",
+            requestHeaders: new Dictionary<string, string>()));
+        Assert.Equal(1, capture.CountMatching("FROM \"Users\""));
+        var bobId = Guid.Parse("88888888-8888-8888-8888-888888888888");
+        db.Users.Add(new User
+        {
+            Id = bobId,
+            Username = "bob",
+            PasswordHash = "h",
+            Role = "user",
+            Enabled = true,
+            CreatedAt = 1,
+            UpdatedAt = 1
+        });
+        db.SaveChanges();
+
+        // 同一 service 实例内再次解析 bob，应回库拿到新 Id，而不是复用 Guid.Empty。
+        capture.Reset();
+        var secondLogId = service.CreateQueuedLog(new ProxyRequestLogQueuedContext(
+            requestId: "req-new-bob",
+            ownerUsername: "bob",
+            apiKeyId: null,
+            payload: null,
+            requestModel: null,
+            isStream: false,
+            method: "POST",
+            path: "/v1/chat/completions",
+            clientIp: "127.0.0.1",
+            requestHeaders: new Dictionary<string, string>()));
+
+        Assert.Equal(1, capture.CountMatching("FROM \"Users\""));
+        var persisted = db.RequestLogs.AsNoTracking().Single(item => item.Id == secondLogId);
+        Assert.Equal(bobId, persisted.OwnerUserId);
     }
 
     [Fact]

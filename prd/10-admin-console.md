@@ -1210,7 +1210,7 @@ flowchart LR
 |---|---|
 | 启动/认证 | `/setup/status`、`/setup`、`/session`、`/login`、`/logout` |
 | 仪表盘 | `/stats`、`/stats/active-channels/stream`、`/stats/recent-errors/stream`、`/logs/{id}` |
-| 渠道 | `/config`、`/config/import`、`/channels`、`/channels/{id}`、`/channels/batch`、`/discover-models`、`/test-channel/stream`、渠道模型信息/健康接口 |
+| 渠道 | `/channels`、`/channels/bulk-import`、`/channels/{id}`、`/channels/batch`、`/discover-models`、`/test-channel/stream`、渠道模型信息/健康接口 |
 | API Key | `/api-keys`、`/api-keys/{id}`、`/api-keys/import`、超级管理员创建时 `/users` |
 | 用户 | `/users`、`/users/{username}` |
 | Web Search | `/web-search`、`/web-search/import`、`/web-search/test-key` |

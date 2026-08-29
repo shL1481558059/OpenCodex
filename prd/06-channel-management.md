@@ -108,7 +108,7 @@
 
 ### 4.2 列表排序与运行时字段
 
-当前 `GET /config` 返回 `channels` 数组，并附带运行时字段：
+当前 `GET /channels` 返回 `channels` 数组，并附带运行时字段：
 
 - `active_requests`：当前进程视角下的活跃请求数量。
 - `health_status`：熔断服务计算出的状态。
@@ -154,7 +154,7 @@
 
 ### 4.5 导入与合并
 
-1. `POST /config/import` 只接受顶层 `channels`。
+1. `POST /channels/bulk-import` 只接受顶层 `channels`。
 2. 配置先补全有效所有者、标准化，再整体校验。
 3. 合并键为 `(OwnerUserId, Channel.Name)`，不是 ID。
 4. 命中同名渠道时更新；未命中时创建。
@@ -300,13 +300,13 @@ flowchart TD
 ```mermaid
 sequenceDiagram
     participant UI as 管理台
-    participant API as ConfigController
-    participant SVC as ConfigService
+    participant API as ChannelController
+    participant SVC as ChannelService
     participant DB as 数据库
     participant CACHE as 路由缓存
 
-    UI->>API: POST /config/import {channels:[...]}
-    API->>SVC: ImportConfigAsync
+    UI->>API: POST /channels/bulk-import {channels:[...]}
+    API->>SVC: ImportChannelsAsync
     SVC->>SVC: 强制租户范围/补 owner
     SVC->>SVC: 标准化并整体校验
     SVC->>DB: 按 owner + name 查询现有渠道
@@ -330,12 +330,12 @@ sequenceDiagram
 
 | 方法与路径 | 权限 | 请求摘要 | 成功响应 | 常见错误 |
 |---|---|---|---|---|
-| `GET /config` | 已登录 | 无 | 当前范围的 `channels` | 401 |
+| `GET /channels` | 已登录 | 无 | 当前范围的 `channels` | 401 |
 | `POST /channels` | 已登录 | `ChannelRequest` | 更新后的渠道列表 | 400/401 |
 | `PUT /channels/{channelId}` | 已登录 | 完整渠道配置 | 更新后的渠道列表 | 400/401/404 |
 | `PATCH /channels/batch` | 已登录 | `{channel_ids, patch}` | 更新后的渠道列表 | 400/401/404 |
 | `DELETE /channels/{channelId}` | 已登录 | 无 | 删除后的渠道列表 | 400/401/404 |
-| `POST /config/import` | 已登录 | `{channels:[...]}` | 合并后的渠道列表 | 400/401 |
+| `POST /channels/bulk-import` | 已登录 | `{channels:[...]}` | 合并后的渠道列表 | 400/401 |
 | `POST /channels/{channelId}/reset-health` | 已登录 | 无 | 成功空载荷 | 400/401/404 |
 | `POST /channels/discover-models` | 已登录 | 临时渠道配置 | 上游模型列表 | 400/401/502/504 |
 | `POST /channels/test/stream` | 已登录 | 临时渠道配置 | SSE 诊断流 | 400/401/上游错误事件 |
@@ -651,7 +651,7 @@ sequenceDiagram
 7. Compat 白名单仍含已经迁移为系统级的 `intercept_probe_requests`。
 8. 导入不是事务化的显式业务操作，逐项仓储保存可能造成大量数据库往返。
 9. 没有乐观锁或 ETag，并发更新可能后写覆盖先写。
-10. `GET /config` 的排序与实际路由排序不同，容易造成产品认知偏差。
+10. `GET /channels` 的排序与实际路由排序不同，容易造成产品认知偏差。
 
 ---
 
@@ -676,14 +676,14 @@ sequenceDiagram
 
 | 能力 | 源码锚点 | 现有测试锚点 |
 |---|---|---|
-| 渠道接口 | `opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/ConfigController.cs` | `RouteTests.NewAdminRoutesAreAvailable` |
-| 渠道 CRUD/导入 | `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/ConfigService.cs` | `RouteTests.UpdateChannel_OnlyTouchesTargetChannel`、`UpdateChannel_UsesPathIdAndKeepsOwner` |
-| 分组保留 | `ConfigService.SaveSingleChannel` | `RouteTests.UpdateChannel_PreservesExistingGroupWhenRequestOmitsGroupName` |
-| 批量更新 | `ConfigService.PatchChannels` | `RouteTests.BatchUpdateChannels_PatchesOnlySelectedChannels` |
-| 名称唯一 | `ConfigService.SaveSingleChannel` | `RouteTests.CreateChannel_RejectsDuplicateNameForSameOwner` |
-| 容量兼容 | `ConfigValidator.ValidateChannel`、`ConfigService.CapacityValue` | `RouteTests.ConfigSave_BackfillsHistoricalNullCapacityToThreeAndRejectsNewNullCapacity` |
-| 实时容量 | `ConfigService.ResolveActiveRequests` | `RouteTests.ConfigEndpoint_ReturnsCurrentChannelCapacityUsage` |
-| 健康状态/重置 | `ConfigService.ResolveHealthStatus`、`ResetChannelHealthAsync` | `RouteTests.ConfigEndpoint_ReturnsOpenHealthStatusWhenCircuitIsOpen`、`ResetChannelHealthEndpoint_ClearsOpenCircuit` |
+| 渠道接口 | `opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/ChannelController.cs` | `RouteTests.NewAdminRoutesAreAvailable` |
+| 渠道 CRUD/导入 | `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/ChannelService.cs` | `RouteTests.UpdateChannel_OnlyTouchesTargetChannel`、`UpdateChannel_UsesPathIdAndKeepsOwner` |
+| 分组保留 | `ChannelService.SaveSingleChannel` | `RouteTests.UpdateChannel_PreservesExistingGroupWhenRequestOmitsGroupName` |
+| 批量更新 | `ChannelService.PatchChannels` | `RouteTests.BatchUpdateChannels_PatchesOnlySelectedChannels` |
+| 名称唯一 | `ChannelService.SaveSingleChannel` | `RouteTests.CreateChannel_RejectsDuplicateNameForSameOwner` |
+| 容量兼容 | `ConfigValidator.ValidateChannel`、`ChannelService.CapacityValue` | `RouteTests.ConfigSave_BackfillsHistoricalNullCapacityToThreeAndRejectsNewNullCapacity` |
+| 实时容量 | `ChannelService.ResolveActiveRequests` | `RouteTests.ConfigEndpoint_ReturnsCurrentChannelCapacityUsage` |
+| 健康状态/重置 | `ChannelService.ResolveHealthStatus`、`ResetChannelHealthAsync` | `RouteTests.ConfigEndpoint_ReturnsOpenHealthStatusWhenCircuitIsOpen`、`ResetChannelHealthEndpoint_ClearsOpenCircuit` |
 | 配置校验 | `opencodex_proxy/src/Libraries/OpenCodex.Core/Config/ConfigValidator.cs` | 由 `RouteTests`、`ProxyCompatibilityTests` 间接覆盖 |
 | Compat 改写 | `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/ChannelCompatRequestRewriter.cs` | `ProxyCompatibilityTests.ResponsesProxy_DropToolTypes_StripsImageGenerationToolsOnly` |
 | 模型发现/渠道测试 | `ChannelDiagnosticsController.cs`、`ChannelDiagnosticsService.cs` | `ChannelDiagnosticsLogTests.cs`、`ProxyCompatibilityTests.ListModelsAsync_NormalizesArrayRootResponses` |

@@ -3,7 +3,7 @@
     <div class="toolbar">
       <div>
         <h2>API Key 管理</h2>
-        <div class="text-muted">用于调用 /v1/* 代理接口，可在列表复制完整 Key</div>
+        <div class="text-muted">用于调用 /v1/* 代理接口；完整 Key 仅创建时显示一次，列表展示脱敏 Key</div>
       </div>
       <div class="toolbar-actions">
         <el-button :icon="Refresh" @click="loadAccessKeys">刷新</el-button>

@@ -24,11 +24,11 @@
 | 需求族 | 文档 | 数量 | 主要可观察面 | 主要实现/测试证据 |
 |---|---|---:|---|---|
 | `REQ-OV` | [产品总览](01-product-overview.md) | 7 | 全局产品边界与高层验收 | Program.cs；README.md；全部专题测试 |
-| `REQ-USR` | [用户与权限](02-users-and-permissions.md) | 30 | /users、/api-keys、/config、/logs；App/Users/AccessKeys | UsersController；UserService；ApiKeyService；权限与路由测试 |
+| `REQ-USR` | [用户与权限](02-users-and-permissions.md) | 30 | /users、/api-keys、/channels、/logs；App/Users/AccessKeys | UsersController；UserService；ApiKeyService；权限与路由测试 |
 | `REQ-SYS` | [系统边界](03-system-boundary.md) | 15 | /、/health、管理 API、代理 API；Web/Docker/Tauri | Program/Hosting；SystemController；src-tauri；Compose；启动测试 |
 | `REQ-DAT` | [领域模型](04-domain-model.md) | 5 | User、Channel、Model、Pricing、RequestLog、LogContent | Domain；OpenCodexDbContextBase；Migrations；数据/日志测试 |
 | `REQ-AUTH` | [初始化与认证](05-initialization-and-auth.md) | 36 | /setup/status、/setup、/session、/login、/logout、/api-keys | AuthController；Auth/Session/ApiKey/ProxyAccess Service；Setup/Auth 测试 |
-| `REQ-CH` | [渠道管理](06-channel-management.md) | 20 | /config、/channels、discover-models、test-channel；Channels 页面 | ConfigController；ConfigService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH` | [渠道管理](06-channel-management.md) | 20 | /channels、discover-models、test-channel；Channels 页面 | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
 | `REQ-RTE` | [路由与可靠性](07-routing-and-reliability.md) | 25 | /models 与三协议代理入口 | ProxyRoute/Capacity/CircuitBreaker/Affinity/Failover；相关单元与集成测试 |
 | `REQ-PRT` | [协议转换](08-protocol-conversion.md) | 27 | Responses、Chat、Messages 的 3×3 请求/响应/SSE | ProtocolConverter；SseStreamConverter；ProtocolConversionMatrixTests |
 | `REQ-SPC` | [特殊流程](09-tools-multimodal-and-special-flows.md) | 22 | /web-search、/images/*、三协议代理、system-settings | Tool/MCP/WebSearch/Image/OCR/Probe 源码；专项测试 |
@@ -68,11 +68,11 @@
 | `POST /logout` | Cookie 可选 | 初始化认证 | AuthController、SessionState | Cookie 清除和失败恢复 |
 | `GET/POST/PATCH/DELETE /users*` | 超级管理员 | 用户权限、管理台 | UsersController、UserService | 保护管理员、当前用户、级联资源测试 |
 | `GET/POST/PATCH/DELETE /api-keys*` | 管理 Cookie | 用户权限、认证、管理台 | ApiKeysController、ApiKeyService | Owner、明文策略、停用失效测试 |
-| `GET /config` | 管理 Cookie | 渠道管理 | ConfigController、ConfigService | 用户范围与敏感字段测试 |
-| `POST/PUT/DELETE /channels*` | 管理 Cookie | 渠道管理 | ConfigController、ConfigService | CRUD、Owner、校验、缓存失效 |
-| `PATCH /channels/batch` | 管理 Cookie | 渠道管理、管理台 | ConfigController、ConfigService | 部分字段、Images 限制、原子性 |
-| `POST /config/import` | 管理 Cookie | 渠道管理、风险 | ConfigController、ConfigService | 合并键、冲突、秘密导入测试 |
-| `POST /channels/{id}/reset-health` | 管理 Cookie | 渠道、可靠性 | ConfigController、CircuitBreaker | Owner 与状态重置测试 |
+| `GET /channels` | 管理 Cookie | 渠道管理 | ChannelController、ChannelService | 用户范围与敏感字段测试 |
+| `POST/PUT/DELETE /channels*` | 管理 Cookie | 渠道管理 | ChannelController、ChannelService | CRUD、Owner、校验、缓存失效 |
+| `PATCH /channels/batch` | 管理 Cookie | 渠道管理、管理台 | ChannelController、ChannelService | 部分字段、Images 限制、原子性 |
+| `POST /channels/bulk-import` | 管理 Cookie | 渠道管理、风险 | ChannelController、ChannelService | 合并键、冲突、秘密导入测试 |
+| `POST /channels/{id}/reset-health` | 管理 Cookie | 渠道、可靠性 | ChannelController、CircuitBreaker | Owner 与状态重置测试 |
 | `POST /channels/discover-models` | 管理 Cookie | 渠道管理 | ChannelDiagnosticsController/Service | 临时草稿、脱敏、上游错误 |
 | `POST /channels/test/stream` | 管理 Cookie | 渠道、协议、UI | ChannelDiagnosticsService | SSE 成功/空事件/失败/取消 |
 | `GET/POST /model-providers*` | 读用户/写超管 | 模型、权限、UI | ModelCatalogController/Service | Provider 校验与权限 |
@@ -118,13 +118,13 @@
 | `POST` | `/discover-models` | 管理 Cookie，服务层限定资源范围 | `ChannelDiagnosticsController.DiscoverModels` |
 | `POST` | `/channels/test/stream` | 管理 Cookie，服务层限定资源范围 | `ChannelDiagnosticsController.TestChannelStream` |
 | `POST` | `/test-channel/stream` | 管理 Cookie，服务层限定资源范围 | `ChannelDiagnosticsController.TestChannelStream` |
-| `PATCH` | `/channels/batch` | 管理 Cookie，服务层限定资源范围 | `ConfigController.BatchUpdateChannels` |
-| `GET` | `/config` | 管理 Cookie，服务层限定资源范围 | `ConfigController.Config` |
-| `POST` | `/channels` | 管理 Cookie，服务层限定资源范围 | `ConfigController.CreateChannel` |
-| `DELETE` | `/channels/{channelId:guid}` | 管理 Cookie，服务层限定资源范围 | `ConfigController.DeleteChannel` |
-| `POST` | `/config/import` | 管理 Cookie，服务层限定资源范围 | `ConfigController.ImportConfig` |
-| `POST` | `/channels/{channelId:guid}/reset-health` | 管理 Cookie，服务层限定资源范围 | `ConfigController.ResetChannelHealth` |
-| `PUT` | `/channels/{channelId:guid}` | 管理 Cookie，服务层限定资源范围 | `ConfigController.UpdateChannel` |
+| `PATCH` | `/channels/batch` | 管理 Cookie，服务层限定资源范围 | `ChannelController.BatchUpdateChannels` |
+| `GET` | `/channels` | 管理 Cookie，服务层限定资源范围 | `ChannelController.Channels` |
+| `POST` | `/channels` | 管理 Cookie，服务层限定资源范围 | `ChannelController.CreateChannel` |
+| `DELETE` | `/channels/{channelId:guid}` | 管理 Cookie，服务层限定资源范围 | `ChannelController.DeleteChannel` |
+| `POST` | `/channels/bulk-import` | 管理 Cookie，服务层限定资源范围 | `ChannelController.BulkImportChannels` |
+| `POST` | `/channels/{channelId:guid}/reset-health` | 管理 Cookie，服务层限定资源范围 | `ChannelController.ResetChannelHealth` |
+| `PUT` | `/channels/{channelId:guid}` | 管理 Cookie，服务层限定资源范围 | `ChannelController.UpdateChannel` |
 | `POST` | `/images/edits` | Bearer 访问 Key | `ImagesController.Edits` |
 | `POST` | `/v1/images/edits` | Bearer 访问 Key | `ImagesController.Edits` |
 | `POST` | `/images/generations` | Bearer 访问 Key | `ImagesController.Generations` |
@@ -182,7 +182,7 @@
 | 登录 | 用户 | `/login` | Login.vue | 表单、停用、失败、会话恢复 |
 | 全局框架/导航 | 登录用户 | `/session`、`/logout` | App.vue、style.css | 角色菜单、无 Router、移动 Drawer |
 | 仪表盘 | 普通/超管 | `/stats`、实时 SSE、日志详情 | Dashboard.vue | 图表、时间、自动刷新、实时错误 |
-| 渠道配置 | 普通/超管 | `/config`、`/channels*`、诊断、模型覆盖 | Channels.vue | CRUD、归并、批量、测试、定价 |
+| 渠道配置 | 普通/超管 | `/channels*`、诊断、模型覆盖 | Channels.vue | CRUD、归并、批量、测试、定价 |
 | API Key | 普通/超管 | `/api-keys*`、`/users` | AccessKeys.vue | 创建、复制、启停、导入导出和秘密冲突 |
 | 用户管理 | 超管 | `/users*` | Users.vue | 创建、停用、重置、删除和保护规则 |
 | Web Search | 超管 | `/web-search*` | WebSearch.vue | 模式、Key、用量、测试和失败回滚 |
@@ -196,7 +196,7 @@
 |---|---|---|---|---|
 | User | 用户、认证 | Auth/User Service | Session/WorkContext/管理台 | 唯一用户名、保护管理员、级联 |
 | AccessApiKey | 用户、认证 | ApiKeyService | ProxyAccess、管理台 | SHA-256、明文冲突、缓存失效 |
-| Channel | 渠道、路由 | ConfigService | Route/Diagnostics/UI | Owner、排序、秘密、环境展开 |
+| Channel | 渠道、路由 | ChannelService | Route/Diagnostics/UI | Owner、排序、秘密、环境展开 |
 | ChannelModelMapping | 渠道、路由 | Config/ModelCatalog | Route/ImageFallback | 显式映射全局语义 |
 | ModelProvider | 模型目录 | ModelCatalogService | UI/Codex 目录 | code 唯一、启停 |
 | ModelInfo | 模型目录/计费 | ModelCatalogService | Route/Catalog/Pricing | 匹配方式、Catalog、能力 |
@@ -360,26 +360,26 @@
 | `REQ-AUTH-034` | MUST | 认证页面可访问性 | [初始化与认证](05-initialization-and-auth.md) | AuthController；Auth/Session/ApiKey/ProxyAccess Service；Setup/Auth 测试 |
 | `REQ-AUTH-035` | MUST | 认证安全审计 | [初始化与认证](05-initialization-and-auth.md) | AuthController；Auth/Session/ApiKey/ProxyAccess Service；Setup/Auth 测试 |
 | `REQ-AUTH-036` | MUST | 管理台与 Bearer 身份隔离 | [初始化与认证](05-initialization-and-auth.md) | AuthController；Auth/Session/ApiKey/ProxyAccess Service；Setup/Auth 测试 |
-| `REQ-CH-001` | MUST | 租户隔离 | [渠道管理](06-channel-management.md) | ConfigController；ConfigService；ChannelDiagnosticsService；渠道/路由测试 |
-| `REQ-CH-002` | MUST | 渠道列表 | [渠道管理](06-channel-management.md) | ConfigController；ConfigService；ChannelDiagnosticsService；渠道/路由测试 |
-| `REQ-CH-003` | MUST | 创建校验 | [渠道管理](06-channel-management.md) | ConfigController；ConfigService；ChannelDiagnosticsService；渠道/路由测试 |
-| `REQ-CH-004` | MUST | 名称唯一性 | [渠道管理](06-channel-management.md) | ConfigController；ConfigService；ChannelDiagnosticsService；渠道/路由测试 |
-| `REQ-CH-005` | MUST | 更新目标稳定性 | [渠道管理](06-channel-management.md) | ConfigController；ConfigService；ChannelDiagnosticsService；渠道/路由测试 |
-| `REQ-CH-006` | MUST | 批量更新原子性 | [渠道管理](06-channel-management.md) | ConfigController；ConfigService；ChannelDiagnosticsService；渠道/路由测试 |
-| `REQ-CH-007` | MUST | 删除及关联清理 | [渠道管理](06-channel-management.md) | ConfigController；ConfigService；ChannelDiagnosticsService；渠道/路由测试 |
-| `REQ-CH-008` | MUST | 配置导入为合并操作 | [渠道管理](06-channel-management.md) | ConfigController；ConfigService；ChannelDiagnosticsService；渠道/路由测试 |
-| `REQ-CH-009` | MUST | 模型映射标准化 | [渠道管理](06-channel-management.md) | ConfigController；ConfigService；ChannelDiagnosticsService；渠道/路由测试 |
-| `REQ-CH-010` | MUST | Images 渠道约束 | [渠道管理](06-channel-management.md) | ConfigController；ConfigService；ChannelDiagnosticsService；渠道/路由测试 |
-| `REQ-CH-011` | MUST | Compat 执行契约 | [渠道管理](06-channel-management.md) | ConfigController；ConfigService；ChannelDiagnosticsService；渠道/路由测试 |
-| `REQ-CH-012` | MUST | 上游凭证保护 | [渠道管理](06-channel-management.md) | ConfigController；ConfigService；ChannelDiagnosticsService；渠道/路由测试 |
-| `REQ-CH-013` | SHOULD | 环境变量引用 | [渠道管理](06-channel-management.md) | ConfigController；ConfigService；ChannelDiagnosticsService；渠道/路由测试 |
-| `REQ-CH-014` | MUST | 实时健康展示 | [渠道管理](06-channel-management.md) | ConfigController；ConfigService；ChannelDiagnosticsService；渠道/路由测试 |
-| `REQ-CH-015` | MUST | 健康重置 | [渠道管理](06-channel-management.md) | ConfigController；ConfigService；ChannelDiagnosticsService；渠道/路由测试 |
-| `REQ-CH-016` | SHOULD | 模型发现 | [渠道管理](06-channel-management.md) | ConfigController；ConfigService；ChannelDiagnosticsService；渠道/路由测试 |
-| `REQ-CH-017` | SHOULD | 流式渠道测试 | [渠道管理](06-channel-management.md) | ConfigController；ConfigService；ChannelDiagnosticsService；渠道/路由测试 |
-| `REQ-CH-018` | MUST | 缓存一致性 | [渠道管理](06-channel-management.md) | ConfigController；ConfigService；ChannelDiagnosticsService；渠道/路由测试 |
-| `REQ-CH-019` | MUST | 审计记录 | [渠道管理](06-channel-management.md) | ConfigController；ConfigService；ChannelDiagnosticsService；渠道/路由测试 |
-| `REQ-CH-020` | SHOULD | 并发修改保护 | [渠道管理](06-channel-management.md) | ConfigController；ConfigService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-001` | MUST | 租户隔离 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-002` | MUST | 渠道列表 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-003` | MUST | 创建校验 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-004` | MUST | 名称唯一性 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-005` | MUST | 更新目标稳定性 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-006` | MUST | 批量更新原子性 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-007` | MUST | 删除及关联清理 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-008` | MUST | 配置导入为合并操作 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-009` | MUST | 模型映射标准化 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-010` | MUST | Images 渠道约束 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-011` | MUST | Compat 执行契约 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-012` | MUST | 上游凭证保护 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-013` | SHOULD | 环境变量引用 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-014` | MUST | 实时健康展示 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-015` | MUST | 健康重置 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-016` | SHOULD | 模型发现 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-017` | SHOULD | 流式渠道测试 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-018` | MUST | 缓存一致性 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-019` | MUST | 审计记录 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-020` | SHOULD | 并发修改保护 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
 | `REQ-RTE-001` | MUST | 租户路由隔离 | [路由与可靠性](07-routing-and-reliability.md) | ProxyRoute/Capacity/CircuitBreaker/Affinity/Failover；相关单元与集成测试 |
 | `REQ-RTE-002` | MUST | 映射模式判定 | [路由与可靠性](07-routing-and-reliability.md) | ProxyRoute/Capacity/CircuitBreaker/Affinity/Failover；相关单元与集成测试 |
 | `REQ-RTE-003` | MUST | 无映射兜底 | [路由与可靠性](07-routing-and-reliability.md) | ProxyRoute/Capacity/CircuitBreaker/Affinity/Failover；相关单元与集成测试 |

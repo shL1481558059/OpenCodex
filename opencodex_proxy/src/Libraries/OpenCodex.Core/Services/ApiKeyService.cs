@@ -121,6 +121,16 @@ public sealed class ApiKeyService : IApiKeyService
             var currentUser = _workContext.RequireUser();
             var isSuperadmin = currentUser.Role == "superadmin";
             var ownerUserId = command.OwnerUserId;
+            string ownerUsername;
+
+            if (ownerUserId == Guid.Empty)
+            {
+                ownerUserId = currentUser.UserId;
+            }
+            if (!isSuperadmin)
+            {
+                ownerUserId = currentUser.UserId;
+            }
 
             // 缺陷 2.1 修复：超管通过 owner_username 指定归属人。
             if (isSuperadmin && !string.IsNullOrWhiteSpace(command.OwnerUsername))
@@ -134,33 +144,26 @@ public sealed class ApiKeyService : IApiKeyService
                     return ApiOpResult<ApiKeyResponsePayload>.Fail(400, $"owner user '{command.OwnerUsername}' not found");
                 }
                 ownerUserId = ownerUser.Id;
+                ownerUsername = ownerUser.Username;
             }
-
-            if (ownerUserId == Guid.Empty)
+            else if (isSuperadmin)
             {
-                ownerUserId = currentUser.UserId;
-            }
-            if (!isSuperadmin)
-            {
-                ownerUserId = currentUser.UserId;
-            }
-
-            string ownerUsername;
-            if (!isSuperadmin)
-            {
-                ownerUsername = currentUser.Username;
-            }
-            else
-            {
-                var owner = _userRepository.TableNoTracking
+                // 超管按 OwnerUserId 指定归属人：一次投影拿到 Id/Username，
+                // 复用 Username 填返回值，避免再按 Id 回查一次。
+                var ownerUser = _userRepository.TableNoTracking
                     .Where(u => u.Id == ownerUserId)
-                    .Select(u => u.Username)
+                    .Select(u => new { u.Id, u.Username })
                     .FirstOrDefault();
-                if (owner is null)
+                if (ownerUser is null)
                 {
                     throw new InvalidOperationException("user not found");
                 }
-                ownerUsername = owner;
+                ownerUserId = ownerUser.Id;
+                ownerUsername = ownerUser.Username;
+            }
+            else
+            {
+                ownerUsername = currentUser.Username;
             }
 
             var rawKey = OpenCodexSecurity.GenerateAccessApiKey();

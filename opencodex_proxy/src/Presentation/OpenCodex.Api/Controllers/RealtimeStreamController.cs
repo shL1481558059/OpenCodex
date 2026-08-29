@@ -1,7 +1,7 @@
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using OpenCodex.Api.Infrastructure;
-using OpenCodex.CoreBase.DTOs.Config;
+using OpenCodex.CoreBase.DTOs.Channels;
 using OpenCodex.CoreBase.DTOs.Observability;
 using OpenCodex.CoreBase.Events;
 using OpenCodex.CoreBase.Services;
@@ -74,7 +74,7 @@ public sealed class RealtimeStreamController : AuthenticatedApiControllerBase
             async ct =>
             {
                 using var scope = _scopeFactory.CreateScope();
-                var config = scope.ServiceProvider.GetRequiredService<IConfigService>();
+                var config = scope.ServiceProvider.GetRequiredService<IChannelService>();
                 var result = config.ReadChannelRuntime(null);
                 var payload = result.Payload ?? new ChannelRuntimeListResponse();
                 var data = JsonSerializer.Serialize(payload);

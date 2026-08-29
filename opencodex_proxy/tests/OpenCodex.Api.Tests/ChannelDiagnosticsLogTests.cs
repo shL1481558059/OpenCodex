@@ -309,12 +309,12 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
             });
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        return await ReadChannelIdFromConfigResponse(cookie, "Diagnostics Channel");
+        return await ReadChannelIdFromChannelsResponse(cookie, "Diagnostics Channel");
     }
 
-    private async Task<Guid> ReadChannelIdFromConfigResponse(string cookie, string channelName)
+    private async Task<Guid> ReadChannelIdFromChannelsResponse(string cookie, string channelName)
     {
-        var config = await SendJsonWithCookie(HttpMethod.Get, "/config", cookie, null);
+        var config = await SendJsonWithCookie(HttpMethod.Get, "/channels", cookie, null);
         Assert.Equal(HttpStatusCode.OK, config.StatusCode);
         using var document = await JsonDocument.ParseAsync(await config.Content.ReadAsStreamAsync());
         foreach (var channel in document.RootElement.GetProperty("Data").GetProperty("channels").EnumerateArray())

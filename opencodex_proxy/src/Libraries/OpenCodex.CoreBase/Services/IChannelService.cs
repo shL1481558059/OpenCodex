@@ -1,4 +1,4 @@
-using OpenCodex.CoreBase.DTOs.Config;
+using OpenCodex.CoreBase.DTOs.Channels;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.Results;
 
@@ -7,12 +7,12 @@ namespace OpenCodex.CoreBase.Services;
 /// <summary>
 /// 定义通道配置管理服务。
 /// </summary>
-public interface IConfigService
+public interface IChannelService
 {
     /// <summary>
     /// 读取当前通道配置列表。
     /// </summary>
-    ApiOpResult<ConfigResponse> ReadConfig();
+    ApiOpResult<ChannelListResponse> ReadChannels();
 
     /// <summary>
     /// 读取指定渠道的配置详情。
@@ -55,7 +55,7 @@ public interface IConfigService
     /// 合并导入通道配置。按 (owner_username, name) 匹配：已存在则更新，不存在则新增。
     /// </summary>
     /// <param name="body">导入的通道配置请求内容。</param>
-    Task<ApiOpResult<ChannelBatchUpdateResult>> ImportConfigAsync(
+    Task<ApiOpResult<ChannelBatchUpdateResult>> ImportChannelsAsync(
         IReadOnlyDictionary<string, object?> body);
 
     /// <summary>

@@ -6,7 +6,7 @@
         <div class="text-muted">保存单个渠道后立即生效</div>
       </div>
       <div class="toolbar-actions">
-        <el-button :icon="Refresh" @click="loadConfig">刷新</el-button>
+        <el-button :icon="Refresh" @click="loadChannels">刷新</el-button>
         <el-tooltip :content="bulkChannelTestDisabledReason" :disabled="!bulkChannelTestDisabledReason">
           <span>
             <el-button :icon="Connection" :disabled="Boolean(bulkChannelTestDisabledReason)" @click="openBulkChannelTest">
@@ -1803,10 +1803,10 @@ const channelPricingEditorTitle = computed(() => {
   const model = channelPricingDraft.upstream_model || "";
   return model ? `编辑定价 - ${model}` : "编辑定价";
 });
-async function loadConfig() {
+async function loadChannels() {
   configLoading.value = true;
   try {
-    const data = await props.api("/config");
+    const data = await props.api("/channels");
     config.channels = Array.isArray(data.channels) ? data.channels : [];
     selectedChannels.value = [];
     await nextTick();
@@ -1867,12 +1867,26 @@ async function handleImportChannelsFile(event) {
       ElMessage.error("导入文件格式不正确：缺少 channels 数组");
       return;
     }
-    await props.api("/config/import", {
+    for (let i = 0; i < channels.length; i += 1) {
+      const channel = channels[i];
+      const name = (channel?.name || "").trim();
+      const baseurl = (channel?.baseurl || "").trim();
+      const id = (channel?.id || "").trim();
+      if (!id || !name || !baseurl) {
+        ElMessage.error(`导入文件第 ${i + 1} 个渠道缺少必填字段（id / name / baseurl）`);
+        return;
+      }
+      if (!/^https?:\/\//i.test(baseurl)) {
+        ElMessage.error(`导入文件第 ${i + 1} 个渠道的 baseurl 必须以 http:// 或 https:// 开头`);
+        return;
+      }
+    }
+    await props.api("/channels/bulk-import", {
       method: "POST",
       body: JSON.stringify({ channels })
     });
     ElMessage.success("渠道配置导入成功");
-    await loadConfig();
+    await loadChannels();
   } catch (error) {
     ElMessage.error(error.message || "导入失败");
   }
@@ -2026,7 +2040,7 @@ async function applyBulkChannelEdit() {
     await nextTick();
     channelTableRef.value?.clearSelection();
     bulkEditVisible.value = false;
-    await loadConfig();
+    await loadChannels();
     ElMessage.success(`已更新 ${channelIds.length} 个渠道`);
   } catch (error) {
     ElMessage.error(error.message);
@@ -2207,6 +2221,11 @@ function markPendingBulkRowsCancelled() {
 }
 
 async function saveChannel() {
+  const validationError = validateChannelDraft();
+  if (validationError) {
+    ElMessage.warning(validationError);
+    return;
+  }
   saveLoading.value = true;
   try {
     const channel = buildChannelFromDraft();
@@ -2217,7 +2236,7 @@ async function saveChannel() {
     }
     channelDrawerVisible.value = false;
     ElMessage.success("渠道配置已保存并生效");
-    await loadConfig();
+    await loadChannels();
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
@@ -2234,7 +2253,7 @@ async function deleteChannel(index) {
     method: "DELETE"
   });
   selectedChannels.value = selectedChannels.value.filter((item) => item.id !== channel.id);
-  await loadConfig();
+  await loadChannels();
   ElMessage.success("渠道已删除");
 }
 
@@ -2340,7 +2359,7 @@ async function confirmResetChannelHealth(channel) {
       body: "{}"
     });
     ElMessage.success("已重置渠道可用状态");
-    await loadConfig();
+    await loadChannels();
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
@@ -3071,6 +3090,41 @@ function assignCompat(compat) {
   });
 }
 
+function validateChannelDraft() {
+  const name = (channelDraft.name || "").trim();
+  if (!name) {
+    return "请填写渠道名称";
+  }
+  const type = channelDraft.type || "";
+  if (!["responses", "chat", "messages", "images"].includes(type)) {
+    return "请选择有效的服务类型";
+  }
+  const baseurl = (channelDraft.baseurl || "").trim();
+  if (!baseurl) {
+    return "请填写 Base URL";
+  }
+  if (!/^https?:\/\//i.test(baseurl)) {
+    return "Base URL 必须以 http:// 或 https:// 开头";
+  }
+  const authMode = channelDraft.auth_mode || "config";
+  if (authMode === "config" && !channelDraft.apikey) {
+    return "认证方式为“配置 Key”时必须填写 API Key";
+  }
+  const capacity = normalizeCapacityValue(channelDraft.capacity);
+  if (!Number.isInteger(capacity) || capacity <= 0) {
+    return "容量必须是正整数";
+  }
+  const priority = normalizePriorityValue(channelDraft.priority);
+  if (!Number.isInteger(priority) || priority < 0) {
+    return "优先级必须是大于等于 0 的整数";
+  }
+  const timeout = Number(channelDraft.timeout_seconds || 0);
+  if (!Number.isInteger(timeout) || timeout <= 0) {
+    return "超时秒数必须是正整数";
+  }
+  return null;
+}
+
 function buildChannelFromDraft() {
   const headers = parseJsonText(headersText.value || "{}", "请求头");
   if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
@@ -3421,12 +3475,12 @@ function isPlainObject(value) {
   return value && typeof value === "object" && !Array.isArray(value);
 }
 
-// Expose loadConfig so App can call it on init
+// Expose loadChannels so App can call it on init
 onMounted(async () => {
   mobileMediaQuery = window.matchMedia("(max-width: 767px)");
   updateMobileViewport(mobileMediaQuery);
   mobileMediaQuery.addEventListener("change", updateMobileViewport);
-  await loadConfig();
+  await loadChannels();
   runtimeStream.start();
   channelOffPeakTimer = window.setInterval(() => {
     channelOffPeakClock.value = Date.now();

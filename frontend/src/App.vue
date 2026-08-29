@@ -1,29 +1,30 @@
 <template>
-  <div v-if="loadingSession" class="login-wrap">
-    <el-empty description="正在加载管理台" />
-  </div>
+  <el-config-provider :locale="zhCn">
+    <div v-if="loadingSession" class="login-wrap">
+      <el-empty description="正在加载管理台" />
+    </div>
 
-  <div v-else-if="initError" class="login-wrap">
-    <el-card class="login-card" shadow="never">
-      <template #header>
-        <strong>初始化失败</strong>
-      </template>
-      <el-alert type="error" :title="initError" show-icon :closable="false" />
-      <el-button type="primary" class="full-width" style="margin-top: 16px" @click="initApp">重试</el-button>
-    </el-card>
-  </div>
+    <div v-else-if="initError" class="login-wrap">
+      <el-card class="login-card" shadow="never">
+        <template #header>
+          <strong>初始化失败</strong>
+        </template>
+        <el-alert type="error" :title="initError" show-icon :closable="false" />
+        <el-button type="primary" class="full-width" style="margin-top: 16px" @click="initApp">重试</el-button>
+      </el-card>
+    </div>
 
-  <Setup
-    v-else-if="needsSetup"
-    :api="api"
-    :initial-settings="setupSettings"
-    @setup-complete="handleSetupComplete"
-  />
+    <Setup
+      v-else-if="needsSetup"
+      :api="api"
+      :initial-settings="setupSettings"
+      @setup-complete="handleSetupComplete"
+    />
 
-  <Login v-else-if="!authenticated" :api="api" @login="handleLogin" />
+    <Login v-else-if="!authenticated" :api="api" @login="handleLogin" />
 
-  <div v-else class="app-page">
-    <el-container class="app-shell">
+    <div v-else class="app-page">
+      <el-container class="app-shell">
       <el-header class="app-header">
         <div class="header-brand">
           <button class="mobile-menu-button" type="button" aria-label="打开菜单" title="打开菜单" @click="mobileMenuVisible = true">
@@ -96,22 +97,23 @@
           </div>
         </el-main>
       </el-container>
-    </el-container>
+      </el-container>
 
-    <el-drawer
-      v-model="mobileMenuVisible"
-      title="菜单"
-      direction="ltr"
-     size="280px"
-   >
-      <el-menu class="mobile-drawer-menu" :default-active="activeTab" @select="handleMobileMenuSelect">
-        <el-menu-item v-for="item in visibleMenuItems" :key="item.index" :index="item.index">
-          <el-icon><component :is="item.icon" /></el-icon>
-          <span>{{ item.label }}</span>
-        </el-menu-item>
-      </el-menu>
-    </el-drawer>
-  </div>
+      <el-drawer
+        v-model="mobileMenuVisible"
+        title="菜单"
+        direction="ltr"
+       size="280px"
+     >
+        <el-menu class="mobile-drawer-menu" :default-active="activeTab" @select="handleMobileMenuSelect">
+          <el-menu-item v-for="item in visibleMenuItems" :key="item.index" :index="item.index">
+            <el-icon><component :is="item.icon" /></el-icon>
+            <span>{{ item.label }}</span>
+          </el-menu-item>
+        </el-menu>
+      </el-drawer>
+    </div>
+  </el-config-provider>
 </template>
 
 <script setup>
@@ -130,6 +132,7 @@ import {
   Tickets,
   User
 } from "@element-plus/icons-vue";
+import zhCn from "element-plus/es/locale/lang/zh-cn";
 const Dashboard = defineAsyncComponent(() => import("./Dashboard.vue"));
 const Setup = defineAsyncComponent(() => import("./Setup.vue"));
 const Login = defineAsyncComponent(() => import("./Login.vue"));

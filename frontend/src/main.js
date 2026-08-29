@@ -6,6 +6,7 @@ import { ElCard } from "element-plus/es/components/card/index.mjs";
 import { ElCheckbox, ElCheckboxGroup } from "element-plus/es/components/checkbox/index.mjs";
 import { ElCol } from "element-plus/es/components/col/index.mjs";
 import { ElCollapse, ElCollapseItem } from "element-plus/es/components/collapse/index.mjs";
+import { ElConfigProvider } from "element-plus/es/components/config-provider/index.mjs";
 import { ElAside, ElContainer, ElHeader, ElMain } from "element-plus/es/components/container/index.mjs";
 import { ElDatePicker } from "element-plus/es/components/date-picker/index.mjs";
 import { ElDescriptions, ElDescriptionsItem } from "element-plus/es/components/descriptions/index.mjs";
@@ -34,6 +35,7 @@ import { ElTable, ElTableColumn } from "element-plus/es/components/table/index.m
 import { ElTabPane, ElTabs } from "element-plus/es/components/tabs/index.mjs";
 import { ElTag } from "element-plus/es/components/tag/index.mjs";
 import { ElTooltip } from "element-plus/es/components/tooltip/index.mjs";
+import zhCn from "element-plus/es/locale/lang/zh-cn";
 import "element-plus/es/components/alert/style/css.mjs";
 import "element-plus/es/components/aside/style/css.mjs";
 import "element-plus/es/components/autocomplete/style/css.mjs";
@@ -44,6 +46,7 @@ import "element-plus/es/components/checkbox-group/style/css.mjs";
 import "element-plus/es/components/col/style/css.mjs";
 import "element-plus/es/components/collapse/style/css.mjs";
 import "element-plus/es/components/collapse-item/style/css.mjs";
+import "element-plus/es/components/config-provider/style/css.mjs";
 import "element-plus/es/components/container/style/css.mjs";
 import "element-plus/es/components/date-picker/style/css.mjs";
 import "element-plus/es/components/descriptions/style/css.mjs";
@@ -101,6 +104,7 @@ const elementComponents = [
   ElCol,
   ElCollapse,
   ElCollapseItem,
+  ElConfigProvider,
   ElContainer,
   ElDatePicker,
   ElDescriptions,

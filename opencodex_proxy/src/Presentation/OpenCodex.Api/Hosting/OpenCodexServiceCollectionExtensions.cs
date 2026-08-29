@@ -151,7 +151,7 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<IChannelDiagnosticsService, ChannelDiagnosticsService>();
         services.AddScoped<ISessionService, SessionService>();
-        services.AddScoped<IConfigService, ConfigService>();
+        services.AddScoped<IChannelService, ChannelService>();
         services.AddScoped<IUserService, UserService>();
         services.AddScoped<IApiKeyService, ApiKeyService>();
         services.AddScoped<IModelCatalogService, ModelCatalogService>();

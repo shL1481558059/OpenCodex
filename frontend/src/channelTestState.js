@@ -136,7 +136,8 @@ export function formatChannelTestResult(result) {
   }
   if (result.phase === "error") {
     const details = extractErrorMessage(result.body);
-    return [result.error || "上游请求失败", details].filter(Boolean).join("\n");
+    const primary = result.error || "上游请求失败";
+    return [primary, details].filter((text) => Boolean(text) && text !== primary).join("\n") || primary;
   }
   const responseText = extractResponseText(result.response);
   if (responseText) return responseText;

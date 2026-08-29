@@ -16,7 +16,7 @@ public static class CacheKeys
     public static string RouteChannels(string ownerUsername) => $"route:channels:{ownerUsername}";
 
     /// <summary>管理台:全量渠道配置快照(进程内 IMemoryCache),供 SSE 每帧回查免落库。</summary>
-    public static string ChannelConfig => "admin:channel-config";
+    public static string Channels => "admin:channels";
 
     /// <summary>观测:全量渠道轻量快照(进程内 IMemoryCache),只含路由/容量所需字段,不含 models/headers/compat。</summary>
     public static string ChannelObservation => "admin:channel-observation";

@@ -92,7 +92,7 @@ OpenCodex 同时承担两类完全不同的身份认证：
 
 | 凭证 | 使用者 | 传输位置 | 目标接口 | 当前作用 | 是否决定资源归属 |
 |---|---|---|---|---|---|
-| 管理台 Cookie | 浏览器中的人 | Cookie `opencodex_admin_auth` | `/session`、`/users`、`/config`、`/api-keys` 等管理接口 | 管理台登录和角色权限 | 是，来自 Cookie 中用户并回查数据库 |
+| 管理台 Cookie | 浏览器中的人 | Cookie `opencodex_admin_auth` | `/session`、`/users`、`/channels`、`/api-keys` 等管理接口 | 管理台登录和角色权限 | 是，来自 Cookie 中用户并回查数据库 |
 | Access API Key | CLI、SDK、客户端 | `Authorization: Bearer ...` | `/v1/responses`、`/v1/chat/completions`、`/v1/messages`、图片接口等代理入口 | 代理调用鉴权 | 是，Key 归属用户决定可用渠道和日志归属 |
 | 渠道上游 Key | OpenCodex 服务端 | 渠道 `apikey` 或自定义 headers | 上游模型服务 | 上游鉴权 | 否，不应改变调用者身份 |
 

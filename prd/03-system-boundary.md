@@ -205,7 +205,7 @@ flowchart TB
 
 - `/users`
 - `/api-keys`
-- `/config`、`/channels`
+- `/channels`
 - `/model-providers`、`/model-infos`
 - `/model-catalog/export`、`/model-catalog/import`（仅超级管理员）
 - `/pricing`

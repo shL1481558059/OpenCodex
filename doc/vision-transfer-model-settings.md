@@ -172,7 +172,7 @@ public interface IVisionTransferSettingsService
 
 ### 4.2 接口契约
 
-四个端点，与桌面文件设置解耦，权限用 `RequireUser()` 加 owner 归属收敛（沿用 `ConfigService.CurrentScope()` 那套 `(currentUsername, isSuperadmin)` 模式）。`owner_username` 缺省为当前登录用户；非 superadmin 传别人也会被强制改写成自己。
+四个端点，与桌面文件设置解耦，权限用 `RequireUser()` 加 owner 归属收敛（沿用 `ChannelService.CurrentScope()` 那套 `(currentUsername, isSuperadmin)` 模式）。`owner_username` 缺省为当前登录用户；非 superadmin 传别人也会被强制改写成自己。
 
 ```text
 GET    /system-settings/vision-transfer?owner_username=alice
@@ -346,7 +346,7 @@ flowchart TD
 | U2b | 清理 2.6 的相邻死代码（紧接 U2a，单独提交） | 同 U2a 加 `ProxyEndpointService.cs` 与相关测试 | 中：一次改掉 4 个公共签名，只改一轮测试替身 |
 | U3 | 兜底执行与请求级失败记忆 | `ProxyImageFallbackService.cs`、`ProxyImageFallbackModels.cs`、`ProxyOcrService.cs`、`ProxyEndpointService.cs` | 中：重试放大上游调用；400 与 502 语义不能串 |
 | U4 | 管理端 API 与权限拆分 | `SystemSettingsController.cs`（逐方法权限）、DTO、`frontend/src/api/systemSettings.js` | 中：越权收敛（D12）是安全边界，必须有测试 |
-| U5 | 引用完整性 | `ConfigService.DeleteChannelAsync`、`UserService.DeleteUser` | 低：注意与现有级联删除同一事务 |
+| U5 | 引用完整性 | `ChannelService.DeleteChannelAsync`、`UserService.DeleteUser` | 低：注意与现有级联删除同一事务 |
 | U6 | 管理台菜单与 UI | `frontend/src/App.vue`（菜单裁剪与 `is-superadmin` 透传）、`frontend/src/SystemSettings.vue`、新增 `frontend/src/visionTransferState.js` 与同名 `.test.js` | 中：菜单放开后普通 user 会看到系统设置页，页面内必须严格分区 |
 | U7 | OCR 缓存 key 并入路由身份 | `ProxyOcrService.cs` | 低 |
 

@@ -57,14 +57,6 @@ export function restoreChannelModelInfo(channelId, id) {
   return request(`/channels/${channelId}/model-infos/${id}`, { method: "DELETE" });
 }
 
-export function getConfig() {
-  return request("/config");
-}
-
-export function importConfig(body) {
-  return request("/config/import", { method: "POST", body: JSON.stringify(body) });
-}
-
 export function resetChannelHealthLegacy(id) {
   return request(`/channels/${id}/reset-health`, { method: "POST" });
 }

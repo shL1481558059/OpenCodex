@@ -66,32 +66,38 @@ public sealed class WebSearchService : IWebSearchService
         }
     }
 
-    private ApiOpResult<TavilyKeyDto> ReserveTestKey(Guid keyId)
-    {
-        var key = ReserveTavilyKeyById(keyId);
-        return key is null
-            ? ApiOpResult<TavilyKeyDto>.Fail(400, KeyUnavailableMessage)
-            : ApiOpResult<TavilyKeyDto>.Succeed(key);
-    }
-
     public async Task<ApiOpResult<WebSearchTestKeyResponsePayload>> TestKeyAsync(
         Guid keyId,
         string query,
         CancellationToken cancellationToken)
     {
-        var reserved = ReserveTestKey(keyId);
-        if (!reserved.Succeeded || reserved.Payload is null)
+        // 测试连接不占用真实调用配额：只读取 key 并返回“测试展示 +1”的快照，
+        // 不持久化 UsageCount，避免把管理员点“测试”误计入计费/配额。
+        var key = _keyRepository.TableNoTracking
+            .Where(item => item.Id == keyId && item.UsageCount < item.UsageLimit)
+            .FirstOrDefault();
+        if (key is null)
         {
-            return ApiOpResult<WebSearchTestKeyResponsePayload>.Fail(400, reserved.Description);
+            return ApiOpResult<WebSearchTestKeyResponsePayload>.Fail(400, KeyUnavailableMessage);
         }
 
         var result = await _webSearchClient.SearchAsync(
-            new WebSearchProviderKey(reserved.Payload.Provider, reserved.Payload.Key),
+            new WebSearchProviderKey(key.Provider, key.ApiKey),
             query,
             cancellationToken);
+        var testKey = MapToDto(key);
+        testKey = new TavilyKeyDto(
+            testKey.Id,
+            testKey.Position,
+            testKey.Provider,
+            testKey.Key,
+            testKey.Enabled,
+            testKey.UsageCount + 1,
+            testKey.UsageLimit,
+            testKey.KeyUsageLimit);
         var config = ReadWebSearchConfig();
         return ApiOpResult<WebSearchTestKeyResponsePayload>.Succeed(WebSearchTestKeyResponsePayload.From(
-            reserved.Payload,
+            testKey,
             result,
             config,
             result.DurationMs));

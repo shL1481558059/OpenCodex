@@ -10,7 +10,6 @@ const adminProxyRoutes = [
   "/logout",
   "/users",
   "/api-keys",
-  "/config",
   "/channels",
   "/logs",
   "/log-filter-options",

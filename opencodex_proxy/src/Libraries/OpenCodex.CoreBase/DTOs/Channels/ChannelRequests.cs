@@ -1,12 +1,12 @@
 using System.Text.Json.Serialization;
 using OpenCodex.CoreBase.DTOs;
 
-namespace OpenCodex.CoreBase.DTOs.Config;
+namespace OpenCodex.CoreBase.DTOs.Channels;
 
 /// <summary>
 /// 表示保存通道配置的请求。
 /// </summary>
-public sealed class ConfigSaveRequest
+public sealed class ChannelSaveRequest
 {
     /// <summary>
     /// 获取或设置要保存的通道请求列表。

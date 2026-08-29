@@ -42,7 +42,6 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
         Assert.DoesNotContain(routes, route => route!.Contains("/admin/api", StringComparison.Ordinal));
         Assert.Contains("/session", routes);
         Assert.Contains("/login", routes);
-        Assert.Contains("/config", routes);
         Assert.Contains("/channels", routes);
         Assert.Contains("/channels/{channelId:guid}", routes);
         Assert.Contains("/channels/runtime", routes);
@@ -157,7 +156,7 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
 
         var cookie = await LoginAndReadSessionCookie();
 
-        var config = await SendWithCookie(HttpMethod.Get, "/config", cookie);
+        var config = await SendWithCookie(HttpMethod.Get, "/channels", cookie);
         Assert.Equal(HttpStatusCode.OK, config.StatusCode);
 
         var logs = await SendWithCookie(HttpMethod.Get, "/logs?page=1&page_size=5", cookie);
@@ -206,7 +205,7 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
                 ["capacity"] = 3
             });
 
-        var response = await SendWithCookie(client, HttpMethod.Get, "/config", cookie);
+        var response = await SendWithCookie(client, HttpMethod.Get, "/channels", cookie);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
@@ -257,7 +256,7 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
             await breaker.RecordFailureAsync("admin", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", new UpstreamException("down", ProxyHttpStatus.BadGateway));
         }
 
-        var response = await SendWithCookie(client, HttpMethod.Get, "/config", cookie);
+        var response = await SendWithCookie(client, HttpMethod.Get, "/channels", cookie);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
@@ -311,7 +310,7 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
             cookie);
         Assert.Equal(HttpStatusCode.OK, reset.StatusCode);
 
-        var response = await SendWithCookie(client, HttpMethod.Get, "/config", cookie);
+        var response = await SendWithCookie(client, HttpMethod.Get, "/channels", cookie);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
@@ -574,14 +573,14 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
             });
         Assert.Equal(HttpStatusCode.OK, batch.StatusCode);
 
-        // 批量更新返回 { updated_ids, count }，不再返回渠道列表。通过 GET /config 验证。
+        // 批量更新返回 { updated_ids, count }，不再返回渠道列表。通过 GET /channels 验证。
         using var batchDocument = await JsonDocument.ParseAsync(await batch.Content.ReadAsStreamAsync());
         var updatedIds = batchDocument.RootElement.GetProperty("Data").GetProperty("updated_ids").EnumerateArray()
             .Select(id => id.GetGuid()).ToList();
         Assert.Single(updatedIds);
         Assert.Equal(firstId, updatedIds[0]);
 
-        var config = await SendWithCookie(client, HttpMethod.Get, "/config", cookie);
+        var config = await SendWithCookie(client, HttpMethod.Get, "/channels", cookie);
         Assert.Equal(HttpStatusCode.OK, config.StatusCode);
         using var document = await JsonDocument.ParseAsync(await config.Content.ReadAsStreamAsync());
         var channels = document.RootElement.GetProperty("Data").GetProperty("channels").EnumerateArray().ToList();
@@ -715,7 +714,7 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
             });
         Assert.Equal(HttpStatusCode.OK, update.StatusCode);
 
-        var config = await SendWithCookie(client, HttpMethod.Get, "/config", adminCookie);
+        var config = await SendWithCookie(client, HttpMethod.Get, "/channels", adminCookie);
         Assert.Equal(HttpStatusCode.OK, config.StatusCode);
         using var document = await JsonDocument.ParseAsync(await config.Content.ReadAsStreamAsync());
         var channels = document.RootElement.GetProperty("Data").GetProperty("channels");
@@ -807,7 +806,7 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
             });
         Assert.Equal(HttpStatusCode.OK, preserveBackfilledCapacity.StatusCode);
 
-        var config = await SendWithCookie(client, HttpMethod.Get, "/config", cookie);
+        var config = await SendWithCookie(client, HttpMethod.Get, "/channels", cookie);
         Assert.Equal(HttpStatusCode.OK, config.StatusCode);
         using var document = await JsonDocument.ParseAsync(await config.Content.ReadAsStreamAsync());
         var channel = document.RootElement.GetProperty("Data").GetProperty("channels")[0];
@@ -832,7 +831,7 @@ public sealed class RouteTests : IClassFixture<OpenCodexApiFactory>
 
         var cookie = await LoginAndReadSessionCookie();
 
-        var config = await SendWithCookie(HttpMethod.Get, "/admin/api/config", cookie);
+        var config = await SendWithCookie(HttpMethod.Get, "/admin/api/channels", cookie);
         Assert.Equal(HttpStatusCode.NotFound, config.StatusCode);
 
         var logs = await SendWithCookie(HttpMethod.Get, "/admin/api/logs?page=1&page_size=5", cookie);

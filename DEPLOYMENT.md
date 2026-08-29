@@ -41,11 +41,11 @@ npm --prefix frontend install
 npm --prefix frontend run dev -- --host 127.0.0.1 --port 5173
 ```
 
-访问 `http://127.0.0.1:5173/admin/`。前端开发服务器会把 `/admin/login`、`/admin/config` 等请求转发到后端真实接口 `/login`、`/config` 等。直接调用后端 API 时不要加 `/admin` 或 `/admin/api` 前缀。开发时不要在 `127.0.0.1:5173` 和 `https://localhost:8443` 之间来回切换，这两个站点不会共享登录 Cookie。
+访问 `http://127.0.0.1:5173/admin/`。前端开发服务器会把 `/admin/login`、`/admin/channels` 等请求转发到后端真实接口 `/login`、`/channels` 等。直接调用后端 API 时不要加 `/admin` 或 `/admin/api` 前缀。开发时不要在 `127.0.0.1:5173` 和 `https://localhost:8443` 之间来回切换，这两个站点不会共享登录 Cookie。
 
 使用 `OPENCODEX_ADMIN_USERNAME` 和 `OPENCODEX_ADMIN_PASSWORD` 调用 `/login` 登录。首次登录后建议先完成两件事：
 
-1. 调用 `/config` 新增自己的上游渠道。渠道里的 `apikey` 是 Windhub、OpenAI 或其他上游服务的 Key。
+1. 调用 `/channels` 新增自己的上游渠道。渠道里的 `apikey` 是 Windhub、OpenAI 或其他上游服务的 Key。
 2. 调用 `/api-keys` 创建访问 API Key。这个 Key 是客户端调用 OpenCodex Proxy 的 Bearer Key，明文只显示一次。
 
 普通用户只能由超级管理员创建。普通用户只能看到自己的渠道、自己的访问 API Key 和自己的请求日志；超级管理员能看到全部。Web Search 模拟只允许超级管理员配置和使用。

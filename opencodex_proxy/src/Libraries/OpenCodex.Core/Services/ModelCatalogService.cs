@@ -902,11 +902,9 @@ public sealed class ModelCatalogService : IModelCatalogService
 
         // 每个上游模型还要做全局复合匹配(文档 C2 明确保留),匹配到的全局模型统一批量取 plan/rules。
         var globalMatches = new Dictionary<Guid, ModelInfo>();
-        var perItemGlobalModel = new Dictionary<string, ModelInfo?>(StringComparer.OrdinalIgnoreCase);
-        foreach (var upstreamModel in distinctUpstreamModels)
+        var perItemGlobalModel = ResolveGlobalModels(distinctUpstreamModels);
+        foreach (var globalModel in perItemGlobalModel.Values)
         {
-            var globalModel = ResolveGlobalModel(upstreamModel);
-            perItemGlobalModel[upstreamModel] = globalModel;
             if (globalModel is not null)
             {
                 globalMatches.TryAdd(globalModel.Id, globalModel);
@@ -1372,6 +1370,75 @@ public sealed class ModelCatalogService : IModelCatalogService
                 StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>
+    /// 批量解析多个上游模型的全局复合匹配。只加载一次 enabled 全局模型与
+    /// provider 排序，保留与 <see cref="ResolveGlobalModel"/> 完全相同的
+    /// MatchRank 打分与排序语义，避免列表接口随模型数量线性触发全表查询。
+    /// </summary>
+    private IReadOnlyDictionary<string, ModelInfo?> ResolveGlobalModels(
+        IReadOnlyCollection<string> modelNames)
+    {
+        var distinctNames = modelNames
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (distinctNames.Count == 0)
+        {
+            return new Dictionary<string, ModelInfo?>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        // 空名统一跳过，避免对空白输入做无意义打分。
+        var normalizedNames = distinctNames
+            .Select(Normalize)
+            .Where(name => name.Length > 0)
+            .ToList();
+        if (normalizedNames.Count == 0)
+        {
+            return new Dictionary<string, ModelInfo?>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var providerSort = _providers.TableNoTracking
+            .Select(provider => new { provider.Id, provider.SortOrder })
+            .ToDictionary(provider => provider.Id, provider => provider.SortOrder);
+        var globalModels = _models.TableNoTracking
+            .Where(model => model.Enabled && model.Scope == ModelInfoScopes.Global && model.ChannelId == null)
+            .AsEnumerable()
+            .Select(model => new
+            {
+                Model = model,
+                ProviderSort = providerSort.TryGetValue(model.ProviderId, out var sort) ? sort : int.MaxValue
+            })
+            .ToList();
+
+        var result = new Dictionary<string, ModelInfo?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var modelName in distinctNames)
+        {
+            var normalized = Normalize(modelName);
+            if (normalized.Length == 0)
+            {
+                result[modelName] = null;
+                continue;
+            }
+
+            var model = globalModels
+                .Select(item => new
+                {
+                    item.Model,
+                    item.ProviderSort,
+                    Rank = MatchRank(item.Model.MatchType, item.Model.MatchPattern, normalized)
+                })
+                .Where(item => item.Rank is not null)
+                .OrderBy(item => item.Rank!.Priority)
+                .ThenByDescending(item => item.Rank!.PatternLength)
+                .ThenBy(item => item.ProviderSort)
+                .ThenBy(item => item.Model.ModelKey, StringComparer.OrdinalIgnoreCase)
+                .Select(item => item.Model)
+                .FirstOrDefault();
+            result[modelName] = model;
+        }
+
+        return result;
+    }
+
     private ModelInfo? ResolveGlobalModel(string modelName)
     {
         var normalized = Normalize(modelName);
@@ -1380,25 +1447,9 @@ public sealed class ModelCatalogService : IModelCatalogService
             return null;
         }
 
-        var providerSort = _providers.TableNoTracking
-            .Select(provider => new { provider.Id, provider.SortOrder })
-            .ToDictionary(provider => provider.Id, provider => provider.SortOrder);
-        return _models.TableNoTracking
-            .Where(model => model.Enabled && model.Scope == ModelInfoScopes.Global && model.ChannelId == null)
-            .AsEnumerable()
-            .Select(model => new
-            {
-                Model = model,
-                Rank = MatchRank(model.MatchType, model.MatchPattern, normalized),
-                ProviderSort = providerSort.TryGetValue(model.ProviderId, out var sort) ? sort : int.MaxValue
-            })
-            .Where(item => item.Rank is not null)
-            .OrderBy(item => item.Rank!.Priority)
-            .ThenByDescending(item => item.Rank!.PatternLength)
-            .ThenBy(item => item.ProviderSort)
-            .ThenBy(item => item.Model.ModelKey, StringComparer.OrdinalIgnoreCase)
-            .Select(item => item.Model)
-            .FirstOrDefault();
+        return ResolveGlobalModels([normalized]).TryGetValue(normalized, out var model)
+            ? model
+            : null;
     }
 
     private ModelPricingPlan? FindPlanForModel(Guid modelInfoId)

@@ -238,6 +238,7 @@ async function createUser() {
     });
     userDialogVisible.value = false;
     await loadUsers();
+    ElMessage.success(`用户 ${userDraft.username} 创建成功`);
   } catch (error) {
     ElMessage.error(error.message);
   } finally {

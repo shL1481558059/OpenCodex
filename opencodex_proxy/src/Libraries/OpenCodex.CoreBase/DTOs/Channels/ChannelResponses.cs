@@ -1,18 +1,18 @@
 using System.Text.Json.Serialization;
 using OpenCodex.CoreBase.DTOs;
 
-namespace OpenCodex.CoreBase.DTOs.Config;
+namespace OpenCodex.CoreBase.DTOs.Channels;
 
 /// <summary>
 /// 表示通道配置响应。
 /// </summary>
-public sealed class ConfigResponse
+public sealed class ChannelListResponse
 {
     /// <summary>
-    /// 初始化 <see cref="ConfigResponse"/> 类的新实例。
+    /// 初始化 <see cref="ChannelListResponse"/> 类的新实例。
     /// </summary>
     /// <param name="channels">通道响应列表。</param>
-    public ConfigResponse(IReadOnlyList<ChannelResponse> channels)
+    public ChannelListResponse(IReadOnlyList<ChannelResponse> channels)
     {
         Channels = channels;
     }
@@ -29,12 +29,12 @@ public sealed class ConfigResponse
     /// <param name="channels">通道 DTO 列表。</param>
     /// <param name="activeRequestsResolver">解析渠道当前并发数的回调。</param>
     /// <returns>配置响应。</returns>
-    public static ConfigResponse From(
+    public static ChannelListResponse From(
         IReadOnlyList<ChannelDto> channels,
         Func<ChannelDto, int>? activeRequestsResolver = null,
         Func<ChannelDto, string>? healthStatusResolver = null)
     {
-        return new ConfigResponse(channels.Select(channel => ChannelResponse.From(
+        return new ChannelListResponse(channels.Select(channel => ChannelResponse.From(
             channel,
             activeRequestsResolver?.Invoke(channel) ?? 0,
             healthStatusResolver?.Invoke(channel) ?? "healthy")).ToList());
