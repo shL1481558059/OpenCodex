@@ -624,8 +624,55 @@ body {
   margin-bottom: 18px;
 }
 
-.settings-form {
+.settings-tabs {
+  min-width: 0;
+}
+
+.settings-tabs .el-tabs__header {
+  margin-bottom: 24px;
+}
+
+.settings-tabs .el-tabs__nav-wrap {
+  overflow-x: auto;
+}
+
+.settings-tabs .el-tabs__nav-wrap::after {
+  min-width: 320px;
+}
+
+.settings-tab-panel {
   width: min(720px, 100%);
+}
+
+.settings-tab-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.settings-tab-header h3 {
+  margin: 0 0 8px;
+  color: var(--el-text-color-primary);
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.settings-tab-header .text-muted {
+  max-width: 65ch;
+  line-height: 1.6;
+}
+
+.settings-tab-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-form {
+  width: 100%;
 }
 
 .settings-form .el-segmented {
@@ -658,6 +705,13 @@ body {
   gap: 8px;
   flex-wrap: wrap;
   margin-bottom: 18px;
+}
+
+.settings-switch-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .json-view {
@@ -1090,12 +1144,36 @@ body {
     width: 100%;
   }
 
+  .settings-tabs .el-tabs__header {
+    margin-bottom: 20px;
+  }
+
+  .settings-tab-header {
+    display: block;
+    margin-bottom: 20px;
+  }
+
+  .settings-tab-actions {
+    justify-content: flex-start;
+    margin-top: 12px;
+  }
+
   .settings-actions {
     align-items: stretch;
     flex-direction: column;
   }
 
   .settings-actions .el-button {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .settings-switch-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-switch-row .el-button {
     width: 100%;
     margin-left: 0;
   }
