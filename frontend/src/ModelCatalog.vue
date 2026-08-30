@@ -296,10 +296,11 @@
           </template>
         </el-table-column>
        <el-table-column prop="source" label="来源" width="140" show-overflow-tooltip />
-        <el-table-column label="操作" width="210" align="center" fixed="right">
+        <el-table-column label="操作" width="280" align="center" fixed="right">
         <template #default="{ row }">
           <div class="inline-actions channel-table-actions">
             <el-button size="small" :icon="Edit" @click="openModelDialog(row)">编辑</el-button>
+            <el-button size="small" :icon="DocumentCopy" @click="copyModel(row)">复制</el-button>
             <el-popconfirm
               :title="row.enabled === false ? `删除模型 ${row.model_key}？删除后不可恢复` : `停用模型 ${row.model_key}？`"
               @confirm="deleteModel(row)"
@@ -369,6 +370,7 @@
 
         <div class="model-card-actions">
           <el-button :icon="Edit" @click="openModelDialog(model)">编辑</el-button>
+          <el-button :icon="DocumentCopy" @click="copyModel(model)">复制</el-button>
           <el-popconfirm
             :title="model.enabled === false ? `删除模型 ${model.model_key}？删除后不可恢复` : `停用模型 ${model.model_key}？`"
             @confirm="deleteModel(model)"
@@ -551,11 +553,12 @@
             </div>
           </div>
       </div>
-      <div v-if="!isMobile" class="rule-table-scroll">
+      <div v-if="!isMobile" class="rule-table-wrap">
         <el-table
           :data="modelDraft.pricing.rules"
           border
           size="small"
+          scrollbar-always-on
           class="model-catalog-rule-table"
         >
           <el-table-column label="计费项" width="110">
@@ -814,7 +817,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
 import { ElMessageBox } from "element-plus/es/components/message-box/index.mjs";
-import { ArrowDown, CircleClose, Close, Delete, Download, Edit, Plus, Refresh, RefreshRight, Search, Select, Upload, Warning } from "@element-plus/icons-vue";
+import { ArrowDown, CircleClose, Close, Delete, DocumentCopy, Download, Edit, Plus, Refresh, RefreshRight, Search, Select, Upload, Warning } from "@element-plus/icons-vue";
 import {
   createModelCatalogImportState,
   parseModelCatalogFile,
@@ -1127,6 +1130,13 @@ function openModelDialog(row = null) {
     catalogText.value = JSON.stringify(defaultCatalog(), null, 2);
   }
   modelDialogVisible.value = true;
+}
+
+function copyModel(row) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  cloned.id = null;
+  cloned.model_key = `${row.model_key}-copy`;
+  openModelDialog(cloned);
 }
 
 function openProviderDialog(continueToModel = false) {
@@ -1630,21 +1640,13 @@ onBeforeUnmount(() => {
   margin-bottom: 16px;
 }
 
-/* 计费规则表格列总宽超过抽屉容器时整表横向滚动，表头表身一起移动、不错位。 */
-.rule-table-scroll {
-  overflow-x: auto;
+/* 计费规则表格只保留 el-table 自身的横向滚动条：外层再套一层 overflow-x 时，
+   列宽总和一旦超过外层 min-width 就会同时出现两条横向滚动条。 */
+.rule-table-wrap {
   margin-bottom: 16px;
 }
-.rule-table-scroll .model-catalog-rule-table {
-  min-width: 1090px;
+.rule-table-wrap .model-catalog-rule-table {
   margin-bottom: 0;
-}
-.rule-table-scroll::-webkit-scrollbar {
-  height: 8px;
-}
-.rule-table-scroll::-webkit-scrollbar-thumb {
-  background: var(--el-border-color);
-  border-radius: 4px;
 }
 
 .off-peak-panel {

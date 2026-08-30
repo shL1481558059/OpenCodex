@@ -47,14 +47,6 @@
           />
         </el-form-item>
 
-        <el-form-item label="拦截探测请求">
-          <el-switch
-            v-model="interceptProbeRequests"
-            active-text="开启"
-            inactive-text="关闭"
-          />
-        </el-form-item>
-
         <el-button type="primary" class="full-width" :loading="loading" @click="handleSetup">
           完成初始化
         </el-button>
@@ -84,7 +76,6 @@ const username = ref("admin");
 const password = ref("");
 const accessMode = ref(props.initialSettings?.access_mode || "localhost");
 const port = ref(Number(props.initialSettings?.port || 18080));
-const interceptProbeRequests = ref(props.initialSettings?.intercept_probe_requests === true);
 const loading = ref(false);
 
 watch(
@@ -92,7 +83,6 @@ watch(
   (settings) => {
     accessMode.value = settings?.access_mode || "localhost";
     port.value = Number(settings?.port || 18080);
-    interceptProbeRequests.value = settings?.intercept_probe_requests === true;
   }
 );
 
@@ -106,8 +96,7 @@ async function handleSetup() {
         password: password.value,
         system_settings: {
           access_mode: accessMode.value,
-          port: Number(port.value),
-          intercept_probe_requests: interceptProbeRequests.value
+          port: Number(port.value)
         }
       })
     });

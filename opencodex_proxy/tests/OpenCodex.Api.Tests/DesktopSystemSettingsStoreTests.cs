@@ -8,7 +8,7 @@ namespace OpenCodex.Api.Tests;
 public sealed class DesktopSystemSettingsStoreTests
 {
     [Fact]
-    public void SaveAndGet_RoundTripsInterceptProbeRequests()
+    public void SaveAndGet_RoundTripsAccessModeAndPort()
     {
         var path = Path.Combine(
             Path.GetTempPath(),
@@ -21,18 +21,18 @@ public sealed class DesktopSystemSettingsStoreTests
         var draft = store.Normalize(new SystemSettingsUpdateRequest
         {
             AccessMode = "localhost",
-            Port = 18080,
-            InterceptProbeRequests = true
+            Port = 18080
         });
         store.Save(draft);
 
         var loaded = CreateStore(path).Get();
 
-        Assert.True(loaded.InterceptProbeRequests);
+        Assert.Equal("localhost", loaded.AccessMode);
+        Assert.Equal(18080, loaded.Port);
     }
 
     [Fact]
-    public void DefaultInterceptProbeRequests_IsFalse()
+    public void Save_DoesNotWriteProbeInterceptionField()
     {
         var path = Path.Combine(
             Path.GetTempPath(),
@@ -41,9 +41,16 @@ public sealed class DesktopSystemSettingsStoreTests
             $"{Guid.NewGuid():N}.json");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
-        var loaded = CreateStore(path).Get();
+        var store = CreateStore(path);
+        var draft = store.Normalize(new SystemSettingsUpdateRequest
+        {
+            AccessMode = "localhost",
+            Port = 18080
+        });
+        store.Save(draft);
 
-        Assert.False(loaded.InterceptProbeRequests);
+        var raw = File.ReadAllText(path);
+        Assert.DoesNotContain("intercept_probe_requests", raw);
     }
 
     private static DesktopSystemSettingsStore CreateStore(string path)

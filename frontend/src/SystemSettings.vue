@@ -36,10 +36,19 @@
 
       <el-form-item label="拦截探测请求">
         <el-switch
-          v-model="draft.intercept_probe_requests"
+          v-model="proxyDraft.intercept_probe_requests"
           active-text="开启"
           inactive-text="关闭"
         />
+        <el-button
+          type="primary"
+          size="small"
+          :icon="Check"
+          :loading="proxySaving"
+          @click="saveProxySettings"
+        >
+          保存
+        </el-button>
       </el-form-item>
 
       <div v-if="settings" class="settings-meta">
@@ -254,10 +263,13 @@ const restarting = ref(false);
 const restartRequired = ref(false);
 const settings = ref(null);
 const tauriRuntime = isTauriRuntime();
+const proxySaving = ref(false);
+const proxyDraft = reactive({
+  intercept_probe_requests: false
+});
 const draft = reactive({
   access_mode: "localhost",
-  port: 18080,
-  intercept_probe_requests: false
+  port: 18080
 });
 
 const bindHostLabel = computed(() => {
@@ -302,8 +314,12 @@ function onChannelChange(group, value) {
 async function loadSettings() {
   loading.value = true;
   try {
-    const data = await props.api("/system-settings");
+    const [data, proxyData] = await Promise.all([
+      props.api("/system-settings"),
+      props.api("/system-settings/proxy-settings")
+    ]);
     assignSettings(data);
+    applyProxySettings(proxyData);
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
@@ -318,8 +334,7 @@ async function saveSettings() {
       method: "PUT",
       body: JSON.stringify({
         access_mode: draft.access_mode,
-        port: Number(draft.port),
-        intercept_probe_requests: draft.intercept_probe_requests === true
+        port: Number(draft.port)
       })
     });
     assignSettings(data);
@@ -330,6 +345,30 @@ async function saveSettings() {
   } finally {
     saving.value = false;
   }
+}
+
+async function saveProxySettings() {
+  proxySaving.value = true;
+  try {
+    const data = await props.api("/system-settings/proxy-settings", {
+      method: "PUT",
+      body: JSON.stringify({
+        key: "intercept_probe_requests",
+        value: String(proxyDraft.intercept_probe_requests === true)
+      })
+    });
+    applyProxySettings(data);
+    ElMessage.success("探测设置已保存");
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    proxySaving.value = false;
+  }
+}
+
+function applyProxySettings(data) {
+  const settingsMap = data?.settings || {};
+  proxyDraft.intercept_probe_requests = settingsMap.intercept_probe_requests === "true";
 }
 
 async function restartService() {
@@ -348,7 +387,6 @@ function assignSettings(data) {
   settings.value = data;
   draft.access_mode = data?.access_mode || "localhost";
   draft.port = Number(data?.port || 18080);
-  draft.intercept_probe_requests = data?.intercept_probe_requests === true;
   restartRequired.value = data?.restart_required === true;
 }
 

@@ -159,6 +159,7 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<IObservabilityService, ObservabilityService>();
         services.AddScoped<IWebSearchService, WebSearchService>();
         services.AddScoped<IVisionTransferSettingsService, VisionTransferSettingsService>();
+        services.AddScoped<IProxySettingsService, ProxySettingsService>();
         services.AddScoped<IProxyAccessService, ProxyAccessService>();
         services.AddScoped<IProxyEndpointService, ProxyEndpointService>();
         services.AddScoped<IProxyImageFallbackService, ProxyImageFallbackService>();

@@ -12,9 +12,6 @@ public sealed class SystemSettingsUpdateRequest
 
     [JsonPropertyName("port")]
     public int? Port { get; set; }
-
-    [JsonPropertyName("intercept_probe_requests")]
-    public bool? InterceptProbeRequests { get; set; }
 }
 
 public sealed class SystemSettingsResponse
@@ -24,15 +21,13 @@ public sealed class SystemSettingsResponse
         string bindHost,
         int port,
         bool managedByDesktop,
-        bool restartRequired,
-        bool interceptProbeRequests)
+        bool restartRequired)
     {
         AccessMode = accessMode;
         BindHost = bindHost;
         Port = port;
         ManagedByDesktop = managedByDesktop;
         RestartRequired = restartRequired;
-        InterceptProbeRequests = interceptProbeRequests;
     }
 
     [JsonPropertyName("access_mode")]
@@ -50,9 +45,21 @@ public sealed class SystemSettingsResponse
     [JsonPropertyName("restart_required")]
     public bool RestartRequired { get; }
 
-    [JsonPropertyName("intercept_probe_requests")]
-    public bool InterceptProbeRequests { get; }
-
     [JsonPropertyName("admin_url")]
     public string AdminUrl => $"http://127.0.0.1:{Port}/admin/";
+}
+
+public sealed class ProxySettingsUpdateRequest
+{
+    [JsonPropertyName("key")]
+    public string? Key { get; set; }
+
+    [JsonPropertyName("value")]
+    public string? Value { get; set; }
+}
+
+public sealed class ProxySettingsResponse
+{
+    [JsonPropertyName("settings")]
+    public Dictionary<string, string> Settings { get; set; } = new();
 }

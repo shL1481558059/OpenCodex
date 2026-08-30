@@ -578,6 +578,34 @@ namespace OpenCodex.Data.Migrations.PostgresMigrations
                     b.ToTable("ModelProviders", (string)null);
                 });
 
+            modelBuilder.Entity("OpenCodex.Core.Domain.ProxySetting", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<double>("CreatedAt")
+                        .HasColumnType("double precision");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<double>("UpdatedAt")
+                        .HasColumnType("double precision");
+
+                    b.Property<string>("Value")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Key")
+                        .IsUnique();
+
+                    b.ToTable("ProxySettings", (string)null);
+                });
+
             modelBuilder.Entity("OpenCodex.Core.Domain.RequestLog", b =>
                 {
                     b.Property<Guid>("Id")

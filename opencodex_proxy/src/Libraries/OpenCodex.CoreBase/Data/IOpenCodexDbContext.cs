@@ -25,6 +25,7 @@ public interface IOpenCodexDbContext : IDisposable, IAsyncDisposable
     DbSet<ChannelModelInfo> ChannelModelInfos { get; }
 
     DbSet<VisionTransferSettings> VisionTransferSettings { get; }
+    DbSet<ProxySetting> ProxySettings { get; }
     DbSet<ModelPricingPlan> ModelPricingPlans { get; }
 
     DbSet<ModelPricingRule> ModelPricingRules { get; }

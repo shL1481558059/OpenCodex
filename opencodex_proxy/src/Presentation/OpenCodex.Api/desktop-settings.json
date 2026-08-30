@@ -1,6 +1,5 @@
 {
   "access_mode": "localhost",
   "bind_host": "127.0.0.1",
-  "port": 8443,
-  "intercept_probe_requests": false
+  "port": 8443
 }

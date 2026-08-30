@@ -122,7 +122,7 @@ public sealed class ProxyControllerTests
             new StubProxyRouteService(),
             new StubModelCatalogService(),
             codexFactory ?? new StubCodexOfficialModelCatalogFactory(),
-            new StubSystemSettingsStore(interceptProbeRequests),
+            new StubProxySettingsService(interceptProbeRequests),
             logs ?? new StubProxyLogService())
         {
             ControllerContext = new ControllerContext
@@ -387,38 +387,32 @@ public sealed class ProxyControllerTests
         }
     }
 
-    private sealed class StubSystemSettingsStore : IDesktopSystemSettingsStore
+    private sealed class StubProxySettingsService : IProxySettingsService
     {
         private readonly bool _interceptProbeRequests;
 
-        public StubSystemSettingsStore(bool interceptProbeRequests)
+        public StubProxySettingsService(bool interceptProbeRequests)
         {
             _interceptProbeRequests = interceptProbeRequests;
         }
 
-        public SystemSettingsResponse Get()
+        public bool GetBool(string key, bool fallback)
         {
-            return new SystemSettingsResponse(
-                "localhost",
-                "127.0.0.1",
-                18080,
-                false,
-                false,
-                _interceptProbeRequests);
+            return key == "intercept_probe_requests" ? _interceptProbeRequests : fallback;
         }
 
-        public DesktopSystemSettingsDraft Normalize(SystemSettingsUpdateRequest? request)
+        public Task<ApiOpResult<Dictionary<string, string>>> GetAllAsync()
         {
-            return new DesktopSystemSettingsDraft(
-                "localhost",
-                "127.0.0.1",
-                18080,
-                _interceptProbeRequests);
+            return Task.FromResult(ApiOpResult<Dictionary<string, string>>.Succeed(
+                new Dictionary<string, string>
+                {
+                    ["intercept_probe_requests"] = _interceptProbeRequests.ToString()
+                }));
         }
 
-        public SystemSettingsResponse Save(DesktopSystemSettingsDraft draft)
+        public Task<ApiOpResult> SetAsync(string key, string value)
         {
-            return Get();
+            return Task.FromResult(ApiOpResult.Succeed());
         }
     }
 }

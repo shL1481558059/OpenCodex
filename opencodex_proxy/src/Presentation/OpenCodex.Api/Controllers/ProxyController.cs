@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
-using OpenCodex.Api.Configuration;
 using OpenCodex.Api.Infrastructure;
 using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.Proxy;
@@ -20,7 +19,7 @@ public sealed class ProxyController : ApiControllerBase
     private readonly IProxyRouteService _routes;
     private readonly IModelCatalogService _catalog;
     private readonly ICodexOfficialModelCatalogFactory _codexModels;
-    private readonly IDesktopSystemSettingsStore _systemSettings;
+    private readonly IProxySettingsService _proxySettings;
     private readonly IProxyLogService _logs;
 
     public ProxyController(
@@ -30,7 +29,7 @@ public sealed class ProxyController : ApiControllerBase
         IProxyRouteService routes,
         IModelCatalogService catalog,
         ICodexOfficialModelCatalogFactory codexModels,
-        IDesktopSystemSettingsStore systemSettings,
+        IProxySettingsService proxySettings,
         IProxyLogService logs)
     {
         _bodyReader = bodyReader;
@@ -39,7 +38,7 @@ public sealed class ProxyController : ApiControllerBase
         _routes = routes;
         _catalog = catalog;
         _codexModels = codexModels;
-        _systemSettings = systemSettings;
+        _proxySettings = proxySettings;
         _logs = logs;
     }
 
@@ -115,7 +114,7 @@ public sealed class ProxyController : ApiControllerBase
         var payload = await _bodyReader.ReadJsonObjectAsync(Request, HttpContext.RequestAborted);
         var probeRequestId = Guid.NewGuid().ToString();
         if (payload is not null
-            && _systemSettings.Get().InterceptProbeRequests
+            && _proxySettings.GetBool("intercept_probe_requests", false)
             && ProbeRequestInterceptor.TryIntercept(
                 entryProtocol,
                 payload,

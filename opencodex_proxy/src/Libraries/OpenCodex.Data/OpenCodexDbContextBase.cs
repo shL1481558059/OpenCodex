@@ -35,6 +35,8 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
 
     public DbSet<VisionTransferSettings> VisionTransferSettings => Set<VisionTransferSettings>();
 
+    public DbSet<ProxySetting> ProxySettings => Set<ProxySetting>();
+
     public DbSet<RequestLog> RequestLogs => Set<RequestLog>();
 
     public DbSet<LogContentBlock> LogContentBlocks => Set<LogContentBlock>();
@@ -52,6 +54,7 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         ConfigureAccessApiKeys(modelBuilder);
         ConfigureWebSearch(modelBuilder);
         ConfigureVisionTransfer(modelBuilder);
+        ConfigureProxySettings(modelBuilder);
         ConfigureModelCatalog(modelBuilder);
         ConfigureRequestLogs(modelBuilder);
     }
@@ -131,6 +134,17 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         settings.Property(item => item.PrimaryChannelId).IsRequired();
         settings.Property(item => item.PrimaryModel).IsRequired();
         settings.HasIndex(item => item.OwnerUserId).IsUnique();
+    }
+
+    private static void ConfigureProxySettings(ModelBuilder modelBuilder)
+    {
+        var settings = modelBuilder.Entity<ProxySetting>();
+        settings.ToTable("ProxySettings");
+        settings.HasKey(item => item.Id);
+        settings.Property(item => item.Id).ValueGeneratedOnAdd();
+        settings.Property(item => item.Key).IsRequired();
+        settings.Property(item => item.Value).IsRequired();
+        settings.HasIndex(item => item.Key).IsUnique();
     }
 
     private static void ConfigureModelCatalog(ModelBuilder modelBuilder)
