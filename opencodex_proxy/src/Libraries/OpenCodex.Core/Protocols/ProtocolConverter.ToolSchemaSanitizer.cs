@@ -157,6 +157,15 @@ public static partial class ProtocolConverter
             pair => SanitizeSchemaValue(pair.Value),
             StringComparer.Ordinal);
 
+        // 部分上游（如某些中转聚合层）要求 object 类型的工具参数 schema 必须显式携带
+        // required 字段，缺失时直接返回 400。这里统一补齐，避免 Codex 下发无 required
+        // 的工具（例如 list_mcp_resources）导致上游拒绝。
+        if (NormalizeJsonValue(GetValue(result, "type")) as string == "object"
+            && !result.ContainsKey("required"))
+        {
+            result["required"] = new List<object?>();
+        }
+
         SanitizeEnum(result);
         SanitizeCompositionSchemas(result);
         return result;

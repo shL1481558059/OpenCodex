@@ -470,6 +470,47 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
+    public void ConvertRequest_ResponsesToolSchemaWithoutRequired_AddsEmptyRequiredForChat()
+    {
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = "ping",
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "function",
+                        ["name"] = "list_mcp_resources",
+                        ["description"] = "List MCP resources.",
+                        ["parameters"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object?>
+                            {
+                                ["cursor"] = new Dictionary<string, object?>
+                                {
+                                    ["type"] = "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Chat,
+            "upstream");
+
+        var tools = Assert.IsType<List<object?>>(request["tools"]);
+        var tool = Assert.IsType<Dictionary<string, object?>>(Assert.Single(tools));
+        var function = Assert.IsType<Dictionary<string, object?>>(tool["function"]);
+        var parameters = Assert.IsType<Dictionary<string, object?>>(function["parameters"]);
+        Assert.True(parameters.ContainsKey("required"));
+        Assert.Empty(Assert.IsType<List<object?>>(parameters["required"]));
+    }
+
+    [Fact]
     public void ConvertRequest_ResponsesToolSchemaWithEmptyStringEnum_SanitizesForChat()
     {
         var request = ProtocolConverter.ConvertRequest(
