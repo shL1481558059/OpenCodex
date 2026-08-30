@@ -256,6 +256,82 @@ public sealed class ProxyImageFallbackTests
     }
 
     [Fact]
+    public async Task VisionOcrCacheHit_DoesNotWriteOcrLog()
+    {
+        using var factory = new ProxyImageFallbackApiFactory(
+            [
+                ResponsesTextResponse("text-upstream", "done")
+            ]);
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = false
+        });
+
+        var cookie = await LoginAndReadSessionCookie(client);
+        await ConfigureModelsAsync(client, cookie, includeVisionModel: true);
+        var visionChannelId = ConfigureVisionTransfer(factory.DbPath);
+
+        // 写入命中 vision 引擎的缓存条目,让本次请求直接走缓存而不调用视觉模型。
+        var imageBytes = Convert.FromBase64String("AAAA");
+        var cacheKey = Convert.ToHexStringLower(SHA256.HashData(
+            [.. imageBytes, .. Encoding.UTF8.GetBytes($"|{visionChannelId}|vision-upstream")]));
+        var cacheDir = Path.Combine(factory.OcrCacheDir, "results");
+        Directory.CreateDirectory(cacheDir);
+        File.WriteAllText(
+            Path.Combine(cacheDir, $"{cacheKey}.json"),
+            """
+            {"Engine":"vision","SourceKind":"data","Text":"CACHED","Description":"缓存描述","CreatedAt":1,"Model":"vision-model","UpstreamModel":"vision-upstream","ChannelId":"vision-channel","ChannelType":"responses"}
+            """);
+
+        var apiKey = await CreateApiKeyAsync(client, cookie, "cli-cache-hit");
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "text-model",
+                input = new object[]
+                {
+                    new
+                    {
+                        type = "message",
+                        role = "user",
+                        content = new object[]
+                        {
+                            new { type = "input_text", text = "请看这张图" },
+                            new { type = "input_image", image_url = "data:image/png;base64,AAAA" }
+                        }
+                    }
+                }
+            })
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        // 缓存命中后只应有一个主请求,不再有视觉子请求。
+        Assert.Single(factory.Upstream.RequestJsons);
+
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={factory.DbPath}");
+        context.Database.Migrate();
+        var logs = context.RequestLogs.OrderBy(item => item.Id).ToList();
+        var mainLog = Assert.Single(logs, item => item.RequestType == ProxyRequestTypes.Main);
+        Assert.DoesNotContain(logs, item => item.RequestType == ProxyRequestTypes.Ocr);
+
+        var contentStore = new LogContentStore(context);
+        Assert.Contains(
+            "[图片 1 OCR文字]",
+            contentStore.Read(mainLog.Id).Get(RequestLogContentSlot.UpstreamRequestBody),
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "CACHED",
+            contentStore.Read(mainLog.Id).Get(RequestLogContentSlot.UpstreamRequestBody),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RemoteUrlWithoutVisionModel_Returns400AndWritesOcrChildLog()
     {
         using var factory = new ProxyImageFallbackApiFactory();

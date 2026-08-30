@@ -174,39 +174,43 @@ public sealed class ProxyOcrService : IProxyOcrService
         }
         finally
         {
-            await _logs.WriteLogAsync(new ProxyRequestLogContext(
-                context.RequestId,
-                context.OwnerUsername,
-                context.ApiKeyId,
-                requestPayload,
-                upstreamRequest,
-                upstreamResponse,
-                responsePayload,
-                errorResponse,
-                requestModel,
-                upstreamModel,
-                channelId,
-                channelType,
-                isStream: false,
-                ttftMs: null,
-                statusCode,
-                durationMs: ElapsedMilliseconds(started),
-                error,
-                webSearchDetails: null,
-                method: "POST",
-                requestPath,
-                context.RequestMetadata.ClientIp,
-                context.RequestMetadata.Headers,
-                requestType: ProxyRequestTypes.Ocr,
-                parentRequestLogId: null,
-                ocrDetails: OcrDetails(
-                    engine,
-                    sourceKind,
-                    cacheHit,
+            // 缓存命中不产生上游调用,不写 OCR 日志;真实识别与失败路径仍需留痕。
+            if (!cacheHit)
+            {
+                await _logs.WriteLogAsync(new ProxyRequestLogContext(
                     context.RequestId,
+                    context.OwnerUsername,
+                    context.ApiKeyId,
+                    requestPayload,
+                    upstreamRequest,
+                    upstreamResponse,
+                    responsePayload,
+                    errorResponse,
+                    requestModel,
+                    upstreamModel,
+                    channelId,
+                    channelType,
+                    isStream: false,
+                    ttftMs: null,
+                    statusCode,
+                    durationMs: ElapsedMilliseconds(started),
+                    error,
+                    webSearchDetails: null,
+                    method: "POST",
+                    requestPath,
+                    context.RequestMetadata.ClientIp,
+                    context.RequestMetadata.Headers,
+                    requestType: ProxyRequestTypes.Ocr,
                     parentRequestLogId: null,
-                    context.RouteKind,
-                    context.Attempt)));
+                    ocrDetails: OcrDetails(
+                        engine,
+                        sourceKind,
+                        cacheHit,
+                        context.RequestId,
+                        parentRequestLogId: null,
+                        context.RouteKind,
+                        context.Attempt)));
+            }
         }
     }
 
