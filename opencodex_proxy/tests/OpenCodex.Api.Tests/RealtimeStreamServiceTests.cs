@@ -1,12 +1,16 @@
 using System.Text;
 using System.Threading.Channels;
 using Microsoft.AspNetCore.Http;
-using OpenCodex.Api.Infrastructure;
+using Microsoft.Extensions.DependencyInjection;
+using OpenCodex.Api.Services;
+using OpenCodex.CoreBase.Domain;
+using OpenCodex.CoreBase.Events;
+using OpenCodex.CoreBase.Services;
 using Xunit;
 
 namespace OpenCodex.Api.Tests;
 
-public sealed class SseEventWriterTests
+public sealed class RealtimeStreamServiceTests
 {
     [Fact]
     public async Task StreamAsync_IdleStream_WritesHeartbeatAfterInterval()
@@ -18,7 +22,7 @@ public sealed class SseEventWriterTests
         var channel = Channel.CreateUnbounded<string>();
 
         // 心跳间隔 20ms,让流空等约 80ms(4 个心跳周期)再取消,确保至少写出一帧心跳。
-        var streamTask = SseEventWriter.StreamAsync(
+        var streamTask = CreateService().StreamAsync(
             context.Response,
             channel.Reader,
             _ => Task.CompletedTask,
@@ -43,7 +47,7 @@ public sealed class SseEventWriterTests
         var channel = Channel.CreateUnbounded<string>();
         var snapshotCallCount = 0;
 
-        var streamTask = SseEventWriter.StreamAsync(
+        var streamTask = CreateService().StreamAsync(
             context.Response,
             channel.Reader,
             async ct =>
@@ -75,7 +79,7 @@ public sealed class SseEventWriterTests
         var channel = Channel.CreateUnbounded<string>();
         channel.Writer.Complete();
 
-        await SseEventWriter.StreamAsync(
+        await CreateService().StreamAsync(
             context.Response,
             channel.Reader,
             _ => Task.CompletedTask,
@@ -97,7 +101,7 @@ public sealed class SseEventWriterTests
         using var cts = new CancellationTokenSource();
         var channel = Channel.CreateUnbounded<string>();
 
-        var streamTask = SseEventWriter.StreamAsync(
+        var streamTask = CreateService().StreamAsync(
             context.Response,
             channel.Reader,
             async ct => { await Task.Delay(5000, ct); },
@@ -125,7 +129,7 @@ public sealed class SseEventWriterTests
         var channel = Channel.CreateUnbounded<string>();
         var snapshotIndex = -1;
 
-        var streamTask = SseEventWriter.StreamAsync(
+        var streamTask = CreateService().StreamAsync(
             context.Response,
             channel.Reader,
             async ct =>
@@ -167,18 +171,49 @@ public sealed class SseEventWriterTests
         }
     }
 
+    [Fact]
+    public async Task StreamLogsAsync_WritesLogsFrameOnEvent()
+    {
+        var context = new DefaultHttpContext();
+        context.Response.Body = new MemoryStream();
+
+        var eventBus = new StubEventBus();
+        var service = new RealtimeStreamService(
+            new StubWorkContext(),
+            eventBus,
+            new StubScopeFactory());
+
+        using var cts = new CancellationTokenSource();
+        var streamTask = service.StreamLogsAsync(context.Response, cts.Token);
+
+        // 等待订阅建立,然后发布一个日志事件。
+        await Task.Delay(20);
+        eventBus.Publish(new RequestLogWrittenEvent
+        {
+            OwnerUsername = "admin",
+            IsError = false
+        });
+        await Task.Delay(50);
+        cts.Cancel();
+        await streamTask;
+
+        var body = ReadBody(context.Response);
+        Assert.Contains("event: logs\n", body);
+    }
+
+    private static RealtimeStreamService CreateService()
+    {
+        return new RealtimeStreamService(
+            new StubWorkContext(),
+            new StubEventBus(),
+            new StubScopeFactory());
+    }
+
     private static string ReadBody(HttpResponse response)
     {
         response.Body.Position = 0;
         using var reader = new StreamReader(response.Body, Encoding.UTF8);
         return reader.ReadToEnd();
-    }
-
-    private static ChannelReader<T> CreateCompletedReader<T>()
-    {
-        var channel = Channel.CreateUnbounded<T>();
-        channel.Writer.Complete();
-        return channel.Reader;
     }
 
     /// <summary>
@@ -196,6 +231,61 @@ public sealed class SseEventWriterTests
         {
             await base.WriteAsync(buffer, cancellationToken);
             await Task.Yield();
+        }
+    }
+
+    private sealed class StubWorkContext : IWorkContext
+    {
+        private static readonly SessionUser User = new(Guid.NewGuid(), "admin", "superadmin", true);
+
+        public SessionUser? CurrentUser => User;
+        public bool IsSignedIn => true;
+        public bool IsSuperadmin => true;
+
+        public SessionUser RequireUser() => User;
+        public SessionUser RequireSuperadmin() => User;
+    }
+
+    private sealed class StubEventBus : IEventBus
+    {
+        private readonly object _lock = new();
+        private readonly Dictionary<Type, object> _writers = new();
+
+        public ChannelReader<TEvent> Subscribe<TEvent>(
+            Func<TEvent, bool> filter,
+            CancellationToken cancellationToken)
+        {
+            var channel = Channel.CreateUnbounded<TEvent>();
+            lock (_lock)
+            {
+                _writers[typeof(TEvent)] = channel.Writer;
+            }
+            return channel.Reader;
+        }
+
+        public void Publish<TEvent>(TEvent evt) where TEvent : notnull
+        {
+            lock (_lock)
+            {
+                if (_writers.TryGetValue(typeof(TEvent), out var writer))
+                {
+                    ((ChannelWriter<TEvent>)writer).TryWrite(evt);
+                }
+            }
+        }
+    }
+
+    private sealed class StubScopeFactory : IServiceScopeFactory
+    {
+        public IServiceScope CreateScope() => new StubScope();
+
+        private sealed class StubScope : IServiceScope
+        {
+            public IServiceProvider ServiceProvider => new ServiceCollection().BuildServiceProvider();
+
+            public void Dispose()
+            {
+            }
         }
     }
 }

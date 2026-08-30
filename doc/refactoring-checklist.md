@@ -183,9 +183,9 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 > 实施记录（2026-08-23）：已删除 `PricingController.cs`、`ModelPricingService.cs`、`OpenCodexPricing.cs`、`IModelPricingService.cs`，全仓 `rg` 零命中。`RouteTests.cs:53` 断言 `/pricing/seed-defaults` 返回 404。`ModelPricing` 实体已删除。保留 `ModelPricingPlan` / `ModelPricingRule` 实体（新目录系统仍在使用）。
 - 验证：`/pricing/seed-defaults` 不可调用；新目录 CRUD 后计费立即生效；旧 `/pricing` CRUD 不影响实际代理计费。
 
-### B.3 Dashboard 两条伪 SSE ✅ 已清理 — SSE 已改为事件驱动，前端已迁移到 /monitor/* 路径，/stats/active-channels、/stats/active-channels/stream、/stats/recent-errors/stream 三条 deprecated 路由已删除
+### B.3 Dashboard SSE ✅ 已清理 — 伪轮询已改为事件驱动 SSE，前端已迁移到 /monitor/* 与 /logs/stream 路径，/stats/active-channels、/stats/active-channels/stream、/stats/recent-errors/stream 三条 deprecated 路由已删除
 
-- 现状（已实证）：`ObservabilityController.cs:178 /stats/active-channels/stream`（2s）和 `:205 /stats/recent-errors/stream`（5s）已从手写 `while + Task.Delay` 循环重构为基于 `_eventBus.Subscribe` + `SseEventWriter.StreamAsync` 的事件驱动模式（`ObservabilityController.cs:383-440`），不再定时轮询查库。但端点本身仍保留，前端 `Dashboard.vue` 仍有 2 个 `EventSource`。原始描述保留供参考：~~手写 `while (!RequestAborted)` + `Task.Delay` + `Response.WriteAsync`，本质是服务端定时查库，却背着常驻连接状态机。~~前端 `frontend/src/Dashboard.vue:617` 与 `:696` 两个 `EventSource`。
+- 现状（已实证）：管理台实时推送全部收敛到 `RealtimeStreamController`，由 `RealtimeStreamService` 统一承载：4 条 SSE 端点 `/channels/runtime/stream`、`/monitor/active-channels/stream`、`/monitor/recent-errors/stream`、`/logs/stream`。推送循环（初始快照 + 事件去抖 300ms + 心跳 15s + 帧串行写出）已从 `SseEventWriter` 并入 `RealtimeStreamService.StreamAsync`，基于 `_eventBus.Subscribe` 事件驱动，不再定时轮询查库。Controller 只保留路由与鉴权，每帧快照通过 `IServiceScopeFactory` 临时解析服务，避免在常驻连接里 hold scoped 依赖。前端 `Dashboard.vue`、`Channels.vue`、`Logs.vue` 共 4 个 `EventSource` 消费这些端点。原始描述保留供参考：~~手写 `while (!RequestAborted)` + `Task.Delay` + `Response.WriteAsync`，本质是服务端定时查库，却背着常驻连接状态机。~~（旧实现 `ObservabilityController.cs:383-440`，前端 `Dashboard.vue:617` 与 `:696` 两个 `EventSource`。）
 - ⚠️ `/stats/active-channels` 有非流版本（`:170`），但 `/stats/recent-errors` **没有** → 改成前端轮询需先新增 `GET /stats/recent-errors`。
 - Dashboard 实际只消费 `/stats/active-channels/stream`；普通 `/stats/active-channels` 在前端、文档和测试外部调用矩阵中没有消费方。若删除队列 SSE，可连同该 GET 和 Vite proxy 白名单一起清理。
 - 更低复杂度的选项：若没有实时运维刚需，直接删除“请求队列”和“请求错误”卡片、两条 SSE 端点及对应前端状态机；保留 Dashboard 统计图、Channels 容量/健康状态和 Logs 错误详情。

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using OpenCodex.Api.Configuration;
 using OpenCodex.Api.Controllers;
 using OpenCodex.Api.Infrastructure;
+using OpenCodex.Api.Services;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Models;
 using OpenCodex.CoreBase.Domain.Proxy;
@@ -92,12 +93,12 @@ public sealed class ProxyControllerTests
                 ["slug"] = "gpt-5.5"
             }
         };
-        var factory = new StubCodexOfficialModelCatalogFactory(expectedModels);
+        var service = new StubCodexOfficialModelCatalogService(expectedModels);
         var controller = CreateController(
             new StubRequestBodyReader(CreateMessagesPayload(maxTokens: 4096)),
             new StubProxyEndpointService(),
             interceptProbeRequests: false,
-            codexFactory: factory);
+            codexService: service);
         controller.HttpContext.Request.QueryString = QueryString.Create("client_version", "0.147.0");
 
         var action = await controller.Models();
@@ -112,18 +113,19 @@ public sealed class ProxyControllerTests
         IRequestBodyReader bodyReader,
         StubProxyEndpointService proxy,
         bool interceptProbeRequests,
-        ICodexOfficialModelCatalogFactory? codexFactory = null,
+        ICodexOfficialModelCatalogService? codexService = null,
         IProxyLogService? logs = null)
     {
-        var controller = new ProxyController(
+        var proxyService = new ProxyService(
             bodyReader,
             proxy,
             new StubProxyRequestService(),
             new StubProxyRouteService(),
             new StubModelCatalogService(),
-            codexFactory ?? new StubCodexOfficialModelCatalogFactory(),
+            codexService ?? new StubCodexOfficialModelCatalogService(),
             new StubProxySettingsService(interceptProbeRequests),
-            logs ?? new StubProxyLogService())
+            logs ?? new StubProxyLogService());
+        var controller = new ProxyController(proxyService)
         {
             ControllerContext = new ControllerContext
             {
@@ -370,11 +372,11 @@ public sealed class ProxyControllerTests
         }
     }
 
-    private sealed class StubCodexOfficialModelCatalogFactory : ICodexOfficialModelCatalogFactory
+    private sealed class StubCodexOfficialModelCatalogService : ICodexOfficialModelCatalogService
     {
         private readonly IReadOnlyList<Dictionary<string, object?>> _result;
 
-        public StubCodexOfficialModelCatalogFactory(IReadOnlyList<Dictionary<string, object?>>? result = null)
+        public StubCodexOfficialModelCatalogService(IReadOnlyList<Dictionary<string, object?>>? result = null)
         {
             _result = result ?? [];
         }

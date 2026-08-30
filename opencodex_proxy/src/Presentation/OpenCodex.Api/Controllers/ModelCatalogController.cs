@@ -1,9 +1,9 @@
 using Microsoft.AspNetCore.Mvc;
-using System.Text.Json;
 using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.DTOs.Models;
 using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
+using OpenCodex.Api.Services;
 
 namespace OpenCodex.Api.Controllers;
 
@@ -11,15 +11,18 @@ public sealed class ModelCatalogController : AuthenticatedApiControllerBase
 {
     private readonly IModelCatalogService _catalog;
     private readonly IModelCatalogSyncService _syncService;
+    private readonly IModelCatalogControllerService _catalogController;
 
     public ModelCatalogController(
         IWorkContext workContext,
         IModelCatalogService catalog,
-        IModelCatalogSyncService syncService)
+        IModelCatalogSyncService syncService,
+        IModelCatalogControllerService catalogController)
         : base(workContext)
     {
         _catalog = catalog;
         _syncService = syncService;
+        _catalogController = catalogController;
     }
 
     [HttpGet("/model-providers")]
@@ -99,22 +102,7 @@ public sealed class ModelCatalogController : AuthenticatedApiControllerBase
     public IActionResult ExportCatalog()
     {
         RequireSuperadmin();
-        var result = _catalog.ExportModelCatalog();
-        if (!result.Succeeded)
-        {
-            return StatusCode(result.Code, result);
-        }
-
-        if (result.Payload is null)
-        {
-            return StatusCode(500, ApiOpResult.Fail(500, "export payload is empty"));
-        }
-
-        Response.ContentType = "application/json";
-        return File(
-            JsonSerializer.SerializeToUtf8Bytes(result.Payload),
-            "application/json",
-            $"model-catalog-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}.json");
+        return _catalogController.ExportCatalog(Response);
     }
 
     [HttpPost("/model-catalog/import")]

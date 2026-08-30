@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using OpenCodex.Api.Services;
 using OpenCodex.CoreBase.DTOs.Observability;
 using OpenCodex.CoreBase.Services;
 
@@ -6,11 +7,11 @@ namespace OpenCodex.Api.Controllers;
 
 public sealed class ObservabilityController : AuthenticatedApiControllerBase
 {
-    private readonly IObservabilityService _observability;
+    private readonly IObservabilityQueryService _observability;
 
     public ObservabilityController(
         IWorkContext workContext,
-        IObservabilityService observability)
+        IObservabilityQueryService observability)
         : base(workContext)
     {
         _observability = observability;
@@ -42,32 +43,32 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         string page_size = "50")
     {
         RequireUser();
-        var filters = BuildLogFilters(
-            request_id,
-            model,
-            upstream_model,
-            channel_id,
-            owner_username,
-            api_key_id,
-            path,
-            request_type,
-            status_code,
-            is_stream,
-            client_ip,
-            error,
-            request_status,
-            created_from,
-            created_to,
-            conversation_key,
-            conversation_turn_id,
-            conversation_window_id,
-            previous_response_id,
-            parent_request_log_id);
-        var result = _observability.ReadLogsPage(
+        return Api(_observability.ReadLogsPage(
             page,
             page_size,
-            filters);
-        return Api(result);
+            new LogFilterCriteria
+            {
+                RequestId = request_id,
+                Model = model,
+                UpstreamModel = upstream_model,
+                ChannelId = channel_id,
+                OwnerUsername = owner_username,
+                ApiKeyId = api_key_id,
+                Path = path,
+                RequestType = request_type,
+                StatusCode = status_code,
+                IsStream = is_stream,
+                ClientIp = client_ip,
+                Error = error,
+                RequestStatus = request_status,
+                CreatedFrom = created_from,
+                CreatedTo = created_to,
+                ConversationKey = conversation_key,
+                ConversationTurnId = conversation_turn_id,
+                ConversationWindowId = conversation_window_id,
+                PreviousResponseId = previous_response_id,
+                ParentRequestLogId = parent_request_log_id
+            }));
     }
 
     [HttpGet("/log-filter-options")]
@@ -95,49 +96,45 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         string? previous_response_id = null)
     {
         RequireUser();
-        var filters = BuildLogFilters(
-            request_id,
-            model,
-            upstream_model,
-            channel_id,
-            owner_username,
-            api_key_id,
-            path,
-            request_type,
-            status_code,
-            is_stream,
-            client_ip,
-            error,
-            request_status,
-            created_from,
-            created_to,
-            conversation_key,
-            conversation_turn_id,
-            conversation_window_id,
-            previous_response_id,
-            null,
-            field);
-        var result = _observability.ReadLogFilterOption(
+        return Api(_observability.ReadLogFilterOption(
             field,
             q,
-            filters);
-        return Api(result);
+            new LogFilterCriteria
+            {
+                RequestId = request_id,
+                Model = model,
+                UpstreamModel = upstream_model,
+                ChannelId = channel_id,
+                OwnerUsername = owner_username,
+                ApiKeyId = api_key_id,
+                Path = path,
+                RequestType = request_type,
+                StatusCode = status_code,
+                IsStream = is_stream,
+                ClientIp = client_ip,
+                Error = error,
+                RequestStatus = request_status,
+                CreatedFrom = created_from,
+                CreatedTo = created_to,
+                ConversationKey = conversation_key,
+                ConversationTurnId = conversation_turn_id,
+                ConversationWindowId = conversation_window_id,
+                PreviousResponseId = previous_response_id
+            }));
     }
 
     [HttpGet("/logs/{logId:guid}")]
     public IActionResult LogDetail(Guid logId)
     {
         RequireUser();
-        var result = _observability.ReadLogById(logId);
-        return Api(result);
+        return Api(_observability.ReadLogById(logId));
     }
 
     [HttpDelete("/logs")]
     public IActionResult ClearLogs()
     {
         RequireSuperadmin();
-        var result = _observability.ClearLogs();
-        return Api(result);
+        return Api(_observability.ClearLogs());
     }
 
     [HttpGet("/stats")]
@@ -164,33 +161,30 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         string? previous_response_id = null)
     {
         RequireUser();
-        var filters = BuildLogFilters(
-            request_id,
-            model,
-            upstream_model,
-            channel_id,
-            owner_username,
-            api_key_id,
-            path,
-            request_type,
-            status_code,
-            is_stream,
-            client_ip,
-            error,
-            request_status,
-            null,
-            null,
-            conversation_key,
-            conversation_turn_id,
-            conversation_window_id,
-            previous_response_id,
-            null);
-        var result = _observability.ReadStats(
+        return Api(_observability.ReadStats(
             range,
             start,
             end,
-            filters);
-        return Api(result);
+            new LogFilterCriteria
+            {
+                RequestId = request_id,
+                Model = model,
+                UpstreamModel = upstream_model,
+                ChannelId = channel_id,
+                OwnerUsername = owner_username,
+                ApiKeyId = api_key_id,
+                Path = path,
+                RequestType = request_type,
+                StatusCode = status_code,
+                IsStream = is_stream,
+                ClientIp = client_ip,
+                Error = error,
+                RequestStatus = request_status,
+                ConversationKey = conversation_key,
+                ConversationTurnId = conversation_turn_id,
+                ConversationWindowId = conversation_window_id,
+                PreviousResponseId = previous_response_id
+            }));
     }
 
 
@@ -220,12 +214,30 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         string? previous_response_id = null)
     {
         RequireUser();
-        var filters = BuildLogFilters(
-            request_id, model, upstream_model, channel_id, owner_username, api_key_id, path,
-            request_type, status_code, is_stream, client_ip, error, request_status, null, null,
-            conversation_key, conversation_turn_id, conversation_window_id, previous_response_id, null);
-        var result = _observability.ReadStatsSummary(range, start, end, filters);
-        return Api(result);
+        return Api(_observability.ReadStatsSummary(
+            range,
+            start,
+            end,
+            new LogFilterCriteria
+            {
+                RequestId = request_id,
+                Model = model,
+                UpstreamModel = upstream_model,
+                ChannelId = channel_id,
+                OwnerUsername = owner_username,
+                ApiKeyId = api_key_id,
+                Path = path,
+                RequestType = request_type,
+                StatusCode = status_code,
+                IsStream = is_stream,
+                ClientIp = client_ip,
+                Error = error,
+                RequestStatus = request_status,
+                ConversationKey = conversation_key,
+                ConversationTurnId = conversation_turn_id,
+                ConversationWindowId = conversation_window_id,
+                PreviousResponseId = previous_response_id
+            }));
     }
 
     [HttpGet("/stats/timeseries")]
@@ -252,12 +264,30 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         string? previous_response_id = null)
     {
         RequireUser();
-        var filters = BuildLogFilters(
-            request_id, model, upstream_model, channel_id, owner_username, api_key_id, path,
-            request_type, status_code, is_stream, client_ip, error, request_status, null, null,
-            conversation_key, conversation_turn_id, conversation_window_id, previous_response_id, null);
-        var result = _observability.ReadStatsTimeseries(range, start, end, filters);
-        return Api(result);
+        return Api(_observability.ReadStatsTimeseries(
+            range,
+            start,
+            end,
+            new LogFilterCriteria
+            {
+                RequestId = request_id,
+                Model = model,
+                UpstreamModel = upstream_model,
+                ChannelId = channel_id,
+                OwnerUsername = owner_username,
+                ApiKeyId = api_key_id,
+                Path = path,
+                RequestType = request_type,
+                StatusCode = status_code,
+                IsStream = is_stream,
+                ClientIp = client_ip,
+                Error = error,
+                RequestStatus = request_status,
+                ConversationKey = conversation_key,
+                ConversationTurnId = conversation_turn_id,
+                ConversationWindowId = conversation_window_id,
+                PreviousResponseId = previous_response_id
+            }));
     }
 
     [HttpGet("/stats/model-distribution")]
@@ -284,12 +314,30 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         string? previous_response_id = null)
     {
         RequireUser();
-        var filters = BuildLogFilters(
-            request_id, model, upstream_model, channel_id, owner_username, api_key_id, path,
-            request_type, status_code, is_stream, client_ip, error, request_status, null, null,
-            conversation_key, conversation_turn_id, conversation_window_id, previous_response_id, null);
-        var result = _observability.ReadStatsModelDistribution(range, start, end, filters);
-        return Api(result);
+        return Api(_observability.ReadStatsModelDistribution(
+            range,
+            start,
+            end,
+            new LogFilterCriteria
+            {
+                RequestId = request_id,
+                Model = model,
+                UpstreamModel = upstream_model,
+                ChannelId = channel_id,
+                OwnerUsername = owner_username,
+                ApiKeyId = api_key_id,
+                Path = path,
+                RequestType = request_type,
+                StatusCode = status_code,
+                IsStream = is_stream,
+                ClientIp = client_ip,
+                Error = error,
+                RequestStatus = request_status,
+                ConversationKey = conversation_key,
+                ConversationTurnId = conversation_turn_id,
+                ConversationWindowId = conversation_window_id,
+                PreviousResponseId = previous_response_id
+            }));
     }
 
     [HttpGet("/stats/error-distribution")]
@@ -316,89 +364,43 @@ public sealed class ObservabilityController : AuthenticatedApiControllerBase
         string? previous_response_id = null)
     {
         RequireUser();
-        var filters = BuildLogFilters(
-            request_id, model, upstream_model, channel_id, owner_username, api_key_id, path,
-            request_type, status_code, is_stream, client_ip, error, request_status, null, null,
-            conversation_key, conversation_turn_id, conversation_window_id, previous_response_id, null);
-        var result = _observability.ReadStatsErrorDistribution(range, start, end, filters);
-        return Api(result);
+        return Api(_observability.ReadStatsErrorDistribution(
+            range,
+            start,
+            end,
+            new LogFilterCriteria
+            {
+                RequestId = request_id,
+                Model = model,
+                UpstreamModel = upstream_model,
+                ChannelId = channel_id,
+                OwnerUsername = owner_username,
+                ApiKeyId = api_key_id,
+                Path = path,
+                RequestType = request_type,
+                StatusCode = status_code,
+                IsStream = is_stream,
+                ClientIp = client_ip,
+                Error = error,
+                RequestStatus = request_status,
+                ConversationKey = conversation_key,
+                ConversationTurnId = conversation_turn_id,
+                ConversationWindowId = conversation_window_id,
+                PreviousResponseId = previous_response_id
+            }));
     }
 
     [HttpGet("/monitor/active-channels")]
     public IActionResult MonitorActiveChannels()
     {
         RequireUser();
-        var result = _observability.ReadActiveChannelQueue();
-        return Api(result);
+        return Api(_observability.ReadActiveChannelQueue());
     }
 
     [HttpGet("/monitor/recent-errors")]
     public IActionResult MonitorRecentErrors()
     {
         RequireUser();
-        var result = _observability.ReadRecentErrors(5);
-        return Api(result);
-    }
-
-    // 实时流端点已迁移至 RealtimeStreamController。
-    private static Dictionary<string, object?> BuildLogFilters(
-        string? requestId,
-        string? model,
-        string? upstreamModel,
-        string? channelId,
-        string? ownerUsername,
-        string? apiKeyId,
-        string? path,
-        string? requestType,
-        string? statusCode,
-        string? isStream,
-        string? clientIp,
-        string? error,
-        string? requestStatus,
-        string? createdFrom,
-        string? createdTo,
-        string? conversationKey,
-        string? conversationTurnId,
-        string? conversationWindowId,
-        string? previousResponseId,
-        string? parentRequestLogId,
-        string? excludedKey = null)
-    {
-        var filters = new Dictionary<string, object?>(StringComparer.Ordinal);
-        AddFilter(filters, "request_id", requestId, excludedKey);
-        AddFilter(filters, "model", model, excludedKey);
-        AddFilter(filters, "upstream_model", upstreamModel, excludedKey);
-        AddFilter(filters, "channel_id", channelId, excludedKey);
-        AddFilter(filters, "owner_username", ownerUsername, excludedKey);
-        AddFilter(filters, "api_key_id", apiKeyId, excludedKey);
-        AddFilter(filters, "path", path, excludedKey);
-        AddFilter(filters, "request_type", requestType, excludedKey);
-        AddFilter(filters, "status_code", statusCode, excludedKey);
-        AddFilter(filters, "is_stream", isStream, excludedKey);
-        AddFilter(filters, "client_ip", clientIp, excludedKey);
-        AddFilter(filters, "error", error, excludedKey);
-        AddFilter(filters, "request_status", requestStatus, excludedKey);
-        AddFilter(filters, "created_from", createdFrom, excludedKey);
-        AddFilter(filters, "created_to", createdTo, excludedKey);
-        AddFilter(filters, "conversation_key", conversationKey, excludedKey);
-        AddFilter(filters, "conversation_turn_id", conversationTurnId, excludedKey);
-        AddFilter(filters, "conversation_window_id", conversationWindowId, excludedKey);
-        AddFilter(filters, "previous_response_id", previousResponseId, excludedKey);
-        AddFilter(filters, "parent_request_log_id", parentRequestLogId, excludedKey);
-        return filters;
-    }
-
-    private static void AddFilter(
-        Dictionary<string, object?> filters,
-        string key,
-        string? value,
-        string? excludedKey)
-    {
-        if (key == excludedKey || string.IsNullOrEmpty(value))
-        {
-            return;
-        }
-
-        filters[key] = value;
+        return Api(_observability.ReadRecentErrors(5));
     }
 }

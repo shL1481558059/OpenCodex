@@ -7,6 +7,7 @@ using Microsoft.Extensions.Caching.Memory;
 using Microsoft.OpenApi;
 using OpenCodex.Api.Configuration;
 using OpenCodex.Api.Infrastructure;
+using OpenCodex.Api.Services;
 using OpenCodex.Core.ExternalIntegrations;
 using OpenCodex.Core.Services;
 using OpenCodex.Core.Services.Caching;
@@ -146,7 +147,7 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddSingleton<IOpenCodexRuntimeSettingsProvider, OpenCodexRuntimeSettingsProvider>();
         services.AddSingleton<IDesktopSystemSettingsStore, DesktopSystemSettingsStore>();
         services.AddScoped<IRequestBodyReader, RequestBodyReader>();
-        services.AddScoped<IImageEditRequestReader, ImageEditRequestReader>();
+        services.AddScoped<IImageEditRequestService, ImageEditRequestService>();
         services.AddScoped<IWorkContext, WebWorkContext>();
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<IChannelDiagnosticsService, ChannelDiagnosticsService>();
@@ -174,7 +175,17 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<IProxyNonStreamService, ProxyNonStreamService>();
         services.AddScoped<IProxyStreamService, ProxyStreamService>();
         services.AddScoped<IWebSearchSimulator, WebSearchSimulator>();
-        services.AddSingleton<ICodexOfficialModelCatalogFactory, CodexOfficialModelCatalogFactory>();
+        services.AddSingleton<ICodexOfficialModelCatalogService, CodexOfficialModelCatalogService>();
+        services.AddScoped<IRealtimeStreamService, RealtimeStreamService>();
+        services.AddScoped<IProxyService, ProxyService>();
+        services.AddScoped<IObservabilityQueryService, ObservabilityQueryService>();
+        services.AddScoped<ISessionControllerService, SessionControllerService>();
+        services.AddScoped<ISetupControllerService, SetupControllerService>();
+        services.AddScoped<ISystemSettingsControllerService, SystemSettingsControllerService>();
+        services.AddScoped<IChannelControllerService, ChannelControllerService>();
+        services.AddScoped<IChannelDiagnosticsControllerService, ChannelDiagnosticsControllerService>();
+        services.AddScoped<IWebSearchAdminService, WebSearchAdminService>();
+        services.AddScoped<IModelCatalogControllerService, ModelCatalogControllerService>();
         services.AddSingleton<IEventBus>(serviceProvider =>
         {
             var redis = serviceProvider.GetService<IRedisConnectionProvider>();

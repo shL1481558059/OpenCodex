@@ -2,19 +2,23 @@ using Microsoft.AspNetCore.Mvc;
 using OpenCodex.CoreBase.DTOs.Channels;
 using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
+using OpenCodex.Api.Services;
 
 namespace OpenCodex.Api.Controllers;
 
 public sealed class ChannelController : AuthenticatedApiControllerBase
 {
     private readonly IChannelService _channels;
+    private readonly IChannelControllerService _channelRuntime;
 
     public ChannelController(
         IWorkContext workContext,
-        IChannelService channels)
+        IChannelService channels,
+        IChannelControllerService channelRuntime)
         : base(workContext)
     {
         _channels = channels;
+        _channelRuntime = channelRuntime;
     }
 
     [HttpGet("/channels")]
@@ -37,20 +41,7 @@ public sealed class ChannelController : AuthenticatedApiControllerBase
     public IActionResult ChannelRuntime([FromQuery] string? ids)
     {
         RequireUser();
-        IReadOnlyList<Guid>? idList = null;
-        if (!string.IsNullOrWhiteSpace(ids))
-        {
-            // 宽松解析: 无法解析为 Guid 的值会被静默忽略, 不返回错误。
-            idList = ids.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(id => Guid.TryParse(id, out var guid) ? guid : Guid.Empty)
-                .Where(guid => guid != Guid.Empty)
-                .ToList();
-            if (idList.Count == 0)
-            {
-                idList = null;
-            }
-        }
-        var result = _channels.ReadChannelRuntime(idList);
+        var result = _channelRuntime.ReadChannelRuntime(ids);
         return Api(result);
     }
 

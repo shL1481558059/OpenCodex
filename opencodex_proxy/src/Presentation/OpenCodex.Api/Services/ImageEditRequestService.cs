@@ -1,14 +1,9 @@
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.Core.Errors;
 
-namespace OpenCodex.Api.Infrastructure;
+namespace OpenCodex.Api.Services;
 
-public interface IImageEditRequestReader
-{
-    Task<ImageEditRequest> ReadAsync(HttpRequest request, CancellationToken cancellationToken = default);
-}
-
-public sealed class ImageEditRequestReader : IImageEditRequestReader
+public sealed class ImageEditRequestService : IImageEditRequestService
 {
     internal const long MaxFileBytes = 20 * 1024 * 1024;
     internal const long MaxTotalFileBytes = 100 * 1024 * 1024;

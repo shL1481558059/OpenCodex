@@ -1,20 +1,23 @@
 using Microsoft.AspNetCore.Mvc;
 using OpenCodex.CoreBase.DTOs.WebSearch;
-using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
+using OpenCodex.Api.Services;
 
 namespace OpenCodex.Api.Controllers;
 
 public sealed class WebSearchController : AuthenticatedApiControllerBase
 {
     private readonly IWebSearchService _webSearch;
+    private readonly IWebSearchAdminService _webSearchAdmin;
 
     public WebSearchController(
         IWorkContext workContext,
-        IWebSearchService webSearch)
+        IWebSearchService webSearch,
+        IWebSearchAdminService webSearchAdmin)
         : base(workContext)
     {
         _webSearch = webSearch;
+        _webSearchAdmin = webSearchAdmin;
     }
 
     [HttpGet("/web-search")]
@@ -45,15 +48,7 @@ public sealed class WebSearchController : AuthenticatedApiControllerBase
     public async Task<IActionResult> TestWebSearchKey(WebSearchTestKeyRequest request)
     {
         RequireSuperadmin();
-        if (request.Id is null)
-        {
-            return Api(ApiOpResult<WebSearchTestKeyResponsePayload>.Fail(400, "id is required"));
-        }
-
-        var test = await _webSearch.TestKeyAsync(
-            request.Id.Value,
-            request.EffectiveQuery(),
-            HttpContext.RequestAborted);
+        var test = await _webSearchAdmin.TestKeyAsync(request, HttpContext.RequestAborted);
         return Api(test);
     }
 }

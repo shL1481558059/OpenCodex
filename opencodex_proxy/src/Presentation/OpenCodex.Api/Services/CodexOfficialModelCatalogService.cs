@@ -4,16 +4,9 @@ using Microsoft.AspNetCore.Hosting;
 using OpenCodex.CoreBase.DTOs.Models;
 using OpenCodex.CoreBase.DTOs.Proxy;
 
-namespace OpenCodex.Api.Infrastructure;
+namespace OpenCodex.Api.Services;
 
-public interface ICodexOfficialModelCatalogFactory
-{
-    IReadOnlyList<Dictionary<string, object?>> BuildCodexModels(
-        IReadOnlyList<ProxyModelCapabilityDto> routedModels,
-        IReadOnlyDictionary<string, ModelInfoResponse> catalogByModel);
-}
-
-public sealed class CodexOfficialModelCatalogFactory : ICodexOfficialModelCatalogFactory
+public sealed class CodexOfficialModelCatalogService : ICodexOfficialModelCatalogService
 {
     private const string ResourceFileName = "ocxp_codex_official_models.json";
     private const int OneMillion = 1_000_000;
@@ -22,7 +15,7 @@ public sealed class CodexOfficialModelCatalogFactory : ICodexOfficialModelCatalo
     private readonly string _resourcePath;
     private readonly Lazy<IReadOnlyList<Dictionary<string, object?>>> _baseModels;
 
-    public CodexOfficialModelCatalogFactory(IWebHostEnvironment environment)
+    public CodexOfficialModelCatalogService(IWebHostEnvironment environment)
     {
         _resourcePath = ResolveResourcePath(environment);
         _baseModels = new Lazy<IReadOnlyList<Dictionary<string, object?>>>(LoadBaseModels);

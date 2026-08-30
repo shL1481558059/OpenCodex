@@ -1,14 +1,14 @@
 using System.Text;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.FileProviders;
-using OpenCodex.Api.Infrastructure;
+using OpenCodex.Api.Services;
 using OpenCodex.CoreBase.DTOs.Models;
 using OpenCodex.CoreBase.DTOs.Proxy;
 using Xunit;
 
 namespace OpenCodex.Api.Tests;
 
-public sealed class CodexOfficialModelCatalogFactoryTests
+public sealed class CodexOfficialModelCatalogServiceTests
 {
     [Fact]
     public void BuildCodexModels_AppliesLengthRulesAndAppendsProxyModels()
@@ -22,13 +22,13 @@ public sealed class CodexOfficialModelCatalogFactoryTests
                 Encoding.UTF8);
 
             var environment = new TestWebHostEnvironment(root);
-            var factory = new CodexOfficialModelCatalogFactory(environment);
+            var service = new CodexOfficialModelCatalogService(environment);
             var catalogByModel = new Dictionary<string, ModelInfoResponse>(StringComparer.OrdinalIgnoreCase)
             {
                 ["custom-proxy"] = CreateModelInfo("custom-proxy", "My Custom Proxy")
             };
 
-            var result = factory.BuildCodexModels(
+            var result = service.BuildCodexModels(
                 [new ProxyModelCapabilityDto("custom-proxy", true)],
                 catalogByModel);
 

@@ -7,6 +7,7 @@ using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.DTOs.Observability;
 using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
+using OpenCodex.Api.Services;
 using Xunit;
 
 namespace OpenCodex.Api.Tests;
@@ -99,7 +100,8 @@ public sealed class ObservabilityControllerTests
 
     private static ObservabilityController CreateController(CapturingObservabilityService service)
     {
-        return new ObservabilityController(new TestWorkContext(), service)
+        var queryService = new ObservabilityQueryService(service);
+        return new ObservabilityController(new TestWorkContext(), queryService)
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
         };

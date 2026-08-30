@@ -1,82 +1,51 @@
 using Microsoft.AspNetCore.Mvc;
-using OpenCodex.Api.Configuration;
 using OpenCodex.CoreBase.DTOs.SystemSettings;
-using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
+using OpenCodex.Api.Services;
 
 namespace OpenCodex.Api.Controllers;
 
 public sealed class SystemSettingsController : AuthenticatedApiControllerBase
 {
-    private readonly IDesktopSystemSettingsStore _settings;
+    private readonly ISystemSettingsControllerService _settings;
     private readonly IVisionTransferSettingsService _visionTransfer;
-    private readonly IProxySettingsService _proxySettings;
 
     public SystemSettingsController(
         IWorkContext workContext,
-        IDesktopSystemSettingsStore settings,
-        IVisionTransferSettingsService visionTransfer,
-        IProxySettingsService proxySettings)
+        ISystemSettingsControllerService settings,
+        IVisionTransferSettingsService visionTransfer)
         : base(workContext)
     {
         _settings = settings;
         _visionTransfer = visionTransfer;
-        _proxySettings = proxySettings;
     }
 
     [HttpGet("/system-settings")]
     public IActionResult GetSettings()
     {
         RequireSuperadmin();
-        return Api(ApiOpResult<SystemSettingsResponse>.Succeed(_settings.Get()));
+        return Api(_settings.ReadSettings());
     }
 
     [HttpPut("/system-settings")]
     public IActionResult UpdateSettings(SystemSettingsUpdateRequest request)
     {
         RequireSuperadmin();
-        try
-        {
-            var settings = _settings.Save(_settings.Normalize(request));
-            return Api(ApiOpResult<SystemSettingsResponse>.Succeed(settings));
-        }
-        catch (ArgumentException exception)
-        {
-            return Api(ApiOpResult<SystemSettingsResponse>.Fail(400, exception.Message));
-        }
+        return Api(_settings.UpdateSettings(request));
     }
 
     [HttpGet("/system-settings/proxy-settings")]
     public async Task<IActionResult> GetProxySettings()
     {
         RequireSuperadmin();
-        var settings = await _proxySettings.GetAllAsync();
-        return Api(ApiOpResult<ProxySettingsResponse>.Succeed(new ProxySettingsResponse
-        {
-            Settings = settings.Payload ?? new Dictionary<string, string>()
-        }));
+        return Api(await _settings.ReadProxySettingsAsync());
     }
 
     [HttpPut("/system-settings/proxy-settings")]
     public async Task<IActionResult> UpdateProxySettings(ProxySettingsUpdateRequest request)
     {
         RequireSuperadmin();
-        if (string.IsNullOrWhiteSpace(request.Key))
-        {
-            return Api(ApiOpResult<ProxySettingsResponse>.Fail(400, "key must not be empty"));
-        }
-
-        var result = await _proxySettings.SetAsync(request.Key, request.Value ?? string.Empty);
-        if (!result.Succeeded)
-        {
-            return Api(result);
-        }
-
-        var settings = await _proxySettings.GetAllAsync();
-        return Api(ApiOpResult<ProxySettingsResponse>.Succeed(new ProxySettingsResponse
-        {
-            Settings = settings.Payload ?? new Dictionary<string, string>()
-        }));
+        return Api(await _settings.UpdateProxySettingsAsync(request));
     }
 
     // 以下四个端点是 per-owner 配置,普通 user 也可以维护自己那一份。

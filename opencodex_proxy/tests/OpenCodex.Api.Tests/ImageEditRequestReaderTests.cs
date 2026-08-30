@@ -1,13 +1,13 @@
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Primitives;
-using OpenCodex.Api.Infrastructure;
+using OpenCodex.Api.Services;
 using OpenCodex.Core.Errors;
 using Xunit;
 
 namespace OpenCodex.Api.Tests;
 
-public sealed class ImageEditRequestReaderTests
+public sealed class ImageEditRequestServiceTests
 {
     [Fact]
     public async Task ReadAsync_PreservesImageOrderAndReturnsFreshStreams()
@@ -24,7 +24,7 @@ public sealed class ImageEditRequestReaderTests
             first,
             second);
 
-        var result = await new ImageEditRequestReader().ReadAsync(request);
+        var result = await new ImageEditRequestService().ReadAsync(request);
 
         Assert.Equal(["first.png", "second.png"], result.Images.Select(file => file.FileName));
         Assert.Equal("kept", result.Parameters.Payload["unknown"]);
@@ -53,7 +53,7 @@ public sealed class ImageEditRequestReaderTests
             file);
 
         var exception = await Assert.ThrowsAsync<BadRequestException>(
-            () => new ImageEditRequestReader().ReadAsync(request));
+            () => new ImageEditRequestService().ReadAsync(request));
 
         Assert.Equal(statusCode, exception.StatusCode);
     }
@@ -66,7 +66,7 @@ public sealed class ImageEditRequestReaderTests
         context.Request.ContentLength = 100L * 1024 * 1024 + 1;
 
         var exception = await Assert.ThrowsAsync<BadRequestException>(
-            () => new ImageEditRequestReader().ReadAsync(context.Request));
+            () => new ImageEditRequestService().ReadAsync(context.Request));
 
         Assert.Equal(413, exception.StatusCode);
     }

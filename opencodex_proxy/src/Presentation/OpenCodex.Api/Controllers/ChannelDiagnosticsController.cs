@@ -1,17 +1,17 @@
 using Microsoft.AspNetCore.Mvc;
-using OpenCodex.Api.Infrastructure;
-using OpenCodex.CoreBase.DTOs.ChannelDiagnostics;
 using OpenCodex.CoreBase.Services;
+using OpenCodex.CoreBase.DTOs.ChannelDiagnostics;
+using OpenCodex.Api.Services;
 
 namespace OpenCodex.Api.Controllers;
 
 public sealed class ChannelDiagnosticsController : AuthenticatedApiControllerBase
 {
-    private readonly IChannelDiagnosticsService _channelDiagnostics;
+    private readonly IChannelDiagnosticsControllerService _channelDiagnostics;
 
     public ChannelDiagnosticsController(
         IWorkContext workContext,
-        IChannelDiagnosticsService channelDiagnostics)
+        IChannelDiagnosticsControllerService channelDiagnostics)
         : base(workContext)
     {
         _channelDiagnostics = channelDiagnostics;
@@ -22,9 +22,7 @@ public sealed class ChannelDiagnosticsController : AuthenticatedApiControllerBas
     public async Task<IActionResult> DiscoverModels(ChannelDiscoverRequest request)
     {
         RequireUser();
-        var result = await _channelDiagnostics.DiscoverModelsAsync(
-            request.ToDictionary(),
-            HttpContext.RequestAborted);
+        var result = await _channelDiagnostics.DiscoverModelsAsync(request, HttpContext.RequestAborted);
         return Api(result);
     }
 
@@ -34,12 +32,10 @@ public sealed class ChannelDiagnosticsController : AuthenticatedApiControllerBas
     {
         var user = RequireUser();
         await _channelDiagnostics.StreamTestChannelAsync(
-            request.ToDictionary(),
+            request,
             user,
-            ProxyRequestMetadataFactory.FromHttpRequest(
-                Request,
-                HttpContext.Connection.RemoteIpAddress?.ToString()),
-            new ProxyStreamResponseWriter(Response),
+            Request,
+            Response,
             HttpContext.RequestAborted);
     }
 }

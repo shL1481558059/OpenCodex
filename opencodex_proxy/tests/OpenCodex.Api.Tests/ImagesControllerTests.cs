@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using OpenCodex.Api.Controllers;
 using OpenCodex.Api.Infrastructure;
+using OpenCodex.Api.Services;
 using OpenCodex.Core.Errors;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs;
@@ -50,13 +51,14 @@ public sealed class ImagesControllerTests
     private static ImagesController CreateController(
         IRequestBodyReader bodyReader,
         IProxyRequestService? requests = null,
-        IImageEditRequestReader? editReader = null)
+        IImageEditRequestService? editReader = null)
     {
-        var controller = new ImagesController(
+        var imagesProxy = new ImagesProxyService(
             bodyReader,
             new StubImagesService(),
             requests ?? new RejectingRequestService(),
             editReader ?? new CountingEditReader());
+        var controller = new ImagesController(imagesProxy);
         controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() };
         return controller;
     }
@@ -75,7 +77,7 @@ public sealed class ImagesControllerTests
             => Task.FromResult(payload);
     }
 
-    private sealed class CountingEditReader : IImageEditRequestReader
+    private sealed class CountingEditReader : IImageEditRequestService
     {
         public int ReadCount { get; private set; }
         public Task<ImageEditRequest> ReadAsync(HttpRequest request, CancellationToken cancellationToken = default)
