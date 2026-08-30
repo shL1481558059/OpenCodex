@@ -511,6 +511,92 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
+    public void ConvertRequest_ResponsesToolSchemaWithDefs_ExpandsRefsForChat()
+    {
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = "ping",
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "function",
+                        ["name"] = "automation_update",
+                        ["description"] = "Update automations.",
+                        ["parameters"] = new Dictionary<string, object?>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object?>(),
+                            ["oneOf"] = new List<object?>
+                            {
+                                new Dictionary<string, object?>
+                                {
+                                    ["$ref"] = "#/$defs/view"
+                                },
+                                new Dictionary<string, object?>
+                                {
+                                    ["$ref"] = "#/$defs/create"
+                                }
+                            },
+                            ["$defs"] = new Dictionary<string, object?>
+                            {
+                                ["view"] = new Dictionary<string, object?>
+                                {
+                                    ["type"] = "object",
+                                    ["properties"] = new Dictionary<string, object?>
+                                    {
+                                        ["id"] = new Dictionary<string, object?>
+                                        {
+                                            ["$ref"] = "#/$defs/stringId"
+                                        }
+                                    },
+                                    ["required"] = new List<object?> { "id" }
+                                },
+                                ["create"] = new Dictionary<string, object?>
+                                {
+                                    ["type"] = "object",
+                                    ["properties"] = new Dictionary<string, object?>
+                                    {
+                                        ["name"] = new Dictionary<string, object?>
+                                        {
+                                            ["type"] = "string"
+                                        }
+                                    },
+                                    ["required"] = new List<object?> { "name" }
+                                },
+                                ["stringId"] = new Dictionary<string, object?>
+                                {
+                                    ["type"] = "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Chat,
+            "upstream");
+
+        var tools = Assert.IsType<List<object?>>(request["tools"]);
+        var tool = Assert.IsType<Dictionary<string, object?>>(Assert.Single(tools));
+        var function = Assert.IsType<Dictionary<string, object?>>(tool["function"]);
+        var parameters = Assert.IsType<Dictionary<string, object?>>(function["parameters"]);
+        Assert.DoesNotContain("$ref", JsonSerializer.Serialize(parameters));
+        Assert.DoesNotContain("$defs", JsonSerializer.Serialize(parameters));
+
+        var oneOf = Assert.IsType<List<object?>>(parameters["oneOf"]);
+        Assert.Equal(2, oneOf.Count);
+
+        var viewBranch = Assert.IsType<Dictionary<string, object?>>(oneOf[0]);
+        var viewProps = Assert.IsType<Dictionary<string, object?>>(viewBranch["properties"]);
+        Assert.Equal(
+            "string",
+            Assert.IsType<Dictionary<string, object?>>(viewProps["id"])["type"]);
+    }
+
+    [Fact]
     public void ConvertRequest_ResponsesToolSchemaWithEmptyStringEnum_SanitizesForChat()
     {
         var request = ProtocolConverter.ConvertRequest(

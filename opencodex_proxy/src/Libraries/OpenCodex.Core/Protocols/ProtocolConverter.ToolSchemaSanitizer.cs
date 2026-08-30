@@ -131,6 +131,12 @@ public static partial class ProtocolConverter
 
     private static object? SanitizeToolSchema(object? schema)
     {
+        schema = NormalizeJsonValue(schema);
+        if (TryAsObject(schema, out var root))
+        {
+            schema = ExpandSchemaDefs(root, root, depth: 0);
+        }
+
         return SanitizeSchemaValue(schema);
     }
 
@@ -148,6 +154,94 @@ public static partial class ProtocolConverter
         }
 
         return value;
+    }
+
+    private const int MaxSchemaDefDepth = 32;
+
+    /// <summary>
+    /// 把工具参数 schema 里的 $ref/$defs 内部引用就地展开为自包含结构。
+    /// chat/messages 上游（含部分中转聚合层）不支持引用式 schema，遇到 $ref 会拒绝。
+    /// </summary>
+    private static Dictionary<string, object?> ExpandSchemaDefs(
+        Dictionary<string, object?> schema,
+        Dictionary<string, object?> root,
+        int depth)
+    {
+        if (depth > MaxSchemaDefDepth)
+        {
+            return new Dictionary<string, object?>
+            {
+                ["type"] = "object",
+                ["properties"] = new Dictionary<string, object?>()
+            };
+        }
+
+        var defs = TryAsObject(GetValue(root, "$defs"), out var defsObject)
+            ? defsObject
+            : new Dictionary<string, object?>();
+
+        var result = schema.ToDictionary(
+            pair => pair.Key,
+            pair => ExpandSchemaDefsValue(pair.Value, root, defs, depth),
+            StringComparer.Ordinal);
+
+        result.Remove("$defs");
+
+        if (TryGetSchemaRef(result, out var refKey))
+        {
+            result.Remove("$ref");
+            if (defs.TryGetValue(refKey, out var definition))
+            {
+                var expanded = ExpandSchemaDefsValue(definition, root, defs, depth + 1);
+                if (TryAsObject(expanded, out var expandedObject))
+                {
+                    foreach (var (key, value) in expandedObject)
+                    {
+                        if (!result.ContainsKey(key))
+                        {
+                            result[key] = value;
+                        }
+                    }
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private static object? ExpandSchemaDefsValue(
+        object? value,
+        Dictionary<string, object?> root,
+        Dictionary<string, object?> defs,
+        int depth)
+    {
+        if (TryAsObject(value, out var dictionary))
+        {
+            return ExpandSchemaDefs(dictionary, root, depth);
+        }
+
+        if (TryAsList(value, out var list))
+        {
+            return list
+                .Select(item => ExpandSchemaDefsValue(item, root, defs, depth))
+                .ToList();
+        }
+
+        return DeepCopy(value);
+    }
+
+    private static bool TryGetSchemaRef(Dictionary<string, object?> schema, out string refKey)
+    {
+        if (schema.TryGetValue("$ref", out var refValue)
+            && NormalizeJsonValue(refValue) is string refText
+            && refText.StartsWith("#/$defs/", StringComparison.Ordinal))
+        {
+            refKey = refText["#/$defs/".Length..];
+            return true;
+        }
+
+        refKey = string.Empty;
+        return false;
     }
 
     private static Dictionary<string, object?> SanitizeSchemaObject(Dictionary<string, object?> schema)
