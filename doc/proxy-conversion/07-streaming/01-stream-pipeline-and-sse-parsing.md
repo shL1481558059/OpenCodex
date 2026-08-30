@@ -122,7 +122,7 @@ Web Search 模拟优先级最高，因为它需要自行执行“模型调用 �
 flowchart TD
     A["发送上游 HTTP 请求"] --> B{"HTTP 是否成功"}
     B -->|"否"| C{"状态码可重试且次数未耗尽"}
-    C -->|"是"| D["按 Retry-After 或指数退避等待"]
+    C -->|"是"| D["按 Retry-After 或指数退避等待，且不低于 2 秒"]
     D --> A
     C -->|"否"| E["抛出 UpstreamException"]
     B -->|"是"| F["读取并缓存直到首个 data 行"]
@@ -139,7 +139,8 @@ flowchart TD
 
 - Delta 或绝对日期都支持；
 - 最大等待 30 秒；
-- 未提供时使用 `min(500ms × 2^attempt, 8000ms)`。
+- 未提供时使用 `min(2s × 2^attempt, 8s)`；
+- 所有路径再叠加 0 到 20% 的向上抖动，并保证不低于 2 秒。
 
 渠道 `retry_count` 表示额外重试次数，因此总尝试次数为 `retry_count + 1`。非法或缺失值默认按 `3` 处理。
 

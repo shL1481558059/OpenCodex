@@ -49,6 +49,8 @@ public sealed partial class HttpUpstreamClient
                     var retryable = await ProbeStreamForRetryableError(reader, bufferedLines, cancellationToken);
                     if (retryable is not null)
                     {
+                        // 先取出 Retry-After 再释放响应，避免退避期间占着上游连接。
+                        var retryAfter = response.Headers.RetryAfter;
                         reader.Dispose();
                         reader = null;
                         response.Dispose();
@@ -63,16 +65,23 @@ public sealed partial class HttpUpstreamClient
                                 channelId: JsonDictionaryValue.String(channel, "id"));
                         }
 
-                       await DelayBeforeRetry(attempt, response: null, cancellationToken);
-                       continue;
-                   }
+                        await DelayBeforeRetry(attempt, retryAfter, cancellationToken);
+                        continue;
+                    }
 
                     break;
                 }
 
                 if (attempt >= retryCount || !RetryableStatuses.Contains(response.StatusCode))
                 {
-                    await ThrowHttpError(response, channel, cancellationToken);
+                    try
+                    {
+                        await ThrowHttpError(response, channel, cancellationToken);
+                    }
+                    finally
+                    {
+                        response.Dispose();
+                    }
                 }
 
                 await DelayBeforeRetry(attempt, response, cancellationToken);
@@ -89,6 +98,8 @@ public sealed partial class HttpUpstreamClient
                         ProxyHttpStatus.GatewayTimeout,
                         channelId: JsonDictionaryValue.String(channel, "id"));
                 }
+
+                await DelayBeforeRetry(attempt, retryAfter: null, cancellationToken);
             }
             catch (HttpRequestException exception)
             {
@@ -100,6 +111,8 @@ public sealed partial class HttpUpstreamClient
                         ProxyHttpStatus.BadGateway,
                         channelId: JsonDictionaryValue.String(channel, "id"));
                 }
+
+                await DelayBeforeRetry(attempt, retryAfter: null, cancellationToken);
             }
         }
 

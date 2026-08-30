@@ -430,22 +430,24 @@ for attempt = 0; attempt <= retryCount; attempt++
 ```mermaid
 flowchart TD
     A["DelayBeforeRetry"] --> B{"Retry-After 有 Delta"}
-    B -->|"是"| C["delay=min(delta, 30s)"]
+    B -->|"是"| C["delay=delta"]
     B -->|"否"| D{"Retry-After 有 Date"}
-    D -->|"是"| E["delay=clamp(date-now, 0, 30s)"]
-    D -->|"否"| F["delay=min(500ms * 2^attempt, 8000ms)"]
-    C --> G{"delay > 0"}
+    D -->|"是"| E["delay=max(date-now, 0)"]
+    D -->|"否"| F["delay=min(2s * 2^attempt, 8s)"]
+    C --> G["叠加 0-20% 向上抖动"]
     E --> G
     F --> G
-    G -->|"是"| H["Task.Delay，响应调用方取消"]
-    G -->|"否"| I["立即下一次尝试"]
+    G --> H["夹到 2s 至 30s 区间"]
+    H --> I["Task.Delay，响应调用方取消"]
 ```
 
-无 `Retry-After` 时，从 `attempt=0` 起依次约为：
+无 `Retry-After` 时，从 `attempt=0` 起的指数项依次为（实际等待再加最多 20% 抖动）：
 
 ```text
-500ms, 1000ms, 2000ms, 4000ms, 8000ms, 8000ms, ...
+2s, 4s, 8s, 8s, ...
 ```
+
+任何重试路径都不会零间隔重发：`Retry-After: 0`、已过期的 `Retry-After: <date>`、网络错误和每次尝试超时都至少等待 2 秒。
 
 ---
 

@@ -347,7 +347,7 @@ Responses→Responses Codex headers；跨协议不复制
 - `invalid_request_error` 不重试、透明传递；
 - 非流式 200 error body 识别。
 
-当前未见针对 `Retry-After` delta/date、30 秒上限和实际指数退避间隔的直接测试。
+`UpstreamRetryBackoffTests` 覆盖了 `Retry-After` delta、30 秒上限、`Retry-After: 0` 兜到最小间隔、指数退避序列，以及流式网络错误和可重试状态的退避。仍未覆盖 `Retry-After` 的 HTTP-date 格式和流式每次尝试超时路径的退避。
 
 ---
 

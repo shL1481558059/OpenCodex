@@ -1,6 +1,7 @@
 # 故障转移、重试与超时
 
 > 基准提交：`5851939ad08db9465a226cc18489756ff8cd6941`
+> 例外：第 6 节退避算法、第 7 节流式重试已更新到“任何重试前至少等待 2 秒”的实现，该实现晚于上述基准提交。
 > 本文区分三类常被混为一谈的行为：同一渠道内重试、候选渠道间故障转移、单次上游尝试超时。
 
 ## 1. 适用范围
@@ -9,7 +10,7 @@
 
 - `HttpUpstreamClient` 的非流式和流式单渠道重试；
 - `retry_count`、`timeout_seconds` 的解析与总尝试次数；
-- HTTP `Retry-After` 与指数退避；
+- HTTP `Retry-After`、最小重试间隔、指数退避与抖动；
 - HTTP 200 但 JSON/SSE body 表示错误时的处理差异；
 - `ProxyFailoverPolicy` 的跨渠道状态集合；
 - 流式首字节前和首字节后的故障边界；
@@ -20,7 +21,7 @@
 
 | 路径 | 类型/方法 | 责任 |
 |---|---|---|
-| `opencodex_proxy/src/Libraries/OpenCodex.Core/ExternalIntegrations/HttpUpstreamClient.cs` | `PostJsonAsync`、`DelayBeforeRetry` | 非流式 HTTP 发送、状态重试、网络/超时重试、退避 |
+| `opencodex_proxy/src/Libraries/OpenCodex.Core/ExternalIntegrations/HttpUpstreamClient.cs` | `PostJsonAsync`、`DelayBeforeRetry`、`RetryDelay` | 非流式 HTTP 发送、状态重试、网络/超时重试、退避时长计算 |
 | `opencodex_proxy/src/Libraries/OpenCodex.Core/ExternalIntegrations/HttpUpstreamClient.Streaming.cs` | `StreamJsonAsync`、`ProbeStreamForRetryableError` | 流式 HTTP 发送、首个 SSE data 错误探测、重试 |
 | `opencodex_proxy/src/Libraries/OpenCodex.Core/ExternalIntegrations/HttpUpstreamClient.Responses.cs` | `RetryableStreamErrorTypes`、`ReadJsonObject`、`ThrowHttpError` | body 错误识别、错误体解码 |
 | `opencodex_proxy/src/Libraries/OpenCodex.Core/ExternalIntegrations/HttpUpstreamClient.Requests.cs` | `TimeoutValue`、`RetryCountValue` | 渠道参数解析 |
@@ -137,7 +138,7 @@ flowchart TD
     H -- "否" --> J["抛 UpstreamException；不在本循环内再次捕获"]
     F -- "否" --> K{"状态可重试且还有次数？"}
     K -- "否" --> L["ThrowHttpError"]
-    K -- "是" --> M["按 Retry-After 或指数退避等待"]
+    K -- "是" --> M["退避等待：Retry-After 或指数退避，且不低于 2 秒"]
     E -. "网络错误/每次尝试超时" .-> N{"还有次数？"}
     N -- "否" --> O["抛 502 或 504 UpstreamException"]
     N -- "是" --> M
@@ -167,23 +168,34 @@ flowchart TD
 
 ## 6. 退避算法
 
-`DelayBeforeRetry(attempt, response, cancellationToken)` 优先级：
+固定常量，定义在 `HttpUpstreamClient`：
 
-1. `Retry-After: <delta>`：使用 delta，但最大 30 秒；
-2. `Retry-After: <date>`：使用 `date - UtcNow`，过去时间视为 0，最大 30 秒；
-3. 无 Retry-After：指数退避 `min(500ms × 2^attempt, 8000ms)`。
+| 常量 | 值 | 作用 |
+|---|---:|---|
+| `RetryBaseDelaySeconds` | 2 s | 任何重试的最小间隔，也是退避下限 |
+| `RetryMaxDelaySeconds` | 8 s | 指数项上限 |
+| `RetryAfterCapSeconds` | 30 s | 所有退避路径的绝对上限 |
+| `RetryJitterRatio` | 0.2 | 抖动幅度，只向上浮动 |
 
-指数退避序列：
+`RetryDelay(attempt, retryAfter)` 分三步：
 
-| 已失败 attempt 索引 | 等待 |
-|---:|---:|
-| 0 | 500 ms |
-| 1 | 1000 ms |
-| 2 | 2000 ms |
-| 3 | 4000 ms |
-| 4 及以后 | 最大 8000 ms |
+1. 取建议值：`Retry-After: <delta>` 用 delta；`Retry-After: <date>` 用 `date - UtcNow`，过去时间视为 0；两者都没有时用 `min(2s × 2^attempt, 8s)`。
+2. 叠加抖动：`建议值 × (1 + rand[0, 0.2))`，只增不减。
+3. 夹取：小于 2 秒抬到 2 秒，大于 30 秒截到 30 秒。
 
-没有随机抖动。等待使用原始客户端 cancellation token，不使用当前尝试的 timeout token；因此退避时间不计入 `timeout_seconds`，但客户端取消会中断等待。
+因此 `Retry-After: 0` 和已过期的 `Retry-After: <date>` 不再等于立即重试，仍会等 2 秒。
+
+无 Retry-After 时的实际等待：
+
+| 已失败 attempt 索引 | 指数项 | 含抖动实际等待 |
+|---:|---:|---|
+| 0 | 2 s | 2.0 - 2.4 s |
+| 1 | 4 s | 4.0 - 4.8 s |
+| 2 及以后 | 8 s | 8.0 - 9.6 s |
+
+抖动用于打散同时失败的请求，避免一批 429 在同一时刻同步重打上游。因为只向上浮动，“至少隔 2 秒”这个下限不会被随机数破坏。
+
+等待使用原始客户端 cancellation token，不使用当前尝试的 timeout token；因此退避时间不计入 `timeout_seconds`，但客户端取消会中断等待。退避动作通过构造函数可注入（`Func<TimeSpan, CancellationToken, Task>? delay = null`），单测据此断言等待序列而不真的睡眠。注意 `HttpUpstreamClient` 必须保持单一构造函数，`AddHttpClient` 使用的 `ActivatorUtilities` 工厂遇到多个候选构造函数会解析失败。
 
 ### 6.1 总时间上界的理解
 
@@ -195,6 +207,8 @@ flowchart TD
 + 流式成功建立后实际消费流的时间
 ```
 
+`retry_count=3` 且上游不返回 `Retry-After` 时，仅退避合计就是 14 到 16.8 秒；再乘上跨渠道故障转移的候选数量。
+
 对于非流式 `ResponseContentRead`，`SendAsync` 会等待响应内容读取完成，因此 timeout 覆盖建立连接、响应头和内容读取阶段。对流式分支则不同，见后文。
 
 ## 7. 流式同渠道重试
@@ -204,7 +218,7 @@ flowchart TD
 `StreamJsonAsync` 使用 `HttpCompletionOption.ResponseHeadersRead`：
 
 - 429/500/502/503/504 HTTP 状态按与非流式相同规则重试；
-- 网络错误和在接收响应头阶段发生的每次尝试超时可重试；
+- 网络错误和在接收响应头阶段发生的每次尝试超时可重试，退避规则与非流式一致；
 - 非可重试 HTTP 状态立即转为 `UpstreamException`。
 
 ### 7.2 首个 SSE data 探测
@@ -217,7 +231,7 @@ HTTP 2xx 后不会立即把流暴露给调用方，而是：
 4. 忽略非 `data:` 行；
 5. 空 `data:` 或 `data: [DONE]` 继续读取；
 6. 第一条有内容、非 `[DONE]` 的 `data:` 若为 JSON，则检查 retryable error；
-7. 若是 `rate_limit_error` 或 `overloaded_error`，关闭本次响应并重试；
+7. 若是 `rate_limit_error` 或 `overloaded_error`，先取出本次响应的 `Retry-After`，关闭响应后按退避规则等待再重发；
 8. 若不是，探测结束，稍后原样回放全部缓冲行；
 9. 探测到流结束但没有有效 data，也按正常空流处理。
 
@@ -232,7 +246,7 @@ flowchart TD
     F -- "是" --> G{"data 为空或 [DONE]？"}
     G -- "是" --> C
     G -- "否" --> H{"JSON error.type 为 rate_limit_error / overloaded_error？"}
-    H -- "是且还有次数" --> I["关闭 reader/response，退避并重发"]
+    H -- "是且还有次数" --> I["取出 Retry-After，关闭 reader/response，退避后重发"]
     H -- "是且已耗尽" --> J["抛 429 UpstreamException"]
     H -- "否" --> K["探测完成，回放 bufferedLines"]
     K --> L["继续逐行读取并 yield"]
@@ -452,7 +466,7 @@ all enabled channels for model <模型> are at capacity
 
 1. **没有整请求总超时。** 多个候选、每候选多次重试和退避可以显著放大总时长。
 2. **流式 timeout 不覆盖完整 SSE。** 响应头后或首 data 前长期挂起不受渠道 timeout 约束。
-3. **退避无 jitter。** 大量同时间失败的请求可能同步重试。
+3. **退避抖动只向上浮动 20%。** 名义等待是下限，指数项 8 秒时实际最多等 9.6 秒。
 4. **Retry-After 最大截断到 30 秒。** 即使上游要求更长等待，也会在 30 秒后重试。
 5. **HTTP 200 JSON body error 不做同渠道重试。** 与首 SSE error 语义不对称。
 6. **只探测第一条有意义 SSE data。** 后续出现过载错误时不会由 `HttpUpstreamClient` 自动重试。
@@ -461,6 +475,7 @@ all enabled channels for model <模型> are at capacity
 9. **上游 401 不切渠道。** 即使备用渠道密钥可能有效，当前策略仍立即终止；这是源码明确固定的边界。
 10. **首字节后无法用 HTTP 状态表达失败。** 调用方必须正确处理 SSE error/中断。
 11. **内部 HTTP 重试没有独立子日志。** 性能诊断只能从候选总时长间接推断。
+12. **退避参数是编译期常量。** 最小间隔、指数上限、抖动比例都不能按渠道配置；渠道只能通过 `retry_count` 影响重试次数。
 
 ## 15. 测试锚点
 
@@ -502,7 +517,18 @@ all enabled channels for model <模型> are at capacity
 - `ProxyStreamServiceTests.StreamAsync_PassThroughSuccess_PrepareSseDeferredUntilFirstLine`
 - `ProxyStreamResponseWriterTests` 中终止事件和 `[DONE]` 补写测试
 
-当前测试未直接覆盖：Retry-After 两种格式与 30 秒上限、指数退避时长、非流式网络异常的全部次数、流式响应头后无限等待、超长总请求时长。这些是后续可靠性测试的优先候选。
+### 15.5 重试退避
+
+- `opencodex_proxy/tests/OpenCodex.Api.Tests/UpstreamRetryBackoffTests.cs`
+  - `PostJsonAsync_RetryableStatuses_WaitsExponentialSecondsBetweenAttempts`
+  - `PostJsonAsync_RetryAfterZero_StillWaitsBaseDelay`
+  - `PostJsonAsync_RetryAfterHeader_IsHonoredAndCappedAt30Seconds`
+  - `PostJsonAsync_NoRetryBudget_DoesNotWait`
+  - `StreamJsonAsync_NetworkError_WaitsBeforeRetrying`
+  - `StreamJsonAsync_RetryableSseError_HonorsRetryAfterHeader`
+  - `StreamJsonAsync_RetryableStatus_WaitsBeforeRetrying`
+
+当前测试未直接覆盖：`Retry-After` 的 HTTP-date 格式、流式每次尝试超时路径的退避、非流式网络异常的全部次数、流式响应头后无限等待、超长总请求时长。这些是后续可靠性测试的优先候选。
 
 ## 16. 维护检查清单
 
@@ -514,5 +540,6 @@ all enabled channels for model <模型> are at capacity
 - 流式首行前仍不准备下游 SSE；
 - 任何新增流式预读是否会吞行或重复行；
 - 超时 token 是否覆盖预期阶段；
+- 每条重试路径是否都经过 `DelayBeforeRetry`，没有新增零间隔重试；
 - attempt 日志能否解释新增重试层级；
 - 候选耗尽时对客户端仍统一隐藏上游错误详情。
