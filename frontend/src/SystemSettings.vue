@@ -8,139 +8,6 @@
     </div>
 
     <el-tabs v-model="activeSettingsTab" class="settings-tabs">
-      <el-tab-pane v-if="isSuperadmin" label="服务配置" name="service">
-        <div class="settings-tab-panel">
-          <div class="settings-tab-header">
-            <div>
-              <h3>服务配置</h3>
-              <div class="text-muted">配置本机服务的访问范围和监听端口，保存后可能需要重启服务生效</div>
-            </div>
-            <div class="settings-tab-actions">
-              <el-button :icon="Refresh" :loading="loading" @click="loadSettings">刷新</el-button>
-            </div>
-          </div>
-
-          <el-form v-loading="loading" class="settings-form" label-position="top">
-            <el-form-item v-if="tauriRuntime" label="访问范围">
-              <el-segmented v-model="draft.access_mode" :options="accessModeOptions" />
-            </el-form-item>
-
-            <el-alert
-              v-if="tauriRuntime && draft.access_mode === 'lan'"
-              class="settings-alert"
-              type="warning"
-              title="局域网访问会允许同一网络内的设备连接当前服务"
-              show-icon
-              :closable="false"
-            />
-
-            <el-form-item v-if="tauriRuntime" label="后端端口">
-              <el-input-number
-                v-model="draft.port"
-                :min="1024"
-                :max="65535"
-                :step="1"
-                controls-position="right"
-              />
-            </el-form-item>
-
-            <div v-if="settings" class="settings-meta">
-              <el-descriptions :column="1" border>
-                <el-descriptions-item v-if="tauriRuntime" label="监听地址">{{ bindHostLabel }}</el-descriptions-item>
-                <el-descriptions-item label="管理台地址">
-                  <code>{{ settings.admin_url }}</code>
-                </el-descriptions-item>
-                <el-descriptions-item label="桌面托管">
-                  <el-tag :type="settings.managed_by_desktop ? 'success' : 'info'">
-                    {{ settings.managed_by_desktop ? "是" : "否" }}
-                  </el-tag>
-                </el-descriptions-item>
-              </el-descriptions>
-            </div>
-
-            <div class="settings-actions">
-              <el-button type="primary" :icon="Check" :loading="saving" @click="saveSettings">保存</el-button>
-              <el-button
-                v-if="restartRequired && tauriRuntime"
-                type="warning"
-                :icon="RefreshRight"
-                :loading="restarting"
-                @click="restartService"
-              >
-                立即重启服务
-              </el-button>
-            </div>
-
-            <el-alert
-              v-if="restartRequired"
-              class="settings-alert"
-              type="info"
-              title="配置已保存，重启后端服务后生效"
-              show-icon
-              :closable="false"
-            />
-          </el-form>
-        </div>
-      </el-tab-pane>
-
-      <el-tab-pane v-if="isSuperadmin" label="代理策略" name="proxy">
-        <div class="settings-tab-panel">
-          <div class="settings-tab-header">
-            <div>
-              <h3>代理策略</h3>
-              <div class="text-muted">控制代理是否拦截探测请求，配置保存后立即生效</div>
-            </div>
-            <div class="settings-tab-actions">
-              <el-button :icon="Refresh" :loading="proxyLoading" @click="loadProxySettings">刷新</el-button>
-            </div>
-          </div>
-
-          <el-form v-loading="proxyLoading" class="settings-form" label-position="top">
-            <el-form-item label="拦截探测请求">
-              <div class="settings-switch-row">
-                <el-switch
-                  v-model="proxyDraft.intercept_probe_requests"
-                  active-text="开启"
-                  inactive-text="关闭"
-                />
-                <el-button
-                  type="primary"
-                  :icon="Check"
-                  :loading="proxySaving"
-                  @click="saveProxySettings"
-                >
-                  保存
-                </el-button>
-              </div>
-              <div class="text-muted">开启后，代理会对符合探测特征的请求进行拦截处理</div>
-            </el-form-item>
-
-            <el-form-item label="USD → CNY 汇率">
-              <div class="settings-switch-row">
-                <el-input-number
-                  v-model="proxyDraft.usd_cny_rate"
-                  :min="0.1"
-                  :max="100"
-                  :step="0.01"
-                  :precision="4"
-                  controls-position="right"
-                  class="full-width"
-                />
-                <el-button
-                  type="primary"
-                  :icon="Check"
-                  :loading="proxySaving"
-                  @click="saveUsdCnyRate"
-                >
-                  保存
-                </el-button>
-              </div>
-              <div class="text-muted">用于把美元成本折算成人民币展示，默认 7.25</div>
-            </el-form-item>
-          </el-form>
-        </div>
-      </el-tab-pane>
-
       <el-tab-pane label="图片识别" name="vision">
         <div class="settings-tab-panel">
           <div class="settings-tab-header">
@@ -279,6 +146,156 @@
           </el-form>
         </div>
       </el-tab-pane>
+
+      <el-tab-pane v-if="isSuperadmin" label="服务配置" name="service">
+        <div class="settings-tab-panel">
+          <div class="settings-tab-header">
+            <div>
+              <h3>服务配置</h3>
+              <div class="text-muted">配置本机服务的访问范围和监听端口，保存后可能需要重启服务生效</div>
+            </div>
+            <div class="settings-tab-actions">
+              <el-button :icon="Refresh" :loading="loading" @click="loadSettings">刷新</el-button>
+            </div>
+          </div>
+
+          <el-form v-loading="loading" class="settings-form" label-position="top">
+            <el-form-item v-if="tauriRuntime" label="访问范围">
+              <el-segmented v-model="draft.access_mode" :options="accessModeOptions" />
+            </el-form-item>
+
+            <el-alert
+              v-if="tauriRuntime && draft.access_mode === 'lan'"
+              class="settings-alert"
+              type="warning"
+              title="局域网访问会允许同一网络内的设备连接当前服务"
+              show-icon
+              :closable="false"
+            />
+
+            <el-form-item v-if="tauriRuntime" label="后端端口">
+              <el-input-number
+                v-model="draft.port"
+                :min="1024"
+                :max="65535"
+                :step="1"
+                controls-position="right"
+              />
+            </el-form-item>
+
+            <div v-if="settings" class="settings-meta">
+              <el-descriptions :column="1" border>
+                <el-descriptions-item v-if="tauriRuntime" label="监听地址">{{ bindHostLabel }}</el-descriptions-item>
+                <el-descriptions-item label="管理台地址">
+                  <code>{{ settings.admin_url }}</code>
+                </el-descriptions-item>
+                <el-descriptions-item label="桌面托管">
+                  <el-tag :type="settings.managed_by_desktop ? 'success' : 'info'">
+                    {{ settings.managed_by_desktop ? "是" : "否" }}
+                  </el-tag>
+                </el-descriptions-item>
+              </el-descriptions>
+            </div>
+
+            <div class="settings-actions">
+              <el-button type="primary" :icon="Check" :loading="saving" @click="saveSettings">保存</el-button>
+              <el-button
+                v-if="restartRequired && tauriRuntime"
+                type="warning"
+                :icon="RefreshRight"
+                :loading="restarting"
+                @click="restartService"
+              >
+                立即重启服务
+              </el-button>
+            </div>
+
+            <el-alert
+              v-if="restartRequired"
+              class="settings-alert"
+              type="info"
+              title="配置已保存，重启后端服务后生效"
+              show-icon
+              :closable="false"
+            />
+          </el-form>
+        </div>
+      </el-tab-pane>
+
+      <el-tab-pane v-if="isSuperadmin" label="汇率设置" name="currency-rate">
+        <div class="settings-tab-panel">
+          <div class="settings-tab-header">
+            <div>
+              <h3>汇率设置</h3>
+              <div class="text-muted">配置美元成本折算成人民币时使用的汇率，保存后立即生效</div>
+            </div>
+            <div class="settings-tab-actions">
+              <el-button :icon="Refresh" :loading="proxyLoading" @click="loadProxySettings">刷新</el-button>
+            </div>
+          </div>
+
+          <el-form v-loading="proxyLoading" class="settings-form" label-position="top">
+            <el-form-item label="USD → CNY 汇率">
+              <div class="settings-switch-row">
+                <el-input-number
+                  v-model="proxyDraft.usd_cny_rate"
+                  :min="0.1"
+                  :max="100"
+                  :step="0.01"
+                  :precision="4"
+                  controls-position="right"
+                  class="full-width"
+                />
+                <el-button
+                  type="primary"
+                  :icon="Check"
+                  :loading="proxySaving"
+                  @click="saveUsdCnyRate"
+                >
+                  保存
+                </el-button>
+              </div>
+              <div class="text-muted">用于把美元成本折算成人民币展示，默认 7.25</div>
+            </el-form-item>
+          </el-form>
+        </div>
+      </el-tab-pane>
+
+      <el-tab-pane v-if="isSuperadmin" label="代理策略" name="proxy">
+        <div class="settings-tab-panel">
+          <div class="settings-tab-header">
+            <div>
+              <h3>代理策略</h3>
+              <div class="text-muted">控制代理是否拦截探测请求，配置保存后立即生效</div>
+            </div>
+            <div class="settings-tab-actions">
+              <el-button :icon="Refresh" :loading="proxyLoading" @click="loadProxySettings">刷新</el-button>
+            </div>
+          </div>
+
+          <el-form v-loading="proxyLoading" class="settings-form" label-position="top">
+            <el-form-item label="拦截探测请求">
+              <div class="settings-switch-row">
+                <el-switch
+                  v-model="proxyDraft.intercept_probe_requests"
+                  active-text="开启"
+                  inactive-text="关闭"
+                />
+                <el-button
+                  type="primary"
+                  :icon="Check"
+                  :loading="proxySaving"
+                  @click="saveProxySettings"
+                >
+                  保存
+                </el-button>
+              </div>
+              <div class="text-muted">开启后，代理会对符合探测特征的请求进行拦截处理</div>
+            </el-form-item>
+          </el-form>
+        </div>
+      </el-tab-pane>
+
     </el-tabs>
   </div>
 </template>

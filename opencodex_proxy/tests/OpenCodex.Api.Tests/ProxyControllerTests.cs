@@ -403,6 +403,11 @@ public sealed class ProxyControllerTests
             return key == "intercept_probe_requests" ? _interceptProbeRequests : fallback;
         }
 
+        public decimal GetDecimal(string key, decimal fallback)
+        {
+            return fallback;
+        }
+
         public Task<ApiOpResult<Dictionary<string, string>>> GetAllAsync()
         {
             return Task.FromResult(ApiOpResult<Dictionary<string, string>>.Succeed(

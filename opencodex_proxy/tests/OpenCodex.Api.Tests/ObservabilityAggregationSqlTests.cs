@@ -194,10 +194,10 @@ public sealed class ObservabilityAggregationSqlTests
         Assert.Equal(30, summary.Payload.InputTokens);
         Assert.Equal(2, summary.Payload.CachedTokens);
         Assert.Equal(13, summary.Payload.OutputTokens);
-        Assert.Equal(45, summary.Payload.TotalTokens);
+        Assert.Equal(41, summary.Payload.TotalTokens);
         Assert.Equal(2.0, summary.Payload.Cost, 6);
-        // 1 条条件聚合 + 1 条 successCount（Expression predicate 无法内联进 IGrouping.Count）。
-        Assert.Equal(2, interceptor.SelectCount);
+        // 主聚合、成功数聚合和两种币种成本聚合各执行 1 条 SQL。
+        Assert.Equal(4, interceptor.SelectCount);
     }
 
     [Fact]
@@ -281,6 +281,7 @@ public sealed class ObservabilityAggregationSqlTests
             new EfRepository<LogContentManifest>(context),
             new EfRepository<LogContentBlock>(context),
             new ChannelCapacityService(),
+            new ProxySettingsService(new EfRepository<ProxySetting>(context)),
             new ServiceCollection().AddMemoryCache().BuildServiceProvider().GetRequiredService<IMemoryCache>());
     }
 

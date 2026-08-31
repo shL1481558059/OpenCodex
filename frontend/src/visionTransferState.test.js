@@ -38,6 +38,58 @@ test("候选按渠道去重后给出渠道选项", () => {
   assert.equal(hasModelCapability(state, { channelId: "c1", model: "text-x" }), false);
 });
 
+test("已保存但当前不可用的渠道仍显示名称和模型", () => {
+  const state = stateWithCandidates();
+
+  applyServerSettings(state, {
+    owner_username: "alice",
+    configured: true,
+    primary: {
+      channel_id: "disabled-channel",
+      channel_name: "已禁用视觉渠道",
+      channel_type: "chat",
+      model: "vision-disabled",
+      available: false,
+      reason: "channel_disabled"
+    }
+  });
+
+  assert.deepEqual(channelOptions(state).find((item) => item.value === "disabled-channel"), {
+    value: "disabled-channel",
+    label: "已禁用视觉渠道",
+    channelType: "chat"
+  });
+  assert.deepEqual(modelOptions(state, "disabled-channel"), [
+    { value: "vision-disabled", label: "vision-disabled", upstreamModel: "" }
+  ]);
+});
+
+test("已删除渠道没有名称时显示明确的占位文案", () => {
+  const state = stateWithCandidates();
+
+  applyServerSettings(state, {
+    owner_username: "alice",
+    configured: true,
+    fallback: {
+      channel_id: "deleted-channel",
+      channel_name: "",
+      channel_type: "",
+      model: "vision-deleted",
+      available: false,
+      reason: "channel_deleted"
+    }
+  });
+
+  assert.deepEqual(channelOptions(state).find((item) => item.value === "deleted-channel"), {
+    value: "deleted-channel",
+    label: "已删除渠道",
+    channelType: ""
+  });
+  assert.deepEqual(modelOptions(state, "deleted-channel"), [
+    { value: "vision-deleted", label: "vision-deleted", upstreamModel: "" }
+  ]);
+});
+
 test("换渠道时清掉不属于新渠道的模型", () => {
   const state = stateWithCandidates();
   selectChannel(state, "primary", "c1");

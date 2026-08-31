@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using OpenCodex.CoreBase.DTOs.SystemSettings;
+using OpenCodex.CoreBase.DTOs.Models;
 
 namespace OpenCodex.CoreBase.DTOs.Auth;
 
@@ -67,10 +68,12 @@ public sealed class SetupCompleteResponse
 {
     public SetupCompleteResponse(
         SessionResponse session,
-        SystemSettingsResponse systemSettings)
+        SystemSettingsResponse systemSettings,
+        SetupModelCatalogSyncResponse modelCatalogSync)
     {
         Session = session;
         SystemSettings = systemSettings;
+        ModelCatalogSync = modelCatalogSync;
     }
 
     [JsonPropertyName("session")]
@@ -78,4 +81,39 @@ public sealed class SetupCompleteResponse
 
     [JsonPropertyName("system_settings")]
     public SystemSettingsResponse SystemSettings { get; }
+
+    [JsonPropertyName("model_catalog_sync")]
+    public SetupModelCatalogSyncResponse ModelCatalogSync { get; }
+}
+
+public sealed class SetupModelCatalogSyncResponse
+{
+    private SetupModelCatalogSyncResponse(
+        string status,
+        ModelCatalogImportResult? result,
+        string? error)
+    {
+        Status = status;
+        Result = result;
+        Error = error;
+    }
+
+    [JsonPropertyName("status")]
+    public string Status { get; }
+
+    [JsonPropertyName("result")]
+    public ModelCatalogImportResult? Result { get; }
+
+    [JsonPropertyName("error")]
+    public string? Error { get; }
+
+    public static SetupModelCatalogSyncResponse Completed(ModelCatalogImportResult result)
+    {
+        return new SetupModelCatalogSyncResponse("completed", result, null);
+    }
+
+    public static SetupModelCatalogSyncResponse Failed(string error)
+    {
+        return new SetupModelCatalogSyncResponse("failed", null, error);
+    }
 }

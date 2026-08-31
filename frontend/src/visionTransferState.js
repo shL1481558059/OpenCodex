@@ -53,11 +53,23 @@ export function channelOptions(state) {
     if (!seen.has(candidate.channel_id)) {
       seen.set(candidate.channel_id, {
         value: candidate.channel_id,
-        label: candidate.channel_name,
+        label: channelDisplayName(candidate),
         channelType: candidate.channel_type
       });
     }
   }
+
+  // 已保存但当前不可用的渠道不会出现在候选列表,仍需保留选项以便正确回显配置。
+  for (const configured of configuredItems(state)) {
+    if (configured.channel_id && !seen.has(configured.channel_id)) {
+      seen.set(configured.channel_id, {
+        value: configured.channel_id,
+        label: channelDisplayName(configured),
+        channelType: configured.channel_type || ""
+      });
+    }
+  }
+
   return [...seen.values()];
 }
 
@@ -66,13 +78,38 @@ export function modelOptions(state, channelId) {
     return [];
   }
 
-  return state.candidates
+  const options = state.candidates
     .filter((candidate) => candidate.channel_id === channelId)
     .map((candidate) => ({
       value: candidate.model,
       label: candidate.model,
       upstreamModel: candidate.upstream_model
     }));
+
+  for (const configured of configuredItems(state)) {
+    if (
+      configured.channel_id === channelId &&
+      configured.model &&
+      !options.some((option) => option.value === configured.model)
+    ) {
+      options.push({
+        value: configured.model,
+        label: configured.model,
+        upstreamModel: configured.upstream_model || ""
+      });
+    }
+  }
+
+  return options;
+}
+
+function configuredItems(state) {
+  return [state.server.primary, state.server.fallback].filter(Boolean);
+}
+
+function channelDisplayName(item) {
+  const name = String(item.channel_name || "").trim();
+  return name || "已删除渠道";
 }
 
 // 换渠道后原来的模型多半不属于新渠道,清掉避免提交出一个必然被后端拒绝的组合。

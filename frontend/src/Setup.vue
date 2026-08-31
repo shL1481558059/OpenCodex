@@ -102,6 +102,16 @@ async function handleSetup() {
     });
     password.value = "";
 
+    const modelCatalogSync = data.model_catalog_sync;
+    if (modelCatalogSync?.status === "failed") {
+      ElMessage.warning("初始化已完成，但模型目录同步失败，请稍后在模型信息页重试");
+    } else if (modelCatalogSync?.status === "completed") {
+      const created = modelCatalogSync.result?.models?.created ?? 0;
+      ElMessage.success(`初始化完成，已同步 ${created} 个模型`);
+    } else {
+      ElMessage.success("初始化完成");
+    }
+
     const settings = data.system_settings;
     if (settings?.restart_required && isTauriRuntime()) {
       const restartResult = await restartBackend();

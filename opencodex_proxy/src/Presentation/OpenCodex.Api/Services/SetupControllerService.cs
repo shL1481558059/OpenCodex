@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OpenCodex.Api.Configuration;
 using OpenCodex.CoreBase.Domain;
@@ -15,15 +16,21 @@ public sealed class SetupControllerService : ISetupControllerService
 {
     private readonly IAuthService _authService;
     private readonly IDesktopSystemSettingsStore _systemSettings;
+    private readonly IModelCatalogSyncService _modelCatalogSync;
+    private readonly ILogger<SetupControllerService> _logger;
     private readonly IOptionsMonitor<CookieAuthenticationOptions> _cookieOptions;
 
     public SetupControllerService(
         IAuthService authService,
         IDesktopSystemSettingsStore systemSettings,
+        IModelCatalogSyncService modelCatalogSync,
+        ILogger<SetupControllerService> logger,
         IOptionsMonitor<CookieAuthenticationOptions> cookieOptions)
     {
         _authService = authService;
         _systemSettings = systemSettings;
+        _modelCatalogSync = modelCatalogSync;
+        _logger = logger;
         _cookieOptions = cookieOptions;
     }
 
@@ -62,6 +69,7 @@ public sealed class SetupControllerService : ISetupControllerService
         }
 
         var savedSettings = _systemSettings.Save(settingsDraft);
+        var modelCatalogSync = await SyncModelCatalogAsync();
         await _authService.SetUserAsync(
             new SessionUser(
                 result.Payload.User.UserId,
@@ -71,6 +79,34 @@ public sealed class SetupControllerService : ISetupControllerService
             _cookieOptions.Get(IAuthService.AuthenticationScheme).ExpireTimeSpan);
 
         return ApiOpResult<SetupCompleteResponse>.Succeed(
-            new SetupCompleteResponse(result.Payload, savedSettings));
+            new SetupCompleteResponse(result.Payload, savedSettings, modelCatalogSync));
+    }
+
+    private async Task<SetupModelCatalogSyncResponse> SyncModelCatalogAsync()
+    {
+        try
+        {
+            var result = await _modelCatalogSync.SyncAsync("incremental", dryRun: false);
+            if (result.Succeeded && result.Payload is not null)
+            {
+                return SetupModelCatalogSyncResponse.Completed(result.Payload);
+            }
+
+            var error = result.Description ?? "model catalog sync failed";
+            _logger.LogWarning(
+                "Automatic model catalog sync failed during setup. Code: {ErrorCode}, Error: {Error}",
+                result.Code,
+                error);
+            return SetupModelCatalogSyncResponse.Failed(
+                "model catalog sync failed; retry from the model catalog page");
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(
+                exception,
+                "Automatic model catalog sync threw an exception during setup");
+            return SetupModelCatalogSyncResponse.Failed(
+                "model catalog sync failed; retry from the model catalog page");
+        }
     }
 }

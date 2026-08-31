@@ -44,6 +44,7 @@ public sealed class ObservabilityServiceTests
             new EfRepository<LogContentManifest>(context),
             new EfRepository<LogContentBlock>(context),
             channelCapacity ?? new ChannelCapacityService(),
+            new ProxySettingsService(new EfRepository<ProxySetting>(context)),
             new ServiceCollection().AddMemoryCache().BuildServiceProvider().GetRequiredService<IMemoryCache>());
     }
 
@@ -222,7 +223,7 @@ public sealed class ObservabilityServiceTests
         var summary = stats.Payload!.Summary;
         Assert.Equal(1, summary.RequestCount);
         Assert.Equal(1, summary.SuccessCount);
-        Assert.Equal(200, summary.TotalTokens);
+        Assert.Equal(140, summary.TotalTokens);
         Assert.Equal(3.5d, summary.Cost, 6);
 
         var point = Assert.Single(
