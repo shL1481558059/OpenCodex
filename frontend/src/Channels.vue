@@ -2300,6 +2300,8 @@ async function toggleChannelEnabled(channel, index, enabled) {
   reconcileSelectedChannels();
   try {
     await persistChannel({ ...channel, enabled: nextEnabled }, "PUT");
+    // PUT 已刷新 UpdatedAt 并失效渠道缓存，单条 GET 拿到的就是最新配置与健康状态。
+    await refreshSingleChannel(channel?.id);
     ElMessage.success(nextEnabled ? "渠道已启用" : "渠道已停用");
   } catch (error) {
     config.channels = previousChannels;
@@ -2308,6 +2310,22 @@ async function toggleChannelEnabled(channel, index, enabled) {
   } finally {
     channelToggleSavingKeys.delete(key);
   }
+}
+
+async function refreshSingleChannel(channelId) {
+  if (!channelId) {
+    return;
+  }
+
+  const data = await props.api(`/channels/${channelId}`);
+  if (!data?.id) {
+    return;
+  }
+
+  const refreshed = channels.value.filter((item) => item.id !== data.id);
+  // 将刷新后的渠道放到当前列表最前，保证启用/禁用后立即置顶。
+  config.channels = [{ ...data }, ...refreshed];
+  reconcileSelectedChannels();
 }
 
 function isChannelToggleSaving(channel, index) {
