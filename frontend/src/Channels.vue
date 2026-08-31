@@ -1610,6 +1610,7 @@ import {
   canUseChatStreamTest,
   isImagesChannel
 } from "./channelImagesState.js";
+import { reorderChannelAfterToggle } from "./channelOrdering.js";
 import { streamChannelTest } from "./channelTestStream.js";
 import { createSseStream } from "./api/sseClient.js";
 import {
@@ -2292,9 +2293,7 @@ async function toggleChannelEnabled(channel, index, enabled) {
   channelToggleSavingKeys.add(key);
   const nextEnabled = enabled === true;
   const previousChannels = channels.value;
-  const nextChannels = previousChannels.map((item, itemIndex) =>
-    itemIndex === index || (channel?.id && item.id === channel.id) ? { ...item, enabled: nextEnabled } : item
-  );
+  const nextChannels = reorderChannelAfterToggle(previousChannels, channel?.id, nextEnabled);
 
   config.channels = nextChannels;
   reconcileSelectedChannels();
@@ -2891,7 +2890,7 @@ function buildGroupedChannelSections(sourceChannels) {
     .map((section) => {
       const baseUrlGroups = Array.from(section.baseMap.values())
         .map((group) => {
-          const groupChannels = [...group.channels].sort(compareChannelsInGroup);
+          const groupChannels = [...group.channels];
           return {
             ...group,
             channels: groupChannels,
@@ -2923,14 +2922,6 @@ function compareGroupedSections(left, right) {
   if (left.key === "__ungrouped" && right.key !== "__ungrouped") return 1;
   if (right.key === "__ungrouped" && left.key !== "__ungrouped") return -1;
   return left.label.localeCompare(right.label);
-}
-
-function compareChannelsInGroup(left, right) {
-  const enabledOrder = Number(right.enabled !== false) - Number(left.enabled !== false);
-  if (enabledOrder !== 0) return enabledOrder;
-  const priorityOrder = normalizePriorityValue(left.priority) - normalizePriorityValue(right.priority);
-  if (priorityOrder !== 0) return priorityOrder;
-  return String(left.name || "").localeCompare(String(right.name || ""));
 }
 
 function compareChannelType(left, right) {
