@@ -594,13 +594,16 @@ public sealed class ProxyLogService : IProxyLogService
         var promptCacheKey = payload is null
             ? null
             : NullIfEmpty(JsonDictionaryValue.String(payload, "prompt_cache_key"));
+        var conversationId = HeaderValue(requestHeaders, "x-conversation-id");
         log.ConversationKey = threadId is not null
             ? $"thread:{threadId}"
             : sessionId is not null
                 ? $"session:{sessionId}"
                 : promptCacheKey is not null
                     ? $"prompt_cache_key:{promptCacheKey}"
-                    : null;
+                    : conversationId is not null
+                        ? $"conversation:{conversationId}"
+                        : null;
         log.ConversationTurnId = MetadataValue(turnMetadata, "turn_id")
             ?? HeaderValue(requestHeaders, "x-client-request-id");
         log.ConversationWindowId = MetadataValue(turnMetadata, "window_id")

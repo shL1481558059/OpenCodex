@@ -374,6 +374,100 @@ public sealed class ProxyLogServiceTests
     }
 
     [Fact]
+    public async Task WriteLog_UsesXConversationIdAsLowestPriorityConversationKey()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-proxy-log-tests", $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        using (var bootstrap = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            bootstrap.Database.Migrate();
+        }
+
+        EnsureAdminUser(dbPath);
+        var service = CreateService(dbPath);
+        var payload = new Dictionary<string, object?>
+        {
+            ["model"] = "gpt-5"
+        };
+
+        // 已有 thread-id 时,x-conversation-id 不覆盖高优先级来源。
+        var headers = new Dictionary<string, string>
+        {
+            ["thread-id"] = "thread-9",
+            ["x-conversation-id"] = "conv-1"
+        };
+        await service.WriteLogAsync(
+            new ProxyLogContext(
+                RequestId: "req-conv-priority",
+                OwnerUsername: "admin",
+                ApiKeyId: null,
+                Payload: payload,
+                UpstreamRequest: new Dictionary<string, object?>(),
+                UpstreamResponse: new Dictionary<string, object?>(),
+                ResponsePayload: new Dictionary<string, object?>(),
+                ErrorResponse: null,
+                RequestModel: "gpt-5",
+                UpstreamModel: "gpt-5",
+                ChannelId: TestChannelId.ToString(),
+                ChannelType: "responses",
+                IsStream: false,
+                TtftMs: null,
+                StatusCode: 200,
+                DurationMs: 1,
+                Error: null,
+                WebSearchDetails: null),
+            new ProxyRequestMetadata(
+                "POST",
+                "/v1/responses",
+                "127.0.0.1",
+                headers,
+                null));
+
+        using var priorityContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var priorityLog = priorityContext.RequestLogs.Single();
+        Assert.Equal("thread:thread-9", priorityLog.ConversationKey);
+
+        // 仅有 x-conversation-id 时作为最低优先级兜底。
+        using var fallbackBootstrap = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        await fallbackBootstrap.Database.MigrateAsync();
+
+        var fallbackHeaders = new Dictionary<string, string>
+        {
+            ["x-conversation-id"] = "conv-2"
+        };
+        await service.WriteLogAsync(
+            new ProxyLogContext(
+                RequestId: "req-conv-fallback",
+                OwnerUsername: "admin",
+                ApiKeyId: null,
+                Payload: payload,
+                UpstreamRequest: new Dictionary<string, object?>(),
+                UpstreamResponse: new Dictionary<string, object?>(),
+                ResponsePayload: new Dictionary<string, object?>(),
+                ErrorResponse: null,
+                RequestModel: "gpt-5",
+                UpstreamModel: "gpt-5",
+                ChannelId: TestChannelId.ToString(),
+                ChannelType: "responses",
+                IsStream: false,
+                TtftMs: null,
+                StatusCode: 200,
+                DurationMs: 1,
+                Error: null,
+                WebSearchDetails: null),
+            new ProxyRequestMetadata(
+                "POST",
+                "/v1/responses",
+                "127.0.0.1",
+                fallbackHeaders,
+                null));
+
+        using var fallbackContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var fallbackLog = fallbackContext.RequestLogs.Single(log => log.RequestId == "req-conv-fallback");
+        Assert.Equal("conversation:conv-2", fallbackLog.ConversationKey);
+    }
+
+    [Fact]
     public async Task LifecycleMethods_PersistStatusesAndStreamLines()
     {
         var dbPath = Path.Combine(
