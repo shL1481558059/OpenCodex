@@ -362,7 +362,8 @@ public sealed class RequestLogDto(
     string? conversationWindowId = null,
     string? previousResponseId = null,
     int attemptCount = 0,
-    int failedAttemptCount = 0)
+    int failedAttemptCount = 0,
+    string? costCurrency = null)
 {
     /// <summary>
     /// 获取请求日志的数据库标识符。
@@ -468,6 +469,11 @@ public sealed class RequestLogDto(
     /// 获取计算得到的请求成本。
     /// </summary>
     public double Cost { get; } = cost;
+
+    /// <summary>
+    /// 获取成本币种。
+    /// </summary>
+    public string CostCurrency { get; } = costCurrency ?? string.Empty;
 
     /// <summary>
     /// 获取拥有该请求的用户名。
@@ -599,7 +605,8 @@ public sealed class RequestLogEventDto(
     string? conversationWindowId = null,
     string? previousResponseId = null,
     int attemptCount = 0,
-    int failedAttemptCount = 0)
+    int failedAttemptCount = 0,
+    string? costCurrency = null)
 {
     /// <summary>
     /// 获取请求日志的数据库标识符。
@@ -705,6 +712,11 @@ public sealed class RequestLogEventDto(
     /// 获取计算得到的请求成本。
     /// </summary>
     public double Cost { get; } = cost;
+
+    /// <summary>
+    /// 获取成本币种。
+    /// </summary>
+    public string CostCurrency { get; } = costCurrency ?? string.Empty;
 
     /// <summary>
     /// 获取拥有该请求的用户名。

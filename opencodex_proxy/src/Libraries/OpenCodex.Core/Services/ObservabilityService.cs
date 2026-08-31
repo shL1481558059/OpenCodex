@@ -82,6 +82,7 @@ public sealed class ObservabilityService : IObservabilityService
     private readonly IRepository<LogContentManifest> _manifestRepository;
     private readonly IRepository<LogContentBlock> _contentBlockRepository;
     private readonly IChannelCapacityService _channelCapacity;
+    private readonly IProxySettingsService _proxySettings;
     private readonly LogContentStore _contentStore;
     private readonly IMemoryCache _memoryCache;
     private static readonly TimeSpan ChannelConfigCacheTtl = TimeSpan.FromSeconds(10);
@@ -98,6 +99,7 @@ public sealed class ObservabilityService : IObservabilityService
         IRepository<LogContentManifest> manifestRepository,
         IRepository<LogContentBlock> contentBlockRepository,
         IChannelCapacityService channelCapacity,
+        IProxySettingsService proxySettings,
         IMemoryCache memoryCache)
     {
         _workContext = workContext;
@@ -111,6 +113,7 @@ public sealed class ObservabilityService : IObservabilityService
         _manifestRepository = manifestRepository;
         _contentBlockRepository = contentBlockRepository;
         _channelCapacity = channelCapacity;
+        _proxySettings = proxySettings;
         _memoryCache = memoryCache;
         _contentStore = new LogContentStore(dbContext);
     }
@@ -430,6 +433,7 @@ public sealed class ObservabilityService : IObservabilityService
                 CachedTokens = log.CachedTokens,
                 OutputTokens = log.OutputTokens,
                 Cost = log.Cost,
+                CostCurrency = log.CostCurrency,
                 OwnerUserId = log.OwnerUserId,
                 ApiKeyId = log.ApiKeyId,
                 Error = log.Error,
@@ -498,6 +502,7 @@ public sealed class ObservabilityService : IObservabilityService
                 CachedTokens = item.CachedTokens,
                 OutputTokens = item.OutputTokens,
                 Cost = item.Cost,
+                CostCurrency = item.CostCurrency,
                 OwnerUserId = item.OwnerUserId,
                 ApiKeyId = item.ApiKeyId,
                 Error = item.Error,
@@ -580,13 +585,14 @@ public sealed class ObservabilityService : IObservabilityService
         var modelDistribution = QueryModelDistribution(query);
         var errorDistribution = QueryErrorDistribution(query);
         var summary = QueryStatsSummary(query, resolved);
+        var usdCnyRate = ResolveUsdCnyRate();
 
         return new StatsDto(
             resolved.RangeKey,
             TimestampToIso(resolved.StartTs),
             TimestampToIso(resolved.EndTs),
             resolved.GranularityMinutes,
-            PricingDefaults.UsdCnyRate,
+            usdCnyRate,
             summary,
             points,
             modelDistribution,
@@ -1054,7 +1060,7 @@ public sealed class ObservabilityService : IObservabilityService
                 channel.Enabled))
             .ToList();
     }
-    private static StatsSummaryDto QueryStatsSummary(
+    private StatsSummaryDto QueryStatsSummary(
         IQueryable<RequestLog> query,
         ResolvedStatsRange resolved)
     {
@@ -1098,19 +1104,60 @@ public sealed class ObservabilityService : IObservabilityService
                     log.CreatedAt >= latestWindowStartTs && log.CreatedAt < effectiveEndTs),
                 LatestTokens = g.Sum(log =>
                     log.CreatedAt >= latestWindowStartTs && log.CreatedAt < effectiveEndTs
-                        ? log.InputTokens + log.CachedTokens + log.OutputTokens
+                        ? log.InputTokens - log.CachedTokens + log.OutputTokens
                         : 0)
             })
             .FirstOrDefault();
         if (row is null)
         {
-            return new StatsSummaryDto(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+            return new StatsSummaryDto(
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0);
         }
 
         // IsSuccessfulPredicate() 是 Expression<Func<...>>，IGrouping 的 Count 只收
         // Func<...>，表达式树里没法直接复用同一个 predicate，因此 successCount
         // 保留为独立的第 2 条查询，口径不变。
         var successCount = query.Count(IsSuccessfulPredicate());
+
+        // 成本按来源币种分组聚合（低基数，扫描行数与主聚合一致），
+        // 再用当前汇率折算成人民币/美元两种口径。单条日志的原始币种成本
+        // 仍然保留在 Cost / CostCurrency 中，不参与折算。
+        var usdCnyRate = ResolveUsdCnyRate();
+        var currencyCosts = query
+            .GroupBy(log => log.CostCurrency)
+            .Select(g => new
+            {
+                Currency = g.Key ?? "USD",
+                TotalCost = g.Sum(log => log.Cost),
+                RecentCost = g.Sum(log =>
+                    log.CreatedAt >= recentStartTs && log.CreatedAt < effectiveEndTs
+                        ? log.Cost
+                        : 0)
+            })
+            .ToList();
+
+        double cnyCost = 0;
+        double usdCost = 0;
+        double recentCnyCost = 0;
+        double recentUsdCost = 0;
+        foreach (var item in currencyCosts)
+        {
+            if (string.Equals(item.Currency, "CNY", StringComparison.OrdinalIgnoreCase))
+            {
+                cnyCost += item.TotalCost;
+                recentCnyCost += item.RecentCost;
+            }
+            else
+            {
+                // 非 CNY（默认 USD）先折算成人民币，再统一除汇率得到美元口径。
+                cnyCost += item.TotalCost * usdCnyRate;
+                recentCnyCost += item.RecentCost * usdCnyRate;
+            }
+        }
+
+        usdCost = usdCnyRate > 0 ? cnyCost / usdCnyRate : cnyCost;
+        recentUsdCost = usdCnyRate > 0 ? recentCnyCost / usdCnyRate : recentCnyCost;
 
         return new StatsSummaryDto(
             row.RequestCount,
@@ -1119,8 +1166,8 @@ public sealed class ObservabilityService : IObservabilityService
             row.InputTokens,
             row.CachedTokens,
             row.OutputTokens,
-            row.InputTokens + row.CachedTokens + row.OutputTokens,
-            row.RecentInputTokens + row.RecentCachedTokens + row.RecentOutputTokens,
+            row.InputTokens - row.CachedTokens + row.OutputTokens,
+            row.RecentInputTokens - row.RecentCachedTokens + row.RecentOutputTokens,
             Math.Round(row.Cost, 6),
             Math.Round(row.RecentCost, 6),
             row.LatestWindowCount > 0
@@ -1128,7 +1175,11 @@ public sealed class ObservabilityService : IObservabilityService
                 : 0,
             row.LatestTokens > 0
                 ? Math.Round((double)row.LatestTokens / resolved.GranularityMinutes, 2)
-                : 0);
+                : 0,
+            Math.Round(cnyCost, 6),
+            Math.Round(usdCost, 6),
+            Math.Round(recentCnyCost, 6),
+            Math.Round(recentUsdCost, 6));
     }
 
     private IReadOnlyList<StatsPointDto> QueryStatsPoints(
@@ -1160,6 +1211,44 @@ public sealed class ObservabilityService : IObservabilityService
             .ToList();
         var byBucket = grouped.ToDictionary(item => (int)item.Bucket);
 
+        // 每个时间桶按来源币种聚合成本，低基数（USD/CNY），只多一次下推的
+        // GROUP BY (bucket, currency)，再折算成人民币/美元口径供前端双币种展示。
+        var usdCnyRate = ResolveUsdCnyRate();
+        var costByCurrency = query
+            .GroupBy(log => new
+            {
+                Bucket = Math.Floor((log.CreatedAt!.Value - resolved.StartTs) / bucketSeconds),
+                Currency = log.CostCurrency
+            })
+            .Select(g => new
+            {
+                Bucket = g.Key.Bucket,
+                Currency = g.Key.Currency ?? "USD",
+                Cost = g.Sum(log => log.Cost)
+            })
+            .ToList();
+        var cnyByBucket = new Dictionary<int, double>();
+        var usdByBucket = new Dictionary<int, double>();
+        foreach (var item in costByCurrency)
+        {
+            var bucket = (int)item.Bucket;
+            var cost = item.Cost;
+            if (string.Equals(item.Currency, "CNY", StringComparison.OrdinalIgnoreCase))
+            {
+                cnyByBucket.TryGetValue(bucket, out var existing);
+                cnyByBucket[bucket] = existing + cost;
+                usdByBucket.TryGetValue(bucket, out var existingUsd);
+                usdByBucket[bucket] = existingUsd + cost / usdCnyRate;
+            }
+            else
+            {
+                cnyByBucket.TryGetValue(bucket, out var existing);
+                cnyByBucket[bucket] = existing + cost * usdCnyRate;
+                usdByBucket.TryGetValue(bucket, out var existingUsd);
+                usdByBucket[bucket] = existingUsd + cost;
+            }
+        }
+
         var points = new List<StatsPointDto>(bucketCount);
         for (var index = 0; index < bucketCount; index++)
         {
@@ -1175,7 +1264,9 @@ public sealed class ObservabilityService : IObservabilityService
                     0,
                     null,
                     null,
-                    0));
+                    0,
+                    cnyByBucket.TryGetValue(index, out var emptyCny) ? emptyCny : 0,
+                    usdByBucket.TryGetValue(index, out var emptyUsd) ? emptyUsd : 0));
                 continue;
             }
 
@@ -1196,10 +1287,20 @@ public sealed class ObservabilityService : IObservabilityService
                     : null,
                 item.Count > 0
                     ? Math.Round((double)item.Count / resolved.GranularityMinutes, 2)
-                    : 0));
+                    : 0,
+                cnyByBucket.TryGetValue(index, out var cny) ? Math.Round(cny, 6) : 0,
+                usdByBucket.TryGetValue(index, out var usd) ? Math.Round(usd, 6) : 0));
         }
 
         return points;
+    }
+
+    private double ResolveUsdCnyRate()
+    {
+        var rate = _proxySettings.GetDecimal(
+            PricingDefaults.UsdCnyRateSettingKey,
+            (decimal)PricingDefaults.UsdCnyRate);
+        return rate > 0 ? (double)rate : PricingDefaults.UsdCnyRate;
     }
 
     private static List<ModelDistributionDto> QueryModelDistribution(
@@ -1313,7 +1414,8 @@ public sealed class ObservabilityService : IObservabilityService
             log.ConversationWindowId,
             log.PreviousResponseId,
             attemptCount,
-            failedAttemptCount);
+            failedAttemptCount,
+            log.CostCurrency);
     }
 
     private Dictionary<Guid, (int AttemptCount, int FailedAttemptCount)> BuildAttemptStats(
@@ -1388,7 +1490,8 @@ public sealed class ObservabilityService : IObservabilityService
             log.ConversationWindowId,
             log.PreviousResponseId,
             attemptStats.AttemptCount,
-            attemptStats.FailedAttemptCount);
+            attemptStats.FailedAttemptCount,
+            log.CostCurrency);
     }
 
     private static IReadOnlyList<RequestLogStreamLineDto> ParseStreamLines(string? value)
@@ -1664,6 +1767,8 @@ public sealed class ObservabilityService : IObservabilityService
         public int OutputTokens { get; set; }
 
         public double Cost { get; set; }
+
+        public string CostCurrency { get; set; } = string.Empty;
 
         public Guid OwnerUserId { get; set; }
 

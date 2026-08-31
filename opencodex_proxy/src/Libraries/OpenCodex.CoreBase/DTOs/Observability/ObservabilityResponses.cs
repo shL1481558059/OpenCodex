@@ -166,7 +166,8 @@ public sealed class LogEventResponse
         string? conversationKey,
         string? conversationTurnId,
         string? conversationWindowId,
-        string? previousResponseId)
+        string? previousResponseId,
+        string? costCurrency = null)
     {
         Id = id;
         RequestId = requestId;
@@ -189,6 +190,7 @@ public sealed class LogEventResponse
         CachedTokens = cachedTokens;
         OutputTokens = outputTokens;
         Cost = cost;
+        CostCurrency = costCurrency ?? string.Empty;
         OwnerUsername = ownerUsername;
         ApiKeyId = apiKeyId;
         ApiKeyName = apiKeyName;
@@ -343,6 +345,12 @@ public sealed class LogEventResponse
     public double Cost { get; }
 
     /// <summary>
+    /// 获取成本币种。
+    /// </summary>
+    [JsonPropertyName("cost_currency")]
+    public string CostCurrency { get; }
+
+    /// <summary>
     /// 获取所属用户名。
     /// </summary>
     [JsonPropertyName("owner_username")]
@@ -440,7 +448,8 @@ public sealed class LogEventResponse
             log.ConversationKey,
             log.ConversationTurnId,
             log.ConversationWindowId,
-            log.PreviousResponseId);
+            log.PreviousResponseId,
+            log.CostCurrency);
     }
 
     private static string ResolveDisplayRequestStatus(
@@ -587,7 +596,8 @@ public sealed class LogDetailResponse
         string? previousResponseId,
         string displayRequestStatus,
         int attemptCount,
-        int failedAttemptCount)
+        int failedAttemptCount,
+        string? costCurrency = null)
     {
         Id = id;
         RequestId = requestId;
@@ -610,6 +620,7 @@ public sealed class LogDetailResponse
         CachedTokens = cachedTokens;
         OutputTokens = outputTokens;
         Cost = cost;
+        CostCurrency = costCurrency ?? string.Empty;
         OwnerUsername = ownerUsername;
         ApiKeyId = apiKeyId;
         ApiKeyName = apiKeyName;
@@ -781,6 +792,12 @@ public sealed class LogDetailResponse
     public double Cost { get; }
 
     /// <summary>
+    /// 获取成本币种。
+    /// </summary>
+    [JsonPropertyName("cost_currency")]
+    public string CostCurrency { get; }
+
+    /// <summary>
     /// 获取所属用户名。
     /// </summary>
     [JsonPropertyName("owner_username")]
@@ -905,7 +922,8 @@ public sealed class LogDetailResponse
             log.ConversationWindowId,
             log.PreviousResponseId,
             log.AttemptCount,
-            log.FailedAttemptCount), apiKeyNames, channelNames);
+            log.FailedAttemptCount,
+            log.CostCurrency), apiKeyNames, channelNames);
 
         return new LogDetailResponse(
             logEvent.Id,
@@ -952,7 +970,8 @@ public sealed class LogDetailResponse
             logEvent.PreviousResponseId,
             logEvent.DisplayRequestStatus,
             logEvent.AttemptCount,
-            logEvent.FailedAttemptCount);
+            logEvent.FailedAttemptCount,
+            logEvent.CostCurrency);
     }
 }
 
@@ -1200,7 +1219,11 @@ public sealed class StatsSummaryResponse
         double cost,
         double recent1hCost,
         double rpm,
-        double tpm)
+        double tpm,
+        double costCny = 0,
+        double costUsd = 0,
+        double recent1hCostCny = 0,
+        double recent1hCostUsd = 0)
     {
         RequestCount = requestCount;
         SuccessCount = successCount;
@@ -1214,6 +1237,10 @@ public sealed class StatsSummaryResponse
         Recent1hCost = recent1hCost;
         Rpm = rpm;
         Tpm = tpm;
+        CostCny = costCny;
+        CostUsd = costUsd;
+        Recent1hCostCny = recent1hCostCny;
+        Recent1hCostUsd = recent1hCostUsd;
     }
 
     /// <summary>
@@ -1289,6 +1316,30 @@ public sealed class StatsSummaryResponse
     public double Tpm { get; }
 
     /// <summary>
+    /// 获取总成本（人民币口径）。
+    /// </summary>
+    [JsonPropertyName("cost_cny")]
+    public double CostCny { get; }
+
+    /// <summary>
+    /// 获取总成本（美元口径）。
+    /// </summary>
+    [JsonPropertyName("cost_usd")]
+    public double CostUsd { get; }
+
+    /// <summary>
+    /// 获取最近一小时成本（人民币口径）。
+    /// </summary>
+    [JsonPropertyName("recent_1h_cost_cny")]
+    public double Recent1hCostCny { get; }
+
+    /// <summary>
+    /// 获取最近一小时成本（美元口径）。
+    /// </summary>
+    [JsonPropertyName("recent_1h_cost_usd")]
+    public double Recent1hCostUsd { get; }
+
+    /// <summary>
     /// 根据统计汇总数据创建响应对象。
     /// </summary>
     /// <param name="summary">统计汇总数据。</param>
@@ -1307,7 +1358,11 @@ public sealed class StatsSummaryResponse
             summary.Cost,
             summary.Recent1hCost,
             summary.Rpm,
-            summary.Tpm);
+            summary.Tpm,
+            summary.CostCny,
+            summary.CostUsd,
+            summary.Recent1hCostCny,
+            summary.Recent1hCostUsd);
     }
 }
 
@@ -1335,7 +1390,9 @@ public sealed class StatsPointResponse
         int outputTokens,
         double? avgTtftMs,
         double? cacheHitRate,
-        double rpm)
+        double rpm,
+        double costCny = 0,
+        double costUsd = 0)
     {
         Time = time;
         Cost = cost;
@@ -1345,6 +1402,8 @@ public sealed class StatsPointResponse
         AvgTtftMs = avgTtftMs;
         CacheHitRate = cacheHitRate;
         Rpm = rpm;
+        CostCny = costCny;
+        CostUsd = costUsd;
     }
 
     /// <summary>
@@ -1396,6 +1455,18 @@ public sealed class StatsPointResponse
     public double Rpm { get; }
 
     /// <summary>
+    /// 获取该时间点累计成本（人民币口径）。
+    /// </summary>
+    [JsonPropertyName("cost_cny")]
+    public double CostCny { get; }
+
+    /// <summary>
+    /// 获取该时间点累计成本（美元口径）。
+    /// </summary>
+    [JsonPropertyName("cost_usd")]
+    public double CostUsd { get; }
+
+    /// <summary>
     /// 根据统计时间点数据创建响应对象。
     /// </summary>
     /// <param name="point">统计时间点数据。</param>
@@ -1410,7 +1481,9 @@ public sealed class StatsPointResponse
             point.OutputTokens,
             point.AvgTtftMs,
             point.CacheHitRate,
-            point.Rpm);
+            point.Rpm,
+            point.CostCny,
+            point.CostUsd);
     }
 }
 

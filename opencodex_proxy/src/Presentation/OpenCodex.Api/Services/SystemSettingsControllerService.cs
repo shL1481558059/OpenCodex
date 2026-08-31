@@ -1,4 +1,6 @@
 using OpenCodex.Api.Configuration;
+using System.Globalization;
+using OpenCodex.Core.Domain;
 using OpenCodex.CoreBase.DTOs.SystemSettings;
 using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
@@ -39,10 +41,18 @@ public sealed class SystemSettingsControllerService : ISystemSettingsControllerS
 
     public async Task<ApiOpResult<ProxySettingsResponse>> ReadProxySettingsAsync()
     {
-        var settings = await _proxySettings.GetAllAsync();
+        var settingsResult = await _proxySettings.GetAllAsync();
+        var settings = new Dictionary<string, string>(
+            settingsResult.Payload ?? new Dictionary<string, string>(),
+            StringComparer.Ordinal);
+        settings.TryAdd(
+            PricingDefaults.UsdCnyRateSettingKey,
+            _proxySettings
+                .GetDecimal(PricingDefaults.UsdCnyRateSettingKey, (decimal)PricingDefaults.UsdCnyRate)
+                .ToString(CultureInfo.InvariantCulture));
         return ApiOpResult<ProxySettingsResponse>.Succeed(new ProxySettingsResponse
         {
-            Settings = settings.Payload ?? new Dictionary<string, string>()
+            Settings = settings
         });
     }
 

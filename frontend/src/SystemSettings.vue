@@ -114,6 +114,29 @@
               </div>
               <div class="text-muted">开启后，代理会对符合探测特征的请求进行拦截处理</div>
             </el-form-item>
+
+            <el-form-item label="USD → CNY 汇率">
+              <div class="settings-switch-row">
+                <el-input-number
+                  v-model="proxyDraft.usd_cny_rate"
+                  :min="0.1"
+                  :max="100"
+                  :step="0.01"
+                  :precision="4"
+                  controls-position="right"
+                  class="full-width"
+                />
+                <el-button
+                  type="primary"
+                  :icon="Check"
+                  :loading="proxySaving"
+                  @click="saveUsdCnyRate"
+                >
+                  保存
+                </el-button>
+              </div>
+              <div class="text-muted">用于把美元成本折算成人民币展示，默认 7.25</div>
+            </el-form-item>
           </el-form>
         </div>
       </el-tab-pane>
@@ -290,7 +313,7 @@ const accessModeOptions = [
   { label: "局域网访问", value: "lan" }
 ];
 
-const activeSettingsTab = ref(props.isSuperadmin ? "service" : "vision");
+const activeSettingsTab = ref("vision");
 const loading = ref(false);
 const saving = ref(false);
 const restarting = ref(false);
@@ -300,7 +323,8 @@ const tauriRuntime = isTauriRuntime();
 const proxyLoading = ref(false);
 const proxySaving = ref(false);
 const proxyDraft = reactive({
-  intercept_probe_requests: false
+  intercept_probe_requests: false,
+  usd_cny_rate: 7.25
 });
 const draft = reactive({
   access_mode: "localhost",
@@ -412,6 +436,27 @@ async function saveProxySettings() {
 function applyProxySettings(data) {
   const settingsMap = data?.settings || {};
   proxyDraft.intercept_probe_requests = settingsMap.intercept_probe_requests === "true";
+  const rate = Number(settingsMap.usd_cny_rate);
+  proxyDraft.usd_cny_rate = Number.isFinite(rate) && rate > 0 ? rate : 7.25;
+}
+
+async function saveUsdCnyRate() {
+  proxySaving.value = true;
+  try {
+    const data = await props.api("/system-settings/proxy-settings", {
+      method: "PUT",
+      body: JSON.stringify({
+        key: "usd_cny_rate",
+        value: String(Number(proxyDraft.usd_cny_rate || 7.25))
+      })
+    });
+    applyProxySettings(data);
+    ElMessage.success("汇率已保存");
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    proxySaving.value = false;
+  }
 }
 
 async function restartService() {

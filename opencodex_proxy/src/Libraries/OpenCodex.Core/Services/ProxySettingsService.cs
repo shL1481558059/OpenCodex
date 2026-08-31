@@ -1,5 +1,6 @@
 using OpenCodex.Core.Domain;
 using OpenCodex.CoreBase.Data;
+using System.Globalization;
 using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
 
@@ -24,6 +25,24 @@ public sealed class ProxySettingsService : IProxySettingsService
         }
 
         return bool.TryParse(setting.Value, out var value) ? value : fallback;
+    }
+
+    public decimal GetDecimal(string key, decimal fallback)
+    {
+        var setting = _repository.TableNoTracking
+            .FirstOrDefault(item => item.Key == key);
+        if (setting is null)
+        {
+            return fallback;
+        }
+
+        return decimal.TryParse(
+            setting.Value,
+            NumberStyles.Number,
+            CultureInfo.InvariantCulture,
+            out var value)
+            ? value
+            : fallback;
     }
 
     public Task<ApiOpResult<Dictionary<string, string>>> GetAllAsync()

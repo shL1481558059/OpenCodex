@@ -19,7 +19,9 @@ public sealed class StatsPointDto(
     int outputTokens,
     double? avgTtftMs,
     double? cacheHitRate,
-    double rpm)
+    double rpm,
+    double costCny = 0,
+    double costUsd = 0)
 {
     /// <summary>
     /// 获取时间桶标签。
@@ -60,6 +62,16 @@ public sealed class StatsPointDto(
     /// 获取该时间桶的每分钟请求数。
     /// </summary>
     public double Rpm { get; } = rpm;
+
+    /// <summary>
+    /// 获取该时间桶累计成本（人民币口径）。
+    /// </summary>
+    public double CostCny { get; } = costCny;
+
+    /// <summary>
+    /// 获取该时间桶累计成本（美元口径）。
+    /// </summary>
+    public double CostUsd { get; } = costUsd;
 }
 
 /// <summary>
@@ -89,7 +101,11 @@ public sealed class StatsSummaryDto(
     double cost,
     double recent1hCost,
     double rpm,
-    double tpm)
+    double tpm,
+    double costCny = 0,
+    double costUsd = 0,
+    double recent1hCostCny = 0,
+    double recent1hCostUsd = 0)
 {
     /// <summary>
     /// 获取总请求数。
@@ -150,6 +166,26 @@ public sealed class StatsSummaryDto(
     /// 获取选定范围内的每分钟 token 数。
     /// </summary>
     public double Tpm { get; } = tpm;
+
+    /// <summary>
+    /// 获取总成本（人民币口径）。
+    /// </summary>
+    public double CostCny { get; } = costCny;
+
+    /// <summary>
+    /// 获取总成本（美元口径）。
+    /// </summary>
+    public double CostUsd { get; } = costUsd;
+
+    /// <summary>
+    /// 获取最近一小时成本（人民币口径）。
+    /// </summary>
+    public double Recent1hCostCny { get; } = recent1hCostCny;
+
+    /// <summary>
+    /// 获取最近一小时成本（美元口径）。
+    /// </summary>
+    public double Recent1hCostUsd { get; } = recent1hCostUsd;
 }
 
 /// <summary>

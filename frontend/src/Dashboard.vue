@@ -481,8 +481,8 @@ const summaryCards = computed(() => {
     {
       key: "cost",
       title: "总计费",
-      value: formatDualCurrency(summary.cost),
-      meta: `近 1 小时: ${formatDualCurrency(summary.recent_1h_cost)}`,
+      value: formatDualCurrency(summary.cost_cny ?? summary.cost, summary.cost_usd),
+      meta: `近 1 小时: ${formatDualCurrency(summary.recent_1h_cost_cny ?? summary.recent_1h_cost, summary.recent_1h_cost_usd)}`,
       icon: Coin,
       tone: "green"
     },
@@ -609,6 +609,10 @@ function defaultSummary() {
     recent_1h_tokens: 0,
     cost: 0,
     recent_1h_cost: 0,
+    cost_cny: 0,
+    cost_usd: 0,
+    recent_1h_cost_cny: 0,
+    recent_1h_cost_usd: 0,
     rpm: 0,
     tpm: 0
   };
@@ -770,9 +774,9 @@ function formatCompactNumber(value) {
   return number.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
-function formatDualCurrency(value) {
-  const cny = Number(value || 0);
-  const usd = cny / (statsData.currency_rate || 7.25);
+function formatDualCurrency(cnyValue, usdValue) {
+  const cny = Number(cnyValue ?? 0);
+  const usd = Number(usdValue ?? (cny / (statsData.currency_rate || 7.25)));
   return `¥${formatCurrencyNumber(cny)}/$${formatCurrencyNumber(usd)}`;
 }
 
@@ -928,11 +932,9 @@ function baseLineOpts() {
 
 function renderCostChart() {
   if (!costChart.value) return;
-  const rate = statsData.currency_rate || 7.25;
   const isCNY = costCurrency.value === "CNY";
   const data = statsData.points.map(p => {
-    const raw = p.cost || 0;
-    return isCNY ? raw : raw / rate;
+    return isCNY ? (p.cost_cny ?? p.cost ?? 0) : (p.cost_usd ?? p.cost ?? 0);
   });
   const precision = data.some(v => v > 1) ? 2 : 6;
   costChart.value.setOption({

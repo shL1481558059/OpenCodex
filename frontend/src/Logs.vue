@@ -527,7 +527,7 @@
             </div>
             <div class="log-mobile-card__wide">
               <dt>成本</dt>
-              <dd>{{ formatCost(row.cost) }}</dd>
+              <dd>{{ formatCost(row.cost, row.cost_currency) }}</dd>
             </div>
             <div class="log-mobile-card__wide">
               <dt>请求 ID</dt>
@@ -614,7 +614,7 @@
                 （失败 {{ selectedLog.failed_attempt_count }} 次）
               </span>
             </el-descriptions-item>
-            <el-descriptions-item label="成本">{{ formatCost(selectedLog.cost) }}</el-descriptions-item>
+            <el-descriptions-item label="成本">{{ formatCost(selectedLog.cost, selectedLog.cost_currency) }}</el-descriptions-item>
             <el-descriptions-item label="创建时间">{{ formatTimeOrDash(selectedLog.created_at) }}</el-descriptions-item>
             <el-descriptions-item label="开始处理">{{ formatTimeOrDash(selectedLog.processing_started_at) }}</el-descriptions-item>
             <el-descriptions-item label="完成时间">{{ formatTimeOrDash(selectedLog.completed_at) }}</el-descriptions-item>
@@ -1001,8 +1001,8 @@ const summaryCards = computed(() => {
     {
       key: "cost",
       title: "总计费",
-      value: formatDualCurrency(summary.cost),
-      meta: `近 1 小时: ${formatDualCurrency(summary.recent_1h_cost)}`,
+      value: formatDualCurrency(summary.cost_cny ?? summary.cost, summary.cost_usd),
+      meta: `近 1 小时: ${formatDualCurrency(summary.recent_1h_cost_cny ?? summary.recent_1h_cost, summary.recent_1h_cost_usd)}`,
       icon: Coin,
       tone: "green"
     },
@@ -1492,7 +1492,7 @@ function formatLogCell(row, column) {
     case "created_at": return formatTime(row.created_at);
     case "api_key_id": return formatApiKeyName(row);
     case "channel_id": return formatChannelName(row);
-    case "cost": return formatCost(row.cost);
+    case "cost": return formatCost(row.cost, row.cost_currency);
     default: return row[column.prop] ?? "";
   }
 }
@@ -1560,11 +1560,11 @@ function parseStoredJson(value) {
   return value;
 }
 
-function formatCost(value) {
+function formatCost(value, currency) {
   const number = Number(value || 0);
-  if (!number) return "¥0.000000 / $0.000000";
-  const usd = number / 7.3;
-  return `¥${number.toFixed(6)} / $${usd.toFixed(6)}`;
+  const code = String(currency || "USD").toUpperCase();
+  const symbol = code === "CNY" ? "¥" : "$";
+  return `${symbol}${number.toFixed(6)} ${code}`;
 }
 
 function formatTime(timestamp) {
@@ -1658,6 +1658,10 @@ function defaultSummary() {
     recent_1h_tokens: 0,
     cost: 0,
     recent_1h_cost: 0,
+    cost_cny: 0,
+    cost_usd: 0,
+    recent_1h_cost_cny: 0,
+    recent_1h_cost_usd: 0,
     rpm: 0,
     tpm: 0
   };
@@ -1673,9 +1677,9 @@ function formatCompactNumber(value) {
   return number.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
-function formatDualCurrency(value) {
-  const cny = Number(value || 0);
-  const usd = cny / (statsData.currency_rate || 7.25);
+function formatDualCurrency(cnyValue, usdValue) {
+  const cny = Number(cnyValue ?? 0);
+  const usd = Number(usdValue ?? (cny / (statsData.currency_rate || 7.25)));
   return `¥${formatCurrencyNumber(cny)}/$${formatCurrencyNumber(usd)}`;
 }
 
