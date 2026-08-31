@@ -53,6 +53,21 @@ export function reorderChannelAfterToggle(channels, channelId, enabled) {
   ];
 }
 
+export function replaceChannelInCurrentPosition(channels, refreshedChannel) {
+  if (!Array.isArray(channels) || !refreshedChannel?.id) {
+    return channels;
+  }
+
+  const index = channels.findIndex((channel) => channel?.id === refreshedChannel.id);
+  if (index < 0) {
+    return channels;
+  }
+
+  return channels.map((channel, currentIndex) =>
+    currentIndex === index ? { ...channel, ...refreshedChannel } : channel
+  );
+}
+
 function ownerOf(channel) {
   return String(channel?.owner_username || "");
 }

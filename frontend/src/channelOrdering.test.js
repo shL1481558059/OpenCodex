@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { reorderChannelAfterToggle } from "./channelOrdering.js";
+import {
+  reorderChannelAfterToggle,
+  replaceChannelInCurrentPosition
+} from "./channelOrdering.js";
 
 function channel(id, owner, enabled) {
   return { id, owner_username: owner, enabled };
@@ -65,4 +68,25 @@ test("找不到目标渠道时不改变原列表", () => {
     reorderChannelAfterToggle(channels, "missing", false),
     channels
   );
+});
+
+test("单条刷新只替换渠道数据,不改变当前排序位置", () => {
+  const channels = [
+    channel("alice-enabled", "alice", true),
+    { ...channel("alice-disabled", "alice", false), health_status: "disabled" },
+    channel("bob-enabled", "bob", true)
+  ];
+
+  const result = replaceChannelInCurrentPosition(channels, {
+    id: "alice-disabled",
+    enabled: false,
+    health_status: "healthy"
+  });
+
+  assert.deepEqual(result.map((item) => item.id), [
+    "alice-enabled",
+    "alice-disabled",
+    "bob-enabled"
+  ]);
+  assert.equal(result[1].health_status, "healthy");
 });

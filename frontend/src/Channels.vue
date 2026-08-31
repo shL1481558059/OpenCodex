@@ -1610,7 +1610,10 @@ import {
   canUseChatStreamTest,
   isImagesChannel
 } from "./channelImagesState.js";
-import { reorderChannelAfterToggle } from "./channelOrdering.js";
+import {
+  reorderChannelAfterToggle,
+  replaceChannelInCurrentPosition
+} from "./channelOrdering.js";
 import { streamChannelTest } from "./channelTestStream.js";
 import { createSseStream } from "./api/sseClient.js";
 import {
@@ -2321,9 +2324,7 @@ async function refreshSingleChannel(channelId) {
     return;
   }
 
-  const refreshed = channels.value.filter((item) => item.id !== data.id);
-  // 将刷新后的渠道放到当前列表最前，保证启用/禁用后立即置顶。
-  config.channels = [{ ...data }, ...refreshed];
+  config.channels = replaceChannelInCurrentPosition(channels.value, data);
   reconcileSelectedChannels();
 }
 
