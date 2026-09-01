@@ -734,6 +734,63 @@ public sealed class ModelCatalogServiceTests
     }
 
     [Fact]
+    public void BuildProxyModelCatalogEmbedsCodexRequiredContractWithoutCatalog()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+        }
+
+        var service = CreateService(dbPath);
+        var result = service.BuildProxyModelCatalog(
+            [new ProxyModelCapabilityDto("unmapped-model", false, null, "", "unmapped-model")]);
+
+        var model = Assert.Single(result);
+
+        // codex 客户端要求的协议字段,缺失会让整份 /v1/models 响应解析失败。
+        Assert.Empty(Assert.IsType<List<object?>>(model["experimental_supported_tools"]));
+        var tiers = Assert.IsType<List<object?>>(model["service_tiers"]);
+        var tier = Assert.IsType<Dictionary<string, object?>>(Assert.Single(tiers));
+        Assert.Equal("priority", tier["id"]);
+
+        // 语义校验要求 base_instructions 或 model_messages.instructions_template 至少一个。
+        var baseInstructions = Assert.IsType<string>(model["base_instructions"]);
+        Assert.StartsWith("You are Codex, a coding agent based on GPT-5.", baseInstructions);
+        var modelMessages = Assert.IsType<Dictionary<string, object?>>(model["model_messages"]);
+        var template = Assert.IsType<string>(modelMessages["instructions_template"]);
+        Assert.StartsWith("You are Codex, a coding agent based on GPT-5.", template);
+
+        // 模态必须是 codex 接受的变体,且不能凭 supports_image 顺带声明 audio/video。
+        Assert.Equal(
+            new List<object?> { "text" },
+            Assert.IsType<List<object?>>(model["input_modalities"]));
+    }
+
+    [Fact]
+    public void BuildProxyModelCatalogNormalizesDefaultReasoningSummaryFromCatalog()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddModel(context, provider.Id, "test-model", ModelMatchTypes.Exact, "test-model", 1m);
+            var model = context.ModelInfos.First(m => m.ModelKey == "test-model");
+            model.CatalogJson = """{"default_reasoning_summary":"short"}""";
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+        var result = service.BuildProxyModelCatalog(
+            [new ProxyModelCapabilityDto("test-model", false, null, "", "test-model")]);
+
+        var m = Assert.Single(result);
+        // "short" 不是 codex 合法值(auto/concise/detailed/none),应归一化为 "auto"。
+        Assert.Equal("auto", m["default_reasoning_summary"]);
+    }
+
+    [Fact]
     public async Task CalculateCostDoesNotFallbackToRequestModel()
     {
         var dbPath = CreateDbPath();
