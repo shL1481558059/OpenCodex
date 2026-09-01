@@ -36,18 +36,27 @@ npm --prefix frontend run dev -- --host 127.0.0.1 --port 5173
 ```env
 OPENCODEX_ADMIN_USERNAME=admin
 OPENCODEX_ADMIN_PASSWORD=change-me
+OPENCODEX_DB_PROVIDER=sqlite
+OPENCODEX_DB_CONNECTION_STRING=Data Source=logs/opencodex.db
+OPENCODEX_REDIS_CONNECTION=
+OPENCODEX_REDIS_PREFIX=opencodex
+OPENCODEX_CACHE_DEFAULT_TTL_SECONDS=300
 OPENCODEX_DEFAULT_TIMEOUT=120
 OPENCODEX_ADMIN_COOKIE_DAYS=30
 OPENCODEX_SECRET_KEY=change-me-session-secret
 OPENCODEX_DATA_PROTECTION_KEYS_PATH=logs/opencodex.keys
+OPENCODEX_OCR_CACHE_DIR=ocr-cache
+OPENCODEX_MODEL_CATALOG_SYNC_URL=
 TZ=Asia/Shanghai
 ```
 
 `OPENCODEX_ADMIN_USERNAME` 和 `OPENCODEX_ADMIN_PASSWORD` 是环境变量超级管理员。超级管理员不能通过管理接口降级或删除，密码以环境变量为准；普通用户只能由超级管理员创建、停用和重置密码。
 
+数据库通过 `OPENCODEX_DB_PROVIDER`（`sqlite` 或 `postgres`）和 `OPENCODEX_DB_CONNECTION_STRING` 配置，本地开发默认使用 SQLite。`OPENCODEX_REDIS_CONNECTION` 留空则降级为纯进程内缓存；启用后鉴权/路由/定价缓存走两级，亲和/容量/熔断走跨实例共享，`OPENCODEX_REDIS_PREFIX` 和 `OPENCODEX_CACHE_DEFAULT_TTL_SECONDS` 分别控制 Redis Key 前缀与默认缓存 TTL。`OPENCODEX_OCR_CACHE_DIR` 是 OCR 中间缓存目录。`OPENCODEX_MODEL_CATALOG_SYNC_URL` 是模型目录同步地址，留空使用内置默认地址。
+
 管理台登录态现在是持久化认证 Cookie，默认有效期 30 天，并开启滑动续期。`OPENCODEX_ADMIN_COOKIE_DAYS` 可调整有效期。
 
-`OPENCODEX_SECRET_KEY` 用于登录 Cookie 的隔离配置；`OPENCODEX_DATA_PROTECTION_KEYS_PATH` 用于持久化认证密钥。生产环境不要使用示例默认值，并确保密钥目录挂载到持久化存储，否则容器重建后仍会要求重新登录。
+`OPENCODEX_SECRET_KEY` 用于派生 DataProtection 的应用名，把不同实例的认证数据隔离开；登录 Cookie 的加密密钥本身由 DataProtection 生成并通过 `OPENCODEX_DATA_PROTECTION_KEYS_PATH` 持久化。生产环境不要使用示例默认值，并确保密钥目录挂载到持久化存储，否则容器重建后仍会要求重新登录。
 
 开发时不要混用 `http://127.0.0.1:5173/admin/` 和 `https://localhost:8443/admin/`。这两个入口属于不同站点，浏览器不会共享登录 Cookie，看起来就像“总是掉登录”。
 
