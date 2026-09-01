@@ -7,11 +7,12 @@ public static partial class SseStreamConverter
     // 上游协议: Chat (OpenAI /v1/chat/completions SSE)
     // 下游协议: Messages (Anthropic /v1/messages SSE)
     //
-    // 输入: Chat 流式 chunk `choices[].delta`，含 content / reasoning_content / tool_calls / refusal
+    // 输入: Chat 流式 chunk `choices[].delta`，含 content / tool_calls / refusal，
+    //       思维链由 ChatReasoningText 统一取自 reasoning_content 或 reasoning / reasoning_details
     // 输出: Anthropic Messages 事件流 message_start -> content_block_start/delta/stop -> message_delta -> message_stop
     //
     // 已知限制（与现有非流式 ConvertResponse 行为一致，不在流式侧隐藏）：
-    //  - thinking 块无 signature_delta / redacted_thinking：上游 Chat 的 reasoning_content 不携带签名，
+    //  - thinking 块无 signature_delta / redacted_thinking：上游 Chat 的思维链字段不携带签名，
     //    多轮历史中 thinking 不可验证；不伪造签名。
     //  - Chat usage 通常仅在末尾出现，message_start.usage.input_tokens 因此保持 0；
     //    output_tokens 在 message_delta 中按上游 usage 报告，避免为回填 usage 而破坏实时流式语义。
@@ -227,7 +228,7 @@ public static partial class SseStreamConverter
                     continue;
                 }
 
-                var reasoningText = StringValue(delta, "reasoning_content", string.Empty);
+                var reasoningText = ChatReasoningText.Extract(delta);
                 if (reasoningText.Length > 0)
                 {
                     foreach (var line in EnsureThinkingStarted())

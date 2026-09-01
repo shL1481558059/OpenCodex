@@ -302,7 +302,7 @@ public static partial class SseStreamConverter
                         });
                 }
 
-                var reasoningText = StringValue(delta, "reasoning_content", string.Empty);
+                var reasoningText = ChatReasoningText.Extract(delta);
                 if (reasoningText.Length > 0)
                 {
                     foreach (var line in EnsureReasoningStarted())

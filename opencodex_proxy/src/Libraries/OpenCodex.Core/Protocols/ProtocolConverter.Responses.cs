@@ -184,7 +184,7 @@ public static partial class ProtocolConverter
             ("model", originalModel ?? GetValue(payload, "model")),
             ("created", GetValue(payload, "created") ?? Now()),
             ("text", StringifyContent(GetValue(message, "content") ?? string.Empty)),
-            ("reasoning", StringifyContent(GetValue(message, "reasoning_content") ?? string.Empty)),
+            ("reasoning", ChatReasoningText.Extract(message)),
             ("refusal", StringifyContent(GetValue(message, "refusal") ?? string.Empty)),
             ("annotations", NormalizeAnnotations(GetValue(message, "annotations"))),
             ("tool_calls", toolCalls),

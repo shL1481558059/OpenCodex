@@ -161,7 +161,7 @@ internal sealed class ChatStreamResponseAccumulator : IStreamResponseAccumulator
 
         state.Role ??= StreamCaptureValues.String(delta, "role");
         _budget.Append(state.Content, StreamCaptureValues.String(delta, "content"));
-        _budget.Append(state.ReasoningContent, StreamCaptureValues.String(delta, "reasoning_content"));
+        _budget.Append(state.ReasoningContent, ChatReasoningText.Extract(delta));
         _budget.Append(state.Refusal, StreamCaptureValues.String(delta, "refusal"));
 
         if (!delta.TryGetValue("tool_calls", out var toolCallsValue)
