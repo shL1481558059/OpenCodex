@@ -1,5 +1,6 @@
 using OpenCodex.CoreBase.Domain.Models;
 using OpenCodex.CoreBase.DTOs.Models;
+using OpenCodex.CoreBase.DTOs.Proxy;
 using OpenCodex.CoreBase.Results;
 
 namespace OpenCodex.CoreBase.Services;
@@ -18,6 +19,9 @@ public interface IModelCatalogService
         string? query,
         string? providerCode,
         bool? enabled);
+
+    IReadOnlyList<Dictionary<string, object?>> BuildProxyModelCatalog(
+        IReadOnlyList<ProxyModelCapabilityDto> routedModels);
 
     ApiOpResult<ModelInfoResponsePayload> ReadModelInfoById(Guid id);
 

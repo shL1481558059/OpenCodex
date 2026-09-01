@@ -245,7 +245,7 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 - **全局/渠道定价表单重复**：`Pricing.vue` 与 `Channels.vue` 分别维护 provider、model_key、match_type/pattern、capabilities、Catalog JSON 和四类计费规则。后端确实支持 `ChannelModelInfo` 覆盖，不能直接删除渠道级数据；应先确认使用率，再选择“渠道仅覆盖价格/继承全局元数据”或抽共享组件。
 - **Catalog JSON 任意编辑**：字段用于 `/models` 元数据，不是死字段，但任意 JSON 编辑器误配面大。优先改为白名单字段或只读展示，不要误删后端存储。
 - **前端低收益实现**：`Pricing.vue` 分页是全量拉取后前端切片，内置目录当前约 17 个模型；规模不大时可删除分页状态。Web Search 同时维护 `usage_limit`/`key_usage_limit` 兼容字段，旧导入格式确认淘汰后可在 API 边界统一。
-- **Codex 官方模型目录**：`CodexOfficialModelCatalogFactory.cs` 约 278 行，配套 `wwwroot/ocxp_codex_official_models.json` 约 258 KB、包含大段 instructions，主要只服务带 Codex UA/`client_version` 的 `/models` 请求；非 Codex 请求仍先构造整套 `codexModels` 再塞入响应。若 Codex CLI 兼容是刚需应保留，否则可改为最小元数据或外置版本化目录，避免单客户端承担高维护静态资产。
+- **模型目录统一**：`/models` 与 `/v1/models` 统一由当前用户的渠道模型映射、渠道级 `ChannelModelInfo` 和全局 `ModelInfo` 动态生成，不再按 Codex UA/`client_version` 分支，也不再打包静态官方模型目录；渠道级 Catalog、上下文窗口和定价分别按渠道优先、全局回退的规则解析。
 - **仅建议顺手收敛**：Logs 的 10 个远程筛选项、Dashboard/Logs 重复的 5 张 summary cards、两页不同的时间格式化、以及三页重复的 Blob 下载/复制/格式化 helper 都有维护成本，但 Logs 的筛选统计仍有诊断价值，不应为了抽象而单独重构。
 - **Dashboard 图表也可按使用率收敛**：当前有 7 个 ECharts 实例，各自维护 ResizeObserver、销毁和渲染函数；TTFT、缓存命中率、RPM 与 Token/请求趋势存在部分信息重叠，Logs 也展示 RPM/TPM。若运维只关注成本、请求量、模型和错误，可先保留 3–4 个核心图表并同步删减 `/stats` 聚合字段；这仍是需反馈确认的主动收敛，不是已证实死代码。
 - `main.js` 手工全局注册约 45 个 Element Plus 组件、Setup/SystemSettings 还重复维护访问范围/端口/拦截开关表单；可按需注册或抽共享表单，但这是包体/组织性重构，不应与功能删减混在一起。

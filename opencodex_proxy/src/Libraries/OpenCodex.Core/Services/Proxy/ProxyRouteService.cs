@@ -184,7 +184,12 @@ public sealed class ProxyRouteService : IProxyRouteService
             .ThenBy(candidate => candidate.Model, StringComparer.Ordinal)
             .Select(candidate => new ProxyModelCapabilityDto(
                 candidate.Model,
-                candidate.SupportsImage))
+                candidate.SupportsImage,
+                ParseChannelId(candidate.Channel),
+                JsonDictionaryValue.String(candidate.Channel, "name"),
+                candidate.UpstreamModel,
+                candidate.Priority,
+                candidate.Position))
             .ToList();
     }
 

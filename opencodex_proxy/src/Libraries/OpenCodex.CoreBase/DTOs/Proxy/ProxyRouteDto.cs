@@ -48,7 +48,12 @@ public sealed class ProxyRouteDto(
 /// <param name="supportsImage">指示模型是否支持图片输入的值。</param>
 public sealed class ProxyModelCapabilityDto(
     string model,
-    bool supportsImage)
+    bool supportsImage,
+    Guid? channelId = null,
+    string channelName = "",
+    string upstreamModel = "",
+    int priority = 0,
+    int position = 0)
 {
     /// <summary>
     /// 获取对外模型名称。
@@ -59,6 +64,31 @@ public sealed class ProxyModelCapabilityDto(
     /// 获取指示模型是否支持图片输入的值。
     /// </summary>
     public bool SupportsImage { get; } = supportsImage;
+
+    /// <summary>
+    /// 获取当前模型能力对应的渠道 ID。
+    /// </summary>
+    public Guid? ChannelId { get; } = channelId;
+
+    /// <summary>
+    /// 获取当前模型能力对应的渠道名称。
+    /// </summary>
+    public string ChannelName { get; } = channelName;
+
+    /// <summary>
+    /// 获取当前模型能力对应的上游模型名称。
+    /// </summary>
+    public string UpstreamModel { get; } = upstreamModel;
+
+    /// <summary>
+    /// 获取当前模型能力对应渠道的优先级。
+    /// </summary>
+    public int Priority { get; } = priority;
+
+    /// <summary>
+    /// 获取当前模型能力对应模型映射在渠道中的位置。
+    /// </summary>
+    public int Position { get; } = position;
 }
 
 /// <summary>

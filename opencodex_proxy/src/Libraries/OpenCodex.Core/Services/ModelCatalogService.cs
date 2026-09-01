@@ -10,6 +10,7 @@ using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain.Models;
 using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.Models;
+using OpenCodex.CoreBase.DTOs.Proxy;
 using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
 using StackExchange.Redis;
@@ -43,6 +44,29 @@ public sealed class ModelCatalogService : IModelCatalogService
     private readonly ICacheService _cache;
     private readonly IRedisConnectionProvider? _redis;
     private readonly IOpenCodexDbContext _dbContext;
+
+    private sealed class ProxyModelCatalogEntry
+    {
+        public ProxyModelCatalogEntry(
+            ProxyModelCapabilityDto route,
+            ChannelModelInfo? channelModel,
+            string baseDisplayName,
+            Dictionary<string, object?> payload)
+        {
+            Route = route;
+            ChannelModel = channelModel;
+            BaseDisplayName = baseDisplayName;
+            Payload = payload;
+        }
+
+        public ProxyModelCapabilityDto Route { get; }
+
+        public ChannelModelInfo? ChannelModel { get; }
+
+        public string BaseDisplayName { get; }
+
+        public Dictionary<string, object?> Payload { get; }
+    }
 
     public ModelCatalogService(
         IRepository<ModelProvider> providers,
@@ -240,6 +264,359 @@ public sealed class ModelCatalogService : IModelCatalogService
                     plansByModel.TryGetValue(model.Id, out var plan) ? plan : null,
                     rulesByPlan))
                 .ToList()));
+    }
+
+    public IReadOnlyList<Dictionary<string, object?>> BuildProxyModelCatalog(
+        IReadOnlyList<ProxyModelCapabilityDto> routedModels)
+    {
+        if (routedModels.Count == 0)
+        {
+            return [];
+        }
+
+        var routes = routedModels
+            .Where(route => !string.IsNullOrWhiteSpace(route.Model))
+            .GroupBy(route => route.Model, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToList();
+        if (routes.Count == 0)
+        {
+            return [];
+        }
+
+        var channelIds = routes
+            .Where(route => route.ChannelId.HasValue)
+            .Select(route => route.ChannelId!.Value)
+            .Distinct()
+            .ToList();
+        var upstreamModels = routes
+            .Select(route => Normalize(string.IsNullOrWhiteSpace(route.UpstreamModel)
+                ? route.Model
+                : route.UpstreamModel))
+            .Where(model => model.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var channelModels = _channelModels.TableNoTracking
+            .Where(model => channelIds.Contains(model.ChannelId) && model.Enabled)
+            .AsEnumerable()
+            .GroupBy(model => ChannelModelKey(model.ChannelId, model.UpstreamModel), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderByDescending(model => model.UpdatedAt).First(),
+                StringComparer.OrdinalIgnoreCase);
+        var globalModels = ResolveGlobalModels(upstreamModels);
+        var entries = routes
+            .Select(route => BuildProxyModelEntry(route, channelModels, globalModels))
+            .ToList();
+
+        var displayNameCounts = entries
+            .GroupBy(entry => entry.BaseDisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in entries)
+        {
+            var displayName = entry.BaseDisplayName;
+            if (displayNameCounts[entry.BaseDisplayName] > 1
+                && entry.ChannelModel is not null
+                && !string.IsNullOrWhiteSpace(entry.Route.ChannelName))
+            {
+                displayName = $"{entry.Route.ChannelName}/{displayName}";
+            }
+
+            entry.Payload["display_name"] = displayName;
+            entry.Payload["slug"] = entry.Route.Model;
+        }
+
+        return entries.Select(entry => entry.Payload).ToList();
+    }
+
+    private ProxyModelCatalogEntry BuildProxyModelEntry(
+        ProxyModelCapabilityDto route,
+        IReadOnlyDictionary<string, ChannelModelInfo> channelModels,
+        IReadOnlyDictionary<string, ModelInfo?> globalModels)
+    {
+        var upstreamModel = Normalize(string.IsNullOrWhiteSpace(route.UpstreamModel)
+            ? route.Model
+            : route.UpstreamModel);
+        channelModels.TryGetValue(
+            ChannelModelKey(route.ChannelId, upstreamModel),
+            out var channelModel);
+        globalModels.TryGetValue(upstreamModel, out var globalModel);
+
+        var globalCatalog = globalModel is null
+            ? new Dictionary<string, object?>(StringComparer.Ordinal)
+            : DeserializeObject(globalModel.CatalogJson);
+        var channelCatalog = channelModel is null
+            ? new Dictionary<string, object?>(StringComparer.Ordinal)
+            : DeserializeObject(channelModel.CatalogJson);
+        var catalog = MergeDictionaries(globalCatalog, channelCatalog);
+        var globalCapabilities = globalModel is null
+            ? new Dictionary<string, object?>(StringComparer.Ordinal)
+            : DeserializeObject(globalModel.CapabilitiesJson);
+        var channelCapabilities = channelModel is null
+            ? new Dictionary<string, object?>(StringComparer.Ordinal)
+            : DeserializeObject(channelModel.CapabilitiesJson);
+        var capabilities = MergeDictionaries(globalCapabilities, channelCapabilities);
+
+        var displayName = FirstNonEmpty(
+            ReadString(channelCatalog, "display_name"),
+            channelModel?.DisplayName,
+            ReadString(globalCatalog, "display_name"),
+            globalModel?.DisplayName,
+            route.Model);
+        var description = FirstNonEmpty(
+            ReadString(channelCatalog, "description"),
+            channelModel?.Description,
+            ReadString(globalCatalog, "description"),
+            globalModel?.Description,
+            $"OpenCodex routed model: {route.Model}.");
+        var supportsImage = ReadBoolean(channelCapabilities, "supports_image")
+            ?? ReadBoolean(globalCapabilities, "supports_image")
+            ?? route.SupportsImage;
+        var contextWindow = ReadPositiveLong(channelCatalog, "context_window")
+            ?? ReadPositiveLong(channelCapabilities, "context_window")
+            ?? ReadPositiveLong(globalCatalog, "context_window")
+            ?? ReadPositiveLong(globalCapabilities, "context_window")
+            ?? 256000;
+
+        // 客户端目录只暴露 Codex/OpenAI 客户端需要的能力字段。
+        // 定价与内部标识只在管理台接口和计费链路使用，不随 /models 下发给访问 Key 持有者。
+        ApplyProxyCatalogDefaults(catalog, route, displayName, description, supportsImage, contextWindow);
+        var payload = CloneDictionary(catalog);
+        payload["slug"] = route.Model;
+        payload["display_name"] = displayName;
+        payload["description"] = description;
+
+        return new ProxyModelCatalogEntry(route, channelModel, displayName, payload);
+    }
+
+    private static void ApplyProxyCatalogDefaults(
+        Dictionary<string, object?> catalog,
+        ProxyModelCapabilityDto route,
+        string displayName,
+        string description,
+        bool supportsImage,
+        long contextWindow)
+    {
+        catalog["slug"] = route.Model;
+        catalog["display_name"] = displayName;
+        catalog["description"] = description;
+        catalog["visibility"] = catalog.TryGetValue("visibility", out var visibility)
+            ? visibility
+            : "list";
+        catalog["supported_in_api"] = catalog.TryGetValue("supported_in_api", out var supportedInApi)
+            ? supportedInApi
+            : true;
+        catalog["shell_type"] = catalog.TryGetValue("shell_type", out var shellType)
+            ? shellType
+            : "shell_command";
+        catalog["priority"] = catalog.TryGetValue("priority", out var priority)
+            ? priority
+            : 100;
+        catalog["apply_patch_tool_type"] = catalog.TryGetValue("apply_patch_tool_type", out var applyPatchToolType)
+            ? applyPatchToolType
+            : "freeform";
+        catalog["web_search_tool_type"] = catalog.TryGetValue("web_search_tool_type", out var webSearchToolType)
+            ? webSearchToolType
+            : "text";
+        catalog["reasoning_summary_format"] = catalog.TryGetValue("reasoning_summary_format", out var summaryFormat)
+            ? summaryFormat
+            : "text";
+        catalog["default_reasoning_summary"] = catalog.TryGetValue("default_reasoning_summary", out var defaultSummary)
+            ? defaultSummary
+            : "auto";
+        catalog["support_verbosity"] = catalog.TryGetValue("support_verbosity", out var supportVerbosity)
+            ? supportVerbosity
+            : true;
+        catalog["default_verbosity"] = catalog.TryGetValue("default_verbosity", out var defaultVerbosity)
+            ? defaultVerbosity
+            : "medium";
+        catalog["input_modalities"] = catalog.TryGetValue("input_modalities", out var inputModalities)
+            ? inputModalities
+            : supportsImage
+                ? new List<object?> { "text", "image" }
+                : new List<object?> { "text" };
+        catalog["supports_image_detail_original"] = supportsImage;
+        catalog["supports_parallel_tool_calls"] = catalog.TryGetValue("supports_parallel_tool_calls", out var parallel)
+            ? parallel
+            : true;
+        catalog["supports_reasoning_summaries"] = catalog.TryGetValue("supports_reasoning_summaries", out var summaries)
+            ? summaries
+            : true;
+        catalog["additional_speed_tiers"] = catalog.TryGetValue("additional_speed_tiers", out var speedTiers)
+            ? speedTiers
+            : new List<object?> { "fast" };
+        catalog["context_window"] = contextWindow;
+        catalog["max_context_window"] = contextWindow;
+
+        // 没有配置思考档位的模型也必须给出可选档位，否则客户端无法选择推理强度。
+        if (!catalog.TryGetValue("supported_reasoning_levels", out var configuredLevels)
+            || configuredLevels is not IEnumerable<object?> configuredLevelItems
+            || !configuredLevelItems.Any())
+        {
+            catalog["supported_reasoning_levels"] = DefaultReasoningLevels();
+        }
+
+        if (!catalog.ContainsKey("default_reasoning_level"))
+        {
+            catalog["default_reasoning_level"] = "medium";
+        }
+
+        if (catalog.TryGetValue("truncation_policy", out var policyValue)
+            && policyValue is Dictionary<string, object?> policy)
+        {
+            policy["limit"] = contextWindow;
+        }
+        else
+        {
+            catalog["truncation_policy"] = new Dictionary<string, object?>
+            {
+                ["mode"] = "tokens",
+                ["limit"] = contextWindow
+            };
+        }
+
+        if (catalog.TryGetValue("supported_reasoning_levels", out var levelsValue)
+            && levelsValue is IEnumerable<object?> levels)
+        {
+            var efforts = levels
+                .Select(level => level as IReadOnlyDictionary<string, object?>)
+                .Where(level => level is not null)
+                .Select(level => ReadString(level!, "effort"))
+                .Where(effort => effort.Length > 0)
+                .ToList();
+            if (efforts.Count > 0)
+            {
+                var defaultLevel = ReadString(catalog, "default_reasoning_level");
+                if (!efforts.Contains(defaultLevel, StringComparer.OrdinalIgnoreCase))
+                {
+                    catalog["default_reasoning_level"] = efforts[0];
+                }
+            }
+        }
+    }
+
+    private static List<object?> DefaultReasoningLevels()
+    {
+        return
+        [
+            new Dictionary<string, object?>
+            {
+                ["effort"] = "low",
+                ["description"] = "Quick responses with lighter reasoning"
+            },
+            new Dictionary<string, object?>
+            {
+                ["effort"] = "medium",
+                ["description"] = "Balances speed and reasoning depth for everyday tasks"
+            },
+            new Dictionary<string, object?>
+            {
+                ["effort"] = "high",
+                ["description"] = "Greater reasoning depth for complex problems"
+            },
+            new Dictionary<string, object?>
+            {
+                ["effort"] = "xhigh",
+                ["description"] = "Extra high reasoning depth for extremely complex logic"
+            }
+        ];
+    }
+
+    private static Dictionary<string, object?> CloneDictionary(
+        IReadOnlyDictionary<string, object?> source)
+    {
+        return source.ToDictionary(
+            pair => pair.Key,
+            pair => CloneProxyCatalogValue(pair.Value),
+            StringComparer.Ordinal);
+    }
+
+    private static object? CloneProxyCatalogValue(object? value)
+    {
+        if (value is JsonElement element)
+        {
+            return JsonRequestValue.Value(element);
+        }
+
+        if (value is IReadOnlyDictionary<string, object?> dictionary)
+        {
+            return CloneDictionary(dictionary);
+        }
+
+        if (value is IEnumerable<object?> values)
+        {
+            return values.Select(CloneProxyCatalogValue).ToList();
+        }
+
+        return value;
+    }
+
+    private static Dictionary<string, object?> MergeDictionaries(
+        IReadOnlyDictionary<string, object?> baseValues,
+        IReadOnlyDictionary<string, object?> overrides)
+    {
+        var result = CloneDictionary(baseValues);
+        foreach (var pair in overrides)
+        {
+            result[pair.Key] = CloneProxyCatalogValue(pair.Value);
+        }
+
+        return result;
+    }
+
+    private static string ChannelModelKey(Guid? channelId, string upstreamModel)
+    {
+        return $"{channelId?.ToString() ?? string.Empty}|{Normalize(upstreamModel)}";
+    }
+
+    private static string FirstNonEmpty(params string?[] values)
+    {
+        return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? string.Empty;
+    }
+
+    private static string ReadString(
+        IReadOnlyDictionary<string, object?> source,
+        string key)
+    {
+        return source.TryGetValue(key, out var value) ? value?.ToString()?.Trim() ?? string.Empty : string.Empty;
+    }
+
+    private static bool? ReadBoolean(
+        IReadOnlyDictionary<string, object?> source,
+        string key)
+    {
+        if (!source.TryGetValue(key, out var value))
+        {
+            return null;
+        }
+
+        return value switch
+        {
+            bool boolean => boolean,
+            string text when bool.TryParse(text, out var parsed) => parsed,
+            _ => null
+        };
+    }
+
+    private static long? ReadPositiveLong(
+        IReadOnlyDictionary<string, object?> source,
+        string key)
+    {
+        if (!source.TryGetValue(key, out var value))
+        {
+            return null;
+        }
+
+        var number = value switch
+        {
+            int integer => integer,
+            long longValue => longValue,
+            double fraction => (long)fraction,
+            decimal decimalValue => (long)decimalValue,
+            string text when long.TryParse(text, out var parsed) => parsed,
+            _ => 0
+        };
+        return number > 0 ? number : null;
     }
 
     public ApiOpResult<ModelInfoResponsePayload> ReadModelInfoById(Guid id)
@@ -1026,7 +1403,11 @@ public sealed class ModelCatalogService : IModelCatalogService
             var channelModel = ResolveChannelModel(channelId.Value, actualModel);
             if (channelModel is not null)
             {
-                return SupportsImage(channelModel.CapabilitiesJson);
+                var channelCapabilities = DeserializeObject(channelModel.CapabilitiesJson);
+                if (channelCapabilities.ContainsKey("supports_image"))
+                {
+                    return ReadBoolean(channelCapabilities, "supports_image") == true;
+                }
             }
         }
 
@@ -1321,10 +1702,14 @@ public sealed class ModelCatalogService : IModelCatalogService
             var channelModel = ResolveChannelModel(channelId.Value, actualModel);
             if (channelModel is not null)
             {
-                return new PricingResolution(
-                    channelModel,
-                    FindPlanForChannelModel(channelModel.Id, channelId.Value),
-                    "channel_model_override");
+                var channelPlan = FindPlanForChannelModel(channelModel.Id, channelId.Value);
+                if (channelPlan is not null)
+                {
+                    return new PricingResolution(
+                        channelModel,
+                        channelPlan,
+                        "channel_model_override");
+                }
             }
         }
 
@@ -1471,6 +1856,27 @@ public sealed class ModelCatalogService : IModelCatalogService
                 && plan.Enabled)
             .OrderByDescending(plan => plan.UpdatedAt)
             .FirstOrDefault();
+    }
+
+    private Dictionary<Guid, ModelPricingPlan> PlansByChannelModelIds(
+        IReadOnlyCollection<Guid> channelModelIds)
+    {
+        if (channelModelIds.Count == 0)
+        {
+            return [];
+        }
+
+        var plans = _plans.TableNoTracking
+            .Where(plan => plan.ChannelModelInfoId != null
+                && plan.ChannelId != null
+                && plan.Enabled
+                && channelModelIds.Contains(plan.ChannelModelInfoId.Value))
+            .ToList();
+        return plans
+            .GroupBy(plan => plan.ChannelModelInfoId!.Value)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderByDescending(plan => plan.UpdatedAt).First());
     }
 
     private static MatchScore? MatchRank(string matchType, string pattern, string modelName)

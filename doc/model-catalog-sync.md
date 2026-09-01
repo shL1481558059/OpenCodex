@@ -75,7 +75,7 @@
 
 ### 2.3 两个易混点
 
-- `wwwroot/ocxp_codex_official_models.json` 是给 Codex 客户端 `/models` 用的静态能力清单（`CodexOfficialModelCatalogFactory` 读取），与本次同步的模型目录不是同一份数据。
+- `/models` 与 `/v1/models` 已统一使用当前用户的动态模型目录；全局 `ModelInfo.Catalog` 来自模型目录同步，渠道级 `ChannelModelInfo.Catalog` 在对应渠道上优先覆盖全局字段。
 - 工作树有未提交改动（`Pricing.vue`、`SystemSettings.vue`、`ModelCatalogService.cs`），其中模型删除已改为「启用→停用，停用→硬删除」两段式。本方案在其之上叠加，不回退。
 
 ## 3. 目标方案
@@ -333,7 +333,7 @@ Q21 三条都选了「以本地为主」，于是两种模式的差异收窄到*
 - 不同步渠道级覆盖（`ChannelModelInfo`），与 PRD 14.4 现有边界一致。
 - 多实例并发同步无分布式锁；单事务保证不出半写状态，但两个超管同时点会各自完成一次写入尝试。
 - 60 秒拉取期间管理员关页面：预检阶段无副作用；确认阶段若事务已提交则变更生效，前端看不到结果，刷新即可见。
-- 不改 `wwwroot/ocxp_codex_official_models.json`（客户端能力清单是另一条链路）。
+- 客户端能力字段由有效模型信息的 Catalog 动态返回，不再维护单独的静态 Codex 能力目录。
 
 ## 8. 实施前的最后两处推定
 

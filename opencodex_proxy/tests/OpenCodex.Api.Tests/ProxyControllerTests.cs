@@ -84,7 +84,7 @@ public sealed class ProxyControllerTests
     }
 
     [Fact]
-    public async Task Models_CodexClientHeader_ReturnsModelsPayload()
+    public async Task Models_CodexClientHeader_ReturnsSamePayloadAsRegularClient()
     {
         var expectedModels = new List<Dictionary<string, object?>>
         {
@@ -93,27 +93,37 @@ public sealed class ProxyControllerTests
                 ["slug"] = "gpt-5.5"
             }
         };
-        var service = new StubCodexOfficialModelCatalogService(expectedModels);
-        var controller = CreateController(
+        var codexController = CreateController(
             new StubRequestBodyReader(CreateMessagesPayload(maxTokens: 4096)),
             new StubProxyEndpointService(),
             interceptProbeRequests: false,
-            codexService: service);
-        controller.HttpContext.Request.QueryString = QueryString.Create("client_version", "0.147.0");
+            modelCatalog: expectedModels);
+        codexController.HttpContext.Request.QueryString = QueryString.Create("client_version", "0.147.0");
 
-        var action = await controller.Models();
+        var codexAction = await codexController.Models();
+        var codexResult = Assert.IsType<ObjectResult>(codexAction);
 
-        var objectResult = Assert.IsType<ObjectResult>(action);
-        Assert.Equal(200, objectResult.StatusCode);
-        var payload = Assert.IsType<Dictionary<string, object?>>(objectResult.Value);
-        Assert.Same(expectedModels, payload["models"]);
+        var regularController = CreateController(
+            new StubRequestBodyReader(CreateMessagesPayload(maxTokens: 4096)),
+            new StubProxyEndpointService(),
+            interceptProbeRequests: false,
+            modelCatalog: expectedModels);
+        var regularAction = await regularController.Models();
+        var regularResult = Assert.IsType<ObjectResult>(regularAction);
+
+        Assert.Equal(200, codexResult.StatusCode);
+        Assert.Equal(200, regularResult.StatusCode);
+        var codexPayload = Assert.IsType<Dictionary<string, object?>>(codexResult.Value);
+        var regularPayload = Assert.IsType<Dictionary<string, object?>>(regularResult.Value);
+        Assert.Equal(regularPayload, codexPayload);
+        Assert.Equal(expectedModels, codexPayload["models"]);
     }
 
     private static ProxyController CreateController(
         IRequestBodyReader bodyReader,
         StubProxyEndpointService proxy,
         bool interceptProbeRequests,
-        ICodexOfficialModelCatalogService? codexService = null,
+        IReadOnlyList<Dictionary<string, object?>>? modelCatalog = null,
         IProxyLogService? logs = null)
     {
         var proxyService = new ProxyService(
@@ -121,8 +131,7 @@ public sealed class ProxyControllerTests
             proxy,
             new StubProxyRequestService(),
             new StubProxyRouteService(),
-            new StubModelCatalogService(),
-            codexService ?? new StubCodexOfficialModelCatalogService(),
+            new StubModelCatalogService(modelCatalog),
             new StubProxySettingsService(interceptProbeRequests),
             logs ?? new StubProxyLogService());
         var controller = new ProxyController(proxyService)
@@ -269,6 +278,13 @@ public sealed class ProxyControllerTests
 
     private sealed class StubModelCatalogService : IModelCatalogService
     {
+        private readonly IReadOnlyList<Dictionary<string, object?>> _modelCatalog;
+
+        public StubModelCatalogService(IReadOnlyList<Dictionary<string, object?>>? modelCatalog = null)
+        {
+            _modelCatalog = modelCatalog ?? [];
+        }
+
         public ApiOpResult<ModelProviderListResponse> ListProviders(bool includeDisabled = false)
         {
             throw new NotSupportedException();
@@ -292,6 +308,12 @@ public sealed class ProxyControllerTests
         public ApiOpResult<ModelInfoListResponse> ListModels(string? query, string? providerCode, bool? enabled)
         {
             return ApiOpResult<ModelInfoListResponse>.Succeed(new ModelInfoListResponse([]));
+        }
+
+        public IReadOnlyList<Dictionary<string, object?>> BuildProxyModelCatalog(
+            IReadOnlyList<ProxyModelCapabilityDto> routedModels)
+        {
+            return _modelCatalog;
         }
 
         public ApiOpResult<ModelInfoResponsePayload> ReadModelInfoById(Guid id)
@@ -369,23 +391,6 @@ public sealed class ProxyControllerTests
            DateTimeOffset billingInstant)
         {
             throw new NotSupportedException();
-        }
-    }
-
-    private sealed class StubCodexOfficialModelCatalogService : ICodexOfficialModelCatalogService
-    {
-        private readonly IReadOnlyList<Dictionary<string, object?>> _result;
-
-        public StubCodexOfficialModelCatalogService(IReadOnlyList<Dictionary<string, object?>>? result = null)
-        {
-            _result = result ?? [];
-        }
-
-        public IReadOnlyList<Dictionary<string, object?>> BuildCodexModels(
-            IReadOnlyList<ProxyModelCapabilityDto> routedModels,
-            IReadOnlyDictionary<string, ModelInfoResponse> catalogByModel)
-        {
-            return _result;
         }
     }
 

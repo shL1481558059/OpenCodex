@@ -91,7 +91,7 @@
 | `GET /stats/active-channels*` | 管理 Cookie | 仪表盘、可靠性 | ObservabilityController/Service | SSE 断开、Owner、数据新鲜度 |
 | `GET /stats/recent-errors/stream` | 管理 Cookie | 仪表盘 | ObservabilityController/Service | SSE 重连、详情权限 |
 | `GET/PUT /system-settings` | 超级管理员 | 配置、桌面、Probe | SystemSettingsController、DesktopSystemSettingsStore | 端口、LAN、重启、字段往返 |
-| `GET /models`、`GET /v1/models` | Bearer Key | 路由、模型目录 | ProxyController、RouteService、CodexCatalogFactory | Codex/普通客户端目录测试 |
+| `GET /models`、`GET /v1/models` | Bearer Key | 路由、动态模型目录 | ProxyController、ProxyRouteService、ModelCatalogService | 普通/Codex 请求同响应、渠道 Catalog/定价优先级 |
 | `POST /responses`、`/v1/responses` | Bearer Key | 协议、工具、路由 | ProxyController、ProxyEndpointService | 3×3 非流式/流式矩阵 |
 | `POST /chat/completions`、`/v1/chat/completions` | Bearer Key | 协议、工具、路由 | ProxyController、ProxyEndpointService | 3×3 非流式/流式矩阵 |
 | `POST /messages`、`/v1/messages` | Bearer Key | 协议、工具、路由 | ProxyController、ProxyEndpointService | 3×3 非流式/流式矩阵 |

@@ -122,7 +122,7 @@
                           <span v-if="isImagesChannel(row)">（图片渠道不支持聊天流测试）</span>
                         </el-dropdown-item>
                         <el-dropdown-item @click="openChannelPricing(row)">
-                          <el-icon><Edit /></el-icon>定价管理
+                          <el-icon><Edit /></el-icon>模型信息
                         </el-dropdown-item>
                         <el-dropdown-item @click="copyChannel(row)">
                           <el-icon><DocumentCopy /></el-icon>复制
@@ -222,7 +222,7 @@
                   <template #dropdown>
                     <el-dropdown-menu>
                       <el-dropdown-item @click="openChannelPricing(channel)">
-                        <el-icon><Edit /></el-icon>定价管理
+                        <el-icon><Edit /></el-icon>模型信息
                       </el-dropdown-item>
                       <el-dropdown-item @click="copyChannel(channel)">
                         <el-icon><DocumentCopy /></el-icon>复制
@@ -367,7 +367,7 @@
                                   <span v-if="isImagesChannel(row)">（图片渠道不支持聊天流测试）</span>
                                 </el-dropdown-item>
                                 <el-dropdown-item @click="openChannelPricing(row)">
-                                  <el-icon><Edit /></el-icon>定价管理
+                                  <el-icon><Edit /></el-icon>模型信息
                                 </el-dropdown-item>
                                 <el-dropdown-item @click="copyChannel(row)">
                                   <el-icon><DocumentCopy /></el-icon>复制
@@ -446,7 +446,7 @@
                           <template #dropdown>
                             <el-dropdown-menu>
                               <el-dropdown-item @click="openChannelPricing(channel)">
-                                <el-icon><Edit /></el-icon>定价管理
+                                <el-icon><Edit /></el-icon>模型信息
                               </el-dropdown-item>
                               <el-dropdown-item @click="copyChannel(channel)">
                                 <el-icon><DocumentCopy /></el-icon>复制
@@ -882,6 +882,9 @@
             {{ formatChannelPricingModel(row) }}
           </template>
         </el-table-column>
+        <el-table-column label="上下文窗口" width="130" align="right">
+          <template #default="{ row }">{{ contextWindowSummary(effectiveChannelPricingModel(row)) }}</template>
+        </el-table-column>
         <el-table-column label="输入" width="115" align="right">
           <template #default="{ row }">{{ pricingRuleSummary(effectiveChannelPricingModel(row), "input") }}</template>
         </el-table-column>
@@ -893,6 +896,13 @@
         </el-table-column>
         <el-table-column label="缓存读" width="115" align="right">
           <template #default="{ row }">{{ pricingRuleSummary(effectiveChannelPricingModel(row), "cache_read") }}</template>
+        </el-table-column>
+        <el-table-column label="Catalog" width="100" align="center">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.overridden ? 'warning' : 'info'">
+              {{ catalogSourceLabel(row) }}
+            </el-tag>
+          </template>
         </el-table-column>
         <el-table-column label="操作" width="210" align="center" fixed="right">
           <template #default="{ row }">
@@ -927,6 +937,8 @@
             </el-tag>
           </div>
           <div class="pricing-model-card__info">{{ formatChannelPricingModel(row) }}</div>
+          <div class="pricing-model-card__info">上下文窗口：{{ contextWindowSummary(effectiveChannelPricingModel(row)) }}</div>
+          <div class="pricing-model-card__info">Catalog：{{ catalogSourceLabel(row) }}</div>
           <dl class="pricing-model-card__rules">
             <div><dt>输入</dt><dd>{{ pricingRuleSummary(effectiveChannelPricingModel(row), "input") }}</dd></div>
             <div><dt>输出</dt><dd>{{ pricingRuleSummary(effectiveChannelPricingModel(row), "output") }}</dd></div>
@@ -1801,11 +1813,11 @@ const channelTestTitle = computed(() => {
 });
 const channelPricingTitle = computed(() => {
   const channel = channelPricingChannel.value;
-  return channel ? `定价管理 - ${channel.name || channel.id}` : "定价管理";
+  return channel ? `模型信息 - ${channel.name || channel.id}` : "模型信息";
 });
 const channelPricingEditorTitle = computed(() => {
   const model = channelPricingDraft.upstream_model || "";
-  return model ? `编辑定价 - ${model}` : "编辑定价";
+  return model ? `编辑模型信息 - ${model}` : "编辑模型信息";
 });
 async function loadChannels() {
   configLoading.value = true;
@@ -2451,7 +2463,7 @@ async function saveChannelPricing() {
     });
     channelPricingEditorVisible.value = false;
     await loadChannelPricingRows();
-    ElMessage.success("渠道模型定价已保存");
+    ElMessage.success("渠道模型信息已保存");
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
@@ -2470,7 +2482,7 @@ async function restoreChannelPricing(row) {
   try {
     await props.api(`/channels/${channelId}/model-infos/${overrideId}`, { method: "DELETE" });
     await loadChannelPricingRows();
-    ElMessage.success("已恢复全局配置");
+    ElMessage.success("已恢复全局模型信息");
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
@@ -2522,7 +2534,39 @@ function buildChannelPricingPayload() {
 }
 
 function effectiveChannelPricingModel(row) {
-  return row?.override_model || row?.global_model || null;
+  if (!row) {
+    return null;
+  }
+
+  const overrideModel = row.override_model;
+  const globalModel = row.global_model;
+  if (!overrideModel) {
+    return globalModel || null;
+  }
+
+  return {
+    ...globalModel,
+    ...overrideModel,
+    catalog: {
+      ...(globalModel?.catalog || {}),
+      ...(overrideModel.catalog || {})
+    },
+    capabilities: {
+      ...(globalModel?.capabilities || {}),
+      ...(overrideModel.capabilities || {})
+    },
+    pricing: overrideModel.pricing || globalModel?.pricing || null
+  };
+}
+
+function catalogSourceLabel(row) {
+  if (Object.keys(row?.override_model?.catalog || {}).length > 0) {
+    return "渠道";
+  }
+  if (Object.keys(row?.global_model?.catalog || {}).length > 0) {
+    return "全局";
+  }
+  return "默认";
 }
 
 function formatChannelPricingModel(row) {
@@ -2536,6 +2580,13 @@ function formatChannelPricingModel(row) {
     ? `${model.model_key} / ${model.display_name}`
     : model.model_key;
   return provider ? `${provider} / ${name}` : name;
+}
+
+function contextWindowSummary(model) {
+  const catalogWindow = Number(model?.catalog?.context_window || 0);
+  const capabilityWindow = Number(model?.capabilities?.context_window || 0);
+  const window = catalogWindow || capabilityWindow;
+  return window > 0 ? window.toLocaleString() : "未设置";
 }
 
 function pricingRuleSummary(model, item) {

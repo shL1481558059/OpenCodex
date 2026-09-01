@@ -10,6 +10,7 @@ using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.Domain.Models;
 using OpenCodex.CoreBase.DTOs.Models;
+using OpenCodex.CoreBase.DTOs.Proxy;
 using OpenCodex.CoreBase.Results;
 using OpenCodex.CoreBase.Services;
 using OpenCodex.Data;
@@ -503,6 +504,233 @@ public sealed class ModelCatalogServiceTests
         Assert.Equal("channel-upstream-model", result.ModelKey);
         Assert.Null(result.ModelInfoId);
         Assert.NotNull(result.ChannelModelInfoId);
+    }
+
+    [Fact]
+    public async Task CalculateCostFallsBackToGlobalPricingWhenChannelModelInfoHasNoPricing()
+    {
+        var dbPath = CreateDbPath();
+        var channelId = Guid.NewGuid();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddChannel(context, channelId, "test-channel", "upstream-model");
+            AddModel(context, provider.Id, "global-model", ModelMatchTypes.Exact, "upstream-model", 7m);
+            context.ChannelModelInfos.Add(new ChannelModelInfo
+            {
+                Id = Guid.NewGuid(),
+                ChannelId = channelId,
+                UpstreamModel = "upstream-model",
+                ProviderId = provider.Id,
+                ModelKey = "channel-model",
+                DisplayName = "Channel Model",
+                MatchType = ModelMatchTypes.Exact,
+                MatchPattern = "upstream-model",
+                CatalogJson = "{\"supported_reasoning_levels\":[{\"effort\":\"low\"}]}",
+                CapabilitiesJson = "{}",
+                Enabled = true,
+                Source = "test",
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath, new InMemoryCacheService());
+        var result = await service.CalculateCostAsync(
+            channelId,
+            "request-model",
+            "upstream-model",
+            Tokens(1_000_000));
+
+        Assert.Equal(7m, result.Cost);
+        Assert.Equal("global_model_match", result.Resolution);
+        Assert.Equal("global-model", result.ModelKey);
+        Assert.Null(result.ChannelModelInfoId);
+    }
+
+    [Fact]
+    public void BuildProxyModelCatalogUsesChannelCatalogAndOmitsInternalPricing()
+    {
+        var dbPath = CreateDbPath();
+        var channelId = Guid.NewGuid();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddChannel(context, channelId, "DeepSeek Channel", "deepseek-v4-flash");
+            var globalModel = AddModel(
+                context,
+                provider.Id,
+                "global-deepseek",
+                ModelMatchTypes.Exact,
+                "deepseek-v4-flash",
+                7m);
+            globalModel.DisplayName = "Shared Model";
+            globalModel.CatalogJson = """
+                {
+                  "display_name": "Shared Model",
+                  "default_reasoning_level": "low",
+                  "supported_reasoning_levels": [
+                    { "effort": "low" },
+                    { "effort": "medium" },
+                    { "effort": "high" },
+                    { "effort": "xhigh" }
+                  ]
+                }
+                """;
+            globalModel.CapabilitiesJson = "{\"context_window\":128000}";
+
+            context.ChannelModelInfos.Add(new ChannelModelInfo
+            {
+                Id = Guid.NewGuid(),
+                ChannelId = channelId,
+                UpstreamModel = "deepseek-v4-flash",
+                ProviderId = provider.Id,
+                ModelKey = "channel-deepseek",
+                DisplayName = "Shared Model",
+                MatchType = ModelMatchTypes.Exact,
+                MatchPattern = "deepseek-v4-flash",
+                CatalogJson = """
+                    {
+                      "display_name": "Shared Model",
+                      "default_reasoning_level": "medium",
+                      "supported_reasoning_levels": [
+                        { "effort": "low" },
+                        { "effort": "high" },
+                        { "effort": "max" }
+                      ],
+                      "context_window": 1000000
+                    }
+                    """,
+                CapabilitiesJson = "{\"context_window\":1000000}",
+                Enabled = true,
+                Source = "test",
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+        var result = service.BuildProxyModelCatalog(
+            [
+                new ProxyModelCapabilityDto(
+                    "deepseek-v4-flash",
+                    false,
+                    channelId,
+                    "DeepSeek Channel",
+                    "deepseek-v4-flash")
+            ]);
+
+        var model = Assert.Single(result);
+        Assert.Equal("Shared Model", model["display_name"]);
+        Assert.Equal("low", model["default_reasoning_level"]);
+        Assert.Equal(1000000L, model["context_window"]);
+        Assert.Equal(1000000L, model["max_context_window"]);
+        var levels = Assert.IsType<List<object?>>(model["supported_reasoning_levels"]);
+        Assert.Equal(["low", "high", "max"], levels
+            .Cast<Dictionary<string, object?>>()
+            .Select(level => level["effort"]));
+
+        // 客户端目录不下发定价与内部标识，避免访问 Key 持有者读取计费数据。
+        Assert.DoesNotContain("pricing", model.Keys);
+        Assert.DoesNotContain("capabilities", model.Keys);
+        Assert.DoesNotContain("catalog", model.Keys);
+        Assert.DoesNotContain("source", model.Keys);
+    }
+
+    [Fact]
+    public void BuildProxyModelCatalogPrefixesChannelNameOnlyWhenDisplayNameConflicts()
+    {
+        var dbPath = CreateDbPath();
+        var channelId = Guid.NewGuid();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddChannel(context, channelId, "DeepSeek Channel", "deepseek-v4-flash");
+            var globalModel = AddModel(
+                context,
+                provider.Id,
+                "global-deepseek",
+                ModelMatchTypes.Exact,
+                "deepseek-v4-flash",
+                1m);
+            globalModel.DisplayName = "Shared Model";
+            globalModel.CatalogJson = "{\"display_name\":\"Shared Model\"}";
+
+            var otherModel = AddModel(
+                context,
+                provider.Id,
+                "other-model",
+                ModelMatchTypes.Exact,
+                "other-model",
+                1m);
+            otherModel.DisplayName = "Shared Model";
+            otherModel.CatalogJson = "{\"display_name\":\"Shared Model\"}";
+
+            context.ChannelModelInfos.Add(new ChannelModelInfo
+            {
+                Id = Guid.NewGuid(),
+                ChannelId = channelId,
+                UpstreamModel = "deepseek-v4-flash",
+                ProviderId = provider.Id,
+                ModelKey = "channel-deepseek",
+                DisplayName = "Shared Model",
+                MatchType = ModelMatchTypes.Exact,
+                MatchPattern = "deepseek-v4-flash",
+                CatalogJson = "{\"display_name\":\"Shared Model\"}",
+                CapabilitiesJson = "{}",
+                Enabled = true,
+                Source = "test",
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+        var result = service.BuildProxyModelCatalog(
+            [
+                new ProxyModelCapabilityDto(
+                    "deepseek-v4-flash",
+                    false,
+                    channelId,
+                    "DeepSeek Channel",
+                    "deepseek-v4-flash"),
+                new ProxyModelCapabilityDto("other-model", false, null, "", "other-model")
+            ]);
+
+        Assert.Equal(
+            ["DeepSeek Channel/Shared Model", "Shared Model"],
+            result.Select(model => (string?)model["display_name"]));
+    }
+
+    [Fact]
+    public void BuildProxyModelCatalogFallsBackToDefaultReasoningLevelsWithoutCatalog()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+        }
+
+        var service = CreateService(dbPath);
+        var result = service.BuildProxyModelCatalog(
+            [new ProxyModelCapabilityDto("unmapped-model", false, null, "", "unmapped-model")]);
+
+        var model = Assert.Single(result);
+        Assert.Equal("unmapped-model", model["slug"]);
+        Assert.Equal("medium", model["default_reasoning_level"]);
+        var levels = Assert.IsType<List<object?>>(model["supported_reasoning_levels"]);
+        Assert.Equal(["low", "medium", "high", "xhigh"], levels
+            .Cast<Dictionary<string, object?>>()
+            .Select(level => level["effort"]));
+        Assert.Equal(256000L, model["context_window"]);
+        Assert.Equal("freeform", model["apply_patch_tool_type"]);
+        Assert.Equal("text", model["web_search_tool_type"]);
     }
 
     [Fact]

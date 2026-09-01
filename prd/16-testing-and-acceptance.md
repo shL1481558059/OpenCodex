@@ -518,7 +518,7 @@ flowchart TB
 | MCP | `NativeMcpConfigurationTests.cs`、`NativeMcpProtocolTests.cs`、`NativeMcpHistoryTests.cs`、`NativeMcpResponseTests.cs` |
 | 图片 | `ImagesControllerTests.cs`、`ProxyImageFallbackTests.cs`、`ProxyVisionRoutingTests.cs` |
 | 日志 | `ProxyLogServiceTests.cs`、`ObservabilityServiceTests.cs`、`LogContentCodecTests.cs`、`LogContentStoreTests.cs` |
-| 模型和价格 | `ModelCatalogServiceTests.cs`、`ModelPricingServiceTests.cs`、`CodexOfficialModelCatalogFactoryTests.cs` |
+| 模型和价格 | `ModelCatalogServiceTests.cs`、`ModelPricingServiceTests.cs`、`ProxyControllerTests.cs`（统一 `/models` 返回） |
 | Probe | `ProbeRequestInterceptorTests.cs`、`ProxyControllerTests.cs` |
 | 前端状态 | `channelImagesState.test.js`、`channelTestState.test.js` |
 | 手工流式工具（当前漂移） | `capture_real_sse.sh`、`extract_sse_test_data.sh`、`test_streaming.py` |
