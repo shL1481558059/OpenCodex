@@ -267,7 +267,6 @@ public sealed class ProtocolStructuralCompatibilityTests
 
     [Theory]
     [InlineData("messages", "responses", "container")]
-    [InlineData("messages", "chat", "thinking")]
     [InlineData("chat", "messages", "reasoning_effort")]
     [InlineData("chat", "messages", "parallel_tool_calls")]
     public void RequestParametersThatChangeStateOrModelBehavior_AreRejectedWhenNoEquivalentExists(
@@ -291,6 +290,63 @@ public sealed class ProtocolStructuralCompatibilityTests
             "upstream"));
 
         Assert.Contains(key, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MessagesToChat_PreservesThinkingParameter()
+    {
+        var request = RequestForProtocol(ProtocolConverter.Messages);
+        request["thinking"] = new Dictionary<string, object?>
+        {
+            ["type"] = "enabled",
+            ["budget_tokens"] = 1024
+        };
+
+        var converted = ProtocolConverter.ConvertRequest(
+            request,
+            ProtocolConverter.Messages,
+            ProtocolConverter.Chat,
+            "upstream");
+
+        var thinking = Object(converted["thinking"]);
+        Assert.Equal("enabled", String(thinking, "type"));
+        Assert.Equal(1024, thinking["budget_tokens"]);
+    }
+
+    [Fact]
+    public void ResponsesToChat_PreservesThinkingParameter()
+    {
+        var request = RequestForProtocol(ProtocolConverter.Responses);
+        request["thinking"] = new Dictionary<string, object?> { ["type"] = "enabled" };
+        request["reasoning"] = new Dictionary<string, object?> { ["effort"] = "max" };
+
+        var converted = ProtocolConverter.ConvertRequest(
+            request,
+            ProtocolConverter.Responses,
+            ProtocolConverter.Chat,
+            "upstream");
+
+        var thinking = Object(converted["thinking"]);
+        Assert.Equal("enabled", String(thinking, "type"));
+        Assert.Equal("max", converted["reasoning_effort"]);
+    }
+
+    [Fact]
+    public void MessagesToChat_StillRejectsContainer()
+    {
+        var request = RequestForProtocol(ProtocolConverter.Messages);
+        request["container"] = new Dictionary<string, object?>
+        {
+            ["type"] = "ephemeral"
+        };
+
+        var exception = Assert.Throws<BadRequestException>(() => ProtocolConverter.ConvertRequest(
+            request,
+            ProtocolConverter.Messages,
+            ProtocolConverter.Chat,
+            "upstream"));
+
+        Assert.Contains("container", exception.Message, StringComparison.Ordinal);
     }
 
     [Theory]

@@ -39,7 +39,9 @@ public static partial class ProtocolConverter
 
         if (sourceProtocol == Messages && targetProtocol is Responses or Chat)
         {
-            return ["container", "thinking"];
+            return targetProtocol == Chat
+                ? ["container"]
+                : ["container", "thinking"];
         }
 
         if (sourceProtocol == Chat && targetProtocol == Messages)

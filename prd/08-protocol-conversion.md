@@ -184,7 +184,7 @@ flowchart TD
 | Responses → Chat | `background`、`context_management`、`conversation`、`previous_response_id`、`prompt` |
 | Responses → Messages | 上述字段；`parallel_tool_calls`、`reasoning` 在转换时静默移除 |
 | Messages → Responses | `container`、`thinking` |
-| Messages → Chat | `container`、`thinking` |
+| Messages → Chat | `container` |
 | Chat → Messages | `parallel_tool_calls`、`reasoning_effort` |
 
 当前策略只针对会明显改变语义的参数显式失败；其他未识别的新字段可能在 Canonical 过程中被忽略或降级。
@@ -213,7 +213,7 @@ Web Search 模式处理发生在 Compat 之前。
 | 对话输入 | `input` | `messages` | `messages` |
 | 系统指令 | `instructions`/输入消息 | system/developer message | 顶层 `system` |
 | 最大输出 | `max_output_tokens` | `max_tokens`/`max_completion_tokens` | `max_tokens` |
-| Reasoning 配置 | `reasoning` | `reasoning_effort` | `thinking`，部分方向不可无损转换 |
+| Reasoning 配置 | `reasoning` | `reasoning_effort`；兼容扩展上游可透传 `thinking` | `thinking`，部分方向不可无损转换 |
 | 结构化输出 | `text.format` | `response_format` | 无完全等价字段，响应阶段可降级包装 |
 | 工具 | `tools` | `tools`/旧 `functions` | `tools`/`mcp_servers` |
 | 工具选择 | `tool_choice` | `tool_choice` | `tool_choice` |

@@ -655,8 +655,8 @@ public static partial class ProtocolConverter
         "logprobs", "max_completion_tokens", "max_tokens", "metadata", "modalities", "moderation", "n",
         "parallel_tool_calls", "prediction", "presence_penalty", "prompt_cache_key", "prompt_cache_options",
         "prompt_cache_retention", "reasoning_effort", "response_format", "safety_identifier", "seed",
-        "service_tier", "stop", "store", "stream", "stream_options", "temperature", "tool_choice", "tools",
-        "top_logprobs", "top_p", "user", "verbosity", "web_search_options"
+        "service_tier", "stop", "store", "stream", "stream_options", "temperature", "thinking", "tool_choice",
+        "tools", "top_logprobs", "top_p", "user", "verbosity", "web_search_options"
     };
 
     private static readonly HashSet<string> MessagesRequestParameterNames = new(StringComparer.Ordinal)

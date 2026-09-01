@@ -354,7 +354,7 @@ flowchart TD
 | Responses → Chat | `background`、`context_management`、`conversation`、`previous_response_id`、`prompt` | Chat 没有当前实现认可的等价状态/提示语义 |
 | Responses → Messages | 上述五项 | `parallel_tool_calls`、`reasoning` 在转换时静默移除，Messages 目标无法保持对应语义 |
 | Messages → Responses | `container`、`thinking` | 当前转换不把容器/原生 thinking 请求语义静默降级 |
-| Messages → Chat | `container`、`thinking` | Chat 没有当前实现认可的等价语义 |
+| Messages → Chat | `container` | Chat 没有当前实现认可的容器生命周期等价语义；`thinking` 作为兼容扩展参数透传 |
 | Chat → Messages | `parallel_tool_calls`、`reasoning_effort` | 当前转换拒绝改变并行工具和推理强度语义 |
 | Chat → Responses | 无预检拒绝项 | 仍受工具、字段白名单和具体内容转换约束 |
 | 同协议 | 不执行该语义预检 | 由上游协议本身处理 |

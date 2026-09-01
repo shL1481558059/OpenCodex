@@ -194,7 +194,7 @@ request parameter 'PARAMETER' cannot be converted from SOURCE to TARGET without 
 | Messages | Responses | `container` | Anthropic container 生命周期无 Responses 等价物 |
 | Messages | Responses | `thinking` | 显式 thinking 配置不能无损改写成 Responses reasoning |
 | Messages | Chat | `container` | Chat 无等价物 |
-| Messages | Chat | `thinking` | Chat `reasoning_effort` 无法表达完整 Anthropic thinking 配置 |
+| Messages | Chat | `thinking`（透传） | 不拒绝；作为兼容扩展参数透传，由 Chat 上游自行解释 |
 | Chat | Messages | `parallel_tool_calls` | Messages 无直接等价开关 |
 | Chat | Messages | `reasoning_effort` | 无法无损推导 `thinking.type/budget_tokens` |
 
@@ -373,11 +373,12 @@ logprobs, max_completion_tokens, max_tokens, metadata, modalities, moderation, n
 parallel_tool_calls, prediction, presence_penalty, prompt_cache_key,
 prompt_cache_options, prompt_cache_retention, reasoning_effort, response_format,
 safety_identifier, seed, service_tier, stop, store, stream, stream_options,
-temperature, tool_choice, tools, top_logprobs, top_p, user, verbosity,
+temperature, thinking, tool_choice, tools, top_logprobs, top_p, user, verbosity,
 web_search_options
 ```
 
 注意：兼容旧 Chat 的 `functions`、`function_call` 仍在白名单中，但跨协议工具主路径输出的是 `tools`、`tool_choice`。
+`thinking` 是面向兼容 Chat 且扩展支持 Anthropic 风格思考配置的上游（如 DeepSeek 网关）保留的透传字段；标准 OpenAI Chat 上游如果不认识该字段，可通过渠道 `drop_params: ["thinking"]` 排除。
 
 ### 8.3 Messages 目标允许字段
 
@@ -529,9 +530,10 @@ token/stop 的优先规则则按键存在性判断：
 当前实现有意拒绝：
 
 - Responses `reasoning` → Messages；
-- Messages `thinking` → Responses/Chat；
+- Messages `thinking` → Responses；
 - Chat `reasoning_effort` → Messages。
 
+`Messages → Chat` 是显式例外：`thinking` 作为兼容扩展参数透传，不做 Anthropic 到 Chat 的语义改写。
 唯一特殊路径是 `preserve_thinking_history`：它恢复**历史内容块与签名**，不是把本轮推理配置做通用等价转换。
 
 ---
