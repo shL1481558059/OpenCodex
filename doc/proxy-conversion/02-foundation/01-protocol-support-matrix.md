@@ -352,7 +352,7 @@ flowchart TD
 | 入口 → 渠道 | 明确拒绝的非空参数 | 原因类别 |
 |---|---|---|
 | Responses → Chat | `background`、`context_management`、`conversation`、`previous_response_id`、`prompt` | Chat 没有当前实现认可的等价状态/提示语义 |
-| Responses → Messages | 上述五项，另加 `parallel_tool_calls`、`reasoning` | Messages 目标无法按当前实现保持这些语义 |
+| Responses → Messages | 上述五项 | `parallel_tool_calls`、`reasoning` 在转换时静默移除，Messages 目标无法保持对应语义 |
 | Messages → Responses | `container`、`thinking` | 当前转换不把容器/原生 thinking 请求语义静默降级 |
 | Messages → Chat | `container`、`thinking` | Chat 没有当前实现认可的等价语义 |
 | Chat → Messages | `parallel_tool_calls`、`reasoning_effort` | 当前转换拒绝改变并行工具和推理强度语义 |

@@ -182,7 +182,7 @@ flowchart TD
 | 源 → 目标 | 不支持字段 |
 |---|---|
 | Responses → Chat | `background`、`context_management`、`conversation`、`previous_response_id`、`prompt` |
-| Responses → Messages | 上述字段，加 `parallel_tool_calls`、`reasoning` |
+| Responses → Messages | 上述字段；`parallel_tool_calls`、`reasoning` 在转换时静默移除 |
 | Messages → Responses | `container`、`thinking` |
 | Messages → Chat | `container`、`thinking` |
 | Chat → Messages | `parallel_tool_calls`、`reasoning_effort` |

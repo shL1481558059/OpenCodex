@@ -34,12 +34,6 @@ public static partial class ProtocolConverter
                 "prompt"
             };
 
-            if (targetProtocol == Messages)
-            {
-                parameters.Add("parallel_tool_calls");
-                parameters.Add("reasoning");
-            }
-
             return parameters;
         }
 

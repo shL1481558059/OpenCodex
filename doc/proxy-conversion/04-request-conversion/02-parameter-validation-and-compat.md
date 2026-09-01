@@ -208,7 +208,7 @@ request parameter 'PARAMETER' cannot be converted from SOURCE to TARGET without 
 
 例如 Responses → Messages：
 
-- `reasoning` 被拒绝；
+- `reasoning` 被静默移除；
 - `include`、`prompt_cache_key`、`store` 被删除；
 - `max_output_tokens` 映射为 `max_tokens`；
 - `text.format` 映射为 `output_config.format`。
@@ -330,7 +330,7 @@ prompt_cache_key
 store
 ```
 
-其中 `text` 在删除前已尝试转换成 `output_config`；`reasoning` 和 `parallel_tool_calls` 对 Responses → Messages 已由语义校验提前拒绝。
+其中 `text` 在删除前已尝试转换成 `output_config`；`reasoning` 和 `parallel_tool_calls` 在 Responses → Messages 转换时静默移除。
 
 ---
 

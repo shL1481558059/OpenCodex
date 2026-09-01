@@ -266,8 +266,6 @@ public sealed class ProtocolStructuralCompatibilityTests
     }
 
     [Theory]
-    [InlineData("responses", "messages", "reasoning")]
-    [InlineData("responses", "messages", "parallel_tool_calls")]
     [InlineData("messages", "responses", "container")]
     [InlineData("messages", "chat", "thinking")]
     [InlineData("chat", "messages", "reasoning_effort")]
@@ -280,7 +278,6 @@ public sealed class ProtocolStructuralCompatibilityTests
         var request = RequestForProtocol(source);
         request[key] = key switch
         {
-            "reasoning" => new Dictionary<string, object?> { ["effort"] = "high" },
             "thinking" => new Dictionary<string, object?> { ["type"] = "enabled", ["budget_tokens"] = 1024 },
             "parallel_tool_calls" => false,
             "reasoning_effort" => "high",
@@ -294,6 +291,25 @@ public sealed class ProtocolStructuralCompatibilityTests
             "upstream"));
 
         Assert.Contains(key, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("reasoning")]
+    [InlineData("parallel_tool_calls")]
+    public void ResponsesToMessages_DropsReasoningAndParallelToolCalls(string key)
+    {
+        var request = RequestForProtocol(ProtocolConverter.Responses);
+        request[key] = key == "reasoning"
+            ? new Dictionary<string, object?> { ["effort"] = "high" }
+            : false;
+
+        var converted = ProtocolConverter.ConvertRequest(
+            request,
+            ProtocolConverter.Responses,
+            ProtocolConverter.Messages,
+            "upstream");
+
+        Assert.False(converted.ContainsKey(key));
     }
 
     [Fact]
