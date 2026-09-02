@@ -6,6 +6,7 @@ public static partial class ProtocolConverter
     {
         var normalized = FoldReasoningIntoToolCallMessages(messages);
         normalized = MergeConsecutiveAssistantToolCallMessages(normalized);
+        normalized = MergeAssistantTextWithToolCalls(normalized);
         RemoveOrphanToolMessages(normalized);
         EnsureToolCallsHaveOutputs(normalized);
         return normalized;
@@ -136,6 +137,41 @@ public static partial class ProtocolConverter
         return merged;
     }
 
+    /// <summary>
+    /// 把同一 assistant 回合被拆开的正文与工具调用并回一条消息。
+    /// Responses 协议把一个回合的输出文本与 function_call 存成彼此独立的 item，
+    /// 若原样拆成两条 assistant 消息，上游会当成两个回合，
+    /// 折叠好的思考内容也就和真正发起调用的那条脱节。
+    /// </summary>
+    private static List<object?> MergeAssistantTextWithToolCalls(List<object?> messages)
+    {
+        var merged = new List<object?>();
+        foreach (var item in messages)
+        {
+            if (!TryAsObject(item, out var message))
+            {
+                continue;
+            }
+
+            if (IsAssistantToolCallOnlyMessage(message)
+                && merged.Count > 0
+                && TryAsObject(merged[^1], out var previous)
+                && IsAssistantTextOnlyMessage(previous))
+            {
+                var target = AsObject(DeepCopy(previous));
+                target["tool_calls"] = ListValue(message, "tool_calls").Select(DeepCopy).ToList();
+                AppendReasoningContent(target, GetValue(message, "reasoning_content"));
+                MergeThinkingEncrypted(target, message);
+                merged[^1] = target;
+                continue;
+            }
+
+            merged.Add(message);
+        }
+
+        return merged;
+    }
+
     private static void RemoveOrphanToolMessages(List<object?> messages)
     {
         HashSet<string>? validIds = null;
@@ -248,5 +284,12 @@ public static partial class ProtocolConverter
         return GetString(message, "role") == "assistant"
                && IsEmptyChatContent(GetValue(message, "content"))
                && ListValue(message, "tool_calls").Count > 0;
+    }
+
+    private static bool IsAssistantTextOnlyMessage(Dictionary<string, object?> message)
+    {
+        return GetString(message, "role") == "assistant"
+               && !IsEmptyChatContent(GetValue(message, "content"))
+               && ListValue(message, "tool_calls").Count == 0;
     }
 }

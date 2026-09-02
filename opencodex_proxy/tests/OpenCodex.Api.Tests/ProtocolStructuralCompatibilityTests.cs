@@ -1350,6 +1350,205 @@ public sealed class ProtocolStructuralCompatibilityTests
         Assert.False(assistant.ContainsKey("reasoning_content"), "preserve=false 时不应保留 reasoning_content");
     }
 
+    [Fact]
+    public void ResponsesToChat_AssistantTextAndToolCallsMergedIntoOneMessage()
+    {
+        var converted = ConvertFoldRequest(
+            AssistantTurnWithToolCallsRequest(), ProtocolConverter.Chat, preserveThinkingHistory: true);
+
+        var messages = List(converted, "messages").Select(Object).ToList();
+        Assert.Equal(
+            new[] { "user", "assistant", "tool", "tool" },
+            messages.Select(message => String(message, "role")));
+
+        var assistant = messages[1];
+        Assert.Equal("我先读这两个文件。", String(assistant, "content"));
+        Assert.Equal("先并行读两个文件", String(assistant, "reasoning_content"));
+        Assert.Equal(2, List(assistant, "tool_calls").Count);
+    }
+
+    [Fact]
+    public void ResponsesToChat_MergedAssistantKeepsToolCallPairing()
+    {
+        var converted = ConvertFoldRequest(
+            AssistantTurnWithToolCallsRequest(), ProtocolConverter.Chat, preserveThinkingHistory: false);
+
+        var messages = List(converted, "messages").Select(Object).ToList();
+        var assistant = messages[1];
+        Assert.False(assistant.ContainsKey("reasoning_content"), "preserve=false 时不应保留 reasoning_content");
+
+        var callIds = List(assistant, "tool_calls").Select(Object).Select(call => String(call, "id")).ToList();
+        var outputIds = messages
+            .Where(message => String(message, "role") == "tool")
+            .Select(message => String(message, "tool_call_id"))
+            .ToList();
+        Assert.Equal(new[] { "call_1", "call_2" }, callIds);
+        Assert.Equal(callIds, outputIds);
+    }
+
+    [Fact]
+    public void ResponsesToChat_ToolCallWithoutAssistantTextKeepsSingleMessage()
+    {
+        // 没有输出文本时，思考本来就折叠在工具调用消息上，合并逻辑不应额外改变结构。
+        var converted = ConvertFoldRequest(
+            ReasoningThenToolCallRequest(), ProtocolConverter.Chat, preserveThinkingHistory: true);
+
+        var messages = List(converted, "messages").Select(Object).ToList();
+        Assert.Equal(new[] { "user", "assistant", "tool" }, messages.Select(message => String(message, "role")));
+
+        var assistant = messages[1];
+        Assert.Equal("只读一个文件就够了", String(assistant, "reasoning_content"));
+        Assert.Single(List(assistant, "tool_calls"));
+    }
+
+    [Fact]
+    public void ResponsesToChat_SeparateTurnsAreNotMergedAcrossToolResults()
+    {
+        var converted = ConvertFoldRequest(
+            TwoAssistantTurnsWithToolCallsRequest(), ProtocolConverter.Chat, preserveThinkingHistory: true);
+
+        var messages = List(converted, "messages").Select(Object).ToList();
+        Assert.Equal(
+            new[] { "user", "assistant", "tool", "assistant", "tool" },
+            messages.Select(message => String(message, "role")));
+
+        Assert.Equal("第一轮", String(messages[1], "content"));
+        Assert.Single(List(messages[1], "tool_calls"));
+        Assert.Equal("第二轮", String(messages[3], "content"));
+        Assert.Single(List(messages[3], "tool_calls"));
+    }
+
+    [Fact]
+    public void ResponsesToMessages_MergedAssistantTurnKeepsTextBeforeToolUse()
+    {
+        var converted = ConvertFoldRequest(
+            AssistantTurnWithToolCallsRequest(), ProtocolConverter.Messages, preserveThinkingHistory: true);
+
+        var messages = List(converted, "messages").Select(Object).ToList();
+        Assert.Equal(
+            new[] { "user", "assistant", "user", "user" },
+            messages.Select(message => String(message, "role")));
+
+        // 思考文本块、正文、工具调用必须落在同一条 assistant 消息里且保持这个顺序。
+        var blockTypes = List(messages[1], "content").Select(Object).Select(block => String(block, "type")).ToList();
+        Assert.Equal(new[] { "text", "text", "tool_use", "tool_use" }, blockTypes);
+    }
+
+    /// <summary>
+    /// 一个完整 assistant 回合：思考、输出文本、两个并行 function_call 及其输出。
+    /// Responses 入口把它们存成彼此独立的 item。
+    /// </summary>
+    private static Dictionary<string, object?> AssistantTurnWithToolCallsRequest()
+    {
+        return new Dictionary<string, object?>
+        {
+            ["model"] = "public",
+            ["input"] = new List<object?>
+            {
+                ResponsesUserMessage("读两个文件"),
+                ResponsesReasoning("先并行读两个文件"),
+                ResponsesAssistantMessage("我先读这两个文件。"),
+                ResponsesFunctionCall("call_1", "README.md"),
+                ResponsesFunctionCall("call_2", "package.json"),
+                ResponsesFunctionCallOutput("call_1", "# Demo"),
+                ResponsesFunctionCallOutput("call_2", "{\"version\":\"2.4.1\"}")
+            }
+        };
+    }
+
+    private static Dictionary<string, object?> ReasoningThenToolCallRequest()
+    {
+        return new Dictionary<string, object?>
+        {
+            ["model"] = "public",
+            ["input"] = new List<object?>
+            {
+                ResponsesUserMessage("读一个文件"),
+                ResponsesReasoning("只读一个文件就够了"),
+                ResponsesFunctionCall("call_1", "README.md"),
+                ResponsesFunctionCallOutput("call_1", "# Demo")
+            }
+        };
+    }
+
+    private static Dictionary<string, object?> TwoAssistantTurnsWithToolCallsRequest()
+    {
+        return new Dictionary<string, object?>
+        {
+            ["model"] = "public",
+            ["input"] = new List<object?>
+            {
+                ResponsesUserMessage("分两步读"),
+                ResponsesAssistantMessage("第一轮"),
+                ResponsesFunctionCall("call_1", "README.md"),
+                ResponsesFunctionCallOutput("call_1", "# Demo"),
+                ResponsesAssistantMessage("第二轮"),
+                ResponsesFunctionCall("call_2", "package.json"),
+                ResponsesFunctionCallOutput("call_2", "{\"version\":\"2.4.1\"}")
+            }
+        };
+    }
+
+    private static Dictionary<string, object?> ResponsesUserMessage(string text)
+    {
+        return new Dictionary<string, object?>
+        {
+            ["type"] = "message",
+            ["role"] = "user",
+            ["content"] = new List<object?>
+            {
+                new Dictionary<string, object?> { ["type"] = "input_text", ["text"] = text }
+            }
+        };
+    }
+
+    private static Dictionary<string, object?> ResponsesAssistantMessage(string text)
+    {
+        return new Dictionary<string, object?>
+        {
+            ["type"] = "message",
+            ["role"] = "assistant",
+            ["content"] = new List<object?>
+            {
+                new Dictionary<string, object?> { ["type"] = "output_text", ["text"] = text }
+            }
+        };
+    }
+
+    private static Dictionary<string, object?> ResponsesReasoning(string summary)
+    {
+        return new Dictionary<string, object?>
+        {
+            ["type"] = "reasoning",
+            ["summary"] = new List<object?>
+            {
+                new Dictionary<string, object?> { ["type"] = "summary_text", ["text"] = summary }
+            },
+            ["status"] = "completed"
+        };
+    }
+
+    private static Dictionary<string, object?> ResponsesFunctionCall(string callId, string path)
+    {
+        return new Dictionary<string, object?>
+        {
+            ["type"] = "function_call",
+            ["call_id"] = callId,
+            ["name"] = "read_file",
+            ["arguments"] = "{\"path\":\"" + path + "\"}"
+        };
+    }
+
+    private static Dictionary<string, object?> ResponsesFunctionCallOutput(string callId, string output)
+    {
+        return new Dictionary<string, object?>
+        {
+            ["type"] = "function_call_output",
+            ["call_id"] = callId,
+            ["output"] = output
+        };
+    }
+
     private static Dictionary<string, object?> ReasoningOrphanRequest()
     {
         // reasoning 后面跟 user 消息，没有关联的 assistant，应被丢弃
