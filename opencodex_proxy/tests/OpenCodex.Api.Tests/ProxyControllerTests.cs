@@ -84,39 +84,77 @@ public sealed class ProxyControllerTests
     }
 
     [Fact]
-    public async Task Models_CodexClientHeader_ReturnsSamePayloadAsRegularClient()
+    public async Task Models_CodexClient_GetsGptTemplatesMergedWithCatalog()
     {
-        var expectedModels = new List<Dictionary<string, object?>>
+        var catalogModels = new List<Dictionary<string, object?>>
         {
             new()
             {
-                ["slug"] = "gpt-5.5"
+                ["slug"] = "gpt-5.5",
+                ["display_name"] = "GPT-5.5 (catalog)"
+            },
+            new()
+            {
+                ["slug"] = "claude-opus-5",
+                ["display_name"] = "Claude Opus 5"
             }
         };
+        var gptTemplateModels = new List<Dictionary<string, object?>>
+        {
+            new()
+            {
+                ["slug"] = "gpt-5.5",
+                ["display_name"] = "GPT-5.5 (template)",
+                ["context_window"] = 1000000
+            }
+        };
+        var codexModels = new StubCodexOfficialModelCatalogService(gptTemplateModels);
+
         var codexController = CreateController(
             new StubRequestBodyReader(CreateMessagesPayload(maxTokens: 4096)),
             new StubProxyEndpointService(),
             interceptProbeRequests: false,
-            modelCatalog: expectedModels);
+            modelCatalog: catalogModels,
+            codexModels: codexModels);
         codexController.HttpContext.Request.QueryString = QueryString.Create("client_version", "0.147.0");
 
         var codexAction = await codexController.Models();
         var codexResult = Assert.IsType<ObjectResult>(codexAction);
+        Assert.Equal(200, codexResult.StatusCode);
+        var codexPayload = Assert.IsType<Dictionary<string, object?>>(codexResult.Value);
+        Assert.Equal(1, codexPayload.Count);
+        Assert.True(codexPayload.ContainsKey("models"));
+        Assert.False(codexPayload.ContainsKey("object"));
+        Assert.False(codexPayload.ContainsKey("data"));
+
+        var codexModelsList = Assert.IsType<List<Dictionary<string, object?>>>(codexPayload["models"]);
+        var gpt55 = Assert.Single(codexModelsList, m =>
+        {
+            Assert.NotNull(m["slug"]);
+            return "gpt-5.5".Equals(m["slug"]);
+        });
+        Assert.Equal("GPT-5.5 (template)", gpt55["display_name"]);
+        Assert.Equal(1000000, gpt55["context_window"]);
+        var claude = Assert.Single(codexModelsList, m =>
+        {
+            Assert.NotNull(m["slug"]);
+            return "claude-opus-5".Equals(m["slug"]);
+        });
+        Assert.Equal("Claude Opus 5", claude["display_name"]);
 
         var regularController = CreateController(
             new StubRequestBodyReader(CreateMessagesPayload(maxTokens: 4096)),
             new StubProxyEndpointService(),
             interceptProbeRequests: false,
-            modelCatalog: expectedModels);
+            modelCatalog: catalogModels,
+            codexModels: codexModels);
         var regularAction = await regularController.Models();
         var regularResult = Assert.IsType<ObjectResult>(regularAction);
-
-        Assert.Equal(200, codexResult.StatusCode);
         Assert.Equal(200, regularResult.StatusCode);
-        var codexPayload = Assert.IsType<Dictionary<string, object?>>(codexResult.Value);
         var regularPayload = Assert.IsType<Dictionary<string, object?>>(regularResult.Value);
-        Assert.Equal(regularPayload, codexPayload);
-        Assert.Equal(expectedModels, codexPayload["models"]);
+        Assert.True(regularPayload.ContainsKey("object"));
+        Assert.True(regularPayload.ContainsKey("data"));
+        Assert.True(regularPayload.ContainsKey("models"));
     }
 
     private static ProxyController CreateController(
@@ -124,6 +162,7 @@ public sealed class ProxyControllerTests
         StubProxyEndpointService proxy,
         bool interceptProbeRequests,
         IReadOnlyList<Dictionary<string, object?>>? modelCatalog = null,
+        ICodexOfficialModelCatalogService? codexModels = null,
         IProxyLogService? logs = null)
     {
         var proxyService = new ProxyService(
@@ -132,6 +171,7 @@ public sealed class ProxyControllerTests
             new StubProxyRequestService(),
             new StubProxyRouteService(),
             new StubModelCatalogService(modelCatalog),
+            codexModels ?? new StubCodexOfficialModelCatalogService(),
             new StubProxySettingsService(interceptProbeRequests),
             logs ?? new StubProxyLogService());
         var controller = new ProxyController(proxyService)
@@ -144,6 +184,21 @@ public sealed class ProxyControllerTests
         controller.HttpContext.Request.Method = HttpMethods.Post;
         controller.HttpContext.Request.Path = "/v1/messages";
         return controller;
+    }
+
+    private sealed class StubCodexOfficialModelCatalogService : ICodexOfficialModelCatalogService
+    {
+        private readonly IReadOnlyList<Dictionary<string, object?>> _models;
+
+        public StubCodexOfficialModelCatalogService(IReadOnlyList<Dictionary<string, object?>>? models = null)
+        {
+            _models = models ?? [];
+        }
+
+        public IReadOnlyList<Dictionary<string, object?>> BuildCodexGptModels()
+        {
+            return _models;
+        }
     }
 
     private static Dictionary<string, object?> CreateMessagesPayload(int maxTokens)

@@ -19,6 +19,7 @@ public sealed class ProxyService : IProxyService
     private readonly IProxyRequestService _requests;
     private readonly IProxyRouteService _routes;
     private readonly IModelCatalogService _catalog;
+    private readonly ICodexOfficialModelCatalogService _codexModels;
     private readonly IProxySettingsService _proxySettings;
     private readonly IProxyLogService _logs;
 
@@ -28,6 +29,7 @@ public sealed class ProxyService : IProxyService
         IProxyRequestService requests,
         IProxyRouteService routes,
         IModelCatalogService catalog,
+        ICodexOfficialModelCatalogService codexModels,
         IProxySettingsService proxySettings,
         IProxyLogService logs)
     {
@@ -36,6 +38,7 @@ public sealed class ProxyService : IProxyService
         _requests = requests;
         _routes = routes;
         _catalog = catalog;
+        _codexModels = codexModels;
         _proxySettings = proxySettings;
         _logs = logs;
     }
@@ -46,6 +49,18 @@ public sealed class ProxyService : IProxyService
             RequestHeaders(request));
         var models = await _routes.ListModelCapabilitiesAsync(accessKey.OwnerUsername);
         var catalogModels = _catalog.BuildProxyModelCatalog(models);
+
+        if (IsCodexClient(request))
+        {
+            var merged = BuildCodexClientModels(catalogModels);
+            return StatusCodeResult(
+                response,
+                new Dictionary<string, object?>
+                {
+                    ["models"] = merged
+                });
+        }
+
         var openAiModels = catalogModels
             .Select(model => (object?)new Dictionary<string, object?>
             {
@@ -66,6 +81,33 @@ public sealed class ProxyService : IProxyService
         };
 
         return StatusCodeResult(response, payload);
+    }
+
+    private List<Dictionary<string, object?>> BuildCodexClientModels(
+        IReadOnlyList<Dictionary<string, object?>> catalogModels)
+    {
+        var gptModels = _codexModels.BuildCodexGptModels();
+        var gptSlugs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var gpt in gptModels)
+        {
+            if (gpt.TryGetValue("slug", out var value) && value is string slug)
+            {
+                gptSlugs.Add(slug);
+            }
+        }
+
+        var merged = new List<Dictionary<string, object?>>(gptModels);
+        foreach (var catalog in catalogModels)
+        {
+            if (catalog.TryGetValue("slug", out var value)
+                && value is string slug
+                && !gptSlugs.Contains(slug))
+            {
+                merged.Add(catalog);
+            }
+        }
+
+        return merged;
     }
 
     public async Task<IActionResult> ProxyAsync(
@@ -144,6 +186,17 @@ public sealed class ProxyService : IProxyService
         return request.Headers.TryGetValue("Authorization", out var values)
             ? values.ToString()
             : null;
+    }
+
+    private static bool IsCodexClient(HttpRequest request)
+    {
+        if (request.Query.ContainsKey("client_version"))
+        {
+            return true;
+        }
+
+        var userAgent = request.Headers.UserAgent.ToString();
+        return userAgent.Contains("codex", StringComparison.OrdinalIgnoreCase);
     }
 
     private static IActionResult StatusCodeResult(

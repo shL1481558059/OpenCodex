@@ -508,7 +508,7 @@
               />
             </el-form-item>
           </el-col>
-          <el-col v-if="channelDraft.type === 'messages'" :span="24">
+          <el-col v-if="supportsPreserveThinkingHistory(channelDraft.type)" :span="24">
             <el-form-item>
               <template #label>
                 <span class="form-label-with-tip">
@@ -523,9 +523,9 @@
                active-text="开启"
                inactive-text="关闭"
              />
-             <div class="text-muted" style="margin-top: 4px; font-size: 12px">
-               开启后会将对端 Anthropic thinking blocks（含签名）编码到 encrypted_content 字段，并在回传时恢复，确保交错思考上下文不丢失
-             </div>
+            <div class="text-muted" style="margin-top: 4px; font-size: 12px">
+              {{ preserveThinkingHistoryHint }}
+            </div>
            </el-form-item>
          </el-col>
           <el-col :span="12">
@@ -1768,6 +1768,11 @@ const bulkChannelTestDisabledReason = computed(() => {
 });
 const groupedChannelSections = computed(() => buildGroupedChannelSections(channels.value));
 const channelTestModelOptions = computed(() => normalizeModels(testingChannel.value?.models).map((item) => item.model));
+const preserveThinkingHistoryHint = computed(() =>
+  channelDraft.type === "chat"
+    ? "开启后会把历史思考文本作为 assistant.reasoning_content 随请求回传；DeepSeek 等模型在 thinking 模式下要求回传该字段，缺失会被上游拒绝"
+    : "开启后会将对端 Anthropic thinking blocks（含签名）编码到 encrypted_content 字段，并在回传时恢复，确保交错思考上下文不丢失"
+);
 const existingDiscoveredModelNames = computed(() => {
   const names = new Set();
   for (const item of normalizeModels(channelDraft.models)) {
@@ -3226,7 +3231,7 @@ function buildCompat() {
     enable_apply_patch_prompt_compat: supportsApplyPatchPromptCompat(channelDraft.type)
       ? compatTexts.enable_apply_patch_prompt_compat === true
       : false,
-    preserve_thinking_history: channelDraft.type === 'messages'
+    preserve_thinking_history: supportsPreserveThinkingHistory(channelDraft.type)
       ? compatTexts.preserve_thinking_history === true
       : false,
     rename_params: parseAssignmentMap(compatTexts.rename_params, false),
@@ -3252,6 +3257,10 @@ function buildCompat() {
 }
 
 function supportsApplyPatchPromptCompat(channelType) {
+  return channelType === "chat" || channelType === "messages";
+}
+
+function supportsPreserveThinkingHistory(channelType) {
   return channelType === "chat" || channelType === "messages";
 }
 

@@ -732,7 +732,7 @@ public sealed class ModelCatalogService : IModelCatalogService
                 Description = Normalize(request.Description),
                 MatchType = NormalizeMatchType(request.MatchType),
                 MatchPattern = NormalizeMatchPattern(request.MatchPattern, modelKey),
-                CatalogJson = SerializeObject(request.Catalog),
+                CatalogJson = SerializeObject(SyncCatalogIdentity(request.Catalog, modelKey, request.DisplayName)),
                 CapabilitiesJson = SerializeObject(request.Capabilities),
                 Enabled = request.Enabled,
                 Source = ModelCatalogSources.Manual,
@@ -784,7 +784,7 @@ public sealed class ModelCatalogService : IModelCatalogService
             model.Description = Normalize(request.Description);
             model.MatchType = NormalizeMatchType(request.MatchType);
             model.MatchPattern = NormalizeMatchPattern(request.MatchPattern, modelKey);
-            model.CatalogJson = SerializeObject(request.Catalog);
+            model.CatalogJson = SerializeObject(SyncCatalogIdentity(request.Catalog, modelKey, request.DisplayName));
             model.CapabilitiesJson = SerializeObject(request.Capabilities);
             model.Enabled = request.Enabled;
             model.Source = ModelCatalogSources.Manual;
@@ -1275,7 +1275,8 @@ public sealed class ModelCatalogService : IModelCatalogService
                model.Description = Normalize(transfer.Description);
                model.MatchType = NormalizeMatchType(transfer.MatchType);
                model.MatchPattern = NormalizeMatchPattern(transfer.MatchPattern, modelKey);
-               model.CatalogJson = SerializeObject(JsonRequestValue.Object(transfer.Catalog));
+               model.CatalogJson = SerializeObject(SyncCatalogIdentity(
+                    JsonRequestValue.Object(transfer.Catalog), modelKey, transfer.DisplayName));
                model.CapabilitiesJson = SerializeObject(JsonRequestValue.Object(transfer.Capabilities));
                // PreserveLocalEnabled: never overwrite enabled on existing models;
                // new models always take the remote enabled value.
@@ -2294,7 +2295,7 @@ public sealed class ModelCatalogService : IModelCatalogService
         model.Description = Normalize(request.Description);
         model.MatchType = NormalizeMatchType(request.MatchType);
         model.MatchPattern = NormalizeMatchPattern(request.MatchPattern, modelKey);
-        model.CatalogJson = SerializeObject(request.Catalog);
+        model.CatalogJson = SerializeObject(SyncCatalogIdentity(request.Catalog, modelKey, request.DisplayName));
         model.CapabilitiesJson = SerializeObject(request.Capabilities);
         model.Enabled = request.Enabled;
         model.Source = ModelCatalogSources.Manual;
@@ -2860,6 +2861,28 @@ public sealed class ModelCatalogService : IModelCatalogService
         return normalized.Length == 0 ? modelKey : normalized;
     }
 
+    /// <summary>
+    /// 同步 Catalog 中的模型身份字段，避免「显示名称」与 CatalogJson 各自维护而漂移。
+    /// </summary>
+    private static Dictionary<string, object?> SyncCatalogIdentity(
+        IReadOnlyDictionary<string, object?> catalog,
+        string modelKey,
+        string? displayName)
+    {
+        var merged = CloneDictionary(catalog);
+        if (merged.ContainsKey("display_name"))
+        {
+            merged["display_name"] = DisplayName(displayName, modelKey);
+        }
+
+        if (merged.ContainsKey("slug"))
+        {
+            merged["slug"] = modelKey;
+        }
+
+        return merged;
+    }
+
     private static decimal ValidatePrice(decimal value, string field)
     {
         if (value < 0)
@@ -3116,7 +3139,8 @@ public sealed class ModelCatalogService : IModelCatalogService
             || model.Description != Normalize(transfer.Description)
             || model.MatchType != NormalizeMatchType(transfer.MatchType)
             || model.MatchPattern != NormalizeMatchPattern(transfer.MatchPattern, model.ModelKey)
-            || model.CatalogJson != SerializeObject(JsonRequestValue.Object(transfer.Catalog))
+            || model.CatalogJson != SerializeObject(SyncCatalogIdentity(
+                JsonRequestValue.Object(transfer.Catalog), model.ModelKey, transfer.DisplayName))
             || model.CapabilitiesJson != SerializeObject(JsonRequestValue.Object(transfer.Capabilities))
             || model.Enabled != transfer.Enabled)
         {

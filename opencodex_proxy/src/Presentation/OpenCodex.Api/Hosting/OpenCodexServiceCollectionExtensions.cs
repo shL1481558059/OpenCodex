@@ -146,6 +146,7 @@ public static class OpenCodexServiceCollectionExtensions
             });
         services.AddSingleton<IOpenCodexRuntimeSettingsProvider, OpenCodexRuntimeSettingsProvider>();
         services.AddSingleton<IDesktopSystemSettingsStore, DesktopSystemSettingsStore>();
+        services.AddSingleton<ICodexOfficialModelCatalogService, CodexOfficialModelCatalogService>();
         services.AddScoped<IRequestBodyReader, RequestBodyReader>();
         services.AddScoped<IImageEditRequestService, ImageEditRequestService>();
         services.AddScoped<IWorkContext, WebWorkContext>();

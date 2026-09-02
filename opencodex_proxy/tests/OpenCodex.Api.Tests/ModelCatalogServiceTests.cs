@@ -163,6 +163,166 @@ public sealed class ModelCatalogServiceTests
     }
 
     [Fact]
+    public void UpdateModelSyncsCatalogDisplayNameAndSlugFromRequest()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+        }
+
+        var service = CreateService(dbPath);
+        var provider = service.CreateProvider(new ModelProviderUpsertRequest
+        {
+            Code = "cache-test",
+            Name = "Cache Test",
+            Enabled = true
+        });
+        Assert.True(provider.Succeeded);
+
+        var request = ModelRequest("sync-model", 1m);
+        request.DisplayName = "Old Name";
+        request.Catalog = new Dictionary<string, object?>
+        {
+            ["display_name"] = "Old Name",
+            ["slug"] = "sync-model"
+        };
+        var created = service.CreateModel(request);
+        Assert.True(created.Succeeded);
+        Assert.NotNull(created.Payload);
+
+        request.DisplayName = "New Name";
+        request.Catalog = new Dictionary<string, object?>
+        {
+            ["display_name"] = "Old Name",
+            ["slug"] = "sync-model"
+        };
+        var updated = service.UpdateModel(created.Payload!.Model.Id, request);
+        Assert.True(updated.Succeeded);
+
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            var model = context.ModelInfos.Single(item => item.ModelKey == "sync-model");
+            var catalog = JsonSerializer.Deserialize<Dictionary<string, object?>>(model.CatalogJson);
+            Assert.NotNull(catalog);
+            Assert.Equal("New Name", catalog["display_name"]?.ToString());
+            Assert.Equal("sync-model", catalog["slug"]?.ToString());
+        }
+    }
+
+    [Fact]
+    public void CreateModelSyncsCatalogDisplayNameAndSlugFromRequest()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+        }
+
+        var service = CreateService(dbPath);
+        var provider = service.CreateProvider(new ModelProviderUpsertRequest
+        {
+            Code = "cache-test",
+            Name = "Cache Test",
+            Enabled = true
+        });
+        Assert.True(provider.Succeeded);
+
+        var request = ModelRequest("create-sync-model", 1m);
+        request.DisplayName = "New Name";
+        request.Catalog = new Dictionary<string, object?>
+        {
+            ["display_name"] = "Old Name",
+            ["slug"] = "old-slug"
+        };
+        var created = service.CreateModel(request);
+        Assert.True(created.Succeeded);
+
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            var model = context.ModelInfos.Single(item => item.ModelKey == "create-sync-model");
+            var catalog = JsonSerializer.Deserialize<Dictionary<string, object?>>(model.CatalogJson);
+            Assert.NotNull(catalog);
+            Assert.Equal("New Name", catalog["display_name"]?.ToString());
+            Assert.Equal("create-sync-model", catalog["slug"]?.ToString());
+        }
+    }
+
+    [Fact]
+    public void ImportModelCatalogSyncsCatalogDisplayNameAndSlug()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+        }
+
+        var service = CreateService(dbPath);
+        var document = ImportPayload();
+        var model = Assert.Single(document.Models);
+        model.DisplayName = "New Name";
+        model.Catalog = new Dictionary<string, object?>
+        {
+            ["display_name"] = "Old Name",
+            ["slug"] = "old-slug"
+        };
+
+        var imported = service.ImportModelCatalog(document, dryRun: false);
+        Assert.True(imported.Succeeded);
+
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            var stored = context.ModelInfos.Single(item => item.ModelKey == "existing");
+            var catalog = JsonSerializer.Deserialize<Dictionary<string, object?>>(stored.CatalogJson);
+            Assert.NotNull(catalog);
+            Assert.Equal("New Name", catalog["display_name"]?.ToString());
+            Assert.Equal("existing", catalog["slug"]?.ToString());
+        }
+    }
+
+    [Fact]
+    public void UpsertChannelModelInfoSyncsCatalogDisplayNameAndSlug()
+    {
+        var dbPath = CreateDbPath();
+        var channelId = Guid.NewGuid();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddChannel(context, channelId, "test-channel", "upstream-model");
+            AddModel(context, provider.Id, "global-model", ModelMatchTypes.Exact, "upstream-model", 1m);
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath, new InMemoryCacheService());
+        var saved = service.UpsertChannelModelInfo(channelId, new ChannelModelInfoUpsertRequest
+        {
+            UpstreamModel = "upstream-model",
+            ProviderCode = "test",
+            ModelKey = "channel-model",
+            DisplayName = "New Name",
+            MatchType = ModelMatchTypes.Exact,
+            MatchPattern = "upstream-model",
+            Catalog = new Dictionary<string, object?>
+            {
+                ["display_name"] = "Old Name",
+                ["slug"] = "old-slug"
+            },
+            Capabilities = new Dictionary<string, object?> { ["supports_image"] = true }
+        });
+        Assert.True(saved.Succeeded);
+
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            var stored = context.ChannelModelInfos.Single(item => item.ChannelId == channelId);
+            var catalog = JsonSerializer.Deserialize<Dictionary<string, object?>>(stored.CatalogJson);
+            Assert.NotNull(catalog);
+            Assert.Equal("New Name", catalog["display_name"]?.ToString());
+            Assert.Equal("channel-model", catalog["slug"]?.ToString());
+        }
+    }
+
+    [Fact]
     public async Task RedisReconnectDoesNotRestoreStalePricingCache()
     {
         var dbPath = CreateDbPath();
