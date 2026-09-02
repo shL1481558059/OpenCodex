@@ -194,7 +194,7 @@ public sealed class ObservabilityAggregationSqlTests
         Assert.Equal(30, summary.Payload.InputTokens);
         Assert.Equal(2, summary.Payload.CachedTokens);
         Assert.Equal(13, summary.Payload.OutputTokens);
-        Assert.Equal(41, summary.Payload.TotalTokens);
+        Assert.Equal(43, summary.Payload.TotalTokens);
         Assert.Equal(2.0, summary.Payload.Cost, 6);
         // 主聚合、成功数聚合和两种币种成本聚合各执行 1 条 SQL。
         Assert.Equal(4, interceptor.SelectCount);

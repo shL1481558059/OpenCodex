@@ -223,7 +223,7 @@ public sealed class ObservabilityServiceTests
         var summary = stats.Payload!.Summary;
         Assert.Equal(1, summary.RequestCount);
         Assert.Equal(1, summary.SuccessCount);
-        Assert.Equal(140, summary.TotalTokens);
+        Assert.Equal(170, summary.TotalTokens);
         Assert.Equal(3.5d, summary.Cost, 6);
 
         var point = Assert.Single(

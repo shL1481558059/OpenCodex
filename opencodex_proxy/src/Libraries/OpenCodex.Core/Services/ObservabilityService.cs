@@ -1104,7 +1104,7 @@ public sealed class ObservabilityService : IObservabilityService
                     log.CreatedAt >= latestWindowStartTs && log.CreatedAt < effectiveEndTs),
                 LatestTokens = g.Sum(log =>
                     log.CreatedAt >= latestWindowStartTs && log.CreatedAt < effectiveEndTs
-                        ? log.InputTokens - log.CachedTokens + log.OutputTokens
+                        ? log.InputTokens + log.OutputTokens
                         : 0)
             })
             .FirstOrDefault();
@@ -1166,8 +1166,8 @@ public sealed class ObservabilityService : IObservabilityService
             row.InputTokens,
             row.CachedTokens,
             row.OutputTokens,
-            row.InputTokens - row.CachedTokens + row.OutputTokens,
-            row.RecentInputTokens - row.RecentCachedTokens + row.RecentOutputTokens,
+            row.InputTokens + row.OutputTokens,
+            row.RecentInputTokens + row.RecentOutputTokens,
             Math.Round(row.Cost, 6),
             Math.Round(row.RecentCost, 6),
             row.LatestWindowCount > 0
