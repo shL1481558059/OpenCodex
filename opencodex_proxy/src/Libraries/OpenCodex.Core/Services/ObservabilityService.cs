@@ -1078,24 +1078,24 @@ public sealed class ObservabilityService : IObservabilityService
             .Select(g => new
             {
                 RequestCount = g.Count(),
-                InputTokens = g.Sum(log => log.InputTokens),
-                CachedTokens = g.Sum(log => log.CachedTokens),
-                OutputTokens = g.Sum(log => log.OutputTokens),
+                InputTokens = g.Sum(log => (long)log.InputTokens),
+                CachedTokens = g.Sum(log => (long)log.CachedTokens),
+                OutputTokens = g.Sum(log => (long)log.OutputTokens),
                 Cost = g.Sum(log => log.Cost),
                 RecentRequestCount = g.Count(log =>
                     log.CreatedAt >= recentStartTs && log.CreatedAt < effectiveEndTs),
                 RecentInputTokens = g.Sum(log =>
                     log.CreatedAt >= recentStartTs && log.CreatedAt < effectiveEndTs
-                        ? log.InputTokens
-                        : 0),
+                        ? (long)log.InputTokens
+                        : 0L),
                 RecentCachedTokens = g.Sum(log =>
                     log.CreatedAt >= recentStartTs && log.CreatedAt < effectiveEndTs
-                        ? log.CachedTokens
-                        : 0),
+                        ? (long)log.CachedTokens
+                        : 0L),
                 RecentOutputTokens = g.Sum(log =>
                     log.CreatedAt >= recentStartTs && log.CreatedAt < effectiveEndTs
-                        ? log.OutputTokens
-                        : 0),
+                        ? (long)log.OutputTokens
+                        : 0L),
                 RecentCost = g.Sum(log =>
                     log.CreatedAt >= recentStartTs && log.CreatedAt < effectiveEndTs
                         ? log.Cost
@@ -1104,8 +1104,8 @@ public sealed class ObservabilityService : IObservabilityService
                     log.CreatedAt >= latestWindowStartTs && log.CreatedAt < effectiveEndTs),
                 LatestTokens = g.Sum(log =>
                     log.CreatedAt >= latestWindowStartTs && log.CreatedAt < effectiveEndTs
-                        ? log.InputTokens + log.OutputTokens
-                        : 0)
+                        ? (long)log.InputTokens + (long)log.OutputTokens
+                        : 0L)
             })
             .FirstOrDefault();
         if (row is null)
@@ -1201,9 +1201,9 @@ public sealed class ObservabilityService : IObservabilityService
                 Bucket = group.Key,
                 Count = group.Count(),
                 Cost = group.Sum(log => log.Cost),
-                InputTokens = group.Sum(log => log.InputTokens),
-                CachedTokens = group.Sum(log => log.CachedTokens),
-                OutputTokens = group.Sum(log => log.OutputTokens),
+                InputTokens = group.Sum(log => (long)log.InputTokens),
+                CachedTokens = group.Sum(log => (long)log.CachedTokens),
+                OutputTokens = group.Sum(log => (long)log.OutputTokens),
                 // 用 double 累加避免大桶内 TTFT 总和溢出 int，且与原内存 Average 的浮点语义一致。
                 TtftSum = group.Sum(log => log.TtftMs > 0 ? (double?)log.TtftMs : null),
                 TtftCount = group.Count(log => log.TtftMs > 0)

@@ -201,6 +201,72 @@ public sealed class ObservabilityAggregationSqlTests
     }
 
     [Fact]
+    public void AggregatedTokensBeyondInt32Range_ReturnFullValues()
+    {
+        var dbPath = NewDbPath();
+        using (var context = OpenCodexDbContextFactory.CreateSqlite($"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            SeedUser(context);
+            context.RequestLogs.AddRange(
+                new RequestLog
+                {
+                    Id = Guid.Parse("33333333-3333-3333-3333-333333335031"),
+                    RequestId = "req-token-overflow-1",
+                    CreatedAt = 1_700_000_010,
+                    RequestType = ProxyRequestTypes.Main,
+                    LifecycleStatus = ProxyRequestLifecycleStatus.Success,
+                    StatusCode = 200,
+                    OwnerUserId = AdminUserId,
+                    InputTokens = 1_500_000_000,
+                    CachedTokens = 100_000_000,
+                    OutputTokens = 1_500_000_000,
+                    Cost = 1
+                },
+                new RequestLog
+                {
+                    Id = Guid.Parse("33333333-3333-3333-3333-333333335032"),
+                    RequestId = "req-token-overflow-2",
+                    CreatedAt = 1_700_000_011,
+                    RequestType = ProxyRequestTypes.Main,
+                    LifecycleStatus = ProxyRequestLifecycleStatus.Success,
+                    StatusCode = 200,
+                    OwnerUserId = AdminUserId,
+                    InputTokens = 1_500_000_000,
+                    CachedTokens = 100_000_000,
+                    OutputTokens = 1_500_000_000,
+                    Cost = 1
+                });
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+        var filters = new Dictionary<string, object?>();
+        var summary = service.ReadStatsSummary(
+            "custom",
+            1_700_000_000,
+            1_700_000_120,
+            filters);
+        var timeseries = service.ReadStatsTimeseries(
+            "custom",
+            1_700_000_000,
+            1_700_000_120,
+            filters);
+
+        Assert.True(summary.Succeeded);
+        Assert.Equal(3_000_000_000L, summary.Payload!.InputTokens);
+        Assert.Equal(200_000_000L, summary.Payload.CachedTokens);
+        Assert.Equal(3_000_000_000L, summary.Payload.OutputTokens);
+        Assert.Equal(6_000_000_000L, summary.Payload.TotalTokens);
+
+        Assert.True(timeseries.Succeeded);
+        var point = Assert.Single(timeseries.Payload!, item => item.InputTokens > 0);
+        Assert.Equal(3_000_000_000L, point.InputTokens);
+        Assert.Equal(200_000_000L, point.CachedTokens);
+        Assert.Equal(3_000_000_000L, point.OutputTokens);
+    }
+
+    [Fact]
     public void Timeseries_PadsEmptyBucketsAndTtftOnlyCountsPositive()
     {
         var dbPath = NewDbPath();

@@ -14,9 +14,9 @@ namespace OpenCodex.CoreBase.DTOs;
 public sealed class StatsPointDto(
     string time,
     double cost,
-    int inputTokens,
-    int cachedTokens,
-    int outputTokens,
+    long inputTokens,
+    long cachedTokens,
+    long outputTokens,
     double? avgTtftMs,
     double? cacheHitRate,
     double rpm,
@@ -36,17 +36,17 @@ public sealed class StatsPointDto(
     /// <summary>
     /// 获取该时间桶内累计的输入 token 数。
     /// </summary>
-    public int InputTokens { get; } = inputTokens;
+    public long InputTokens { get; } = inputTokens;
 
     /// <summary>
     /// 获取该时间桶内累计的缓存输入 token 数。
     /// </summary>
-    public int CachedTokens { get; } = cachedTokens;
+    public long CachedTokens { get; } = cachedTokens;
 
     /// <summary>
     /// 获取该时间桶内累计的输出 token 数。
     /// </summary>
-    public int OutputTokens { get; } = outputTokens;
+    public long OutputTokens { get; } = outputTokens;
 
     /// <summary>
     /// 获取平均首 token 时间，单位为毫秒（如果可用）。
@@ -93,11 +93,11 @@ public sealed class StatsSummaryDto(
     int requestCount,
     int successCount,
     int recent1hRequestCount,
-    int inputTokens,
-    int cachedTokens,
-    int outputTokens,
-    int totalTokens,
-    int recent1hTokens,
+    long inputTokens,
+    long cachedTokens,
+    long outputTokens,
+    long totalTokens,
+    long recent1hTokens,
     double cost,
     double recent1hCost,
     double rpm,
@@ -125,27 +125,27 @@ public sealed class StatsSummaryDto(
     /// <summary>
     /// 获取总输入 token 数。
     /// </summary>
-    public int InputTokens { get; } = inputTokens;
+    public long InputTokens { get; } = inputTokens;
 
     /// <summary>
     /// 获取总缓存输入 token 数。
     /// </summary>
-    public int CachedTokens { get; } = cachedTokens;
+    public long CachedTokens { get; } = cachedTokens;
 
     /// <summary>
     /// 获取总输出 token 数。
     /// </summary>
-    public int OutputTokens { get; } = outputTokens;
+    public long OutputTokens { get; } = outputTokens;
 
     /// <summary>
     /// 获取总 token 数。
     /// </summary>
-    public int TotalTokens { get; } = totalTokens;
+    public long TotalTokens { get; } = totalTokens;
 
     /// <summary>
     /// 获取最近一小时 token 数。
     /// </summary>
-    public int Recent1hTokens { get; } = recent1hTokens;
+    public long Recent1hTokens { get; } = recent1hTokens;
 
     /// <summary>
     /// 获取总成本。

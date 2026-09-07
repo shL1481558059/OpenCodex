@@ -1211,11 +1211,11 @@ public sealed class StatsSummaryResponse
         int requestCount,
         int successCount,
         int recent1hRequestCount,
-        int inputTokens,
-        int cachedTokens,
-        int outputTokens,
-        int totalTokens,
-        int recent1hTokens,
+        long inputTokens,
+        long cachedTokens,
+        long outputTokens,
+        long totalTokens,
+        long recent1hTokens,
         double cost,
         double recent1hCost,
         double rpm,
@@ -1265,31 +1265,31 @@ public sealed class StatsSummaryResponse
     /// 获取输入令牌数。
     /// </summary>
     [JsonPropertyName("input_tokens")]
-    public int InputTokens { get; }
+    public long InputTokens { get; }
 
     /// <summary>
     /// 获取缓存令牌数。
     /// </summary>
     [JsonPropertyName("cached_tokens")]
-    public int CachedTokens { get; }
+    public long CachedTokens { get; }
 
     /// <summary>
     /// 获取输出令牌数。
     /// </summary>
     [JsonPropertyName("output_tokens")]
-    public int OutputTokens { get; }
+    public long OutputTokens { get; }
 
     /// <summary>
     /// 获取令牌总数。
     /// </summary>
     [JsonPropertyName("total_tokens")]
-    public int TotalTokens { get; }
+    public long TotalTokens { get; }
 
     /// <summary>
     /// 获取最近一小时令牌数。
     /// </summary>
     [JsonPropertyName("recent_1h_tokens")]
-    public int Recent1hTokens { get; }
+    public long Recent1hTokens { get; }
 
     /// <summary>
     /// 获取总成本。
@@ -1385,9 +1385,9 @@ public sealed class StatsPointResponse
     public StatsPointResponse(
         string time,
         double cost,
-        int inputTokens,
-        int cachedTokens,
-        int outputTokens,
+        long inputTokens,
+        long cachedTokens,
+        long outputTokens,
         double? avgTtftMs,
         double? cacheHitRate,
         double rpm,
@@ -1422,19 +1422,19 @@ public sealed class StatsPointResponse
     /// 获取输入令牌数。
     /// </summary>
     [JsonPropertyName("input_tokens")]
-    public int InputTokens { get; }
+    public long InputTokens { get; }
 
     /// <summary>
     /// 获取缓存令牌数。
     /// </summary>
     [JsonPropertyName("cached_tokens")]
-    public int CachedTokens { get; }
+    public long CachedTokens { get; }
 
     /// <summary>
     /// 获取输出令牌数。
     /// </summary>
     [JsonPropertyName("output_tokens")]
-    public int OutputTokens { get; }
+    public long OutputTokens { get; }
 
     /// <summary>
     /// 获取平均首字耗时毫秒数。
