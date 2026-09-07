@@ -34,6 +34,92 @@ public sealed class UpstreamStreamErrorRetryTests
         }
     }
 
+    private sealed class HangAfterSkeletonHandler : HttpMessageHandler
+    {
+        private int _calls;
+
+        public int CallCount => _calls;
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            _calls++;
+            if (_calls == 1)
+            {
+                var stream = new HangAfterWriteStream(
+                    """
+                    event: response.created
+                    event: response.in_progress
+
+                    """);
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StreamContent(stream)
+                };
+            }
+
+            var body = """
+                event: response.created
+                data: {"type":"response.created","response":{"id":"r2","status":"in_progress"}}
+
+                event: response.completed
+                data: {"type":"response.completed","response":{"id":"r2","status":"completed"}}
+
+                data: [DONE]
+
+                """;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "text/event-stream")
+            };
+        }
+    }
+
+    private sealed class HangAfterWriteStream : Stream
+    {
+        private readonly byte[] _prefix;
+        private int _position;
+
+        public HangAfterWriteStream(string prefix)
+        {
+            _prefix = Encoding.UTF8.GetBytes(prefix);
+        }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => _prefix.Length;
+        public override long Position { get => _position; set => throw new NotSupportedException(); }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            if (_position < _prefix.Length)
+            {
+                var remaining = _prefix.Length - _position;
+                var toCopy = Math.Min(remaining, buffer.Length);
+                _prefix.AsMemory(_position, toCopy).CopyTo(buffer);
+                _position += toCopy;
+                return toCopy;
+            }
+
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return 0;
+        }
+
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
     private static Dictionary<string, object?> ChatChannel(int retryCount) => new()
     {
         ["id"] = "test-channel",
@@ -41,6 +127,16 @@ public sealed class UpstreamStreamErrorRetryTests
         ["baseurl"] = "https://upstream.test/v1",
         ["auth_mode"] = "none",
         ["retry_count"] = retryCount
+    };
+
+    private static Dictionary<string, object?> TimeoutChannel(int retryCount) => new()
+    {
+        ["id"] = "test-channel",
+        ["type"] = "chat",
+        ["baseurl"] = "https://upstream.test/v1",
+        ["auth_mode"] = "none",
+        ["retry_count"] = retryCount,
+        ["timeout_seconds"] = 1
     };
 
     [Fact]
@@ -197,6 +293,165 @@ public sealed class UpstreamStreamErrorRetryTests
 
         Assert.Equal(1, handler.CallCount);
         Assert.Contains(lines, l => l.Contains("invalid_request_error"));
+    }
+
+    [Fact]
+    public async Task StreamJsonAsync_EmptySkeleton_RetriesAndSucceeds()
+    {
+        var handler = new SseHandler(
+            [
+                "event: response.created",
+                "event: response.in_progress",
+                ""
+            ],
+            [
+                "event: response.created",
+                """data: {"type":"response.created","response":{"id":"r1","status":"in_progress"}}""",
+                "",
+                "event: response.completed",
+                """data: {"type":"response.completed","response":{"id":"r1","status":"completed"}}""",
+                "",
+                "data: [DONE]",
+                ""
+            ]);
+        var upstream = new HttpUpstreamClient(new HttpClient(handler));
+
+        var lines = new List<string>();
+        await foreach (var line in upstream.StreamJsonAsync(
+            ChatChannel(retryCount: 2),
+            new Dictionary<string, object?> { ["model"] = "test" },
+            30,
+            CancellationToken.None))
+        {
+            lines.Add(line.TrimEnd('\n'));
+        }
+
+        Assert.Equal(2, handler.CallCount);
+        Assert.Contains(lines, l => l.Contains("response.completed"));
+        Assert.DoesNotContain(lines, l => l.Contains("upstream stream produced no content"));
+    }
+
+    [Fact]
+    public async Task StreamJsonAsync_ProductionSkeletonWithCreatedData_Retries()
+    {
+        var handler = new SseHandler(
+            [
+                "event: response.created",
+                """data: {"type":"response.created","response":{"id":"r1","status":"in_progress"}}""",
+                "",
+                "event: response.in_progress",
+                """data: {"type":"response.in_progress","response":{"id":"r1","status":"in_progress"}}""",
+                ""
+            ],
+            [
+                "event: response.created",
+                """data: {"type":"response.created","response":{"id":"r2","status":"in_progress"}}""",
+                "",
+                "event: response.completed",
+                """data: {"type":"response.completed","response":{"id":"r2","status":"completed"}}""",
+                "",
+                "data: [DONE]",
+                ""
+            ]);
+        var upstream = new HttpUpstreamClient(new HttpClient(handler));
+
+        var lines = new List<string>();
+        await foreach (var line in upstream.StreamJsonAsync(
+            ChatChannel(retryCount: 1),
+            new Dictionary<string, object?> { ["model"] = "test" },
+            30,
+            CancellationToken.None))
+        {
+            lines.Add(line.TrimEnd('\n'));
+        }
+
+        Assert.Equal(2, handler.CallCount);
+        Assert.Contains(lines, l => l.Contains("response.completed"));
+    }
+
+    [Fact]
+    public async Task StreamJsonAsync_StreamWithOutputItem_DoesNotRetryAsEmptySkeleton()
+    {
+        var handler = new SseHandler(
+            [
+                "event: response.created",
+                """data: {"type":"response.created","response":{"id":"r1","status":"in_progress"}}""",
+                "",
+                "event: response.output_item.added",
+                """data: {"type":"response.output_item.added","item":{"id":"item-1","type":"reasoning","content":[]}}""",
+                ""
+            ]);
+        var upstream = new HttpUpstreamClient(new HttpClient(handler));
+
+        var lines = new List<string>();
+        await foreach (var line in upstream.StreamJsonAsync(
+            ChatChannel(retryCount: 1),
+            new Dictionary<string, object?> { ["model"] = "test" },
+            30,
+            CancellationToken.None))
+        {
+            lines.Add(line.TrimEnd('\n'));
+        }
+
+        Assert.Equal(1, handler.CallCount);
+        Assert.Contains(lines, l => l.Contains("response.output_item.added"));
+    }
+
+    [Fact]
+    public async Task StreamJsonAsync_EmptySkeleton_RetriesExhausted_ThrowsUpstreamException()
+    {
+        var handler = new SseHandler(
+            [
+                "event: response.created",
+                "event: response.in_progress",
+                ""
+            ],
+            [
+                "event: response.created",
+                "event: response.in_progress",
+                ""
+            ],
+            [
+                "event: response.created",
+                "event: response.in_progress",
+                ""
+            ]);
+        var upstream = new HttpUpstreamClient(new HttpClient(handler));
+
+        var ex = await Assert.ThrowsAsync<UpstreamException>(async () =>
+        {
+            await foreach (var _ in upstream.StreamJsonAsync(
+                ChatChannel(retryCount: 2),
+                new Dictionary<string, object?> { ["model"] = "test" },
+                30,
+                CancellationToken.None))
+            {
+            }
+        });
+
+        Assert.Equal(3, handler.CallCount);
+        Assert.Equal(ProxyHttpStatus.BadGateway, ex.StatusCode);
+        Assert.Equal("upstream stream produced no content", ex.Message);
+    }
+
+    [Fact]
+    public async Task StreamJsonAsync_HangingSkeleton_TimesOutAndRetries()
+    {
+        var handler = new HangAfterSkeletonHandler();
+        var upstream = new HttpUpstreamClient(new HttpClient(handler));
+
+        var lines = new List<string>();
+        await foreach (var line in upstream.StreamJsonAsync(
+            TimeoutChannel(retryCount: 1),
+            new Dictionary<string, object?> { ["model"] = "test" },
+            30,
+            CancellationToken.None))
+        {
+            lines.Add(line.TrimEnd('\n'));
+        }
+
+        Assert.Equal(2, handler.CallCount);
+        Assert.Contains(lines, l => l.Contains("response.completed"));
     }
 
     [Fact]

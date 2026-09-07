@@ -536,6 +536,63 @@ public sealed class ProxyEndpointServiceTests
     }
 
     [Fact]
+    public async Task ProxyAsync_EmptySkeletonStream_ThrowsRetryableUpstreamAndFailsOver()
+    {
+        var capacity = new ChannelCapacityService();
+        var primary = CreateChannel("primary", priority: 0, capacity: 1);
+        var secondary = CreateChannel("secondary", priority: 1, capacity: 1);
+        var attempts = new List<string>();
+        var streams = new StubProxyStreamService(async context =>
+        {
+            attempts.Add(context.ChannelId);
+            if (context.ChannelId == "primary")
+            {
+                throw new UpstreamException(
+                    "upstream stream produced no content",
+                    ProxyHttpStatus.BadGateway,
+                    channelId: "primary");
+            }
+
+            await context.StreamWriter.WriteLinesAsync(
+                ToAsyncEnumerable(
+                    "event: response.created",
+                    """
+                    data: {"type":"response.created","response":{"id":"r2","status":"in_progress"}}
+                    """,
+                    "",
+                    "event: response.completed",
+                    """
+                    data: {"type":"response.completed","response":{"id":"r2","status":"completed"}}
+                    """,
+                    "",
+                    "data: [DONE]",
+                    ""),
+                static _ => true,
+                static () => 1,
+                CancellationToken.None);
+        });
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService(
+            [
+                CreateRoute(primary, "shared-model", "upstream-primary"),
+                CreateRoute(secondary, "shared-model", "upstream-secondary")
+            ]),
+            streams: streams);
+
+        var payload = CreateChatPayload("shared-model");
+        payload["stream"] = true;
+        var writer = new RecordingProxyStreamWriter();
+        var result = await service.ProxyAsync(CreateChatContext(payload, writer));
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.True(result.IsEmpty);
+        Assert.Equal(["primary", "secondary"], attempts);
+        Assert.Contains(writer.WrittenLines, line => line.Contains("response.completed", StringComparison.Ordinal));
+        Assert.DoesNotContain(writer.WrittenLines, line => line.Contains("upstream stream produced no content", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task ProxyAsync_StreamAllCandidatesFail_DoesNotPrepareSseAndReturnsJsonError()
     {
         var capacity = new ChannelCapacityService();
