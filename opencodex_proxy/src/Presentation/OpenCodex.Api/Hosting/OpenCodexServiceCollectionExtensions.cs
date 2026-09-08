@@ -123,13 +123,28 @@ public static class OpenCodexServiceCollectionExtensions
                 EnableMultipleHttp2Connections = true
             });
         
-        services.AddHttpClient<IWebSearchClient, TavilyWebSearchClient>()
+        services.AddHttpClient<TavilyWebSearchClient>()
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {
                 PooledConnectionLifetime = TimeSpan.FromMinutes(10),
                 PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
                 MaxConnectionsPerServer = 50
             });
+
+        services.AddHttpClient<KeenableWebSearchClient>()
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
+                MaxConnectionsPerServer = 50
+            });
+
+        services.AddScoped<IWebSearchClient>(serviceProvider =>
+        {
+            var tavilyClient = serviceProvider.GetRequiredService<TavilyWebSearchClient>();
+            var keenableClient = serviceProvider.GetRequiredService<KeenableWebSearchClient>();
+            return new WebSearchClientRouter(tavilyClient, keenableClient);
+        });
 
         // Model catalog sync: independent HttpClient with 60s timeout,
         // automatic decompression, max 3 redirects, 5MB response cap.

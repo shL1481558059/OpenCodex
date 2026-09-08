@@ -243,7 +243,7 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 
 ### B.7 Web Search 与模型目录的过度泛化
 
-- **Web Search Provider**：`WebSearchService.WebSearchProviders` 当前只有 `tavily`，客户端也只有 `TavilyWebSearchClient`；前后端仍维护 provider 列表、归一化、选择器、兼容字段和 `(provider, key)` 合并逻辑。若近期无第二家供应商，可固定 Tavily，保留 `IWebSearchClient` 作为测试边界。
+- **Web Search Provider**：`WebSearchService.WebSearchProviders` 当前支持 `tavily` 和 `keenable`，客户端由 `WebSearchClientRouter` 按 provider 分发到 `TavilyWebSearchClient` / `KeenableWebSearchClient`；前后端仍维护 provider 列表、归一化、选择器、兼容字段和 `(provider, key)` 合并逻辑。若近期不确定是否继续新增供应商，可先保留现有 registry/路由结构和 `IWebSearchClient` 测试边界。
 - **全局/渠道定价表单重复**：`Pricing.vue` 与 `Channels.vue` 分别维护 provider、model_key、match_type/pattern、capabilities、Catalog JSON 和四类计费规则。后端确实支持 `ChannelModelInfo` 覆盖，不能直接删除渠道级数据；应先确认使用率，再选择“渠道仅覆盖价格/继承全局元数据”或抽共享组件。
 - **Catalog JSON 任意编辑**：字段用于 `/models` 元数据，不是死字段，但任意 JSON 编辑器误配面大。优先改为白名单字段或只读展示，不要误删后端存储。
 - **前端低收益实现**：`Pricing.vue` 分页是全量拉取后前端切片，内置目录当前约 17 个模型；规模不大时可删除分页状态。Web Search 同时维护 `usage_limit`/`key_usage_limit` 兼容字段，旧导入格式确认淘汰后可在 API 边界统一。
@@ -541,7 +541,7 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 2. **修复 `/images` 的错误语义**：不能在现有 `ImagesController` 上简单加 feature flag，因为构造注入仍会先解析缺失的 `IProxyImagesEndpointService`。若决定下线，应替换为不依赖业务服务的 `RetiredImagesController`/中间件并返回统一 `410 Gone`；若需要保留“未实现”语义则返回 `501`。响应带 `Deprecation`、`Sunset` 和迁移文档链接，确保不再出现 500。最终删除时再移除 Controller、图片渠道校验、`channelImagesState`、历史配置迁移和所有 `images` 引用。
 3. **收敛 `/pricing`**：legacy seed、全量重写、远端拉取和新目录迁移已停止。剩余 `/pricing` CRUD 仅作兼容保留，不影响实际代理计费；连续一个保留窗口无外部调用后，再删除 `PricingController`、`ModelPricingService`、旧 DTO、`OpenCodexPricing` 和旧表。
 4. **收敛 Dashboard 实时卡片**：若无实时运维刚需，删除队列/错误两张卡片、伪 SSE、仅供它们使用的查询链和测试；若必须保留，新增单一低频 GET + 前端轮询，不同时维护 SSE 和轮询两套状态机。
-5. **迁移低价值管理台便利层**：保留单渠道测试、模型发现和渠道 CRUD；在使用率确认后删除批量测试、批量编辑、归并视图和未使用的路由前缀别名。Web Search 近期只有 Tavily 时，在 API 边界固定 provider，保留接口作为测试边界，不提前为第二家供应商维护整套泛化字段。
+5. **迁移低价值管理台便利层**：保留单渠道测试、模型发现和渠道 CRUD；在使用率确认后删除批量测试、批量编辑、归并视图和未使用的路由前缀别名。Web Search 当前支持 Tavily/Keenable，在 API 边界仍应保留 provider 白名单和 `IWebSearchClient` 测试边界，不提前为更多供应商维护整套泛化字段。
 6. **执行扩展→回填→切换→收缩**：先加新字段/marker 和兼容读取，再批量回填并校验计数/哈希，切换代码只读新结构，保留旧列一个版本，最后为 SQLite/Postgres 分别提交删列/删表 migration。生产回滚以备份/旧镜像为准，不把 EF `Down()` 当唯一回滚手段。
 7. **完成密钥与日志的目标态迁移**：`AccessApiKey` 可保持现有 hash 认证并改为 hash-only；渠道 API key、Tavily key 和需回调上游的敏感 headers 必须使用可逆密文或 `secret_ref`，不能套用不可逆 hash。GET/list 永不返回原文，create/rotate 只一次性返回；更新时缺失或 `null` 表示保持旧值，只有显式 rotate/clear 才改变秘密；`/web-search` 测试响应也不得回传 key。导出默认 metadata-only，必要时使用版本化、单独口令加密的 bundle，并支持 dry-run、冲突预览和审计。迁移顺序固定为“备份/轮换 → 双读回填 → 抽样解密验证 → 清空 `KeyPlaintext`/历史导出副本 → 保留一个版本 → 删除旧列”。
 
@@ -733,7 +733,7 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 
 ### F.13 B.7 与 1.2：Web Search Provider、`simulate` 和模型目录泛化
 
-**背景与原因**：实际 provider 只有 Tavily，但前后端维护多 provider 选择/兼容字段；`simulate` 远端确有配置和日志，不能顺手删除。`Pricing.vue`/`Channels.vue` 重复编辑模型、能力、四类价格和任意 Catalog JSON；渠道级覆盖确有读取点，Codex 官方目录又是约 258 KB 的客户端专用静态资产。根因是未来需求泛化先于实际供应商/模型规模。
+**背景与原因**：实际 provider 是 Tavily/Keenable，前后端维护多 provider 选择/兼容字段；`simulate` 远端确有配置和日志，不能顺手删除。`Pricing.vue`/`Channels.vue` 重复编辑模型、能力、四类价格和任意 Catalog JSON；渠道级覆盖确有读取点，Codex 官方目录又是约 258 KB 的客户端专用静态资产。根因是未来需求泛化先于实际供应商/模型规模。
 
 - **方案 A（近期无第二 provider 时推荐）**：API 边界只接受/规范化 Tavily，未知 provider 明确拒绝，不立即删除实体列；保留 `IWebSearchClient` 测试边界，压缩兼容字段，Catalog JSON 改白名单/只读，Codex 目录按 UA/client_version 懒加载。`simulate` 单独保留并加 allowlist、搜索/迭代/耗时上限和最小脱敏日志。优点是风险低、与事实一致；缺点是未来接第二 provider 需再扩展。
 - **方案 B（确定多 provider/多租户需求时）**：建立 provider registry/descriptor 和 schema 驱动表单，每家 adapter 独立处理能力、错误和 secret_ref；共享 ModelEditor，明确 global 与 channel override；`simulate` 保留为独立策略接口并统一流/非流状态机。优点是新增 provider 不复制整链；缺点是注册表/schema 本身增加复杂度。验收 fake provider contract、未注册 provider 拒绝、密钥不出 DTO/日志、模型覆盖优先级矩阵全绿。

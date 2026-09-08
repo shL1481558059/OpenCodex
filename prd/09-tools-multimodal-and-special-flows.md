@@ -164,13 +164,15 @@ sequenceDiagram
 
 ### 6.1 模式
 
-| 模式 | 行为 | 是否调用 Tavily |
+当前 Web Search 支持 Tavily 与 Keenable 两类搜索 provider，`simulate` 模式按配置的 provider 选择对应 Key 执行。
+
+| 模式 | 行为 | 是否调用搜索 provider |
 |---|---|---:|
 | `convert` | 保留/转换 `web_search` 工具，交给上游模型或上游工具链 | 否（OpenCodex 不主动搜索） |
-| `simulate` | 拦截模型的 `web_search` 调用，选择 Tavily Key 执行，再继续模型请求 | 是 |
+| `simulate` | 拦截模型的 `web_search` 调用，选择 Tavily/Keenable Key 执行，再继续模型请求 | 是 |
 | `disabled` | 删除 Web Search 工具及关联 `tool_choice`/`include` | 否 |
 
-当前模拟范围不是所有请求：只有 **Responses 入口 + Chat/Messages 渠道 + 访问 Key 所属用户角色为 `superadmin` + 请求声明 `type=web_search` + 全局模式为 `simulate`** 时才进入本地模拟。普通用户拥有的访问 Key 即使处于全局 `simulate` 模式，也不会执行 Tavily 模拟。
+当前模拟范围不是所有请求：只有 **Responses 入口 + Chat/Messages 渠道 + 访问 Key 所属用户角色为 `superadmin` + 请求声明 `type=web_search` + 全局模式为 `simulate`** 时才进入本地模拟。普通用户拥有的访问 Key 即使处于全局 `simulate` 模式，也不会执行搜索 provider 模拟。
 
 ### 6.2 请求策略
 

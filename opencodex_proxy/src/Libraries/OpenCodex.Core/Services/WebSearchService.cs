@@ -18,7 +18,8 @@ public sealed class WebSearchService : IWebSearchService
 
     private static readonly HashSet<string> WebSearchProviders = new(StringComparer.Ordinal)
     {
-        "tavily"
+        "tavily",
+        "keenable"
     };
 
     private readonly IWebSearchClient _webSearchClient;

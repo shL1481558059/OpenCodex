@@ -6,7 +6,7 @@ Web Search 的运行模式保存在 `WebSearchSettings.Mode`，合法值：
 
 | 模式 | 常量 | 行为 |
 |---|---|---|
-| 模拟 | `simulate` | 代理拦截模型产生的 `web_search` 工具调用，使用 Tavily Key 搜索，再把结果作为工具结果续轮提交给上游模型 |
+| 模拟 | `simulate` | 代理拦截模型产生的 `web_search` 工具调用，使用 Tavily/Keenable Key 搜索，再把结果作为工具结果续轮提交给上游模型 |
 | 转换 | `convert` | 不在代理内执行搜索；`web_search` 像其他 Responses 工具一样转换给目标协议/上游 |
 | 关闭 | `disabled` | 请求发送前移除 Web Search 工具、相关 tool choice 和 include |
 
@@ -206,9 +206,9 @@ content[type=tool_use]
 
 ---
 
-## 8. Tavily Key 预留
+## 8. Web Search Key 预留
 
-`ReserveTavilyKey` 从数据库选择：
+`ReserveTavilyKey` 从数据库选择（provider 可以是 `tavily` 或 `keenable`）：
 
 ```text
 Enabled == true

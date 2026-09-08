@@ -257,7 +257,7 @@ import { ref, reactive, computed, onMounted } from "vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
 import { Delete, Download, Edit, Plus, Refresh, Upload } from "@element-plus/icons-vue";
 
-const WEB_SEARCH_PROVIDER_LABELS = { tavily: "Tavily" };
+const WEB_SEARCH_PROVIDER_LABELS = { tavily: "Tavily", keenable: "Keenable" };
 const WEB_SEARCH_MODES = new Set(["simulate", "convert", "disabled"]);
 const WEB_SEARCH_MODE_LABELS = {
   simulate: "模拟",
