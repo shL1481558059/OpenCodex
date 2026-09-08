@@ -226,11 +226,11 @@ public sealed partial class HttpUpstreamClient
             try
             {
                 using var document = JsonDocument.Parse(json);
-                if (TryGetRetryableErrorFromElement(document.RootElement) is { } retryable)
+                if (TryGetStreamErrorFromElement(document.RootElement) is { } streamError)
                 {
                     return new StreamProbeResult
                     {
-                        Retryable = (retryable.Message, FromJsonElement(document.RootElement))
+                        Retryable = (streamError.Message, streamError.Body)
                     };
                 }
 
@@ -252,6 +252,40 @@ public sealed partial class HttpUpstreamClient
                 return new StreamProbeResult { EmptySkeleton = false };
             }
         }
+    }
+
+    // 流首探测时尚未向客户端输出正文：任何 {"type":"error",...} 都视为可重试错误，
+    // 与内层 error.type 无关。非流式路径仍走 TryGetRetryableErrorFromElement 的白名单。
+    private static (string Message, object? Body)? TryGetStreamErrorFromElement(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (!root.TryGetProperty("type", out var typeElement)
+            || typeElement.ValueKind != JsonValueKind.String
+            || !string.Equals(typeElement.GetString(), "error", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        if (!root.TryGetProperty("error", out var errorElement)
+            || errorElement.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var errorType = errorElement.TryGetProperty("type", out var errorTypeElement)
+            && errorTypeElement.ValueKind == JsonValueKind.String
+            ? errorTypeElement.GetString()
+            : null;
+        var message = errorElement.TryGetProperty("message", out var messageElement)
+            && messageElement.ValueKind == JsonValueKind.String
+            ? messageElement.GetString()
+            : null;
+
+        return (message ?? errorType ?? "error", FromJsonElement(root));
     }
 
     private sealed class StreamProbeResult

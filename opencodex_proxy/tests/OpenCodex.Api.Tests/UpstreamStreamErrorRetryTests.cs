@@ -270,12 +270,19 @@ public sealed class UpstreamStreamErrorRetryTests
     }
 
     [Fact]
-    public async Task StreamJsonAsync_NonRetryableError_NotRetried_TransparentToClient()
+    public async Task StreamJsonAsync_AnyStreamError_RetriesAndSucceedsOnSecondAttempt()
     {
-        // invalid_request_error 不在可重试列表中，应原样透传给客户端
+        // 流首出现的任意 {"type":"error",...} 都应在未输出正文前静默重试，
+        // 不再依赖内层 error.type 白名单。
         var handler = new SseHandler(
             [
                 """data: {"type":"error","error":{"type":"invalid_request_error","message":"bad request"}}""",
+                ""
+            ],
+            [
+                """data: {"id":"chatcmpl-3","object":"chat.completion.chunk","choices":[{"delta":{"content":"ok"}}]}""",
+                "",
+                "data: [DONE]",
                 ""
             ]
         );
@@ -291,8 +298,104 @@ public sealed class UpstreamStreamErrorRetryTests
             lines.Add(line.TrimEnd('\n'));
         }
 
-        Assert.Equal(1, handler.CallCount);
-        Assert.Contains(lines, l => l.Contains("invalid_request_error"));
+        Assert.Equal(2, handler.CallCount);
+        Assert.DoesNotContain(lines, l => l.Contains("invalid_request_error"));
+        Assert.Contains(lines, l => l.Contains("chatcmpl-3"));
+    }
+
+    [Fact]
+    public async Task StreamJsonAsync_ServerError_RetriesAndSucceedsOnSecondAttempt()
+    {
+        var handler = new SseHandler(
+            [
+                """data: {"type":"error","error":{"type":"server_error","message":"server boom"}}""",
+                ""
+            ],
+            [
+                """data: {"id":"chatcmpl-4","object":"chat.completion.chunk","choices":[{"delta":{"content":"ok"}}]}""",
+                "",
+                "data: [DONE]",
+                ""
+            ]
+        );
+        var upstream = new HttpUpstreamClient(new HttpClient(handler));
+
+        var lines = new List<string>();
+        await foreach (var line in upstream.StreamJsonAsync(
+            ChatChannel(retryCount: 2),
+            new Dictionary<string, object?> { ["model"] = "test" },
+            30,
+            CancellationToken.None))
+        {
+            lines.Add(line.TrimEnd('\n'));
+        }
+
+        Assert.Equal(2, handler.CallCount);
+        Assert.DoesNotContain(lines, l => l.Contains("server_error"));
+        Assert.Contains(lines, l => l.Contains("chatcmpl-4"));
+    }
+
+    [Fact]
+    public async Task StreamJsonAsync_TooManyRequestsError_RetriesAndSucceedsOnSecondAttempt()
+    {
+        var handler = new SseHandler(
+            [
+                """data: {"type":"error","error":{"type":"too_many_requests","message":"peak load"}}""",
+                ""
+            ],
+            [
+                """data: {"id":"chatcmpl-5","object":"chat.completion.chunk","choices":[{"delta":{"content":"ok"}}]}""",
+                "",
+                "data: [DONE]",
+                ""
+            ]
+        );
+        var upstream = new HttpUpstreamClient(new HttpClient(handler));
+
+        var lines = new List<string>();
+        await foreach (var line in upstream.StreamJsonAsync(
+            ChatChannel(retryCount: 2),
+            new Dictionary<string, object?> { ["model"] = "test" },
+            30,
+            CancellationToken.None))
+        {
+            lines.Add(line.TrimEnd('\n'));
+        }
+
+        Assert.Equal(2, handler.CallCount);
+        Assert.DoesNotContain(lines, l => l.Contains("too_many_requests"));
+        Assert.Contains(lines, l => l.Contains("chatcmpl-5"));
+    }
+
+    [Fact]
+    public async Task StreamJsonAsync_AnyStreamError_RetriesExhausted_ThrowsUpstreamException()
+    {
+        var handler = new SseHandler(
+            [
+                """data: {"type":"error","error":{"type":"server_error","message":"server boom"}}""",
+                ""
+            ],
+            [
+                """data: {"type":"error","error":{"type":"server_error","message":"server boom"}}""",
+                ""
+            ]
+        );
+        var upstream = new HttpUpstreamClient(new HttpClient(handler));
+
+        var ex = await Assert.ThrowsAsync<UpstreamException>(async () =>
+        {
+            await foreach (var _ in upstream.StreamJsonAsync(
+                ChatChannel(retryCount: 1),
+                new Dictionary<string, object?> { ["model"] = "test" },
+                30,
+                CancellationToken.None))
+            {
+            }
+        });
+
+        Assert.Equal(2, handler.CallCount);
+        Assert.Equal(ProxyHttpStatus.TooManyRequests, ex.StatusCode);
+        Assert.Contains("server boom", ex.Message);
     }
 
     [Fact]
