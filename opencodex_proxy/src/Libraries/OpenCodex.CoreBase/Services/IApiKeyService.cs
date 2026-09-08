@@ -1,5 +1,6 @@
 using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.DTOs.ApiKeys;
+using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.Results;
 
 namespace OpenCodex.CoreBase.Services;
@@ -15,6 +16,15 @@ public interface IApiKeyService
     /// <param name="requestedOwnerUsername">请求查看的拥有者用户名；为空时按当前用户上下文处理。</param>
     /// <returns>访问密钥列表结果。</returns>
     ApiOpResult<ApiKeysResponse> ListKeys(
+        string? requestedOwnerUsername);
+
+    /// <summary>
+    /// 读取访问密钥下拉选项，供日志筛选等轻量场景使用。
+    /// </summary>
+    /// <param name="query">按密钥名称过滤的可选关键字。</param>
+    /// <param name="requestedOwnerUsername">请求查看的拥有者用户名；为空时按当前用户上下文处理。</param>
+    ApiOpResult<IReadOnlyList<SelectOption<Guid>>> ListApiKeySelectOptions(
+        string? query,
         string? requestedOwnerUsername);
 
     /// <summary>

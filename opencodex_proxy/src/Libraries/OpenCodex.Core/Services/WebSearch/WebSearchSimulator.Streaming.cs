@@ -1,4 +1,5 @@
 using OpenCodex.Core.Protocols;
+using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.WebSearch;
 using OpenCodex.CoreBase.Services.WebSearch;
@@ -40,6 +41,7 @@ public sealed partial class WebSearchSimulator
             var converted = new ConvertedStreamResult { TextFormat = textFormat, ToolCallMappings = toolCallMappings };
             var lines = _upstream.StreamJsonAsync(channel, requestPayload, defaultTimeout, cancellationToken);
             lines = CaptureUpstreamLines(lines, streamCapture);
+            lines = await UpstreamStreamPrimer.PrimeAsync(lines, cancellationToken);
             var events = new List<string>();
             var convertedLines = protocol == ProtocolConverter.Messages
                 ? SseStreamConverter.MessagesToResponsesEvents(
@@ -177,6 +179,7 @@ public sealed partial class WebSearchSimulator
             converted = new ConvertedStreamResult { TextFormat = textFormat, ToolCallMappings = toolCallMappings };
             lines = _upstream.StreamJsonAsync(channel, requestPayload, defaultTimeout, cancellationToken);
             lines = CaptureUpstreamLines(lines, streamCapture);
+            lines = await UpstreamStreamPrimer.PrimeAsync(lines, cancellationToken);
             events = [];
             convertedLines = protocol == ProtocolConverter.Messages
                 ? SseStreamConverter.MessagesToResponsesEvents(

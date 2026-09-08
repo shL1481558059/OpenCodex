@@ -365,6 +365,11 @@ public sealed class ProxyControllerTests
             return ApiOpResult<ModelInfoListResponse>.Succeed(new ModelInfoListResponse([]));
         }
 
+        public ApiOpResult<IReadOnlyList<SelectOption<string>>> ListModelSelectOptions(string? query)
+        {
+            return ApiOpResult<IReadOnlyList<SelectOption<string>>>.Succeed([]);
+        }
+
         public IReadOnlyList<Dictionary<string, object?>> BuildProxyModelCatalog(
             IReadOnlyList<ProxyModelCapabilityDto> routedModels)
         {

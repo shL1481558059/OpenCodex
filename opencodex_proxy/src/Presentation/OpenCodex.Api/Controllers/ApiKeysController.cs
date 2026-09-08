@@ -25,6 +25,15 @@ public sealed class ApiKeysController : AuthenticatedApiControllerBase
         return Api(result);
     }
 
+    [HttpGet("/api-keys/select-list")]
+    public IActionResult GetSelectList(
+        [FromQuery] string? q,
+        [FromQuery] string? owner_username)
+    {
+        RequireUser();
+        return Api(_apiKeys.ListApiKeySelectOptions(q, owner_username));
+    }
+
     [HttpGet("/api-keys/{keyId:guid}")]
     public IActionResult ApiKey(Guid keyId)
     {

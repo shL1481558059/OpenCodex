@@ -63,6 +63,13 @@ public sealed class ModelCatalogController : AuthenticatedApiControllerBase
         return Api(_catalog.ListModels(query, provider, enabled));
     }
 
+    [HttpGet("/model-infos/select-list")]
+    public IActionResult GetSelectList([FromQuery] string? q)
+    {
+        RequireUser();
+        return Api(_catalog.ListModelSelectOptions(q));
+    }
+
     [HttpGet("/model-infos/{id:guid}")]
     public IActionResult ModelInfo(Guid id)
     {

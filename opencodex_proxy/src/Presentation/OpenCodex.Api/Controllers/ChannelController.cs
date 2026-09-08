@@ -29,6 +29,15 @@ public sealed class ChannelController : AuthenticatedApiControllerBase
         return Api(result);
     }
 
+    [HttpGet("/channels/select-list")]
+    public IActionResult GetSelectList(
+        [FromQuery] string? q,
+        [FromQuery] string? owner_username)
+    {
+        RequireUser();
+        return Api(_channels.ListChannelSelectOptions(q, owner_username));
+    }
+
     [HttpGet("/channels/{channelId:guid}")]
     public IActionResult Channel(Guid channelId)
     {

@@ -256,7 +256,9 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         }
 
                         logInFinally = false;
-                        trackingWriter = new TrackingProxyStreamWriter(context.StreamWriter);
+                        trackingWriter = new TrackingProxyStreamWriter(
+                            context.StreamWriter,
+                            countOnlyMeaningfulWrites: context.EntryProtocol != channelType);
                         await _streams.StreamAsync(
                             new ProxyStreamContext(
                                 started,

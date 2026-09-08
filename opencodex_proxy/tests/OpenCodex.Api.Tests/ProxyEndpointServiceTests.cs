@@ -593,6 +593,74 @@ public sealed class ProxyEndpointServiceTests
     }
 
     [Fact]
+    public async Task ProxyAsync_ResponsesToChat_SkeletonOnlyThen429_FailsOverToSecondary()
+    {
+        var capacity = new ChannelCapacityService();
+        var primary = CreateChannel("primary", priority: 0, capacity: 1);
+        var secondary = CreateChannel("secondary", priority: 1, capacity: 1);
+        var attempts = new List<string>();
+        var streams = new StubProxyStreamService(async context =>
+        {
+            attempts.Add(context.ChannelId);
+            if (context.ChannelId == "primary")
+            {
+                await context.StreamWriter.WriteLinesAsync(
+                    ToAsyncEnumerable(
+                        "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\",\"status\":\"in_progress\"}}\n\n",
+                        "",
+                        "event: response.in_progress\ndata: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"r1\",\"status\":\"in_progress\"}}\n\n"),
+                    static _ => true,
+                    static () => 1,
+                    CancellationToken.None);
+                throw new UpstreamException(
+                    "upstream returned HTTP 429",
+                    ProxyHttpStatus.TooManyRequests);
+            }
+
+            await context.StreamWriter.WriteLinesAsync(
+                ToAsyncEnumerable(
+                    "event: response.output_item.added\ndata: {}\n\n"),
+                static _ => true,
+                static () => 1,
+                CancellationToken.None);
+        });
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService(
+            [
+                CreateRoute(primary, "shared-model", "upstream-primary"),
+                CreateRoute(secondary, "shared-model", "upstream-secondary")
+            ]),
+            streams: streams);
+
+        var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["model"] = "shared-model",
+            ["input"] = "ping",
+            ["stream"] = true
+        };
+        var writer = new RecordingProxyStreamWriter();
+        var result = await service.ProxyAsync(
+            new ProxyEndpointContext(
+                ProtocolConverter.Responses,
+                payload,
+                "Bearer test",
+                new ProxyRequestMetadata(
+                    "POST",
+                    "/v1/responses",
+                    null,
+                    new Dictionary<string, string>()),
+                writer,
+                CancellationToken.None));
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.Equal(["primary", "secondary"], attempts);
+        Assert.Contains(
+            writer.WrittenLines,
+            line => line.Contains("response.output_item.added", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task ProxyAsync_StreamAllCandidatesFail_DoesNotPrepareSseAndReturnsJsonError()
     {
         var capacity = new ChannelCapacityService();

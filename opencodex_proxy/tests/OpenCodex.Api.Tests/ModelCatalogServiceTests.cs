@@ -99,6 +99,37 @@ public sealed class ModelCatalogServiceTests
     }
 
     [Fact]
+    public void ListModelSelectOptionsDeduplicatesModelKeysAndSupportsQuery()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context, "test", "Test", ModelCatalogSources.Manual, 1);
+            context.ModelInfos.AddRange(
+                ModelInfoRow(provider.Id, "alpha", "Alpha Model", enabled: true),
+                ModelInfoRow(provider.Id, "alpha", "Alpha Duplicate", enabled: true),
+                ModelInfoRow(provider.Id, "beta", "Beta Model", enabled: false));
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+        var all = service.ListModelSelectOptions(null);
+        Assert.True(all.Succeeded);
+        Assert.Equal(2, all.Payload!.Count);
+        Assert.Contains(all.Payload, option => option.Id == "alpha" && option.Name == "Alpha Duplicate");
+        Assert.Contains(all.Payload, option => option.Id == "beta" && option.Name == "Beta Model");
+
+        var byKey = service.ListModelSelectOptions("beta");
+        Assert.True(byKey.Succeeded);
+        Assert.Single(byKey.Payload!, option => option.Id == "beta");
+
+        var byDisplayName = service.ListModelSelectOptions("duplicate");
+        Assert.True(byDisplayName.Succeeded);
+        Assert.Single(byDisplayName.Payload!, option => option.Id == "alpha");
+    }
+
+    [Fact]
     public async Task CalculateCostUsesMatchPriority()
     {
         var dbPath = CreateDbPath();
@@ -2223,6 +2254,30 @@ public sealed class ModelCatalogServiceTests
         });
         context.SaveChanges();
         return channel;
+    }
+
+    private static ModelInfo ModelInfoRow(
+        Guid providerId,
+        string modelKey,
+        string displayName,
+        bool enabled)
+    {
+        return new ModelInfo
+        {
+            Scope = ModelInfoScopes.Global,
+            ProviderId = providerId,
+            ModelKey = modelKey,
+            DisplayName = displayName,
+            Description = string.Empty,
+            MatchType = ModelMatchTypes.Exact,
+            MatchPattern = modelKey,
+            CatalogJson = "{}",
+            CapabilitiesJson = "{}",
+            Enabled = enabled,
+            Source = "test",
+            CreatedAt = 1,
+            UpdatedAt = 1
+        };
     }
 
     private static ModelInfo AddModel(

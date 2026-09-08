@@ -67,6 +67,48 @@ public sealed class ChannelService : IChannelService
             ResolveHealthStatus));
     }
 
+    public ApiOpResult<IReadOnlyList<SelectOption<Guid>>> ListChannelSelectOptions(
+        string? query,
+        string? requestedOwnerUsername)
+    {
+        var currentUser = _workContext.RequireUser();
+        var isSuperadmin = currentUser.Role == "superadmin";
+        var scopeUsername = isSuperadmin
+            ? string.IsNullOrWhiteSpace(requestedOwnerUsername) ? null : requestedOwnerUsername.Trim()
+            : null;
+
+        var channelQuery = _channelRepository.TableNoTracking;
+        Guid? ownerUserId = isSuperadmin ? null : currentUser.UserId;
+        if (isSuperadmin && !string.IsNullOrWhiteSpace(scopeUsername))
+        {
+            ownerUserId = _userRepository.TableNoTracking
+                .Where(user => user.Username == scopeUsername)
+                .Select(user => (Guid?)user.Id)
+                .FirstOrDefault() ?? Guid.Empty;
+            if (ownerUserId == Guid.Empty)
+            {
+                return ApiOpResult<IReadOnlyList<SelectOption<Guid>>>.Succeed([]);
+            }
+        }
+
+        if (ownerUserId.HasValue)
+        {
+            channelQuery = channelQuery.Where(channel => channel.OwnerUserId == ownerUserId.Value);
+        }
+
+        var queryText = (query ?? string.Empty).Trim();
+        var options = channelQuery
+            .OrderBy(channel => channel.Name)
+            .ThenBy(channel => channel.Id)
+            .Select(channel => new { channel.Id, channel.Name })
+            .AsEnumerable()
+            .Where(channel => queryText.Length == 0
+                || channel.Name.Contains(queryText, StringComparison.OrdinalIgnoreCase))
+            .Select(channel => new SelectOption<Guid>(channel.Id, channel.Name))
+            .ToList();
+        return ApiOpResult<IReadOnlyList<SelectOption<Guid>>>.Succeed(options);
+    }
+
     public ApiOpResult<ChannelResponse> ReadChannelById(Guid channelId)
     {
         if (channelId == Guid.Empty)

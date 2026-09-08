@@ -3,6 +3,8 @@
 > 状态：部分实施中。本文档用于记录后端代码清理、业务逻辑整理和维护性改进的分阶段方案。已完成项标注 ✅，详见各节实施记录。
 >
 > 最近一次实证排查：2026-08-08（数据库体积核验截至 2026-08-07）。新增 Phase A / Phase B 两组候选，并修正了原清单中多处与代码/部署实际不符的判断，详见「清单修正说明」。凡标注「已实证」的结论均通过 `rg` 全仓检索、运行时请求或只读部署核验过。
+>
+> 补充实证：2026-09-02 因 `deepseek-v4-flash` 走 chat 渠道被上游拒绝而排查了思考历史透传与渠道熔断链路，新增 Phase C。该组结论除代码检索外，还有远端只读日志、Redis 熔断状态和直连上游的对照实验作为依据。
 
 ## 规模基线（2026-08-07 实测）
 
@@ -251,6 +253,51 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 - `main.js` 手工全局注册约 45 个 Element Plus 组件、Setup/SystemSettings 还重复维护访问范围/端口/拦截开关表单；可按需注册或抽共享表单，但这是包体/组织性重构，不应与功能删减混在一起。
 - `App.vue` 的 `defineAsyncComponent` 与 `vite.config.js` 手工 `manualChunks` 共同维护页面拆包，历史上已有多次异步组件生命周期/切 tab 修复；若 Tauri/内网首屏体积不是瓶颈，可评估恢复普通 import 并删除手工 pageChunks，降低白屏和生命周期复杂度，但优先级低于真正的功能删减。
 - 风险：这些是主动收敛/去重，不应标成死代码；保留渠道级覆盖时要先锁定 API 契约。
+
+## Phase C：思考历史透传与渠道熔断（2026-09-02 实证）
+
+> 背景：`deepseek-v4-flash` 经 chat 渠道请求时，上游间歇返回 `400001 The request is invalid: The reasoning_content in the thinking mode must be passed back to the API`。同一会话连续 3 次 400 达到熔断阈值，渠道按 `CircuitBreakDurationSeconds=5000` 开路 83 分钟，同模型再无启用渠道，客户端收到 429 `all enabled channels ... are at capacity`，会话中断。
+>
+> 对照实验（直连上游 `/v1/chat/completions`，每种消息结构各 12 次）：缺 `reasoning_content` 的结构 25% 被拒，补齐后 0% 被拒。上游只校验「带正文的 assistant 消息」是否携带 `reasoning_content`，对只有 `tool_calls` 的消息不作要求；把思考挂到 `tool_calls` 那条而正文那条留空同样会被拒。同一请求体在不同上游后端上 `prompt_tokens` 计数不一致、400 恒定在 0.7–1.6 秒返回，说明该渠道是多后端聚合，只有一部分严格校验。
+
+### C.1 chat 渠道开放 `preserve_thinking_history` 与 assistant 回合合并 ✅ 已完成
+
+- 管理台此前只对 `messages` 类型渠道显示该开关：`frontend/src/Channels.vue:511` 的显示条件和 `Channels.vue:3234` 的 `buildCompat()` 都硬编码 `type === 'messages'`，chat 渠道即便手改数据库也会在下次保存时被写回 `false`。已改为 `supportsPreserveThinkingHistory()`（`Channels.vue:3263`，与 `supportsApplyPatchPromptCompat` 同口径），开关说明按渠道类型区分文案。
+- 开关打开后 Responses→Chat 会保留 `reasoning_content`（`ProtocolConverter.Requests.cs:214`），但一个 assistant 回合的输出文本与 `function_call` 在 Responses 入口是彼此独立的 item，转换后成为两条 assistant 消息，思考落在正文那条，真正发起调用的那条是裸的。已在归一化流水线补 `MergeAssistantTextWithToolCalls`（`ProtocolConverter.ToolHistory.cs:9` 注册、`:146` 实现、`:289` 判定）把同回合并回一条。
+- 真实请求重放（被拒会话的客户端原始 payload）：消息 66 → 55、assistant 30 → 19、带思考 18 条不变、带 `tool_calls` 的 19 条里 18 条带思考、连续 assistant 对 11 → 0。Responses→Messages 方向同样受益，合并后一条 assistant 消息内是 `text(思考)`、`text(正文)`、`tool_use`、`tool_use`，符合 Anthropic 规范形状。
+- 合并结构在上游对照实验中优于拆分结构：历史思考被采纳 15/16 对 14/18，空回复 1 次对 3 次，拆分结构另有 3/18 次退化成「不回答、再调一次工具」（`finish_reason=tool_calls`）。单看采纳率 Fisher 检验 p≈0.34 不显著，但空回复、finish_reason 退化和思考长度三个指标方向一致。
+- 验证：`ProtocolStructuralCompatibilityTests` 新增 5 个用例（合并落位、tool_call 与 tool 结果配对、无正文时结构不变、跨 tool 结果不误并、Messages 方向内容块顺序），全量 698 个测试通过。
+
+### C.2 `anthropic_thinking_encrypted` 会随 Chat 上游请求外泄
+
+- `ProtocolConverter.Requests.cs:214-215` 在 `preserve_thinking_history=true` 时把 `reasoning_content` 和 `anthropic_thinking_encrypted` 一并拷进 chat 消息。后者是 OpenCodex 自有编码（`ocxp-thinking-v1:<base64>`，由 `Requests.cs:487` 写入 canonical），Chat Completions 协议没有这个字段。
+- 触发路径：Messages 客户端（如 Claude Code）打 chat 渠道且开启该开关。已用最小请求实测复现，上游请求体里确实出现该字段。Codex 走 Responses 入口不受影响，其 `encrypted_content` 不是 `ocxp-thinking-v1` 前缀，`ResponsesInput.cs:118-120` 不会写入。
+- C.1 放开 chat 渠道开关后这个面才真正暴露，需要评估 chat 出站是否只保留 `reasoning_content`。注意响应方向（`ProtocolConverter.Responses.cs:425`）是刻意保留该字段用于 OpenCodex 自身往返，删除请求侧前先确认没有级联部署依赖它。
+- 风险：宽容上游会忽略未知字段，严格上游可能直接 400；影响面限于 messages→chat 且开启开关的渠道。
+- 验证：messages→chat 转换断言上游消息不含 `anthropic_thinking_encrypted`，同时保留 chat 响应方向的既有用例。
+
+### C.3 同协议短路不清理 `_ocxp_*` 内部标记
+
+- `ProtocolConverter.cs:188` 的 `sourceProtocol == targetProtocol` 分支只做工具 schema 与 tool_choice 清理就直接返回，不移除兼容层注入的内部标记。跨协议路径分别在 `Requests.cs:196-197`（chat 目标）和 `Requests.cs:279-280`（messages 目标）显式 `Remove`。
+- 已实测：chat 客户端打 chat 渠道且开启 `preserve_thinking_history`（注入点 `ChannelCompatRequestRewriter.cs:79`），上游请求体里带 `"_ocxp_preserve_thinking_history": true`。`_ocxp_thinking_budget_tokens`（`Requests.cs:395-396` 读取并移除）有同样问题，它靠用户在 compat `default_params` 手工注入。
+- 建议在短路分支统一移除 `_ocxp_` 前缀键。同协议时这些标记本身没有语义（历史 `reasoning_content` 原样透传），移除不改变行为，也能覆盖未来新增的内部标记。
+- 风险：低。若将来需要在 OpenCodex 级联之间传递内部标记，应改为显式白名单而不是依赖短路泄漏。
+- 验证：chat→chat、responses→responses、messages→messages 三个方向断言上游请求体无 `_ocxp_` 前缀键。
+
+### C.4 上游 400 计入渠道熔断失败计数
+
+- `ChannelCircuitBreakerService.cs:252` 的 `ShouldCountFailure` 把 `BadRequest` 与 `Forbidden`、429、5xx 同等对待，阈值 3（`:16`），`ProxyEndpointService.cs:359` 在每个 `ProxyException` 上调用。
+- 400 表示这一次请求本身不合规，重试必然再失败，但渠道对其它请求是健康的。当天数据支持这个判断：该渠道 349 次 200 夹着 24 次 400（约 6%），Codex 客户端连试 3 次都撞上严格后端，渠道即被开路 5000 秒，Redis `opencodex:breaker:*` 记录为 `State=1 / ConsecutiveFailures=3`。
+- 建议二选一：把 `BadRequest` 从熔断计数移除；或给 4xx 单独设一个远小于 5xx 的开路时长，不复用渠道级 `CircuitBreakDurationSeconds`。
+- 风险：若某上游用 400 表达整体不可用（少见），移除计数会让失败请求持续打过去；可保留 `Forbidden` 计数作为折中，鉴权失效确实是渠道级问题。
+- 验证：`ChannelCircuitBreakerService` 针对 400 的计数断言，以及 `ProxyEndpointService` 连续 400 后渠道仍在候选内的用例。
+
+### C.5 熔断导致无候选时的 429 文案含糊
+
+- `ProxyEndpointService.cs:482` 在候选耗尽时统一抛 `all enabled channels for {model} are at capacity`，但候选被跳过有三种原因：渠道 `Enabled=false`、熔断开路（`:143`）、容量租约拿不到（`:166`）。这次事故的真实原因是熔断，文案却说容量已满，排查时必须去翻 Redis 才能确认。
+- 建议按跳过原因分别计数，错误信息区分「熔断中（附剩余开路秒数）/容量已满/无匹配渠道」。管理台已有 `/channels/{id}/reset-health` 可手工清除熔断，文案里提示这个动作能省一轮排查。
+- 风险：错误文案属于对外契约的一部分，改动前确认没有客户端按字符串匹配。
+- 验证：三种跳过原因各自的路由异常用例。
 
 ## 明确保留的核心链路
 
@@ -789,6 +836,12 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 12. **1.1 OCR / 1.2 WebSearch simulate / 1.3 渠道诊断 / 1.4 Probe**：均为仍在使用的主动砍功能，需产品确认后单独实施。
 13. **第 4 节协议拆 Codec、第 5 节内部强类型化**：收益最低、改动最大，排最后或搁置。
 
+Phase C 是 2026-09-02 新增的一组，按风险排序应插在第 3 项前后执行，不必等前面的决策项：
+
+- C.3（同协议短路统一清理 `_ocxp_*`）和 C.5（429 文案区分跳过原因）是纯清理，可与 Phase A 一起做。
+- C.4（400 是否计入熔断）改动很小但会影响 failover 与渠道可用性，先定策略，单独一个提交并补熔断用例。
+- C.2（是否停止把 `anthropic_thinking_encrypted` 发往 chat 上游）要先确认没有 OpenCodex 级联部署依赖响应侧那个字段，属于待决策项。
+
 ### 待用户决策的问题
 
 1. `/images` 是**补齐完整实现**还是**整链删除**？（决策点 6）
@@ -801,6 +854,8 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 8. Dashboard 队列/错误卡片是否有实时运维刚需？（决策点 12）
 9. 批量测试、批量编辑、归并视图和诊断路由别名的实际使用率如何？（决策点 13）
 10. 是否计划接入第二家 Web Search Provider，是否依赖渠道级模型覆盖？（决策点 14）
+11. Chat 出站是否停止携带 `anthropic_thinking_encrypted`？是否存在 OpenCodex 级联部署依赖它做思考往返？（见 C.2）
+12. 上游 400 是否继续计入渠道熔断？若不再计入，`Forbidden` 是否保留计数？（见 C.4）
 
 ### 已知 Bug：桌面设置跨语言覆盖 ✅ 已修复
 

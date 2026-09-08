@@ -266,6 +266,28 @@ public sealed class ModelCatalogService : IModelCatalogService
                 .ToList()));
     }
 
+    public ApiOpResult<IReadOnlyList<SelectOption<string>>> ListModelSelectOptions(string? query)
+    {
+        var queryText = (query ?? string.Empty).Trim();
+        var modelQuery = _models.TableNoTracking
+            .Where(model => model.Scope == ModelInfoScopes.Global);
+
+        var options = modelQuery
+            .OrderBy(model => model.ModelKey)
+            .ThenBy(model => model.DisplayName)
+            .Select(model => new { model.ModelKey, model.DisplayName })
+            .AsEnumerable()
+            .Where(model => queryText.Length == 0
+                || model.ModelKey.Contains(queryText, StringComparison.OrdinalIgnoreCase)
+                || model.DisplayName.Contains(queryText, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(item => item.ModelKey, StringComparer.Ordinal)
+            .Select(group => new SelectOption<string>(
+                group.Key,
+                string.IsNullOrWhiteSpace(group.First().DisplayName) ? group.Key : group.First().DisplayName))
+            .ToList();
+        return ApiOpResult<IReadOnlyList<SelectOption<string>>>.Succeed(options);
+    }
+
     public IReadOnlyList<Dictionary<string, object?>> BuildProxyModelCatalog(
         IReadOnlyList<ProxyModelCapabilityDto> routedModels)
     {

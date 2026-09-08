@@ -81,6 +81,46 @@ public sealed class ApiKeyService : IApiKeyService
         return ApiOpResult<ApiKeysResponse>.Succeed(ApiKeysResponse.From(dtos));
     }
 
+    public ApiOpResult<IReadOnlyList<SelectOption<Guid>>> ListApiKeySelectOptions(
+        string? query,
+        string? requestedOwnerUsername)
+    {
+        var currentUser = _workContext.RequireUser();
+        var isSuperadmin = currentUser.Role == "superadmin";
+        var scopeUsername = OwnerScope(requestedOwnerUsername, currentUser.Username, isSuperadmin);
+
+        var keyQuery = _keyRepository.TableNoTracking;
+        if (!isSuperadmin)
+        {
+            keyQuery = keyQuery.Where(key => key.OwnerUserId == currentUser.UserId);
+        }
+        else if (!string.IsNullOrWhiteSpace(scopeUsername))
+        {
+            var ownerUserId = _userRepository.TableNoTracking
+                .Where(user => user.Username == scopeUsername)
+                .Select(user => (Guid?)user.Id)
+                .FirstOrDefault() ?? Guid.Empty;
+            if (ownerUserId == Guid.Empty)
+            {
+                return ApiOpResult<IReadOnlyList<SelectOption<Guid>>>.Succeed([]);
+            }
+
+            keyQuery = keyQuery.Where(key => key.OwnerUserId == ownerUserId);
+        }
+
+        var queryText = (query ?? string.Empty).Trim();
+        var options = keyQuery
+            .OrderBy(key => key.Name)
+            .ThenBy(key => key.Id)
+            .Select(key => new { key.Id, key.Name })
+            .AsEnumerable()
+            .Where(key => queryText.Length == 0
+                || key.Name.Contains(queryText, StringComparison.OrdinalIgnoreCase))
+            .Select(key => new SelectOption<Guid>(key.Id, key.Name))
+            .ToList();
+        return ApiOpResult<IReadOnlyList<SelectOption<Guid>>>.Succeed(options);
+    }
+
     public ApiOpResult<ApiKeyResponsePayload> ReadKeyById(Guid keyId)
     {
         if (keyId == Guid.Empty)

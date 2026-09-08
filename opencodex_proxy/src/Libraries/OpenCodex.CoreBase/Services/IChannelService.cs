@@ -15,6 +15,15 @@ public interface IChannelService
     ApiOpResult<ChannelListResponse> ReadChannels();
 
     /// <summary>
+    /// 读取渠道下拉选项，供日志筛选等轻量场景使用。
+    /// </summary>
+    /// <param name="query">按渠道名称过滤的可选关键字。</param>
+    /// <param name="requestedOwnerUsername">超管可指定拥有者用户名；为空时返回当前范围内的全部渠道。</param>
+    ApiOpResult<IReadOnlyList<SelectOption<Guid>>> ListChannelSelectOptions(
+        string? query,
+        string? requestedOwnerUsername);
+
+    /// <summary>
     /// 读取指定渠道的配置详情。
     /// </summary>
     /// <param name="channelId">渠道标识符。</param>

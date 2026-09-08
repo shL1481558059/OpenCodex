@@ -775,6 +775,12 @@ const filterOptionFieldMap = {
   path: "paths",
   status_code: "status_codes"
 };
+const businessFilterFieldRoutes = {
+  model: { url: "/model-infos/select-list", kind: "text" },
+  channel_id: { url: "/channels/select-list", kind: "option" },
+  api_key_id: { url: "/api-keys/select-list", kind: "option" },
+  owner_username: { url: "/users/options", kind: "text" }
+};
 const filterOptionsLoading = reactive({
   request_id: false,
   conversation_key: false,
@@ -1376,6 +1382,7 @@ function fallbackCopyLogDetailText(text) {
 async function loadFilterOptions(field, query = "") {
   const optionKey = filterOptionFieldMap[field];
   if (!optionKey) return [];
+  if (businessFilterFieldRoutes[field]) return loadBusinessFilterOptions(field, query);
   const requestToken = (filterOptionRequestTokens[field] || 0) + 1;
   filterOptionRequestTokens[field] = requestToken;
   const contextSignature = logFilterSignature(draftLogFilters);
@@ -1393,6 +1400,42 @@ async function loadFilterOptions(field, query = "") {
       && contextSignature === logFilterSignature(draftLogFilters)
       && Array.isArray(data[optionKey])) {
       filterOptions[optionKey] = data[optionKey];
+    }
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    if (requestToken === filterOptionRequestTokens[field]) filterOptionsLoading[field] = false;
+  }
+  return filterOptions[optionKey] || [];
+}
+
+async function loadBusinessFilterOptions(field, query = "") {
+  const optionKey = filterOptionFieldMap[field];
+  const route = businessFilterFieldRoutes[field];
+  const requestToken = (filterOptionRequestTokens[field] || 0) + 1;
+  filterOptionRequestTokens[field] = requestToken;
+  filterOptionsLoading[field] = true;
+  try {
+    const params = new URLSearchParams();
+    const queryText = String(query || "").trim();
+    if (queryText) params.set("q", queryText);
+    if ((field === "channel_id" || field === "api_key_id") && draftLogFilters.owner_username) {
+      params.set("owner_username", String(draftLogFilters.owner_username).trim());
+    }
+    const data = await props.api(`${route.url}?${params.toString()}`);
+    if (requestToken !== filterOptionRequestTokens[field]) return filterOptions[optionKey] || [];
+
+    let values = Array.isArray(data) ? data : [];
+    if (route.kind === "text") {
+      values = values.map((item) => ({ id: String(item.id), name: String(item.name || "") }));
+      if (queryText) {
+        const normalized = queryText.toLowerCase();
+        values = values.filter((item) =>
+          item.id.toLowerCase().includes(normalized) || item.name.toLowerCase().includes(normalized));
+      }
+      filterOptions[optionKey] = values.map((item) => item.id);
+    } else {
+      filterOptions[optionKey] = values;
     }
   } catch (error) {
     ElMessage.error(error.message);

@@ -3,10 +3,14 @@ namespace OpenCodex.CoreBase.Abstractions;
 public sealed class TrackingProxyStreamWriter : IProxyStreamWriter
 {
     private readonly IProxyStreamWriter _inner;
+    private readonly bool _countOnlyMeaningfulWrites;
 
-    public TrackingProxyStreamWriter(IProxyStreamWriter inner)
+    public TrackingProxyStreamWriter(
+        IProxyStreamWriter inner,
+        bool countOnlyMeaningfulWrites = false)
     {
         _inner = inner;
+        _countOnlyMeaningfulWrites = countOnlyMeaningfulWrites;
     }
 
     public bool HasWritten { get; private set; }
@@ -44,7 +48,11 @@ public sealed class TrackingProxyStreamWriter : IProxyStreamWriter
                     PrepareSse();
                 }
 
-                HasWritten = true;
+                if (!_countOnlyMeaningfulWrites || IsMeaningfulLine(line))
+                {
+                    HasWritten = true;
+                }
+
                 yield return line;
             }
         }
@@ -54,5 +62,16 @@ public sealed class TrackingProxyStreamWriter : IProxyStreamWriter
             countsForTtft,
             elapsedMilliseconds,
             cancellationToken);
+    }
+
+    private static bool IsMeaningfulLine(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return false;
+        }
+
+        return !line.Contains("event: response.created", StringComparison.Ordinal)
+            && !line.Contains("event: response.in_progress", StringComparison.Ordinal);
     }
 }

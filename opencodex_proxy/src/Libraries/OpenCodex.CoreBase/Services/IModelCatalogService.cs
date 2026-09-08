@@ -1,4 +1,5 @@
 using OpenCodex.CoreBase.Domain.Models;
+using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.Models;
 using OpenCodex.CoreBase.DTOs.Proxy;
 using OpenCodex.CoreBase.Results;
@@ -19,6 +20,12 @@ public interface IModelCatalogService
         string? query,
         string? providerCode,
         bool? enabled);
+
+    /// <summary>
+    /// 读取模型下拉选项，供日志筛选等轻量场景使用；以 ModelKey 作为选项值。
+    /// </summary>
+    /// <param name="query">按模型 key 或显示名称过滤的可选关键字。</param>
+    ApiOpResult<IReadOnlyList<SelectOption<string>>> ListModelSelectOptions(string? query);
 
     IReadOnlyList<Dictionary<string, object?>> BuildProxyModelCatalog(
         IReadOnlyList<ProxyModelCapabilityDto> routedModels);

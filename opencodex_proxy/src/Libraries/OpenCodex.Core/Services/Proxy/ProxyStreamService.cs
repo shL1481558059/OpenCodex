@@ -138,7 +138,7 @@ public sealed class ProxyStreamService : IProxyStreamService
                     streamLineCaptures,
                     "upstream",
                     context.CancellationToken);
-                var confirmedStreamLines = await ConfirmUpstreamStreamStartedAsync(
+                var confirmedStreamLines = await UpstreamStreamPrimer.PrimeAsync(
                     capturedStreamLines,
                     context.CancellationToken);
                 // 按 (入口协议, 上游协议) 派发到对应流式转换器；下游事件格式取决于入口协议。
@@ -309,64 +309,6 @@ public sealed class ProxyStreamService : IProxyStreamService
         return (int)Math.Round(
             Stopwatch.GetElapsedTime(started).TotalMilliseconds,
             MidpointRounding.AwayFromZero);
-    }
-
-    private static async Task<IAsyncEnumerable<string>> ConfirmUpstreamStreamStartedAsync(
-        IAsyncEnumerable<string> lines,
-        CancellationToken cancellationToken)
-    {
-        var enumerator = lines.GetAsyncEnumerator(cancellationToken);
-        bool hasFirstLine;
-        try
-        {
-            hasFirstLine = await enumerator.MoveNextAsync();
-        }
-        catch
-        {
-            await enumerator.DisposeAsync();
-            throw;
-        }
-
-        if (!hasFirstLine)
-        {
-            await enumerator.DisposeAsync();
-            return EmptyStreamLines(cancellationToken);
-        }
-
-        return ReplayPrimedStreamLines(
-            enumerator.Current,
-            enumerator,
-            cancellationToken);
-    }
-
-    private static async IAsyncEnumerable<string> EmptyStreamLines(
-        [EnumeratorCancellation] CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        await Task.CompletedTask;
-        yield break;
-    }
-
-    private static async IAsyncEnumerable<string> ReplayPrimedStreamLines(
-        string firstLine,
-        IAsyncEnumerator<string> enumerator,
-        [EnumeratorCancellation] CancellationToken cancellationToken)
-    {
-        try
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            yield return firstLine;
-
-            while (await enumerator.MoveNextAsync())
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                yield return enumerator.Current;
-            }
-        }
-        finally
-        {
-            await enumerator.DisposeAsync();
-        }
     }
 
     private static Dictionary<string, object?>? UpstreamErrorBody(ProxyException exception)
