@@ -4,6 +4,8 @@ public sealed class ChannelModelInfo : BaseEntity<Guid>
 {
     public Guid ChannelId { get; set; }
 
+    public string RequestModel { get; set; } = string.Empty;
+
     public string UpstreamModel { get; set; } = string.Empty;
 
     public Guid ProviderId { get; set; }
@@ -17,6 +19,8 @@ public sealed class ChannelModelInfo : BaseEntity<Guid>
     public string MatchType { get; set; } = ModelMatchTypes.Exact;
 
     public string MatchPattern { get; set; } = string.Empty;
+
+    public string MatchPatternsJson { get; set; } = "[]";
 
     public string CatalogJson { get; set; } = "{}";
 

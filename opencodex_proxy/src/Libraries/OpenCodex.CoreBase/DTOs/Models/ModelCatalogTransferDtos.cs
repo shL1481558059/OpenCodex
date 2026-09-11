@@ -92,6 +92,9 @@ public sealed class ModelCatalogModelTransfer
     [JsonPropertyName("match_pattern")]
     public string MatchPattern { get; set; } = string.Empty;
 
+    [JsonPropertyName("match_patterns")]
+    public List<string>? MatchPatterns { get; set; }
+
     [JsonPropertyName("catalog")]
     public Dictionary<string, object?> Catalog { get; set; } = [];
 

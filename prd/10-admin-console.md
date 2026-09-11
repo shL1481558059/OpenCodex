@@ -427,7 +427,7 @@ status, errorCode, message, requestId, retryAfter, details, isNetworkError, isAb
 ### 10.4 当前辅助流程
 
 - 模型发现：列表选择后加入映射；
-- 渠道级模型信息/价格覆盖：查看、编辑、恢复全局配置；
+- 渠道级模型信息/价格覆盖：以请求模型为主查看和编辑、上游模型作为映射信息展示，可恢复全局配置；
 - 批量编辑：分组、enabled、priority、capacity、timeout、retry、熔断；
 - 批量测试：prompt、最大输出Token、并发1–10，展示等待/运行/成功/失败/取消；
 - 单渠道测试：模型、prompt、流式事件、耗时、上游请求/响应、错误响应和原始事件；
@@ -553,7 +553,7 @@ status, errorCode, message, requestId, retryAfter, details, isNetworkError, isAb
 - provider、enabled；
 - model key、display name；
 - match type：exact/prefix/suffix/contains；
-- match pattern、description；
+- match pattern（`exact` 支持多个匹配键）、description；
 - supports image、context window；
 - currency；
 - input/output/cache_write/cache_read规则；

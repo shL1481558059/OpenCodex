@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using OpenCodex.Api.Tests.Infrastructure;
 using OpenCodex.Core.Config;
 using OpenCodex.Core.Domain;
 using OpenCodex.Core.Protocols;
@@ -165,6 +166,70 @@ public sealed class ProxyVisionRoutingTests
 
         var route = Assert.Single(routes);
         Assert.Equal("images-second", route.Channel["name"]);
+    }
+
+    [Fact]
+    public async Task ListModelCapabilities_DoesNotResolveImageSupportPerMapping()
+    {
+        var dbPath = Path.Combine(
+            Path.GetTempPath(),
+            "opencodex-vision-routing-tests",
+            $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        using (var seed = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            seed.Database.Migrate();
+            seed.Users.Add(new OpenCodex.Core.Domain.User
+            {
+                Id = AdminUserId,
+                Username = "admin",
+                PasswordHash = "hash",
+                Role = "superadmin",
+                Enabled = true,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            seed.Channels.Add(ChannelEntity(
+                "admin",
+                "mapped-channel",
+                0,
+                [
+                    ModelConfig("model-a", "upstream-a"),
+                    ModelConfig("model-b", "upstream-b")
+                ]));
+            seed.SaveChanges();
+        }
+
+        var capture = new SqlCapture();
+        using var context = SqlCapture.CreateCapturingContext($"Data Source={dbPath}", capture);
+        var workContext = new TestWorkContext(AdminUserId, "admin", "superadmin");
+        var catalog = new ModelCatalogService(
+            new EfRepository<ModelProvider>(context),
+            new EfRepository<ModelInfo>(context),
+            new EfRepository<ChannelModelInfo>(context),
+            new EfRepository<ModelPricingPlan>(context),
+            new EfRepository<ModelPricingRule>(context),
+            new EfRepository<ChannelModelMapping>(context),
+            new EfRepository<Channel>(context),
+            workContext,
+            new TestCacheService());
+        var routeService = new ProxyRouteService(
+            new EfRepository<Channel>(context),
+            new EfRepository<OpenCodex.Core.Domain.User>(context),
+            catalog,
+            new TestCacheService(),
+            new VisionTransferSettingsService(
+                workContext,
+                new EfRepository<VisionTransferSettings>(context),
+                new EfRepository<OpenCodex.Core.Domain.User>(context),
+                new EfRepository<Channel>(context),
+                catalog));
+
+        capture.Reset();
+        var models = await routeService.ListModelCapabilitiesAsync("admin");
+
+        Assert.Equal(2, models.Count);
+        Assert.Equal(0, capture.CountMatching("FROM \"ChannelModelInfos\""));
     }
 
     [Fact]
@@ -549,6 +614,7 @@ context.Channels.AddRange(channels);
         {
             Id = Guid.NewGuid(),
             ChannelId = channelId,
+            RequestModel = upstreamModel,
             UpstreamModel = upstreamModel,
             ProviderId = Guid.NewGuid(),
             ModelKey = upstreamModel,

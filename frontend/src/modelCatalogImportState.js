@@ -138,6 +138,12 @@ function normalizeModel(item) {
   if (!item || typeof item !== "object" || Array.isArray(item)) {
     throw new Error("models 内存在非法条目");
   }
+  const matchPattern = String(item.match_pattern || "").trim();
+  const matchPatterns = [...new Set(
+    (Array.isArray(item.match_patterns) ? item.match_patterns : [matchPattern])
+      .map((pattern) => String(pattern || "").trim())
+      .filter(Boolean)
+  )];
   const pricing = item.pricing == null
     ? null
     : {
@@ -157,7 +163,8 @@ function normalizeModel(item) {
     display_name: String(item.display_name || "").trim(),
     description: String(item.description || "").trim(),
     match_type: String(item.match_type || "exact").trim().toLowerCase(),
-    match_pattern: String(item.match_pattern || "").trim(),
+    match_pattern: matchPattern || matchPatterns[0] || "",
+    match_patterns: matchPatterns,
     catalog: item.catalog && typeof item.catalog === "object" && !Array.isArray(item.catalog)
       ? item.catalog
       : {},

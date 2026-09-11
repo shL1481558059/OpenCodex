@@ -153,6 +153,271 @@ public sealed class ModelCatalogServiceTests
     }
 
     [Fact]
+    public async Task CreateModelStoresExactMatchPatternArrayAndMatchesAll()
+    {
+        var service = CreatePeakOffPeakService();
+        var request = ModelRequest("array-model", 1m);
+        request.ProviderCode = "peak-test";
+        request.MatchPatterns = [" model-a ", "model-a", "model-b"];
+
+        var created = service.CreateModel(request);
+
+        Assert.True(created.Succeeded);
+        Assert.Equal("model-a", created.Payload!.Model.MatchPattern);
+        Assert.Equal(new[] { "model-a", "model-b" }, created.Payload.Model.MatchPatterns);
+        Assert.Equal(1m, (await service.CalculateCostAsync(
+            null, null, "model-a", Tokens(1_000_000))).Cost);
+        var secondPattern = await service.CalculateCostAsync(
+            null, null, "model-b", Tokens(1_000_000));
+        Assert.Equal(1m, secondPattern.Cost);
+        Assert.Equal("model-b", secondPattern.MatchPattern);
+        Assert.Equal(0m, (await service.CalculateCostAsync(
+            null, null, "model-c", Tokens(1_000_000))).Cost);
+    }
+
+    [Fact]
+    public void NonExactMatchRejectsMultipleMatchPatterns()
+    {
+        var service = CreatePeakOffPeakService();
+        var request = ModelRequest("prefix-model", 1m);
+        request.ProviderCode = "peak-test";
+        request.MatchType = ModelMatchTypes.Prefix;
+        request.MatchPatterns = ["model-a", "model-b"];
+
+        AssertBadRequest(service.CreateModel(request));
+        Assert.Empty(service.ListModels(null, null, null).Payload!.Models);
+    }
+
+    [Fact]
+    public void ListModelsSearchesAllMatchPatterns()
+    {
+        var service = CreatePeakOffPeakService();
+        var request = ModelRequest("search-model", 1m);
+        request.ProviderCode = "peak-test";
+        request.MatchPatterns = ["alpha", "beta"];
+        Assert.True(service.CreateModel(request).Succeeded);
+
+        var bySecond = service.ListModels("beta", null, null);
+
+        Assert.Single(bySecond.Payload!.Models, item => item.ModelKey == "search-model");
+    }
+
+    [Fact]
+    public void ChannelModelInfoUpsertStoresExactMatchPatternArray()
+    {
+        var dbPath = CreateDbPath();
+        var channelId = Guid.NewGuid();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddChannel(context, channelId, "test-channel", "upstream-model");
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+        var saved = service.UpsertChannelModelInfo(channelId, new ChannelModelInfoUpsertRequest
+        {
+            UpstreamModel = "upstream-model",
+            ProviderCode = "test",
+            ModelKey = "channel-model",
+            DisplayName = "Channel Model",
+            MatchType = ModelMatchTypes.Exact,
+            MatchPattern = "upstream-model",
+            MatchPatterns = ["upstream-model", "alias-a"]
+        });
+
+        Assert.True(saved.Succeeded);
+        Assert.Equal("upstream-model", saved.Payload!.Model.MatchPattern);
+        Assert.Equal(new[] { "upstream-model", "alias-a" }, saved.Payload.Model.MatchPatterns);
+
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            var stored = context.ChannelModelInfos.Single(item => item.ChannelId == channelId);
+            Assert.Equal("""["upstream-model","alias-a"]""", stored.MatchPatternsJson);
+        }
+    }
+
+    [Fact]
+    public void ExportImportRoundTripPreservesMatchPatternArray()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+        }
+
+        var service = CreateService(dbPath);
+        var provider = service.CreateProvider(new ModelProviderUpsertRequest
+        {
+            Code = "array-prov",
+            Name = "Array",
+            Enabled = true
+        });
+        Assert.True(provider.Succeeded);
+        var request = ModelRequest("array-roundtrip", 1m);
+        request.ProviderCode = "array-prov";
+        request.MatchPatterns = ["one", "two"];
+        Assert.True(service.CreateModel(request).Succeeded);
+
+        var exported = service.ExportModelCatalog();
+
+        Assert.True(exported.Succeeded);
+        Assert.Equal(new[] { "one", "two" }, exported.Payload!.Models.Single().MatchPatterns);
+
+        var targetPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={targetPath}"))
+        {
+            context.Database.Migrate();
+        }
+
+        var targetService = CreateService(targetPath);
+        var imported = targetService.ImportModelCatalog(exported.Payload, dryRun: false);
+
+        Assert.True(imported.Succeeded);
+        var model = targetService.ListModels(null, null, null).Payload!.Models.Single();
+        Assert.Equal(new[] { "one", "two" }, model.MatchPatterns);
+    }
+
+    [Fact]
+    public void PricingCacheKeyDistinguishesAmbiguousDelimiters()
+    {
+        var first = CacheKeys.PricingContext(0, 0, null, "a", "b:c");
+        var second = CacheKeys.PricingContext(0, 0, null, "a:b", "c");
+
+        Assert.NotEqual(first, second);
+    }
+
+    [Fact]
+    public async Task ChannelOverrideFollowsRequestModelWhenUpstreamRemapped()
+    {
+        var dbPath = CreateDbPath();
+        var channelId = Guid.NewGuid();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddChannelWithMappings(
+                context,
+                channelId,
+                "test-channel",
+                ("request-a", "upstream-x"),
+                ("request-b", "upstream-y"));
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath, new InMemoryCacheService());
+        Assert.True(service.UpsertChannelModelInfo(channelId, new ChannelModelInfoUpsertRequest
+        {
+            RequestModel = "request-a",
+            UpstreamModel = "upstream-x",
+            ProviderCode = "test",
+            ModelKey = "channel-a",
+            DisplayName = "Channel A",
+            MatchType = ModelMatchTypes.Exact,
+            MatchPatterns = ["request-a"],
+            Pricing = Pricing(10m)
+        }).Succeeded);
+        Assert.True(service.UpsertChannelModelInfo(channelId, new ChannelModelInfoUpsertRequest
+        {
+            RequestModel = "request-b",
+            UpstreamModel = "upstream-y",
+            ProviderCode = "test",
+            ModelKey = "channel-b",
+            DisplayName = "Channel B",
+            MatchType = ModelMatchTypes.Exact,
+            MatchPatterns = ["request-b"],
+            Pricing = Pricing(20m)
+        }).Succeeded);
+
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            var channel = context.Channels.Single(item => item.Id == channelId);
+            channel.ModelsJson = JsonSerializer.Serialize(new[]
+            {
+                new { model = "request-a", upstream_model = "upstream-y" },
+                new { model = "request-b", upstream_model = "upstream-y" }
+            });
+            var mapping = context.ChannelModelMappings.Single(item =>
+                item.ChannelId == channelId && item.RequestModel == "request-a");
+            mapping.UpstreamModel = "upstream-y";
+            context.SaveChanges();
+        }
+
+        var remappedService = CreateService(dbPath, new InMemoryCacheService());
+        Assert.True(remappedService.UpsertChannelModelInfo(channelId, new ChannelModelInfoUpsertRequest
+        {
+            RequestModel = "request-a",
+            UpstreamModel = "upstream-y",
+            ProviderCode = "test",
+            ModelKey = "channel-a",
+            DisplayName = "Channel A",
+            MatchType = ModelMatchTypes.Exact,
+            MatchPatterns = ["request-a"],
+            Pricing = Pricing(30m)
+        }).Succeeded);
+
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            Assert.Equal(2, context.ChannelModelInfos.Count(item => item.ChannelId == channelId));
+            Assert.Equal(
+                "upstream-y",
+                context.ChannelModelInfos.Single(item =>
+                    item.ChannelId == channelId && item.RequestModel == "request-a").UpstreamModel);
+        }
+
+        var costA = await remappedService.CalculateCostAsync(
+            channelId,
+            "request-a",
+            "upstream-y",
+            Tokens(1_000_000));
+        var costB = await remappedService.CalculateCostAsync(
+            channelId,
+            "request-b",
+            "upstream-y",
+            Tokens(1_000_000));
+
+        Assert.Equal(30m, costA.Cost);
+        Assert.Equal(20m, costB.Cost);
+    }
+
+    [Fact]
+    public async Task ChannelOverrideLegacyPatternDoesNotActivateForAnotherUpstream()
+    {
+        var dbPath = CreateDbPath();
+        var channelId = Guid.NewGuid();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddChannel(context, channelId, "test-channel", "upstream-model");
+            AddModel(context, provider.Id, "global-model", ModelMatchTypes.Exact, "upstream-model", 1m);
+            var legacy = AddChannelModel(
+                context,
+                channelId,
+                provider.Id,
+                "legacy-upstream",
+                "legacy-model",
+                ModelMatchTypes.Contains,
+                "request",
+                99m);
+            legacy.RequestModel = "legacy-upstream";
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath, new InMemoryCacheService());
+        var result = await service.CalculateCostAsync(
+            channelId,
+            "request-model",
+            "upstream-model",
+            Tokens(1_000_000));
+
+        Assert.Equal(1m, result.Cost);
+        Assert.Equal("global_model_match_upstream_fallback", result.Resolution);
+        Assert.Null(result.ChannelModelInfoId);
+    }
+
+    [Fact]
     public async Task UpdateModelInvalidatesCachedPricingImmediately()
     {
         var dbPath = CreateDbPath();
@@ -624,7 +889,7 @@ public sealed class ModelCatalogServiceTests
     }
 
     [Fact]
-    public async Task CalculateCostUsesUpstreamModelForGlobalPricing()
+    public async Task CalculateCostPrefersRequestModelOverUpstreamForGlobalPricing()
     {
         var dbPath = CreateDbPath();
         using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
@@ -639,13 +904,13 @@ public sealed class ModelCatalogServiceTests
         var service = CreateService(dbPath);
         var result = await service.CalculateCostAsync(null, "request-model", "upstream-model", Tokens(1_000_000));
 
-        Assert.Equal(7m, result.Cost);
+        Assert.Equal(1m, result.Cost);
         Assert.Equal("global_model_match", result.Resolution);
-        Assert.Equal("upstream-model", result.ModelKey);
+        Assert.Equal("request-model", result.ModelKey);
     }
 
    [Fact]
-    public async Task CalculateCostUsesUpstreamModelForPricing()
+    public async Task CalculateCostFallsBackToUpstreamModelForGlobalPricing()
    {
         var dbPath = CreateDbPath();
         using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
@@ -661,12 +926,12 @@ public sealed class ModelCatalogServiceTests
         var result = await service.CalculateCostAsync(null, "request-model", "upstream-model", Tokens(1_000_000));
 
         Assert.Equal(2m, result.Cost);
-        Assert.Equal("global_model_match", result.Resolution);
+        Assert.Equal("global_model_match_upstream_fallback", result.Resolution);
         Assert.Equal("upstream-model", result.ModelKey);
     }
 
     [Fact]
-    public async Task CalculateCostUsesChannelModelInfoByUpstreamModel()
+    public async Task CalculateCostFallsBackToChannelModelInfoByUpstreamModel()
     {
         var dbPath = CreateDbPath();
         var channelId = Guid.NewGuid();
@@ -691,10 +956,73 @@ public sealed class ModelCatalogServiceTests
         var result = await service.CalculateCostAsync(channelId, "request-alias", "upstream-model", Tokens(1_000_000));
 
         Assert.Equal(9m, result.Cost);
-        Assert.Equal("channel_model_override", result.Resolution);
+        Assert.Equal("channel_model_override_upstream_fallback", result.Resolution);
         Assert.Equal("channel-upstream-model", result.ModelKey);
         Assert.Null(result.ModelInfoId);
         Assert.NotNull(result.ChannelModelInfoId);
+    }
+
+    [Fact]
+    public async Task CalculateCostPrefersRequestModelChannelOverride()
+    {
+        var dbPath = CreateDbPath();
+        var channelId = Guid.NewGuid();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddChannel(context, channelId, "test-channel", "upstream-model");
+            AddChannelModel(
+                context,
+                channelId,
+                provider.Id,
+                "upstream-model",
+                "channel-request-model",
+                ModelMatchTypes.Exact,
+                "request-model",
+                9m);
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath, new InMemoryCacheService());
+        var result = await service.CalculateCostAsync(
+            channelId,
+            "request-model",
+            "upstream-model",
+            Tokens(1_000_000));
+
+        Assert.Equal(9m, result.Cost);
+        Assert.Equal("channel_model_override", result.Resolution);
+        Assert.Equal("request-model", result.MatchPattern);
+    }
+
+    [Fact]
+    public async Task CalculateCostKeepsRequestModelPriceSeparatePerUpstreamCacheContext()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddModel(context, provider.Id, "upstream-a", ModelMatchTypes.Exact, "upstream-a", 1m);
+            AddModel(context, provider.Id, "upstream-b", ModelMatchTypes.Exact, "upstream-b", 2m);
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath, new InMemoryCacheService());
+        var first = await service.CalculateCostAsync(
+            null,
+            "request-model",
+            "upstream-a",
+            Tokens(1_000_000));
+        var second = await service.CalculateCostAsync(
+            null,
+            "request-model",
+            "upstream-b",
+            Tokens(1_000_000));
+
+        Assert.Equal(1m, first.Cost);
+        Assert.Equal(2m, second.Cost);
     }
 
     [Fact]
@@ -712,6 +1040,7 @@ public sealed class ModelCatalogServiceTests
             {
                 Id = Guid.NewGuid(),
                 ChannelId = channelId,
+                RequestModel = "request-alias",
                 UpstreamModel = "upstream-model",
                 ProviderId = provider.Id,
                 ModelKey = "channel-model",
@@ -736,7 +1065,7 @@ public sealed class ModelCatalogServiceTests
             Tokens(1_000_000));
 
         Assert.Equal(7m, result.Cost);
-        Assert.Equal("global_model_match", result.Resolution);
+        Assert.Equal("global_model_match_upstream_fallback", result.Resolution);
         Assert.Equal("global-model", result.ModelKey);
         Assert.Null(result.ChannelModelInfoId);
     }
@@ -830,6 +1159,118 @@ public sealed class ModelCatalogServiceTests
         Assert.DoesNotContain("capabilities", model.Keys);
         Assert.DoesNotContain("catalog", model.Keys);
         Assert.DoesNotContain("source", model.Keys);
+    }
+
+    [Fact]
+    public void BuildProxyModelCatalogPrefersRequestModelInfoOverUpstreamModelInfo()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            var requestModel = AddModel(
+                context,
+                provider.Id,
+                "request-alias",
+                ModelMatchTypes.Exact,
+                "request-alias",
+                1m);
+            requestModel.DisplayName = "Request Name";
+            var upstreamModel = AddModel(
+                context,
+                provider.Id,
+                "upstream-model",
+                ModelMatchTypes.Exact,
+                "upstream-model",
+                2m);
+            upstreamModel.DisplayName = "Upstream Name";
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+        var result = service.BuildProxyModelCatalog(
+            [new ProxyModelCapabilityDto("request-alias", false, null, "", "upstream-model")]);
+
+        var model = Assert.Single(result);
+        Assert.Equal("request-alias", model["slug"]);
+        Assert.Equal("Request Name", model["display_name"]);
+    }
+
+    [Fact]
+    public void BuildProxyModelCatalogUsesRequestModelChannelOverride()
+    {
+        var dbPath = CreateDbPath();
+        var channelId = Guid.NewGuid();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddChannel(context, channelId, "test-channel", "upstream-model");
+            context.ChannelModelInfos.Add(new ChannelModelInfo
+            {
+                Id = Guid.NewGuid(),
+                ChannelId = channelId,
+                RequestModel = "request-alias",
+                UpstreamModel = "upstream-model",
+                ProviderId = provider.Id,
+                ModelKey = "request-alias",
+                DisplayName = "Request Channel Model",
+                MatchType = ModelMatchTypes.Exact,
+                MatchPattern = "request-alias",
+                CatalogJson = """{"display_name":"Request Channel Model"}""",
+                CapabilitiesJson = """{"supports_image":true}""",
+                Enabled = true,
+                Source = "test",
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+        var result = service.BuildProxyModelCatalog(
+            [new ProxyModelCapabilityDto("request-alias", false, channelId, "test-channel", "upstream-model")]);
+
+        var model = Assert.Single(result);
+        Assert.Equal("request-alias", model["slug"]);
+        Assert.Equal("Request Channel Model", model["display_name"]);
+        Assert.Contains(
+            "image",
+            Assert.IsType<List<object?>>(model["input_modalities"]));
+    }
+
+    [Fact]
+    public void SupportsImagePrefersRequestModelCapabilitiesOverUpstreamModelCapabilities()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            var requestModel = AddModel(
+                context,
+                provider.Id,
+                "request-alias",
+                ModelMatchTypes.Exact,
+                "request-alias",
+                1m);
+            requestModel.CapabilitiesJson = """{"supports_image":true}""";
+            var upstreamModel = AddModel(
+                context,
+                provider.Id,
+                "upstream-model",
+                ModelMatchTypes.Exact,
+                "upstream-model",
+                2m);
+            upstreamModel.CapabilitiesJson = """{"supports_image":false}""";
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+
+        Assert.True(service.SupportsImage(null, "request-alias", "upstream-model"));
+        Assert.False(service.SupportsImage(null, "missing-request-alias", "upstream-model"));
     }
 
     [Fact]
@@ -982,7 +1423,7 @@ public sealed class ModelCatalogServiceTests
     }
 
     [Fact]
-    public async Task CalculateCostDoesNotFallbackToRequestModel()
+    public async Task CalculateCostUsesRequestModelWhenUpstreamModelIsMissing()
     {
         var dbPath = CreateDbPath();
         using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
@@ -996,8 +1437,8 @@ public sealed class ModelCatalogServiceTests
         var service = CreateService(dbPath);
         var result = await service.CalculateCostAsync(null, "request-model", "missing-upstream-model", Tokens(1_000_000));
 
-        Assert.Equal(0m, result.Cost);
-        Assert.Equal("model_not_matched", result.Resolution);
+        Assert.Equal(5m, result.Cost);
+        Assert.Equal("global_model_match", result.Resolution);
     }
 
     [Fact]
@@ -1050,6 +1491,8 @@ public sealed class ModelCatalogServiceTests
 
         Assert.True(listed.Succeeded);
         var item = Assert.Single(listed.Payload!.Models);
+        Assert.Equal("request-model", item.RequestModel);
+        Assert.Equal("upstream-model", item.UpstreamModel);
         Assert.False(item.Overridden);
         Assert.Equal("global-model", item.GlobalModel?.ModelKey);
 
@@ -1062,12 +1505,13 @@ public sealed class ModelCatalogServiceTests
 
         var saved = service.UpsertChannelModelInfo(channelId, new ChannelModelInfoUpsertRequest
         {
+            RequestModel = "request-model",
             UpstreamModel = "upstream-model",
             ProviderCode = "test",
             ModelKey = "channel-model",
             DisplayName = "Channel Model",
             MatchType = ModelMatchTypes.Exact,
-            MatchPattern = "upstream-model",
+            MatchPattern = "request-model",
             Capabilities = new Dictionary<string, object?> { ["supports_image"] = true },
             Pricing = new ModelPricingPlanRequest
             {
@@ -1093,6 +1537,7 @@ public sealed class ModelCatalogServiceTests
         listed = service.ListChannelModelInfos(channelId);
         item = Assert.Single(listed.Payload!.Models);
         Assert.True(item.Overridden);
+        Assert.Equal("request-model", item.OverrideModel?.RequestModel);
         Assert.Equal("channel-model", item.OverrideModel?.ModelKey);
 
         var restored = service.DeleteChannelModelInfo(channelId, saved.Payload!.Model.Id);
@@ -1100,7 +1545,7 @@ public sealed class ModelCatalogServiceTests
         Assert.True(restored.Succeeded);
         var globalCost = await service.CalculateCostAsync(channelId, "request-model", "upstream-model", Tokens(1_000_000));
         Assert.Equal(1m, globalCost.Cost);
-        Assert.Equal("global_model_match", globalCost.Resolution);
+        Assert.Equal("global_model_match_upstream_fallback", globalCost.Resolution);
 
         listed = service.ListChannelModelInfos(channelId);
         item = Assert.Single(listed.Payload!.Models);
@@ -2256,6 +2701,70 @@ public sealed class ModelCatalogServiceTests
         return channel;
     }
 
+    private static void AddChannelWithMappings(
+        IOpenCodexDbContext context,
+        Guid channelId,
+        string name,
+        params (string RequestModel, string UpstreamModel)[] mappings)
+    {
+        var channel = new Channel
+        {
+            Id = channelId,
+            OwnerUserId = TestUserId,
+            Position = 0,
+            Priority = 0,
+            Name = name,
+            Type = "chat",
+            BaseUrl = "https://example.test/v1",
+            ApiKey = "secret",
+            AuthMode = "config",
+            HeadersJson = "{}",
+            TimeoutSeconds = 120,
+            RetryCount = 0,
+            Capacity = 3,
+            CompatJson = "{}",
+            ModelsJson = JsonSerializer.Serialize(mappings.Select(mapping => new
+            {
+                model = mapping.RequestModel,
+                upstream_model = mapping.UpstreamModel
+            })),
+            Enabled = true,
+            CreatedAt = 1,
+            UpdatedAt = 1
+        };
+        context.Channels.Add(channel);
+        context.ChannelModelMappings.AddRange(mappings.Select((mapping, position) =>
+            new ChannelModelMapping
+            {
+                ChannelId = channelId,
+                Position = position,
+                RequestModel = mapping.RequestModel,
+                UpstreamModel = mapping.UpstreamModel,
+                Enabled = true,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            }));
+        context.SaveChanges();
+    }
+
+    private static ModelPricingPlanRequest Pricing(decimal inputPrice)
+    {
+        return new ModelPricingPlanRequest
+        {
+            Currency = "USD",
+            Rules =
+            [
+                new ModelPricingRuleRequest
+                {
+                    BillingItem = ModelBillingItems.Input,
+                    BillingMode = ModelBillingModes.PerMillionTokens,
+                    UnitPrice = inputPrice,
+                    Enabled = true
+                }
+            ]
+        };
+    }
+
     private static ModelInfo ModelInfoRow(
         Guid providerId,
         string modelKey,
@@ -2326,6 +2835,7 @@ public sealed class ModelCatalogServiceTests
         var model = new ChannelModelInfo
         {
             ChannelId = channelId,
+            RequestModel = matchPattern,
             UpstreamModel = upstreamModel,
             ProviderId = providerId,
             ModelKey = modelKey,

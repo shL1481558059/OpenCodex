@@ -87,7 +87,7 @@ Q21 三条都选了「以本地为主」，于是两种模式的差异收窄到*
 | | 增量同步（`同步最新模型`） | 覆盖已有模型 |
 | --- | --- | --- |
 | 远端有、本地无的模型 | 创建 + 写价格，`source = sync` | 同左 |
-| 远端有、本地已有的模型 | **完全不动** | 改写 `display_name`/`description`/`match_type`/`match_pattern`/`catalog`/`capabilities` + 价格，`source = sync` |
+| 远端有、本地已有的模型 | **完全不动** | 改写 `display_name`/`description`/`match_type`/`match_pattern`/`match_patterns`/`catalog`/`capabilities` + 价格，`source = sync` |
 | 已存在模型的启用状态 | 不动 | **不动**（Q21-3） |
 | 远端有、本地已有的供应商 | 不动 | **不动**（Q21-2） |
 | 远端有、本地无的供应商 | 创建 | 创建 |
@@ -128,7 +128,7 @@ Q21 三条都选了「以本地为主」，于是两种模式的差异收窄到*
 
 ### 3.4 远端 JSON 契约
 
-就是现有导出文件，字段不增不减：
+在现有导出文件上新增可选的 `match_patterns`，旧文件仍兼容：
 
 ```json
 {
@@ -143,6 +143,7 @@ Q21 三条都选了「以本地为主」，于是两种模式的差异收窄到*
       "display_name": "GPT-5.6",
       "match_type": "exact",
       "match_pattern": "gpt-5.6",
+      "match_patterns": ["gpt-5.6"],
       "catalog": {},
       "capabilities": { "supports_image": true, "context_window": 272000 },
       "enabled": true,

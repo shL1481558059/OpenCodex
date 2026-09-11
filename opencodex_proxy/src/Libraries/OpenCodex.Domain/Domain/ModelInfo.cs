@@ -18,6 +18,8 @@ public sealed class ModelInfo : BaseEntity<Guid>
 
     public string MatchPattern { get; set; } = string.Empty;
 
+    public string MatchPatternsJson { get; set; } = "[]";
+
     public string CatalogJson { get; set; } = "{}";
 
     public string CapabilitiesJson { get; set; } = "{}";

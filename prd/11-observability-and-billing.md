@@ -303,10 +303,14 @@ flowchart LR
 
 ### 7.1 价格继承
 
-当前有效价格解析只有两层：
+当前有效价格解析以请求模型为主、上游模型仅做旧数据兼容回退：
 
-1. 若 `channel_id + upstream_model` 精确命中启用的 `ChannelModelInfo`，使用该渠道模型自己的启用计划；
-2. 没有渠道模型覆盖时，按 `exact → prefix → suffix → contains` 及模式长度/供应商排序匹配启用的全局 `ModelInfo`，使用其启用计划。
+1. 若渠道模型覆盖按 `ChannelId + RequestModel` 命中启用的 `ChannelModelInfo`，使用该渠道模型自己的启用计划；显式配置的 `MatchType/MatchPatternsJson` 继续作为请求模型别名匹配；
+2. 请求模型未命中时，兼容回退到 `channel_id + upstream_model` 精确匹配旧 `ChannelModelInfo`；
+3. 没有渠道模型覆盖时，全局 `ModelInfo` 优先按请求模型匹配（`exact → prefix → suffix → contains`，模式长度/供应商排序）；
+4. 请求模型未命中全局目录时，兼容回退到上游模型的全局匹配。
+
+回退命中时计费快照的 `resolution` 分别记录 `channel_model_override_upstream_fallback` 和 `global_model_match_upstream_fallback`，避免与请求模型命中混淆。
 
 当前没有独立的“渠道级价格计划”回退，也不读取 `ChannelModelMapping.PricingMode/PricingPlanId`。内置和旧版价格需要先播种/迁移为全局模型计划才会参与该解析。若命中渠道模型但该覆盖没有有效计划，系统不会继续回退全局，而是生成原因相应的零成本快照。
 

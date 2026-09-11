@@ -443,6 +443,11 @@ public sealed class ProxyControllerTests
             throw new NotSupportedException();
         }
 
+        public bool SupportsImage(Guid? channelId, string? model, string? upstreamModel)
+        {
+            throw new NotSupportedException();
+        }
+
        public Task<ModelPricingCalculationResult> CalculateCostAsync(
            Guid? channelId,
            string? requestModel,

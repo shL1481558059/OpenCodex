@@ -52,6 +52,33 @@ test("pricing 为 null 时保留删除语义", () => {
   assert.equal(document.models[0].pricing, null);
 });
 
+test("匹配键数组会去重并兼容旧单值字段", () => {
+  const document = parseModelCatalogFile(JSON.stringify({
+    type: MODEL_CATALOG_TYPE,
+    version: MODEL_CATALOG_VERSION,
+    providers: [],
+    models: [
+      {
+        provider_code: "p",
+        model_key: "array",
+        match_type: "exact",
+        match_pattern: "alpha",
+        match_patterns: ["alpha", "beta", "alpha"]
+      },
+      {
+        provider_code: "p",
+        model_key: "legacy",
+        match_type: "prefix",
+        match_pattern: "legacy-"
+      }
+    ]
+  }), "catalog.json");
+
+  assert.deepEqual(document.models[0].match_patterns, ["alpha", "beta"]);
+  assert.equal(document.models[0].match_pattern, "alpha");
+  assert.deepEqual(document.models[1].match_patterns, ["legacy-"]);
+});
+
 test("非法文件抛错", () => {
   assert.throws(() => parseModelCatalogFile("not-json", "x.json"), /合法 JSON/);
   assert.throws(

@@ -49,7 +49,7 @@
 | `Channel` | 展开后的渠道配置字典 | 含 ID、类型、Base URL、认证、超时、重试、优先级、容量、compat 和 models 等 |
 | `OriginalModel` | 映射 `model`，或无映射回退时的请求模型 | 对外模型；响应转换时恢复给客户端 |
 | `UpstreamModel` | 映射 `upstream_model`，为空时回退为 `model` | 实际发送给上游 |
-| `SupportsImage` | 模型目录能力判断 | 当前候选映射的上游模型是否原生支持图片 |
+| `SupportsImage` | 模型目录能力判断 | 当前候选映射的请求模型是否原生支持图片；未命中时再按上游模型兼容回退 |
 | `MatchedModelMapping` | 显式映射候选为 `true`；兼容回退为 `false` | OCR 降级判断的重要条件 |
 
 ## 4. 渠道数据读取链路
@@ -200,18 +200,18 @@ RoutingException($"no enabled channel configured for model: {normalizedModel}")
 
 ### 5.5 图片能力确定
 
-`MappingSupportsImage` 先读取旧映射中的 `supports_image=true`，再调用：
+`MappingSupportsImage` 同时传入映射的请求模型和上游模型，再调用：
 
 ```text
-ModelCatalogService.SupportsImage(channelId, actualUpstreamModel, legacyMappingValue)
+ModelCatalogService.SupportsImage(channelId, requestModel, upstreamModel)
 ```
 
 能力判断优先顺序：
 
-1. 旧映射值为 `true`：立即支持；
-2. 上游模型为空：不支持；
-3. 存在渠道级模型信息覆盖：读取其 `CapabilitiesJson.supports_image`；
-4. 否则查全局模型目录匹配并读取 `CapabilitiesJson.supports_image`；
+1. 请求模型和上游模型都为空：不支持；
+2. 存在按请求模型命中的渠道级模型信息覆盖：读取其 `CapabilitiesJson.supports_image`；
+3. 否则按请求模型匹配全局模型目录并读取 `CapabilitiesJson.supports_image`；
+4. 请求模型未命中时，兼容回退到渠道覆盖或全局目录的上游模型匹配；
 5. 都未命中：不支持。
 
 正常新配置的映射会被规范化为只含 `model` 与 `upstream_model`，所以长期权威来源是模型目录，而非映射上的旧布尔字段。
@@ -344,7 +344,7 @@ flowchart TD
 6. 最终先按候选排序，再按模型名序号排序；
 7. 输出模型名及最佳候选的 `SupportsImage`。
 
-控制器随后将该列表同时投影成 OpenAI 风格 `data` 和 Codex 客户端风格 `models`。模型目录中的展示名称和 catalog 元数据可以补充输出，但只有路由映射中出现的对外模型会被列出。
+控制器随后将该列表同时投影成 OpenAI 风格 `data` 和 Codex 客户端风格 `models`。展示名称、catalog 和能力元数据优先按请求模型解析，未命中时再按上游模型兼容回退；只有路由映射中出现的对外模型会被列出。
 
 ## 11. 决策表
 

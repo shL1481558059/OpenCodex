@@ -183,6 +183,7 @@ public sealed class ModelInfoResponse
         string description,
         string matchType,
         string matchPattern,
+        IReadOnlyList<string> matchPatterns,
         IReadOnlyDictionary<string, object?> catalog,
         IReadOnlyDictionary<string, object?> capabilities,
         bool enabled,
@@ -202,6 +203,7 @@ public sealed class ModelInfoResponse
         Description = description;
         MatchType = matchType;
         MatchPattern = matchPattern;
+        MatchPatterns = matchPatterns;
         Catalog = catalog;
         Capabilities = capabilities;
         Enabled = enabled;
@@ -243,6 +245,9 @@ public sealed class ModelInfoResponse
 
     [JsonPropertyName("match_pattern")]
     public string MatchPattern { get; }
+
+    [JsonPropertyName("match_patterns")]
+    public IReadOnlyList<string> MatchPatterns { get; }
 
     [JsonPropertyName("catalog")]
     public IReadOnlyDictionary<string, object?> Catalog { get; }
@@ -304,6 +309,7 @@ public sealed class ChannelModelInfoResponse
     public ChannelModelInfoResponse(
         Guid id,
         Guid channelId,
+        string requestModel,
         string upstreamModel,
         Guid providerId,
         string providerCode,
@@ -313,6 +319,7 @@ public sealed class ChannelModelInfoResponse
         string description,
         string matchType,
         string matchPattern,
+        IReadOnlyList<string> matchPatterns,
         IReadOnlyDictionary<string, object?> catalog,
         IReadOnlyDictionary<string, object?> capabilities,
         bool enabled,
@@ -323,6 +330,7 @@ public sealed class ChannelModelInfoResponse
     {
         Id = id;
         ChannelId = channelId;
+        RequestModel = requestModel;
         UpstreamModel = upstreamModel;
         ProviderId = providerId;
         ProviderCode = providerCode;
@@ -332,6 +340,7 @@ public sealed class ChannelModelInfoResponse
         Description = description;
         MatchType = matchType;
         MatchPattern = matchPattern;
+        MatchPatterns = matchPatterns;
         Catalog = catalog;
         Capabilities = capabilities;
         Enabled = enabled;
@@ -346,6 +355,9 @@ public sealed class ChannelModelInfoResponse
 
     [JsonPropertyName("channel_id")]
     public Guid ChannelId { get; }
+
+    [JsonPropertyName("request_model")]
+    public string RequestModel { get; }
 
     [JsonPropertyName("upstream_model")]
     public string UpstreamModel { get; }
@@ -374,6 +386,9 @@ public sealed class ChannelModelInfoResponse
     [JsonPropertyName("match_pattern")]
     public string MatchPattern { get; }
 
+    [JsonPropertyName("match_patterns")]
+    public IReadOnlyList<string> MatchPatterns { get; }
+
     [JsonPropertyName("catalog")]
     public IReadOnlyDictionary<string, object?> Catalog { get; }
 
@@ -399,16 +414,21 @@ public sealed class ChannelModelInfoResponse
 public sealed class ChannelModelInfoListItemResponse
 {
     public ChannelModelInfoListItemResponse(
+        string requestModel,
         string upstreamModel,
         bool overridden,
         ModelInfoResponse? globalModel,
         ChannelModelInfoResponse? overrideModel)
     {
+        RequestModel = requestModel;
         UpstreamModel = upstreamModel;
         Overridden = overridden;
         GlobalModel = globalModel;
         OverrideModel = overrideModel;
     }
+
+    [JsonPropertyName("request_model")]
+    public string RequestModel { get; }
 
     [JsonPropertyName("upstream_model")]
     public string UpstreamModel { get; }

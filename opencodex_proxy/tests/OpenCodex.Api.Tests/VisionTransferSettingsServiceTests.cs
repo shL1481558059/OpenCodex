@@ -625,6 +625,7 @@ public sealed class VisionTransferSettingsServiceTests
         {
             Id = Guid.NewGuid(),
             ChannelId = channelId,
+            RequestModel = upstreamModel,
             UpstreamModel = upstreamModel,
             ProviderId = Guid.NewGuid(),
             ModelKey = upstreamModel,

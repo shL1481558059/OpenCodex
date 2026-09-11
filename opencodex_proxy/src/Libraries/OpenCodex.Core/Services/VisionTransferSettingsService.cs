@@ -96,7 +96,7 @@ public sealed class VisionTransferSettingsService : IVisionTransferSettingsServi
             var mappings = ParseChannelModels(channel.ModelsJson);
             foreach (var (model, upstreamModel) in mappings)
             {
-                if (_modelCatalogService.SupportsImage(channel.Id, upstreamModel))
+                if (_modelCatalogService.SupportsImage(channel.Id, model, upstreamModel))
                 {
                     candidates.Add(new VisionTransferCandidateDto
                     {
@@ -292,7 +292,7 @@ public sealed class VisionTransferSettingsService : IVisionTransferSettingsServi
             return (false, 400, $"model '{model}' not found in channel {channelId}");
         }
 
-        if (!_modelCatalogService.SupportsImage(channelId, foundUpstream))
+        if (!_modelCatalogService.SupportsImage(channelId, foundModel, foundUpstream))
         {
             return (false, 400, "model does not have image support enabled. Please go to model information page to mark supports_image capability.");
         }
@@ -341,7 +341,7 @@ public sealed class VisionTransferSettingsService : IVisionTransferSettingsServi
 
         result.UpstreamModel = foundUpstream;
 
-        if (!_modelCatalogService.SupportsImage(channelId, foundUpstream))
+        if (!_modelCatalogService.SupportsImage(channelId, foundModel, foundUpstream))
         {
             result.Reason = "image_capability_revoked";
             return result;

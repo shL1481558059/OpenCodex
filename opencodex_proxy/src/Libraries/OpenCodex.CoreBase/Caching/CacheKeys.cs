@@ -21,13 +21,19 @@ public static class CacheKeys
     /// <summary>观测:全量渠道轻量快照(进程内 IMemoryCache),只含路由/容量所需字段,不含 models/headers/compat。</summary>
     public static string ChannelObservation => "admin:channel-observation";
 
-    /// <summary>定价:按 (channelId, upstreamModel) 缓存的计费解析结果。</summary>
+    /// <summary>定价:按 (channelId, requestModel, upstreamModel) 缓存的计费解析结果。</summary>
     /// <param name="redisVersion">Redis 全局定价版本;用于跨实例失效。</param>
     /// <param name="localVersion">进程内定价版本;用于 Redis 故障期间失效。</param>
     public static string PricingContext(
         int redisVersion,
         int localVersion,
         Guid? channelId,
+        string? requestModel,
         string? upstreamModel)
-        => $"pricing:context:r{redisVersion}:l{localVersion}:{channelId}:{upstreamModel}";
+        => $"pricing:context:r{redisVersion}:l{localVersion}:{channelId}:{EncodePart(requestModel)}:{EncodePart(upstreamModel)}";
+
+    private static string EncodePart(string? value)
+    {
+        return value is null ? "-" : $"{value.Length}:{value}";
+    }
 }

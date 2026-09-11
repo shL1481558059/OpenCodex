@@ -60,7 +60,9 @@ public interface IModelCatalogService
 
     bool SupportsImage(Guid? channelId, string? upstreamModel);
 
-   Task<ModelPricingCalculationResult> CalculateCostAsync(
+    bool SupportsImage(Guid? channelId, string? model, string? upstreamModel);
+
+    Task<ModelPricingCalculationResult> CalculateCostAsync(
        Guid? channelId,
        string? requestModel,
        string? upstreamModel,

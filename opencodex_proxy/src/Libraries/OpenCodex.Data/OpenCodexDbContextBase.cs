@@ -170,6 +170,7 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         infos.Property(info => info.Description).IsRequired();
         infos.Property(info => info.MatchType).IsRequired();
         infos.Property(info => info.MatchPattern).IsRequired();
+        infos.Property(info => info.MatchPatternsJson).IsRequired();
         infos.Property(info => info.CatalogJson).IsRequired();
         infos.Property(info => info.CapabilitiesJson).IsRequired();
         infos.Property(info => info.Source).IsRequired();
@@ -185,16 +186,19 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         channelInfos.ToTable("ChannelModelInfos");
         channelInfos.HasKey(info => info.Id);
         channelInfos.Property(info => info.Id).ValueGeneratedOnAdd();
+        channelInfos.Property(info => info.RequestModel).IsRequired();
         channelInfos.Property(info => info.UpstreamModel).IsRequired();
         channelInfos.Property(info => info.ModelKey).IsRequired();
         channelInfos.Property(info => info.DisplayName).IsRequired();
         channelInfos.Property(info => info.Description).IsRequired();
         channelInfos.Property(info => info.MatchType).IsRequired();
         channelInfos.Property(info => info.MatchPattern).IsRequired();
+        channelInfos.Property(info => info.MatchPatternsJson).IsRequired();
         channelInfos.Property(info => info.CatalogJson).IsRequired();
         channelInfos.Property(info => info.CapabilitiesJson).IsRequired();
         channelInfos.Property(info => info.Source).IsRequired();
-        channelInfos.HasIndex(info => new { info.ChannelId, info.UpstreamModel }).IsUnique();
+        channelInfos.HasIndex(info => new { info.ChannelId, info.RequestModel }).IsUnique();
+        channelInfos.HasIndex(info => new { info.ChannelId, info.UpstreamModel });
         channelInfos.HasIndex(info => info.ProviderId);
         channelInfos.HasIndex(info => info.Enabled);
         channelInfos.HasIndex(info => info.MatchPattern);

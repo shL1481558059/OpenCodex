@@ -205,7 +205,8 @@ erDiagram
 | `DisplayName` | string | 展示名 |
 | `Description` | string | 描述 |
 | `MatchType` | string | 服务层只接受 `exact/prefix/suffix/contains` |
-| `MatchPattern` | string | 匹配键 |
+| `MatchPattern` | string | 主匹配键；数组模式下取首项，兼容旧客户端 |
+| `MatchPatternsJson` | JSON | 匹配键数组；仅 `exact` 允许包含多个值 |
 | `CatalogJson` | JSON | Codex/客户端目录字段 |
 | `CapabilitiesJson` | JSON | 图片等能力 |
 | `Enabled` | bool | 删除操作实际通常是停用 |
@@ -213,7 +214,7 @@ erDiagram
 
 ### 6.3 ChannelModelInfo
 
-渠道级模型信息用于覆盖上游模型的展示、能力、Catalog 和定价；删除覆盖时恢复全局定义，而不是删除上游模型。
+渠道级模型信息按 `ChannelId + RequestModel` 唯一定位，用于覆盖请求模型在该渠道下的展示、能力、Catalog 和定价；`UpstreamModel` 只记录当前映射使用的上游模型，不作为覆盖主键。删除覆盖时恢复全局定义，而不是删除上游模型。
 
 ### 6.4 ModelPricingPlan 与 Rule
 
@@ -222,7 +223,7 @@ erDiagram
 - 全局模型计划：`ModelInfoId` 非空，`ChannelModelInfoId` 与 `ChannelId` 为空；
 - 渠道模型覆盖计划：`ChannelModelInfoId` 与对应 `ChannelId` 非空，`ModelInfoId` 为空。
 
-当前成本解析不会读取 `ChannelModelMapping.PricingMode/PricingPlanId`，也没有独立的“仅绑定渠道”价格回退层。解析顺序为：先按渠道与上游模型精确查找启用的 `ChannelModelInfo` 及其计划；不存在渠道覆盖时，再按 `exact → prefix → suffix → contains` 查找启用的全局 `ModelInfo` 及其计划。若命中渠道覆盖但覆盖没有有效计划，当前实现直接生成零成本快照，不再回退到全局计划。
+当前成本解析不会读取 `ChannelModelMapping.PricingMode/PricingPlanId`，也没有独立的“仅绑定渠道”价格回退层。解析顺序为：先按渠道与请求模型查找启用的 `ChannelModelInfo` 及其计划；请求模型未命中时，仅为迁移前旧行按上游模型精确回退。不存在渠道覆盖时，再按 `exact → prefix → suffix → contains` 查找启用的全局 `ModelInfo` 及其计划。若命中渠道覆盖但覆盖没有有效计划，当前实现直接生成零成本快照，不再回退到全局计划。
 
 每个计划包含多个计费规则，当前计费项包括：
 
@@ -344,7 +345,7 @@ stateDiagram-v2
 - User.Username 唯一；
 - AccessApiKey.KeyHash 唯一；
 - Channel 按 Owner + Position、Owner + Priority + Position；
-- ChannelModelInfo 按 Channel + UpstreamModel 唯一；
+- ChannelModelInfo 按 Channel + RequestModel 唯一；UpstreamModel 使用普通索引；
 - ModelProvider.Code 唯一；
 - ModelPricing.ModelId 唯一；
 - RequestLog 按创建时间、模型、上游模型、渠道、类型、状态、父 ID、会话字段、路径、状态码、Key、Owner + Id；

@@ -188,6 +188,10 @@ namespace OpenCodex.Data.Migrations.PostgresMigrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("MatchPatternsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<string>("MatchType")
                         .IsRequired()
                         .HasColumnType("text");
@@ -198,6 +202,10 @@ namespace OpenCodex.Data.Migrations.PostgresMigrations
 
                     b.Property<Guid>("ProviderId")
                         .HasColumnType("uuid");
+
+                    b.Property<string>("RequestModel")
+                        .IsRequired()
+                        .HasColumnType("text");
 
                     b.Property<string>("Source")
                         .IsRequired()
@@ -220,8 +228,10 @@ namespace OpenCodex.Data.Migrations.PostgresMigrations
 
                     b.HasIndex("ProviderId");
 
-                    b.HasIndex("ChannelId", "UpstreamModel")
+                    b.HasIndex("ChannelId", "RequestModel")
                         .IsUnique();
+
+                    b.HasIndex("ChannelId", "UpstreamModel");
 
                     b.ToTable("ChannelModelInfos", (string)null);
                 });
@@ -389,6 +399,10 @@ namespace OpenCodex.Data.Migrations.PostgresMigrations
                         .HasColumnType("boolean");
 
                     b.Property<string>("MatchPattern")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("MatchPatternsJson")
                         .IsRequired()
                         .HasColumnType("text");
 

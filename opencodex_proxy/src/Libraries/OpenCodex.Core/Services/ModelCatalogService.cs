@@ -250,6 +250,8 @@ public sealed class ModelCatalogService : IModelCatalogService
                     model.ModelKey.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase)
                     || model.DisplayName.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase)
                     || model.MatchPattern.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase)
+                    || ReadMatchPatterns(model.MatchPatternsJson, model.MatchPattern)
+                        .Any(pattern => pattern.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase))
                     || ProviderText(providerById, model.ProviderId).Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase))
                 .ToList();
         }
@@ -311,22 +313,22 @@ public sealed class ModelCatalogService : IModelCatalogService
             .Select(route => route.ChannelId!.Value)
             .Distinct()
             .ToList();
-        var upstreamModels = routes
-            .Select(route => Normalize(string.IsNullOrWhiteSpace(route.UpstreamModel)
-                ? route.Model
-                : route.UpstreamModel))
+        var lookupModels = routes
+            .SelectMany(route => new[]
+            {
+                Normalize(route.Model),
+                Normalize(string.IsNullOrWhiteSpace(route.UpstreamModel)
+                    ? route.Model
+                    : route.UpstreamModel)
+            })
             .Where(model => model.Length > 0)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
         var channelModels = _channelModels.TableNoTracking
             .Where(model => channelIds.Contains(model.ChannelId) && model.Enabled)
             .AsEnumerable()
-            .GroupBy(model => ChannelModelKey(model.ChannelId, model.UpstreamModel), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(
-                group => group.Key,
-                group => group.OrderByDescending(model => model.UpdatedAt).First(),
-                StringComparer.OrdinalIgnoreCase);
-        var globalModels = ResolveGlobalModels(upstreamModels);
+            .ToList();
+        var globalModels = ResolveGlobalModels(lookupModels);
         var entries = routes
             .Select(route => BuildProxyModelEntry(route, channelModels, globalModels))
             .ToList();
@@ -353,16 +355,18 @@ public sealed class ModelCatalogService : IModelCatalogService
 
     private ProxyModelCatalogEntry BuildProxyModelEntry(
         ProxyModelCapabilityDto route,
-        IReadOnlyDictionary<string, ChannelModelInfo> channelModels,
+        IReadOnlyList<ChannelModelInfo> channelModels,
         IReadOnlyDictionary<string, ModelInfo?> globalModels)
     {
+        var requestModel = Normalize(route.Model);
         var upstreamModel = Normalize(string.IsNullOrWhiteSpace(route.UpstreamModel)
             ? route.Model
             : route.UpstreamModel);
-        channelModels.TryGetValue(
-            ChannelModelKey(route.ChannelId, upstreamModel),
-            out var channelModel);
-        globalModels.TryGetValue(upstreamModel, out var globalModel);
+        var channelModel = ResolveChannelModelMatch(
+            channelModels.Where(model => model.ChannelId == route.ChannelId).ToList(),
+            requestModel,
+            upstreamModel)?.Model;
+        var globalModel = ResolveGlobalModelFromLookup(globalModels, requestModel, upstreamModel);
 
         var globalCatalog = globalModel is null
             ? new Dictionary<string, object?>(StringComparer.Ordinal)
@@ -649,11 +653,6 @@ public sealed class ModelCatalogService : IModelCatalogService
         return result;
     }
 
-    private static string ChannelModelKey(Guid? channelId, string upstreamModel)
-    {
-        return $"{channelId?.ToString() ?? string.Empty}|{Normalize(upstreamModel)}";
-    }
-
     private static string FirstNonEmpty(params string?[] values)
     {
         return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? string.Empty;
@@ -744,6 +743,12 @@ public sealed class ModelCatalogService : IModelCatalogService
                 return ModelValidationFailure("model_key already exists");
             }
 
+            var matchType = NormalizeMatchType(request.MatchType);
+            var matchPatterns = NormalizeMatchPatterns(
+                request.MatchPatterns,
+                request.MatchPattern,
+                modelKey,
+                matchType);
             var model = new ModelInfo
             {
                 Scope = scope,
@@ -752,8 +757,9 @@ public sealed class ModelCatalogService : IModelCatalogService
                 ModelKey = modelKey,
                 DisplayName = DisplayName(request.DisplayName, modelKey),
                 Description = Normalize(request.Description),
-                MatchType = NormalizeMatchType(request.MatchType),
-                MatchPattern = NormalizeMatchPattern(request.MatchPattern, modelKey),
+                MatchType = matchType,
+                MatchPattern = matchPatterns[0],
+                MatchPatternsJson = SerializeMatchPatterns(matchPatterns),
                 CatalogJson = SerializeObject(SyncCatalogIdentity(request.Catalog, modelKey, request.DisplayName)),
                 CapabilitiesJson = SerializeObject(request.Capabilities),
                 Enabled = request.Enabled,
@@ -798,14 +804,21 @@ public sealed class ModelCatalogService : IModelCatalogService
             }
 
             var now = UnixTimeSeconds();
+            var matchType = NormalizeMatchType(request.MatchType);
+            var matchPatterns = NormalizeMatchPatterns(
+                request.MatchPatterns,
+                request.MatchPattern,
+                modelKey,
+                matchType);
             model.Scope = scope;
             model.ProviderId = provider.Id;
             model.ChannelId = channelId;
             model.ModelKey = modelKey;
             model.DisplayName = DisplayName(request.DisplayName, modelKey);
             model.Description = Normalize(request.Description);
-            model.MatchType = NormalizeMatchType(request.MatchType);
-            model.MatchPattern = NormalizeMatchPattern(request.MatchPattern, modelKey);
+            model.MatchType = matchType;
+            model.MatchPattern = matchPatterns[0];
+            model.MatchPatternsJson = SerializeMatchPatterns(matchPatterns);
             model.CatalogJson = SerializeObject(SyncCatalogIdentity(request.Catalog, modelKey, request.DisplayName));
             model.CapabilitiesJson = SerializeObject(request.Capabilities);
             model.Enabled = request.Enabled;
@@ -1295,8 +1308,15 @@ public sealed class ModelCatalogService : IModelCatalogService
                model.ProviderId = provider.Id;
                model.DisplayName = DisplayName(transfer.DisplayName, modelKey);
                model.Description = Normalize(transfer.Description);
-               model.MatchType = NormalizeMatchType(transfer.MatchType);
-               model.MatchPattern = NormalizeMatchPattern(transfer.MatchPattern, modelKey);
+               var matchType = NormalizeMatchType(transfer.MatchType);
+               var matchPatterns = NormalizeMatchPatterns(
+                   transfer.MatchPatterns,
+                   transfer.MatchPattern,
+                   modelKey,
+                   matchType);
+               model.MatchType = matchType;
+               model.MatchPattern = matchPatterns[0];
+               model.MatchPatternsJson = SerializeMatchPatterns(matchPatterns);
                model.CatalogJson = SerializeObject(SyncCatalogIdentity(
                     JsonRequestValue.Object(transfer.Catalog), modelKey, transfer.DisplayName));
                model.CapabilitiesJson = SerializeObject(JsonRequestValue.Object(transfer.Capabilities));
@@ -1326,7 +1346,7 @@ public sealed class ModelCatalogService : IModelCatalogService
        }
    }
 
-   public ApiOpResult<ChannelModelInfoListResponse> ListChannelModelInfos(Guid channelId)
+    public ApiOpResult<ChannelModelInfoListResponse> ListChannelModelInfos(Guid channelId)
     {
         var channel = FindChannelInScope(channelId);
         if (channel is null)
@@ -1335,38 +1355,51 @@ public sealed class ModelCatalogService : IModelCatalogService
         }
 
         var providerById = ProviderMap();
-        var upstreamModels = ListChannelUpstreamModels(channel);
-        var overrides = new Dictionary<string, ChannelModelInfo>(StringComparer.OrdinalIgnoreCase);
-        foreach (var model in _channelModels.TableNoTracking
+        var channelModels = _channelModels.TableNoTracking
             .Where(model => model.ChannelId == channel.Id)
             .OrderByDescending(model => model.UpdatedAt)
-            .AsEnumerable())
+            .AsEnumerable()
+            .ToList();
+        var rows = ListChannelModelMappings(channel)
+            .GroupBy(item => item.RequestModel, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToList();
+        var mappedOverrideIds = new HashSet<Guid>();
+        foreach (var row in rows)
         {
-            overrides.TryAdd(model.UpstreamModel, model);
+            var overrideMatch = ResolveChannelModelMatch(
+                channelModels,
+                row.RequestModel,
+                row.UpstreamModel);
+            if (overrideMatch is not null)
+            {
+                mappedOverrideIds.Add(overrideMatch.Model.Id);
+            }
         }
 
-        foreach (var upstreamModel in overrides.Keys)
+        foreach (var model in channelModels.Where(model => !mappedOverrideIds.Contains(model.Id)))
         {
-            upstreamModels.Add(upstreamModel);
+            rows.Add((
+                ChannelRequestModel(model),
+                Normalize(model.UpstreamModel)));
         }
 
-        // 批量取回覆盖模型与全局模型的 plan/rules，避免每个上游模型各查一次。
-        var overrideModels = overrides.Values.DistinctBy(model => model.Id).ToList();
+        // 批量取回覆盖模型与全局模型的 plan/rules，避免每个请求模型各查一次。
+        var overrideModels = channelModels.DistinctBy(model => model.Id).ToList();
         var plansByChannelModel = PlansByChannelModelId(
             overrideModels.Select(model => model.Id).ToList(),
             channel.Id);
         var channelRulesByPlan = RulesByPlanIds(plansByChannelModel.Values.Select(plan => plan.Id).ToList());
 
-        var distinctUpstreamModels = upstreamModels
+        var lookupModels = rows
+            .SelectMany(row => new[] { row.RequestModel, row.UpstreamModel })
             .Where(model => Normalize(model).Length > 0)
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(model => model, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        // 每个上游模型还要做全局复合匹配(文档 C2 明确保留),匹配到的全局模型统一批量取 plan/rules。
         var globalMatches = new Dictionary<Guid, ModelInfo>();
-        var perItemGlobalModel = ResolveGlobalModels(distinctUpstreamModels);
-        foreach (var globalModel in perItemGlobalModel.Values)
+        var globalModels = ResolveGlobalModels(lookupModels);
+        foreach (var globalModel in globalModels.Values)
         {
             if (globalModel is not null)
             {
@@ -1377,13 +1410,21 @@ public sealed class ModelCatalogService : IModelCatalogService
         var plansByGlobalModel = PlansByModelId(globalMatches.Keys.ToList());
         var globalRulesByPlan = RulesByPlanIds(plansByGlobalModel.Values.Select(plan => plan.Id).ToList());
 
-        var items = distinctUpstreamModels
-            .Select(upstreamModel =>
+        var items = rows
+            .Select(row =>
             {
-                var globalModel = perItemGlobalModel[upstreamModel];
-                overrides.TryGetValue(upstreamModel, out var overrideModel);
+                var overrideMatch = ResolveChannelModelMatch(
+                    channelModels,
+                    row.RequestModel,
+                    row.UpstreamModel);
+                var globalModel = ResolveGlobalModelFromLookup(
+                    globalModels,
+                    row.RequestModel,
+                    row.UpstreamModel);
+                var overrideModel = overrideMatch?.Model;
                 return new ChannelModelInfoListItemResponse(
-                    upstreamModel,
+                    row.RequestModel,
+                    row.UpstreamModel,
                     overrideModel is not null,
                     globalModel is null ? null : ToModelResponse(
                         globalModel,
@@ -1394,8 +1435,11 @@ public sealed class ModelCatalogService : IModelCatalogService
                         overrideModel,
                         providerById,
                         plansByChannelModel.TryGetValue(overrideModel.Id, out var channelPlan) ? channelPlan : null,
-                        channelRulesByPlan));
+                        channelRulesByPlan,
+                        row.RequestModel));
             })
+            .OrderBy(item => item.RequestModel, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.UpstreamModel, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         return ApiOpResult<ChannelModelInfoListResponse>.Succeed(
@@ -1417,15 +1461,26 @@ public sealed class ModelCatalogService : IModelCatalogService
 
             var now = UnixTimeSeconds();
             var upstreamModel = NormalizeRequired(request.UpstreamModel, "upstream_model");
+            var requestModel = ResolveChannelRequestModel(
+                channel,
+                request.RequestModel,
+                upstreamModel);
             var provider = ResolveProvider(request.ProviderId, request.ProviderCode);
             var modelKey = NormalizeRequired(request.ModelKey, "model_key");
-            var existing = _channelModels.Table
+            var channelModels = _channelModels.Table
                 .Where(model => model.ChannelId == channel.Id)
                 .AsEnumerable()
-                .FirstOrDefault(model => string.Equals(
-                    model.UpstreamModel,
-                    upstreamModel,
-                    StringComparison.OrdinalIgnoreCase));
+                .ToList();
+            var existing = channelModels.FirstOrDefault(model => string.Equals(
+                    model.RequestModel,
+                    requestModel,
+                    StringComparison.OrdinalIgnoreCase))
+                ?? channelModels.FirstOrDefault(model =>
+                    IsLegacyChannelModel(model)
+                    && string.Equals(
+                        model.UpstreamModel,
+                        upstreamModel,
+                        StringComparison.OrdinalIgnoreCase));
 
             if (existing is null)
             {
@@ -1435,12 +1490,12 @@ public sealed class ModelCatalogService : IModelCatalogService
                     ChannelId = channel.Id,
                     CreatedAt = now
                 };
-                AssignChannelModel(existing, request, provider.Id, upstreamModel, modelKey, now);
+                AssignChannelModel(existing, request, provider.Id, requestModel, upstreamModel, modelKey, now);
                 _channelModels.Insert(existing);
             }
             else
             {
-                AssignChannelModel(existing, request, provider.Id, upstreamModel, modelKey, now);
+                AssignChannelModel(existing, request, provider.Id, requestModel, upstreamModel, modelKey, now);
                 _channelModels.Update(existing);
             }
 
@@ -1448,7 +1503,8 @@ public sealed class ModelCatalogService : IModelCatalogService
             BumpPricingVersion();
 
             return ApiOpResult<ChannelModelInfoResponsePayload>.Succeed(
-                new ChannelModelInfoResponsePayload(ToChannelModelResponseForSingle(existing, ProviderMap())));
+                new ChannelModelInfoResponsePayload(
+                    ToChannelModelResponseForSingle(existing, ProviderMap(), requestModel)));
         }
         catch (ArgumentException exception)
         {
@@ -1476,20 +1532,29 @@ public sealed class ModelCatalogService : IModelCatalogService
         return ApiOpResult.Succeed();
     }
 
-    public bool SupportsImage(Guid? channelId, string? upstreamModel)
+    public bool SupportsImage(Guid? channelId, string? model)
     {
-        var actualModel = Normalize(upstreamModel);
-        if (actualModel.Length == 0)
+        return SupportsImage(channelId, model, model);
+    }
+
+    public bool SupportsImage(Guid? channelId, string? model, string? upstreamModel)
+    {
+        var requestModel = Normalize(model);
+        var actualUpstreamModel = Normalize(upstreamModel);
+        if (requestModel.Length == 0 && actualUpstreamModel.Length == 0)
         {
             return false;
         }
 
         if (channelId.HasValue)
         {
-            var channelModel = ResolveChannelModel(channelId.Value, actualModel);
-            if (channelModel is not null)
+            var channelMatch = ResolveChannelModelMatch(
+                channelId.Value,
+                requestModel,
+                actualUpstreamModel);
+            if (channelMatch is not null)
             {
-                var channelCapabilities = DeserializeObject(channelModel.CapabilitiesJson);
+                var channelCapabilities = DeserializeObject(channelMatch.Model.CapabilitiesJson);
                 if (channelCapabilities.ContainsKey("supports_image"))
                 {
                     return ReadBoolean(channelCapabilities, "supports_image") == true;
@@ -1497,7 +1562,11 @@ public sealed class ModelCatalogService : IModelCatalogService
             }
         }
 
-        var globalModel = ResolveGlobalModel(actualModel);
+        var globalModel = ResolveGlobalModelWithFallback(
+            requestModel,
+            actualUpstreamModel,
+            out _,
+            out _);
         return globalModel is not null && SupportsImage(globalModel.CapabilitiesJson);
     }
 
@@ -1508,10 +1577,13 @@ public sealed class ModelCatalogService : IModelCatalogService
        ModelUsageVector usage,
        DateTimeOffset billingInstant)
    {
-       // 缓存定价解析(按 channelId + upstreamModel),扁平 DTO 规避 PricingResolution 不可序列化的问题。
+       // 缓存定价解析(按 channelId + requestModel + upstreamModel),扁平 DTO 规避 PricingResolution 不可序列化的问题。
         // rules 与 provider code 随解析结果一起缓存(失效时机与 plan/provider 完全一致,
         // 见 BumpPricingVersion);usage 计算每请求不同,不可缓存。
-        var cached = await ResolvePricingCachedAsync(channelId, upstreamModel);
+        var cached = await ResolvePricingCachedAsync(
+            channelId,
+            Normalize(requestModel),
+            Normalize(upstreamModel));
         if (cached is null || !cached.HasModel || !cached.HasPlan)
         {
             return EmptyCalculation(cached?.Reason ?? "model_not_matched", billingInstant);
@@ -1592,6 +1664,7 @@ public sealed class ModelCatalogService : IModelCatalogService
 
     private async Task<CachedPricingResolution?> ResolvePricingCachedAsync(
         Guid? channelId,
+        string requestModel,
         string? upstreamModel)
     {
         var versions = await GetPricingVersionsAsync();
@@ -1600,8 +1673,9 @@ public sealed class ModelCatalogService : IModelCatalogService
                 versions.RedisVersion,
                 versions.LocalVersion,
                 channelId,
+                requestModel,
                 upstreamModel),
-            () => Task.FromResult(ToCached(ResolvePricing(channelId, upstreamModel))),
+            () => Task.FromResult(ToCached(ResolvePricing(channelId, requestModel, upstreamModel))),
             PricingCacheTtl);
     }
 
@@ -1775,70 +1849,196 @@ public sealed class ModelCatalogService : IModelCatalogService
 
     private PricingResolution ResolvePricing(
         Guid? channelId,
+        string requestModel,
         string? upstreamModel)
     {
-        var actualModel = Normalize(upstreamModel);
-        if (actualModel.Length == 0)
+        var actualRequestModel = Normalize(requestModel);
+        var actualUpstreamModel = Normalize(upstreamModel);
+        if (actualRequestModel.Length == 0 && actualUpstreamModel.Length == 0)
         {
             return new PricingResolution("model_not_matched");
         }
 
         if (channelId.HasValue)
         {
-            var channelModel = ResolveChannelModel(channelId.Value, actualModel);
-            if (channelModel is not null)
+            var channelMatch = ResolveChannelModelMatch(
+                channelId.Value,
+                actualRequestModel,
+                actualUpstreamModel);
+            if (channelMatch is not null)
             {
-                var channelPlan = FindPlanForChannelModel(channelModel.Id, channelId.Value);
+                var channelPlan = FindPlanForChannelModel(channelMatch.Model.Id, channelId.Value);
                 if (channelPlan is not null)
                 {
+                    var usedUpstreamFallback = actualRequestModel.Length > 0
+                        && channelMatch.MatchedByUpstream
+                        && !string.Equals(
+                            actualRequestModel,
+                            actualUpstreamModel,
+                            StringComparison.OrdinalIgnoreCase);
                     return new PricingResolution(
-                        channelModel,
+                        channelMatch.Model,
                         channelPlan,
-                        "channel_model_override");
+                        usedUpstreamFallback
+                            ? "channel_model_override_upstream_fallback"
+                            : "channel_model_override",
+                        channelMatch.MatchedPattern);
                 }
             }
         }
 
-        var globalModel = ResolveGlobalModel(actualModel);
+        var globalModel = ResolveGlobalModelWithFallback(
+            actualRequestModel,
+            actualUpstreamModel,
+            out var globalMatchModel,
+            out var globalUsedUpstreamFallback);
         if (globalModel is not null)
         {
             return new PricingResolution(
                 globalModel,
                 FindPlanForModel(globalModel.Id),
-                "global_model_match");
+                globalUsedUpstreamFallback
+                    ? "global_model_match_upstream_fallback"
+                    : "global_model_match",
+                ResolveGlobalModelMatchPattern(globalModel, globalMatchModel));
         }
 
         return new PricingResolution("model_not_matched");
     }
 
-    private ChannelModelInfo? ResolveChannelModel(Guid channelId, string upstreamModel)
+    private ModelInfo? ResolveGlobalModelWithFallback(
+        string requestModel,
+        string upstreamModel,
+        out string matchedModel,
+        out bool usedUpstreamFallback)
     {
-        var normalized = Normalize(upstreamModel);
-        if (normalized.Length == 0)
+        var normalizedRequestModel = Normalize(requestModel);
+        if (normalizedRequestModel.Length > 0)
+        {
+            var requestMatch = ResolveGlobalModel(normalizedRequestModel);
+            if (requestMatch is not null)
+            {
+                matchedModel = normalizedRequestModel;
+                usedUpstreamFallback = false;
+                return requestMatch;
+            }
+        }
+
+        var normalizedUpstreamModel = Normalize(upstreamModel);
+        if (normalizedUpstreamModel.Length > 0
+            && !string.Equals(
+                normalizedUpstreamModel,
+                normalizedRequestModel,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            var upstreamMatch = ResolveGlobalModel(normalizedUpstreamModel);
+            if (upstreamMatch is not null)
+            {
+                matchedModel = normalizedUpstreamModel;
+                usedUpstreamFallback = normalizedRequestModel.Length > 0;
+                return upstreamMatch;
+            }
+        }
+
+        matchedModel = normalizedRequestModel.Length > 0
+            ? normalizedRequestModel
+            : normalizedUpstreamModel;
+        usedUpstreamFallback = false;
+        return null;
+    }
+
+    private ChannelModelMatch? ResolveChannelModelMatch(
+        Guid channelId,
+        string requestModel,
+        string upstreamModel)
+    {
+        var models = _channelModels.TableNoTracking
+            .Where(model => model.ChannelId == channelId && model.Enabled)
+            .AsEnumerable()
+            .ToList();
+        return ResolveChannelModelMatch(models, requestModel, upstreamModel);
+    }
+
+    private static ChannelModelMatch? ResolveChannelModelMatch(
+        IReadOnlyList<ChannelModelInfo> models,
+        string requestModel,
+        string upstreamModel)
+    {
+        var normalizedRequestModel = Normalize(requestModel);
+        var normalizedUpstreamModel = Normalize(upstreamModel);
+        if (models.Count == 0)
         {
             return null;
         }
 
-        // 数据库精确相等快路径:常见情况下只取回匹配行,不拉取该渠道全部模型。
-        // OrdinalIgnoreCase 与数据库 collation 语义不完全等价,未命中再退回内存比较兜底。
-        var exact = _channelModels.TableNoTracking
-            .Where(model => model.ChannelId == channelId
-                && model.Enabled
-                && model.UpstreamModel == normalized)
-            .OrderByDescending(model => model.UpdatedAt)
-            .FirstOrDefault();
-        if (exact is not null)
+        if (normalizedRequestModel.Length > 0)
         {
-            return exact;
+            var requestMatch = models
+                .Where(model => string.Equals(
+                    Normalize(model.RequestModel),
+                    normalizedRequestModel,
+                    StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(model => model.UpdatedAt)
+                .ThenBy(model => model.Id)
+                .FirstOrDefault();
+            if (requestMatch is not null)
+            {
+                return new ChannelModelMatch(
+                    requestMatch,
+                    normalizedRequestModel,
+                    matchedByUpstream: false);
+            }
+
+            var aliasMatch = models
+                .Where(HasExplicitMatchPatterns)
+                .Select(model => new
+                {
+                    Model = model,
+                    Rank = MatchRank(
+                        model.MatchType,
+                        ReadMatchPatterns(model.MatchPatternsJson, model.MatchPattern),
+                        normalizedRequestModel)
+                })
+                .Where(item => item.Rank is not null)
+                .OrderBy(item => item.Rank!.Priority)
+                .ThenByDescending(item => item.Rank!.PatternLength)
+                .ThenByDescending(item => item.Model.UpdatedAt)
+                .ThenBy(item => item.Model.UpstreamModel, StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault();
+            if (aliasMatch is not null)
+            {
+                return new ChannelModelMatch(
+                    aliasMatch.Model,
+                    aliasMatch.Rank!.Pattern,
+                    matchedByUpstream: false);
+            }
         }
 
-        return _channelModels.TableNoTracking
-            .Where(model => model.ChannelId == channelId && model.Enabled)
-            .AsEnumerable()
-            .FirstOrDefault(model => string.Equals(
-                model.UpstreamModel,
-                normalized,
-                StringComparison.OrdinalIgnoreCase));
+        if (normalizedUpstreamModel.Length > 0)
+        {
+            var upstreamMatch = models
+                .Where(model =>
+                    IsLegacyChannelModel(model)
+                    && string.Equals(
+                        model.UpstreamModel,
+                        normalizedUpstreamModel,
+                        StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(model => model.UpdatedAt)
+                .ThenBy(model => model.Id)
+                .FirstOrDefault();
+            if (upstreamMatch is not null)
+            {
+                var patterns = ReadMatchPatterns(
+                    upstreamMatch.MatchPatternsJson,
+                    upstreamMatch.MatchPattern);
+                return new ChannelModelMatch(
+                    upstreamMatch,
+                    patterns.FirstOrDefault() ?? upstreamMatch.MatchPattern,
+                    matchedByUpstream: true);
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -1876,7 +2076,8 @@ public sealed class ModelCatalogService : IModelCatalogService
             .Select(model => new
             {
                 Model = model,
-                ProviderSort = providerSort.TryGetValue(model.ProviderId, out var sort) ? sort : int.MaxValue
+                ProviderSort = providerSort.TryGetValue(model.ProviderId, out var sort) ? sort : int.MaxValue,
+                MatchPatterns = ReadMatchPatterns(model.MatchPatternsJson, model.MatchPattern)
             })
             .ToList();
 
@@ -1895,7 +2096,7 @@ public sealed class ModelCatalogService : IModelCatalogService
                 {
                     item.Model,
                     item.ProviderSort,
-                    Rank = MatchRank(item.Model.MatchType, item.Model.MatchPattern, normalized)
+                    Rank = MatchRank(item.Model.MatchType, item.MatchPatterns, normalized)
                 })
                 .Where(item => item.Rank is not null)
                 .OrderBy(item => item.Rank!.Priority)
@@ -1921,6 +2122,22 @@ public sealed class ModelCatalogService : IModelCatalogService
         return ResolveGlobalModels([normalized]).TryGetValue(normalized, out var model)
             ? model
             : null;
+    }
+
+    private static string ResolveGlobalModelMatchPattern(ModelInfo model, string modelName)
+    {
+        var normalized = Normalize(modelName);
+        if (normalized.Length == 0)
+        {
+            return model.MatchPattern;
+        }
+
+        var matched = ReadMatchPatterns(model.MatchPatternsJson, model.MatchPattern)
+            .Select(pattern => MatchRank(model.MatchType, [pattern], normalized))
+            .Where(score => score is not null)
+            .OrderByDescending(score => score!.PatternLength)
+            .FirstOrDefault();
+        return matched?.Pattern ?? model.MatchPattern;
     }
 
     private ModelPricingPlan? FindPlanForModel(Guid modelInfoId)
@@ -1965,29 +2182,42 @@ public sealed class ModelCatalogService : IModelCatalogService
                 group => group.OrderByDescending(plan => plan.UpdatedAt).First());
     }
 
-    private static MatchScore? MatchRank(string matchType, string pattern, string modelName)
+    private static MatchScore? MatchRank(
+        string matchType,
+        IReadOnlyList<string> patterns,
+        string modelName)
     {
-        var normalizedPattern = Normalize(pattern);
-        if (normalizedPattern.Length == 0)
-        {
-            return null;
-        }
-
+        MatchScore? best = null;
         var comparison = StringComparison.OrdinalIgnoreCase;
-        var matched = matchType switch
+        foreach (var pattern in patterns)
         {
-            ModelMatchTypes.Exact => string.Equals(modelName, normalizedPattern, comparison),
-            ModelMatchTypes.Prefix => modelName.StartsWith(normalizedPattern, comparison),
-            ModelMatchTypes.Suffix => modelName.EndsWith(normalizedPattern, comparison),
-            ModelMatchTypes.Contains => modelName.Contains(normalizedPattern, comparison),
-            _ => false
-        };
-        if (!matched)
-        {
-            return null;
+            var normalizedPattern = Normalize(pattern);
+            if (normalizedPattern.Length == 0)
+            {
+                continue;
+            }
+
+            var matched = matchType switch
+            {
+                ModelMatchTypes.Exact => string.Equals(modelName, normalizedPattern, comparison),
+                ModelMatchTypes.Prefix => modelName.StartsWith(normalizedPattern, comparison),
+                ModelMatchTypes.Suffix => modelName.EndsWith(normalizedPattern, comparison),
+                ModelMatchTypes.Contains => modelName.Contains(normalizedPattern, comparison),
+                _ => false
+            };
+            if (!matched)
+            {
+                continue;
+            }
+
+            var score = new MatchScore(MatchPriority(matchType), normalizedPattern);
+            if (best is null || score.PatternLength > best.PatternLength)
+            {
+                best = score;
+            }
         }
 
-        return new MatchScore(MatchPriority(matchType), normalizedPattern.Length);
+        return best;
     }
 
     private static int MatchPriority(string matchType)
@@ -2265,18 +2495,26 @@ public sealed class ModelCatalogService : IModelCatalogService
             : null;
     }
 
-    private HashSet<string> ListChannelUpstreamModels(Channel channel)
+    private IReadOnlyList<(string RequestModel, string UpstreamModel)> ListChannelModelMappings(Channel channel)
     {
-        var upstreamModels = _mappings.TableNoTracking
+        var mappings = _mappings.TableNoTracking
             .Where(mapping => mapping.ChannelId == channel.Id && mapping.Enabled)
             .OrderBy(mapping => mapping.Position)
-            .Select(mapping => mapping.UpstreamModel)
+            .Select(mapping => new { mapping.RequestModel, mapping.UpstreamModel })
             .ToList()
-            .Where(model => Normalize(model).Length > 0)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (upstreamModels.Count > 0)
+            .Select(mapping =>
+            {
+                var requestModel = Normalize(mapping.RequestModel);
+                var upstreamModel = Normalize(mapping.UpstreamModel);
+                return (
+                    RequestModel: requestModel,
+                    UpstreamModel: upstreamModel.Length > 0 ? upstreamModel : requestModel);
+            })
+            .Where(mapping => mapping.RequestModel.Length > 0)
+            .ToList();
+        if (mappings.Count > 0)
         {
-            return upstreamModels;
+            return mappings;
         }
 
         foreach (var item in DeserializeList(channel.ModelsJson))
@@ -2286,37 +2524,133 @@ public sealed class ModelCatalogService : IModelCatalogService
                 continue;
             }
 
-            var requestModel = JsonDictionaryValue.String(mapping, "model");
-            var upstreamModel = JsonDictionaryValue.String(mapping, "upstream_model");
-            if (upstreamModel.Length == 0)
+            var requestModel = Normalize(JsonDictionaryValue.String(mapping, "model"));
+            var upstreamModel = Normalize(JsonDictionaryValue.String(mapping, "upstream_model"));
+            if (requestModel.Length == 0)
             {
-                upstreamModel = requestModel;
+                continue;
             }
 
-            if (upstreamModel.Length > 0)
-            {
-                upstreamModels.Add(upstreamModel);
-            }
+            mappings.Add((
+                requestModel,
+                upstreamModel.Length > 0 ? upstreamModel : requestModel));
         }
 
-        return upstreamModels;
+        return mappings;
+    }
+
+    private string ResolveChannelRequestModel(
+        Channel channel,
+        string? requestedRequestModel,
+        string upstreamModel)
+    {
+        var normalizedRequestModel = Normalize(requestedRequestModel);
+        var mappings = ListChannelModelMappings(channel);
+        if (normalizedRequestModel.Length > 0)
+        {
+            var mapping = mappings.FirstOrDefault(item => string.Equals(
+                item.RequestModel,
+                normalizedRequestModel,
+                StringComparison.OrdinalIgnoreCase));
+            if (mapping.RequestModel is not null
+                && mapping.UpstreamModel is not null
+                && !string.Equals(
+                    mapping.UpstreamModel,
+                    upstreamModel,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ArgumentException(
+                    "request_model does not map to upstream_model",
+                    nameof(requestedRequestModel));
+            }
+
+            return mapping.RequestModel is not null
+                ? Normalize(mapping.RequestModel)
+                : normalizedRequestModel;
+        }
+
+        var byUpstream = mappings.FirstOrDefault(item => string.Equals(
+            item.UpstreamModel,
+            upstreamModel,
+            StringComparison.OrdinalIgnoreCase));
+        return Normalize(byUpstream.RequestModel).Length > 0
+            ? Normalize(byUpstream.RequestModel)
+            : upstreamModel;
+    }
+
+    private static string ChannelRequestModel(ChannelModelInfo model)
+    {
+        var requestModel = Normalize(model.RequestModel);
+        if (requestModel.Length > 0)
+        {
+            return requestModel;
+        }
+
+        var matchedPattern = ReadMatchPatterns(model.MatchPatternsJson, model.MatchPattern)
+            .Select(Normalize)
+            .FirstOrDefault(pattern => pattern.Length > 0);
+        return matchedPattern ?? Normalize(model.UpstreamModel);
+    }
+
+    private static bool IsLegacyChannelModel(ChannelModelInfo model)
+    {
+        var requestModel = Normalize(model.RequestModel);
+        if (requestModel.Length == 0)
+        {
+            return true;
+        }
+
+        return !HasExplicitMatchPatterns(model)
+            && string.Equals(
+                requestModel,
+                Normalize(model.UpstreamModel),
+                StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static ModelInfo? ResolveGlobalModelFromLookup(
+        IReadOnlyDictionary<string, ModelInfo?> models,
+        string requestModel,
+        string upstreamModel)
+    {
+        var normalizedRequestModel = Normalize(requestModel);
+        if (normalizedRequestModel.Length > 0
+            && models.TryGetValue(normalizedRequestModel, out var requestMatch)
+            && requestMatch is not null)
+        {
+            return requestMatch;
+        }
+
+        var normalizedUpstreamModel = Normalize(upstreamModel);
+        return normalizedUpstreamModel.Length > 0
+            && models.TryGetValue(normalizedUpstreamModel, out var upstreamMatch)
+            ? upstreamMatch
+            : null;
     }
 
     private static void AssignChannelModel(
         ChannelModelInfo model,
         ChannelModelInfoUpsertRequest request,
         Guid providerId,
+        string requestModel,
         string upstreamModel,
         string modelKey,
         double now)
     {
+        model.RequestModel = requestModel;
         model.UpstreamModel = upstreamModel;
         model.ProviderId = providerId;
         model.ModelKey = modelKey;
         model.DisplayName = DisplayName(request.DisplayName, modelKey);
         model.Description = Normalize(request.Description);
-        model.MatchType = NormalizeMatchType(request.MatchType);
-        model.MatchPattern = NormalizeMatchPattern(request.MatchPattern, modelKey);
+        var matchType = NormalizeMatchType(request.MatchType);
+        var matchPatterns = NormalizeMatchPatterns(
+            request.MatchPatterns,
+            request.MatchPattern,
+            requestModel,
+            matchType);
+        model.MatchType = matchType;
+        model.MatchPattern = matchPatterns[0];
+        model.MatchPatternsJson = SerializeMatchPatterns(matchPatterns);
         model.CatalogJson = SerializeObject(SyncCatalogIdentity(request.Catalog, modelKey, request.DisplayName));
         model.CapabilitiesJson = SerializeObject(request.Capabilities);
         model.Enabled = request.Enabled;
@@ -2328,13 +2662,15 @@ public sealed class ModelCatalogService : IModelCatalogService
         ChannelModelInfo model,
         IReadOnlyDictionary<Guid, ProviderLookup> providerById,
         ModelPricingPlan? plan,
-        IReadOnlyDictionary<Guid, List<ModelPricingRule>> rulesByPlan)
+        IReadOnlyDictionary<Guid, List<ModelPricingRule>> rulesByPlan,
+        string? requestModel = null)
     {
         providerById.TryGetValue(model.ProviderId, out var provider);
 
         return new ChannelModelInfoResponse(
             model.Id,
             model.ChannelId,
+            Normalize(requestModel).Length > 0 ? Normalize(requestModel) : ChannelRequestModel(model),
             model.UpstreamModel,
             model.ProviderId,
             provider?.Code ?? string.Empty,
@@ -2344,6 +2680,7 @@ public sealed class ModelCatalogService : IModelCatalogService
             model.Description,
             model.MatchType,
             model.MatchPattern,
+            ReadMatchPatterns(model.MatchPatternsJson, model.MatchPattern),
             DeserializeObject(model.CatalogJson),
             DeserializeObject(model.CapabilitiesJson),
             model.Enabled,
@@ -2413,6 +2750,7 @@ public sealed class ModelCatalogService : IModelCatalogService
             model.Description,
             model.MatchType,
             model.MatchPattern,
+            ReadMatchPatterns(model.MatchPatternsJson, model.MatchPattern),
             DeserializeObject(model.CatalogJson),
             DeserializeObject(model.CapabilitiesJson),
             model.Enabled,
@@ -2472,7 +2810,8 @@ public sealed class ModelCatalogService : IModelCatalogService
 
     private ChannelModelInfoResponse ToChannelModelResponseForSingle(
         ChannelModelInfo model,
-        IReadOnlyDictionary<Guid, ProviderLookup> providerById)
+        IReadOnlyDictionary<Guid, ProviderLookup> providerById,
+        string? requestModel = null)
     {
         var plansByModel = PlansByChannelModelId([model.Id], model.ChannelId);
         var rulesByPlan = RulesByPlanIds(plansByModel.Values.Select(plan => plan.Id).ToList());
@@ -2480,7 +2819,8 @@ public sealed class ModelCatalogService : IModelCatalogService
             model,
             providerById,
             plansByModel.TryGetValue(model.Id, out var plan) ? plan : null,
-            rulesByPlan);
+            rulesByPlan,
+            requestModel);
     }
 
     /// <summary>按 ModelInfoId 批量取回全局模型的最新启用计划，并按 Id 建索引。</summary>
@@ -2608,6 +2948,7 @@ public sealed class ModelCatalogService : IModelCatalogService
             Description = model.Description,
             MatchType = model.MatchType,
             MatchPattern = model.MatchPattern,
+            MatchPatterns = ReadMatchPatterns(model.MatchPatternsJson, model.MatchPattern).ToList(),
             Catalog = DeserializeObject(model.CatalogJson),
             Capabilities = DeserializeObject(model.CapabilitiesJson),
             Enabled = model.Enabled,
@@ -2840,10 +3181,85 @@ public sealed class ModelCatalogService : IModelCatalogService
         return normalized.Length == 0 ? "USD" : normalized;
     }
 
-    private static string NormalizeMatchPattern(string? matchPattern, string modelKey)
+    private static List<string> NormalizeMatchPatterns(
+        IReadOnlyList<string>? matchPatterns,
+        string? matchPattern,
+        string modelKey,
+        string matchType)
     {
-        var normalized = Normalize(matchPattern);
-        return normalized.Length == 0 ? NormalizeRequired(modelKey, "model_key") : normalized;
+        var source = matchPatterns is { Count: > 0 }
+            ? matchPatterns
+            : [matchPattern ?? string.Empty];
+        var normalized = source
+            .Select(Normalize)
+            .Where(pattern => pattern.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (normalized.Count == 0)
+        {
+            normalized.Add(NormalizeRequired(modelKey, "model_key"));
+        }
+
+        if (normalized.Count > 1 && matchType != ModelMatchTypes.Exact)
+        {
+            throw new ArgumentException(
+                "only exact match supports multiple match patterns",
+                nameof(matchPatterns));
+        }
+
+        return normalized;
+    }
+
+    private static string SerializeMatchPatterns(IReadOnlyList<string> patterns)
+    {
+        return JsonSerializer.Serialize(patterns);
+    }
+
+    private static IReadOnlyList<string> ReadMatchPatterns(
+        string? matchPatternsJson,
+        string primaryPattern)
+    {
+        if (string.IsNullOrWhiteSpace(matchPatternsJson))
+        {
+            return [primaryPattern];
+        }
+
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<List<string>>(matchPatternsJson);
+            var normalized = parsed?
+                .Select(Normalize)
+                .Where(pattern => pattern.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (normalized is { Count: > 0 })
+            {
+                return normalized;
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        return [primaryPattern];
+    }
+
+    private static bool HasExplicitMatchPatterns(ChannelModelInfo model)
+    {
+        if (string.IsNullOrWhiteSpace(model.MatchPatternsJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<string>>(model.MatchPatternsJson)?
+                .Any(pattern => Normalize(pattern).Length > 0) == true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static string NormalizeProviderCode(string? value)
@@ -3113,8 +3529,8 @@ public sealed class ModelCatalogService : IModelCatalogService
     {
         NormalizeProviderCodeRequired(model.ProviderCode);
         NormalizeRequired(model.ModelKey, "model_key");
-        NormalizeMatchType(model.MatchType);
-        NormalizeMatchPattern(model.MatchPattern, model.ModelKey);
+        var matchType = NormalizeMatchType(model.MatchType);
+        NormalizeMatchPatterns(model.MatchPatterns, model.MatchPattern, model.ModelKey, matchType);
         if (model.Pricing is null)
         {
             return;
@@ -3156,11 +3572,19 @@ public sealed class ModelCatalogService : IModelCatalogService
         IReadOnlyDictionary<Guid, ModelPricingPlan> plansByModelId,
         IReadOnlyDictionary<Guid, List<ModelPricingRule>> rulesByPlanId)
     {
+        var transferMatchType = NormalizeMatchType(transfer.MatchType);
+        var transferMatchPatterns = NormalizeMatchPatterns(
+            transfer.MatchPatterns,
+            transfer.MatchPattern,
+            model.ModelKey,
+            transferMatchType);
         if (model.ProviderId != providerId
             || model.DisplayName != DisplayName(transfer.DisplayName, model.ModelKey)
             || model.Description != Normalize(transfer.Description)
-            || model.MatchType != NormalizeMatchType(transfer.MatchType)
-            || model.MatchPattern != NormalizeMatchPattern(transfer.MatchPattern, model.ModelKey)
+            || model.MatchType != transferMatchType
+            || model.MatchPattern != transferMatchPatterns[0]
+            || !ReadMatchPatterns(model.MatchPatternsJson, model.MatchPattern)
+                .SequenceEqual(transferMatchPatterns, StringComparer.OrdinalIgnoreCase)
             || model.CatalogJson != SerializeObject(SyncCatalogIdentity(
                 JsonRequestValue.Object(transfer.Catalog), model.ModelKey, transfer.DisplayName))
             || model.CapabilitiesJson != SerializeObject(JsonRequestValue.Object(transfer.Capabilities))
@@ -3326,23 +3750,34 @@ public sealed class ModelCatalogService : IModelCatalogService
 
     private sealed class PricingResolution
     {
-        public PricingResolution(ModelInfo model, ModelPricingPlan? plan, string reason)
+        public PricingResolution(
+            ModelInfo model,
+            ModelPricingPlan? plan,
+            string reason,
+            string? matchPattern = null)
         {
             Model = model;
             Plan = plan;
             Reason = reason;
+            MatchPattern = matchPattern ?? model.MatchPattern;
         }
 
-        public PricingResolution(ChannelModelInfo model, ModelPricingPlan? plan, string reason)
+        public PricingResolution(
+            ChannelModelInfo model,
+            ModelPricingPlan? plan,
+            string reason,
+            string? matchPattern = null)
         {
             ChannelModel = model;
             Plan = plan;
             Reason = reason;
+            MatchPattern = matchPattern ?? model.MatchPattern;
         }
 
         public PricingResolution(string reason)
         {
             Reason = reason;
+            MatchPattern = string.Empty;
         }
 
         public ModelInfo? Model { get; }
@@ -3361,18 +3796,40 @@ public sealed class ModelCatalogService : IModelCatalogService
 
         public string MatchType => ChannelModel?.MatchType ?? Model!.MatchType;
 
-        public string MatchPattern => ChannelModel?.MatchPattern ?? Model!.MatchPattern;
+        public string MatchPattern { get; }
+    }
+
+    private sealed class ChannelModelMatch
+    {
+        public ChannelModelMatch(
+            ChannelModelInfo model,
+            string matchedPattern,
+            bool matchedByUpstream)
+        {
+            Model = model;
+            MatchedPattern = matchedPattern;
+            MatchedByUpstream = matchedByUpstream;
+        }
+
+        public ChannelModelInfo Model { get; }
+
+        public string MatchedPattern { get; }
+
+        public bool MatchedByUpstream { get; }
     }
 
     private sealed class MatchScore
     {
-        public MatchScore(int priority, int patternLength)
+        public MatchScore(int priority, string pattern)
         {
             Priority = priority;
-            PatternLength = patternLength;
+            Pattern = pattern;
+            PatternLength = pattern.Length;
         }
 
         public int Priority { get; }
+
+        public string Pattern { get; }
 
         public int PatternLength { get; }
     }

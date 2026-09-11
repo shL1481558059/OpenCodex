@@ -865,10 +865,11 @@
         v-if="!isMobile"
         v-loading="channelPricingLoading"
         :data="channelPricingRows"
-        row-key="upstream_model"
+        :row-key="channelPricingRowKey"
         max-height="520"
         empty-text="暂无上游模型"
       >
+        <el-table-column prop="request_model" label="请求模型" min-width="190" show-overflow-tooltip />
         <el-table-column prop="upstream_model" label="上游模型" min-width="190" show-overflow-tooltip />
         <el-table-column label="状态" width="110">
           <template #default="{ row }">
@@ -929,13 +930,14 @@
       </el-table>
       <div v-else v-loading="channelPricingLoading" class="pricing-model-list">
         <div v-if="channelPricingRows.length === 0" class="model-mapping-empty">暂无上游模型</div>
-        <article v-for="row in channelPricingRows" :key="row.upstream_model" class="pricing-model-card">
+        <article v-for="row in channelPricingRows" :key="channelPricingRowKey(row)" class="pricing-model-card">
           <div class="pricing-model-card__header">
-            <strong>{{ row.upstream_model }}</strong>
+            <strong>{{ row.request_model }}</strong>
             <el-tag size="small" :type="row.overridden ? 'warning' : 'info'">
               {{ row.overridden ? "覆盖全局" : "继承全局" }}
             </el-tag>
           </div>
+          <div class="pricing-model-card__info">上游模型：{{ row.upstream_model || "-" }}</div>
           <div class="pricing-model-card__info">{{ formatChannelPricingModel(row) }}</div>
           <div class="pricing-model-card__info">上下文窗口：{{ contextWindowSummary(effectiveChannelPricingModel(row)) }}</div>
           <div class="pricing-model-card__info">Catalog：{{ catalogSourceLabel(row) }}</div>
@@ -1005,26 +1007,34 @@
 
         <el-row :gutter="16">
           <el-col :span="12">
-            <el-form-item label="上游模型">
-              <el-input v-model="channelPricingDraft.upstream_model" disabled />
+            <el-form-item label="请求模型">
+              <el-input v-model="channelPricingDraft.request_model" disabled />
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="模型标识">
-              <el-input v-model="channelPricingDraft.model_key" autocomplete="off" />
+            <el-form-item label="上游模型">
+              <el-input v-model="channelPricingDraft.upstream_model" disabled />
             </el-form-item>
           </el-col>
         </el-row>
 
         <el-row :gutter="16">
           <el-col :span="12">
+            <el-form-item label="模型标识">
+              <el-input v-model="channelPricingDraft.model_key" autocomplete="off" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
             <el-form-item label="显示名称">
               <el-input v-model="channelPricingDraft.display_name" autocomplete="off" />
             </el-form-item>
           </el-col>
+        </el-row>
+
+        <el-row :gutter="16">
           <el-col :span="12">
             <el-form-item label="匹配类型">
-              <el-select v-model="channelPricingDraft.match_type" class="full-width">
+              <el-select v-model="channelPricingDraft.match_type" class="full-width" @change="handleChannelPricingMatchTypeChange">
                 <el-option label="精确" value="exact" />
                 <el-option label="前缀" value="prefix" />
                 <el-option label="后缀" value="suffix" />
@@ -1035,7 +1045,25 @@
         </el-row>
 
         <el-form-item label="匹配键">
-          <el-input v-model="channelPricingDraft.match_pattern" autocomplete="off" />
+          <el-select
+            v-if="channelPricingDraft.match_type === 'exact'"
+            v-model="channelPricingDraft.match_patterns"
+            multiple
+            filterable
+            allow-create
+            default-first-option
+            clearable
+            placeholder="输入后回车添加"
+            class="full-width"
+          >
+            <el-option
+              v-for="pattern in channelPricingDraft.match_patterns"
+              :key="pattern"
+              :label="pattern"
+              :value="pattern"
+            />
+          </el-select>
+          <el-input v-else v-model="channelPricingDraft.match_pattern" autocomplete="off" />
         </el-form-item>
 
         <el-form-item label="描述">
@@ -1821,7 +1849,7 @@ const channelPricingTitle = computed(() => {
   return channel ? `模型信息 - ${channel.name || channel.id}` : "模型信息";
 });
 const channelPricingEditorTitle = computed(() => {
-  const model = channelPricingDraft.upstream_model || "";
+  const model = channelPricingDraft.request_model || "";
   return model ? `编辑模型信息 - ${model}` : "编辑模型信息";
 });
 async function loadChannels() {
@@ -2436,20 +2464,34 @@ async function loadChannelPricingRows() {
 function openChannelPricingEditor(row) {
   const model = effectiveChannelPricingModel(row);
   Object.assign(channelPricingDraft, emptyChannelPricingDraft());
+  channelPricingDraft.request_model = row.request_model || model?.request_model || "";
   channelPricingDraft.upstream_model = row.upstream_model || "";
   channelPricingDraft.provider_code = model?.provider_code || modelProviders.value[0]?.code || "";
-  channelPricingDraft.model_key = model?.model_key || row.upstream_model || "";
-  channelPricingDraft.display_name = model?.display_name || row.upstream_model || "";
+  channelPricingDraft.model_key = model?.model_key || row.request_model || "";
+  channelPricingDraft.display_name = model?.display_name || row.request_model || "";
   channelPricingDraft.description = model?.description || "";
   channelPricingDraft.match_type = model?.match_type || "exact";
-  channelPricingDraft.match_pattern = model?.match_pattern || row.upstream_model || "";
+  const requestModel = row.request_model || model?.request_model || row.upstream_model || "";
+  const existingPatterns = channelMatchPatternList(row?.override_model);
+  const legacyUpstreamModel = String(row.upstream_model || model?.upstream_model || "").trim().toLowerCase();
+  const requestPatterns = existingPatterns.filter((pattern) =>
+    !legacyUpstreamModel || String(pattern || "").trim().toLowerCase() !== legacyUpstreamModel
+  );
+  const patternsForDraft = requestModel
+    ? [...new Set([...requestPatterns, requestModel])]
+    : requestPatterns;
+  channelPricingDraft.match_pattern = requestModel || existingPatterns[0] || "";
+  channelPricingDraft.match_patterns = patternsForDraft;
   channelPricingDraft.enabled = model?.enabled !== false;
   channelPricingDraft.capabilities = {
     supports_image: model?.capabilities?.supports_image === true,
     context_window: Number(model?.capabilities?.context_window || 0)
   };
   channelPricingDraft.pricing = normalizeChannelPricing(model?.pricing || null);
-  channelPricingCatalogText.value = JSON.stringify(model?.catalog || defaultChannelPricingCatalog(row.upstream_model), null, 2);
+  channelPricingCatalogText.value = JSON.stringify(
+    model?.catalog || defaultChannelPricingCatalog(row.request_model),
+    null,
+    2);
   channelPricingEditorVisible.value = true;
 }
 
@@ -2500,15 +2542,24 @@ function buildChannelPricingPayload() {
   if (!isPlainObject(catalog)) {
     throw new Error("Catalog JSON 必须是 JSON 对象");
   }
+  const matchPatterns = channelPricingDraft.match_type === "exact"
+    ? normalizeChannelMatchPatternList(channelPricingDraft.match_patterns)
+    : normalizeChannelMatchPatternList([channelPricingDraft.match_pattern]);
+  const matchPattern = matchPatterns[0]
+    || channelPricingDraft.request_model
+    || channelPricingDraft.model_key
+    || "";
 
   return {
+    request_model: channelPricingDraft.request_model,
     upstream_model: channelPricingDraft.upstream_model,
     provider_code: channelPricingDraft.provider_code,
     model_key: channelPricingDraft.model_key,
     display_name: channelPricingDraft.display_name,
     description: channelPricingDraft.description,
     match_type: channelPricingDraft.match_type,
-    match_pattern: channelPricingDraft.match_pattern,
+    match_pattern: matchPattern,
+    match_patterns: matchPatterns,
     catalog,
     capabilities: {
       ...channelPricingDraft.capabilities,
@@ -2584,7 +2635,38 @@ function formatChannelPricingModel(row) {
   const name = model.display_name && model.display_name !== model.model_key
     ? `${model.model_key} / ${model.display_name}`
     : model.model_key;
-  return provider ? `${provider} / ${name}` : name;
+  const patterns = row?.override_model
+    ? channelMatchPatternList(row.override_model)
+    : channelMatchPatternList(row?.request_model);
+  const match = patterns.length > 0 ? `（${patterns.join(" / ")}）` : "";
+  return provider ? `${provider} / ${name}${match}` : `${name}${match}`;
+}
+
+function normalizeChannelMatchPatternList(values) {
+  const source = Array.isArray(values) ? values : [values];
+  return [...new Set(source.map((value) => String(value || "").trim()).filter(Boolean))];
+}
+
+function channelMatchPatternList(model) {
+  const patterns = normalizeChannelMatchPatternList(model?.match_patterns);
+  return patterns.length > 0 ? patterns : normalizeChannelMatchPatternList(model?.match_pattern);
+}
+
+function channelPricingRowKey(row) {
+  return `${row?.request_model || ""}|${row?.upstream_model || ""}`;
+}
+
+function handleChannelPricingMatchTypeChange() {
+  if (channelPricingDraft.match_type === "exact") {
+    if (channelPricingDraft.match_patterns.length === 0) {
+      channelPricingDraft.match_patterns = normalizeChannelMatchPatternList([channelPricingDraft.match_pattern]);
+    }
+    return;
+  }
+
+  const current = normalizeChannelMatchPatternList(channelPricingDraft.match_patterns);
+  channelPricingDraft.match_pattern = current[0] || channelPricingDraft.match_pattern || channelPricingDraft.model_key || "";
+  channelPricingDraft.match_patterns = [];
 }
 
 function contextWindowSummary(model) {
@@ -2695,6 +2777,7 @@ function defaultChannelPricingCatalog(upstreamModel) {
 
 function emptyChannelPricingDraft() {
   return {
+    request_model: "",
     upstream_model: "",
     provider_code: "",
     model_key: "",
@@ -2702,6 +2785,7 @@ function emptyChannelPricingDraft() {
     description: "",
     match_type: "exact",
     match_pattern: "",
+    match_patterns: [],
     catalog: {},
     capabilities: {
       supports_image: false,

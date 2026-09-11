@@ -273,7 +273,7 @@
         <el-table-column label="匹配" min-width="220" show-overflow-tooltip>
           <template #default="{ row }">
             <el-tag size="small">{{ formatMatchType(row.match_type) }}</el-tag>
-            <span class="match-pattern">{{ row.match_pattern }}</span>
+            <span class="match-pattern">{{ matchPatternList(row).join(" / ") || "-" }}</span>
           </template>
         </el-table-column>
         <el-table-column label="输入" width="120" align="right">
@@ -346,7 +346,7 @@
 
           <div class="model-card-match">
             <el-tag size="small">{{ formatMatchType(model.match_type) }}</el-tag>
-            <span>{{ model.match_pattern || "-" }}</span>
+            <span>{{ matchPatternList(model).join(" / ") || "-" }}</span>
           </div>
 
           <dl class="model-card-pricing">
@@ -452,7 +452,7 @@
         <el-row :gutter="16">
           <el-col :xs="24" :span="8">
             <el-form-item label="匹配类型">
-              <el-select v-model="modelDraft.match_type" class="full-width">
+              <el-select v-model="modelDraft.match_type" class="full-width" @change="handleModelMatchTypeChange">
                 <el-option label="精确" value="exact" />
                 <el-option label="前缀" value="prefix" />
                 <el-option label="后缀" value="suffix" />
@@ -462,7 +462,25 @@
           </el-col>
           <el-col :xs="24" :span="16">
             <el-form-item label="匹配键">
-              <el-input v-model="modelDraft.match_pattern" autocomplete="off" />
+              <el-select
+                v-if="modelDraft.match_type === 'exact'"
+                v-model="modelDraft.match_patterns"
+                multiple
+                filterable
+                allow-create
+                default-first-option
+                clearable
+                placeholder="输入后回车添加"
+                class="full-width"
+              >
+                <el-option
+                  v-for="pattern in modelDraft.match_patterns"
+                  :key="pattern"
+                  :label="pattern"
+                  :value="pattern"
+                />
+              </el-select>
+              <el-input v-else v-model="modelDraft.match_pattern" autocomplete="off" />
             </el-form-item>
           </el-col>
         </el-row>
@@ -1113,7 +1131,8 @@ function openModelDialog(row = null) {
       display_name: row.display_name || "",
       description: row.description || "",
       match_type: row.match_type || "exact",
-      match_pattern: row.match_pattern || row.model_key || "",
+      match_pattern: row.match_pattern || matchPatternList(row)[0] || row.model_key || "",
+      match_patterns: matchPatternList(row),
       enabled: row.enabled !== false,
       capabilities: {
         supports_image: row.capabilities?.supports_image === true,
@@ -1307,6 +1326,10 @@ async function runBatch(action, ids = selection.value) {
 
 function buildModelPayload() {
   const catalog = parseJson(catalogText.value || "{}", "Catalog JSON");
+  const matchPatterns = modelDraft.match_type === "exact"
+    ? normalizeMatchPatternList(modelDraft.match_patterns)
+    : normalizeMatchPatternList([modelDraft.match_pattern]);
+  const matchPattern = matchPatterns[0] || modelDraft.model_key || "";
   const rules = modelDraft.pricing.rules.map((rule) => ({
     billing_item: rule.billing_item,
     billing_mode: rule.billing_mode,
@@ -1327,7 +1350,8 @@ function buildModelPayload() {
     display_name: modelDraft.display_name,
     description: modelDraft.description,
     match_type: modelDraft.match_type,
-    match_pattern: modelDraft.match_pattern,
+    match_pattern: matchPattern,
+    match_patterns: matchPatterns,
     catalog,
     capabilities: {
       ...modelDraft.capabilities,
@@ -1355,6 +1379,7 @@ function emptyModelDraft() {
     description: "",
     match_type: "exact",
     match_pattern: "",
+    match_patterns: [],
     catalog: {},
     capabilities: {
       supports_image: false,
@@ -1579,6 +1604,29 @@ function defaultCatalog() {
 
 function formatMatchType(value) {
   return matchTypes[value] || value || "-";
+}
+
+function normalizeMatchPatternList(values) {
+  const source = Array.isArray(values) ? values : [values];
+  return [...new Set(source.map((value) => String(value || "").trim()).filter(Boolean))];
+}
+
+function matchPatternList(model) {
+  const patterns = normalizeMatchPatternList(model?.match_patterns);
+  return patterns.length > 0 ? patterns : normalizeMatchPatternList(model?.match_pattern);
+}
+
+function handleModelMatchTypeChange() {
+  if (modelDraft.match_type === "exact") {
+    if (modelDraft.match_patterns.length === 0) {
+      modelDraft.match_patterns = normalizeMatchPatternList([modelDraft.match_pattern]);
+    }
+    return;
+  }
+
+  const current = normalizeMatchPatternList(modelDraft.match_patterns);
+  modelDraft.match_pattern = current[0] || modelDraft.match_pattern || modelDraft.model_key || "";
+  modelDraft.match_patterns = [];
 }
 
 function formatBillingItem(value) {

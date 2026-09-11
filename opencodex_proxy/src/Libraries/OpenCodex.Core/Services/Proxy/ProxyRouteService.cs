@@ -165,7 +165,11 @@ public sealed class ProxyRouteService : IProxyRouteService
                     continue;
                 }
 
-                var candidate = ToCandidate(channel, mapping, string.Empty);
+                var candidate = ToCandidate(
+                    channel,
+                    mapping,
+                    string.Empty,
+                    resolveImageSupport: false);
                 if (candidate.Model.Length == 0)
                 {
                     continue;
@@ -296,7 +300,8 @@ public sealed class ProxyRouteService : IProxyRouteService
     private ModelRouteCandidate ToCandidate(
         Dictionary<string, object?> channel,
         IReadOnlyDictionary<string, object?> mapping,
-        string fallbackModel)
+        string fallbackModel,
+        bool resolveImageSupport = true)
     {
         var model = mapping.TryGetValue("model", out var modelValue)
             ? ConfigValue.PythonString(modelValue).Trim()
@@ -318,7 +323,8 @@ public sealed class ProxyRouteService : IProxyRouteService
             channel,
             model,
             upstreamModel,
-            MappingSupportsImage(channel, mapping, upstreamModel),
+            resolveImageSupport
+                && MappingSupportsImage(channel, mapping, model, upstreamModel),
             PriorityValue(channel),
             PositionValue(channel));
     }
@@ -326,17 +332,24 @@ public sealed class ProxyRouteService : IProxyRouteService
     private bool MappingSupportsImage(
         IReadOnlyDictionary<string, object?> channel,
         IReadOnlyDictionary<string, object?> mapping,
+        string requestModel,
         string? upstreamModel = null)
     {
+        var actualRequestModel = string.IsNullOrWhiteSpace(requestModel)
+            ? JsonDictionaryValue.String(mapping, "model")
+            : requestModel;
         var actualUpstreamModel = string.IsNullOrWhiteSpace(upstreamModel)
             ? JsonDictionaryValue.String(mapping, "upstream_model")
             : upstreamModel;
         if (string.IsNullOrWhiteSpace(actualUpstreamModel))
         {
-            actualUpstreamModel = JsonDictionaryValue.String(mapping, "model");
+            actualUpstreamModel = actualRequestModel;
         }
 
-        return _catalog.SupportsImage(ParseChannelId(channel), actualUpstreamModel);
+        return _catalog.SupportsImage(
+            ParseChannelId(channel),
+            actualRequestModel,
+            actualUpstreamModel);
     }
 
     private static Guid? ParseChannelId(IReadOnlyDictionary<string, object?> channel)
