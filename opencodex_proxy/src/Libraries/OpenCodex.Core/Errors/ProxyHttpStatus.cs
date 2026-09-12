@@ -7,6 +7,7 @@ public static class ProxyHttpStatus
     public const int Unauthorized = 401;
     public const int Forbidden = 403;
     public const int TooManyRequests = 429;
+    public const int ClientClosedRequest = 499;
     public const int InternalServerError = 500;
     public const int BadGateway = 502;
     public const int ServiceUnavailable = 503;

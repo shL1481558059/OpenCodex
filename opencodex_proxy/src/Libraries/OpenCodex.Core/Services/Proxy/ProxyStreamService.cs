@@ -2,28 +2,31 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using OpenCodex.Core.Errors;
 using OpenCodex.Core.Protocols;
+using OpenCodex.Core.Services.WebSearch;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
-using OpenCodex.CoreBase.Domain.WebSearch;
 using OpenCodex.CoreBase.Services.Proxy;
 using OpenCodex.CoreBase.Services.WebSearch;
 
 namespace OpenCodex.Core.Services.Proxy;
 
-public sealed class ProxyStreamService : IProxyStreamService
+public sealed partial class ProxyStreamService : IProxyStreamService
 {
     private readonly IUpstreamClient _upstream;
     private readonly IProxyLogService _logs;
-    private readonly IWebSearchSimulator _webSearch;
+    private readonly IWebSearchToolExecutor _webSearch;
+    private readonly WebSearchContinuationStore _webSearchHistory;
 
     public ProxyStreamService(
         IUpstreamClient upstream,
         IProxyLogService logs,
-        IWebSearchSimulator webSearch)
+        IWebSearchToolExecutor webSearch,
+        WebSearchContinuationStore? webSearchHistory = null)
     {
         _upstream = upstream;
         _logs = logs;
         _webSearch = webSearch;
+        _webSearchHistory = webSearchHistory ?? new WebSearchContinuationStore();
     }
 
     public async Task StreamAsync(ProxyStreamContext context)
@@ -43,50 +46,15 @@ public sealed class ProxyStreamService : IProxyStreamService
         var streamLineCaptures = new List<ProxyRequestStreamLineCapture>();
         var statusCode = ProxyHttpStatus.Ok;
         var upstreamRequest = context.UpstreamRequest;
+        ConvertedProxyStreamState? convertedState = null;
+        BuiltinToolSession? tools = null;
         try
         {
-            if (_webSearch.CanSimulate(
-                context.EntryProtocol,
-                context.ChannelType,
-                context.OwnerRole,
-                context.Payload))
-            {
-                var streamResult = new WebSearchStreamResult();
-                var visibleModel = VisibleModel(context);
-                var streamLines = _webSearch.RunChatStreamAsync(
-                    context.Route.Channel,
-                    upstreamRequest,
-                    context.Payload,
-                    visibleModel,
-                    context.DefaultTimeout,
-                    streamResult,
-                    (lines, source) => CaptureStreamLines(
-                        lines,
-                        streamLineCaptures,
-                        source,
-                        context.CancellationToken),
-                    context.CancellationToken);
-                streamWriteMetrics = await context.StreamWriter.WriteLinesAsync(
-                    EnsureCompletedStreamEndsWithDone(
-                        CaptureStreamLines(
-                            streamLines,
-                            streamLineCaptures,
-                            "downstream",
-                            context.CancellationToken),
-                        streamLineCaptures,
-                        "downstream",
-                        context.CancellationToken),
-                    SseStreamConverter.CountsForTtft,
-                    () => ElapsedMilliseconds(ttftStarted),
-                    context.CancellationToken);
-                ttftMs = streamWriteMetrics.TtftMs;
-
-                upstreamRequest = streamResult.FinalUpstreamRequest ?? upstreamRequest;
-                upstreamResponse = streamResult.FinalUpstreamResponse;
-                responsePayload = streamResult.ResponsePayload;
-                webSearchDetails = streamResult.Details;
-            }
-            else if (context.EntryProtocol == context.ChannelType)
+            using var toolLifetime = tools = context.BuiltinTools is null ? null : new BuiltinToolSession(
+                context.BuiltinTools, _webSearch, _webSearchHistory,
+                WebSearchContinuationStore.OwnerKey(context.OwnerUsername, context.ApiKeyId),
+                context.ChannelType, context.DefaultTimeout, BuiltinToolSession.OutputTokenBudget(context.Payload));
+            if (context.EntryProtocol == context.ChannelType)
             {
                 var streamLines = _upstream.StreamJsonAsync(
                     context.Route.Channel,
@@ -118,99 +86,8 @@ public sealed class ProxyStreamService : IProxyStreamService
             }
             else
             {
-                var converted = new ConvertedStreamResult
-                {
-                    TextFormat = ProtocolConverter.ExtractTextFormat(context.OriginalPayload),
-                    ToolCallMappings = context.EntryProtocol == ProtocolConverter.Responses
-                        && (context.ChannelType == ProtocolConverter.Chat
-                            || context.ChannelType == ProtocolConverter.Messages)
-                        ? ProtocolConverter.BuildResponsesToolCallMappings(context.Payload)
-                        : null
-                };
-                var visibleModel = VisibleModel(context);
-                var streamLines = _upstream.StreamJsonAsync(
-                    context.Route.Channel,
-                    upstreamRequest,
-                    context.DefaultTimeout,
-                    context.CancellationToken);
-                var capturedStreamLines = CaptureStreamLines(
-                    streamLines,
-                    streamLineCaptures,
-                    "upstream",
-                    context.CancellationToken);
-                var confirmedStreamLines = await UpstreamStreamPrimer.PrimeAsync(
-                    capturedStreamLines,
-                    context.CancellationToken);
-                // 按 (入口协议, 上游协议) 派发到对应流式转换器；下游事件格式取决于入口协议。
-                IAsyncEnumerable<string> convertedLines;
-                var includeChatUsage = context.Payload.TryGetValue("stream_options", out var streamOptionsValue)
-                    && streamOptionsValue is Dictionary<string, object?> streamOptions
-                    && streamOptions.TryGetValue("include_usage", out var includeUsageValue)
-                    && includeUsageValue is true;
-                switch ((context.EntryProtocol, context.ChannelType))
-                {
-                    case (ProtocolConverter.Responses, ProtocolConverter.Chat):
-                        convertedLines = SseStreamConverter.ChatToResponsesEvents(
-                            confirmedStreamLines,
-                            visibleModel,
-                            converted,
-                            SkipToolNames: null,
-                            SkipResponseCreated: false,
-                            InitialSequenceNumber: 0,
-                            InitialOutputIndex: 0,
-                            context.CancellationToken);
-                        break;
-                    case (ProtocolConverter.Responses, ProtocolConverter.Messages):
-                        convertedLines = SseStreamConverter.MessagesToResponsesEvents(
-                            confirmedStreamLines,
-                            visibleModel,
-                            converted,
-                            SkipToolNames: null,
-                            SkipResponseCreated: false,
-                            InitialSequenceNumber: 0,
-                            InitialOutputIndex: 0,
-                            context.CancellationToken);
-                        break;
-                    case (ProtocolConverter.Messages, ProtocolConverter.Chat):
-                        convertedLines = SseStreamConverter.ChatToMessagesEvents(
-                            confirmedStreamLines,
-                            visibleModel,
-                            converted,
-                            SkipToolNames: null,
-                            SkipMessageStart: false,
-                            context.CancellationToken);
-                        break;
-                    case (ProtocolConverter.Chat, ProtocolConverter.Messages):
-                        convertedLines = SseStreamConverter.MessagesToChatEvents(
-                            confirmedStreamLines,
-                            visibleModel,
-                            converted,
-                            SkipToolNames: null,
-                            IncludeUsage: includeChatUsage,
-                            context.CancellationToken);
-                        break;
-                    case (ProtocolConverter.Chat, ProtocolConverter.Responses):
-                        convertedLines = SseStreamConverter.ResponsesToChatEvents(
-                            confirmedStreamLines,
-                            visibleModel,
-                            converted,
-                            SkipToolNames: null,
-                            context.CancellationToken);
-                        break;
-                    case (ProtocolConverter.Messages, ProtocolConverter.Responses):
-                        convertedLines = SseStreamConverter.ResponsesToMessagesEvents(
-                            confirmedStreamLines,
-                            visibleModel,
-                            converted,
-                            SkipToolNames: null,
-                            SkipMessageStart: false,
-                            context.CancellationToken);
-                        break;
-                    default:
-                        // 理论上不可达：SupportsStreamingConversion 已在上游拦截未实现方向。
-                        throw new BadRequestException(
-                            $"streaming conversion not implemented for {context.EntryProtocol} to {context.ChannelType}");
-                }
+                convertedState = new ConvertedProxyStreamState { UpstreamRequest = upstreamRequest };
+                var convertedLines = ConvertRoundsAsync(context, streamLineCaptures, convertedState, tools, context.CancellationToken);
                 streamWriteMetrics = await context.StreamWriter.WriteLinesAsync(
                     EnsureCompletedStreamEndsWithDone(
                         CaptureStreamLines(
@@ -226,22 +103,15 @@ public sealed class ProxyStreamService : IProxyStreamService
                     context.CancellationToken);
                 ttftMs = streamWriteMetrics.TtftMs;
 
-                upstreamResponse = converted.UpstreamResponse;
-                responsePayload = upstreamResponse is null
-                    ? null
-                    : ProtocolConverter.ConvertResponse(
-                        upstreamResponse,
-                        context.EntryProtocol,
-                        context.ChannelType,
-                        context.Route.OriginalModel,
-                        converted.TextFormat,
-                        converted.ToolCallMappings);
+                upstreamRequest = convertedState.UpstreamRequest;
+                upstreamResponse = convertedState.UpstreamResponse;
+                responsePayload = convertedState.ResponsePayload;
             }
         }
         catch (Exception exception)
         {
             error = exception.Message;
-            passThroughTermination = exception is OperationCanceledException
+            passThroughTermination = exception is OperationCanceledException && context.CancellationToken.IsCancellationRequested
                 ? StreamCaptureTermination.ClientCancelled
                 : StreamCaptureTermination.UpstreamError;
             var capturedUpstreamResponse = passThroughResponseCapture?
@@ -258,12 +128,31 @@ public sealed class ProxyStreamService : IProxyStreamService
             }
             else
             {
+                statusCode = exception is OperationCanceledException
+                    ? context.CancellationToken.IsCancellationRequested
+                        ? ProxyHttpStatus.ClientClosedRequest
+                        : ProxyHttpStatus.GatewayTimeout
+                    : ProxyHttpStatus.InternalServerError;
                 upstreamResponse ??= capturedUpstreamResponse;
+            }
+            if (exception is OperationCanceledException && !context.CancellationToken.IsCancellationRequested)
+            {
+                var timeout = new UpstreamException("proxy request timed out", ProxyHttpStatus.GatewayTimeout);
+                error = timeout.Message;
+                errorResponse = timeout.ToResponse();
+                throw timeout;
             }
             throw;
         }
         finally
         {
+            if (convertedState is not null)
+            {
+                upstreamRequest = convertedState.UpstreamRequest;
+                upstreamResponse ??= convertedState.UpstreamResponse;
+                responsePayload ??= convertedState.ResponsePayload;
+            }
+            webSearchDetails = tools?.Details;
             if (passThroughResponseCapture is not null && upstreamResponse is null)
             {
                 upstreamResponse = passThroughResponseCapture
@@ -292,7 +181,10 @@ public sealed class ProxyStreamService : IProxyStreamService
                     DurationMs: ElapsedMilliseconds(context.StartedTimestamp),
                     error,
                     webSearchDetails,
-                    StreamLines: streamLineCaptures),
+                    StreamLines: streamLineCaptures)
+                {
+                    AggregatedUsage = tools?.HasCalls == true ? tools.AccountingUsage : null
+                },
                 context.RequestMetadata);
         }
     }

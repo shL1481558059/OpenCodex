@@ -1,79 +1,47 @@
 using System.Text.Json;
+using System.Text;
+using OpenCodex.CoreBase.Domain.WebSearch;
 using static OpenCodex.CoreBase.Abstractions.WebSearchPayload;
 
 namespace OpenCodex.Core.Services.WebSearch;
 
 internal static class WebSearchResponsePayload
 {
-    public static Dictionary<string, object?> ReplaceOrPrependWebSearchItems(
-        Dictionary<string, object?> responsePayload,
-        IReadOnlyList<WebSearchToolResult> webResults)
+    public static Dictionary<string, object?> ProjectRound(
+        Dictionary<string, object?> response,
+        IReadOnlyList<WebSearchToolResult> results,
+        string internalName,
+        bool includeSources)
     {
-        var output = ListValue(responsePayload, "output");
-        var hasWebSearchFunction = output.Any(item =>
-            TryAsObject(item, out var outputItem)
-            && string.Equals(StringValue(outputItem, "type"), "function_call", StringComparison.Ordinal)
-            && string.Equals(StringValue(outputItem, "name"), WebSearchRequestPolicy.ToolName, StringComparison.Ordinal));
-        return hasWebSearchFunction
-            ? ReplaceWebSearchFunctionItems(responsePayload, webResults, includeResult: true)
-            : PrependWebSearchItems(responsePayload, webResults, includeResult: false);
-    }
-
-    public static Dictionary<string, object?> ReplaceWebSearchFunctionItems(
-        Dictionary<string, object?> responsePayload,
-        IReadOnlyList<WebSearchToolResult> webResults,
-        bool includeResult)
-    {
-        var byCallId = webResults.ToDictionary(result => result.CallId, StringComparer.Ordinal);
+        var byId = results.ToDictionary(result => result.CallId, StringComparer.Ordinal);
         var output = new List<object?>();
         var inserted = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var item in ListValue(responsePayload, "output"))
+        foreach (var value in ListValue(response, "output"))
         {
-            if (TryAsObject(item, out var outputItem)
-                && string.Equals(StringValue(outputItem, "type"), "function_call", StringComparison.Ordinal)
-                && string.Equals(StringValue(outputItem, "name"), WebSearchRequestPolicy.ToolName, StringComparison.Ordinal)
-                && byCallId.TryGetValue(StringValue(outputItem, "call_id"), out var result))
+            if (TryAsObject(value, out var item) && StringValue(item, "type") == "function_call"
+                && StringValue(item, "name") == internalName)
             {
-                output.Add(BuildWebSearchItem(result, includeResult));
-                inserted.Add(result.CallId);
+                var callId = StringValue(item, "call_id");
+                if (byId.TryGetValue(callId, out var result) && inserted.Add(callId))
+                {
+                    output.Add(BuildWebSearchItem(result, true, includeSources));
+                }
                 continue;
             }
-
-            output.Add(item);
+            output.Add(DeepCopy(value));
         }
-
-        foreach (var result in webResults)
-        {
-            if (!inserted.Contains(result.CallId))
-            {
-                output.Insert(0, BuildWebSearchItem(result, includeResult));
-            }
-        }
-
-        responsePayload["output"] = output;
-        return responsePayload;
-    }
-
-    public static Dictionary<string, object?> PrependWebSearchItems(
-        Dictionary<string, object?> responsePayload,
-        IReadOnlyList<WebSearchToolResult> webResults,
-        bool includeResult)
-    {
-        var output = webResults
-            .Select(result => (object?)BuildWebSearchItem(result, includeResult))
-            .Concat(ListValue(responsePayload, "output"))
-            .ToList();
-        responsePayload["output"] = output;
-        return responsePayload;
+        response["output"] = output;
+        return AddSourceAnnotations(response, results);
     }
 
     public static Dictionary<string, object?> BuildWebSearchItem(
         WebSearchToolResult result,
-        bool includeResult)
+        bool includeResult,
+        bool includeSources = false)
     {
         var item = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
-            ["id"] = result.CallId,
+            ["id"] = result.ItemId,
             ["type"] = "web_search_call",
             ["status"] = result.Status == "completed" ? "completed" : "failed",
             ["action"] = new Dictionary<string, object?>
@@ -86,28 +54,18 @@ internal static class WebSearchResponsePayload
         {
             item["opencodex_result"] = DeepCopy(result.OpenCodexResult);
         }
-
-        return item;
-    }
-
-    public static string InjectWebSearchIntoCompleted(
-        string line,
-        IReadOnlyList<WebSearchToolResult> webResults)
-    {
-        var (eventName, payload) = ParseSseLine(line);
-        if (eventName != "response.completed" || payload is null)
+        if (includeSources)
         {
-            return line;
+            ObjectValue(item, "action")["sources"] = AllSources([result])
+                .Select(source => (object?)new Dictionary<string, object?>
+                {
+                    ["type"] = "url",
+                    ["url"] = StringValue(source, "url"),
+                    ["title"] = StringValue(source, "title")
+                }).ToList();
         }
 
-        var response = ObjectValue(payload, "response");
-        var output = ListValue(response, "output");
-        response["output"] = webResults
-            .Select(result => (object?)BuildWebSearchItem(result, includeResult: true))
-            .Concat(output)
-            .ToList();
-        payload["response"] = response;
-        return $"event: response.completed\ndata: {JsonDumps(payload)}\n\n";
+        return item;
     }
 
     public static (string EventName, Dictionary<string, object?>? Payload) ParseSseLine(string line)
@@ -155,81 +113,48 @@ internal static class WebSearchResponsePayload
             return responsePayload;
         }
 
-        var message = FirstMessageItem(responsePayload);
-        if (message is null)
+        foreach (var message in ListValue(responsePayload, "output").OfType<Dictionary<string, object?>>())
+        foreach (var block in ListValue(message, "content").OfType<Dictionary<string, object?>>())
         {
-            return responsePayload;
+            AnnotateTextBlock(block, sources);
         }
+        return responsePayload;
+    }
 
-        var content = ListValue(message, "content");
-        message["content"] = content;
-        if (content.Count == 0)
+    public static void AnnotateTextBlock(
+        Dictionary<string, object?> block,
+        IReadOnlyList<WebSearchToolResult> results) => AnnotateTextBlock(block, AllSources(results));
+
+    private static void AnnotateTextBlock(Dictionary<string, object?> block, List<Dictionary<string, object?>> sources)
+    {
+        if (StringValue(block, "type") != "output_text")
         {
-            content.Add(new Dictionary<string, object?>
-            {
-                ["type"] = "output_text",
-                ["text"] = string.Empty
-            });
+            return;
         }
-
-        if (!TryAsObject(content[0], out var textBlock))
-        {
-            return responsePayload;
-        }
-
-        var text = StringValue(textBlock, "text");
-        var sourceLines = sources
-            .Where(source => StringValue(source, "url").Length > 0)
-            .Select(source =>
-            {
-                var url = StringValue(source, "url");
-                var title = StringValue(source, "title");
-                return $"- {(title.Length > 0 ? title : url)}: {url}";
-            })
-            .ToList();
-        var startOffset = text.Length;
-        if (sourceLines.Count > 0)
-        {
-            var separator = text.Length > 0 ? "\n\n" : string.Empty;
-            var sourceText = $"来源:\n{string.Join("\n", sourceLines)}";
-            startOffset = text.Length + separator.Length;
-            text = $"{text}{separator}{sourceText}";
-            textBlock["text"] = text;
-        }
-
-        var annotations = ListValue(textBlock, "annotations");
+        var text = StringValue(block, "text");
+        var annotations = ListValue(block, "annotations");
         foreach (var source in sources)
         {
             var url = StringValue(source, "url");
-            if (url.Length == 0)
+            var offset = text.IndexOf(url, StringComparison.Ordinal);
+            if (offset < 0 || annotations.OfType<Dictionary<string, object?>>()
+                .Any(annotation => StringValue(annotation, "url") == url))
             {
                 continue;
             }
-
-            var title = StringValue(source, "title");
-            var line = $"- {(title.Length > 0 ? title : url)}: {url}";
-            var startIndex = text.IndexOf(line, StringComparison.Ordinal);
-            if (startIndex < 0)
-            {
-                startIndex = Math.Max(0, startOffset);
-            }
-
             annotations.Add(new Dictionary<string, object?>
             {
                 ["type"] = "url_citation",
-                ["start_index"] = startIndex,
-                ["end_index"] = startIndex + line.Length,
+                ["start_index"] = text[..offset].EnumerateRunes().Count(),
+                ["end_index"] = text[..(offset + url.Length)].EnumerateRunes().Count(),
                 ["url"] = url,
-                ["title"] = title.Length > 0 ? title : url
+                ["title"] = StringValue(source, "title", url)
             });
         }
-
         if (annotations.Count > 0)
         {
-            textBlock["annotations"] = annotations;
+            block["annotations"] = annotations;
         }
-
-        return responsePayload;
     }
 
     private static List<Dictionary<string, object?>> AllSources(IReadOnlyList<WebSearchToolResult> webResults)
@@ -244,7 +169,10 @@ internal static class WebSearchResponsePayload
 
             foreach (var item in resultItems)
             {
-                if (TryAsObject(item, out var source))
+                if (TryAsObject(item, out var source)
+                    && Uri.TryCreate(StringValue(source, "url"), UriKind.Absolute, out var uri)
+                    && uri.Scheme is "https" or "http"
+                    && !sources.Any(existing => StringValue(existing, "url") == StringValue(source, "url")))
                 {
                     sources.Add(source);
                 }
@@ -254,17 +182,4 @@ internal static class WebSearchResponsePayload
         return sources;
     }
 
-    private static Dictionary<string, object?>? FirstMessageItem(Dictionary<string, object?> responsePayload)
-    {
-        foreach (var item in ListValue(responsePayload, "output"))
-        {
-            if (TryAsObject(item, out var outputItem)
-                && string.Equals(StringValue(outputItem, "type"), "message", StringComparison.Ordinal))
-            {
-                return outputItem;
-            }
-        }
-
-        return null;
-    }
 }

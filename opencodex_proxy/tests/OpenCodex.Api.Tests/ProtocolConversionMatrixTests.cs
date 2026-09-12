@@ -43,7 +43,7 @@ public sealed class ProtocolConversionMatrixTests
         var service = new ProxyNonStreamService(
             upstream,
             logs,
-            new DisabledWebSearchSimulator());
+            new DisabledWebSearchToolExecutor());
 
         var result = await service.SendAsync(new ProxyNonStreamContext(
             Stopwatch.GetTimestamp(),
@@ -96,7 +96,7 @@ public sealed class ProtocolConversionMatrixTests
         var service = new ProxyStreamService(
             upstream,
             logs,
-            new DisabledWebSearchSimulator());
+            new DisabledWebSearchToolExecutor());
 
         await service.StreamAsync(new ProxyStreamContext(
             Stopwatch.GetTimestamp(),
@@ -650,34 +650,11 @@ public sealed class ProtocolConversionMatrixTests
             => Task.FromResult(Guid.NewGuid());
     }
 
-    private sealed class DisabledWebSearchSimulator : IWebSearchSimulator
+    private sealed class DisabledWebSearchToolExecutor : IWebSearchToolExecutor
     {
         public string CurrentMode() => "convert";
 
-        public bool CanSimulate(
-            string entryProtocol,
-            string channelType,
-            string ownerRole,
-            IReadOnlyDictionary<string, object?> payload) => false;
-
-        public Task<WebSearchSimulationResult> RunAsync(
-            IReadOnlyDictionary<string, object?> channel,
-            Dictionary<string, object?> upstreamRequest,
-            Dictionary<string, object?> payload,
-            string? originalModel,
-            int defaultTimeout,
-            CancellationToken cancellationToken)
-            => throw new NotSupportedException();
-
-        public IAsyncEnumerable<string> RunChatStreamAsync(
-            IReadOnlyDictionary<string, object?> channel,
-            Dictionary<string, object?> upstreamRequest,
-            Dictionary<string, object?> payload,
-            string? originalModel,
-            int defaultTimeout,
-            WebSearchStreamResult result,
-            Func<IAsyncEnumerable<string>, string, IAsyncEnumerable<string>>? streamCapture,
-            CancellationToken cancellationToken)
+        public Task<WebSearchToolResult> ExecuteAsync(string callId, string arguments, CancellationToken cancellationToken)
             => throw new NotSupportedException();
     }
 }

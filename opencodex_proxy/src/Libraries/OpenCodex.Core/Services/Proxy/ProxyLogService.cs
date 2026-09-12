@@ -149,7 +149,10 @@ public sealed class ProxyLogService : IProxyLogService
             context.ParentRequestLogId,
             context.OcrDetails,
             request.RawBody,
-            context.StreamLines));
+            context.StreamLines)
+        {
+            AggregatedUsage = context.AggregatedUsage
+        });
     }
 
     public async Task<Guid> WriteLogAsync(ProxyLogContext context, ProxyRequestMetadata request)
@@ -181,7 +184,10 @@ public sealed class ProxyLogService : IProxyLogService
             context.ParentRequestLogId,
             context.OcrDetails,
             request.RawBody,
-            context.StreamLines));
+            context.StreamLines)
+        {
+            AggregatedUsage = context.AggregatedUsage
+        });
     }
 
     public async Task<Guid> WriteLogAsync(ProxyRequestLogContext context)
@@ -217,10 +223,7 @@ public sealed class ProxyLogService : IProxyLogService
     private async Task<Guid> CompleteLogAsync(Guid requestLogId, ProxyRequestLogContext context)
     {
         var settings = _settingsProvider.GetSettings();
-        var responseForUsage = context.UpstreamResponse ?? [];
-        var usage = context.ChannelType is null
-            ? new UsageDto(0, 0, 0)
-           : ExtractUsage(responseForUsage, context.ChannelType);
+        var usage = ExtractUsage(context);
 
        var log = _logRepository.Table.FirstOrDefault(item => item.Id == requestLogId);
         if (log is null)
@@ -343,10 +346,7 @@ public sealed class ProxyLogService : IProxyLogService
             ? DefaultOwnerUsername(settings)
             : context.OwnerUsername;
         var ownerUserId = ResolveOwnerUserId(ownerUsername);
-        var responseForUsage = context.UpstreamResponse ?? [];
-        var usage = context.ChannelType is null
-            ? new UsageDto(0, 0, 0)
-           : ExtractUsage(responseForUsage, context.ChannelType);
+        var usage = ExtractUsage(context);
 
        var channelId = ParseChannelId(context.ChannelId);
        // 计费时刻与即将落库的 CreatedAt 用同一个值,保证账单可按日志时间原样复算。
@@ -406,6 +406,14 @@ public sealed class ProxyLogService : IProxyLogService
 
         PublishLogWritten(logId, ownerUsername, context.StatusCode, context.Error);
         return logId;
+    }
+
+    private static UsageDto ExtractUsage(ProxyRequestLogContext context)
+    {
+        var response = context.AggregatedUsage is null
+            ? context.UpstreamResponse ?? []
+            : new Dictionary<string, object?> { ["usage"] = context.AggregatedUsage };
+        return context.ChannelType is null ? new UsageDto(0, 0, 0) : ExtractUsage(response, context.ChannelType);
     }
 
     private static UsageDto ExtractUsage(IReadOnlyDictionary<string, object?> response, string protocol)

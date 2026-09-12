@@ -58,7 +58,7 @@
 - 未发现使用真实或容器化 PostgreSQL 执行完整迁移矩阵、约束和升级恢复的测试；
 - 未发现连接真实 Redis 的共享状态、多实例一致性或网络分区测试，现有 Redis 相关单测主要使用 `redis: null`、Fake 或进程内状态；
 - 未发现正式的数据库备份恢复、从上一发布版本升级、迁移失败恢复或回滚数据校验；
-- `README_STREAMING_TESTS.md` 仍将 WebSearchSimulator 集成测试列为待添加项。
+- Web Search 已有代理服务级多轮、混合工具、预算和异常测试；真实 HTTP/Tavily 联调及多实例 Redis 仍需单独验收。
 
 仓库中的手工流式工具也存在漂移：
 
@@ -99,7 +99,7 @@ flowchart TB
 - ProxyEndpoint 编排；
 - ChannelCapacity/CircuitBreaker/Affinity 状态机；
 - Observability 查询和 DTO；
-- WebSearchSimulator 工具循环；
+- Web Search 代理内置工具执行与续轮；
 - Images 控制器和读体约束。
 
 ### 3.3 集成测试
@@ -282,7 +282,7 @@ flowchart TB
 - 搜索轮数上限；
 - 流式和非流式；
 - 普通用户不能触发未授权本地搜索；
-- 当前明确缺少的 WebSearchSimulator 集成测试必须补齐。
+- Web Search 内置工具需覆盖从入口准备到搜索、续轮、混合历史和日志的集成测试，真实 HTTP/Tavily 链路另行验收。
 
 ### 7.5 图片/OCR/Images
 
@@ -497,7 +497,7 @@ flowchart TB
 | `REQ-TST-007` | MUST | 九个协议方向覆盖流式和非流式 |
 | `REQ-TST-008` | MUST | Redis 可用/不可用和多实例行为均测试 |
 | `REQ-TST-009` | MUST | Images 真实生产依赖通过启动集成测试 |
-| `REQ-TST-010` | MUST | WebSearchSimulator 具备完整集成测试 |
+| `REQ-TST-010` | MUST | Web Search 内置工具具备完整集成测试 |
 | `REQ-TST-011` | MUST | 移动端关键管理流程具备 E2E |
 | `REQ-TST-012` | MUST | 桌面三平台完成安装冒烟 |
 | `REQ-TST-013` | MUST | 所有安全边界有负向测试 |

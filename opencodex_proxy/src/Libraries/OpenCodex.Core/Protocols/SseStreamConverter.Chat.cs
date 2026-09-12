@@ -55,7 +55,7 @@ public static partial class SseStreamConverter
         var outputByIndex = new SortedDictionary<int, Dictionary<string, object?>>();
         var toolCallMappings = result.ToolCallMappings;
         var upstreamResponseAccumulator = new ChatStreamResponseAccumulator(
-            new StreamCaptureBudget(int.MaxValue, int.MaxValue));
+            new StreamCaptureBudget(int.MaxValue, int.MaxValue), SkipToolNames);
 
         string Emit(string eventName, Dictionary<string, object?> payload)
         {
@@ -168,7 +168,7 @@ public static partial class SseStreamConverter
         }
 
         // 提前启动上游HTTP请求，避免延迟
-        var enumerator = ParseEvents(upstreamLines, cancellationToken).GetAsyncEnumerator(cancellationToken);
+        await using var enumerator = ParseEvents(upstreamLines, cancellationToken).GetAsyncEnumerator(cancellationToken);
 
         if (!SkipResponseCreated)
         {
@@ -229,6 +229,7 @@ public static partial class SseStreamConverter
                     ["output"] = new List<object?>()
                 };
                 result.UpstreamResponse = upstreamResponseAccumulator.BuildResponse() ?? payload;
+                result.UpstreamCompleted = upstreamResponseAccumulator.IsComplete;
                 yield return Emit("response.failed", new Dictionary<string, object?>
                 {
                     ["response"] = downstreamFailedResponse
@@ -358,7 +359,9 @@ public static partial class SseStreamConverter
                         var name = StringValue(function, "name", string.Empty);
                         if (name.Length > 0)
                         {
-                            aggregate.Name = name;
+                            var combined = (aggregate.Name ?? string.Empty) + name;
+                            aggregate.Name = SkipToolNames?.Any(candidate =>
+                                candidate.StartsWith(combined, StringComparison.Ordinal)) is true ? combined : name;
                         }
 
                         var arguments = StringValue(function, "arguments", string.Empty);
@@ -388,7 +391,7 @@ public static partial class SseStreamConverter
                         continue;
                     }
 
-                    if (SkipToolNames?.Contains(aggregate.Name) is true)
+                    if (SkipToolNames?.Any(candidate => candidate.StartsWith(aggregate.Name, StringComparison.Ordinal)) is true)
                     {
                         continue;
                     }
@@ -528,6 +531,7 @@ public static partial class SseStreamConverter
 
         result.UpstreamResponse = upstreamResponseAccumulator.BuildResponse()
             ?? BuildEmptyChatCompletion(responseModel, createdAt, finishReason, usage);
+        result.UpstreamCompleted = upstreamResponseAccumulator.IsComplete;
 
         if (combinedReasoning.Length > 0)
         {

@@ -242,7 +242,7 @@ List<object?>
 | 找六种流式方向 | `opencodex_proxy/src/Libraries/OpenCodex.Core/Protocols/SseStreamConverter*.cs` |
 | 找上游重试/超时 | `opencodex_proxy/src/Libraries/OpenCodex.Core/ExternalIntegrations/HttpUpstreamClient*.cs` |
 | 找图片 OCR 降级 | `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/ProxyImageFallbackService.cs` |
-| 找 Web Search 模拟 | `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/WebSearch/WebSearchSimulator*.cs` |
+| 找 Web Search 内置工具 | `Services/Proxy/BuiltinToolSession.cs`、`Services/WebSearch/WebSearchToolExecutor.cs`、`WebSearchRequestPolicy.cs` |
 | 找日志 | `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/ProxyLogService.cs` |
 
 ## 7. 支持范围摘要

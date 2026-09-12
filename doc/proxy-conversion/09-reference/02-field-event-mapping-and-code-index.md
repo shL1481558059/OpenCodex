@@ -804,7 +804,7 @@ opencodex_proxy/src/Libraries/OpenCodex.Core/Protocols/
 | OCR 降级编排 | `Services/Proxy/ProxyImageFallbackService.cs` |
 | OCR 执行/日志 | `Services/Proxy/ProxyOcrService.cs` |
 | Web Search 模式 | `Services/WebSearch/WebSearchRequestPolicy.cs` |
-| Web Search 模拟 | `Services/WebSearch/WebSearchSimulator*.cs` |
+| Web Search 内置工具 | `Services/Proxy/BuiltinToolSession.cs`、`Services/WebSearch/WebSearchToolExecutor.cs` |
 | compat 重写 | `Services/Proxy/ChannelCompatRequestRewriter.cs` |
 | 日志 | `Services/Proxy/ProxyLogService.cs` |
 | 脱敏 | `Services/Proxy/ImageLogSanitizer.cs` |

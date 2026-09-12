@@ -39,7 +39,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
     private readonly IProxyImageFallbackService _imageFallback;
     private readonly IProxyNonStreamService _nonStreams;
     private readonly IProxyStreamService _streams;
-    private readonly IWebSearchSimulator _webSearch;
+    private readonly IWebSearchToolExecutor _webSearch;
+    private readonly WebSearchContinuationStore _webSearchHistory;
 
     public ProxyEndpointService(
         IProxyLogService logs,
@@ -51,7 +52,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         IProxyImageFallbackService imageFallback,
         IProxyNonStreamService nonStreams,
         IProxyStreamService streams,
-        IWebSearchSimulator webSearch)
+        IWebSearchToolExecutor webSearch,
+        WebSearchContinuationStore? webSearchHistory = null)
     {
         _logs = logs;
         _requests = requests;
@@ -63,6 +65,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         _nonStreams = nonStreams;
         _streams = streams;
         _webSearch = webSearch;
+        _webSearchHistory = webSearchHistory ?? new WebSearchContinuationStore();
     }
 
     public async Task<ProxyEndpointResult> ProxyAsync(ProxyEndpointContext context)
@@ -181,6 +184,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 string? attemptChannelType = null;
                 string? attemptUpstreamModel = null;
                 Dictionary<string, object?>? attemptUpstreamRequest = null;
+                BuiltinToolRequestContext? builtinTools = null;
                 try
                 {
                     if (!string.IsNullOrEmpty(stickyKey))
@@ -218,14 +222,24 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         effectivePayload = fallback.Payload;
                     }
 
-                    effectivePayload = WebSearchRequestPolicy.ApplyMode(
-                        effectivePayload,
-                        _webSearch.CurrentMode());
+                    var webSearchMode = _webSearch.CurrentMode();
+                    effectivePayload = WebSearchRequestPolicy.ApplyMode(effectivePayload, webSearchMode);
 
                     var channelCompat = JsonDictionaryValue.Object(route.Channel, "compat", WebSearchPayload.DeepCopyObject);
                     effectivePayload = ChannelCompatRequestRewriter.Apply(
                         effectivePayload,
                         channelCompat).Payload;
+                    builtinTools = WebSearchRequestPolicy.RegisterBuiltin(
+                        effectivePayload, webSearchMode, context.EntryProtocol, channelType, ownerRole ?? string.Empty);
+                    if (context.EntryProtocol == ProtocolConverter.Responses
+                        && channelType is ProtocolConverter.Chat or ProtocolConverter.Messages)
+                    {
+                        await _webSearchHistory.RestoreAsync(
+                            effectivePayload,
+                            WebSearchContinuationStore.OwnerKey(ownerUsername, apiKeyId),
+                            builtinTools?.WebSearchToolName,
+                            context.CancellationToken);
+                    }
 
                     upstreamRequest = ProtocolConverter.ConvertRequest(
                         effectivePayload,
@@ -233,6 +247,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         channelType,
                         route.UpstreamModel,
                         channelCompat);
+                    WebSearchRequestPolicy.FinalizeUpstreamRequest(upstreamRequest, builtinTools);
                     attemptUpstreamRequest = upstreamRequest;
 
                     if (requestLogId.HasValue)
@@ -279,7 +294,10 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                                 defaultTimeout,
                                 requestMetadata,
                                 trackingWriter,
-                                context.CancellationToken));
+                                context.CancellationToken)
+                            {
+                                BuiltinTools = builtinTools
+                            });
 
                         await WriteChannelAttemptLogAsync(
                             requestLogId,
@@ -326,7 +344,10 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                            requestModel,
                            defaultTimeout,
                            requestMetadata,
-                           context.CancellationToken));
+                           context.CancellationToken)
+                       {
+                           BuiltinTools = builtinTools
+                       });
 
                    if (result.FailureException is ProxyException failureException)
                    {
@@ -376,6 +397,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                     {
                         streamResponseStarted = trackingWriter?.HasWritten == true;
                         var failoverEligible = !streamResponseStarted
+                            && builtinTools?.HasExecuted != true
                             && ProxyFailoverPolicy.CanFailover(exception);
                         await WriteChannelAttemptLogAsync(
                             requestLogId,
@@ -406,7 +428,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         throw;
                     }
 
-                    var canFailover = ProxyFailoverPolicy.CanFailover(exception);
+                    var canFailover = builtinTools?.HasExecuted != true && ProxyFailoverPolicy.CanFailover(exception);
                     await WriteChannelAttemptLogAsync(
                         requestLogId,
                         requestId,

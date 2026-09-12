@@ -18,7 +18,7 @@
 | `mcp` / `mcp_toolset` | 由模型供应商连接远程 MCP 服务 | 否 |
 | `mcp__server__tool` | 已展平的普通 function namespace | 不是原生远程 MCP 定义 |
 
-Web Search 的禁用/模拟/原生模式选择与多轮执行由 `WebSearchRequestPolicy`、`WebSearchSimulator` 完成；本文只详述与 `ProtocolConverter` 直接相关的协议形态和历史。
+Web Search 的模式与声明替换由 `WebSearchRequestPolicy` 完成，实际调用由普通代理管线中的 `BuiltinToolSession` 和 `WebSearchToolExecutor` 处理；本文详述与 `ProtocolConverter` 相关的协议形态和历史。模拟模式不再提前选择专用请求管线，详见 [内置搜索执行流程](../08-special-flows/02-web-search-modes-and-simulation.md)。
 
 ---
 
@@ -38,13 +38,16 @@ Web Search 的禁用/模拟/原生模式选择与多轮执行由 `WebSearchReque
 
 相关边界实现：
 
-- `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/WebSearch/WebSearchSimulator.NonStream.cs`
-- `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/WebSearch/WebSearchSimulator.Streaming.cs`
+- `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/BuiltinToolSession.cs`
+- `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/WebSearch/WebSearchToolExecutor.cs`
+- `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/WebSearch/WebSearchContinuationStore.cs`
 - `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/ChannelCompatRequestRewriter.cs`
 
 ---
 
 ## 3. Web Search 工具定义转换
+
+本节是原生声明直接进入转换器时的形态。符合条件的 `simulate` 请求会在转换之前改为 `opencodex_web_search` 普通函数，并独立登记代理执行权；上游响应后才执行搜索，不能仅凭任意同名函数判断执行归属。
 
 ### 3.1 Responses 定义进入 canonical
 
@@ -177,6 +180,8 @@ flowchart TD
 因此纯文本 arguments 会直接作为 query；合法 JSON 但没有字符串 query 也会退回原 JSON 文本。
 
 ### 4.3 Responses 历史中的 `web_search_call`
+
+代理托管搜索使用 `ws_ocxp_` 公开 ID。入口先通过 `WebSearchContinuationStore` 恢复结果和混合调用关联，再进行协议转换；因此不依赖客户端一定保留 `opencodex_result`。以下是转换器仍保留的旧历史兼容分支。
 
 若 item 含 `opencodex_result`，转换为：
 

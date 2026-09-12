@@ -1,6 +1,7 @@
 using OpenCodex.Core.Errors;
 using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.Proxy;
+using OpenCodex.Core.Services.WebSearch;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.Domain.WebSearch;
@@ -14,6 +15,43 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class ProxyEndpointServiceTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ProxyAsync_WebSearch_PreparesOnlyAndDoesNotReplayExecutedTools(bool executed)
+    {
+        var executor = new StubWebSearchToolExecutor(WebSearchModes.Simulate);
+        var attempts = new List<string>();
+        var first = CreateChannel("first", 0);
+        var second = CreateChannel("second", 1);
+        var nonStreams = new StubProxyNonStreamService(context =>
+        {
+            attempts.Add(context.ChannelId);
+            Assert.NotNull(context.BuiltinTools);
+            var tool = Assert.IsType<Dictionary<string, object?>>(Assert.Single(WebSearchPayload.ListValue(context.UpstreamRequest, "tools")));
+            Assert.Equal(WebSearchRequestPolicy.InternalToolName, WebSearchPayload.ObjectValue(tool, "function")["name"]);
+            Assert.Equal("web_search", Assert.IsType<Dictionary<string, object?>>(
+                Assert.Single(WebSearchPayload.ListValue(context.OriginalPayload, "tools")))["type"]);
+            if (context.ChannelId == "first")
+            {
+                context.BuiltinTools.HasExecuted = executed;
+                throw new UpstreamException("upstream unavailable", ProxyHttpStatus.ServiceUnavailable);
+            }
+            return Task.FromResult(new ProxyNonStreamResult(200, new { ok = true }));
+        });
+        var service = CreateService(new ChannelCapacityService(),
+            new StubProxyRouteService([CreateRoute(first, "model", "upstream"), CreateRoute(second, "model", "upstream")]),
+            nonStreams: nonStreams, webSearch: executor);
+        var request = CreateResponsesContext("model", new Dictionary<string, string>());
+        request.Payload!["tools"] = new List<object?> { new Dictionary<string, object?> { ["type"] = "web_search" } };
+
+        var result = await service.ProxyAsync(request);
+
+        Assert.Equal(executed ? 502 : 200, result.StatusCode);
+        Assert.Equal(executed ? 1 : 2, attempts.Count);
+        Assert.Equal(0, executor.Calls);
+    }
+
     [Fact]
     public async Task ProxyAsync_SamePriorityPrefersLessBusyChannel()
     {
@@ -1003,7 +1041,7 @@ public sealed class ProxyEndpointServiceTests
         IProxyNonStreamService? nonStreams = null,
         IProxyStreamService? streams = null,
         IProxyLogService? logs = null,
-        IWebSearchSimulator? webSearch = null)
+        IWebSearchToolExecutor? webSearch = null)
     {
         return new ProxyEndpointService(
             logs ?? new StubProxyLogService(),
@@ -1016,7 +1054,7 @@ public sealed class ProxyEndpointServiceTests
             nonStreams ?? new StubProxyNonStreamService(_ =>
                 Task.FromResult(new ProxyNonStreamResult(200, new { ok = true }))),
             streams ?? new StubProxyStreamService(_ => Task.CompletedTask),
-            webSearch ?? new StubWebSearchSimulator());
+            webSearch ?? new StubWebSearchToolExecutor());
     }
 
     private static ProxyEndpointContext CreateChatContext(string model)
@@ -1243,43 +1281,17 @@ public sealed class ProxyEndpointServiceTests
         }
     }
 
-    private sealed class StubWebSearchSimulator : IWebSearchSimulator
+    private sealed class StubWebSearchToolExecutor(string mode = WebSearchModes.Convert) : IWebSearchToolExecutor
     {
+        public int Calls { get; private set; }
         public string CurrentMode()
         {
-            return WebSearchModes.Convert;
+            return mode;
         }
 
-        public bool CanSimulate(
-            string entryProtocol,
-            string channelType,
-            string ownerRole,
-            IReadOnlyDictionary<string, object?> payload)
+        public Task<WebSearchToolResult> ExecuteAsync(string callId, string arguments, CancellationToken cancellationToken)
         {
-            return false;
-        }
-
-        public Task<WebSearchSimulationResult> RunAsync(
-            IReadOnlyDictionary<string, object?> channel,
-            Dictionary<string, object?> upstreamRequest,
-            Dictionary<string, object?> payload,
-            string? originalModel,
-            int defaultTimeout,
-            CancellationToken cancellationToken)
-        {
-            throw new NotSupportedException();
-        }
-
-        public IAsyncEnumerable<string> RunChatStreamAsync(
-            IReadOnlyDictionary<string, object?> channel,
-            Dictionary<string, object?> upstreamRequest,
-            Dictionary<string, object?> payload,
-            string? originalModel,
-            int defaultTimeout,
-            WebSearchStreamResult result,
-            Func<IAsyncEnumerable<string>, string, IAsyncEnumerable<string>>? streamCapture,
-            CancellationToken cancellationToken)
-        {
+            Calls++;
             throw new NotSupportedException();
         }
     }

@@ -225,6 +225,7 @@ public static partial class SseStreamConverter
                     ["output"] = new List<object?>()
                 };
                 result.UpstreamResponse = upstreamResponseAccumulator.BuildResponse() ?? payload;
+                result.UpstreamCompleted = upstreamResponseAccumulator.IsComplete;
                 yield return Emit("response.failed", new Dictionary<string, object?>
                 {
                     ["response"] = downstreamFailedResponse
@@ -556,6 +557,7 @@ public static partial class SseStreamConverter
         }
 
         result.UpstreamResponse = upstreamResponseAccumulator.BuildResponse();
+        result.UpstreamCompleted = upstreamResponseAccumulator.IsComplete;
 
         var output = new List<object?>();
         var combinedReasoning = string.Concat(reasoningParts);

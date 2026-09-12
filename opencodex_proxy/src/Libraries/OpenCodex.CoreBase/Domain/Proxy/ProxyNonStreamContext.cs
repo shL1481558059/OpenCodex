@@ -8,6 +8,8 @@ namespace OpenCodex.CoreBase.Domain.Proxy;
 /// </summary>
 public sealed class ProxyNonStreamContext
 {
+    public BuiltinToolRequestContext? BuiltinTools { get; init; }
+
     /// <summary>
     /// 初始化 <see cref="ProxyNonStreamContext"/> 类的新实例。
     /// </summary>

@@ -1,3 +1,4 @@
+using OpenCodex.CoreBase.Domain.WebSearch;
 using static OpenCodex.CoreBase.Abstractions.WebSearchPayload;
 
 namespace OpenCodex.Core.Services.WebSearch;

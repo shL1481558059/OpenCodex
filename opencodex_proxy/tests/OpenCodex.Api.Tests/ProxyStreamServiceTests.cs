@@ -2,6 +2,7 @@ using System.Diagnostics;
 using OpenCodex.Core.Errors;
 using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.Proxy;
+using OpenCodex.Core.Services.WebSearch;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.Domain.WebSearch;
@@ -14,6 +15,105 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class ProxyStreamServiceTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BuiltinStream_UnfinishedCall_DoesNotSearchOrComplete(bool hasDoneMarker)
+    {
+        var lines = new List<(string Line, int DelayAfterMs)>
+        {
+            ("data: {\"id\":\"chat_1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"search_1\",\"type\":\"function\",\"function\":{\"name\":\"opencodex_web_search\",\"arguments\":\"{\\\"query\\\":\"}}]}}]}", 0),
+            ("", 0)
+        };
+        if (hasDoneMarker)
+        {
+            lines.Add(("data: [DONE]", 0));
+            lines.Add(("", 0));
+        }
+        var logs = new StubProxyLogService();
+        var executor = new StubWebSearchToolExecutor();
+        var writer = new CapturingProxyStreamWriter();
+        var channel = new Dictionary<string, object?> { ["id"] = "test", ["type"] = "chat" };
+        var payload = new Dictionary<string, object?>();
+        var context = new ProxyStreamContext(
+            Stopwatch.GetTimestamp(), Guid.NewGuid(), "test", "admin", null, payload, payload,
+            new Dictionary<string, object?>(), "responses", new ProxyRouteDto(channel, "public", "model", false, true),
+            "chat", "test", "superadmin", "model", "public", 120,
+            new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()), writer, CancellationToken.None)
+        {
+            BuiltinTools = new BuiltinToolRequestContext { WebSearchToolName = WebSearchRequestPolicy.InternalToolName }
+        };
+
+        await Assert.ThrowsAsync<UpstreamException>(() =>
+            new ProxyStreamService(new SequencedUpstreamClient(lines), logs, executor).StreamAsync(context));
+
+        Assert.Equal(0, executor.Calls);
+        Assert.DoesNotContain(writer.Lines, line => line.Contains("response.completed", StringComparison.Ordinal));
+        Assert.DoesNotContain(writer.Lines, line => line.Contains("response.function_call_arguments", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task BuiltinRequest_CancellationAndTimeoutHaveAccurateLogStatus(bool stream, bool clientCancelled)
+    {
+        using var cancellation = new CancellationTokenSource();
+        if (clientCancelled)
+        {
+            cancellation.Cancel();
+        }
+        var upstream = new FailingUpstreamClient(new OperationCanceledException(cancellation.Token));
+        var logs = new StubProxyLogService();
+        var executor = new StubWebSearchToolExecutor();
+        var payload = new Dictionary<string, object?>();
+        var channel = new Dictionary<string, object?> { ["id"] = "test", ["type"] = "chat" };
+        var route = new ProxyRouteDto(channel, "public", "model", false, true);
+        var metadata = new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>());
+        var binding = new BuiltinToolRequestContext { WebSearchToolName = WebSearchRequestPolicy.InternalToolName };
+        if (stream)
+        {
+            var context = new ProxyStreamContext(
+                Stopwatch.GetTimestamp(), Guid.NewGuid(), "test", "admin", null, payload, payload,
+                new Dictionary<string, object?>(), "responses", route, "chat", "test", "superadmin",
+                "model", "public", 120, metadata, new CapturingProxyStreamWriter(), cancellation.Token)
+            {
+                BuiltinTools = binding
+            };
+            var operation = new ProxyStreamService(upstream, logs, executor).StreamAsync(context);
+            if (clientCancelled)
+            {
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation);
+            }
+            else
+            {
+                await Assert.ThrowsAsync<UpstreamException>(() => operation);
+            }
+        }
+        else
+        {
+            var context = new ProxyNonStreamContext(
+                Stopwatch.GetTimestamp(), Guid.NewGuid(), "test", "admin", null, payload, payload,
+                new Dictionary<string, object?>(), "responses", route, "chat", "test", "superadmin",
+                "model", "public", 120, metadata, cancellation.Token)
+            {
+                BuiltinTools = binding
+            };
+            var operation = new ProxyNonStreamService(upstream, logs, executor).SendAsync(context);
+            if (clientCancelled)
+            {
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation);
+            }
+            else
+            {
+                Assert.IsType<UpstreamException>((await operation).FailureException);
+            }
+        }
+        Assert.Equal(clientCancelled ? 499 : 504, logs.LastContext!.StatusCode);
+        Assert.NotNull(logs.LastContext.Error);
+    }
+
     [Fact]
     public async Task StreamAsync_ConvertedMessages_StreamsReasoningAndUsesItForTtft()
     {
@@ -45,7 +145,7 @@ public sealed class ProxyStreamServiceTests
             ("", 0)
         ]);
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(upstream, logs, new StubWebSearchSimulator(false, []));
+        var service = new ProxyStreamService(upstream, logs, new StubWebSearchToolExecutor());
         var writer = new CapturingProxyStreamWriter();
         var channel = new Dictionary<string, object?>
         {
@@ -92,17 +192,37 @@ public sealed class ProxyStreamServiceTests
     }
 
     [Fact]
-    public async Task StreamAsync_MessagesWebSearchSimulation_UsesSimulatorBranch()
+    public async Task StreamAsync_DeclaredWebSearchWithoutCall_UsesNormalUpstream()
     {
-        var upstream = new ThrowingUpstreamClient();
+        var upstream = new SequencedUpstreamClient(
+        [
+            ("event: message_start", 0),
+            ("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"upstream-model\",\"usage\":{\"input_tokens\":1}}}", 0),
+            ("", 0),
+            ("event: content_block_start", 0),
+            ("data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}", 0),
+            ("", 0),
+            ("event: content_block_delta", 0),
+            ("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ordinary answer\"}}", 0),
+            ("", 0),
+            ("event: content_block_stop", 0),
+            ("data: {\"type\":\"content_block_stop\",\"index\":0}", 0),
+            ("", 0),
+            ("event: message_delta", 0),
+            ("data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}", 0),
+            ("", 0),
+            ("event: message_stop", 0),
+            ("data: {\"type\":\"message_stop\"}", 0),
+            ("", 0)
+        ]);
         var logs = new StubProxyLogService();
-        var webSearch = new StubWebSearchSimulator(
-            canSimulate: true,
-            streamLines:
-            [
-                "event: response.created\ndata: {\"type\":\"response.created\"}\n\n",
-                "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"
-            ]);
+        var webSearch = new StubWebSearchToolExecutor();
+        var payload = new Dictionary<string, object?>
+        {
+            ["input"] = "Hello",
+            ["tools"] = new List<object?> { new Dictionary<string, object?> { ["type"] = "web_search" } }
+        };
+        var binding = WebSearchRequestPolicy.RegisterBuiltin(payload, "simulate", "responses", "messages", "superadmin");
         var service = new ProxyStreamService(upstream, logs, webSearch);
         var writer = new CapturingProxyStreamWriter();
         var channel = new Dictionary<string, object?>
@@ -123,11 +243,8 @@ public sealed class ProxyStreamServiceTests
             ownerUsername: "admin",
             apiKeyId: Guid.NewGuid(),
             originalPayload: new Dictionary<string, object?>(),
-            payload: new Dictionary<string, object?>
-            {
-                ["tools"] = new List<object?> { new Dictionary<string, object?> { ["type"] = "web_search" } }
-            },
-            upstreamRequest: new Dictionary<string, object?>(),
+            payload: payload,
+            upstreamRequest: ProtocolConverter.ConvertRequest(payload, "responses", "messages", "upstream-model"),
             entryProtocol: ProtocolConverter.Responses,
             route: route,
             channelType: ProtocolConverter.Messages,
@@ -138,16 +255,21 @@ public sealed class ProxyStreamServiceTests
             defaultTimeout: 120,
             requestMetadata: new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
             streamWriter: writer,
-            cancellationToken: CancellationToken.None);
+            cancellationToken: CancellationToken.None)
+        {
+            BuiltinTools = binding
+        };
 
         await service.StreamAsync(context);
 
-        Assert.True(webSearch.StreamCalled);
+        Assert.Equal(0, webSearch.Calls);
+        Assert.Equal(1, upstream.Calls);
         Assert.True(writer.Prepared);
-        Assert.Equal(3, writer.Lines.Count);
-        Assert.Contains("response.created", writer.Lines[0], StringComparison.Ordinal);
-        Assert.Contains("response.completed", writer.Lines[1], StringComparison.Ordinal);
-        Assert.Equal("data: [DONE]\n\n", writer.Lines[2]);
+        Assert.Contains("ordinary answer", string.Concat(writer.Lines), StringComparison.Ordinal);
+        Assert.Single(writer.Lines, line => line.StartsWith("event: response.created\n", StringComparison.Ordinal));
+        Assert.Single(writer.Lines, line => line.StartsWith("event: response.completed\n", StringComparison.Ordinal));
+        Assert.Equal("data: [DONE]\n\n", writer.Lines[^1]);
+        Assert.Null(logs.LastContext?.WebSearchDetails);
         Assert.NotNull(logs.LastContext?.StreamLines);
         Assert.Contains(logs.LastContext!.StreamLines!, line =>
             line.Source == "upstream"
@@ -176,7 +298,7 @@ public sealed class ProxyStreamServiceTests
             },
             channelId: "responses"));
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(upstream, logs, new StubWebSearchSimulator(false, []));
+        var service = new ProxyStreamService(upstream, logs, new StubWebSearchToolExecutor());
         var writer = new CapturingProxyStreamWriter();
         var channel = new Dictionary<string, object?>
         {
@@ -230,7 +352,7 @@ public sealed class ProxyStreamServiceTests
             ProxyHttpStatus.ServiceUnavailable,
             channelId: "responses"));
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(upstream, logs, new StubWebSearchSimulator(false, []));
+        var service = new ProxyStreamService(upstream, logs, new StubWebSearchToolExecutor());
         var writer = new CapturingProxyStreamWriter();
         var channel = new Dictionary<string, object?>
         {
@@ -278,7 +400,7 @@ public sealed class ProxyStreamServiceTests
             406,
             channelId: "chat"));
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(upstream, logs, new StubWebSearchSimulator(false, []));
+        var service = new ProxyStreamService(upstream, logs, new StubWebSearchToolExecutor());
         var writer = new CapturingProxyStreamWriter();
         var channel = new Dictionary<string, object?>
         {
@@ -320,6 +442,62 @@ public sealed class ProxyStreamServiceTests
     }
 
     [Fact]
+    public async Task StreamAsync_BuiltinToolUpstream429BeforeFirstLine_DoesNotPrepareSseOrSearch()
+    {
+        var upstream = new FailingUpstreamClient(new UpstreamException(
+            "upstream returned HTTP 429",
+            ProxyHttpStatus.TooManyRequests));
+        var logs = new StubProxyLogService();
+        var executor = new StubWebSearchToolExecutor();
+        var service = new ProxyStreamService(upstream, logs, executor);
+        var writer = new CapturingProxyStreamWriter();
+        var channel = new Dictionary<string, object?>
+        {
+            ["id"] = "chat",
+            ["type"] = ProtocolConverter.Chat
+        };
+        var route = new ProxyRouteDto(
+            channel,
+            "public-model",
+            "upstream-model",
+            supportsImage: false,
+            matchedModelMapping: true);
+        var context = new ProxyStreamContext(
+            startedTimestamp: Stopwatch.GetTimestamp(),
+            requestLogId: Guid.NewGuid(),
+            requestId: "req_builtin_no_prepare",
+            ownerUsername: "admin",
+            apiKeyId: Guid.NewGuid(),
+            originalPayload: new Dictionary<string, object?>(),
+            payload: new Dictionary<string, object?>(),
+            upstreamRequest: new Dictionary<string, object?>(),
+            entryProtocol: ProtocolConverter.Responses,
+            route: route,
+            channelType: ProtocolConverter.Chat,
+            channelId: "chat",
+            ownerRole: "superadmin",
+            upstreamModel: "upstream-model",
+            requestModel: "public-model",
+            defaultTimeout: 120,
+            requestMetadata: new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
+            streamWriter: writer,
+            cancellationToken: CancellationToken.None)
+        {
+            BuiltinTools = new BuiltinToolRequestContext
+            {
+                WebSearchToolName = WebSearchRequestPolicy.InternalToolName
+            }
+        };
+
+        var exception = await Assert.ThrowsAsync<UpstreamException>(() => service.StreamAsync(context));
+
+        Assert.Equal(429, exception.StatusCode);
+        Assert.Equal(0, executor.Calls);
+        Assert.False(writer.Prepared);
+        Assert.Empty(writer.Lines);
+    }
+
+    [Fact]
     public async Task StreamAsync_PassThroughSuccess_PrepareSseDeferredUntilFirstLine()
     {
         var upstream = new SequencedUpstreamClient(
@@ -329,7 +507,7 @@ public sealed class ProxyStreamServiceTests
             ("data: [DONE]", 0)
         ]);
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(upstream, logs, new StubWebSearchSimulator(false, []));
+        var service = new ProxyStreamService(upstream, logs, new StubWebSearchToolExecutor());
         var writer = new CapturingProxyStreamWriter();
         var channel = new Dictionary<string, object?>
         {
@@ -380,7 +558,7 @@ public sealed class ProxyStreamServiceTests
             ("data: [DONE]", 0)
         ]);
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(upstream, logs, new StubWebSearchSimulator(false, []));
+        var service = new ProxyStreamService(upstream, logs, new StubWebSearchToolExecutor());
         var writer = new CapturingProxyStreamWriter();
         var channel = new Dictionary<string, object?>
         {
@@ -455,7 +633,7 @@ public sealed class ProxyStreamServiceTests
         };
         var upstream = new SequencedUpstreamClient(upstreamLines.Select(line => (line, 0)).ToArray());
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(upstream, logs, new StubWebSearchSimulator(false, []));
+        var service = new ProxyStreamService(upstream, logs, new StubWebSearchToolExecutor());
         var writer = new CapturingProxyStreamWriter();
         var channel = new Dictionary<string, object?>
         {
@@ -513,7 +691,7 @@ public sealed class ProxyStreamServiceTests
             ("data: [DONE]", 0)
         ]);
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(upstream, logs, new StubWebSearchSimulator(false, []));
+        var service = new ProxyStreamService(upstream, logs, new StubWebSearchToolExecutor());
         var writer = new CapturingProxyStreamWriter();
         var context = new ProxyStreamContext(
             startedTimestamp: Stopwatch.GetTimestamp(),
@@ -560,7 +738,7 @@ public sealed class ProxyStreamServiceTests
             ("", 0)
         ]);
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(upstream, logs, new StubWebSearchSimulator(false, []));
+        var service = new ProxyStreamService(upstream, logs, new StubWebSearchToolExecutor());
         var writer = new CapturingProxyStreamWriter();
         var channel = new Dictionary<string, object?>
         {
@@ -923,31 +1101,6 @@ public sealed class ProxyStreamServiceTests
         }
     }
 
-    private sealed class ThrowingUpstreamClient : IUpstreamClient
-    {
-        public Task<Dictionary<string, object?>> PostJsonAsync(
-            IReadOnlyDictionary<string, object?> channel,
-            IReadOnlyDictionary<string, object?> payload,
-            int defaultTimeout,
-            CancellationToken cancellationToken)
-        {
-            throw new NotSupportedException("should not use direct upstream post in simulator branch");
-        }
-
-        public async IAsyncEnumerable<string> StreamJsonAsync(
-            IReadOnlyDictionary<string, object?> channel,
-            IReadOnlyDictionary<string, object?> payload,
-            int defaultTimeout,
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
-        {
-            await Task.Yield();
-            throw new NotSupportedException("should not use direct upstream stream in simulator branch");
-#pragma warning disable CS0162
-            yield break;
-#pragma warning restore CS0162
-        }
-    }
-
     private sealed class FailingUpstreamClient : IUpstreamClient
     {
         private readonly Exception _exception;
@@ -963,7 +1116,7 @@ public sealed class ProxyStreamServiceTests
             int defaultTimeout,
             CancellationToken cancellationToken)
         {
-            throw new NotSupportedException("non-stream path is not used in this test");
+            throw _exception;
         }
 
         public async IAsyncEnumerable<string> StreamJsonAsync(
@@ -983,6 +1136,7 @@ public sealed class ProxyStreamServiceTests
     private sealed class SequencedUpstreamClient : IUpstreamClient
     {
         private readonly IReadOnlyList<(string Line, int DelayAfterMs)> _lines;
+        public int Calls { get; private set; }
 
         public SequencedUpstreamClient(IReadOnlyList<(string Line, int DelayAfterMs)> lines)
         {
@@ -1004,6 +1158,7 @@ public sealed class ProxyStreamServiceTests
             int defaultTimeout,
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
         {
+            Calls++;
             foreach (var (line, delayAfterMs) in _lines)
             {
                 yield return line;
@@ -1019,73 +1174,19 @@ public sealed class ProxyStreamServiceTests
         }
     }
 
-    private sealed class StubWebSearchSimulator : IWebSearchSimulator
+    private sealed class StubWebSearchToolExecutor : IWebSearchToolExecutor
     {
-        private readonly bool _canSimulate;
-        private readonly IReadOnlyList<string> _streamLines;
-
-        public StubWebSearchSimulator(bool canSimulate, IReadOnlyList<string> streamLines)
-        {
-            _canSimulate = canSimulate;
-            _streamLines = streamLines;
-        }
-
-        public bool StreamCalled { get; private set; }
+        public int Calls { get; private set; }
 
         public string CurrentMode()
         {
-            return _canSimulate ? WebSearchModes.Simulate : WebSearchModes.Convert;
+            return WebSearchModes.Simulate;
         }
 
-        public bool CanSimulate(
-            string entryProtocol,
-            string channelType,
-            string ownerRole,
-            IReadOnlyDictionary<string, object?> payload)
+        public Task<WebSearchToolResult> ExecuteAsync(string callId, string arguments, CancellationToken cancellationToken)
         {
-            return _canSimulate;
-        }
-
-        public Task<WebSearchSimulationResult> RunAsync(
-            IReadOnlyDictionary<string, object?> channel,
-            Dictionary<string, object?> upstreamRequest,
-            Dictionary<string, object?> payload,
-            string? originalModel,
-            int defaultTimeout,
-            CancellationToken cancellationToken)
-        {
-            throw new NotSupportedException("non-stream path is not used in this test");
-        }
-
-        public async IAsyncEnumerable<string> RunChatStreamAsync(
-            IReadOnlyDictionary<string, object?> channel,
-            Dictionary<string, object?> upstreamRequest,
-            Dictionary<string, object?> payload,
-            string? originalModel,
-            int defaultTimeout,
-            WebSearchStreamResult result,
-            Func<IAsyncEnumerable<string>, string, IAsyncEnumerable<string>>? streamCapture,
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
-        {
-            StreamCalled = true;
-            result.ResponsePayload = new Dictionary<string, object?>();
-            if (streamCapture is not null)
-            {
-                await foreach (var _ in streamCapture(
-                    ToAsyncEnumerable([
-                        "event: content_block_delta",
-                        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"upstream text\"}}",
-                        ""]),
-                    "upstream").WithCancellation(cancellationToken))
-                {
-                }
-            }
-
-            foreach (var line in _streamLines)
-            {
-                yield return line;
-                await Task.Yield();
-            }
+            Calls++;
+            throw new NotSupportedException("this request must not execute web search");
         }
     }
 

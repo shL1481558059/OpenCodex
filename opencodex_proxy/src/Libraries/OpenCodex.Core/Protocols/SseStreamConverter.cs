@@ -8,6 +8,8 @@ public sealed class ConvertedStreamResult
 {
     public Dictionary<string, object?>? UpstreamResponse { get; set; }
 
+    internal bool UpstreamCompleted { get; set; }
+
     internal IReadOnlyDictionary<string, ResponsesToolCallMapping>? ToolCallMappings { get; set; }
 
     /// <summary>

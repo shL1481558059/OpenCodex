@@ -169,20 +169,20 @@ sequenceDiagram
 | 模式 | 行为 | 是否调用搜索 provider |
 |---|---|---:|
 | `convert` | 保留/转换 `web_search` 工具，交给上游模型或上游工具链 | 否（OpenCodex 不主动搜索） |
-| `simulate` | 拦截模型的 `web_search` 调用，选择 Tavily/Keenable Key 执行，再继续模型请求 | 是 |
+| `simulate` | 原生声明替换为代理函数；普通管线收到实际调用后执行 Tavily/Keenable 并回填 | 仅实际调用时 |
 | `disabled` | 删除 Web Search 工具及关联 `tool_choice`/`include` | 否 |
 
-当前模拟范围不是所有请求：只有 **Responses 入口 + Chat/Messages 渠道 + 访问 Key 所属用户角色为 `superadmin` + 请求声明 `type=web_search` + 全局模式为 `simulate`** 时才进入本地模拟。普通用户拥有的访问 Key 即使处于全局 `simulate` 模式，也不会执行搜索 provider 模拟。
+当前注册范围不是所有请求：只有 **Responses 入口 + Chat/Messages 渠道 + 访问 Key 所属用户角色为 `superadmin` + 声明原生 `web_search`/`web_search_preview` + 全局模式为 `simulate`** 时才登记代理执行权。登记不会触发搜索，未调用搜索时仍走普通响应路径。普通用户不能触发搜索 provider 执行，同名普通函数不被接管。
 
 ### 6.2 请求策略
 
 当前 `web_search` 调用参数原则上只接受 `query`：
 
 - arguments 必须是对象或可解析 JSON 对象；
-- `query` 必填且非空；
-- 未知参数按策略拒绝或忽略，必须保持一致；
+- `query` 必须为非空字符串，最多 2048 字符，参数 JSON 最多 16 KiB；
+- 拒绝重复键和未知参数；不支持的原生选项明确报错；
 - 搜索结果应包含答案摘要、来源链接和可供模型继续处理的文本；
-- Key 在真正调用 Tavily 之前即被预留，并立即把 `UsageCount` 加 1；Tavily 随后失败也不会自动回退本次计数；
+- Key 在实际调用前通过数据库条件更新原子预留，`UsageCount` 加 1；搜索 provider 随后失败不自动回退计数；
 - 达到单 Key 上限的 Key 不得继续使用。
 
 ### 6.3 simulate 流程
@@ -190,13 +190,15 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
     [*] --> Forwarding
-    Forwarding --> ModelToolCall: 上游产生 web_search
+    Forwarding --> ModelToolCall: 上游产生已登记的搜索函数调用
     ModelToolCall --> ValidateQuery: 解析参数
     ValidateQuery --> Search: query 合法且有可用 Key
     ValidateQuery --> Failed: 参数非法/无 Key
-    Search --> BuildToolResult: Tavily 成功
-    Search --> Failed: Tavily 错误或超时
-    BuildToolResult --> Continuation: 生成续轮请求
+    Search --> BuildToolResult: 搜索 provider 成功
+    Search --> Failed: 搜索 provider 错误或超时
+    BuildToolResult --> Continuation: 没有待完成客户端工具时续轮
+    BuildToolResult --> ClientTools: 同轮还有客户端工具
+    ClientTools --> [*]: 保存搜索结果并交回客户端
     Continuation --> Forwarding: 回到模型
     Forwarding --> Completed: 模型最终完成
     Forwarding --> ModelToolCall: 再次产生搜索
@@ -214,14 +216,17 @@ stateDiagram-v2
 - 必须有最大搜索轮数，避免模型循环调用；
 - 达到上限时返回入口协议可识别的错误或终止事件；
 - 主请求日志记录每一轮搜索和 Key 使用情况。
+- 一个公开 response ID、连续输出索引和完整跨轮 output；模型 usage 汇总所有轮次。
+- 混合调用时不提前续轮；通过短期结果存储恢复客户端回传历史。
+- 搜索已经执行后禁止入口重放；取消、断流和超时不得伪造成功。
 
-`REQ-SPC-005`（MUST）：只有超级管理员配置并允许的场景才能启用 `simulate`；普通用户不得通过请求字段绕过全局模式或触发未授权 Tavily 调用。
+`REQ-SPC-005`（MUST）：只有超级管理员配置并允许的场景才能启用 `simulate`；普通用户不得通过请求字段绕过全局模式或触发未授权搜索 provider 调用。
 
-当前 `simulate` 对参数非法、无可用 Key、Tavily 失败或调用次数超限的处理，不是直接返回独立 HTTP 4xx/5xx；它先生成 `status=failed` 的 Web Search 工具结果，再要求模型给出最终回答。只有后续上游调用本身失败时，代理才按上游异常结束请求。
+当前 `simulate` 对参数非法、无可用 Key、搜索 provider 失败或调用次数超限的处理，不是直接返回独立 HTTP 4xx/5xx；它先生成 `status=failed` 的 Web Search 工具结果，再要求模型给出最终回答。只有后续上游调用本身失败时，代理才按上游异常结束请求。
 
 ### 6.4 convert/disabled 边界
 
-- `convert` 不得因本地没有 Tavily Key而失败；
+- `convert` 不得因本地没有可用搜索 provider Key 而失败；
 - `disabled` 必须同时清理工具声明、`tool_choice` 和相关 `include`；
 - 模式切换的生效时机由 `/web-search` 保存操作定义；
 - 上游协议不支持 Web Search 时，必须走渠道 compat 或明确错误。

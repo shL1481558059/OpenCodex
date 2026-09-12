@@ -7,6 +7,7 @@ internal sealed class ChatStreamResponseAccumulator : IStreamResponseAccumulator
     private static readonly string[] ErrorFallbackFields = ["type", "code", "message", "param"];
 
     private readonly StreamCaptureBudget _budget;
+    private readonly IReadOnlySet<string>? _builtinToolNames;
     private readonly SortedDictionary<int, ChoiceState> _choices = [];
     private string? _id;
     private object? _created;
@@ -16,9 +17,10 @@ internal sealed class ChatStreamResponseAccumulator : IStreamResponseAccumulator
     private Dictionary<string, object?>? _usage;
     private object? _error;
 
-    public ChatStreamResponseAccumulator(StreamCaptureBudget budget)
+    public ChatStreamResponseAccumulator(StreamCaptureBudget budget, IReadOnlySet<string>? builtinToolNames = null)
     {
         _budget = budget;
+        _builtinToolNames = builtinToolNames;
     }
 
     public bool IsComplete { get; private set; }
@@ -202,7 +204,21 @@ internal sealed class ChatStreamResponseAccumulator : IStreamResponseAccumulator
         if (toolCall.TryGetValue("function", out var functionValue)
             && StreamCaptureValues.TryObject(functionValue, out var function))
         {
-            AppendOnce(state.Name, StreamCaptureValues.String(function, "name"));
+            var name = StreamCaptureValues.String(function, "name");
+            if (!string.IsNullOrEmpty(name) && _builtinToolNames?.Contains(name) is true)
+            {
+                state.Name.Clear();
+                _budget.Append(state.Name, name);
+            }
+            else if (!string.IsNullOrEmpty(name) && state.Name.Length > 0
+                && _builtinToolNames?.Any(candidate => candidate.StartsWith(state.Name.ToString() + name, StringComparison.Ordinal)) is true)
+            {
+                _budget.Append(state.Name, name);
+            }
+            else
+            {
+                AppendOnce(state.Name, name);
+            }
             _budget.Append(state.Arguments, StreamCaptureValues.String(function, "arguments"));
         }
 

@@ -1,4 +1,5 @@
 using OpenCodex.Core.Protocols;
+using OpenCodex.CoreBase.Domain.WebSearch;
 using static OpenCodex.CoreBase.Abstractions.WebSearchPayload;
 
 namespace OpenCodex.Core.Services.WebSearch;
@@ -10,13 +11,14 @@ internal static class WebSearchContinuationRequest
         Dictionary<string, object?> upstreamResponse,
         string protocol,
         IReadOnlyList<WebSearchToolResult> results,
-        bool forceFinalAnswer = false)
+        bool forceFinalAnswer = false,
+        string internalToolName = WebSearchRequestPolicy.ToolName)
     {
         var request = DeepCopyObject(upstreamRequest);
-        RelaxToolChoice(request);
+        RelaxToolChoice(request, internalToolName);
         if (forceFinalAnswer)
         {
-            RemoveWebSearchTool(request);
+            RemoveWebSearchTool(request, internalToolName);
         }
 
         if (protocol == ProtocolConverter.Chat)
@@ -25,16 +27,7 @@ internal static class WebSearchContinuationRequest
             request["messages"] = messages;
             var choice = FirstObject(ListValue(upstreamResponse, "choices"));
             var message = choice is null ? [] : ObjectValue(choice, "message");
-            var assistant = new Dictionary<string, object?>(StringComparer.Ordinal);
-            foreach (var key in new[] { "role", "content", "tool_calls", "reasoning_content" })
-            {
-                if (message.TryGetValue(key, out var value))
-                {
-                    assistant[key] = DeepCopy(value);
-                }
-            }
-
-            messages.Add(assistant);
+            messages.Add(DeepCopyObject(message));
             foreach (var result in results)
             {
                 messages.Add(new Dictionary<string, object?>
@@ -62,20 +55,18 @@ internal static class WebSearchContinuationRequest
                 });
             }
 
-            foreach (var result in results)
+            if (results.Count > 0)
             {
                 messages.Add(new Dictionary<string, object?>
                 {
                     ["role"] = "user",
-                    ["content"] = new List<object?>
-                    {
-                        new Dictionary<string, object?>
+                    ["content"] = results.Select(result => (object?)new Dictionary<string, object?>
                         {
                             ["type"] = "tool_result",
                             ["tool_use_id"] = result.CallId,
-                            ["content"] = result.ToolResult
-                        }
-                    }
+                            ["content"] = result.ToolResult,
+                            ["is_error"] = result.Status != "completed"
+                        }).ToList()
                 });
             }
         }
@@ -83,12 +74,39 @@ internal static class WebSearchContinuationRequest
         return request;
     }
 
-    private static void RelaxToolChoice(Dictionary<string, object?> request)
+    private static void RelaxToolChoice(Dictionary<string, object?> request, string internalToolName)
     {
-        request.Remove("tool_choice");
+        var choice = GetValue(request, "tool_choice");
+        if (choice is "required" or "any")
+        {
+            request.Remove("tool_choice");
+        }
+        else if (TryAsObject(choice, out var value))
+        {
+            var type = StringValue(value, "type");
+            var name = StringValue(value, "name", StringValue(ObjectValue(value, "function"), "name"));
+            if (type == "allowed_tools")
+            {
+                if (StringValue(value, "mode") == "required")
+                {
+                    value["mode"] = "auto";
+                }
+            }
+            else if (name == internalToolName || type is "required" or "any")
+            {
+                if (value.Count == 1 || name == internalToolName)
+                {
+                    request.Remove("tool_choice");
+                }
+                else
+                {
+                    value["type"] = "auto";
+                }
+            }
+        }
     }
 
-    private static void RemoveWebSearchTool(Dictionary<string, object?> request)
+    private static void RemoveWebSearchTool(Dictionary<string, object?> request, string internalToolName)
     {
         var tools = ListValue(request, "tools");
         if (tools.Count == 0)
@@ -97,30 +115,31 @@ internal static class WebSearchContinuationRequest
         }
 
         var filtered = tools
-            .Where(tool => !IsWebSearchTool(tool))
+            .Where(tool => !IsWebSearchTool(tool, internalToolName))
             .ToList();
         if (filtered.Count == 0)
         {
             request.Remove("tools");
+            request.Remove("tool_choice");
             return;
         }
 
         request["tools"] = filtered;
     }
 
-    private static bool IsWebSearchTool(object? value)
+    private static bool IsWebSearchTool(object? value, string internalToolName)
     {
         if (!TryAsObject(value, out var tool))
         {
             return false;
         }
 
-        if (StringValue(tool, "name") == WebSearchRequestPolicy.ToolName)
+        if (StringValue(tool, "name") == internalToolName)
         {
             return true;
         }
 
         var function = ObjectValue(tool, "function");
-        return StringValue(function, "name") == WebSearchRequestPolicy.ToolName;
+        return StringValue(function, "name") == internalToolName;
     }
 }

@@ -136,7 +136,7 @@ flowchart TB
 | ProxyEndpoint | 单次代理请求的总编排 | Scoped |
 | ProtocolConverter | 请求、响应、工具和字段转换 | Core Protocols |
 | SseStreamConverter | 六个跨协议流式转换方向 | Core Protocols |
-| WebSearchSimulator | 本地 Web Search 工具循环 | Core Web Search |
+| BuiltinToolSession / WebSearchToolExecutor | 普通代理管线中的内置 Web Search 调用与执行 | Core Proxy / Web Search |
 | ImageFallback/OCR | 图片能力检测、视觉路由和文本重写 | Core Proxy Service |
 | ProxyLog/Observability | 请求生命周期、正文、统计和实时数据 | Core Service |
 | EF DbContext | 数据持久化与迁移 | Scoped |

@@ -5,6 +5,8 @@ namespace OpenCodex.CoreBase.Domain.Proxy;
 /// </summary>
 public sealed class ProxyLogContext
 {
+    public Dictionary<string, object?>? AggregatedUsage { get; init; }
+
     /// <summary>
     /// 初始化 <see cref="ProxyLogContext"/> 类的新实例。
     /// </summary>

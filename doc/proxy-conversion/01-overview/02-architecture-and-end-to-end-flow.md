@@ -41,7 +41,8 @@ flowchart TB
         PSS["ProxyStreamService"]
         PLS["ProxyLogService"]
         PIF["ProxyImageFallbackService"]
-        WSS["WebSearchSimulator"]
+        WSS["BuiltinToolSession"]
+        WSE["WebSearchToolExecutor"]
     end
 
     subgraph Routing["Core：路由与可靠性"]
@@ -80,7 +81,8 @@ flowchart TB
     PSS --> SSC
     PSS --> SRC
     PSS --> WSS
-    WSS --> TAV
+    WSS --> WSE
+    WSE --> TAV
     PNS --> PLS
     PSS --> PLS
     PES --> PLS
@@ -273,7 +275,8 @@ flowchart LR
     E --> G["WebSearchRequestPolicy.ApplyMode"]
     F --> G
     G --> H["ChannelCompatRequestRewriter.Apply"]
-    H --> I["ProtocolConverter.ConvertRequest"]
+    H --> WS["登记内置工具并恢复搜索历史"]
+    WS --> I["ProtocolConverter.ConvertRequest"]
     I --> J["MarkProcessing"]
     J --> K{"流式？"}
 ```
@@ -288,10 +291,10 @@ flowchart LR
 
 1. 从原始 Responses 请求提取 JSON Schema 文本格式信息；
 2. 特定 Responses→Chat/Messages 场景构建工具调用映射，用于把响应中的代理工具名还原；
-3. 判断 Web Search 是否应由本地模拟器执行；
-4. 若模拟：`WebSearchSimulator.RunAsync` 可能执行多轮“模型工具调用 → Tavily → 延续请求”；
-5. 若不模拟：`HttpUpstreamClient.PostJsonAsync` 发起上游调用；
-6. 使用 `ProtocolConverter.ConvertResponse` 生成入口协议响应；
+3. 首轮统一由 `HttpUpstreamClient.PostJsonAsync` 发起上游调用；
+4. 使用 `ProtocolConverter.ConvertResponse` 生成入口协议响应；
+5. 仅当响应包含本请求登记的搜索调用时，`BuiltinToolSession` 执行搜索、投影结果并准备续轮；
+6. 续轮复用普通发送逻辑；同轮包含客户端工具时保存搜索历史并交回客户端；
 7. 在 `finally` 中完成主日志；
 8. 将成功结果或捕获到的 `ProxyException` 包装成 `ProxyNonStreamResult` 返回编排器。
 
@@ -299,22 +302,23 @@ flowchart LR
 
 `ProxyEndpointService` 检查 `ProxyNonStreamResult.FailureException`：
 
-- 非空：重新抛出，让外层候选 catch 统一做熔断、attempt 日志与故障转移判断；
+- 非空：重新抛出，让外层候选 catch 统一做熔断、attempt 日志与故障转移判断；内置工具已开始执行后不再重放请求；
 - 为空：写成功 attempt 日志、调用 `RecordSuccessAsync` 清除熔断状态、返回非流式结果。
 
 ### 6.3 非流式流程图
 
 ```mermaid
 flowchart TD
-    A["ProxyNonStreamService.SendAsync"] --> B{"Web Search 可模拟？"}
-    B -- "是" --> C["WebSearchSimulator.RunAsync"]
-    B -- "否" --> D["HttpUpstreamClient.PostJsonAsync"]
+    A["ProxyNonStreamService.SendAsync"] --> D["HttpUpstreamClient.PostJsonAsync"]
     D --> E["ProtocolConverter.ConvertResponse"]
-    C --> F["得到模拟器最终上游请求、响应及入口响应"]
-    E --> G["构造 ProxyNonStreamResult 成功"]
-    F --> G
+    E --> B{"实际调用了代理托管工具？"}
+    B -- "否" --> G["构造 ProxyNonStreamResult 成功"]
+    B -- "是" --> F["执行搜索并记录结果"]
+    F --> C{"仍有客户端工具待完成？"}
+    C -- "是" --> G
+    C -- "否：回填结果" --> D
     D -. "ProxyException" .-> H["构造失败结果并保留 FailureException"]
-    C -. "WebSearchSimulationUpstreamException" .-> H
+    F -. "执行或续轮异常" .-> H
     G --> I["finally：完成主请求日志"]
     H --> I
     I --> J["返回 ProxyEndpointService"]
@@ -329,15 +333,16 @@ flowchart TD
 
 编排器在调用 `ProxyStreamService` 前先调用 `ProtocolConverter.SupportsStreamingConversion`。同协议始终支持；当前三协议之间六个跨协议方向全部显式登记。未登记方向抛出 400，不会调用上游。
 
-### 7.2 三条流式路径
+### 7.2 两条流式路径
 
 `ProxyStreamService.StreamAsync` 首先强制 `upstreamRequest["stream"] = true`，随后选择：
 
 | 分支 | 条件 | 上游/下游处理 |
 |---|---|---|
-| Web Search 模拟 | `IWebSearchSimulator.CanSimulate(...)` | 模拟器产生入口协议可写出的流，并维护最终请求/响应/细节 |
 | 同协议透传 | `EntryProtocol == ChannelType` | 原 SSE 行写出；`StreamResponseCapture` 同时累积结构化日志响应 |
 | 跨协议转换 | 其余已支持组合 | 先确认上游流可读取第一行，再交给对应 `SseStreamConverter` |
+
+登记了内置搜索的 Responses→Chat/Messages 请求仍走跨协议转换路径。只有实际工具调用被 `BuiltinToolSession` 接管；普通事件及时写出，中间终止事件由跨轮响应状态管理，最终只输出一个完整逻辑响应。
 
 ### 7.3 为什么延迟准备 SSE
 
@@ -478,11 +483,11 @@ flowchart TD
 
 ### 11.1 执行分支选择
 
-| `stream` | Web Search 模拟 | 入口=渠道 | 执行路径 |
+| `stream` | 实际出现托管搜索调用 | 入口=渠道 | 执行路径 |
 |---|---|---|---|
 | false | false | 任意 | `PostJsonAsync`；必要时非流式响应转换 |
-| false | true | 通常为 Responses→Chat/Messages | `WebSearchSimulator.RunAsync` |
-| true | true | 由模拟器能力判断 | `RunChatStreamAsync` 产生下游流 |
+| false | true | Responses→Chat/Messages | 普通发送 + `BuiltinToolSession` 执行与续轮 |
+| true | true | false | 普通 SSE 转换 + 工具拦截和跨轮响应状态 |
 | true | false | true | SSE 同协议透传 + `StreamResponseCapture` |
 | true | false | false | 对应 `SseStreamConverter` 跨协议状态机 |
 

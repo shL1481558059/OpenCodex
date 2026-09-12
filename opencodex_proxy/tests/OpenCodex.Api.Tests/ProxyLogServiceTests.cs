@@ -18,6 +18,59 @@ public sealed class ProxyLogServiceTests
     private static readonly Guid TestApiKeyId = Guid.Parse("55555555-5555-5555-5555-555555555501");
     private static readonly Guid TestChannelId = Guid.Parse("66666666-6666-6666-6666-666666666601");
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task WebSearchLog_UsesAggregateUsageWithoutChangingLastResponse(bool completeQueued)
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-proxy-log-tests", $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        using (var bootstrap = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            bootstrap.Database.Migrate();
+        }
+        EnsureAdminUser(dbPath);
+        var service = CreateService(dbPath);
+        var lastResponse = new Dictionary<string, object?>
+        {
+            ["usage"] = new Dictionary<string, object?> { ["input_tokens"] = 2, ["output_tokens"] = 3 }
+        };
+        var logContext = new ProxyLogContext(
+            "req-aggregate", "admin", null, new Dictionary<string, object?>(), new Dictionary<string, object?>(),
+            lastResponse, new Dictionary<string, object?>(), null, "model", "upstream",
+            TestChannelId.ToString(), "messages", true, 1, 200, 10, null, new Dictionary<string, object?>())
+        {
+            AggregatedUsage = new Dictionary<string, object?>
+            {
+                ["input_tokens"] = 20,
+                ["cache_creation_input_tokens"] = 4,
+                ["cache_read_input_tokens"] = 6,
+                ["output_tokens"] = 30
+            }
+        };
+        var metadata = new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>());
+        if (completeQueued)
+        {
+            var id = service.CreateQueuedLog(new ProxyRequestLogQueuedContext(
+                "req-aggregate", "admin", null, new Dictionary<string, object?>(), "model", true,
+                "POST", "/v1/responses", null, new Dictionary<string, string>()));
+            await service.CompleteLogAsync(id, logContext, metadata);
+        }
+        else
+        {
+            await service.WriteLogAsync(logContext, metadata);
+        }
+
+        using var db = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var log = db.RequestLogs.Single();
+        Assert.Equal(30, log.InputTokens);
+        Assert.Equal(30, log.OutputTokens);
+        Assert.Equal(4, log.CacheWriteTokens);
+        Assert.Equal(6, log.CacheReadTokens);
+        Assert.Equal(10, log.CachedTokens);
+        Assert.Equal(2, ((Dictionary<string, object?>)lastResponse["usage"]!)["input_tokens"]);
+    }
+
     [Fact]
     public async Task WriteLog_PreservesNestedMcpAuthorizationTokens()
     {

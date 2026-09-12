@@ -37,7 +37,7 @@ var isStream = payload.TryGetValue("stream", out var streamValue)
 3. 图片输入检测；
 4. 候选渠道排序；
 5. 熔断状态与容量租约检查；
-6. 图片 OCR 降级、Web Search 模式处理和渠道兼容重写；
+6. 图片 OCR 降级、模式处理、渠道兼容重写、内置搜索登记和历史恢复；
 7. `ProtocolConverter.ConvertRequest` 请求协议转换；
 8. `ProtocolConverter.SupportsStreamingConversion` 支持性校验。
 
@@ -57,9 +57,6 @@ flowchart TD
     B --> C{"入口协议与渠道协议是否相同"}
     C -->|"相同"| D["同协议透明透传"]
     C -->|"不同"| E["跨协议流式转换"]
-    B --> F{"是否满足 Web Search 模拟条件"}
-    F -->|"是"| G["WebSearchSimulator.RunChatStreamAsync"]
-    F -->|"否"| C
     D --> H["HttpUpstreamClient.StreamJsonAsync"]
     E --> H
     H --> I["探测首个 data 行是否为可重试 SSE error"]
@@ -69,6 +66,8 @@ flowchart TD
     K -->|"透传"| L["StreamResponseCapture 旁路观察"]
     K -->|"转换"| M["SseStreamConverter.ParseEvents"]
     M --> N["六个跨协议状态机之一"]
+    N -. "实际出现已登记的搜索调用" .-> G["BuiltinToolSession 执行搜索并回填"]
+    G -->|"需要续轮"| H
     L --> O["IProxyStreamWriter.WriteLinesAsync"]
     N --> O
     G --> O
@@ -78,18 +77,46 @@ flowchart TD
     R --> S["ProxyLogService 完成主请求日志"]
 ```
 
-### 3.1 分支优先级
+### 3.1 分支与工具观察
 
-`ProxyStreamService.StreamAsync` 的判断顺序不是简单的“同协议/跨协议”二选一，而是：
+`ProxyStreamService.StreamAsync` 只区分同协议透传与跨协议转换：
 
 | 顺序 | 条件 | 处理器 | 说明 |
 |---|---|---|---|
-| 1 | `IWebSearchSimulator.CanSimulate(...) == true` | `RunChatStreamAsync` | 仅 Responses 入口、Chat/Messages 渠道、超级管理员、声明 `web_search` 且模式为 `simulate` |
-| 2 | `EntryProtocol == ChannelType` | 透明透传 | 下游收到原上游协议事件，旁路累积完整响应用于日志 |
-| 3 | 其他已支持组合 | `SseStreamConverter` | 根据 `(入口协议, 渠道协议)` 派发到六个转换器 |
-| 4 | 未登记组合 | `BadRequestException` | 正常情况下已在 `ProxyEndpointService` 被前置拦截 |
+| 1 | `EntryProtocol == ChannelType` | 透明透传 | 下游收到原上游协议事件，旁路累积完整响应用于日志 |
+| 2 | 其他已支持组合 | `SseStreamConverter` | 根据 `(入口协议, 渠道协议)` 派发到六个转换器 |
+| 3 | 未登记组合 | `BadRequestException` | 正常情况下已在 `ProxyEndpointService` 被前置拦截 |
 
-Web Search 模拟优先级最高，因为它需要自行执行“模型调用 → 搜索 → 续轮模型调用”的多轮流式循环。
+内置搜索不再具有一条优先级更高的专用管线。已登记的 Responses→Chat/Messages 请求在普通转换中隐藏内部函数事件，确认调用完整后执行搜索；没有实际搜索调用时直接正常完成。多轮保持同一个公开 response ID，并累计完整 output 和 usage。
+
+### 3.2 搜索进度与实时查询词
+
+代理确认上游发出了完整的内部搜索调用后，先向客户端发送 `response.output_item.added`，其中 `item.type=web_search_call`、`item.action.query` 是实际搜索词；随后发送 `response.web_search_call.in_progress` 和 `response.web_search_call.searching`，再等待搜索执行器。客户端不必等 Tavily 返回结果才知道正在搜索什么。
+
+```mermaid
+sequenceDiagram
+    participant C as Codex
+    participant P as 普通代理管线
+    participant L as Chat/Messages 上游
+    participant S as 搜索执行器 / Tavily
+    C->>P: Responses 请求，携带原生 web_search
+    P->>L: 转换请求，登记 opencodex_web_search
+    L-->>P: 完整的搜索工具调用与实际 query
+    P-->>C: output_item.added，包含 action.query
+    P-->>C: web_search_call.in_progress
+    P-->>C: web_search_call.searching
+    P->>S: 执行实际搜索
+    S-->>P: 搜索结果与来源
+    P-->>C: web_search_call.completed
+    P-->>C: output_item.done
+    P->>L: 回填工具结果，继续普通模型调用
+    L-->>P: 最终答案
+    P-->>C: 文本事件与唯一 response.completed
+```
+
+进度事件使用同一条流的单调 `sequence_number`，并携带对应 `item_id` 和 `output_index`。搜索执行器返回失败结果时，输出失败状态的 `output_item.done`，不发送表示成功的 `web_search_call.completed`。查询词只在完整工具调用确认后展示，不从用户输入或未完成参数中猜测。
+
+最终 Responses usage 与日志计费分别累计各轮转换后、转换前的用量。流式汇总复用每轮终态事件中已经规范化的 usage，保留缓存和 `reasoning_tokens` 明细，避免再次经过通用响应转换时丢失字段。HTTP JSON 解码得到的整数值可能以 `double` 表示；累加器接受非负整数形式的 `int/long/double/decimal`，拒绝非法 token 数值和累加溢出，避免搜索请求的日志 token 被静默记成零。
 
 ---
 

@@ -255,7 +255,7 @@ flowchart BT
 覆盖服务层：
 
 - reasoning 计入 TTFT；
-- Web Search 流模拟分支；
+- Web Search 内置工具调用、普通流式主链路及跨轮响应状态；
 - 上游真实状态和 body 写日志；
 - 首个上游行前不准备 SSE；
 - 同协议/跨协议延迟 PrepareSse；
@@ -386,6 +386,16 @@ AND 命中显式模型映射
 
 ## 11. Web Search 测试
 
+内置工具链的专项测试：
+
+| 测试文件 | 覆盖 |
+|---|---|
+| `WebSearchRequestPolicyTests.cs` | 原生搜索工具登记、工具选择、名称冲突与请求约束 |
+| `WebSearchToolExecutorTests.cs` | 单次执行、参数、供应商结果与错误返回 |
+| `BuiltinToolSessionTests.cs` | 多轮工具调用、混合客户端工具、历史、预算、嵌套 usage、数值类型及累加溢出 |
+| `BuiltinToolHttpUsageTests.cs` | 真实 `HttpUpstreamClient` 解码 JSON/SSE，再经完整 API 写入 SQLite；覆盖 Chat/Messages × 流式/非流式、缓存用量和 Chat 流式推理明细 |
+| `WebSearchProgressTests.cs` | 阻塞搜索执行器，验证查询词和 searching 事件先送达；失败不误报成功，序号单调、终态唯一 |
+
 `ProxyCompatibilityTests.cs` 中主要覆盖：
 
 - disabled 模式只移除 Web Search；
@@ -406,7 +416,18 @@ AND 命中显式模型映射
 6. 最终轮不再强制 Web Search；
 7. 原有非搜索工具不丢失。
 
-当前测试主要使用 fake 搜索/上游，不验证 Tavily 真实网络、限流和供应商响应漂移。
+默认回归不访问付费上游。HTTP usage 测试使用本地 `HttpMessageHandler` 返回字节，故能验证生产解码、协议转换和计费入库，但不能代替真实 Tavily/模型联调。
+
+真实 Codex 验收需另行使用临时配置、临时数据库和受限调用预算，同时核对：
+
+1. 请求确实携带原生 `web_search`，普通请求不产生搜索消费；
+2. `item.started` 中出现实际查询词，且时间早于搜索完成事件；
+3. 搜索完成后模型正常续轮，内部函数不泄露成客户端待执行工具；
+4. 上游多轮总用量、Responses usage、Codex usage 与主请求日志一致；
+5. Codex 收到终态后正常关闭流，不被误判成失败；
+6. 临时凭据与进程清理，且不修改全局 Codex 或生产配置。
+
+`codex exec --json` 的搜索项可能同时输出通用和原生 `id`。验收读取器应保留原始 JSON，并采用兼容的重复字段读取规则；这不意味着要放宽代理对业务请求的校验。CLI 事件验收不等于桌面 GUI 已完成截图验证。真实供应商限流、响应漂移及长时间运行仍需额外验证。
 
 ---
 

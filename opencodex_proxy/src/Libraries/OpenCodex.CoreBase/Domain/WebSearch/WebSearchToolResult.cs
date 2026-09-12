@@ -1,9 +1,9 @@
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.DTOs;
 
-namespace OpenCodex.Core.Services.WebSearch;
+namespace OpenCodex.CoreBase.Domain.WebSearch;
 
-internal sealed class WebSearchToolResult
+public sealed class WebSearchToolResult
 {
     public WebSearchToolResult(
         string callId,
@@ -22,6 +22,7 @@ internal sealed class WebSearchToolResult
         object? raw)
     {
         CallId = callId;
+        ItemId = callId;
         Query = query;
         Status = status;
         ToolResult = toolResult;
@@ -38,6 +39,10 @@ internal sealed class WebSearchToolResult
     }
 
     public string CallId { get; }
+
+    public string ItemId { get; set; }
+
+    public bool DisableSearch { get; init; }
 
     public string Query { get; }
 
@@ -65,7 +70,7 @@ internal sealed class WebSearchToolResult
 
     public object? Raw { get; }
 
-    public static WebSearchToolResult Failed(string callId, string query, string error)
+    public static WebSearchToolResult Failed(string callId, string query, string error, bool disableSearch = false)
     {
         var resultPayload = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
@@ -87,7 +92,10 @@ internal sealed class WebSearchToolResult
             null,
             null,
             null,
-            null);
+            null)
+        {
+            DisableSearch = disableSearch
+        };
     }
 
     public static WebSearchToolResult FromProvider(
@@ -116,6 +124,9 @@ internal sealed class WebSearchToolResult
             key.KeyUsageLimit,
             result.ErrorType,
             result.StatusCode,
-            result.Raw);
+            result.Raw)
+        {
+            DisableSearch = !result.Ok
+        };
     }
 }

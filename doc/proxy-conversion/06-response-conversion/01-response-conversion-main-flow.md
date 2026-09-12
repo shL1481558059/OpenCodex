@@ -73,7 +73,7 @@ ConvertResponse(upstream, Responses, Chat, "public-model")
   - 原始 Responses 请求会提前提取 `textFormat` 和工具映射。
 - `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/ProxyStreamService.cs`
   - 流完成后，对累计的完整上游响应调用，用于最终响应体/日志。
-- `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/WebSearch/WebSearchSimulator.NonStream.cs`
+- `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/BuiltinToolSession.cs`
   - Web Search 多轮模拟的最终响应转换。
 
 ---

@@ -1762,14 +1762,14 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         var upstream = new RecordingUpstreamClient(
             MessagesToolUseResponse(
                 "call_web",
-                "web_search",
+                "opencodex_web_search",
                 new Dictionary<string, object?>
                 {
                     ["query"] = "OpenAI"
                 }),
             MessagesTextResponse("final answer"));
         var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
-        var simulator = new WebSearchSimulator(
+        var simulator = new WebSearchProxyHarness(
             upstream,
             new SuccessfulWebSearchClient(),
             new EfRepository<WebSearchSettings>(wsContext),
@@ -1802,7 +1802,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                 {
                     new Dictionary<string, object?>
                     {
-                        ["name"] = "web_search",
+                        ["name"] = "opencodex_web_search",
                         ["description"] = "Search the web.",
                         ["input_schema"] = new Dictionary<string, object?>
                         {
@@ -1882,7 +1882,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         var upstream = new RecordingUpstreamClient(
             MessagesToolUseResponse(
                 "call_web",
-                "web_search",
+                "opencodex_web_search",
                 new Dictionary<string, object?>
                 {
                     ["query"] = "OpenAI"
@@ -1896,7 +1896,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                     ["y"] = 34
                 }));
         var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
-        var simulator = new WebSearchSimulator(
+        var simulator = new WebSearchProxyHarness(
             upstream,
             new SuccessfulWebSearchClient(),
             new EfRepository<WebSearchSettings>(wsContext),
@@ -1929,7 +1929,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                 {
                     new Dictionary<string, object?>
                     {
-                        ["name"] = "web_search",
+                        ["name"] = "opencodex_web_search",
                         ["description"] = "Search the web.",
                         ["input_schema"] = new Dictionary<string, object?>
                         {
@@ -1996,7 +1996,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Assert.DoesNotContain(output, item =>
             item is Dictionary<string, object?> entry
             && (string?)entry["type"] == "function_call"
-            && (string?)entry["name"] == "web_search");
+            && (string?)entry["name"] == "opencodex_web_search");
     }
 
     [Fact]
@@ -2547,10 +2547,10 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         }
 
         var upstream = new RecordingUpstreamClient(
-            ChatToolResponse("call_web", "web_search", "{\"query\":\"OpenAI\"}"),
+            ChatToolResponse("call_web", "opencodex_web_search", "{\"query\":\"OpenAI\"}"),
             ChatTextResponse("final answer"));
         var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
-        var simulator = new WebSearchSimulator(
+        var simulator = new WebSearchProxyHarness(
             upstream,
             new SuccessfulWebSearchClient(),
             new EfRepository<WebSearchSettings>(wsContext),
@@ -2575,7 +2575,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                         ["type"] = "function",
                         ["function"] = new Dictionary<string, object?>
                         {
-                            ["name"] = "web_search",
+                            ["name"] = "opencodex_web_search",
                             ["parameters"] = new Dictionary<string, object?>()
                         }
                     }
@@ -2595,6 +2595,141 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Assert.False(upstream.Requests[1].ContainsKey("tool_choice"));
         var output = Assert.IsType<List<object?>>(result.ResponsePayload["output"]);
         Assert.Contains(output, item => item is Dictionary<string, object?> entry && (string?)entry["type"] == "message");
+    }
+
+    [Fact]
+    public void WebSearchDisabled_PreservesClientFunctionWithSameName()
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["tools"] = new List<object?>
+            {
+                new Dictionary<string, object?> { ["type"] = "web_search" },
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "function",
+                    ["name"] = "web_search",
+                    ["parameters"] = new Dictionary<string, object?>()
+                }
+            },
+            ["tool_choice"] = new Dictionary<string, object?>
+            {
+                ["type"] = "function",
+                ["name"] = "web_search"
+            }
+        };
+
+        var result = WebSearchRequestPolicy.ApplyMode(payload, WebSearchModes.Disabled);
+
+        var tools = WebSearchPayload.ListValue(result, "tools");
+        Assert.Single(tools);
+        Assert.Equal("function", WebSearchPayload.StringValue(Assert.IsType<Dictionary<string, object?>>(tools[0]), "type"));
+        Assert.True(result.ContainsKey("tool_choice"));
+    }
+
+    [Fact]
+    public async Task WebSearchStream_MixedCalls_ExecutesSearchBeforeReturningClientTool()
+    {
+        var dbPath = await CreateWebSearchTestDbPathAsync();
+        await using var db = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var upstream = new RecordingStreamUpstreamClient(MessagesMultiToolStreamResponse(
+            [
+                new GeneratedMessagesToolCall(
+                    "call_web", "opencodex_web_search",
+                    new Dictionary<string, object?> { ["query"] = "OpenAI" }, "opencodex_web_search", null),
+                new GeneratedMessagesToolCall(
+                    "call_read", "read_file",
+                    new Dictionary<string, object?> { ["path"] = "README.md" }, "read_file", null)
+            ],
+            null));
+        var simulator = new WebSearchProxyHarness(
+            upstream,
+            new SuccessfulWebSearchClient(),
+            new EfRepository<WebSearchSettings>(db),
+            new EfRepository<TavilyKey>(db));
+        var payload = new Dictionary<string, object?>
+        {
+            ["input"] = "search and read",
+            ["tools"] = new List<object?>
+            {
+                new Dictionary<string, object?> { ["type"] = "web_search" },
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "function",
+                    ["name"] = "read_file",
+                    ["parameters"] = new Dictionary<string, object?>()
+                }
+            }
+        };
+        var streamResult = new WebSearchStreamResult();
+        var events = new List<string>();
+        await foreach (var line in simulator.RunChatStreamAsync(
+            new Dictionary<string, object?> { ["type"] = ProtocolConverter.Messages },
+            ProtocolConverter.ConvertRequest(payload, ProtocolConverter.Responses, ProtocolConverter.Messages, "upstream"),
+            payload, "public-model", 120, streamResult, null, CancellationToken.None))
+        {
+            events.Add(line);
+        }
+
+        Assert.Single(upstream.Requests);
+        Assert.Single(WebSearchPayload.ListValue(streamResult.Details!, "calls"));
+        Assert.Single(WebSearchStreamItemIds(events, "response.output_item.done"));
+        Assert.Contains("\"name\":\"read_file\"", string.Concat(events), StringComparison.Ordinal);
+        Assert.Equal(1, db.TavilyKeys.Single().UsageCount);
+    }
+
+    [Fact]
+    public async Task WebSearchStream_MultipleRounds_PreservesResponseIdentityAndEarlierText()
+    {
+        var dbPath = await CreateWebSearchTestDbPathAsync();
+        await using var db = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var upstream = new RecordingStreamUpstreamClient(
+            MessagesMultiToolStreamResponse(
+                [
+                    new GeneratedMessagesToolCall(
+                        "call_web", "opencodex_web_search",
+                        new Dictionary<string, object?> { ["query"] = "OpenAI" }, "opencodex_web_search", null)
+                ],
+                "Before searching."),
+            MessagesTextStreamResponse("After searching."));
+        var simulator = new WebSearchProxyHarness(
+            upstream,
+            new SuccessfulWebSearchClient(),
+            new EfRepository<WebSearchSettings>(db),
+            new EfRepository<TavilyKey>(db));
+        var payload = new Dictionary<string, object?>
+        {
+            ["input"] = "search",
+            ["tools"] = new List<object?> { new Dictionary<string, object?> { ["type"] = "web_search" } }
+        };
+        var streamResult = new WebSearchStreamResult();
+        var events = new List<string>();
+        await foreach (var line in simulator.RunChatStreamAsync(
+            new Dictionary<string, object?> { ["type"] = ProtocolConverter.Messages },
+            ProtocolConverter.ConvertRequest(payload, ProtocolConverter.Responses, ProtocolConverter.Messages, "upstream"),
+            payload, "public-model", 120, streamResult, null, CancellationToken.None))
+        {
+            events.Add(line);
+        }
+
+        var parsed = events.Select(WebSearchResponsePayload.ParseSseLine).ToList();
+        var created = Assert.Single(parsed, item => item.EventName == "response.created").Payload!;
+        var completed = Assert.Single(parsed, item => item.EventName == "response.completed").Payload!;
+        var createdResponse = WebSearchPayload.ObjectValue(created, "response");
+        var completedResponse = WebSearchPayload.ObjectValue(completed, "response");
+        Assert.Equal(createdResponse["id"], completedResponse["id"]);
+        var output = JsonSerializer.Serialize(completedResponse["output"]);
+        Assert.Contains("Before searching.", output, StringComparison.Ordinal);
+        Assert.Contains("After searching.", output, StringComparison.Ordinal);
+        var doneItems = parsed.Where(item => item.EventName == "response.output_item.done")
+            .Select(item => WebSearchPayload.ObjectValue(item.Payload!, "item"))
+            .Select(item => WebSearchPayload.StringValue(item, "id"))
+            .ToList();
+        var finalIds = WebSearchPayload.ListValue(completedResponse, "output")
+            .Cast<Dictionary<string, object?>>()
+            .Select(item => WebSearchPayload.StringValue(item, "id"))
+            .ToList();
+        Assert.Equal(doneItems, finalIds);
     }
 
     [Fact]
@@ -2627,11 +2762,11 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         }
 
         var upstream = new RecordingStreamUpstreamClient(
-            ChatToolStreamResponse("call_web_1", "web_search", "{\"query\":\"OpenAI first\"}"),
-            ChatToolStreamResponse("call_web_2", "web_search", "{\"query\":\"OpenAI second\"}"),
+            ChatToolStreamResponse("call_web_1", "opencodex_web_search", "{\"query\":\"OpenAI first\"}"),
+            ChatToolStreamResponse("call_web_2", "opencodex_web_search", "{\"query\":\"OpenAI second\"}"),
             ChatTextStreamResponse("final answer"));
         var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
-        var simulator = new WebSearchSimulator(
+        var simulator = new WebSearchProxyHarness(
             upstream,
             new SuccessfulWebSearchClient(),
             new EfRepository<WebSearchSettings>(wsContext),
@@ -2659,7 +2794,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                         ["type"] = "function",
                         ["function"] = new Dictionary<string, object?>
                         {
-                            ["name"] = "web_search",
+                            ["name"] = "opencodex_web_search",
                             ["parameters"] = new Dictionary<string, object?>()
                         }
                     }
@@ -2691,7 +2826,9 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Assert.DoesNotContain("\"name\":\"web_search\"", body, StringComparison.Ordinal);
         var addedSearchItemIds = WebSearchStreamItemIds(events, "response.output_item.added");
         var doneSearchItemIds = WebSearchStreamItemIds(events, "response.output_item.done");
-        Assert.Equal(new[] { "call_web_1", "call_web_2" }, addedSearchItemIds);
+        Assert.Equal(2, addedSearchItemIds.Count);
+        Assert.All(addedSearchItemIds, id => Assert.StartsWith(WebSearchRequestPolicy.PublicItemPrefix, id, StringComparison.Ordinal));
+        Assert.Equal(2, addedSearchItemIds.Distinct(StringComparer.Ordinal).Count());
         Assert.Equal(addedSearchItemIds, doneSearchItemIds);
 
         Assert.NotNull(streamResult.ResponsePayload);
@@ -2742,14 +2879,14 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         var upstream = new RecordingStreamUpstreamClient(
             MessagesToolStreamResponse(
                 "call_web",
-                "web_search",
+                "opencodex_web_search",
                 new Dictionary<string, object?>
                 {
                     ["query"] = "OpenAI"
                 }),
             MessagesTextStreamResponse("final answer"));
         var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
-        var simulator = new WebSearchSimulator(
+        var simulator = new WebSearchProxyHarness(
             upstream,
             new SuccessfulWebSearchClient(),
             new EfRepository<WebSearchSettings>(wsContext),
@@ -2785,7 +2922,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                 {
                     new Dictionary<string, object?>
                     {
-                        ["name"] = "web_search",
+                        ["name"] = "opencodex_web_search",
                         ["description"] = "Search the web.",
                         ["input_schema"] = new Dictionary<string, object?>
                         {
@@ -2879,10 +3016,10 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         }
 
         var upstream = new RecordingStreamUpstreamClient(
-            ChatToolStreamResponse("call_web_1", "web_search", "{\"query\":\"OpenAI\"}"),
+            ChatToolStreamResponse("call_web_1", "opencodex_web_search", "{\"query\":\"OpenAI\"}"),
             ChatToolStreamResponse("call_ts_1", "tool_search", "{\"query\":\"browser\",\"limit\":3}"));
         var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
-        var simulator = new WebSearchSimulator(
+        var simulator = new WebSearchProxyHarness(
             upstream,
             new SuccessfulWebSearchClient(),
             new EfRepository<WebSearchSettings>(wsContext),
@@ -2909,7 +3046,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                         ["type"] = "function",
                         ["function"] = new Dictionary<string, object?>
                         {
-                            ["name"] = "web_search",
+                            ["name"] = "opencodex_web_search",
                             ["parameters"] = new Dictionary<string, object?>()
                         }
                     },
@@ -3003,7 +3140,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         var upstream = new RecordingStreamUpstreamClient(
             MessagesToolStreamResponse(
                 "call_web",
-                "web_search",
+                "opencodex_web_search",
                 new Dictionary<string, object?>
                 {
                     ["query"] = "OpenAI"
@@ -3017,7 +3154,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                     ["y"] = 34
                 }));
         var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
-        var simulator = new WebSearchSimulator(
+        var simulator = new WebSearchProxyHarness(
             upstream,
             new SuccessfulWebSearchClient(),
             new EfRepository<WebSearchSettings>(wsContext),
@@ -3052,7 +3189,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                 {
                     new Dictionary<string, object?>
                     {
-                        ["name"] = "web_search",
+                        ["name"] = "opencodex_web_search",
                         ["description"] = "Search the web.",
                         ["input_schema"] = new Dictionary<string, object?>
                         {
@@ -3141,7 +3278,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Assert.DoesNotContain(output, item =>
             item is Dictionary<string, object?> entry
             && (string?)entry["type"] == "function_call"
-            && (string?)entry["name"] == "web_search");
+            && (string?)entry["name"] == "opencodex_web_search");
     }
 
     [Fact]
@@ -3231,7 +3368,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             var upstreamResponses = testCase.WebQueries
                 .Select((query, index) => MessagesToolStreamResponse(
                     $"call_web_{index + 1}",
-                    "web_search",
+                    "opencodex_web_search",
                     new Dictionary<string, object?>
                     {
                         ["query"] = query
@@ -3241,7 +3378,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
 
             var upstream = new RecordingStreamUpstreamClient(upstreamResponses.ToArray());
             var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
-        var simulator = new WebSearchSimulator(
+        var simulator = new WebSearchProxyHarness(
             upstream,
             new SuccessfulWebSearchClient(),
             new EfRepository<WebSearchSettings>(wsContext),
@@ -3274,7 +3411,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                     },
                     ["tools"] = new List<object?>(
                         [
-                            BuildMessagesToolDefinition("web_search", "Search the web."),
+                            BuildMessagesToolDefinition("opencodex_web_search", "Search the web."),
                             .. testCase.FinalToolCalls.Select(tool => (object?)BuildMessagesToolDefinition(
                                 tool.UpstreamName,
                                 $"Tool {tool.UpstreamName}."))
@@ -3311,7 +3448,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                 var toolUse = Assert.IsType<Dictionary<string, object?>>(Assert.Single(assistantContent));
                 Assert.Equal("tool_use", toolUse["type"]);
                 Assert.Equal($"call_web_{index + 1}", toolUse["id"]);
-                Assert.Equal("web_search", toolUse["name"]);
+                Assert.Equal("opencodex_web_search", toolUse["name"]);
                 var toolUseInput = Assert.IsType<Dictionary<string, object?>>(toolUse["input"]);
                 Assert.Equal(testCase.WebQueries[index], toolUseInput["query"]);
 
@@ -3330,7 +3467,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             Assert.DoesNotContain(output, item =>
                 item is Dictionary<string, object?> entry
                 && (string?)entry["type"] == "function_call"
-                && (string?)entry["name"] == "web_search");
+                && (string?)entry["name"] == "opencodex_web_search");
 
             if (!string.IsNullOrEmpty(testCase.AssistantPreamble))
             {

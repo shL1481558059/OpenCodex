@@ -1058,6 +1058,28 @@ public sealed class SseStreamConverterTests
     }
 
     [Fact]
+    public async Task Chat_FragmentedBuiltinToolName_DoesNotLeakPartialFunction()
+    {
+        const string name = "opencodex_web_search";
+        var lines = SseLines(
+            SseBlock(ChatChunk(toolCalls: new List<object?> { ChatToolCall(0, id: "search", name: "opencodex_") })),
+            SseBlock(ChatChunk(toolCalls: new List<object?> { ChatToolCall(0, name: "web_search", arguments: "{\"query\":\"test\"}") })),
+            SseBlock(ChatChunk(finishReason: "tool_calls")),
+            SseBlock("[DONE]"));
+        var result = new ConvertedStreamResult();
+        var events = await CollectAsync(SseStreamConverter.ChatToResponsesEvents(
+            lines, "model", result, new HashSet<string> { name }, false, 0, 0, CancellationToken.None));
+
+        Assert.DoesNotContain("response.function_call_arguments", string.Concat(events), StringComparison.Ordinal);
+        Assert.DoesNotContain("\"type\":\"function_call\"", string.Concat(events), StringComparison.Ordinal);
+        var choices = Assert.IsType<List<object?>>(result.UpstreamResponse!["choices"]);
+        var message = Assert.IsType<Dictionary<string, object?>>(Assert.IsType<Dictionary<string, object?>>(choices[0])["message"]);
+        var calls = Assert.IsType<List<object?>>(message["tool_calls"]);
+        var function = Assert.IsType<Dictionary<string, object?>>(Assert.IsType<Dictionary<string, object?>>(calls[0])["function"]);
+        Assert.Equal(name, function["name"]);
+    }
+
+    [Fact]
     public async Task Chat_MixedApplyPatchAndFunctionTools_StreamCorrectEventTypesAndOutputIndexes()
     {
         const string patch = "*** Begin Patch\n*** Add File: data.json\n+new\n*** End Patch";

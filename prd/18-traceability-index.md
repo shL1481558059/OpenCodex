@@ -53,7 +53,7 @@
 | 超级管理员 | 管理 Cookie | 全部用户资源和全局配置 | 全部管理实体 | RequireSuperadmin、管理 Service | 管理权限和保护规则测试 |
 | API 调用方 | Bearer `ocx_...` | models、Responses、Chat、Messages、Images | AccessApiKey、Channel、RequestLog | ProxyAccessService、ProxyController | 有效/无效/停用 Key测试 |
 | AI 上游 | 渠道认证 | 接收转换后请求并返回响应 | Channel、ChannelModelMapping | HttpUpstreamClient、ProtocolConverter | 上游集成/协议矩阵 |
-| Tavily | Tavily Key | simulate Web Search | WebSearchSettings、TavilyKey | TavilyWebSearchClient、WebSearchSimulator | 搜索模式与故障测试 |
+| Tavily | Tavily Key | simulate Web Search | WebSearchSettings、TavilyKey | TavilyWebSearchClient、WebSearchToolExecutor、BuiltinToolSession | 搜索模式与故障测试 |
 
 ## 4. HTTP 接口追踪矩阵
 
@@ -227,7 +227,7 @@
 | Apply Patch | 三协议/多方言 | ApplyPatchTools | Compatibility/Streaming | 不等价方言需明确错误 |
 | MCP | Responses/Chat/Messages | Mcp/ResponsesInput/Headers | NativeMcp*Tests | Enricher TODO |
 | Web Search convert | 三协议 | WebSearchTools/Policy | 协议测试 | 上游能力依赖 |
-| Web Search simulate | Responses 入口 → Chat/Messages 渠道，多轮 | WebSearchSimulator | 部分 Stream tests | 仅超级管理员 Key Owner；完整集成测试 GAP |
+| Web Search simulate | Responses 入口 → Chat/Messages 渠道，按调用执行 | BuiltinToolSession / WebSearchToolExecutor | 代理服务、执行器、策略和流式测试 | 仅超级管理员 Key Owner；真实 HTTP/Tavily 与多实例 Redis 需联调 |
 | 图片检测/OCR | 三协议图片输入 | ImageDetector/Fallback/Ocr | Vision/FallbackTests | 通用无映射路径不一致 |
 | Images API | Images | ImagesController/Reader | Controller/Core Contract | 生产 DI/真实上游 GAP |
 | Probe | 三协议 | ProbeRequestInterceptor | Probe/ProxyControllerTests | Rust 设置往返风险 |
@@ -256,7 +256,7 @@
 | 日志保留和配额 | DAT、OBS、NFR、MIG、RSK | 配置、清理、告警、恢复和合规验收 |
 | PR CI 门禁 | NFR、REL、TST、RSK | PR workflow 全部质量步骤 |
 | 桌面签名/CSP/DevTools | UI、NFR、REL、RSK | 正式配置、签名、公证、安装测试 |
-| WebSearchSimulator 集成 | SPC、TST | 真实 HTTP/Tavily fake server 多轮测试 |
+| Web Search 内置工具集成 | SPC、TST | 真实 HTTP/Tavily fake server 多轮测试 |
 | 前端标准测试与 E2E | UI、NFR、TST | npm test、浏览器矩阵和移动 E2E |
 | SLA/RPO/RTO/容量 | OV、SYS、NFR、MIG、REL | 批准指标和可复现基准/演练 |
 | 日志原样持久化认证与图片秘密 | OBS、NFR、MIG、RSK | 安全日志副本、受保护原始槽位、脱敏回归、访问审计和加密策略 |
@@ -641,7 +641,7 @@
 | `REQ-TST-007` | MUST | 九个协议方向覆盖流式和非流式 | [测试与验收](16-testing-and-acceptance.md) | OpenCodex.Api.Tests；前端测试；CI；测试缺口 |
 | `REQ-TST-008` | MUST | Redis 可用/不可用和多实例行为均测试 | [测试与验收](16-testing-and-acceptance.md) | OpenCodex.Api.Tests；前端测试；CI；测试缺口 |
 | `REQ-TST-009` | MUST | Images 真实生产依赖通过启动集成测试 | [测试与验收](16-testing-and-acceptance.md) | OpenCodex.Api.Tests；前端测试；CI；测试缺口 |
-| `REQ-TST-010` | MUST | WebSearchSimulator 具备完整集成测试 | [测试与验收](16-testing-and-acceptance.md) | OpenCodex.Api.Tests；前端测试；CI；测试缺口 |
+| `REQ-TST-010` | MUST | Web Search 内置工具具备完整集成测试 | [测试与验收](16-testing-and-acceptance.md) | OpenCodex.Api.Tests；前端测试；CI；测试缺口 |
 | `REQ-TST-011` | MUST | 移动端关键管理流程具备 E2E | [测试与验收](16-testing-and-acceptance.md) | OpenCodex.Api.Tests；前端测试；CI；测试缺口 |
 | `REQ-TST-012` | MUST | 桌面三平台完成安装冒烟 | [测试与验收](16-testing-and-acceptance.md) | OpenCodex.Api.Tests；前端测试；CI；测试缺口 |
 | `REQ-TST-013` | MUST | 所有安全边界有负向测试 | [测试与验收](16-testing-and-acceptance.md) | OpenCodex.Api.Tests；前端测试；CI；测试缺口 |
