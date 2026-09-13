@@ -1,0 +1,316 @@
+name: deploy-dev
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-ocxp-dev
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.300"
+
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
+
+      - name: Build frontend
+        run: npm --prefix frontend run build
+
+      - name: Run backend tests
+        run: dotnet test opencodex_proxy/OpenCodex.sln --configuration Release
+
+  build:
+    name: Build image
+    needs: validate
+    runs-on: ubuntu-24.04
+
+    env:
+      REGISTRY: ghcr.io
+
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      tag: ${{ steps.meta.outputs.tag }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve image metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          repository="$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+          echo "image=${REGISTRY}/${owner}/${repository}" >> "$GITHUB_OUTPUT"
+          echo "tag=dev-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        env:
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ github.token }}
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ env.REGISTRY_USERNAME }}
+          password: ${{ env.REGISTRY_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to dev
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    environment:
+      name: ocxp-dev
+
+    env:
+      IMAGE_NAME: ${{ needs.build.outputs.image }}
+      IMAGE_TAG: ${{ needs.build.outputs.tag }}
+      REGISTRY_HOST: ghcr.io
+      REMOTE_HOST: ${{ vars.REMOTE_HOST }}
+      REMOTE_USER: ${{ vars.REMOTE_USER }}
+      REMOTE_PORT: ${{ vars.REMOTE_PORT }}
+      REMOTE_DEPLOY_DIR: ${{ vars.REMOTE_DEPLOY_DIR }}
+      SERVICE_NAME: ${{ vars.SERVICE_NAME }}
+      POSTGRES_CONTAINER_NAME: ${{ vars.POSTGRES_CONTAINER_NAME }}
+      REDIS_CONTAINER_NAME: ${{ vars.REDIS_CONTAINER_NAME }}
+      APP_PORT_MAPPING: ${{ vars.APP_PORT_MAPPING }}
+      NETWORK_NAME: ${{ vars.NETWORK_NAME }}
+      DOCKER_LOG_MAX_SIZE: ${{ vars.DOCKER_LOG_MAX_SIZE }}
+      DOCKER_LOG_MAX_FILE: ${{ vars.DOCKER_LOG_MAX_FILE }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PRIVATE_KEY"
+          test -n "$SSH_KNOWN_HOSTS"
+
+          ssh_dir="$RUNNER_TEMP/ocxp-dev-ssh"
+          install -m 700 -d "$ssh_dir"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$ssh_dir/id_ed25519"
+          chmod 600 "$ssh_dir/id_ed25519"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          chmod 600 "$ssh_dir/known_hosts"
+          ssh-keygen -y -f "$ssh_dir/id_ed25519" > /dev/null
+
+          echo "SSH_KEY_PATH=$ssh_dir/id_ed25519" >> "$GITHUB_ENV"
+          echo "SSH_KNOWN_HOSTS_PATH=$ssh_dir/known_hosts" >> "$GITHUB_ENV"
+
+      - name: Validate deployment variables
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          require_value() {
+            local name="$1"
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is not configured"
+              exit 1
+            fi
+          }
+
+          validate_name() {
+            local name="$1"
+            local value="${!name:-}"
+            case "$value" in
+              [A-Za-z0-9]*)
+                case "$value" in
+                  *[!A-Za-z0-9_.-]*)
+                    echo "::error::$name contains invalid characters"
+                    exit 1
+                    ;;
+                esac
+                ;;
+              *)
+                echo "::error::$name is invalid"
+                exit 1
+                ;;
+            esac
+          }
+
+          for name in \
+            IMAGE_NAME \
+            IMAGE_TAG \
+            REGISTRY_HOST \
+            REMOTE_HOST \
+            REMOTE_USER \
+            REMOTE_PORT \
+            REMOTE_DEPLOY_DIR \
+            SERVICE_NAME \
+            POSTGRES_CONTAINER_NAME \
+            REDIS_CONTAINER_NAME \
+            APP_PORT_MAPPING \
+            NETWORK_NAME; do
+            require_value "$name"
+          done
+
+          case "$REMOTE_PORT" in
+            *[!0-9]*)
+              echo "::error::REMOTE_PORT must be numeric"
+              exit 1
+              ;;
+          esac
+
+          case "$REMOTE_DEPLOY_DIR" in
+            /*) ;;
+            *)
+              echo "::error::REMOTE_DEPLOY_DIR must be an absolute path"
+              exit 1
+              ;;
+          esac
+          case "$REMOTE_DEPLOY_DIR" in
+            *[!A-Za-z0-9_./-]*)
+              echo "::error::REMOTE_DEPLOY_DIR contains invalid characters"
+              exit 1
+              ;;
+          esac
+          case "$APP_PORT_MAPPING" in
+            *[!0-9.:]*)
+              echo "::error::APP_PORT_MAPPING contains invalid characters"
+              exit 1
+              ;;
+          esac
+          case "$DOCKER_LOG_MAX_FILE" in
+            *[!0-9]*)
+              echo "::error::DOCKER_LOG_MAX_FILE must be numeric"
+              exit 1
+              ;;
+          esac
+
+          validate_name SERVICE_NAME
+          validate_name POSTGRES_CONTAINER_NAME
+          validate_name REDIS_CONTAINER_NAME
+          validate_name NETWORK_NAME
+
+      - name: Upload deployment files
+        env:
+          SSH_KEY_PATH: ${{ env.SSH_KEY_PATH }}
+          SSH_KNOWN_HOSTS_PATH: ${{ env.SSH_KNOWN_HOSTS_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ssh_target="$REMOTE_USER@$REMOTE_HOST"
+          ssh_opts=(
+            -i "$SSH_KEY_PATH"
+            -p "$REMOTE_PORT"
+            -o BatchMode=yes
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS_PATH"
+            -o ConnectTimeout=15
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=3
+          )
+          scp_opts=(
+            -i "$SSH_KEY_PATH"
+            -P "$REMOTE_PORT"
+            -o BatchMode=yes
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS_PATH"
+            -o ConnectTimeout=15
+          )
+
+          remote_dir="$(printf '%q' "$REMOTE_DEPLOY_DIR")"
+          ssh "${ssh_opts[@]}" "$ssh_target" "mkdir -p -- $remote_dir"
+          scp "${scp_opts[@]}" docker-compose-pgsql.yml "$ssh_target:$REMOTE_DEPLOY_DIR/docker-compose.yml"
+          scp "${scp_opts[@]}" scripts/deploy-ocxp-dev.sh "$ssh_target:$REMOTE_DEPLOY_DIR/deploy-ocxp-dev.sh"
+
+      - name: Deploy approved image
+        env:
+          SSH_KEY_PATH: ${{ env.SSH_KEY_PATH }}
+          SSH_KNOWN_HOSTS_PATH: ${{ env.SSH_KNOWN_HOSTS_PATH }}
+          GHCR_READ_USERNAME: ${{ github.actor }}
+          GHCR_READ_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          registry_auth_enabled=0
+          if [ -n "$GHCR_READ_USERNAME" ] || [ -n "$GHCR_READ_TOKEN" ]; then
+            test -n "$GHCR_READ_USERNAME"
+            test -n "$GHCR_READ_TOKEN"
+            registry_auth_enabled=1
+          fi
+
+          ssh_target="$REMOTE_USER@$REMOTE_HOST"
+          ssh_opts=(
+            -i "$SSH_KEY_PATH"
+            -p "$REMOTE_PORT"
+            -o BatchMode=yes
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS_PATH"
+            -o ConnectTimeout=15
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=3
+          )
+
+          remote_command="IMAGE_NAME=$(printf '%q' "$IMAGE_NAME")"
+          remote_command+=" IMAGE_TAG=$(printf '%q' "$IMAGE_TAG")"
+          remote_command+=" REGISTRY_HOST=$(printf '%q' "$REGISTRY_HOST")"
+          remote_command+=" REGISTRY_AUTH_ENABLED=$(printf '%q' "$registry_auth_enabled")"
+          remote_command+=" REGISTRY_USERNAME=$(printf '%q' "$GHCR_READ_USERNAME")"
+          remote_command+=" SERVICE_NAME=$(printf '%q' "$SERVICE_NAME")"
+          remote_command+=" POSTGRES_CONTAINER_NAME=$(printf '%q' "$POSTGRES_CONTAINER_NAME")"
+          remote_command+=" REDIS_CONTAINER_NAME=$(printf '%q' "$REDIS_CONTAINER_NAME")"
+          remote_command+=" APP_PORT_MAPPING=$(printf '%q' "$APP_PORT_MAPPING")"
+          remote_command+=" NETWORK_NAME=$(printf '%q' "$NETWORK_NAME")"
+          remote_command+=" DOCKER_LOG_MAX_SIZE=$(printf '%q' "$DOCKER_LOG_MAX_SIZE")"
+          remote_command+=" DOCKER_LOG_MAX_FILE=$(printf '%q' "$DOCKER_LOG_MAX_FILE")"
+          remote_command+=" bash $(printf '%q' "$REMOTE_DEPLOY_DIR/deploy-ocxp-dev.sh")"
+
+          if [ "$registry_auth_enabled" = "1" ]; then
+            printf '%s\n' "$GHCR_READ_TOKEN" | ssh "${ssh_opts[@]}" "$ssh_target" "$remote_command"
+          else
+            ssh "${ssh_opts[@]}" "$ssh_target" "$remote_command" < /dev/null
+          fi
