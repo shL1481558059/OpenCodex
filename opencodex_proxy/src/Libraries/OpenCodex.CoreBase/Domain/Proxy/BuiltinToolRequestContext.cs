@@ -2,6 +2,8 @@ namespace OpenCodex.CoreBase.Domain.Proxy;
 
 public sealed class BuiltinToolRequestContext
 {
+    public Guid OwnerUserId { get; init; }
+
     public required string WebSearchToolName { get; init; }
 
     public int MaxWebSearchCalls { get; init; } = 15;

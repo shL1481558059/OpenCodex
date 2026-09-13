@@ -14,7 +14,6 @@ internal sealed class BuiltinToolSession(
     BuiltinToolRequestContext binding,
     IWebSearchToolExecutor executor,
     WebSearchContinuationStore history,
-    string owner,
     string protocol,
     int timeoutSeconds,
     int? outputTokenBudget) : IDisposable
@@ -185,7 +184,7 @@ internal sealed class BuiltinToolSession(
         }
 
         var clientCalls = calls.Where(call => call.Name != binding.WebSearchToolName).ToList();
-        await history.SaveAsync(owner, roundResults, clientCalls, Token(cancellationToken));
+        await history.SaveAsync(binding.OwnerUserId, roundResults, clientCalls, Token(cancellationToken));
         if (clientCalls.Count > 0)
         {
             yield break;

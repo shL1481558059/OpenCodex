@@ -21,12 +21,12 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         IUpstreamClient upstream,
         IProxyLogService logs,
         IWebSearchToolExecutor webSearch,
-        WebSearchContinuationStore? webSearchHistory = null)
+        WebSearchContinuationStore webSearchHistory)
     {
         _upstream = upstream;
         _logs = logs;
         _webSearch = webSearch;
-        _webSearchHistory = webSearchHistory ?? new WebSearchContinuationStore();
+        _webSearchHistory = webSearchHistory;
     }
 
     public async Task StreamAsync(ProxyStreamContext context)
@@ -52,7 +52,6 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         {
             using var toolLifetime = tools = context.BuiltinTools is null ? null : new BuiltinToolSession(
                 context.BuiltinTools, _webSearch, _webSearchHistory,
-                WebSearchContinuationStore.OwnerKey(context.OwnerUsername, context.ApiKeyId),
                 context.ChannelType, context.DefaultTimeout, BuiltinToolSession.OutputTokenBudget(context.Payload));
             if (context.EntryProtocol == context.ChannelType)
             {

@@ -904,6 +904,43 @@ namespace OpenCodex.Data.Migrations.PostgresMigrations
                     b.ToTable("VisionTransferSettings", (string)null);
                 });
 
+            modelBuilder.Entity("OpenCodex.Core.Domain.WebSearchContinuationEntry", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<double>("CreatedAt")
+                        .HasColumnType("double precision");
+
+                    b.Property<string>("EntryKey")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<Guid>("OwnerUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("PayloadJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("PayloadVersion")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OwnerUserId", "EntryKey")
+                        .IsUnique();
+
+                    b.ToTable("WebSearchContinuationEntries", (string)null);
+                });
+
             modelBuilder.Entity("OpenCodex.Core.Domain.WebSearchSettings", b =>
                 {
                     b.Property<Guid>("Id")
@@ -954,6 +991,15 @@ namespace OpenCodex.Data.Migrations.PostgresMigrations
                     b.HasOne("OpenCodex.Core.Domain.RequestLog", null)
                         .WithMany()
                         .HasForeignKey("RequestLogId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("OpenCodex.Core.Domain.WebSearchContinuationEntry", b =>
+                {
+                    b.HasOne("OpenCodex.Core.Domain.User", null)
+                        .WithMany()
+                        .HasForeignKey("OwnerUserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });

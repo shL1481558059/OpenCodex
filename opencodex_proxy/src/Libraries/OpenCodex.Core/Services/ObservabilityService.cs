@@ -81,6 +81,7 @@ public sealed class ObservabilityService : IObservabilityService
     private readonly IRepository<LogContentManifestChunk> _manifestChunkRepository;
     private readonly IRepository<LogContentManifest> _manifestRepository;
     private readonly IRepository<LogContentBlock> _contentBlockRepository;
+    private readonly IWebSearchContinuationRepository _webSearchContinuationRepository;
     private readonly IChannelCapacityService _channelCapacity;
     private readonly IProxySettingsService _proxySettings;
     private readonly LogContentStore _contentStore;
@@ -98,6 +99,7 @@ public sealed class ObservabilityService : IObservabilityService
         IRepository<LogContentManifestChunk> manifestChunkRepository,
         IRepository<LogContentManifest> manifestRepository,
         IRepository<LogContentBlock> contentBlockRepository,
+        IWebSearchContinuationRepository webSearchContinuationRepository,
         IChannelCapacityService channelCapacity,
         IProxySettingsService proxySettings,
         IMemoryCache memoryCache)
@@ -112,6 +114,7 @@ public sealed class ObservabilityService : IObservabilityService
         _manifestChunkRepository = manifestChunkRepository;
         _manifestRepository = manifestRepository;
         _contentBlockRepository = contentBlockRepository;
+        _webSearchContinuationRepository = webSearchContinuationRepository;
         _channelCapacity = channelCapacity;
         _proxySettings = proxySettings;
         _memoryCache = memoryCache;
@@ -272,8 +275,10 @@ public sealed class ObservabilityService : IObservabilityService
         int deletedContentRefs;
         int deletedLogs;
         int deletedContentBlocks;
+        int deletedWebSearchContinuations;
         using (var transaction = _dbContext.Database.BeginTransaction())
         {
+            deletedWebSearchContinuations = _webSearchContinuationRepository.DeleteAll();
             deletedContentRefs = _contentRefRepository.ExecuteDeleteAll();
             _manifestChunkRepository.ExecuteDeleteAll();
             deletedLogs = _logRepository.ExecuteDeleteAll();
@@ -285,7 +290,8 @@ public sealed class ObservabilityService : IObservabilityService
         return ApiOpResult<ClearLogsResponse>.Succeed(new ClearLogsResponse(
             deletedLogs,
             deletedContentRefs,
-            deletedContentBlocks));
+            deletedContentBlocks,
+            deletedWebSearchContinuations));
     }
 
     public ApiOpResult<StatsSummaryResponse> ReadStatsSummary(

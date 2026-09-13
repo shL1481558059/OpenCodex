@@ -19,7 +19,7 @@ public sealed class BuiltinToolSessionTests
     public async Task DeclaredButNotCalled_DoesNotExecuteOrCreateSearchLog()
     {
         var executor = new CountingExecutor();
-        using var store = new WebSearchContinuationStore();
+        var store = WebSearchTestStore.Create();
         using var session = Session(executor, store);
         var upstream = ChatResponse("Hello");
         var response = Convert(upstream);
@@ -36,7 +36,7 @@ public sealed class BuiltinToolSessionTests
     public async Task MixedCalls_ExecutesOnlySearchAndRestoresStrippedHistory()
     {
         var executor = new CountingExecutor();
-        using var store = new WebSearchContinuationStore();
+        var store = WebSearchTestStore.Create();
         using var session = Session(executor, store);
         var upstream = ChatResponse(null, ("search_1", Tool), ("read_1", "read_file"));
 
@@ -59,7 +59,7 @@ public sealed class BuiltinToolSessionTests
                 }
             }
         };
-        await store.RestoreAsync(next, "owner", Tool, CancellationToken.None);
+        await store.RestoreAsync(next, WebSearchTestStore.OwnerUserId, Tool, CancellationToken.None);
 
         var history = ListValue(next, "input").Cast<Dictionary<string, object?>>().ToList();
         Assert.Equal(new[] { "function_call", "function_call", "function_call_output", "function_call_output" },
@@ -73,7 +73,7 @@ public sealed class BuiltinToolSessionTests
     public async Task MultipleRounds_PreserveAllOutputAndSumUsage()
     {
         var executor = new CountingExecutor();
-        using var store = new WebSearchContinuationStore();
+        var store = WebSearchTestStore.Create();
         using var session = Session(executor, store);
         var first = ChatResponse("Before.", ("search_1", Tool));
         await Drain(session, first, Convert(first));
@@ -97,7 +97,7 @@ public sealed class BuiltinToolSessionTests
     public async Task DuplicateCall_DoesNotExecuteOrEmitLifecycleTwice()
     {
         var executor = new CountingExecutor();
-        using var store = new WebSearchContinuationStore();
+        var store = WebSearchTestStore.Create();
         using var session = Session(executor, store);
         var upstream = ChatResponse(null, ("same", Tool), ("same", Tool));
         var progress = await Drain(session, upstream, Convert(upstream));
@@ -107,10 +107,10 @@ public sealed class BuiltinToolSessionTests
     }
 
     [Fact]
-    public async Task MissingOrForeignContinuation_IsRejectedWithoutSearching()
+    public async Task MissingOrForeignContinuation_IsRestoredAsUnavailableWithoutSearching()
     {
         var executor = new CountingExecutor();
-        using var store = new WebSearchContinuationStore();
+        var store = WebSearchTestStore.Create();
         using var session = Session(executor, store);
         var upstream = ChatResponse(null, ("search_1", Tool), ("read_1", "read_file"));
         await Drain(session, upstream, Convert(upstream));
@@ -119,8 +119,11 @@ public sealed class BuiltinToolSessionTests
         item.Remove("opencodex_result");
         var payload = new Dictionary<string, object?> { ["input"] = new List<object?> { item } };
 
-        await Assert.ThrowsAsync<BadRequestException>(() =>
-            store.RestoreAsync(payload, "another-owner", Tool, CancellationToken.None));
+        await store.RestoreAsync(payload, Guid.NewGuid(), Tool, CancellationToken.None);
+
+        var restored = ListValue(payload, "input").Cast<Dictionary<string, object?>>()
+            .Single(value => StringValue(value, "type") == "function_call_output");
+        Assert.Contains("unavailable", StringValue(restored, "output"), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, executor.Calls);
     }
 
@@ -128,7 +131,7 @@ public sealed class BuiltinToolSessionTests
     public async Task RepeatedCallIds_StillConsumeIterationBudget()
     {
         var executor = new CountingExecutor();
-        using var store = new WebSearchContinuationStore();
+        var store = WebSearchTestStore.Create();
         using var session = Session(executor, store, 2);
         for (var round = 0; round < 5; round++)
         {
@@ -144,7 +147,7 @@ public sealed class BuiltinToolSessionTests
     public async Task ProviderFailure_DisablesRemainingCallsInSameBatch()
     {
         var executor = new CountingExecutor { Fail = true };
-        using var store = new WebSearchContinuationStore();
+        var store = WebSearchTestStore.Create();
         using var session = Session(executor, store);
         var upstream = ChatResponse(null, ("first", Tool), ("second", Tool));
 
@@ -161,7 +164,7 @@ public sealed class BuiltinToolSessionTests
     {
         using var cancellation = new CancellationTokenSource();
         var executor = new CountingExecutor { CancelSource = cancellation };
-        using var store = new WebSearchContinuationStore();
+        var store = WebSearchTestStore.Create();
         using var session = Session(executor, store);
         var upstream = ChatResponse(null, ("first", Tool));
 
@@ -177,7 +180,7 @@ public sealed class BuiltinToolSessionTests
     public async Task UnfinishedToolCall_IsRejectedBeforeExecution()
     {
         var executor = new CountingExecutor();
-        using var store = new WebSearchContinuationStore();
+        var store = WebSearchTestStore.Create();
         using var session = Session(executor, store);
         var upstream = ChatResponse(null, ("first", Tool));
         ((Dictionary<string, object?>)ListValue(upstream, "choices")[0]!).Remove("finish_reason");
@@ -191,9 +194,18 @@ public sealed class BuiltinToolSessionTests
     public async Task ExhaustedOutputBudget_DoesNotExecuteSearch()
     {
         var executor = new CountingExecutor();
-        using var store = new WebSearchContinuationStore();
+        var store = WebSearchTestStore.Create();
         using var session = new BuiltinToolSession(
-            new BuiltinToolRequestContext { WebSearchToolName = Tool }, executor, store, "owner", "chat", 120, 1);
+            new BuiltinToolRequestContext
+            {
+                OwnerUserId = WebSearchTestStore.OwnerUserId,
+                WebSearchToolName = Tool
+            },
+            executor,
+            store,
+            "chat",
+            120,
+            1);
         var upstream = ChatResponse(null, ("first", Tool));
 
         await Drain(session, upstream, Convert(upstream));
@@ -213,7 +225,7 @@ public sealed class BuiltinToolSessionTests
     public async Task AccountingUsage_AcceptsIntegralNumericRepresentations(object value)
     {
         var executor = new CountingExecutor();
-        using var store = new WebSearchContinuationStore();
+        var store = WebSearchTestStore.Create();
         using var session = Session(executor, store);
         var upstream = ChatResponse(null, ("search_1", Tool));
         var response = Convert(upstream);
@@ -228,7 +240,7 @@ public sealed class BuiltinToolSessionTests
     public async Task AccountingUsage_AccumulatesNestedDecodedCounters()
     {
         var executor = new CountingExecutor();
-        using var store = new WebSearchContinuationStore();
+        var store = WebSearchTestStore.Create();
         using var session = Session(executor, store);
         var first = ChatResponse(null, ("search_1", Tool));
         var second = ChatResponse("answer");
@@ -263,7 +275,7 @@ public sealed class BuiltinToolSessionTests
     public async Task AccountingUsage_RejectsInvalidTokenCounters(object value)
     {
         var executor = new CountingExecutor();
-        using var store = new WebSearchContinuationStore();
+        var store = WebSearchTestStore.Create();
         using var session = Session(executor, store);
         var upstream = ChatResponse(null, ("search_1", Tool));
         var response = Convert(upstream);
@@ -278,7 +290,7 @@ public sealed class BuiltinToolSessionTests
     public async Task AccountingUsage_RejectsAccumulationOverflowBeforeAnotherSearch()
     {
         var executor = new CountingExecutor();
-        using var store = new WebSearchContinuationStore();
+        var store = WebSearchTestStore.Create();
         using var session = Session(executor, store);
         var first = ChatResponse(null, ("search_1", Tool));
         var firstResponse = Convert(first);
@@ -296,8 +308,17 @@ public sealed class BuiltinToolSessionTests
     }
 
     private static BuiltinToolSession Session(CountingExecutor executor, WebSearchContinuationStore store, int maxCalls = 15) =>
-        new(new BuiltinToolRequestContext { WebSearchToolName = Tool, MaxWebSearchCalls = maxCalls },
-            executor, store, "owner", "chat", 120, null);
+        new(new BuiltinToolRequestContext
+            {
+                OwnerUserId = WebSearchTestStore.OwnerUserId,
+                WebSearchToolName = Tool,
+                MaxWebSearchCalls = maxCalls
+            },
+            executor,
+            store,
+            "chat",
+            120,
+            null);
 
     private static async Task<List<BuiltinToolProgress>> Drain(
         BuiltinToolSession session, Dictionary<string, object?> upstream, Dictionary<string, object?> response,

@@ -47,6 +47,8 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
 
     public DbSet<RequestLogContentRef> RequestLogContentRefs => Set<RequestLogContentRef>();
 
+    public DbSet<WebSearchContinuationEntry> WebSearchContinuationEntries => Set<WebSearchContinuationEntry>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ConfigureUsers(modelBuilder);
@@ -122,6 +124,22 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         keys.Property(key => key.Provider).IsRequired();
         keys.Property(key => key.ApiKey).IsRequired();
         keys.HasIndex(key => key.Position);
+
+        var continuation = modelBuilder.Entity<WebSearchContinuationEntry>();
+        continuation.ToTable("WebSearchContinuationEntries");
+        continuation.HasKey(item => item.Id);
+        continuation.Property(item => item.Id).ValueGeneratedOnAdd();
+        continuation.Property(item => item.OwnerUserId).IsRequired();
+        continuation.Property(item => item.EntryKey).HasMaxLength(256).IsRequired();
+        continuation.Property(item => item.Kind).HasMaxLength(32).IsRequired();
+        continuation.Property(item => item.PayloadVersion).IsRequired();
+        continuation.Property(item => item.PayloadJson).IsRequired();
+        continuation.Property(item => item.CreatedAt).IsRequired();
+        continuation.HasIndex(item => new { item.OwnerUserId, item.EntryKey }).IsUnique();
+        continuation.HasOne<User>()
+            .WithMany()
+            .HasForeignKey(item => item.OwnerUserId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 
     private static void ConfigureVisionTransfer(ModelBuilder modelBuilder)

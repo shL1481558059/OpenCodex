@@ -53,7 +53,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         IProxyNonStreamService nonStreams,
         IProxyStreamService streams,
         IWebSearchToolExecutor webSearch,
-        WebSearchContinuationStore? webSearchHistory = null)
+        WebSearchContinuationStore webSearchHistory)
     {
         _logs = logs;
         _requests = requests;
@@ -65,7 +65,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         _nonStreams = nonStreams;
         _streams = streams;
         _webSearch = webSearch;
-        _webSearchHistory = webSearchHistory ?? new WebSearchContinuationStore();
+        _webSearchHistory = webSearchHistory;
     }
 
     public async Task<ProxyEndpointResult> ProxyAsync(ProxyEndpointContext context)
@@ -75,6 +75,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         var requestId = requestState.RequestId;
         var ownerUsername = requestState.DefaultOwnerUsername;
         var defaultTimeout = requestState.DefaultTimeout;
+        var ownerUserId = Guid.Empty;
         Guid? apiKeyId = null;
         Dictionary<string, object?>? payload = null;
         Dictionary<string, object?>? effectivePayload = null;
@@ -98,6 +99,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             var accessKey = await _requests.AuthenticateAccessKeyAsync(context.AuthorizationHeader);
             ownerUsername = accessKey.OwnerUsername;
             ownerRole = accessKey.User.Role;
+            ownerUserId = accessKey.OwnerUserId;
             apiKeyId = accessKey.Id;
 
             payload = context.Payload;
@@ -230,13 +232,18 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         effectivePayload,
                         channelCompat).Payload;
                     builtinTools = WebSearchRequestPolicy.RegisterBuiltin(
-                        effectivePayload, webSearchMode, context.EntryProtocol, channelType, ownerRole ?? string.Empty);
+                        effectivePayload,
+                        webSearchMode,
+                        context.EntryProtocol,
+                        channelType,
+                        ownerRole ?? string.Empty,
+                        ownerUserId);
                     if (context.EntryProtocol == ProtocolConverter.Responses
                         && channelType is ProtocolConverter.Chat or ProtocolConverter.Messages)
                     {
                         await _webSearchHistory.RestoreAsync(
                             effectivePayload,
-                            WebSearchContinuationStore.OwnerKey(ownerUsername, apiKeyId),
+                            ownerUserId,
                             builtinTools?.WebSearchToolName,
                             context.CancellationToken);
                     }

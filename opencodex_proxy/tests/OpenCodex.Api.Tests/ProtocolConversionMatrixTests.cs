@@ -43,7 +43,8 @@ public sealed class ProtocolConversionMatrixTests
         var service = new ProxyNonStreamService(
             upstream,
             logs,
-            new DisabledWebSearchToolExecutor());
+            new DisabledWebSearchToolExecutor(),
+            WebSearchTestStore.Create());
 
         var result = await service.SendAsync(new ProxyNonStreamContext(
             Stopwatch.GetTimestamp(),
@@ -96,7 +97,8 @@ public sealed class ProtocolConversionMatrixTests
         var service = new ProxyStreamService(
             upstream,
             logs,
-            new DisabledWebSearchToolExecutor());
+            new DisabledWebSearchToolExecutor(),
+            WebSearchTestStore.Create());
 
         await service.StreamAsync(new ProxyStreamContext(
             Stopwatch.GetTimestamp(),

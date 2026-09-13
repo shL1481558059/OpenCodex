@@ -25,7 +25,7 @@ public sealed class WebSearchProgressTests
     {
         var executor = new BlockedSearchExecutor(fail);
         var writer = new RecordingWriter();
-        using var history = new WebSearchContinuationStore();
+        var history = WebSearchTestStore.Create();
         var payload = new Dictionary<string, object?> { ["input"] = "search" };
         var channel = new Dictionary<string, object?> { ["type"] = "chat", ["id"] = "test" };
         var context = new ProxyStreamContext(
@@ -47,7 +47,12 @@ public sealed class WebSearchProgressTests
             new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
             writer, CancellationToken.None)
         {
-            BuiltinTools = new BuiltinToolRequestContext { WebSearchToolName = WebSearchRequestPolicy.InternalToolName, MaxWebSearchCalls = 1 }
+            BuiltinTools = new BuiltinToolRequestContext
+            {
+                OwnerUserId = WebSearchTestStore.OwnerUserId,
+                WebSearchToolName = WebSearchRequestPolicy.InternalToolName,
+                MaxWebSearchCalls = 1
+            }
         };
         var service = new ProxyStreamService(new ChatStream(), new Logs(), executor, history);
         var task = service.StreamAsync(context);

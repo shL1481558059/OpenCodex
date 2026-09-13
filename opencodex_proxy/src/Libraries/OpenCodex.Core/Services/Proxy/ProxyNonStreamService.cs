@@ -20,12 +20,12 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
         IUpstreamClient upstream,
         IProxyLogService logs,
         IWebSearchToolExecutor webSearch,
-        WebSearchContinuationStore? webSearchHistory = null)
+        WebSearchContinuationStore webSearchHistory)
     {
         _upstream = upstream;
         _logs = logs;
         _webSearch = webSearch;
-        _webSearchHistory = webSearchHistory ?? new WebSearchContinuationStore();
+        _webSearchHistory = webSearchHistory;
     }
 
     public async Task<ProxyNonStreamResult> SendAsync(ProxyNonStreamContext context)
@@ -49,7 +49,6 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
         {
             using var toolLifetime = tools = context.BuiltinTools is null ? null : new BuiltinToolSession(
                 context.BuiltinTools, _webSearch, _webSearchHistory,
-                WebSearchContinuationStore.OwnerKey(context.OwnerUsername, context.ApiKeyId),
                 context.ChannelType, context.DefaultTimeout, BuiltinToolSession.OutputTokenBudget(context.Payload));
             while (true)
             {

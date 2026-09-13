@@ -346,6 +346,7 @@ public sealed class ObservabilityAggregationSqlTests
             new EfRepository<LogContentManifestChunk>(context),
             new EfRepository<LogContentManifest>(context),
             new EfRepository<LogContentBlock>(context),
+            new EfWebSearchContinuationRepository(context),
             new ChannelCapacityService(),
             new ProxySettingsService(new EfRepository<ProxySetting>(context)),
             new ServiceCollection().AddMemoryCache().BuildServiceProvider().GetRequiredService<IMemoryCache>());

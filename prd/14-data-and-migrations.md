@@ -101,6 +101,7 @@ flowchart TD
 | `AccessApiKeys` | OpenCodex 客户端访问 Key 元数据 | `KeyHash` 唯一；`(OwnerUserId, Id)` 索引 | **高：当前同时持久化可空 `KeyPlaintext`、哈希、前后缀** |
 | `WebSearchSettings` | Web Search 模式与系统设置 | 主键 | 中 |
 | `TavilyKeys` | 搜索 provider Key、顺序与使用状态 | `Position` 索引 | **高：当前实体保存 ApiKey 字符串** |
+| `WebSearchContinuationEntries` | Web Search 跨请求续传结果 | `(OwnerUserId, EntryKey)` 唯一；用户外键级联 | 中：包含搜索摘要与来源 |
 | `ModelPricings` | 旧/全局模型价格规则 | `ModelId` 唯一，vendor/enabled/match 索引 | 中 |
 | `ModelProviders` | 模型厂商目录 | `Code` 唯一，enabled/sort 索引 | 低 |
 | `ModelInfos` | 全局/provider/channel scope 模型信息和 capabilities/catalog JSON | scope/provider/model 与 scope/channel/model 索引 | 中 |
@@ -170,6 +171,7 @@ SQLite 配置会从连接串中解析 `Data Source`、`DataSource` 或 `Filename
 | 5 | `20260703000000_ChannelGroupName` | 同名时间戳 | 渠道分组名 |
 | 6 | `20260705110840_WebSearchMode` | `20260705110856_WebSearchMode` | Web Search 模式 |
 | 7 | `20260810233458_ContentAddressedLogs` | `20260810233510_ContentAddressedLogs` | 内容寻址日志和会话索引；删除旧日志详情/流行表 |
+| 8 | `20260913121301_WebSearchContinuationEntries` | `20260913121314_WebSearchContinuationEntries` | Web Search 数据库续传记录 |
 
 ### 5.4 Pending model changes
 

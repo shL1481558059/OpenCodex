@@ -45,7 +45,11 @@ public sealed class ProxyStreamServiceTests
         };
 
         await Assert.ThrowsAsync<UpstreamException>(() =>
-            new ProxyStreamService(new SequencedUpstreamClient(lines), logs, executor).StreamAsync(context));
+            new ProxyStreamService(
+                new SequencedUpstreamClient(lines),
+                logs,
+                executor,
+                WebSearchTestStore.Create()).StreamAsync(context));
 
         Assert.Equal(0, executor.Calls);
         Assert.DoesNotContain(writer.Lines, line => line.Contains("response.completed", StringComparison.Ordinal));
@@ -81,7 +85,11 @@ public sealed class ProxyStreamServiceTests
             {
                 BuiltinTools = binding
             };
-            var operation = new ProxyStreamService(upstream, logs, executor).StreamAsync(context);
+            var operation = new ProxyStreamService(
+                upstream,
+                logs,
+                executor,
+                WebSearchTestStore.Create()).StreamAsync(context);
             if (clientCancelled)
             {
                 await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation);
@@ -100,7 +108,11 @@ public sealed class ProxyStreamServiceTests
             {
                 BuiltinTools = binding
             };
-            var operation = new ProxyNonStreamService(upstream, logs, executor).SendAsync(context);
+            var operation = new ProxyNonStreamService(
+                upstream,
+                logs,
+                executor,
+                WebSearchTestStore.Create()).SendAsync(context);
             if (clientCancelled)
             {
                 await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation);
@@ -145,7 +157,11 @@ public sealed class ProxyStreamServiceTests
             ("", 0)
         ]);
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(upstream, logs, new StubWebSearchToolExecutor());
+        var service = new ProxyStreamService(
+            upstream,
+            logs,
+            new StubWebSearchToolExecutor(),
+            WebSearchTestStore.Create());
         var writer = new CapturingProxyStreamWriter();
         var channel = new Dictionary<string, object?>
         {
@@ -223,7 +239,7 @@ public sealed class ProxyStreamServiceTests
             ["tools"] = new List<object?> { new Dictionary<string, object?> { ["type"] = "web_search" } }
         };
         var binding = WebSearchRequestPolicy.RegisterBuiltin(payload, "simulate", "responses", "messages", "superadmin");
-        var service = new ProxyStreamService(upstream, logs, webSearch);
+        var service = new ProxyStreamService(upstream, logs, webSearch, WebSearchTestStore.Create());
         var writer = new CapturingProxyStreamWriter();
         var channel = new Dictionary<string, object?>
         {
@@ -298,7 +314,11 @@ public sealed class ProxyStreamServiceTests
             },
             channelId: "responses"));
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(upstream, logs, new StubWebSearchToolExecutor());
+        var service = new ProxyStreamService(
+            upstream,
+            logs,
+            new StubWebSearchToolExecutor(),
+            WebSearchTestStore.Create());
         var writer = new CapturingProxyStreamWriter();
         var channel = new Dictionary<string, object?>
         {
@@ -352,7 +372,11 @@ public sealed class ProxyStreamServiceTests
             ProxyHttpStatus.ServiceUnavailable,
             channelId: "responses"));
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(upstream, logs, new StubWebSearchToolExecutor());
+        var service = new ProxyStreamService(
+            upstream,
+            logs,
+            new StubWebSearchToolExecutor(),
+            WebSearchTestStore.Create());
         var writer = new CapturingProxyStreamWriter();
         var channel = new Dictionary<string, object?>
         {
@@ -400,7 +424,11 @@ public sealed class ProxyStreamServiceTests
             406,
             channelId: "chat"));
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(upstream, logs, new StubWebSearchToolExecutor());
+        var service = new ProxyStreamService(
+            upstream,
+            logs,
+            new StubWebSearchToolExecutor(),
+            WebSearchTestStore.Create());
         var writer = new CapturingProxyStreamWriter();
         var channel = new Dictionary<string, object?>
         {
@@ -449,7 +477,7 @@ public sealed class ProxyStreamServiceTests
             ProxyHttpStatus.TooManyRequests));
         var logs = new StubProxyLogService();
         var executor = new StubWebSearchToolExecutor();
-        var service = new ProxyStreamService(upstream, logs, executor);
+        var service = new ProxyStreamService(upstream, logs, executor, WebSearchTestStore.Create());
         var writer = new CapturingProxyStreamWriter();
         var channel = new Dictionary<string, object?>
         {
@@ -507,7 +535,11 @@ public sealed class ProxyStreamServiceTests
             ("data: [DONE]", 0)
         ]);
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(upstream, logs, new StubWebSearchToolExecutor());
+        var service = new ProxyStreamService(
+            upstream,
+            logs,
+            new StubWebSearchToolExecutor(),
+            WebSearchTestStore.Create());
         var writer = new CapturingProxyStreamWriter();
         var channel = new Dictionary<string, object?>
         {
@@ -558,7 +590,11 @@ public sealed class ProxyStreamServiceTests
             ("data: [DONE]", 0)
         ]);
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(upstream, logs, new StubWebSearchToolExecutor());
+        var service = new ProxyStreamService(
+            upstream,
+            logs,
+            new StubWebSearchToolExecutor(),
+            WebSearchTestStore.Create());
         var writer = new CapturingProxyStreamWriter();
         var channel = new Dictionary<string, object?>
         {
@@ -633,7 +669,11 @@ public sealed class ProxyStreamServiceTests
         };
         var upstream = new SequencedUpstreamClient(upstreamLines.Select(line => (line, 0)).ToArray());
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(upstream, logs, new StubWebSearchToolExecutor());
+        var service = new ProxyStreamService(
+            upstream,
+            logs,
+            new StubWebSearchToolExecutor(),
+            WebSearchTestStore.Create());
         var writer = new CapturingProxyStreamWriter();
         var channel = new Dictionary<string, object?>
         {
@@ -691,7 +731,11 @@ public sealed class ProxyStreamServiceTests
             ("data: [DONE]", 0)
         ]);
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(upstream, logs, new StubWebSearchToolExecutor());
+        var service = new ProxyStreamService(
+            upstream,
+            logs,
+            new StubWebSearchToolExecutor(),
+            WebSearchTestStore.Create());
         var writer = new CapturingProxyStreamWriter();
         var context = new ProxyStreamContext(
             startedTimestamp: Stopwatch.GetTimestamp(),
@@ -738,7 +782,11 @@ public sealed class ProxyStreamServiceTests
             ("", 0)
         ]);
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(upstream, logs, new StubWebSearchToolExecutor());
+        var service = new ProxyStreamService(
+            upstream,
+            logs,
+            new StubWebSearchToolExecutor(),
+            WebSearchTestStore.Create());
         var writer = new CapturingProxyStreamWriter();
         var channel = new Dictionary<string, object?>
         {

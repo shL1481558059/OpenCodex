@@ -191,7 +191,8 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<IProxyNonStreamService, ProxyNonStreamService>();
         services.AddScoped<IProxyStreamService, ProxyStreamService>();
         services.AddScoped<IWebSearchToolExecutor, WebSearchToolExecutor>();
-        services.AddSingleton<WebSearchContinuationStore>();
+        services.AddScoped<IWebSearchContinuationRepository, EfWebSearchContinuationRepository>();
+        services.AddScoped<WebSearchContinuationStore>();
         services.AddScoped<IRealtimeStreamService, RealtimeStreamService>();
         services.AddScoped<IProxyService, ProxyService>();
         services.AddScoped<IObservabilityQueryService, ObservabilityQueryService>();

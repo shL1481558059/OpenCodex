@@ -266,6 +266,21 @@ erDiagram
 
 可用 Key 定义为：启用且 `UsageCount < UsageLimit`。达到上限的 Key 不得继续用于模拟搜索。
 
+### 7.3 WebSearchContinuationEntry
+
+用于跨请求恢复代理内置 Web Search 的工具结果：
+
+| 字段 | 说明 |
+|---|---|
+| `OwnerUserId` | 所属用户；用户删除时级联清理 |
+| `EntryKey` | 搜索项 ID 或 `client:<call_id>` |
+| `Kind` | `search` 或 `client-round` |
+| `PayloadVersion` | 结果 JSON 版本 |
+| `PayloadJson` | 完整搜索结果或客户端调用映射 |
+| `CreatedAt` | 创建时间 |
+
+该表以数据库为唯一真源，不使用 Web Search 专用内存或 Redis 缓存，也不运行后台过期清理。生命周期跟随“清除全部日志”：清除请求日志时必须在同一事务中删除全部续传记录。
+
 ## 8. 请求日志模型
 
 ### 8.1 RequestLog

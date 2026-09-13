@@ -42,6 +42,8 @@ public interface IOpenCodexDbContext : IDisposable, IAsyncDisposable
 
     DbSet<RequestLogContentRef> RequestLogContentRefs { get; }
 
+    DbSet<WebSearchContinuationEntry> WebSearchContinuationEntries { get; }
+
     DatabaseFacade Database { get; }
 
     ChangeTracker ChangeTracker { get; }

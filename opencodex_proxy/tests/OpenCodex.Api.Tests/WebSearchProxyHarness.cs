@@ -30,7 +30,7 @@ internal sealed class WebSearchProxyHarness(
         int defaultTimeout,
         CancellationToken cancellationToken)
     {
-        using var history = new WebSearchContinuationStore();
+        var history = WebSearchTestStore.Create();
         var logs = new CapturingLogs();
         var (prepared, request, binding, route) = Prepare(channel, upstreamRequest, payload, originalModel);
         var context = new ProxyNonStreamContext(
@@ -58,7 +58,7 @@ internal sealed class WebSearchProxyHarness(
         Func<IAsyncEnumerable<string>, string, IAsyncEnumerable<string>>? streamCapture,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        using var history = new WebSearchContinuationStore();
+        var history = WebSearchTestStore.Create();
         var logs = new CapturingLogs();
         var writer = new CapturingWriter();
         var (prepared, request, binding, route) = Prepare(channel, upstreamRequest, payload, originalModel);
@@ -88,7 +88,13 @@ internal sealed class WebSearchProxyHarness(
     {
         var prepared = DeepCopyObject(payload);
         var protocol = StringValue(channel, "type");
-        var binding = WebSearchRequestPolicy.RegisterBuiltin(prepared, _executor.CurrentMode(), "responses", protocol, "superadmin");
+        var binding = WebSearchRequestPolicy.RegisterBuiltin(
+            prepared,
+            _executor.CurrentMode(),
+            "responses",
+            protocol,
+            "superadmin",
+            WebSearchTestStore.OwnerUserId);
         var request = DeepCopyObject(upstreamRequest);
         var definitions = ProtocolConverter.ConvertRequest(prepared, "responses", protocol, "upstream");
         var replacement = ListValue(definitions, "tools").OfType<Dictionary<string, object?>>().Single(tool =>

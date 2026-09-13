@@ -47,7 +47,8 @@ public static class WebSearchRequestPolicy
         string mode,
         string entryProtocol,
         string channelType,
-        string ownerRole)
+        string ownerRole,
+        Guid ownerUserId = default)
     {
         if (mode != WebSearchModes.Simulate
             || entryProtocol != ProtocolConverter.Responses
@@ -149,6 +150,7 @@ public static class WebSearchRequestPolicy
 
         return new BuiltinToolRequestContext
         {
+            OwnerUserId = ownerUserId,
             WebSearchToolName = name,
             MaxWebSearchCalls = maxCalls,
             SearchAllowed = canSearch,

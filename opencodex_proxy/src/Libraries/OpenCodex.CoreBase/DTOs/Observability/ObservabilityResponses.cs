@@ -1537,11 +1537,17 @@ public sealed class ClearLogsResponse
     /// <param name="deletedLogs">已删除的请求日志数。</param>
     /// <param name="deletedContentRefs">已删除的日志内容引用数。</param>
     /// <param name="deletedContentBlocks">已删除的共享内容块数。</param>
-    public ClearLogsResponse(int deletedLogs, int deletedContentRefs, int deletedContentBlocks)
+    /// <param name="deletedWebSearchContinuations">已删除的 Web Search 续传记录数。</param>
+    public ClearLogsResponse(
+        int deletedLogs,
+        int deletedContentRefs,
+        int deletedContentBlocks,
+        int deletedWebSearchContinuations)
     {
         DeletedLogs = deletedLogs;
         DeletedContentRefs = deletedContentRefs;
         DeletedContentBlocks = deletedContentBlocks;
+        DeletedWebSearchContinuations = deletedWebSearchContinuations;
     }
 
     /// <summary>
@@ -1561,6 +1567,12 @@ public sealed class ClearLogsResponse
     /// </summary>
     [JsonPropertyName("deleted_content_blocks")]
     public int DeletedContentBlocks { get; }
+
+    /// <summary>
+    /// 获取已删除的 Web Search 续传记录数。
+    /// </summary>
+    [JsonPropertyName("deleted_web_search_continuations")]
+    public int DeletedWebSearchContinuations { get; }
 }
 
 /// <summary>

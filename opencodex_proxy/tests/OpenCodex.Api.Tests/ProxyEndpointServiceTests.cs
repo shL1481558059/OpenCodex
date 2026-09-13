@@ -1054,7 +1054,8 @@ public sealed class ProxyEndpointServiceTests
             nonStreams ?? new StubProxyNonStreamService(_ =>
                 Task.FromResult(new ProxyNonStreamResult(200, new { ok = true }))),
             streams ?? new StubProxyStreamService(_ => Task.CompletedTask),
-            webSearch ?? new StubWebSearchToolExecutor());
+            webSearch ?? new StubWebSearchToolExecutor(),
+            WebSearchTestStore.Create());
     }
 
     private static ProxyEndpointContext CreateChatContext(string model)

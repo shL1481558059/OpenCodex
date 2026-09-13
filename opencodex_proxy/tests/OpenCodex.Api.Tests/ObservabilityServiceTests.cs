@@ -43,6 +43,7 @@ public sealed class ObservabilityServiceTests
             new EfRepository<LogContentManifestChunk>(context),
             new EfRepository<LogContentManifest>(context),
             new EfRepository<LogContentBlock>(context),
+            new EfWebSearchContinuationRepository(context),
             channelCapacity ?? new ChannelCapacityService(),
             new ProxySettingsService(new EfRepository<ProxySetting>(context)),
             new ServiceCollection().AddMemoryCache().BuildServiceProvider().GetRequiredService<IMemoryCache>());
@@ -1083,6 +1084,16 @@ public sealed class ObservabilityServiceTests
                 RequestType = ProxyRequestTypes.Main,
                 OwnerUserId = AdminUserId
             });
+            context.WebSearchContinuationEntries.Add(new WebSearchContinuationEntry
+            {
+                Id = Guid.NewGuid(),
+                OwnerUserId = AdminUserId,
+                EntryKey = "ws_ocxp_clear_test",
+                Kind = "search",
+                PayloadVersion = 1,
+                PayloadJson = "{}",
+                CreatedAt = 1
+            });
             context.SaveChanges();
             new LogContentStore(context).Write(logId, new Dictionary<RequestLogContentSlot, string?>
             {
@@ -1097,12 +1108,14 @@ public sealed class ObservabilityServiceTests
         Assert.Equal(1, result.Payload!.DeletedLogs);
         Assert.Equal(2, result.Payload.DeletedContentRefs);
         Assert.True(result.Payload.DeletedContentBlocks > 0);
+        Assert.Equal(1, result.Payload.DeletedWebSearchContinuations);
         using var readContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         Assert.Empty(readContext.RequestLogs);
         Assert.Empty(readContext.RequestLogContentRefs);
         Assert.Empty(readContext.LogContentManifests);
         Assert.Empty(readContext.LogContentManifestChunks);
         Assert.Empty(readContext.LogContentBlocks);
+        Assert.Empty(readContext.WebSearchContinuationEntries);
     }
 
     private sealed class TestWorkContext : IWorkContext

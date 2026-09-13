@@ -69,7 +69,7 @@ public interface IObservabilityService
         int limit);
 
     /// <summary>
-    /// 清除全部请求日志及其关联详情和流式行记录。
+    /// 清除全部请求日志、Web Search 续传记录及其关联详情和流式行记录。
     /// </summary>
     /// <returns>清除操作结果，载荷为已删除的记录总数。</returns>
     ApiOpResult<ClearLogsResponse> ClearLogs();

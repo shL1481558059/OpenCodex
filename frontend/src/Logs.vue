@@ -51,7 +51,7 @@
   <el-button :icon="Refresh" :loading="refreshLoading" @click="refreshLogPageData()">刷新</el-button>
         <el-popconfirm
           v-if="isSuperadmin"
-          title="确定清除全部请求日志？此操作不可恢复，将删除所有日志、内容引用及 SSE 流。"
+          title="确定清除全部请求日志？此操作不可恢复，将删除所有日志、内容引用、SSE 流及 Web Search 续传记录。"
           confirm-button-text="清除"
           cancel-button-text="取消"
           confirm-button-type="danger"
@@ -977,7 +977,8 @@ async function clearAllLogs() {
   try {
     const result = await props.api("/logs", { method: "DELETE" });
     const deleted = result?.deleted_logs ?? 0;
-    ElMessage.success(`已清除 ${deleted} 条日志`);
+    const continuations = result?.deleted_web_search_continuations ?? 0;
+    ElMessage.success(`已清除 ${deleted} 条日志、${continuations} 条 Web Search 续传记录`);
     await refreshLogPageData(1);
   } catch (error) {
     ElMessage.error(error.message || "清除日志失败");
