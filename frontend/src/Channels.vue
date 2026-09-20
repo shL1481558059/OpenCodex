@@ -637,6 +637,9 @@
 
         <el-divider content-position="left">请求头</el-divider>
         <el-input v-model="headersText" type="textarea" :rows="4" placeholder='{"X-Test":"yes"}' />
+        <div class="text-muted" style="margin-top: 8px; font-size: 12px; line-height: 1.6">
+          请求头值支持 <code v-pre>{{session_id}}</code> 占位符：优先使用请求中的会话标识，缺失时按请求生成随机会话 ID。
+        </div>
 
         <el-divider content-position="left">模型映射</el-divider>
         <el-table v-if="!isMobile" :data="channelDraft.models" empty-text="暂无模型映射">

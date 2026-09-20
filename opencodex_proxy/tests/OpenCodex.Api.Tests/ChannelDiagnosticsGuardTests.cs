@@ -181,6 +181,37 @@ public sealed class ChannelDiagnosticsGuardTests : IDisposable
     }
 
     [Fact]
+    public async Task TestChannelStream_ReplacesSessionHeaderPlaceholder()
+    {
+        var cookie = await LoginAndReadSessionCookie();
+        var channelId = await CreateChannelAsync(
+            cookie,
+            headers: new Dictionary<string, object?>
+            {
+                ["x-opencode-session"] = "{{session_id}}"
+            });
+
+        var (statusCode, body) = await SendStreamRequestWithCookie(
+            "/test-channel/stream",
+            cookie,
+            new
+            {
+                channel_id = channelId,
+                model = "public-model",
+                input = "你好",
+                max_output_tokens = 32
+            });
+
+        Assert.Equal(HttpStatusCode.OK, statusCode);
+        Assert.Contains("pong", body, StringComparison.Ordinal);
+
+        var (channel, _) = Assert.Single(_factory.CapturedStreamChannels);
+        var headers = Assert.IsType<Dictionary<string, object?>>(channel["headers"]);
+        var sessionId = Assert.IsType<string>(headers["x-opencode-session"]);
+        Assert.Equal("channel-test", sessionId);
+    }
+
+    [Fact]
     public async Task TestChannelStream_NormalUserCannotTestOthersChannel()
     {
         var adminCookie = await LoginAndReadSessionCookie();
@@ -326,7 +357,8 @@ public sealed class ChannelDiagnosticsGuardTests : IDisposable
         int? timeoutSeconds = null,
         int? retryCount = null,
         bool? enabled = null,
-        string? type = null)
+        string? type = null,
+        Dictionary<string, object?>? headers = null)
     {
         var response = await SendJsonWithCookie(
             HttpMethod.Post,
@@ -344,6 +376,7 @@ public sealed class ChannelDiagnosticsGuardTests : IDisposable
                 retry_count = retryCount ?? 0,
                 capacity = 3,
                 enabled = enabled ?? true,
+                headers = headers ?? new Dictionary<string, object?>(),
                 models = new[]
                 {
                     new

@@ -1010,6 +1010,84 @@ public sealed class ProxyEndpointServiceTests
    }
 
     [Fact]
+    public async Task ProxyAsync_SessionHeaderTemplate_ReusesResolvedSessionAcrossFailover()
+    {
+        var capacity = new ChannelCapacityService();
+        var primary = CreateChannel("primary", priority: 0, type: ProtocolConverter.Responses);
+        var secondary = CreateChannel("secondary", priority: 1, type: ProtocolConverter.Responses);
+        primary["headers"] = new Dictionary<string, object?>
+        {
+            ["x-opencode-session"] = "opencode-{{session_id}}"
+        };
+        secondary["headers"] = new Dictionary<string, object?>
+        {
+            ["x-opencode-session"] = "opencode-{{session_id}}"
+        };
+        var observedSessionIds = new List<string?>();
+        var nonStreams = new StubProxyNonStreamService(context =>
+        {
+            var headers = Assert.IsType<Dictionary<string, object?>>(
+                context.Route.Channel["headers"]);
+            observedSessionIds.Add(Assert.IsType<string>(headers["x-opencode-session"]));
+            if (context.ChannelId == "primary")
+            {
+                throw new UpstreamException("primary unavailable", ProxyHttpStatus.BadGateway);
+            }
+
+            return Task.FromResult(new ProxyNonStreamResult(200, new { ok = true }));
+        });
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService(
+            [
+                CreateRoute(primary, "shared-model", "upstream-primary"),
+                CreateRoute(secondary, "shared-model", "upstream-secondary")
+            ]),
+            nonStreams: nonStreams);
+
+        var result = await service.ProxyAsync(CreateResponsesContext(
+            "shared-model",
+            new Dictionary<string, string>
+            {
+                ["thread-id"] = "thread-42"
+            }));
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.Equal(["opencode-thread-42", "opencode-thread-42"], observedSessionIds);
+    }
+
+    [Fact]
+    public async Task ProxyAsync_SessionHeaderTemplate_NoIdentityUsesRandomSessionWithoutMutatingRoute()
+    {
+        var capacity = new ChannelCapacityService();
+        var channel = CreateChannel("random-session", priority: 0);
+        var configuredHeaders = new Dictionary<string, object?>
+        {
+            ["x-opencode-session"] = "{{session_id}}"
+        };
+        channel["headers"] = configuredHeaders;
+        string? observedSessionId = null;
+        var nonStreams = new StubProxyNonStreamService(context =>
+        {
+            var headers = Assert.IsType<Dictionary<string, object?>>(
+                context.Route.Channel["headers"]);
+            observedSessionId = Assert.IsType<string>(headers["x-opencode-session"]);
+            return Task.FromResult(new ProxyNonStreamResult(200, new { ok = true }));
+        });
+        var service = CreateService(
+            capacity,
+            new StubProxyRouteService([CreateRoute(channel, "shared-model", "upstream")]),
+            nonStreams: nonStreams);
+
+        var result = await service.ProxyAsync(CreateChatContext("shared-model"));
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.NotNull(observedSessionId);
+        Assert.Matches("^ses_[0-9a-f]{32}$", observedSessionId);
+        Assert.Equal("{{session_id}}", configuredHeaders["x-opencode-session"]);
+    }
+
+    [Fact]
     public async Task ProxyAsync_ProbeInterception_IsNotHandledAtServiceLayer()
     {
         var capacity = new ChannelCapacityService();

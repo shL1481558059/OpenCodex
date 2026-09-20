@@ -593,32 +593,11 @@ public sealed class ProxyLogService : IProxyLogService
         IReadOnlyDictionary<string, string> requestHeaders,
         IReadOnlyDictionary<string, object?>? payload)
     {
-        var turnMetadata = ParseTurnMetadata(HeaderValue(requestHeaders, "x-codex-turn-metadata"));
-        var threadId = MetadataValue(turnMetadata, "thread_id")
-            ?? HeaderValue(requestHeaders, "thread-id");
-        var sessionId = MetadataValue(turnMetadata, "session_id")
-            ?? HeaderValue(requestHeaders, "session-id")
-            ?? HeaderValue(requestHeaders, "x-claude-code-session-id");
-        var promptCacheKey = payload is null
-            ? null
-            : NullIfEmpty(JsonDictionaryValue.String(payload, "prompt_cache_key"));
-        var conversationId = HeaderValue(requestHeaders, "x-conversation-id");
-        log.ConversationKey = threadId is not null
-            ? $"thread:{threadId}"
-            : sessionId is not null
-                ? $"session:{sessionId}"
-                : promptCacheKey is not null
-                    ? $"prompt_cache_key:{promptCacheKey}"
-                    : conversationId is not null
-                        ? $"conversation:{conversationId}"
-                        : null;
-        log.ConversationTurnId = MetadataValue(turnMetadata, "turn_id")
-            ?? HeaderValue(requestHeaders, "x-client-request-id");
-        log.ConversationWindowId = MetadataValue(turnMetadata, "window_id")
-            ?? HeaderValue(requestHeaders, "x-codex-window-id");
-        log.PreviousResponseId = payload is null
-            ? null
-            : NullIfEmpty(JsonDictionaryValue.String(payload, "previous_response_id"));
+        var identity = ProxyConversationIdentity.From(requestHeaders, payload);
+        log.ConversationKey = identity.ConversationKey;
+        log.ConversationTurnId = identity.TurnId;
+        log.ConversationWindowId = identity.WindowId;
+        log.PreviousResponseId = identity.PreviousResponseId;
     }
 
     private static void ApplyConversationMetadataFromSerializedRequest(
@@ -637,62 +616,6 @@ public sealed class ProxyLogService : IProxyLogService
         {
             // 日志正文仍会完整保存；不可解析的元数据只是不建立检索索引。
         }
-    }
-
-    private static Dictionary<string, string> ParseTurnMetadata(string? value)
-    {
-        if (value is null)
-        {
-            return new Dictionary<string, string>(StringComparer.Ordinal);
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(value);
-            if (document.RootElement.ValueKind != JsonValueKind.Object)
-            {
-                return new Dictionary<string, string>(StringComparer.Ordinal);
-            }
-
-            return document.RootElement.EnumerateObject()
-                .Where(property => property.Value.ValueKind == JsonValueKind.String)
-                .ToDictionary(
-                    property => property.Name,
-                    property => property.Value.GetString() ?? string.Empty,
-                    StringComparer.Ordinal);
-        }
-        catch (JsonException)
-        {
-            return new Dictionary<string, string>(StringComparer.Ordinal);
-        }
-    }
-
-    private static string? MetadataValue(
-        IReadOnlyDictionary<string, string> metadata,
-        string key)
-    {
-        return metadata.TryGetValue(key, out var value) ? NullIfEmpty(value) : null;
-    }
-
-    private static string? HeaderValue(
-        IReadOnlyDictionary<string, string> headers,
-        string key)
-    {
-        foreach (var pair in headers)
-        {
-            if (string.Equals(pair.Key, key, StringComparison.OrdinalIgnoreCase))
-            {
-                return NullIfEmpty(pair.Value);
-            }
-        }
-
-        return null;
-    }
-
-    private static string? NullIfEmpty(string? value)
-    {
-        var normalized = value?.Trim();
-        return string.IsNullOrEmpty(normalized) ? null : normalized;
     }
 
     private static string? UpdateOcrJsonParentRequestLogId(string? ocrJson, Guid parentRequestLogId)

@@ -109,6 +109,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             }
 
             requestModel = JsonDictionaryValue.String(payload, "model");
+            var sessionId = ProxySessionHeaderTemplate.ResolveSessionId(requestMetadata, payload);
             var requestContainsImages = ProxyImageRequestDetector.ContainsImageInput(payload, context.EntryProtocol);
             // 请求级共享:主请求换渠道重试时不再重复尝试已失败的视觉转移路由。
             var failedVisionRoutes = new HashSet<string>(StringComparer.Ordinal);
@@ -204,6 +205,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                     attemptChannelType = channelType;
                     attemptUpstreamModel = upstreamModel;
                     route = ApplyResponsesPassthroughHeaders(route, context.EntryProtocol, channelType, requestMetadata);
+                    route = ProxySessionHeaderTemplate.Apply(route, sessionId);
 
                     effectivePayload = payload;
                     if (requestContainsImages

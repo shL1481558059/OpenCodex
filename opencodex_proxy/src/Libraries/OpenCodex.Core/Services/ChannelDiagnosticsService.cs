@@ -57,8 +57,11 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
             EnsurePublicBaseUrl(draft);
             var validated = ConfigValidator.ValidateChannel(draft, DefaultTimeout());
             var clamped = ClampDiagnosticsChannel(validated);
-            var raw = await _upstreamModelClient.ListModelsAsync(
+            var channel = ProxySessionHeaderTemplate.ApplyToChannel(
                 clamped,
+                ProxySessionHeaderTemplate.CreateSessionId());
+            var raw = await _upstreamModelClient.ListModelsAsync(
+                channel,
                 DefaultTimeout(),
                 cancellationToken);
             return ApiOpResult<DiscoverModelsResponse>.Succeed(DiscoverModelsResponse.From(
@@ -324,11 +327,13 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
             upstreamModel,
             supportsImage: true,
             matchedModelMapping: false);
+        var sessionId = ProxySessionHeaderTemplate.ResolveSessionId(requestMetadata, payload);
         route = ProxyEndpointService.ApplyResponsesPassthroughHeaders(
             route,
             ProtocolConverter.Responses,
             channelType,
             requestMetadata);
+        route = ProxySessionHeaderTemplate.Apply(route, sessionId);
         channel = route.Channel;
 
         var channelCompat = JsonDictionaryValue.Object(channel, "compat", CloneObject);
