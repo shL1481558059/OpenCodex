@@ -16,12 +16,13 @@ public sealed class RealtimeStreamServiceTests
     public async Task StreamAsync_IdleStream_WritesHeartbeatAfterInterval()
     {
         var context = new DefaultHttpContext();
-        context.Response.Body = new MemoryStream();
+        var streamBody = new HeartbeatAwareStream();
+        context.Response.Body = streamBody;
 
         using var cts = new CancellationTokenSource();
         var channel = Channel.CreateUnbounded<string>();
 
-        // 心跳间隔 20ms,让流空等约 80ms(4 个心跳周期)再取消,确保至少写出一帧心跳。
+        // 等待真实写入而非固定延时,避免 CI 高负载下错过心跳帧。
         var streamTask = CreateService().StreamAsync(
             context.Response,
             channel.Reader,
@@ -30,7 +31,7 @@ public sealed class RealtimeStreamServiceTests
             TimeSpan.FromMilliseconds(20),
             cts.Token);
 
-        await Task.Delay(80);
+        await streamBody.FirstWrite.WaitAsync(TimeSpan.FromSeconds(5));
         cts.Cancel();
         await streamTask;
 
@@ -231,6 +232,52 @@ public sealed class RealtimeStreamServiceTests
         {
             await base.WriteAsync(buffer, cancellationToken);
             await Task.Yield();
+        }
+    }
+
+    private sealed class HeartbeatAwareStream : MemoryStream
+    {
+        private readonly TaskCompletionSource _firstWrite =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task FirstWrite => _firstWrite.Task;
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            base.Write(buffer, offset, count);
+            _firstWrite.TrySetResult();
+        }
+
+        public override void Write(ReadOnlySpan<byte> buffer)
+        {
+            base.Write(buffer);
+            _firstWrite.TrySetResult();
+        }
+
+        public override void WriteByte(byte value)
+        {
+            base.WriteByte(value);
+            _firstWrite.TrySetResult();
+        }
+
+        public override Task WriteAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken)
+        {
+            var write = base.WriteAsync(buffer, offset, count, cancellationToken);
+            _firstWrite.TrySetResult();
+            return write;
+        }
+
+        public override ValueTask WriteAsync(
+            ReadOnlyMemory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            var write = base.WriteAsync(buffer, cancellationToken);
+            _firstWrite.TrySetResult();
+            return write;
         }
     }
 
