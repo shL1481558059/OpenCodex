@@ -427,6 +427,64 @@ public sealed class ProxyLogServiceTests
     }
 
     [Fact]
+    public async Task WriteLog_IndexesCopilotInteractionIdAsSessionAndTurn()
+    {
+        var dbPath = Path.Combine(
+            Path.GetTempPath(),
+            "opencodex-proxy-log-tests",
+            $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        using (var bootstrap = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            bootstrap.Database.Migrate();
+        }
+
+        EnsureAdminUser(dbPath);
+        const string interactionId = "6e55489b-a9f3-4bf1-abc5-69dfdf5f3108";
+        var headers = new Dictionary<string, string>
+        {
+            ["User-Agent"] = "GitHubCopilotChat/0.65.0",
+            ["x-interaction-id"] = interactionId,
+            ["x-client-request-id"] = "request-1"
+        };
+        var service = CreateService(dbPath);
+        await service.WriteLogAsync(
+            new ProxyLogContext(
+                RequestId: "req-copilot",
+                OwnerUsername: "admin",
+                ApiKeyId: null,
+                Payload: new Dictionary<string, object?>
+                {
+                    ["model"] = "gpt-5"
+                },
+                UpstreamRequest: new Dictionary<string, object?>(),
+                UpstreamResponse: new Dictionary<string, object?>(),
+                ResponsePayload: new Dictionary<string, object?>(),
+                ErrorResponse: null,
+                RequestModel: "gpt-5",
+                UpstreamModel: "gpt-5",
+                ChannelId: TestChannelId.ToString(),
+                ChannelType: "chat",
+                IsStream: false,
+                TtftMs: null,
+                StatusCode: 200,
+                DurationMs: 1,
+                Error: null,
+                WebSearchDetails: null),
+            new ProxyRequestMetadata(
+                "POST",
+                "/v1/chat/completions",
+                "127.0.0.1",
+                headers,
+                null));
+
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var log = context.RequestLogs.Single();
+        Assert.Equal($"session:{interactionId}", log.ConversationKey);
+        Assert.Equal(interactionId, log.ConversationTurnId);
+    }
+
+    [Fact]
     public async Task WriteLog_UsesXConversationIdAsLowestPriorityConversationKey()
     {
         var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-proxy-log-tests", $"{Guid.NewGuid():N}.db");

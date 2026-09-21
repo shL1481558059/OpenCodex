@@ -67,14 +67,17 @@ public sealed class ProxyConversationIdentity
         var turnMetadata = ParseTurnMetadata(HeaderValue(requestHeaders, "x-codex-turn-metadata"));
         var threadId = MetadataValue(turnMetadata, "thread_id")
             ?? HeaderValue(requestHeaders, "thread-id");
+        var interactionId = HeaderValue(requestHeaders, "x-interaction-id");
         var sessionId = MetadataValue(turnMetadata, "session_id")
             ?? HeaderValue(requestHeaders, "session-id")
-            ?? HeaderValue(requestHeaders, "x-claude-code-session-id");
+            ?? HeaderValue(requestHeaders, "x-claude-code-session-id")
+            ?? interactionId;
         var promptCacheKey = payload is null
             ? null
             : NullIfEmpty(JsonDictionaryValue.String(payload, "prompt_cache_key"));
         var clientConversationId = HeaderValue(requestHeaders, "x-conversation-id");
         var turnId = MetadataValue(turnMetadata, "turn_id")
+            ?? interactionId
             ?? HeaderValue(requestHeaders, "x-client-request-id");
         var windowId = MetadataValue(turnMetadata, "window_id")
             ?? HeaderValue(requestHeaders, "x-codex-window-id");

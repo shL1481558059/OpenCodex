@@ -41,6 +41,38 @@ public sealed class ProxySessionHeaderTemplateTests
     }
 
     [Fact]
+    public void ResolveSessionId_UsesInteractionIdAsSessionFallback()
+    {
+        var request = Request(new Dictionary<string, string>
+        {
+            ["User-Agent"] = "GitHubCopilotChat/0.65.0",
+            ["X-Interaction-Id"] = "6e55489b-a9f3-4bf1-abc5-69dfdf5f3108"
+        });
+
+        var sessionId = ProxySessionHeaderTemplate.ResolveSessionId(
+            request,
+            new Dictionary<string, object?>());
+
+        Assert.Equal("6e55489b-a9f3-4bf1-abc5-69dfdf5f3108", sessionId);
+    }
+
+    [Fact]
+    public void ResolveSessionId_PrefersExplicitSessionHeaderOverInteractionId()
+    {
+        var request = Request(new Dictionary<string, string>
+        {
+            ["session-id"] = "explicit-session",
+            ["x-interaction-id"] = "interaction-session"
+        });
+
+        var sessionId = ProxySessionHeaderTemplate.ResolveSessionId(
+            request,
+            new Dictionary<string, object?>());
+
+        Assert.Equal("explicit-session", sessionId);
+    }
+
+    [Fact]
     public void ResolveSessionId_NoIdentity_CreatesRandomOpenCodeSessionId()
     {
         var sessionId = ProxySessionHeaderTemplate.ResolveSessionId(
