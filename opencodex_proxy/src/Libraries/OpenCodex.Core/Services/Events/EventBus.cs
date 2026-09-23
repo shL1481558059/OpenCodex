@@ -80,6 +80,9 @@ public sealed class EventBus : IEventBus, IDisposable
     {
         if (_redis is not { IsAvailable: true }) return;
 
+        // Redis 可能在启动之后才连上,这里让订阅自愈(已订阅时为廉价空操作)。
+        TryEnsureRedisSubscribed();
+
         var subscriber = _redis.GetSubscriber();
         if (subscriber is null) return;
 

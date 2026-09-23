@@ -48,6 +48,9 @@ services:
     platform: linux/amd64
     container_name: ${SERVICE_NAME:-ocxp}
     restart: unless-stopped
+    # 限制应用容器内存:宿主仅 2G 且与其他服务共用,.NET 会据此计算 GC 堆预算,
+    # 避免托管堆无上限增长到触发整机 OOM。
+    mem_limit: ${APP_MEMORY_LIMIT:-1g}
     ports:
       - "${APP_PORT_MAPPING:-127.0.0.1:8002:8080}"
     env_file:
