@@ -4,6 +4,7 @@ using Xunit;
 
 namespace OpenCodex.Api.Tests;
 
+[Collection(LogContentCollection.Name)]
 public sealed class LogContentCodecTests
 {
     [Theory]

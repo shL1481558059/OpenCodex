@@ -11,8 +11,72 @@ using Xunit;
 
 namespace OpenCodex.Api.Tests;
 
+[Collection(LogContentCollection.Name)]
 public sealed class LogContentStoreTests
 {
+    [Fact]
+    public void Write_SameContentTwice_CompressesOnlyFirstTime()
+    {
+        var (dbPath, firstLogId, secondLogId) = CreateDatabaseWithTwoLogs();
+        var value = BuildConversation(180);
+
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var store = new LogContentStore(context);
+
+        var beforeFirst = Interlocked.Read(ref LogContentCodec.CompressionInvocationCount);
+        store.Write(firstLogId, Values(value));
+        var firstCost = Interlocked.Read(ref LogContentCodec.CompressionInvocationCount) - beforeFirst;
+
+        var beforeSecond = Interlocked.Read(ref LogContentCodec.CompressionInvocationCount);
+        store.Write(secondLogId, Values(value));
+        var secondCost = Interlocked.Read(ref LogContentCodec.CompressionInvocationCount) - beforeSecond;
+
+        Assert.True(firstCost > 0, "首次写入应产生压缩调用。");
+        Assert.Equal(0, secondCost);
+    }
+
+    [Fact]
+    public void Write_AppendedConversation_CompressesOnlyNewChunks()
+    {
+        var (dbPath, firstLogId, secondLogId) = CreateDatabaseWithTwoLogs();
+        var original = BuildConversation(180);
+        var appended = BuildConversation(181);
+
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var store = new LogContentStore(context);
+
+        var beforeFirst = Interlocked.Read(ref LogContentCodec.CompressionInvocationCount);
+        store.Write(firstLogId, Values(original));
+        var fullCost = Interlocked.Read(ref LogContentCodec.CompressionInvocationCount) - beforeFirst;
+
+        var beforeSecond = Interlocked.Read(ref LogContentCodec.CompressionInvocationCount);
+        store.Write(secondLogId, Values(appended));
+        var incrementalCost = Interlocked.Read(ref LogContentCodec.CompressionInvocationCount) - beforeSecond;
+
+        Assert.True(fullCost > 3, "首次写入应产生多个块的压缩调用。");
+        Assert.True(
+            incrementalCost < fullCost,
+            $"追加一轮只应压缩新增块,实际全量 {fullCost} 次、追加 {incrementalCost} 次。");
+    }
+
+    [Fact]
+    public void Read_DoesNotInvokeCompression()
+    {
+        var (dbPath, firstLogId, _) = CreateDatabaseWithTwoLogs();
+        var value = BuildConversation(180);
+
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var store = new LogContentStore(context);
+        store.Write(firstLogId, Values(value));
+
+        var before = Interlocked.Read(ref LogContentCodec.CompressionInvocationCount);
+        var read = store.Read(firstLogId).Get(RequestLogContentSlot.RequestBody);
+        var cost = Interlocked.Read(ref LogContentCodec.CompressionInvocationCount) - before;
+
+        Assert.Equal(value, read);
+        Assert.Equal(0, cost);
+    }
+
     [Fact]
     public void IdenticalValuesAcrossRequests_ShareManifestAndBlocks()
     {

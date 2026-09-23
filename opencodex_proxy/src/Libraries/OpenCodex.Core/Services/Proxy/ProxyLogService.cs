@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Globalization;
+using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using OpenCodex.Core.Domain;
@@ -303,7 +304,7 @@ public sealed class ProxyLogService : IProxyLogService
             nameof(RequestLog.ConversationWindowId),
             nameof(RequestLog.PreviousResponseId));
 
-        _contentStore.Write(requestLogId, BuildContentValues(context));
+        _contentStore.WriteUtf8(requestLogId, BuildContentValues(context));
 
         if (context.RequestType == ProxyRequestTypes.Main)
         {
@@ -491,15 +492,15 @@ public sealed class ProxyLogService : IProxyLogService
         ApplyConversationMetadataFromSerializedRequest(log, record.RequestHeaders, record.RequestBody);
         _logRepository.Insert(log);
 
-        _contentStore.Write(log.Id, new Dictionary<RequestLogContentSlot, string?>
+        _contentStore.WriteUtf8(log.Id, new Dictionary<RequestLogContentSlot, byte[]?>
         {
-            [RequestLogContentSlot.RequestHeaders] = record.RequestHeaders,
-            [RequestLogContentSlot.RequestBody] = record.RequestBody,
-            [RequestLogContentSlot.UpstreamRequestBody] = record.UpstreamRequestBody,
-            [RequestLogContentSlot.UpstreamResponseBody] = record.UpstreamResponseBody,
-            [RequestLogContentSlot.ResponseBody] = record.ResponseBody,
-            [RequestLogContentSlot.WebSearchJson] = record.WebSearchJson,
-            [RequestLogContentSlot.OcrJson] = record.OcrJson,
+            [RequestLogContentSlot.RequestHeaders] = EncodeText(record.RequestHeaders),
+            [RequestLogContentSlot.RequestBody] = EncodeText(record.RequestBody),
+            [RequestLogContentSlot.UpstreamRequestBody] = EncodeText(record.UpstreamRequestBody),
+            [RequestLogContentSlot.UpstreamResponseBody] = EncodeText(record.UpstreamResponseBody),
+            [RequestLogContentSlot.ResponseBody] = EncodeText(record.ResponseBody),
+            [RequestLogContentSlot.WebSearchJson] = EncodeText(record.WebSearchJson),
+            [RequestLogContentSlot.OcrJson] = EncodeText(record.OcrJson),
             [RequestLogContentSlot.StreamLinesJson] = SerializeStreamLines(record.StreamLines)
         });
 
@@ -535,22 +536,24 @@ public sealed class ProxyLogService : IProxyLogService
         return log.Id;
     }
 
-    private static IReadOnlyDictionary<RequestLogContentSlot, string?> BuildContentValues(
+    private static IReadOnlyDictionary<RequestLogContentSlot, byte[]?> BuildContentValues(
         ProxyRequestLogContext context)
     {
-        return new Dictionary<RequestLogContentSlot, string?>
+        return new Dictionary<RequestLogContentSlot, byte[]?>
         {
-            [RequestLogContentSlot.RequestHeaders] = SerializeForLog(context.RequestHeaders),
-            [RequestLogContentSlot.RequestBody] = context.RawRequestBody ?? SerializeForLog(context.Payload),
-            [RequestLogContentSlot.UpstreamRequestBody] = SerializeForLog(context.UpstreamRequest),
-            [RequestLogContentSlot.UpstreamResponseBody] = SerializeForLog(context.UpstreamResponse),
-            [RequestLogContentSlot.ResponseBody] = SerializeForLog(context.ResponsePayload ?? context.ErrorResponse),
+            [RequestLogContentSlot.RequestHeaders] = EncodeForLog(context.RequestHeaders),
+            [RequestLogContentSlot.RequestBody] = context.RawRequestBody is { } rawRequestBody
+                ? EncodeText(rawRequestBody)
+                : EncodeForLog(context.Payload),
+            [RequestLogContentSlot.UpstreamRequestBody] = EncodeForLog(context.UpstreamRequest),
+            [RequestLogContentSlot.UpstreamResponseBody] = EncodeForLog(context.UpstreamResponse),
+            [RequestLogContentSlot.ResponseBody] = EncodeForLog(context.ResponsePayload ?? context.ErrorResponse),
             [RequestLogContentSlot.WebSearchJson] = context.WebSearchDetails is null
                 ? null
-                : SerializeForLog(context.WebSearchDetails),
+                : EncodeForLog(context.WebSearchDetails),
             [RequestLogContentSlot.OcrJson] = context.OcrDetails is null
                 ? null
-                : SerializeForLog(context.OcrDetails),
+                : EncodeForLog(context.OcrDetails),
             [RequestLogContentSlot.StreamLinesJson] = SerializeStreamLines(context.StreamLines)
         };
     }
@@ -568,7 +571,17 @@ public sealed class ProxyLogService : IProxyLogService
         });
     }
 
-    private static string? SerializeStreamLines(
+    private static byte[] EncodeForLog(object? value)
+    {
+        return Encoding.UTF8.GetBytes(SerializeForLog(value));
+    }
+
+    private static byte[]? EncodeText(string? value)
+    {
+        return value is null ? null : Encoding.UTF8.GetBytes(value);
+    }
+
+    private static byte[]? SerializeStreamLines(
         IReadOnlyList<ProxyRequestStreamLineCapture>? streamLines)
     {
         if (streamLines is null)
@@ -576,16 +589,7 @@ public sealed class ProxyLogService : IProxyLogService
             return null;
         }
 
-        var values = streamLines
-            .OrderBy(item => item.Sequence)
-            .Select(item => new Dictionary<string, object?>(StringComparer.Ordinal)
-            {
-                ["sequence"] = item.Sequence,
-                ["source"] = item.Source,
-                ["raw_line"] = item.RawLine
-            })
-            .ToList();
-        return JsonSerializer.Serialize(values, JsonOptions);
+        return StreamLineJsonSerializer.Serialize(streamLines);
     }
 
     private static void ApplyConversationMetadata(

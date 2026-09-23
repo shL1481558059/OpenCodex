@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using System.Text;
 using OpenCodex.Core.Domain;
 using OpenCodex.CoreBase.Data;
 
@@ -19,17 +20,39 @@ internal sealed class LogContentStore
         IReadOnlyDictionary<RequestLogContentSlot, string?> values)
     {
         ArgumentNullException.ThrowIfNull(values);
+        WriteUtf8(
+            requestLogId,
+            values.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value is null ? null : Encoding.UTF8.GetBytes(pair.Value),
+                EqualityComparer<RequestLogContentSlot>.Default));
+    }
+
+    /// <summary>
+    /// 与 <see cref="Write"/> 等价,但直接接收 UTF-8 字节。
+    /// </summary>
+    /// <remarks>
+    /// 已经以 UTF-8 形式存在的内容(例如用 <see cref="Utf8JsonWriter"/> 直出的流日志)
+    /// 走这条路径可以省掉一次"字节 → 字符串 → 字节"的往返转换。
+    /// </remarks>
+    public void WriteUtf8(
+        Guid requestLogId,
+        IReadOnlyDictionary<RequestLogContentSlot, byte[]?> values)
+    {
+        ArgumentNullException.ThrowIfNull(values);
         if (values.Count == 0)
         {
             return;
         }
 
-        var encodedBySlot = values
+        // 先只分块 + 算哈希,不压缩;等查重结果出来后再压缩缺失的块。
+        var plansBySlot = values
             .Where(pair => pair.Value is not null)
             .ToDictionary(
                 pair => pair.Key,
-                pair => LogContentCodec.Encode(pair.Value!),
+                pair => LogContentCodec.Plan(pair.Value!),
                 EqualityComparer<RequestLogContentSlot>.Default);
+        var plans = plansBySlot.Values.ToList();
 
         using var transaction = _context.Database.BeginTransaction();
         var updatedSlots = values.Keys.ToList();
@@ -39,15 +62,15 @@ internal sealed class LogContentStore
             .Select(reference => reference.ManifestId)
             .Distinct()
             .ToList();
-        var blocksByHash = EnsureBlocks(encodedBySlot.Values);
-        var manifestsByHash = EnsureManifests(encodedBySlot.Values, blocksByHash);
+        var blocksByHash = EnsureBlocks(plans);
+        var manifestsByHash = EnsureManifests(plans, blocksByHash);
 
         _context.RequestLogContentRefs
             .Where(reference => reference.RequestLogId == requestLogId
                 && updatedSlots.Contains(reference.Slot))
             .ExecuteDelete();
 
-        var references = encodedBySlot.Select(pair => new RequestLogContentRef
+        var references = plansBySlot.Select(pair => new RequestLogContentRef
         {
             Id = Guid.NewGuid(),
             RequestLogId = requestLogId,
@@ -141,8 +164,10 @@ internal sealed class LogContentStore
                 throw new InvalidDataException($"Log manifest {manifest.Id} exceeds the supported length.");
             }
 
-            var value = LogContentCodec.Decode(checked((int)manifest.RawLength), storedChunks);
-            var actualHash = LogContentCodec.Encode(value).Hash;
+            var value = LogContentCodec.Decode(
+                checked((int)manifest.RawLength),
+                storedChunks,
+                out var actualHash);
             if (!string.Equals(actualHash, manifest.Sha256, StringComparison.Ordinal))
             {
                 throw new InvalidDataException($"Log manifest hash mismatch for {manifest.Id}.");
@@ -154,44 +179,57 @@ internal sealed class LogContentStore
         return new LogContentSnapshot(values);
     }
 
-    private Dictionary<string, BlockRef> EnsureBlocks(
-        IEnumerable<EncodedLogContent> encodedValues)
+    private Dictionary<string, BlockRef> EnsureBlocks(IReadOnlyList<LogContentPlan> plans)
     {
-        var chunks = encodedValues
-            .SelectMany(value => value.Chunks)
+        var chunkPlansByHash = plans
+            .SelectMany(plan => plan.Chunks)
             .GroupBy(chunk => chunk.Hash, StringComparer.Ordinal)
-            .Select(group => group.First())
-            .ToList();
-        if (chunks.Count == 0)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+        if (chunkPlansByHash.Count == 0)
         {
             return new Dictionary<string, BlockRef>(StringComparer.Ordinal);
         }
 
+        var hashes = chunkPlansByHash.Keys.ToList();
+        var existing = QueryBlocks(hashes);
+
+        // 只压缩库中尚不存在的块。同一会话反复发送时绝大多数块可以命中,
+        // 这一步省掉的正是原先"先全量压缩、再查重丢弃"的重复 Brotli 开销。
+        var compressedByHash = new Dictionary<string, EncodedLogContentChunk>(StringComparer.Ordinal);
+        foreach (var plan in plans)
+        {
+            foreach (var chunk in plan.Chunks)
+            {
+                if (existing.ContainsKey(chunk.Hash) || compressedByHash.ContainsKey(chunk.Hash))
+                {
+                    continue;
+                }
+
+                compressedByHash[chunk.Hash] = LogContentCodec.Compress(plan.Source, chunk);
+            }
+        }
+
         for (var attempt = 0; attempt < 2; attempt++)
         {
-            var hashes = chunks.Select(chunk => chunk.Hash).ToList();
-            var existing = _context.LogContentBlocks
-                .AsNoTracking()
-                .Where(block => hashes.Contains(block.Sha256))
-                .Select(block => new BlockRef(block.Id, block.Sha256, block.RawLength))
-                .ToDictionary(block => block.Sha256, StringComparer.Ordinal);
-            var missing = chunks.Where(chunk => !existing.ContainsKey(chunk.Hash)).ToList();
-            if (missing.Count == 0)
+            var missingBlocks = compressedByHash
+                .Where(pair => !existing.ContainsKey(pair.Key))
+                .Select(pair => new LogContentBlock
+                {
+                    Id = Guid.NewGuid(),
+                    Sha256 = pair.Key,
+                    RawLength = pair.Value.OriginalLength,
+                    StoredLength = pair.Value.Data.Length,
+                    Compression = pair.Value.Codec,
+                    Data = pair.Value.Data,
+                    CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0
+                })
+                .ToList();
+            if (missingBlocks.Count == 0)
             {
-                return ValidateBlocks(existing, chunks);
+                return ValidateBlocks(existing, chunkPlansByHash.Values);
             }
 
             CreateSavepoint("log_content_blocks");
-            var missingBlocks = missing.Select(chunk => new LogContentBlock
-            {
-                Id = Guid.NewGuid(),
-                Sha256 = chunk.Hash,
-                RawLength = chunk.OriginalLength,
-                StoredLength = chunk.Data.Length,
-                Compression = chunk.Codec,
-                Data = chunk.Data,
-                CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0
-            }).ToList();
             _context.LogContentBlocks.AddRange(missingBlocks);
             try
             {
@@ -201,7 +239,7 @@ internal sealed class LogContentStore
                     existing[block.Sha256] = new BlockRef(block.Id, block.Sha256, block.RawLength);
                 }
 
-                return ValidateBlocks(existing, chunks);
+                return ValidateBlocks(existing, chunkPlansByHash.Values);
             }
             catch (DbUpdateException)
             {
@@ -209,25 +247,36 @@ internal sealed class LogContentStore
                 // 未提交的插入,Detach 新增实体后重查,以实际落库的行作为引用依据。
                 RollbackToSavepoint("log_content_blocks");
                 DetachEntities(missingBlocks);
+                existing = QueryBlocks(hashes);
             }
         }
 
         throw new InvalidDataException("One or more content-addressed log blocks could not be persisted.");
     }
 
+    private Dictionary<string, BlockRef> QueryBlocks(IReadOnlyList<string> hashes)
+    {
+        return _context.LogContentBlocks
+            .AsNoTracking()
+            .Where(block => hashes.Contains(block.Sha256))
+            .Select(block => new BlockRef(block.Id, block.Sha256, block.RawLength))
+            .ToDictionary(block => block.Sha256, StringComparer.Ordinal);
+    }
+
     private Dictionary<string, LogContentManifest> EnsureManifests(
-        IEnumerable<EncodedLogContent> encodedValues,
+        IReadOnlyList<LogContentPlan> plans,
         IReadOnlyDictionary<string, BlockRef> blocksByHash)
     {
-        var values = encodedValues
+        var values = plans
             .GroupBy(value => value.Hash, StringComparer.Ordinal)
             .Select(group => group.First())
             .ToList();
+        var hashes = values.Select(value => value.Hash).ToList();
         for (var attempt = 0; attempt < 2; attempt++)
         {
             var existing = _context.LogContentManifests
                 .AsNoTracking()
-                .Where(manifest => values.Select(value => value.Hash).Contains(manifest.Sha256))
+                .Where(manifest => hashes.Contains(manifest.Sha256))
                 .ToDictionary(manifest => manifest.Sha256, StringComparer.Ordinal);
             var missing = values.Where(value => !existing.ContainsKey(value.Hash)).ToList();
             if (missing.Count == 0)
@@ -254,7 +303,7 @@ internal sealed class LogContentStore
                     ManifestId = manifest.Id,
                     Ordinal = ordinal,
                     BlockId = blocksByHash[chunk.Hash].Id,
-                    RawLength = chunk.OriginalLength
+                    RawLength = chunk.Length
                 });
                 _context.LogContentManifestChunks.AddRange(manifestChunks);
             }
@@ -290,17 +339,18 @@ internal sealed class LogContentStore
 
     private static Dictionary<string, BlockRef> ValidateBlocks(
         IReadOnlyDictionary<string, BlockRef> existing,
-        IReadOnlyList<EncodedLogContentChunk> chunks)
+        IEnumerable<LogChunkPlan> chunks)
     {
-        if (existing.Count != chunks.Count)
+        var chunkList = chunks as IReadOnlyCollection<LogChunkPlan> ?? chunks.ToList();
+        if (existing.Count != chunkList.Count)
         {
             throw new InvalidDataException("One or more content-addressed log blocks could not be persisted.");
         }
 
-        foreach (var chunk in chunks)
+        foreach (var chunk in chunkList)
         {
             var block = existing[chunk.Hash];
-            if (block.RawLength != chunk.OriginalLength)
+            if (block.RawLength != chunk.Length)
             {
                 throw new InvalidDataException($"Content hash collision detected for block {chunk.Hash}.");
             }
@@ -313,7 +363,7 @@ internal sealed class LogContentStore
 
     private static Dictionary<string, LogContentManifest> ValidateManifests(
         IReadOnlyDictionary<string, LogContentManifest> existing,
-        IReadOnlyList<EncodedLogContent> values)
+        IReadOnlyList<LogContentPlan> values)
     {
         if (existing.Count != values.Count)
         {
