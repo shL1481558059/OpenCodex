@@ -467,6 +467,7 @@
               </el-tag>
               <span>{{ formatTokenSummary(row) }}</span>
             </div>
+            <span v-else-if="column.key === 'tps'">{{ formatEndToEndTps(row) }}</span>
             <span v-else>{{ formatLogCell(row, column) }}</span>
           </template>
         </el-table-column>
@@ -520,6 +521,10 @@
             <div>
               <dt>耗时 / TTFT</dt>
               <dd>{{ formatLatencyValue(row.duration_ms) }} / {{ formatLatencyValue(row.ttft_ms) }}</dd>
+            </div>
+            <div>
+              <dt>输出速度</dt>
+              <dd>{{ formatEndToEndTps(row) }}</dd>
             </div>
             <div class="log-mobile-card__wide">
               <dt>Token</dt>
@@ -618,6 +623,11 @@
             <el-descriptions-item label="创建时间">{{ formatTimeOrDash(selectedLog.created_at) }}</el-descriptions-item>
             <el-descriptions-item label="开始处理">{{ formatTimeOrDash(selectedLog.processing_started_at) }}</el-descriptions-item>
             <el-descriptions-item label="完成时间">{{ formatTimeOrDash(selectedLog.completed_at) }}</el-descriptions-item>
+            <el-descriptions-item label="耗时">{{ formatLatencyValue(selectedLog.duration_ms) }}</el-descriptions-item>
+            <el-descriptions-item label="TTFT">{{ formatLatencyValue(selectedLog.ttft_ms) }}</el-descriptions-item>
+            <el-descriptions-item label="Token 用量">{{ formatTokenSummary(selectedLog) }}</el-descriptions-item>
+            <el-descriptions-item label="输出速度（端到端）">{{ formatEndToEndTps(selectedLog) }}</el-descriptions-item>
+            <el-descriptions-item label="生成速度（扣除 TTFT）">{{ formatDecodeTps(selectedLog) }}</el-descriptions-item>
             <el-descriptions-item label="流式写出">
               {{ selectedLog.is_stream ? "是" : "否" }}
             </el-descriptions-item>
@@ -724,6 +734,7 @@ import { Box, Check, Coin, CopyDocument, DataLine, Delete, Filter, Lightning, Re
 import VueJsonPretty from "vue-json-pretty";
 import "vue-json-pretty/lib/styles.css";
 import { createSseStream } from "./api/sseClient.js";
+import { formatDecodeTps, formatEndToEndTps } from "./logTps.js";
 
 const props = defineProps({
   api: { type: Function, required: true },
@@ -940,6 +951,7 @@ const logColumnDefinitions = [
   { key: "status_code", prop: "status_code", label: "状态码", width: 90 },
   { key: "latency", label: "耗时 / TTFT", width: 150 },
   { key: "tokens", label: "Token", width: 210 },
+  { key: "tps", label: "输出速度", width: 130 },
   { key: "cost", prop: "cost", label: "成本", width: 110 }
 ];
 const defaultLogColumnKeys = logColumnDefinitions
