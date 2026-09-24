@@ -343,7 +343,10 @@ stateDiagram-v2
 | 5 | `ResponseBody` | 客户端响应或错误响应正文 |
 | 6 | `WebSearchJson` | Web Search 模拟详情 |
 | 7 | `OcrJson` | OCR 元数据 |
-| 8 | `StreamLinesJson` | 带 sequence/source/raw_line 的流式原始行集合 |
+
+> 历史槽位 `8`（`StreamLinesJson`）已废弃并从枚举移除：流式请求不再保存原始 SSE 行集合，
+> 只在失败或断流时把最后一行数据行与终止原因写入 `RequestLog.Error`。
+> 历史数据需用一次性命令 `--cleanup-legacy-stream-lines` 清理。
 
 内容存储必须满足：
 

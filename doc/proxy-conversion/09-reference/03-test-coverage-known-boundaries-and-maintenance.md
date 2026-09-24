@@ -458,9 +458,11 @@ AND 命中显式模型映射
 
 ### 12.3 尚需注意
 
-逐行 `RequestLogStreamLine.RawLine` 当前由选择性事件捕获器直接持久化，没有经过 `ImageLogSanitizer.CopyAndSanitize`。现有测试覆盖“过滤哪些事件”，但未直接覆盖 raw SSE delta 中的 token、data URI 或其他敏感内容脱敏。
+逐行 SSE 已不再持久化：`StreamLogCapture` 只保留最后一行非 `[DONE]` 的 `data:` 行，并在失败时写入
+`RequestLog.Error`（2000 字符上限）。因此旧的“raw SSE delta 未脱敏”“capture list 无预算”两个风险已消除。
 
-此外，完整响应捕获有 1 MiB 预算，逐行 capture list 当前没有同等的总字节/条数预算；超长高频输出可能造成较大的日志集合。若调整，应先添加压力和脱敏回归用例。
+需要注意的新边界：写入 `Error` 的最后一行数据行仍可能包含模型输出内容，且 `Error` 不经过请求体脱敏链；
+如果后续要求错误字段也脱敏，需要单独设计，并在压力与敏感内容回归用例中覆盖。
 
 ---
 

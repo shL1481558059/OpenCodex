@@ -11,7 +11,6 @@ public sealed partial class ProxyStreamService
 {
     private async IAsyncEnumerable<string> ConvertRoundsAsync(
         ProxyStreamContext context,
-        List<ProxyRequestStreamLineCapture> captures,
         ConvertedProxyStreamState state,
         BuiltinToolSession? tools,
         [EnumeratorCancellation] CancellationToken cancellationToken)
@@ -30,7 +29,7 @@ public sealed partial class ProxyStreamService
             var converted = new ConvertedStreamResult { TextFormat = textFormat, ToolCallMappings = mappings };
             var upstreamLines = _upstream.StreamJsonAsync(context.Route.Channel, state.UpstreamRequest, context.DefaultTimeout, token);
             var confirmed = await UpstreamStreamPrimer.PrimeAsync(
-                CaptureStreamLines(upstreamLines, captures, "upstream", token), token);
+                upstreamLines, token);
             var lines = ConvertRound(context, confirmed, converted, streamState, skipped, token);
             string? terminal = null;
             await foreach (var line in lines.WithCancellation(token))

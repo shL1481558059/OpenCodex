@@ -9,24 +9,21 @@ using OpenCodex.CoreBase.Services.Proxy;
 namespace OpenCodex.Api.Services;
 
 /// <summary>
-/// 图片生成 / 图片编辑代理端点实现：读取请求、鉴权并转发给上游图片端点服务。
+/// 图片生成 / 图片编辑代理端点实现：读取请求并转发给上游图片端点服务。
 /// </summary>
 public sealed class ImagesProxyService : IImagesProxyService
 {
     private readonly IRequestBodyReader _bodyReader;
     private readonly IProxyImagesEndpointService _images;
-    private readonly IProxyRequestService _requests;
     private readonly IImageEditRequestService _editReader;
 
     public ImagesProxyService(
         IRequestBodyReader bodyReader,
         IProxyImagesEndpointService images,
-        IProxyRequestService requests,
         IImageEditRequestService editReader)
     {
         _bodyReader = bodyReader;
         _images = images;
-        _requests = requests;
         _editReader = editReader;
     }
 
@@ -56,7 +53,6 @@ public sealed class ImagesProxyService : IImagesProxyService
 
         var result = await _images.GenerateAsync(new ImageGenerationContext(
             new ImageGenerationRequest(new ImageProxyParameters(payload)),
-            AuthorizationHeader(request),
             RequestMetadata(request),
             new ProxyResponseBodyWriter(response),
             request.HttpContext.RequestAborted));
@@ -69,14 +65,11 @@ public sealed class ImagesProxyService : IImagesProxyService
         HttpRequest request,
         HttpResponse response)
     {
-        var authorization = AuthorizationHeader(request);
-        await _requests.AuthenticateAccessKeyAsync(authorization);
         var editRequest = await _editReader.ReadAsync(
             request,
             request.HttpContext.RequestAborted);
         var result = await _images.EditAsync(new ImageEditContext(
             editRequest,
-            authorization,
             RequestMetadata(request),
             new ProxyResponseBodyWriter(response),
             request.HttpContext.RequestAborted));
@@ -89,11 +82,6 @@ public sealed class ImagesProxyService : IImagesProxyService
         => ProxyRequestMetadataFactory.FromHttpRequest(
             request,
             request.HttpContext.Connection.RemoteIpAddress?.ToString());
-
-    private static string? AuthorizationHeader(HttpRequest request)
-        => request.Headers.TryGetValue(HeaderNames.Authorization, out var values)
-            ? values.ToString()
-            : null;
 
     private static IActionResult StatusCodeResult(
         HttpResponse response,

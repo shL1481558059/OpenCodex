@@ -32,6 +32,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
 
     private readonly IProxyLogService _logs;
     private readonly IProxyRequestService _requests;
+    private readonly IProxyIdentityContext _identity;
     private readonly IProxyRouteService _routes;
     private readonly IChannelCapacityService _channelCapacity;
     private readonly IChannelCircuitBreakerService _channelCircuitBreaker;
@@ -45,6 +46,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
     public ProxyEndpointService(
         IProxyLogService logs,
         IProxyRequestService requests,
+        IProxyIdentityContext identity,
         IProxyRouteService routes,
         IChannelCapacityService channelCapacity,
         IChannelCircuitBreakerService channelCircuitBreaker,
@@ -57,6 +59,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
     {
         _logs = logs;
         _requests = requests;
+        _identity = identity;
         _routes = routes;
         _channelCapacity = channelCapacity;
         _channelCircuitBreaker = channelCircuitBreaker;
@@ -71,12 +74,14 @@ public sealed class ProxyEndpointService : IProxyEndpointService
     public async Task<ProxyEndpointResult> ProxyAsync(ProxyEndpointContext context)
     {
         var started = Stopwatch.GetTimestamp();
+        var identity = _identity.RequireIdentity();
         var requestState = _requests.StartRequest();
         var requestId = requestState.RequestId;
-        var ownerUsername = requestState.DefaultOwnerUsername;
+        var ownerUsername = identity.OwnerUsername;
+        var ownerRole = identity.OwnerRole;
+        var ownerUserId = identity.OwnerUserId;
+        Guid? apiKeyId = identity.ApiKeyId;
         var defaultTimeout = requestState.DefaultTimeout;
-        var ownerUserId = Guid.Empty;
-        Guid? apiKeyId = null;
         Dictionary<string, object?>? payload = null;
         Dictionary<string, object?>? effectivePayload = null;
         Dictionary<string, object?>? upstreamRequest = null;
@@ -85,7 +90,6 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         string? upstreamModel = null;
         string? channelId = null;
         string? channelType = null;
-        string? ownerRole = null;
         var statusCode = 200;
         string? error = null;
         object? errorResponse = null;
@@ -96,12 +100,6 @@ public sealed class ProxyEndpointService : IProxyEndpointService
 
         try
         {
-            var accessKey = await _requests.AuthenticateAccessKeyAsync(context.AuthorizationHeader);
-            ownerUsername = accessKey.OwnerUsername;
-            ownerRole = accessKey.User.Role;
-            ownerUserId = accessKey.OwnerUserId;
-            apiKeyId = accessKey.Id;
-
             payload = context.Payload;
             if (payload is null)
             {
@@ -230,15 +228,19 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                     effectivePayload = WebSearchRequestPolicy.ApplyMode(effectivePayload, webSearchMode);
 
                     var channelCompat = JsonDictionaryValue.Object(route.Channel, "compat", WebSearchPayload.DeepCopyObject);
-                    effectivePayload = ChannelCompatRequestRewriter.Apply(
-                        effectivePayload,
-                        channelCompat).Payload;
+                    // 渠道没有 compat 配置时无需重写，跳过整棵载荷的深拷贝。
+                    if (channelCompat.Count > 0)
+                    {
+                        effectivePayload = ChannelCompatRequestRewriter.Apply(
+                            effectivePayload,
+                            channelCompat).Payload;
+                    }
                     builtinTools = WebSearchRequestPolicy.RegisterBuiltin(
                         effectivePayload,
                         webSearchMode,
                         context.EntryProtocol,
                         channelType,
-                        ownerRole ?? string.Empty,
+                        ownerRole,
                         ownerUserId);
                     if (context.EntryProtocol == ProtocolConverter.Responses
                         && channelType is ProtocolConverter.Chat or ProtocolConverter.Messages)
@@ -297,7 +299,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                                 route,
                                 channelType,
                                 channelId,
-                                ownerRole ?? string.Empty,
+                                ownerRole,
                                 upstreamModel,
                                 requestModel,
                                 defaultTimeout,
@@ -348,7 +350,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                            route,
                            channelType,
                            channelId,
-                           ownerRole ?? string.Empty,
+                           ownerRole,
                            upstreamModel,
                            requestModel,
                            defaultTimeout,

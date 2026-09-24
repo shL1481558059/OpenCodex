@@ -31,7 +31,6 @@ public sealed class ProxyLogContext
     /// <param name="RequestType">请求日志类型。</param>
     /// <param name="ParentRequestLogId">父请求日志标识符（如果可用）。</param>
     /// <param name="OcrDetails">OCR 专用详情（如果可用）。</param>
-    /// <param name="StreamLines">按原始 SSE line 记录的上游流片段（如果可用）。</param>
     public ProxyLogContext(
         string RequestId,
         string OwnerUsername,
@@ -53,8 +52,7 @@ public sealed class ProxyLogContext
         Dictionary<string, object?>? WebSearchDetails,
         string RequestType = ProxyRequestTypes.Main,
         Guid? ParentRequestLogId = null,
-        Dictionary<string, object?>? OcrDetails = null,
-        IReadOnlyList<ProxyRequestStreamLineCapture>? StreamLines = null)
+        Dictionary<string, object?>? OcrDetails = null)
     {
         this.RequestId = RequestId;
         this.OwnerUsername = OwnerUsername;
@@ -77,7 +75,6 @@ public sealed class ProxyLogContext
         this.RequestType = RequestType;
         this.ParentRequestLogId = ParentRequestLogId;
         this.OcrDetails = OcrDetails;
-        this.StreamLines = StreamLines;
     }
 
     /// <summary>
@@ -185,8 +182,4 @@ public sealed class ProxyLogContext
     /// </summary>
     public Dictionary<string, object?>? OcrDetails { get; }
 
-    /// <summary>
-    /// 获取按原始 SSE line 记录的上游流片段（如果可用）。
-    /// </summary>
-    public IReadOnlyList<ProxyRequestStreamLineCapture>? StreamLines { get; }
 }

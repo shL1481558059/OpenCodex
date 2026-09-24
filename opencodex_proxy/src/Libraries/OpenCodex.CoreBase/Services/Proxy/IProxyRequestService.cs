@@ -1,5 +1,4 @@
 using OpenCodex.CoreBase.Domain.Proxy;
-using OpenCodex.CoreBase.DTOs;
 
 namespace OpenCodex.CoreBase.Services.Proxy;
 
@@ -13,11 +12,4 @@ public interface IProxyRequestService
     /// </summary>
     /// <returns>代理请求状态。</returns>
     ProxyRequestState StartRequest();
-
-    /// <summary>
-    /// 根据认证头认证代理访问密钥。
-    /// </summary>
-    /// <param name="authorizationHeader">传入请求中的认证头。</param>
-    /// <returns>已认证的访问密钥信息。</returns>
-    Task<AuthenticatedAccessApiKeyDto> AuthenticateAccessKeyAsync(string? authorizationHeader);
 }

@@ -1489,7 +1489,6 @@ public sealed class ObservabilityService : IObservabilityService
             content.Get(RequestLogContentSlot.ResponseBody),
             content.Get(RequestLogContentSlot.WebSearchJson),
             content.Get(RequestLogContentSlot.OcrJson),
-            ParseStreamLines(content.Get(RequestLogContentSlot.StreamLinesJson)),
             NormalizeRequestStatus(log.LifecycleStatus, log.StatusCode, log.Error),
             log.ConversationKey,
             log.ConversationTurnId,
@@ -1498,42 +1497,6 @@ public sealed class ObservabilityService : IObservabilityService
             attemptStats.AttemptCount,
             attemptStats.FailedAttemptCount,
             log.CostCurrency);
-    }
-
-    private static IReadOnlyList<RequestLogStreamLineDto> ParseStreamLines(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return [];
-        }
-
-        using var document = JsonDocument.Parse(value);
-        if (document.RootElement.ValueKind != JsonValueKind.Array)
-        {
-            throw new InvalidDataException("Stored SSE log content must be a JSON array.");
-        }
-
-        var lines = new List<RequestLogStreamLineDto>();
-        foreach (var item in document.RootElement.EnumerateArray())
-        {
-            if (item.ValueKind != JsonValueKind.Object
-                || !item.TryGetProperty("sequence", out var sequence)
-                || !sequence.TryGetInt32(out var sequenceValue)
-                || !item.TryGetProperty("source", out var source)
-                || source.ValueKind != JsonValueKind.String
-                || !item.TryGetProperty("raw_line", out var rawLine)
-                || rawLine.ValueKind != JsonValueKind.String)
-            {
-                throw new InvalidDataException("Stored SSE log line is malformed.");
-            }
-
-            lines.Add(new RequestLogStreamLineDto(
-                sequenceValue,
-                source.GetString() ?? string.Empty,
-                rawLine.GetString() ?? string.Empty));
-        }
-
-        return lines.OrderBy(line => line.Sequence).ToList();
     }
 
     private static string NormalizeRequestStatus(string? lifecycleStatus, int? statusCode, string? error)

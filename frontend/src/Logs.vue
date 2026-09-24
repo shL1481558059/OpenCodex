@@ -666,49 +666,6 @@
             <pre class="json-view">{{ selectedLog.error }}</pre>
           </el-alert>
           <el-tabs style="margin-top: 16px">
-            <el-tab-pane v-if="selectedStreamLines.length" label="SSE 流">
-              <div class="stream-view-toolbar">
-                <el-radio-group v-model="streamDetailMode" size="small">
-                  <el-radio-button label="merged">合并事件</el-radio-button>
-                  <el-radio-button label="raw">原始行</el-radio-button>
-                </el-radio-group>
-                <el-button
-                  size="small"
-                  :icon="CopyDocument"
-                  @click="copyStreamDetailContent()"
-                >
-                  复制当前视图
-                </el-button>
-              </div>
-
-              <div v-if="streamDetailMode === 'raw'" class="stream-record-list">
-                <div
-                  v-for="line in selectedStreamLines"
-                  :key="line.sequence"
-                  class="stream-record-card"
-                >
-                  <div class="stream-record-card__meta">
-                    <span>#{{ line.sequence }}</span>
-                    <span>{{ line.source || "upstream" }}</span>
-                  </div>
-                  <pre class="json-view stream-record-card__body">{{ formatStreamLine(line.raw_line) }}</pre>
-                </div>
-              </div>
-
-              <div v-else class="stream-record-list">
-                <div
-                  v-for="event in selectedStreamEvents"
-                  :key="event.key"
-                  class="stream-record-card"
-                >
-                  <div class="stream-record-card__meta">
-                    <span>事件 {{ event.index }}</span>
-                    <span>{{ event.line_count }} 行</span>
-                  </div>
-                  <pre class="json-view stream-record-card__body">{{ event.text }}</pre>
-                </div>
-              </div>
-            </el-tab-pane>
             <el-tab-pane v-for="section in logDetailSections" :key="section.key" :label="section.label">
               <div class="json-view-frame">
                 <el-tooltip :content="`复制${section.label}`">
@@ -927,7 +884,6 @@ const selectedLog = ref(null);
 const logDetailVisible = ref(false);
 const logDetailLoading = ref(false);
 const logDetailError = ref("");
-const streamDetailMode = ref("merged");
 let logDetailRequestToken = 0;
 const logDetailSections = [
   { key: "request_headers", label: "请求头" },
@@ -1043,9 +999,6 @@ const summaryCards = computed(() => {
     }
   ];
 });
-
-const selectedStreamLines = computed(() => Array.isArray(selectedLog.value?.stream_lines) ? selectedLog.value.stream_lines : []);
-const selectedStreamEvents = computed(() => mergeStreamLines(selectedStreamLines.value));
 
 async function loadLogs(page = logPage.value) {
   logsLoading.value = true;
@@ -1291,7 +1244,6 @@ async function openLogDetail(row) {
   const token = ++logDetailRequestToken;
   selectedLog.value = null;
   logDetailError.value = "";
-  streamDetailMode.value = "merged";
   logDetailVisible.value = true;
   logDetailLoading.value = true;
   try {
@@ -1345,7 +1297,6 @@ function resetLogDetail() {
   selectedLog.value = null;
   logDetailError.value = "";
   logDetailLoading.value = false;
-  streamDetailMode.value = "merged";
 }
 
 async function copyLogDetailContent(label, value) {
@@ -1354,22 +1305,6 @@ async function copyLogDetailContent(label, value) {
   try {
     await copyLogDetailText(text);
     ElMessage.success(`${label}已复制`);
-  } catch (error) {
-    ElMessage.error(error.message || "复制失败");
-  }
-}
-
-async function copyStreamDetailContent() {
-  const text = streamDetailMode.value === "raw"
-    ? buildRawStreamText(selectedStreamLines.value)
-    : buildMergedStreamText(selectedStreamEvents.value);
-  if (!text) {
-    ElMessage.warning("当前没有可复制的 SSE 内容");
-    return;
-  }
-  try {
-    await copyLogDetailText(text);
-    ElMessage.success(streamDetailMode.value === "raw" ? "原始 SSE 已复制" : "合并 SSE 已复制");
   } catch (error) {
     ElMessage.error(error.message || "复制失败");
   }
@@ -1660,48 +1595,6 @@ function formatJson(value) {
   return JSON.stringify(value, null, 2);
 }
 
-function formatStreamLine(value) {
-  return value === "" ? "(空行)" : String(value ?? "");
-}
-
-function mergeStreamLines(lines) {
-  const events = [];
-  let bucket = [];
-  let eventIndex = 1;
-
-  const flush = () => {
-    if (!bucket.length) return;
-    const normalized = bucket[bucket.length - 1]?.raw_line === "" ? bucket.slice(0, -1) : bucket.slice();
-    events.push({
-      key: `event-${eventIndex}-${bucket[0]?.sequence ?? 0}`,
-      index: eventIndex,
-      line_count: normalized.length,
-      text: normalized.map((item) => String(item.raw_line ?? "")).join("\n") || "(空事件)"
-    });
-    eventIndex += 1;
-    bucket = [];
-  };
-
-  for (const line of lines || []) {
-    bucket.push(line);
-    if (line?.raw_line === "") flush();
-  }
-
-  flush();
-  return events;
-}
-
-function buildRawStreamText(lines) {
-  return (lines || []).map((line) => {
-    const rawText = line?.raw_line === "" ? "(空行)" : String(line?.raw_line ?? "");
-    return `#${line?.sequence ?? 0} ${line?.source || "upstream"}\n${rawText}`;
-  }).join("\n\n");
-}
-
-function buildMergedStreamText(events) {
-  return (events || []).map((event) => `事件 ${event.index}\n${event.text}`).join("\n\n");
-}
-
 function defaultSummary() {
   return {
     request_count: 0,
@@ -1825,40 +1718,6 @@ onBeforeUnmount(() => {
 
 .token-cell__pill {
   flex: 0 0 auto;
-}
-
-.stream-view-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.stream-record-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.stream-record-card {
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 8px;
-  padding: 12px;
-  background: var(--el-fill-color-blank);
-}
-
-.stream-record-card__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-bottom: 8px;
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.stream-record-card__body {
-  margin: 0;
 }
 
 .log-detail-actions {
@@ -2088,29 +1947,15 @@ onBeforeUnmount(() => {
     min-height: 44px;
   }
 
-  .log-detail-actions,
-  .stream-view-toolbar {
+  .log-detail-actions {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .log-detail-actions .el-button,
-  .stream-view-toolbar .el-button {
+  .log-detail-actions .el-button {
     width: 100%;
     min-height: 44px;
     margin-left: 0;
-  }
-
-  .stream-view-toolbar .el-radio-group {
-    width: 100%;
-  }
-
-  .stream-view-toolbar :deep(.el-radio-button) {
-    flex: 1 1 0;
-  }
-
-  .stream-view-toolbar :deep(.el-radio-button__inner) {
-    width: 100%;
   }
 
   :global(.log-detail-dialog .el-dialog__header) {

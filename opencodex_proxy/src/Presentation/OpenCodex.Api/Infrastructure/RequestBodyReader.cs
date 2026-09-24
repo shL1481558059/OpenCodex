@@ -13,10 +13,7 @@ public sealed class RequestBodyReader : IRequestBodyReader
     {
         try
         {
-            using var buffer = new MemoryStream();
-            await request.Body.CopyToAsync(buffer, cancellationToken);
-            var bytes = buffer.ToArray();
-            request.HttpContext.Items[RawBodyItemKey] = new UTF8Encoding(false, true).GetString(bytes);
+            var bytes = await ReadBodyAsync(request, cancellationToken);
             using var document = JsonDocument.Parse(bytes);
             return document.RootElement.ValueKind == JsonValueKind.Object
                 ? (Dictionary<string, object?>?)FromJsonElement(document.RootElement)
@@ -28,11 +25,28 @@ public sealed class RequestBodyReader : IRequestBodyReader
         }
     }
 
-    internal static string? ReadCapturedRawBody(HttpRequest request)
+    internal static ReadOnlyMemory<byte>? ReadCapturedRawBody(HttpRequest request)
     {
         return request.HttpContext.Items.TryGetValue(RawBodyItemKey, out var value)
-            ? value as string
-            : null;
+            && value is ReadOnlyMemory<byte> captured
+                ? captured
+                : null;
+    }
+
+    private static async Task<ReadOnlyMemory<byte>> ReadBodyAsync(
+        HttpRequest request,
+        CancellationToken cancellationToken)
+    {
+        // 按 Content-Length 预分配，避免 MemoryStream 扩容时的多次拷贝；
+        // 只保留这一份 UTF-8 字节：既用于解析，也作为日志正文的原文来源。
+        var capacity = request.ContentLength is > 0 and <= int.MaxValue
+            ? (int)request.ContentLength.Value
+            : 0;
+        var buffer = new MemoryStream(capacity);
+        await request.Body.CopyToAsync(buffer, cancellationToken);
+        var bytes = new ReadOnlyMemory<byte>(buffer.GetBuffer(), 0, (int)buffer.Length);
+        request.HttpContext.Items[RawBodyItemKey] = bytes;
+        return bytes;
     }
 
     private static object? FromJsonElement(JsonElement element)

@@ -69,8 +69,7 @@ public sealed class RequestLogWriteDto(
     Guid ownerUserId,
     Guid? apiKeyId,
     string? error,
-    string? ocrJson,
-    IReadOnlyList<ProxyRequestStreamLineCapture>? streamLines)
+    string? ocrJson)
 {
     /// <summary>
     /// 获取唯一请求标识符。
@@ -257,37 +256,6 @@ public sealed class RequestLogWriteDto(
     /// </summary>
     public string? OcrJson { get; } = ocrJson;
 
-    /// <summary>
-    /// 获取按原始 SSE line 记录的上游流片段。
-    /// </summary>
-    public IReadOnlyList<ProxyRequestStreamLineCapture>? StreamLines { get; } = streamLines;
-}
-
-/// <summary>
-/// 表示请求日志中的一条原始流式响应行。
-/// </summary>
-/// <param name="sequence">该行在请求内的顺序。</param>
-/// <param name="source">该行来源。</param>
-/// <param name="rawLine">原始行文本。</param>
-public sealed class RequestLogStreamLineDto(
-    int sequence,
-    string source,
-    string rawLine)
-{
-    /// <summary>
-    /// 获取该行在请求内的顺序。
-    /// </summary>
-    public int Sequence { get; } = sequence;
-
-    /// <summary>
-    /// 获取该行来源。
-    /// </summary>
-    public string Source { get; } = source;
-
-    /// <summary>
-    /// 获取原始行文本。
-    /// </summary>
-    public string RawLine { get; } = rawLine;
 }
 
 /// <summary>
@@ -355,7 +323,6 @@ public sealed class RequestLogDto(
     string? responseBody,
     string? webSearchJson,
     string? ocrJson,
-    IReadOnlyList<RequestLogStreamLineDto> streamLines,
     string requestStatus,
     string? conversationKey = null,
     string? conversationTurnId = null,
@@ -524,11 +491,6 @@ public sealed class RequestLogDto(
     /// 获取序列化后的 OCR 详情（如果可用）。
     /// </summary>
     public string? OcrJson { get; } = ocrJson;
-
-    /// <summary>
-    /// 获取按原始 SSE line 记录的上游流片段。
-    /// </summary>
-    public IReadOnlyList<RequestLogStreamLineDto> StreamLines { get; } = streamLines;
 
     /// <summary>
     /// 获取标准化后的请求状态。

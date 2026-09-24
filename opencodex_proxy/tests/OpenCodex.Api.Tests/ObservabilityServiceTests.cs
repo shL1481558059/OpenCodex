@@ -676,7 +676,7 @@ public sealed class ObservabilityServiceTests
     }
 
     [Fact]
-    public void LogsAndDetailsExposeLifecycleStatusesAndStreamLines()
+    public void LogsAndDetailsExposeLifecycleStatuses()
     {
         var dbPath = Path.Combine(
             Path.GetTempPath(),
@@ -759,12 +759,7 @@ public sealed class ObservabilityServiceTests
                 Guid.Parse("33333333-3333-3333-3333-333333333333"),
                 new Dictionary<RequestLogContentSlot, string?>
                 {
-                    [RequestLogContentSlot.RequestBody] = "{\"model\":\"gpt-test\"}",
-                    [RequestLogContentSlot.StreamLinesJson] = "["
-                        + "{\"sequence\":0,\"source\":\"upstream\","
-                        + "\"raw_line\":\"event: response.output_text.delta\"},"
-                        + "{\"sequence\":1,\"source\":\"upstream\","
-                        + "\"raw_line\":\"data: {\\\"delta\\\":\\\"hi\\\"}\"}]"
+                    [RequestLogContentSlot.RequestBody] = "{\"model\":\"gpt-test\"}"
                 });
         }
 
@@ -794,24 +789,10 @@ public sealed class ObservabilityServiceTests
         var detail = service.ReadLogById(Guid.Parse("33333333-3333-3333-3333-333333333333"));
         Assert.True(detail.Succeeded);
         Assert.Equal(ProxyRequestLifecycleStatus.Success, detail.Payload!.RequestStatus);
-        Assert.NotNull(detail.Payload.StreamLines);
-        Assert.Collection(
-            detail.Payload.StreamLines!,
-            line =>
-            {
-                Assert.Equal(0, line.Sequence);
-                Assert.DoesNotContain(
-                    "occurred_at",
-                    JsonSerializer.Serialize(line),
-                    StringComparison.Ordinal);
-                Assert.Equal("upstream", line.Source);
-                Assert.Equal("event: response.output_text.delta", line.RawLine);
-            },
-            line =>
-            {
-                Assert.Equal(1, line.Sequence);
-                Assert.Equal("data: {\"delta\":\"hi\"}", line.RawLine);
-            });
+        Assert.DoesNotContain(
+            "stream_lines",
+            JsonSerializer.Serialize(detail.Payload),
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1097,8 +1078,7 @@ public sealed class ObservabilityServiceTests
             context.SaveChanges();
             new LogContentStore(context).Write(logId, new Dictionary<RequestLogContentSlot, string?>
             {
-                [RequestLogContentSlot.RequestBody] = new string('x', 10_000),
-                [RequestLogContentSlot.StreamLinesJson] = "[]"
+                [RequestLogContentSlot.RequestBody] = new string('x', 10_000)
             });
         }
 
@@ -1106,7 +1086,7 @@ public sealed class ObservabilityServiceTests
 
         Assert.True(result.Succeeded);
         Assert.Equal(1, result.Payload!.DeletedLogs);
-        Assert.Equal(2, result.Payload.DeletedContentRefs);
+        Assert.Equal(1, result.Payload.DeletedContentRefs);
         Assert.True(result.Payload.DeletedContentBlocks > 0);
         Assert.Equal(1, result.Payload.DeletedWebSearchContinuations);
         using var readContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");

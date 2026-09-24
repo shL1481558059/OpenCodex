@@ -497,25 +497,6 @@ public sealed class LogEventResponse
 /// <summary>
 /// 表示请求日志详情响应。
 /// </summary>
-public sealed class RequestLogStreamLineResponse
-{
-    public RequestLogStreamLineResponse(int sequence, string source, string rawLine)
-    {
-        Sequence = sequence;
-        Source = source;
-        RawLine = rawLine;
-    }
-
-    [JsonPropertyName("sequence")]
-    public int Sequence { get; }
-
-    [JsonPropertyName("source")]
-    public string Source { get; }
-
-    [JsonPropertyName("raw_line")]
-    public string RawLine { get; }
-}
-
 public sealed class LogDetailResponse
 {
     /// <summary>
@@ -553,7 +534,6 @@ public sealed class LogDetailResponse
     /// <param name="responseBody">响应体内容。</param>
     /// <param name="webSearchJson">联网搜索记录内容。</param>
     /// <param name="ocrJson">OCR 记录内容。</param>
-    /// <param name="streamLines">原始 SSE line 记录。</param>
     public LogDetailResponse(
         Guid id,
         string? requestId,
@@ -589,7 +569,6 @@ public sealed class LogDetailResponse
         string? responseBody,
         string? webSearchJson,
         string? ocrJson,
-        IReadOnlyList<RequestLogStreamLineResponse> streamLines,
         string? conversationKey,
         string? conversationTurnId,
         string? conversationWindowId,
@@ -634,7 +613,6 @@ public sealed class LogDetailResponse
         ResponseBody = responseBody;
         WebSearchJson = webSearchJson;
         OcrJson = ocrJson;
-        StreamLines = streamLines;
         ConversationKey = conversationKey;
         ConversationTurnId = conversationTurnId;
         ConversationWindowId = conversationWindowId;
@@ -876,12 +854,6 @@ public sealed class LogDetailResponse
     public string? OcrJson { get; }
 
     /// <summary>
-    /// 获取原始 SSE line 记录。
-    /// </summary>
-    [JsonPropertyName("stream_lines")]
-    public IReadOnlyList<RequestLogStreamLineResponse> StreamLines { get; }
-
-    /// <summary>
     /// 根据请求日志详情数据创建响应对象。
     /// </summary>
     /// <param name="log">请求日志详情数据。</param>
@@ -960,10 +932,6 @@ public sealed class LogDetailResponse
             log.ResponseBody,
             log.WebSearchJson,
             log.OcrJson,
-            log.StreamLines.Select(line => new RequestLogStreamLineResponse(
-                line.Sequence,
-                line.Source,
-                line.RawLine)).ToList(),
             logEvent.ConversationKey,
             logEvent.ConversationTurnId,
             logEvent.ConversationWindowId,

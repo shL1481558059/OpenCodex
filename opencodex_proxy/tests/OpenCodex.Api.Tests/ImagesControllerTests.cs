@@ -1,11 +1,12 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using OpenCodex.Api.Authentication;
 using OpenCodex.Api.Controllers;
 using OpenCodex.Api.Infrastructure;
 using OpenCodex.Api.Services;
 using OpenCodex.Core.Errors;
 using OpenCodex.CoreBase.Domain.Proxy;
-using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.Services.Proxy;
 using Xunit;
 
@@ -38,25 +39,21 @@ public sealed class ImagesControllerTests
     }
 
     [Fact]
-    public async Task Edits_DoesNotReadFormWhenAuthenticationFails()
+    public void Controller_RequiresProxyBearerAuthentication()
     {
-        var reader = new CountingEditReader();
-        var controller = CreateController(new StubBodyReader(null), new RejectingRequestService(), reader);
-
-        await Assert.ThrowsAsync<BadRequestException>(() => controller.Edits());
-
-        Assert.Equal(0, reader.ReadCount);
+        var authorize = Assert.Single(
+            typeof(ImagesController).GetCustomAttributes(typeof(AuthorizeAttribute), inherit: true)
+                .Cast<AuthorizeAttribute>());
+        Assert.Equal(ProxyBearerAuthenticationDefaults.Scheme, authorize.AuthenticationSchemes);
     }
 
     private static ImagesController CreateController(
         IRequestBodyReader bodyReader,
-        IProxyRequestService? requests = null,
         IImageEditRequestService? editReader = null)
     {
         var imagesProxy = new ImagesProxyService(
             bodyReader,
             new StubImagesService(),
-            requests ?? new RejectingRequestService(),
             editReader ?? new CountingEditReader());
         var controller = new ImagesController(imagesProxy);
         controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() };
@@ -85,13 +82,6 @@ public sealed class ImagesControllerTests
             ReadCount++;
             throw new NotSupportedException();
         }
-    }
-
-    private sealed class RejectingRequestService : IProxyRequestService
-    {
-        public ProxyRequestState StartRequest() => throw new NotSupportedException();
-        public Task<AuthenticatedAccessApiKeyDto> AuthenticateAccessKeyAsync(string? authorizationHeader)
-            => throw new BadRequestException("unauthorized", 401);
     }
 
     private sealed class StubImagesService : IProxyImagesEndpointService

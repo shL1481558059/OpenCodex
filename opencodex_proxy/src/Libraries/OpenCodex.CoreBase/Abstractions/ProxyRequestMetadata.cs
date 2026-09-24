@@ -18,7 +18,7 @@ public sealed class ProxyRequestMetadata
         string path,
         string? clientIp,
         IReadOnlyDictionary<string, string> headers,
-        string? rawBody = null)
+        ReadOnlyMemory<byte>? rawBody = null)
     {
         Method = method;
         Path = path;
@@ -50,5 +50,5 @@ public sealed class ProxyRequestMetadata
     /// <summary>
     /// 获取入口读取到的原始 UTF-8 请求正文（如果可用）。
     /// </summary>
-    public string? RawBody { get; }
+    public ReadOnlyMemory<byte>? RawBody { get; }
 }

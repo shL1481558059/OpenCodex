@@ -682,7 +682,6 @@ public sealed class ProxyEndpointServiceTests
             new ProxyEndpointContext(
                 ProtocolConverter.Responses,
                 payload,
-                "Bearer test",
                 new ProxyRequestMetadata(
                     "POST",
                     "/v1/responses",
@@ -1124,6 +1123,7 @@ public sealed class ProxyEndpointServiceTests
         return new ProxyEndpointService(
             logs ?? new StubProxyLogService(),
             new StubProxyRequestService(),
+            new StubProxyIdentityContext(),
             routes,
             capacity,
             breaker ?? new ChannelCircuitBreakerService(),
@@ -1153,7 +1153,6 @@ public sealed class ProxyEndpointServiceTests
         return new ProxyEndpointContext(
             ProtocolConverter.Chat,
             payload,
-            "Bearer test",
             new ProxyRequestMetadata("POST", "/v1/chat/completions", null, new Dictionary<string, string>()),
             streamWriter,
             CancellationToken.None);
@@ -1170,7 +1169,6 @@ public sealed class ProxyEndpointServiceTests
                 ["model"] = model,
                 ["input"] = "ping"
             },
-            "Bearer test",
             new ProxyRequestMetadata("POST", "/v1/responses", null, headers),
             new StubProxyStreamWriter(),
             CancellationToken.None);
@@ -1204,7 +1202,6 @@ public sealed class ProxyEndpointServiceTests
         return new ProxyEndpointContext(
             ProtocolConverter.Messages,
             payload,
-            "Bearer test",
             new ProxyRequestMetadata("POST", "/v1/messages", null, new Dictionary<string, string>()),
             new StubProxyStreamWriter(),
             CancellationToken.None);
@@ -1295,24 +1292,25 @@ public sealed class ProxyEndpointServiceTests
     {
         public ProxyRequestState StartRequest()
         {
-            return new ProxyRequestState("req-1", "admin", 120);
+            return new ProxyRequestState("req-1", 120);
         }
+    }
 
-        public Task<AuthenticatedAccessApiKeyDto> AuthenticateAccessKeyAsync(string? authorizationHeader)
+    private sealed class StubProxyIdentityContext : IProxyIdentityContext
+    {
+        private static readonly ProxyIdentity Identity = new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "admin",
+            "superadmin");
+
+        public bool IsAuthenticated => true;
+
+        public ProxyIdentity? Current => Identity;
+
+        public ProxyIdentity RequireIdentity()
         {
-            return Task.FromResult(new AuthenticatedAccessApiKeyDto(
-                Guid.NewGuid(),
-                Guid.NewGuid(),
-                "admin",
-                "test",
-                "sk-test",
-                "suffix",
-                "sk-***",
-                true,
-                0,
-                0,
-                null,
-                new AccessApiKeyUserDto(Guid.NewGuid(), "admin", "superadmin", true)));
+            return Identity;
         }
     }
 

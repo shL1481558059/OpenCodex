@@ -1,17 +1,21 @@
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.OpenApi;
 using OpenCodex.Api.Configuration;
+using OpenCodex.Api.Authentication;
 using OpenCodex.Api.Infrastructure;
 using OpenCodex.Api.Services;
 using OpenCodex.Core.ExternalIntegrations;
 using OpenCodex.Core.Services;
 using OpenCodex.Core.Services.Caching;
 using OpenCodex.Core.Services.Events;
+using OpenCodex.Core.Services.LogMaintenance;
 using OpenCodex.CoreBase.Events;
 using OpenCodex.CoreBase.Caching;
 using OpenCodex.Core.Services.Proxy;
@@ -32,6 +36,11 @@ public static class OpenCodexServiceCollectionExtensions
         IConfiguration configuration)
     {
         services.AddControllers();
+        services.Configure<KestrelServerOptions>(options =>
+        {
+            // 与代理端点上限保持一致；代理端点还会在资源过滤器中按请求再确认一次。
+            options.Limits.MaxRequestBodySize = ProxyRequestLimits.ResolveMaxRequestBodyBytes(configuration);
+        });
         services.AddEndpointsApiExplorer();
         services.AddSwaggerGen(options =>
         {
@@ -165,6 +174,7 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<IRequestBodyReader, RequestBodyReader>();
         services.AddScoped<IImageEditRequestService, ImageEditRequestService>();
         services.AddScoped<IWorkContext, WebWorkContext>();
+        services.AddScoped<IProxyIdentityContext, WebProxyIdentityContext>();
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<IChannelDiagnosticsService, ChannelDiagnosticsService>();
         services.AddScoped<ISessionService, SessionService>();
@@ -177,6 +187,7 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<IWebSearchService, WebSearchService>();
         services.AddScoped<IVisionTransferSettingsService, VisionTransferSettingsService>();
         services.AddScoped<IProxySettingsService, ProxySettingsService>();
+        services.AddScoped<IStreamLineLogCleanupService, StreamLineLogCleanupService>();
         services.AddScoped<IProxyAccessService, ProxyAccessService>();
         services.AddScoped<IProxyEndpointService, ProxyEndpointService>();
         services.AddScoped<IProxyImageFallbackService, ProxyImageFallbackService>();
@@ -243,7 +254,10 @@ public static class OpenCodexServiceCollectionExtensions
                         return Task.CompletedTask;
                     }
                 };
-            });
+            })
+            .AddScheme<AuthenticationSchemeOptions, ProxyBearerAuthenticationHandler>(
+                ProxyBearerAuthenticationDefaults.Scheme,
+                configureOptions: null);
         services.AddAuthorization();
 
         return services;

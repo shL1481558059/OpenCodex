@@ -230,9 +230,9 @@ sequenceDiagram
 | 5 | `ResponseBody` | 客户端响应或错误正文 |
 | 6 | `WebSearchJson` | Web Search 过程详情 |
 | 7 | `OcrJson` | OCR 子流程详情 |
-| 8 | `StreamLinesJson` | 选择性保存的流式行集合 |
 
 枚举注释已明确“新增值只能追加”。不得重排、复用或改变已发布数值语义。
+历史数值 `8`（`StreamLinesJson`）已停用；历史数据由一次性命令 `--cleanup-legacy-stream-lines` 清理。
 
 ### 7.2 编码与分块
 

@@ -1,5 +1,5 @@
 using System.Globalization;
-using System.Text;
+using System.Net.Http.Headers;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using OpenCodex.Core.Config;
@@ -25,8 +25,7 @@ public sealed partial class HttpUpstreamClient
         string endpoint)
     {
         var request = new HttpRequestMessage(HttpMethod.Post, JoinUrl(JsonDictionaryValue.String(channel, "baseurl"), endpoint));
-        var body = JsonSerializer.Serialize(payload, JsonOptions);
-        request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+        request.Content = JsonBodyContent(payload);
         foreach (var header in BuildHeaders(channel))
         {
             if (!request.Headers.TryAddWithoutValidation(header.Key, header.Value)
@@ -58,6 +57,23 @@ public sealed partial class HttpUpstreamClient
         }
 
         return request;
+    }
+
+    /// <summary>
+    /// 把载荷序列化为 UTF-8 请求体。
+    /// </summary>
+    /// <remarks>
+    /// 直接产出字节，避免 <see cref="StringContent"/> 持有整份 UTF-16 字符串并在发送时再次编码；
+    /// 线缆字节与旧实现一致。
+    /// </remarks>
+    private static ByteArrayContent JsonBodyContent(IReadOnlyDictionary<string, object?> payload)
+    {
+        var content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(payload, JsonOptions));
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json")
+        {
+            CharSet = "utf-8"
+        };
+        return content;
     }
 
     private static HttpRequestMessage BuildGetRequest(

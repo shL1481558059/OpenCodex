@@ -32,55 +32,81 @@ internal sealed class LogContentStore
     /// 与 <see cref="Write"/> 等价,但直接接收 UTF-8 字节。
     /// </summary>
     /// <remarks>
-    /// 已经以 UTF-8 形式存在的内容(例如用 <see cref="Utf8JsonWriter"/> 直出的流日志)
-    /// 走这条路径可以省掉一次"字节 → 字符串 → 字节"的往返转换。
+    /// 已经以 UTF-8 形式存在的内容(例如令牌由上游直出的正文)走这条路径，
+    /// 可以省掉一次"字节 → 字符串 → 字节"的往返转换。
     /// </remarks>
     public void WriteUtf8(
         Guid requestLogId,
         IReadOnlyDictionary<RequestLogContentSlot, byte[]?> values)
     {
         ArgumentNullException.ThrowIfNull(values);
-        if (values.Count == 0)
+        WriteSequential(
+            requestLogId,
+            values.Keys.ToList(),
+            slot => values.TryGetValue(slot, out var value) ? value : null);
+    }
+
+    /// <summary>
+    /// 逐槽位写入日志正文：每次只保留一个槽位的字节与其压缩结果，降低完成阶段的峰值内存。
+    /// </summary>
+    /// <param name="requestLogId">请求日志标识符。</param>
+    /// <param name="slots">需要处理的槽位；未提供内容的槽位会清除既有引用。</param>
+    /// <param name="encode">按槽位生成 UTF-8 字节；返回 null 表示清除该槽位。</param>
+    /// <remarks>
+    /// 语义与 <see cref="WriteUtf8(Guid, IReadOnlyDictionary{RequestLogContentSlot, byte[]})"/> 一致：
+    /// 单事务、替换旧引用、清理不再被引用的清单与物理块。
+    /// </remarks>
+    public void WriteSequential(
+        Guid requestLogId,
+        IReadOnlyList<RequestLogContentSlot> slots,
+        Func<RequestLogContentSlot, byte[]?> encode)
+    {
+        ArgumentNullException.ThrowIfNull(slots);
+        ArgumentNullException.ThrowIfNull(encode);
+        if (slots.Count == 0)
         {
             return;
         }
 
-        // 先只分块 + 算哈希,不压缩;等查重结果出来后再压缩缺失的块。
-        var plansBySlot = values
-            .Where(pair => pair.Value is not null)
-            .ToDictionary(
-                pair => pair.Key,
-                pair => LogContentCodec.Plan(pair.Value!),
-                EqualityComparer<RequestLogContentSlot>.Default);
-        var plans = plansBySlot.Values.ToList();
-
         using var transaction = _context.Database.BeginTransaction();
-        var updatedSlots = values.Keys.ToList();
+        foreach (var slot in slots)
+        {
+            WriteSlot(requestLogId, slot, encode(slot));
+        }
+
+        transaction.Commit();
+    }
+
+    private void WriteSlot(Guid requestLogId, RequestLogContentSlot slot, byte[]? content)
+    {
         var replacedManifestIds = _context.RequestLogContentRefs
-            .Where(reference => reference.RequestLogId == requestLogId
-                && updatedSlots.Contains(reference.Slot))
+            .Where(reference => reference.RequestLogId == requestLogId && reference.Slot == slot)
             .Select(reference => reference.ManifestId)
             .Distinct()
             .ToList();
-        var blocksByHash = EnsureBlocks(plans);
-        var manifestsByHash = EnsureManifests(plans, blocksByHash);
-
         _context.RequestLogContentRefs
-            .Where(reference => reference.RequestLogId == requestLogId
-                && updatedSlots.Contains(reference.Slot))
+            .Where(reference => reference.RequestLogId == requestLogId && reference.Slot == slot)
             .ExecuteDelete();
 
-        var references = plansBySlot.Select(pair => new RequestLogContentRef
+        if (content is null)
+        {
+            RemoveOrphanedReplacedContent(replacedManifestIds);
+            return;
+        }
+
+        // 先只分块 + 算哈希,不压缩;等查重结果出来后再压缩缺失的块。
+        var plan = LogContentCodec.Plan(content);
+        var blocksByHash = EnsureBlocks([plan]);
+        var manifestsByHash = EnsureManifests([plan], blocksByHash);
+        _context.RequestLogContentRefs.Add(new RequestLogContentRef
         {
             Id = Guid.NewGuid(),
             RequestLogId = requestLogId,
-            Slot = pair.Key,
-            ManifestId = manifestsByHash[pair.Value.Hash].Id
+            Slot = slot,
+            ManifestId = manifestsByHash[plan.Hash].Id
         });
-        _context.RequestLogContentRefs.AddRange(references);
         _context.SaveChanges();
         RemoveOrphanedReplacedContent(replacedManifestIds);
-        transaction.Commit();
     }
 
     public LogContentSnapshot Read(Guid requestLogId)

@@ -147,16 +147,7 @@ public sealed class ProtocolConversionMatrixTests
             AssertUsage(logs.LastContext.ResponsePayload!, entryProtocol, inputTokens: 5, outputTokens: 2);
         }
 
-        var capturedLines = logs.LastContext.StreamLines!;
-        Assert.Contains(capturedLines, line => line.Source == "upstream");
-        if (entryProtocol != channelProtocol)
-        {
-            Assert.Contains(capturedLines, line => line.Source == "downstream");
-        }
-
-        Assert.Contains(capturedLines, line =>
-            line.Source == "upstream"
-            && line.RawLine.Contains("matrix-reply", StringComparison.Ordinal));
+        Assert.Null(logs.LastContext.Error);
     }
 
     private static IReadOnlyList<string> Protocols() =>

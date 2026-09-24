@@ -350,7 +350,7 @@ public sealed class ProxyLogServiceTests
                 "/v1/responses",
                 "127.0.0.1",
                 headers,
-                rawBody));
+                System.Text.Encoding.UTF8.GetBytes(rawBody)));
 
         using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         var log = context.RequestLogs.Single();
@@ -579,7 +579,7 @@ public sealed class ProxyLogServiceTests
     }
 
     [Fact]
-    public async Task LifecycleMethods_PersistStatusesAndStreamLines()
+    public async Task LifecycleMethods_PersistStatusesAndContentSlots()
     {
         var dbPath = Path.Combine(
             Path.GetTempPath(),
@@ -676,13 +676,7 @@ public sealed class ProxyLogServiceTests
                 StatusCode: 200,
                 DurationMs: 320,
                 Error: null,
-                WebSearchDetails: null,
-                StreamLines:
-                [
-                    new ProxyRequestStreamLineCapture(0, "upstream", "event: response.output_text.delta"),
-                    new ProxyRequestStreamLineCapture(1, "upstream", "data: {\"delta\":\"hello\"}"),
-                    new ProxyRequestStreamLineCapture(2, "upstream", string.Empty)
-                ]),
+                WebSearchDetails: null),
             new ProxyRequestMetadata("POST", "/v1/responses", "127.0.0.1", new Dictionary<string, string>()));
 
         using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
@@ -691,35 +685,21 @@ public sealed class ProxyLogServiceTests
             var completed = context.RequestLogs
                 .Single(item => item.Id == requestLogId);
             var completedContent = new LogContentStore(context).Read(requestLogId);
-            using var streamDocument = JsonDocument.Parse(
-                completedContent.Get(RequestLogContentSlot.StreamLinesJson)!);
-            var completedStreamLines = streamDocument.RootElement.EnumerateArray().ToList();
             Assert.Equal(ProxyRequestLifecycleStatus.Success, completed.LifecycleStatus);
             Assert.NotNull(completed.CompletedAt);
             Assert.Equal(88, completed.TtftMs);
             Assert.Equal(320, completed.DurationMs);
             Assert.Equal(2, completed.InputTokens);
             Assert.Equal(3, completed.OutputTokens);
-            Assert.Equal(3, completedStreamLines.Count);
-            Assert.Collection(
-                completedStreamLines,
-                line =>
-                {
-                    Assert.False(line.TryGetProperty("occurred_at", out _));
-                    Assert.Equal(0, line.GetProperty("sequence").GetInt32());
-                    Assert.Equal("upstream", line.GetProperty("source").GetString());
-                    Assert.Equal("event: response.output_text.delta", line.GetProperty("raw_line").GetString());
-                },
-                line =>
-                {
-                    Assert.Equal(1, line.GetProperty("sequence").GetInt32());
-                    Assert.Equal("data: {\"delta\":\"hello\"}", line.GetProperty("raw_line").GetString());
-                },
-                line =>
-                {
-                    Assert.Equal(2, line.GetProperty("sequence").GetInt32());
-                    Assert.Equal(string.Empty, line.GetProperty("raw_line").GetString());
-                });
+            Assert.Contains(
+                "\"id\":\"resp-1\"",
+                completedContent.Get(RequestLogContentSlot.ResponseBody),
+                StringComparison.Ordinal);
+            var storedSlots = context.RequestLogContentRefs
+                .Where(reference => reference.RequestLogId == requestLogId)
+                .Select(reference => (short)reference.Slot)
+                .ToList();
+            Assert.DoesNotContain((short)8, storedSlots);
         }
     }
 

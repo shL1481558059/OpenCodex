@@ -272,7 +272,7 @@ flowchart TD
 
 ```text
 上游行
-  → CaptureLoggableStreamLines(source=upstream)
+  → CaptureStreamLogLines（只保留最后一行 data 行）
   → CapturePassThroughResponse
   → StreamResponseCapture.Accept
   → 下游 WriteLinesAsync

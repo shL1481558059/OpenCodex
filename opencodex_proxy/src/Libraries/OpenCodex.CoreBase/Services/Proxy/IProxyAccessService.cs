@@ -8,9 +8,9 @@ namespace OpenCodex.CoreBase.Services.Proxy;
 public interface IProxyAccessService
 {
     /// <summary>
-    /// 根据承载认证头认证访问密钥。
+    /// 根据原始访问密钥认证身份。
     /// </summary>
-    /// <param name="authorizationHeader">传入请求中的认证头。</param>
-    /// <returns>已认证的访问密钥信息。</returns>
-    Task<AuthenticatedAccessApiKeyDto> AuthenticateBearerAsync(string? authorizationHeader);
+    /// <param name="rawKey">从请求凭据中提取的原始访问密钥。</param>
+    /// <returns>已认证的访问密钥信息；密钥或所有者不可用时为 <see langword="null"/>。</returns>
+    Task<AuthenticatedAccessApiKeyDto?> AuthenticateRawKeyAsync(string? rawKey);
 }

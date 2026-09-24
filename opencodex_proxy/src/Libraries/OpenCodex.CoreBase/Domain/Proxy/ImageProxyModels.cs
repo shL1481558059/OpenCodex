@@ -68,14 +68,12 @@ public sealed record ImageEditRequest(
 
 public sealed record ImageGenerationContext(
     ImageGenerationRequest Request,
-    string? AuthorizationHeader,
     ProxyRequestMetadata RequestMetadata,
     IProxyResponseBodyWriter ResponseWriter,
     CancellationToken CancellationToken);
 
 public sealed record ImageEditContext(
     ImageEditRequest Request,
-    string? AuthorizationHeader,
     ProxyRequestMetadata RequestMetadata,
     IProxyResponseBodyWriter ResponseWriter,
     CancellationToken CancellationToken);

@@ -60,7 +60,7 @@
 5. **B.1 的补齐实现工作量被低估。** `/images` 不是“补一个实现类和两处注册”即可完成，还要复刻鉴权、候选排序、容量、熔断、failover、响应写入和日志生命周期；若无明确产品需求，应按独立功能评审，而不是当作几十行修复。
 6. **B.3 不应默认改成轮询。** Dashboard 的错误和队列卡片分别只有一条 SSE 消费链，Logs/Channels 已有重叠信息；若没有实时运维刚需，删除卡片和端点比新增 GET + 轮询更低复杂度。
 7. **第 6 节的 `ChannelModelMapping` 不宜直接整表删除。** 它仍被 `ChannelService.SyncChannelModelMappings` 写入，并由 `ModelCatalogService.ListChannelUpstreamModels` 读取；可先删除确认无读取的列/常量，再评估整表迁移。
-8. **流行留存已有明确无上限风险。** `StreamResponseCapture` 的 1 MB 预算只限制响应重建，`ProxyStreamService` 的 `streamLineCaptures` 和 `RequestLogStreamLines.RawLine` 没有总行数/字节上限，也没有统一脱敏和 TTL（见 B.5）。
+8. **流行留存已有明确无上限风险。** ~~`StreamResponseCapture` 的 1 MB 预算只限制响应重建，`ProxyStreamService` 的 `streamLineCaptures` 和 `RequestLogStreamLines.RawLine` 没有总行数/字节上限，也没有统一脱敏和 TTL（见 B.5）。~~ ✅ 已解决：逐行 SSE 持久化整体删除，`StreamLogCapture` 只保留最后一行 data 行与终止原因（常量级内存），失败时写入 `RequestLog.Error`（2000 字符上限）。旧 `StreamLinesJson` 槽位（数值 8）已从枚举移除，历史数据用 `--cleanup-legacy-stream-lines` 清理。
 9. **OCR 保留时还需管理缓存目录。** `ProxyOcrService` 会按图片哈希写 `OcrCacheDir/results`，当前只有读写，没有 TTL、容量上限或清理任务；删除 OCR 时随链路删除，保留 OCR 时必须单列运维策略。
 
 ## Phase 0：基线
@@ -217,15 +217,15 @@ A.1-A.4 主要是已实证零引用的纯删/去重；A.5-A.6 涉及启动验证
 - **成功 attempt 子日志**：`ProxyEndpointService.WriteChannelAttemptLogAsync` 在成功流式/非流式分支（`:279/:331`）和失败分支（`:375/:405/:445`）都会写一条 `request_type=attempt`。每条子日志还复制请求体和上游请求；读取侧默认排除 attempt，只聚合次数（`ObservabilityService.cs:182/486/1073`）。建议仅保留失败、实际 failover 或父日志摘要。
 - **完整详情重复保存**：~~`RequestLogDetail` 同时保存请求头、原始请求、转换后请求、上下游响应、Web Search/OCR 诊断和流时序；流请求还同时保存 `UpstreamResponseBody` 与 `RequestLogStreamLines.RawLine`。~~ ✅ 旧宽表 `RequestLogDetail` 和 `RequestLogStreamLines` 实体已删除，替换为内容寻址存储 `LogContentBlock` + `LogContentManifest`（SHA-256 分块 + Brotli 压缩 + manifest 引用）。
 - **计费溯源字段零观测收益**：`RequestLog` 写入 `PricingModelInfoId`、`PricingPlanId`、`PricingSnapshotJson`、`CostCurrency`、`CacheWriteTokens`、`CacheReadTokens`，但观测响应和前端没有对应读取；若不提供计费审计，可删持久化字段及索引，保留运行时 `ModelUsageVector` 计算所需数据。
-- **SSE 无总预算（当前为 P0/P1 运维风险）**：`StreamResponseCapture` 的 1 MB/256 项预算只限制响应重建；`ProxyStreamService.cs:95/493-534/725-734` 创建的 `streamLineCaptures` 没有总行数、总字节或总时长上限，`RequestLogStreamLines.RawLine` 原样写入数据库，可能造成长流内存和数据库无限放大。原始行还没有统一经过请求体同等级的脱敏。 ✅ 旧逐行表已删除，`streamLineCaptures` 改为写入 `LogContentBlock`（内容寻址存储）。`ProxyStreamService.cs:43` 仍创建 `List<ProxyRequestStreamLineCapture>`，但持久化路径已改为内容寻址分块，不再逐行写宽表。
-- Logs 详情还提供“合并事件/原始行”切换、逐行展示和复制；若没有协议排障刚需，可只保留摘要、错误和上下游响应，并连带关闭原始行持久化，而不是仅给无限增长的表加查询入口。
+- **SSE 无总预算（当前为 P0/P1 运维风险）**：`StreamResponseCapture` 的 1 MB/256 项预算只限制响应重建；`ProxyStreamService.cs:95/493-534/725-734` 创建的 `streamLineCaptures` 没有总行数、总字节或总时长上限，`RequestLogStreamLines.RawLine` 原样写入数据库，可能造成长流内存和数据库无限放大。原始行还没有统一经过请求体同等级的脱敏。 ✅ 旧逐行表已删除，`streamLineCaptures` 改为写入 `LogContentBlock`（内容寻址存储）。`ProxyStreamService.cs:43` 仍创建 `List<ProxyRequestStreamLineCapture>`，但持久化路径已改为内容寻址分块，不再逐行写宽表。 ✅ 进一步收敛：逐行捕获本身已删除，只保留最后一行与终止原因。
+- Logs 详情还提供“合并事件/原始行”切换、逐行展示和复制；若没有协议排障刚需，可只保留摘要、错误和上下游响应，并连带关闭原始行持久化，而不是仅给无限增长的表加查询入口。 ✅ 已执行：前端“SSE 流”面板、相关函数与样式已删除，断流/失败信息改由 `RequestLog.Error` 呈现。
 - 远端只读样本核验（2026-08-07，需确认目标实例）显示 `RequestLogStreamLines` 约 **3.16 GB / 11.33M 行**，约 6,747 个请求带流行，单请求平均约 1,680 行，最大约 **124,575 行**；`RequestLogDetails` 约 **5.85 GB**，而 `RequestLogs` 仅约 17 MB。当前只有超级管理员手动清空日志，没有 TTL 或自动清理。服务代码已经为 Postgres 特判 `TRUNCATE`，说明逐行清理超时风险已被预见。
 - 同期约有 7,233 个主流式请求和 7,161 个 attempt 流式请求，说明问题来自正常主流量而非边角测试流，不能简单以“删除测试日志”解决。
 - attempt 的成功率也很高：生产 956 条 attempt 中 901 条为 HTTP 200（94.2%），开发 7,435 条中 7,096 条为 200（95.4%）；而读取侧默认排除成功 attempt。因此默认只留失败、实际 failover 或父日志摘要，收益/风险比高于继续保存完整成功 attempt。
 - `RequestLogDetails` 的主要膨胀来自 `RequestBody`（约 3.18 GB）和 `UpstreamRequestBody`（约 2.52 GB），不是响应正文；`RequestLogs` 日增量也从 7 月 31 日约 685 条升至 8 月 7 日约 4,776 条。默认保存完整请求体的收益不足以覆盖持续增长和敏感数据风险。
 - 字段填充率进一步说明 OCR 不是当前日志体积来源：生产库 `RequestLogDetails=1,945`，`OcrJson=0`、`WebSearchJson=528`、`StreamTimingsJson=895`；开发库 `=15,158`，`OcrJson=0`、`WebSearchJson=3,184`、`StreamTimingsJson=7,060`。这支持将 OCR 列为“生产未使用、待产品决策”的低收益候选，但仍不能仅凭日志零值删除客户端明确依赖的图片能力。
 - **OCR 缓存**：若保留 OCR，`ProxyOcrService` 按图片哈希写 `OcrCacheDir/results`，当前没有 TTL、容量上限或清理任务；若删除 OCR，则随 1.1 一并删除。
-- 建议分两步：先备份并按时间窗口分批清理已超量的 `RequestLogStreamLines`/`RequestLogDetails`，再在代码中默认保存元数据和错误摘要；调试详情改为开关或仅失败请求留存；为 SSE 行设置每请求 max lines/max bytes，超限保留首尾和摘要；增加 TTL/定期清理，并明确敏感数据权限。不要删除协议转换本身使用的 `StreamResponseCapture`。
+- 建议分两步：先备份并按时间窗口分批清理已超量的 `RequestLogStreamLines`/`RequestLogDetails`，再在代码中默认保存元数据和错误摘要；调试详情改为开关或仅失败请求留存；为 SSE 行设置每请求 max lines/max bytes，超限保留首尾和摘要；增加 TTL/定期清理，并明确敏感数据权限。不要删除协议转换本身使用的 `StreamResponseCapture`。 ✅ 第一步已执行：逐行 SSE 持久化删除，历史内容槽位由 `--cleanup-legacy-stream-lines`（先 `--dry-run`）清理；`StreamResponseCapture` 保持不变。
 - 风险：Logs 页面目前确实展示流行和详情，不能直接判为死功能；需要兼容旧日志读取和 SQLite/Postgres 两套迁移。
 - 验证：长流、超限、取消、错误、敏感字段脱敏、旧日志详情读取和清理任务测试。
 

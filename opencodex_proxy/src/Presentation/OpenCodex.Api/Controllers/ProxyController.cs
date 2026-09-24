@@ -1,9 +1,14 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using OpenCodex.Api.Authentication;
+using OpenCodex.Api.Infrastructure;
 using OpenCodex.Api.Services;
 using OpenCodex.Core.Protocols;
 
 namespace OpenCodex.Api.Controllers;
 
+[Authorize(AuthenticationSchemes = ProxyBearerAuthenticationDefaults.Scheme)]
+[ProxyRequestBodyLimit]
 public sealed class ProxyController : ApiControllerBase
 {
     private readonly IProxyService _proxyService;

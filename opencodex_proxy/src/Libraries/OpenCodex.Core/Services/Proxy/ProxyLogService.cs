@@ -75,7 +75,7 @@ public sealed class ProxyLogService : IProxyLogService
         _contentStore.Write(log.Id, new Dictionary<RequestLogContentSlot, string?>
         {
             [RequestLogContentSlot.RequestHeaders] = SerializeForLog(context.RequestHeaders),
-            [RequestLogContentSlot.RequestBody] = context.RawRequestBody ?? SerializeForLog(context.Payload)
+            [RequestLogContentSlot.RequestBody] = RawBodyText(context.RawRequestBody, context.Payload)
         });
         PublishLogWritten(log.Id, ownerUsername, 0, null);
         return log.Id;
@@ -149,8 +149,7 @@ public sealed class ProxyLogService : IProxyLogService
             context.RequestType,
             context.ParentRequestLogId,
             context.OcrDetails,
-            request.RawBody,
-            context.StreamLines)
+            request.RawBody)
         {
             AggregatedUsage = context.AggregatedUsage
         });
@@ -184,8 +183,7 @@ public sealed class ProxyLogService : IProxyLogService
             context.RequestType,
             context.ParentRequestLogId,
             context.OcrDetails,
-            request.RawBody,
-            context.StreamLines)
+            request.RawBody)
         {
             AggregatedUsage = context.AggregatedUsage
         });
@@ -304,7 +302,10 @@ public sealed class ProxyLogService : IProxyLogService
             nameof(RequestLog.ConversationWindowId),
             nameof(RequestLog.PreviousResponseId));
 
-        _contentStore.WriteUtf8(requestLogId, BuildContentValues(context));
+        _contentStore.WriteSequential(
+            requestLogId,
+            ContentSlots,
+            slot => EncodeContentSlot(context, slot));
 
         if (context.RequestType == ProxyRequestTypes.Main)
         {
@@ -375,7 +376,7 @@ public sealed class ProxyLogService : IProxyLogService
                 context.Path,
                 context.ClientIp,
                 SerializeForLog(context.RequestHeaders),
-                context.RawRequestBody ?? SerializeForLog(context.Payload),
+                RawBodyText(context.RawRequestBody, context.Payload),
                 SerializeForLog(context.UpstreamRequest),
                 SerializeForLog(context.UpstreamResponse),
                 SerializeForLog(context.ResponsePayload ?? context.ErrorResponse),
@@ -402,8 +403,7 @@ public sealed class ProxyLogService : IProxyLogService
                 ownerUserId,
                 context.ApiKeyId,
                 context.Error,
-                context.OcrDetails is null ? null : SerializeForLog(context.OcrDetails),
-                context.StreamLines));
+                context.OcrDetails is null ? null : SerializeForLog(context.OcrDetails)));
 
         PublishLogWritten(logId, ownerUsername, context.StatusCode, context.Error);
         return logId;
@@ -500,8 +500,7 @@ public sealed class ProxyLogService : IProxyLogService
             [RequestLogContentSlot.UpstreamResponseBody] = EncodeText(record.UpstreamResponseBody),
             [RequestLogContentSlot.ResponseBody] = EncodeText(record.ResponseBody),
             [RequestLogContentSlot.WebSearchJson] = EncodeText(record.WebSearchJson),
-            [RequestLogContentSlot.OcrJson] = EncodeText(record.OcrJson),
-            [RequestLogContentSlot.StreamLinesJson] = SerializeStreamLines(record.StreamLines)
+            [RequestLogContentSlot.OcrJson] = EncodeText(record.OcrJson)
         });
 
         if (record.RequestType == ProxyRequestTypes.Main)
@@ -536,26 +535,49 @@ public sealed class ProxyLogService : IProxyLogService
         return log.Id;
     }
 
-    private static IReadOnlyDictionary<RequestLogContentSlot, byte[]?> BuildContentValues(
-        ProxyRequestLogContext context)
+    /// <summary>
+    /// 完成日志时按顺序写入的正文槽位；顺序固定，便于按需逐槽位释放内存。
+    /// </summary>
+    private static readonly RequestLogContentSlot[] ContentSlots =
+    [
+        RequestLogContentSlot.RequestHeaders,
+        RequestLogContentSlot.RequestBody,
+        RequestLogContentSlot.UpstreamRequestBody,
+        RequestLogContentSlot.UpstreamResponseBody,
+        RequestLogContentSlot.ResponseBody,
+        RequestLogContentSlot.WebSearchJson,
+        RequestLogContentSlot.OcrJson
+    ];
+
+    private static byte[]? EncodeContentSlot(ProxyRequestLogContext context, RequestLogContentSlot slot)
     {
-        return new Dictionary<RequestLogContentSlot, byte[]?>
+        return slot switch
         {
-            [RequestLogContentSlot.RequestHeaders] = EncodeForLog(context.RequestHeaders),
-            [RequestLogContentSlot.RequestBody] = context.RawRequestBody is { } rawRequestBody
-                ? EncodeText(rawRequestBody)
+            RequestLogContentSlot.RequestHeaders => EncodeForLog(context.RequestHeaders),
+            RequestLogContentSlot.RequestBody => context.RawRequestBody is { Length: > 0 } rawRequestBody
+                ? rawRequestBody.ToArray()
                 : EncodeForLog(context.Payload),
-            [RequestLogContentSlot.UpstreamRequestBody] = EncodeForLog(context.UpstreamRequest),
-            [RequestLogContentSlot.UpstreamResponseBody] = EncodeForLog(context.UpstreamResponse),
-            [RequestLogContentSlot.ResponseBody] = EncodeForLog(context.ResponsePayload ?? context.ErrorResponse),
-            [RequestLogContentSlot.WebSearchJson] = context.WebSearchDetails is null
+            RequestLogContentSlot.UpstreamRequestBody => EncodeForLog(context.UpstreamRequest),
+            RequestLogContentSlot.UpstreamResponseBody => EncodeForLog(context.UpstreamResponse),
+            RequestLogContentSlot.ResponseBody => EncodeForLog(context.ResponsePayload ?? context.ErrorResponse),
+            RequestLogContentSlot.WebSearchJson => context.WebSearchDetails is null
                 ? null
                 : EncodeForLog(context.WebSearchDetails),
-            [RequestLogContentSlot.OcrJson] = context.OcrDetails is null
+            RequestLogContentSlot.OcrJson => context.OcrDetails is null
                 ? null
                 : EncodeForLog(context.OcrDetails),
-            [RequestLogContentSlot.StreamLinesJson] = SerializeStreamLines(context.StreamLines)
+            _ => throw new ArgumentOutOfRangeException(nameof(slot), slot, "unsupported log content slot")
         };
+    }
+
+    /// <summary>
+    /// 把入口捕获的 UTF-8 原文字节还原为文本；没有原文时退回序列化后的载荷。
+    /// </summary>
+    private static string RawBodyText(ReadOnlyMemory<byte>? rawRequestBody, Dictionary<string, object?>? payload)
+    {
+        return rawRequestBody is { Length: > 0 } raw
+            ? Encoding.UTF8.GetString(raw.Span)
+            : SerializeForLog(payload);
     }
 
     private void PublishLogWritten(Guid logId, string ownerUsername, int statusCode, string? error)
@@ -579,17 +601,6 @@ public sealed class ProxyLogService : IProxyLogService
     private static byte[]? EncodeText(string? value)
     {
         return value is null ? null : Encoding.UTF8.GetBytes(value);
-    }
-
-    private static byte[]? SerializeStreamLines(
-        IReadOnlyList<ProxyRequestStreamLineCapture>? streamLines)
-    {
-        if (streamLines is null)
-        {
-            return null;
-        }
-
-        return StreamLineJsonSerializer.Serialize(streamLines);
     }
 
     private static void ApplyConversationMetadata(

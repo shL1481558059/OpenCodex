@@ -110,7 +110,7 @@ public sealed partial class HttpUpstreamClient
     {
         var request = new HttpRequestMessage(HttpMethod.Post, JoinUrl(JsonDictionaryValue.String(channel, "baseurl"), endpoint))
         {
-            Content = new StringContent(JsonSerializer.Serialize(payload, JsonOptions), Encoding.UTF8, "application/json")
+            Content = JsonBodyContent(payload)
         };
         ApplyImagesHeaders(request, channel, includeContentType: false);
         return request;

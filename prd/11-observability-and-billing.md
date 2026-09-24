@@ -147,7 +147,8 @@ TTFT 不等同第一条空 SSE 行或连接建立时间。不同协议必须使�
 | `ResponseBody` | 客户端响应或错误响应 |
 | `WebSearchJson` | Web Search 模拟详情 |
 | `OcrJson` | OCR 元数据 |
-| `StreamLinesJson` | 按 sequence/source/raw_line 保存的流式原始行 |
+
+流式原始行槽位（历史 `StreamLinesJson`，数值 8）已移除：断流或失败时只把最后一行数据行与终止原因写入 `RequestLog.Error`。
 
 当前没有按日志级别关闭正文槽位的实现：创建、处理中和完成阶段会写入所有可取得的槽位，`null` 槽位不建立引用。产品若需要“元数据-only”或分级日志，必须新增明确配置和验收。
 
@@ -375,7 +376,7 @@ flowchart LR
 当前实现有部分保护：
 
 - `StreamResponseCapture` 对同协议流重建的逻辑响应默认限制约 1 MiB、集合 256 项、单个待解析 SSE 数据约 256 KiB；
-- 但 `ProxyStreamService.CaptureStreamLines` 会把每一条 upstream/downstream 原始行追加到 `StreamLinesJson`，当前没有字节数或条数上限；上述 1 MiB/256 项限制不保护原始流日志槽位；
+- `ProxyStreamService` 不再保存逐行 SSE：`StreamLogCapture` 只保留最后一行数据行与终止原因（常量级内存），因此长流不再造成日志与内存放大；
 - 上游连接池每主机约 100；
 - Tavily 连接池约 50。
 

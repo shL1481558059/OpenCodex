@@ -11,8 +11,7 @@ public enum RequestLogContentSlot : short
     UpstreamResponseBody = 4,
     ResponseBody = 5,
     WebSearchJson = 6,
-    OcrJson = 7,
-    StreamLinesJson = 8
+    OcrJson = 7
 }
 
 /// <summary>

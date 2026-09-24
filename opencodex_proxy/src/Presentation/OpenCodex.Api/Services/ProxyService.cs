@@ -16,7 +16,7 @@ public sealed class ProxyService : IProxyService
 {
     private readonly IRequestBodyReader _bodyReader;
     private readonly IProxyEndpointService _proxy;
-    private readonly IProxyRequestService _requests;
+    private readonly IProxyIdentityContext _identity;
     private readonly IProxyRouteService _routes;
     private readonly IModelCatalogService _catalog;
     private readonly ICodexOfficialModelCatalogService _codexModels;
@@ -26,7 +26,7 @@ public sealed class ProxyService : IProxyService
     public ProxyService(
         IRequestBodyReader bodyReader,
         IProxyEndpointService proxy,
-        IProxyRequestService requests,
+        IProxyIdentityContext identity,
         IProxyRouteService routes,
         IModelCatalogService catalog,
         ICodexOfficialModelCatalogService codexModels,
@@ -35,7 +35,7 @@ public sealed class ProxyService : IProxyService
     {
         _bodyReader = bodyReader;
         _proxy = proxy;
-        _requests = requests;
+        _identity = identity;
         _routes = routes;
         _catalog = catalog;
         _codexModels = codexModels;
@@ -45,9 +45,8 @@ public sealed class ProxyService : IProxyService
 
     public async Task<IActionResult> ModelsAsync(HttpRequest request, HttpResponse response)
     {
-        var accessKey = await _requests.AuthenticateAccessKeyAsync(
-            RequestHeaders(request));
-        var models = await _routes.ListModelCapabilitiesAsync(accessKey.OwnerUsername);
+        var identity = _identity.RequireIdentity();
+        var models = await _routes.ListModelCapabilitiesAsync(identity.OwnerUsername);
         var catalogModels = _catalog.BuildProxyModelCatalog(models);
 
         if (IsCodexClient(request))
@@ -117,7 +116,6 @@ public sealed class ProxyService : IProxyService
     {
         var started = Stopwatch.GetTimestamp();
         var payload = await _bodyReader.ReadJsonObjectAsync(request, request.HttpContext.RequestAborted);
-        var authorization = RequestHeaders(request);
         var probeRequestId = Guid.NewGuid().ToString();
         if (payload is not null
             && _proxySettings.GetBool("intercept_probe_requests", false)
@@ -127,7 +125,7 @@ public sealed class ProxyService : IProxyService
                 probeRequestId,
                 out var probeResult))
         {
-            var accessKey = await _requests.AuthenticateAccessKeyAsync(authorization);
+            var identity = _identity.RequireIdentity();
             var requestMetadata = ProxyRequestMetadataFactory.FromHttpRequest(
                 request,
                 request.HttpContext.Connection.RemoteIpAddress?.ToString());
@@ -135,8 +133,8 @@ public sealed class ProxyService : IProxyService
             await _logs.WriteLogAsync(
                 new ProxyLogContext(
                     probeRequestId,
-                    accessKey.OwnerUsername,
-                    accessKey.Id,
+                    identity.OwnerUsername,
+                    identity.ApiKeyId,
                     payload,
                     UpstreamRequest: null,
                     UpstreamResponse: null,
@@ -167,7 +165,6 @@ public sealed class ProxyService : IProxyService
             new ProxyEndpointContext(
                 entryProtocol,
                 payload,
-                authorization,
                 ProxyRequestMetadataFactory.FromHttpRequest(
                     request,
                     request.HttpContext.Connection.RemoteIpAddress?.ToString()),
@@ -179,13 +176,6 @@ public sealed class ProxyService : IProxyService
         }
 
         return StatusCodeResult(response, result.StatusCode, result.Payload);
-    }
-
-    private static string? RequestHeaders(HttpRequest request)
-    {
-        return request.Headers.TryGetValue("Authorization", out var values)
-            ? values.ToString()
-            : null;
     }
 
     private static bool IsCodexClient(HttpRequest request)

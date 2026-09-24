@@ -141,9 +141,10 @@ sequenceDiagram
     participant LOG as "ProxyLogService"
 
     C->>CTL: "POST 三协议端点"
+    CTL->>CTL: "认证方案校验凭据（失败即 401）"
     CTL->>CTL: "读取 JSON 与元数据"
     CTL->>EP: "ProxyAsync(ProxyEndpointContext)"
-    EP->>AUTH: "StartRequest + AuthenticateAccessKeyAsync"
+    EP->>AUTH: "StartRequest + RequireIdentity"
     AUTH-->>EP: "requestId、owner、role、apiKeyId"
     EP->>LOG: "CreateQueuedLog"
     EP->>ROUTE: "ListRouteCandidatesAsync"
@@ -184,14 +185,16 @@ sequenceDiagram
 ### 5.1 请求初始化与认证
 
 1. 记录整体开始时间 `started`。
-2. 调用 `ProxyRequestService.StartRequest`：
+2. 调用 `IProxyIdentityContext.RequireIdentity()` 读取管道已认证身份：
+   - 缺失身份时抛出 401（路由漏挂认证方案时的兜底）；
+   - 提供所有者用户名、所有者角色、所有者用户 ID 与 API Key ID。
+3. 调用 `ProxyRequestService.StartRequest`：
    - 使用 `RandomNumberGenerator.GetHexString(12).ToLowerInvariant()` 生成请求 ID；
-   - 从运行时设置读取默认管理员用户名和默认上游超时。
-3. 调用 `AuthenticateAccessKeyAsync` 验证 Bearer Key。
-4. 认证成功后，用密钥所有者用户名、角色和 API Key ID 覆盖初始默认值。
-5. 检查 `context.Payload`：为 `null` 时抛出 400。
+   - 从运行时设置读取默认上游超时。
+4. 检查 `context.Payload`：为 `null` 时抛出 400。
 
-认证发生在载荷合法性检查之前。因此没有合法访问密钥的请求不会先得到请求体格式错误。
+认证发生在控制器动作与载荷合法性检查之前。因此没有合法访问密钥的请求不会先得到请求体格式错误，
+也不会进入 `ProxyEndpointService`。
 
 ### 5.2 提取请求级信号
 

@@ -42,8 +42,8 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         Dictionary<string, object?>? upstreamResponse = null;
         Dictionary<string, object?>? responsePayload = null;
         StreamResponseCapture? passThroughResponseCapture = null;
-        var passThroughTermination = StreamCaptureTermination.UnexpectedEnd;
-        var streamLineCaptures = new List<ProxyRequestStreamLineCapture>();
+        var streamTermination = StreamCaptureTermination.UnexpectedEnd;
+        var streamLogCapture = new StreamLogCapture(context.EntryProtocol);
         var statusCode = ProxyHttpStatus.Ok;
         var upstreamRequest = context.UpstreamRequest;
         ConvertedProxyStreamState? convertedState = null;
@@ -64,43 +64,42 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                 streamWriteMetrics = await context.StreamWriter.WriteLinesAsync(
                     EnsureCompletedStreamEndsWithDone(
                         CapturePassThroughResponse(
-                            CaptureStreamLines(
+                            CaptureStreamLogLines(
                                 streamLines,
-                                streamLineCaptures,
-                                "upstream",
+                                streamLogCapture,
                                 context.CancellationToken),
                             passThroughResponseCapture,
                             context.CancellationToken),
-                        streamLineCaptures,
-                        "downstream",
                         context.CancellationToken),
                     static line => line.Trim().Length > 0,
                     () => ElapsedMilliseconds(ttftStarted),
                     context.CancellationToken);
                 ttftMs = streamWriteMetrics.TtftMs;
-                passThroughTermination = StreamCaptureTermination.Completed;
+                streamTermination = streamLogCapture.SawTerminalEvent
+                    ? StreamCaptureTermination.Completed
+                    : StreamCaptureTermination.UnexpectedEnd;
                 upstreamResponse = passThroughResponseCapture
-                    .Complete(passThroughTermination)
+                    .Complete(streamTermination)
                     .Response;
             }
             else
             {
                 convertedState = new ConvertedProxyStreamState { UpstreamRequest = upstreamRequest };
-                var convertedLines = ConvertRoundsAsync(context, streamLineCaptures, convertedState, tools, context.CancellationToken);
+                var convertedLines = ConvertRoundsAsync(context, convertedState, tools, context.CancellationToken);
                 streamWriteMetrics = await context.StreamWriter.WriteLinesAsync(
                     EnsureCompletedStreamEndsWithDone(
-                        CaptureStreamLines(
+                        CaptureStreamLogLines(
                             convertedLines,
-                            streamLineCaptures,
-                            "downstream",
+                            streamLogCapture,
                             context.CancellationToken),
-                        streamLineCaptures,
-                        "downstream",
                         context.CancellationToken),
                     SseStreamConverter.CountsForTtft,
                     () => ElapsedMilliseconds(ttftStarted),
                     context.CancellationToken);
                 ttftMs = streamWriteMetrics.TtftMs;
+                streamTermination = streamLogCapture.SawTerminalEvent
+                    ? StreamCaptureTermination.Completed
+                    : StreamCaptureTermination.UnexpectedEnd;
 
                 upstreamRequest = convertedState.UpstreamRequest;
                 upstreamResponse = convertedState.UpstreamResponse;
@@ -110,11 +109,11 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         catch (Exception exception)
         {
             error = exception.Message;
-            passThroughTermination = exception is OperationCanceledException && context.CancellationToken.IsCancellationRequested
+            streamTermination = exception is OperationCanceledException && context.CancellationToken.IsCancellationRequested
                 ? StreamCaptureTermination.ClientCancelled
                 : StreamCaptureTermination.UpstreamError;
             var capturedUpstreamResponse = passThroughResponseCapture?
-                .Complete(passThroughTermination)
+                .Complete(streamTermination)
                 .Response;
             if (exception is ProxyException proxyException)
             {
@@ -145,6 +144,11 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         }
         finally
         {
+            if (streamTermination != StreamCaptureTermination.Completed || error is not null)
+            {
+                error = streamLogCapture.ComposeErrorText(error, streamTermination);
+            }
+
             if (convertedState is not null)
             {
                 upstreamRequest = convertedState.UpstreamRequest;
@@ -155,7 +159,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
             if (passThroughResponseCapture is not null && upstreamResponse is null)
             {
                 upstreamResponse = passThroughResponseCapture
-                    .Complete(passThroughTermination)
+                    .Complete(streamTermination)
                     .Response;
             }
 
@@ -179,8 +183,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                     StatusCode: statusCode,
                     DurationMs: ElapsedMilliseconds(context.StartedTimestamp),
                     error,
-                    webSearchDetails,
-                    StreamLines: streamLineCaptures)
+                    webSearchDetails)
                 {
                     AggregatedUsage = tools?.HasCalls == true ? tools.AccountingUsage : null
                 },
@@ -264,17 +267,16 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         }
     }
 
-    internal static async IAsyncEnumerable<string> CaptureStreamLines(
+    internal static async IAsyncEnumerable<string> CaptureStreamLogLines(
         IAsyncEnumerable<string> lines,
-        IList<ProxyRequestStreamLineCapture> capture,
-        string source,
+        StreamLogCapture capture,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         await foreach (var line in lines.WithCancellation(cancellationToken))
         {
             foreach (var rawLine in SplitStreamLogLines(line))
             {
-                AddStreamLineCapture(capture, source, rawLine);
+                capture.Observe(rawLine);
             }
 
             yield return line;
@@ -283,8 +285,6 @@ public sealed partial class ProxyStreamService : IProxyStreamService
 
     private static async IAsyncEnumerable<string> EnsureCompletedStreamEndsWithDone(
         IAsyncEnumerable<string> lines,
-        IList<ProxyRequestStreamLineCapture> capture,
-        string source,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var sawCompleted = false;
@@ -302,11 +302,6 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         }
 
         const string done = "data: [DONE]\n\n";
-        foreach (var rawLine in SplitStreamLogLines(done))
-        {
-            AddStreamLineCapture(capture, source, rawLine);
-        }
-
         yield return done;
     }
 
@@ -320,17 +315,4 @@ public sealed partial class ProxyStreamService : IProxyStreamService
             yield return parts[i];
         }
     }
-
-
-    private static void AddStreamLineCapture(
-        IList<ProxyRequestStreamLineCapture> capture,
-        string source,
-        string rawLine)
-    {
-        capture.Add(new ProxyRequestStreamLineCapture(
-            capture.Count,
-            source,
-            rawLine));
-    }
-
 }

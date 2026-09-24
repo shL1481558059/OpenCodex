@@ -286,16 +286,7 @@ public sealed class ProxyStreamServiceTests
         Assert.Single(writer.Lines, line => line.StartsWith("event: response.completed\n", StringComparison.Ordinal));
         Assert.Equal("data: [DONE]\n\n", writer.Lines[^1]);
         Assert.Null(logs.LastContext?.WebSearchDetails);
-        Assert.NotNull(logs.LastContext?.StreamLines);
-        Assert.Contains(logs.LastContext!.StreamLines!, line =>
-            line.Source == "upstream"
-            && line.RawLine.Contains("content_block_delta", StringComparison.Ordinal));
-        Assert.Contains(logs.LastContext!.StreamLines!, line =>
-            line.Source == "downstream"
-            && line.RawLine.Contains("response.completed", StringComparison.Ordinal));
-        Assert.Contains(logs.LastContext.StreamLines!, line =>
-            line.Source == "downstream"
-            && line.RawLine == "data: [DONE]");
+        Assert.Null(logs.LastContext?.Error);
     }
 
     [Fact]
@@ -357,7 +348,7 @@ public sealed class ProxyStreamServiceTests
         Assert.Equal(429, exception.StatusCode);
         Assert.NotNull(logs.LastContext);
         Assert.Equal(429, logs.LastContext!.StatusCode);
-        Assert.Equal("upstream returned HTTP 429", logs.LastContext.Error);
+        Assert.Equal("upstream returned HTTP 429｜终止:UpstreamError", logs.LastContext.Error);
         Assert.NotNull(logs.LastContext.UpstreamResponse);
         var upstreamError = Assert.IsType<Dictionary<string, object?>>(logs.LastContext.UpstreamResponse!["error"]);
         var upstreamDetail = Assert.IsType<Dictionary<string, object?>>(upstreamError["error"]);
@@ -580,7 +571,7 @@ public sealed class ProxyStreamServiceTests
     }
 
     [Fact]
-    public async Task StreamAsync_PassThrough_CapturesOriginalUpstreamSseLines()
+    public async Task StreamAsync_PassThrough_DoesNotPersistStreamLines()
     {
         var upstream = new SequencedUpstreamClient(
         [
@@ -631,30 +622,7 @@ public sealed class ProxyStreamServiceTests
         await service.StreamAsync(context);
 
         Assert.NotNull(logs.LastContext);
-        Assert.NotNull(logs.LastContext!.StreamLines);
-        Assert.Collection(
-            logs.LastContext.StreamLines!,
-            line =>
-            {
-                Assert.Equal(0, line.Sequence);
-                Assert.Equal("upstream", line.Source);
-                Assert.Equal("event: response.output_text.delta", line.RawLine);
-            },
-            line =>
-            {
-                Assert.Equal(1, line.Sequence);
-                Assert.Equal("data: {\"delta\":\"hello\"}", line.RawLine);
-            },
-            line =>
-            {
-                Assert.Equal(2, line.Sequence);
-                Assert.Equal(string.Empty, line.RawLine);
-            },
-            line =>
-            {
-                Assert.Equal(3, line.Sequence);
-                Assert.Equal("data: [DONE]", line.RawLine);
-            });
+        Assert.Null(logs.LastContext!.Error);
     }
 
     [Fact]
@@ -766,13 +734,11 @@ public sealed class ProxyStreamServiceTests
         await service.StreamAsync(context);
 
         Assert.Equal("data: [DONE]\n\n", writer.Lines.Last());
-        Assert.NotNull(logs.LastContext?.StreamLines);
-        Assert.Contains(logs.LastContext!.StreamLines!, line =>
-            line.Source == "downstream" && line.RawLine == "data: [DONE]");
+        Assert.Null(logs.LastContext?.Error);
     }
 
     [Fact]
-    public async Task StreamAsync_ConvertedChat_CapturesUpstreamAndDownstreamDeltas()
+    public async Task StreamAsync_ConvertedChat_CompletesWithoutStreamLineLogging()
     {
         var upstream = new SequencedUpstreamClient(
         [
@@ -823,29 +789,11 @@ public sealed class ProxyStreamServiceTests
         await service.StreamAsync(context);
 
         Assert.Contains(writer.Lines, line => line.Contains("response.output_text.delta", StringComparison.Ordinal));
-        Assert.NotNull(logs.LastContext?.StreamLines);
-        var streamLines = logs.LastContext!.StreamLines!;
-        Assert.Contains(streamLines, line =>
-            line.Source == "upstream"
-            && line.RawLine.Contains("\"choices\"", StringComparison.Ordinal)
-            && line.RawLine.Contains("\"content\":\"hello\"", StringComparison.Ordinal));
-        Assert.Contains(streamLines, line =>
-            line.Source == "downstream"
-            && line.RawLine == "event: response.output_text.delta");
-        Assert.Contains(streamLines, line =>
-            line.Source == "downstream"
-            && line.RawLine.Contains("\"type\":\"response.output_text.delta\"", StringComparison.Ordinal)
-            && line.RawLine.Contains("\"delta\":\"hello\"", StringComparison.Ordinal));
-        Assert.Contains(streamLines, line =>
-            line.Source == "downstream"
-            && line.RawLine.Contains("response.created", StringComparison.Ordinal));
-        Assert.Contains(streamLines, line =>
-            line.Source == "downstream"
-            && line.RawLine.Contains("response.in_progress", StringComparison.Ordinal));
+        Assert.Null(logs.LastContext?.Error);
     }
 
     [Fact]
-    public async Task CaptureStreamLines_PreservesAllEventsAndPayloads()
+    public async Task CaptureStreamLogLines_KeepsOnlyLastDataLine()
     {
         var input = new[]
         {
@@ -856,35 +804,90 @@ public sealed class ProxyStreamServiceTests
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}",
             "",
             "event: response.completed",
-            "data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5\",\"status\":\"completed\",\"instructions\":\"secret instructions\",\"tools\":[{\"name\":\"secret_tool\"}],\"output\":[{\"type\":\"message\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}",
+            "data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5\",\"status\":\"completed\"}}",
+            "",
+            "data: [DONE]",
             ""
         };
-        var capture = new List<ProxyRequestStreamLineCapture>();
+        var capture = new StreamLogCapture(ProtocolConverter.Responses);
         var forwarded = new List<string>();
 
-        await foreach (var line in ProxyStreamService.CaptureStreamLines(
+        await foreach (var line in ProxyStreamService.CaptureStreamLogLines(
             ToAsyncEnumerable(input),
             capture,
-            "upstream",
             CancellationToken.None))
         {
             forwarded.Add(line);
         }
 
         Assert.Equal(input, forwarded);
-        Assert.Equal(input, capture.Select(line => line.RawLine));
-        Assert.Contains(capture, line => line.RawLine.Contains("secret instructions", StringComparison.Ordinal));
-        Assert.Contains(capture, line => line.RawLine.Contains("secret_tool", StringComparison.Ordinal));
-        Assert.Contains(capture, line => line.RawLine.Contains("response.created", StringComparison.Ordinal));
-        Assert.Contains(capture, line => line.RawLine == "event: response.output_text.delta");
-        Assert.Contains(capture, line => line.RawLine.Contains("\"delta\":\"hello\"", StringComparison.Ordinal));
-        var completed = Assert.Single(capture, line =>
-            line.RawLine.StartsWith("data:", StringComparison.Ordinal)
-            && line.RawLine.Contains("\"type\":\"response.completed\"", StringComparison.Ordinal));
-        Assert.Contains("\"usage\"", completed.RawLine, StringComparison.Ordinal);
-        Assert.Contains("\"instructions\"", completed.RawLine, StringComparison.Ordinal);
-        Assert.Contains("\"tools\"", completed.RawLine, StringComparison.Ordinal);
-        Assert.Contains("\"output\":[", completed.RawLine, StringComparison.Ordinal);
+        Assert.True(capture.SawTerminalEvent);
+        Assert.Equal(
+            "data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5\",\"status\":\"completed\"}}",
+            capture.LastDataLine);
+    }
+
+    [Fact]
+    public async Task StreamAsync_PassThroughTruncated_LogsUnexpectedEndWithLastDataLine()
+    {
+        var upstream = new SequencedUpstreamClient(
+        [
+            ("event: response.output_text.delta", 0),
+            ("data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}", 0),
+            ("", 0)
+        ]);
+        var logs = new StubProxyLogService();
+        var service = new ProxyStreamService(
+            upstream,
+            logs,
+            new StubWebSearchToolExecutor(),
+            WebSearchTestStore.Create());
+        var context = new ProxyStreamContext(
+            startedTimestamp: Stopwatch.GetTimestamp(),
+            requestLogId: Guid.NewGuid(),
+            requestId: "req-truncated",
+            ownerUsername: "admin",
+            apiKeyId: Guid.NewGuid(),
+            originalPayload: new Dictionary<string, object?>(),
+            payload: new Dictionary<string, object?>(),
+            upstreamRequest: new Dictionary<string, object?>(),
+            entryProtocol: ProtocolConverter.Responses,
+            route: new ProxyRouteDto(
+                new Dictionary<string, object?> { ["id"] = "responses", ["type"] = ProtocolConverter.Responses },
+                "public-model",
+                "upstream-model",
+                supportsImage: false,
+                matchedModelMapping: true),
+            channelType: ProtocolConverter.Responses,
+            channelId: "responses",
+            ownerRole: "superadmin",
+            upstreamModel: "upstream-model",
+            requestModel: "public-model",
+            defaultTimeout: 120,
+            requestMetadata: new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
+            streamWriter: new CapturingProxyStreamWriter(),
+            cancellationToken: CancellationToken.None);
+
+        await service.StreamAsync(context);
+
+        Assert.NotNull(logs.LastContext);
+        Assert.Equal(200, logs.LastContext!.StatusCode);
+        Assert.Equal(
+            "upstream stream ended before its terminal event｜终止:UnexpectedEnd｜最后SSE:data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}",
+            logs.LastContext.Error);
+    }
+
+    [Fact]
+    public void StreamLogCapture_ComposeErrorText_TruncatesAtLimit()
+    {
+        var capture = new StreamLogCapture(ProtocolConverter.Responses);
+        capture.Observe($"data: {new string('x', 3000)}");
+
+        var text = capture.ComposeErrorText(null, StreamCaptureTermination.UnexpectedEnd);
+
+        Assert.Equal(StreamLogCapture.MaxErrorTextLength, text.Length);
+        Assert.StartsWith("upstream stream ended before its terminal event｜终止:UnexpectedEnd｜最后SSE:data: ", text, StringComparison.Ordinal);
+        Assert.EndsWith("…", text, StringComparison.Ordinal);
     }
 
     [Fact]

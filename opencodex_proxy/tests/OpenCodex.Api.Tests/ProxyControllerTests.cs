@@ -46,7 +46,9 @@ public sealed class ProxyControllerTests
         Assert.NotNull(logs.LastRequestMetadata);
         Assert.Equal("POST", logs.LastRequestMetadata!.Method);
         Assert.Equal("/v1/messages", logs.LastRequestMetadata.Path);
-        Assert.Equal("{\"model\":\"claude-opus-5\",\"max_tokens\":1}", logs.LastRequestMetadata.RawBody);
+        Assert.Equal(
+            "{\"model\":\"claude-opus-5\",\"max_tokens\":1}",
+            System.Text.Encoding.UTF8.GetString(logs.LastRequestMetadata.RawBody!.Value.Span));
     }
 
     [Fact]
@@ -168,7 +170,7 @@ public sealed class ProxyControllerTests
         var proxyService = new ProxyService(
             bodyReader,
             proxy,
-            new StubProxyRequestService(),
+            new StubProxyIdentityContext(),
             new StubProxyRouteService(),
             new StubModelCatalogService(modelCatalog),
             codexModels ?? new StubCodexOfficialModelCatalogService(),
@@ -286,28 +288,21 @@ public sealed class ProxyControllerTests
         public Task<Guid> WriteLogAsync(ProxyRequestLogContext context) => throw new NotSupportedException();
     }
 
-    private sealed class StubProxyRequestService : IProxyRequestService
+    private sealed class StubProxyIdentityContext : IProxyIdentityContext
     {
-        public ProxyRequestState StartRequest()
-        {
-            return new ProxyRequestState("req-1", "admin", 120);
-        }
+        private static readonly ProxyIdentity Identity = new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "admin",
+            "superadmin");
 
-        public Task<AuthenticatedAccessApiKeyDto> AuthenticateAccessKeyAsync(string? authorizationHeader)
+        public bool IsAuthenticated => true;
+
+        public ProxyIdentity? Current => Identity;
+
+        public ProxyIdentity RequireIdentity()
         {
-            return Task.FromResult(new AuthenticatedAccessApiKeyDto(
-                Guid.NewGuid(),
-                Guid.NewGuid(),
-                "admin",
-                "test",
-                "sk-test",
-                "suffix",
-                "sk-***",
-                true,
-                0,
-                0,
-                null,
-                new AccessApiKeyUserDto(Guid.NewGuid(), "admin", "superadmin", true)));
+            return Identity;
         }
     }
 

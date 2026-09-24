@@ -1,6 +1,10 @@
 # 入口、鉴权与逐请求状态
 
 > 基线：当前文档依据仓库 HEAD `5851939ad08db9465a226cc18489756ff8cd6941` 整理。本文覆盖文本协议代理入口；图片生成/编辑入口只作为边界对照。
+>
+> 变更：代理访问密钥认证已从业务服务内联调用迁移到 ASP.NET Core 认证管道，
+> 第 2.3、3.2、3.3、4.1、4.2、7、8、11、15.3、16.1 节已按迁移后实现更新；
+> 第 9、13、14 节描述的缓存与日志机制未变。
 
 ## 1. 适用范围
 
@@ -8,8 +12,8 @@
 
 1. HTTP 路径如何确定入口协议；
 2. 请求体何时读取、如何归一化；
-3. 原始 Authorization 与脱敏请求元数据如何分离；
-4. Bearer API Key 如何认证；
+3. 认证凭据如何被认证方案解析，脱敏请求元数据如何独立保留；
+4. Bearer API Key 在何处认证，身份如何进入请求上下文；
 5. API Key/User 两级缓存如何参与认证；
 6. `ProxyRequestState`、`ProxyEndpointContext` 和编排局部状态分别保存什么；
 7. queued、processing、success/failed 日志生命周期如何推进；
@@ -51,12 +55,20 @@
 
 - `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/ProxyRequestService.cs`
   - `StartRequest`
-  - `AuthenticateAccessKeyAsync`
 - `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/ProxyAccessService.cs`
-  - `AuthenticateBearerAsync`
-  - `AuthenticateAccessApiKeyAsync`
+  - `AuthenticateRawKeyAsync`
   - `LoadAccessKeyByHash`
   - `LoadUserById`
+- `opencodex_proxy/src/Presentation/OpenCodex.Api/Authentication/ProxyBearerAuthenticationHandler.cs`
+  - `HandleAuthenticateAsync`
+  - `HandleChallengeAsync`
+  - `ReadRawKey`
+- `opencodex_proxy/src/Presentation/OpenCodex.Api/Infrastructure/WebProxyIdentityContext.cs`
+  - `Current`
+  - `RequireIdentity`
+- `opencodex_proxy/src/Presentation/OpenCodex.Api/Errors/ProxyErrorResponseWriter.cs`
+  - `WriteAsync`
+  - `IsProxyCompatibilityEndpoint`
 - `opencodex_proxy/src/Libraries/OpenCodex.Core/Persistence/OpenCodexSecurity.cs`
   - `HashAccessApiKey`
 - `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Caching/TwoLevelCacheService.cs`
@@ -104,19 +116,24 @@
 - 不读取代理请求体；
 - 不构造 `ProxyEndpointContext`；
 - 不调用 `ProxyEndpointService.ProxyAsync`；
-- 直接调用 `AuthenticateAccessKeyAsync` 和模型路由列表。
+- 通过 `[Authorize(AuthenticationSchemes = ProxyBearerAuthenticationDefaults.Scheme)]` 复用同一认证方案，再用 `IProxyIdentityContext.RequireIdentity()` 取身份并查询模型路由列表。
 
 因此它属于发现接口，不属于请求转换状态机。
 
 ### 3.3 管理 Cookie 与代理 Bearer 的边界
 
-应用注册了 Cookie Authentication，主要服务于管理界面和管理接口。文本代理动作本身没有使用 `[Authorize]` 来接受管理会话，而是在业务服务中手动读取并验证 `Authorization`。
+应用同时注册两个认证方案：
+
+- `OpenCodexAdmin`（Cookie）：默认方案，服务管理界面和管理接口；
+- `OpenCodexProxyBearer`（自定义 handler）：只通过 `[Authorize(AuthenticationSchemes = ...)]` 绑定在 `ProxyController` 与 `ImagesController`。
+
+`ProxyBearerAuthenticationHandler` 只读取请求凭据，不参与管理会话判断；管理 Cookie 不在代理端点的方案列表内。
 
 结论：
 
-- 管理 Cookie 不替代代理访问 API Key；
-- 代理鉴权只依据传入 `Authorization` 字符串；
-- `HttpContext.User` 不是 `ProxyAccessService` 的认证输入。
+- 管理 Cookie 不能替代代理访问 API Key，携带管理 Cookie 请求代理端点仍返回 401；
+- 代理鉴权只依据 `Authorization` 头（按固定 `Bearer ` 前缀解析），`x-api-key` 等其它来源尚未启用；
+- `HttpContext.User` 是代理身份的唯一载体，业务服务通过 `IProxyIdentityContext` 读取。
 
 ## 4. 控制器阶段输入与输出
 
@@ -124,20 +141,20 @@
 
 `ProxyController.Proxy` 的顺序是：
 
+0. 授权中间件先按 `OpenCodexProxyBearer` 方案认证，失败即返回 401，动作不执行；
 1. 调用 `RequestBodyReader.ReadJsonObjectAsync` 读取并消费请求体；
-2. 读取原始 `Authorization` 请求头；
-3. 构造脱敏 `ProxyRequestMetadata`；
-4. 构造 `ProxyStreamResponseWriter`；
-5. 组装 `ProxyEndpointContext`；
-6. 调用 `IProxyEndpointService.ProxyAsync`；
-7. 根据 `ProxyEndpointResult.IsEmpty` 返回 `EmptyResult` 或普通状态码响应。
+2. 构造脱敏 `ProxyRequestMetadata`；
+3. 构造 `ProxyStreamResponseWriter`；
+4. 组装 `ProxyEndpointContext`；
+5. 调用 `IProxyEndpointService.ProxyAsync`；
+6. 根据 `ProxyEndpointResult.IsEmpty` 返回 `EmptyResult` 或普通状态码响应。
 
 重要区别：
 
-- **JSON 解析发生在鉴权之前**；
+- **鉴权发生在读取请求体之前**，凭据缺失或不可用时请求体不会被读取；
 - **请求体是否为有效 JSON 对象的业务错误判断发生在鉴权之后**。
 
-也就是说，缺少有效 Bearer 且请求体也非法时，请求体先被解析为 `null`，但 `ProxyEndpointService` 会先返回鉴权错误，而不是 body 错误。
+也就是说，缺少有效 Bearer 且请求体也非法时，只会返回鉴权错误，不会再触发 body 解析。
 
 ### 4.2 `ProxyEndpointContext`
 
@@ -145,14 +162,13 @@
 |---|---|---|
 | `EntryProtocol` | 否 | 控制器固定的入口协议 |
 | `Payload` | 是 | JSON 根对象；解析失败或非对象时为 null |
-| `AuthorizationHeader` | 是 | 原始 Authorization 值 |
 | `RequestMetadata` | 否 | 方法、路径、IP、脱敏请求头 |
 | `StreamWriter` | 否 | 下游流写入抽象 |
 | `CancellationToken` | 否 | `RequestAborted` |
 
-原始 Authorization 和 metadata headers 是两条不同数据通道：
+身份与 metadata headers 是两条不同数据通道：
 
-- 前者用于鉴权；
+- 前者由认证方案写入 `HttpContext.User`，业务侧通过 `IProxyIdentityContext` 读取；
 - 后者用于日志和特定 Responses header 透传；
 - metadata 中的 Authorization 已部分脱敏。
 
@@ -255,6 +271,7 @@ Bearer abcdefghijklmnop → Bearer a...mnop
 `ProxyEndpointService.ProxyAsync` 进入后立即调用：
 
 ```csharp
+var identity = _identity.RequireIdentity();
 var requestState = _requests.StartRequest();
 ```
 
@@ -263,8 +280,10 @@ var requestState = _requests.StartRequest();
 | 字段 | 生成规则 | 用途 |
 |---|---|---|
 | `RequestId` | `RandomNumberGenerator.GetHexString(12).ToLowerInvariant()` | 日志关联、OCR/attempt 子记录关联 |
-| `DefaultOwnerUsername` | 当前 `OpenCodexRuntimeSettings.AdminUsername` | 鉴权完成前或鉴权失败时的日志归属回退 |
 | `DefaultTimeout` | 当前 `OpenCodexRuntimeSettings.DefaultTimeout` | 上游超时的默认回退值 |
+
+所有者用户名不再有默认回退值：它只来自 `IProxyIdentityContext.RequireIdentity()`，
+缺少已认证身份时直接抛出 401，不会退化为管理员账号。
 
 ### 7.1 默认值来源
 
@@ -285,11 +304,11 @@ var requestState = _requests.StartRequest();
 
 二者不可互换。
 
-## 8. Bearer 鉴权判断
+## 8. Bearer 凭据解析与密钥校验
 
 ### 8.1 格式判断
 
-`ProxyAccessService.AuthenticateBearerAsync` 使用固定前缀：
+`ProxyBearerAuthenticationHandler.ReadRawKey` 使用固定前缀：
 
 ```text
 Bearer<空格>
@@ -299,15 +318,16 @@ Bearer<空格>
 
 | Authorization | 结果 |
 |---|---|
-| 缺失/null | 401 |
-| 不以 `Bearer ` 开头 | 401 |
+| 缺失/null | 无凭据，challenge 返回 401 |
+| 不以 `Bearer ` 开头 | 无凭据，challenge 返回 401 |
 | Bearer 大小写不同 | 接受，前缀比较忽略大小写 |
-| `Bearer ` 后只有空白 | 401 |
+| `Bearer ` 后只有空白 | 无凭据，challenge 返回 401 |
 | `Bearer   TOKEN` | 提取后 Trim，使用 `TOKEN` |
-| `BearerTOKEN` | 401，因为缺少固定空格 |
+| `BearerTOKEN` | 无凭据，challenge 返回 401，因为缺少固定空格 |
 | 任意非 `ocx_` 前缀 token | 不在格式阶段拒绝；仍计算 hash，通常查不到 |
 
-失败统一构造：
+凭据解析成功后交给 `IProxyAccessService.AuthenticateRawKeyAsync`；校验失败时 handler 返回
+`AuthenticateResult.Fail`，授权中间件随后触发 challenge。challenge 统一构造：
 
 - 异常类型：`BadRequestException`；
 - HTTP 状态：401；
@@ -324,6 +344,9 @@ Bearer<空格>
   }
 }
 ```
+
+非 `/v1` 路径（`/responses`、`/chat/completions`、`/messages`、`/models`、`/images/*`）
+返回 `ApiOpResult.Fail(401, ...)`，字段名为历史值 `ErrorCode`/`ErrorMsg`。
 
 ### 8.2 Token 查找
 
@@ -347,22 +370,25 @@ Bearer<空格>
 | 存在但 `Enabled=false` | 任意 | 401 |
 | 有效 | 不存在 | 401 |
 | 有效 | 存在但 `Enabled=false` | 401 |
-| 有效 | 有效 | 返回 `AuthenticatedAccessApiKeyDto` |
+| 有效 | 有效 | 返回 `AuthenticatedAccessApiKeyDto`，handler 据此写入 claims |
 
-成功 DTO 向后续编排提供：
+handler 只投影后续编排需要的字段，并附加到 `HttpContext.User` 的
+`OpenCodexProxyBearer` 身份上：
 
-- `Id`：API Key ID；
-- `OwnerUserId`；
-- `OwnerUsername`；
-- key 名称及掩码；
-- `User.Role`；
-- `User.Enabled`。
+| claim | 来源 | 用途 |
+|---|---|---|
+| `ClaimTypes.Name` | `OwnerUsername` | 路由隔离、日志归属 |
+| `opencodex_proxy_api_key_id` | `Id` | 请求日志 API Key 维度 |
+| `opencodex_proxy_owner_user_id` | `OwnerUserId` | Web Search 历史等按用户维度存储 |
+| `opencodex_proxy_owner_role` | `User.Role` | Web Search 模拟权限判断 |
 
-后续用途：
+`IProxyIdentityContext`（实现 `WebProxyIdentityContext`）是业务侧唯一读取入口：
 
-- `OwnerUsername`：隔离路由、亲和、容量、熔断、日志；
-- `Id`：请求日志 API Key 维度；
-- `User.Role`：Web Search 模拟权限判断。
+- `Current`：身份不完整时返回 null；
+- `RequireIdentity()`：无身份时抛 401，供路由漏挂认证方案时兜底。
+
+代理身份刻意不写入 `ClaimTypes.Role`，因此访问密钥所有者角色不会被管理端权限判断读取。
+key 名称、掩码、`User.Enabled` 等字段不再进入请求链路。
 
 ## 9. 鉴权缓存逻辑
 
@@ -463,11 +489,11 @@ flowchart TD
 
 日志中同时可能保存原始请求和上游请求，以便诊断重写差异。
 
-## 11. 鉴权后的基础判断顺序
+## 11. 认证完成后的基础判断顺序
 
-鉴权成功后，`ProxyEndpointService.ProxyAsync` 按以下顺序建立派生状态：
+认证已由管道完成，`ProxyEndpointService.ProxyAsync` 按以下顺序建立派生状态：
 
-1. 将 `ownerUsername`、`ownerRole`、`apiKeyId` 替换为认证结果；
+1. 读取 `IProxyIdentityContext.RequireIdentity()`，得到 `ownerUsername`、`ownerRole`、`ownerUserId`、`apiKeyId`；
 2. 将 `context.Payload` 赋给局部 `payload`；
 3. 若 payload 为 null，抛出 400；
 4. 提取 `requestModel`；
@@ -700,23 +726,28 @@ flowchart TD
 - 未处理普通异常返回 500 和 `An unexpected error occurred.`；
 - 若响应已经开始，中间件重新抛出，不清空响应。
 
+响应体序列化与 `/v1` 路径判断由 `ProxyErrorResponseWriter` 承载，
+认证 challenge（`ProxyBearerAuthenticationHandler.HandleChallengeAsync`）与中间件共用同一实现，
+避免 401 在两条路径上出现格式漂移。
+
 代理主链路多数首字节前 `ProxyException` 已由 `ProxyEndpointService` 转成 `ProxyEndpointResult`；中间件主要处理控制器直接抛错、模型接口错误、服务外错误和流开始后的异常边界。
 
 ## 16. 重要边界与当前实现细节
 
-### 16.1 JSON 解析在鉴权前发生
+### 16.1 鉴权发生在读取请求体之前
 
 这意味着：
 
-- 服务器会在确认 API Key 前读取整个 JSON body；
-- 但不会在鉴权前把 payload 写入主请求日志；
-- 大 body 的读取成本不受业务 Bearer 提前拦截。
+- 凭据缺失或不可用时，服务器不会读取整个 JSON body；
+- 未认证请求不进入 `ProxyEndpointService`，因此不会产生请求日志记录；
+- 大 body 的读取成本只发生在认证成功之后。
 
-本文只记录当前顺序，不推断反向代理层是否另有限制。
+这是相对迁移前实现的唯一顺序差异：迁移前鉴权在 `ProxyEndpointService` 内，
+JSON 解析先于鉴权，且认证失败会写出一条 401 请求日志。
 
 ### 16.2 认证缓存 DTO 时间字段
 
-`AuthenticateAccessApiKeyAsync` 构造 `AuthenticatedAccessApiKeyDto` 时：
+`AuthenticateRawKeyAsync` 构造 `AuthenticatedAccessApiKeyDto` 时：
 
 - `CreatedAt` 来自 key 记录；
 - `UpdatedAt` 使用当前时间；
@@ -803,7 +834,7 @@ flowchart TD
 - `WriteLog_RedactsNestedMcpAuthorizationTokens`
 - `WriteLog_RedactsNestedImageDataInObjectsAndArrays`
 - `WriteLog_DoesNotModifyClientResponseWhileSanitizingStoredLog`
-- `LifecycleMethods_PersistStatusesAndStreamLines`
+- `LifecycleMethods_PersistStatusesAndContentSlots`
 
 ### 18.4 集成入口
 
@@ -812,6 +843,21 @@ flowchart TD
 - `ResponsesProxy_DropToolTypes_StripsImageGenerationToolsOnly`
 
 该测试通过真实 `/v1/responses` 请求、Bearer access key 和测试宿主覆盖控制器到代理服务的集成路径。
+
+认证管道契约测试：
+
+- `opencodex_proxy/tests/OpenCodex.Api.Tests/ProxyAuthenticationPipelineTests.cs`
+  - `MissingCredential_ReturnsProtocolSpecificUnauthorizedBody`
+  - `MalformedCredential_ReturnsUnauthorized`
+  - `UnknownCredential_ReturnsUnauthorized`
+  - `DisabledCredential_ReturnsUnauthorized`
+  - `AdminCookie_DoesNotAuthenticateProxyEndpoint`
+  - `ValidCredential_AuthenticatesVersionedAndAdminModelRoutes`
+  - `MissingCredential_RejectsRequestBeforeEndpointExecutes`
+- `opencodex_proxy/tests/OpenCodex.Api.Tests/WebProxyIdentityContextTests.cs`
+  - `Current_ProxyBearerPrincipal_ReturnsIdentity`
+  - `Current_AdminCookiePrincipal_ReturnsNull`
+  - `RequireIdentity_WithoutHttpContext_ThrowsUnauthorized`
 
 路由暴露检查：
 
@@ -823,15 +869,15 @@ flowchart TD
 
 未发现针对以下基础入口行为的专门测试：
 
-1. `ProxyAccessService.AuthenticateBearerAsync` 的前缀、空白、大小写和 disabled key/user 决策；
-2. 鉴权 L1/L2/DB 顺序及 60 秒 TTL；
-3. 认证失败不负缓存；
-4. `RequestBodyReader` 的 malformed/non-object/数字类型/重复键；
-5. `ProxyRequestMetadataFactory` 的“前 8 + 后 4”掩码；
-6. 缺失 Bearer 与非法 body 同时存在时的错误优先级；
-7. 认证失败日志是否使用默认 owner 且不保存已解析 payload；
-8. 普通非 `ProxyException` 导致的最终 HTTP 状态与日志状态一致性；
-9. 文本代理对非 `application/json` Content-Type 的当前接受行为；
-10. 管理 Cookie 不能替代代理 Bearer 的端到端契约。
+1. 鉴权 L1/L2/DB 顺序及 60 秒 TTL；
+2. 认证失败不负缓存；
+3. `RequestBodyReader` 的 malformed/non-object/数字类型/重复键；
+4. `ProxyRequestMetadataFactory` 的“前 8 + 后 4”掩码；
+5. 普通非 `ProxyException` 导致的最终 HTTP 状态与日志状态一致性；
+6. 文本代理对非 `application/json` Content-Type 的当前接受行为；
+7. 未认证请求不再写请求日志这一顺序变更的显式回归测试（当前由结构与 401 状态间接保证）。
+
+凭据前缀、空白、大小写与 disabled key/user 决策已由
+`ProxyAuthenticationPipelineTests` 覆盖；管理 Cookie 不能替代代理 Bearer 的端到端契约同样已覆盖。
 
 这些行为在本文中均按当前源码路径记录；维护时建议补充为独立的入口契约测试。

@@ -430,7 +430,8 @@ sequenceDiagram
 - 经过筛选的上游/下游 SSE 行；
 - Web Search 详情。
 
-`ProxyStreamService.CaptureLoggableStreamLines` 不记录所有配置快照，而优先记录文本、推理、工具增量、终止和错误事件。`response.completed` 只保留允许的 envelope 字段，防止日志重复保存整个大 output。
+`ProxyStreamService.CaptureStreamLogLines` 不再记录逐行内容，只保留最后一行非 `[DONE]` 的 `data:` 行；
+终止事件是否出现决定该流记录为成功还是断流失败。完整响应仍由 `StreamResponseCapture` 重建。
 
 ---
 

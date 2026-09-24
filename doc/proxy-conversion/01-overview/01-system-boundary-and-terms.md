@@ -119,10 +119,12 @@ OCR 降级的目标是让**原本包含图片的文本协议请求**可以继续
 |---|---|---|
 | `EntryProtocol` | 控制器按路由固定传入 | 客户端期望的协议形态，也是最终响应必须恢复的协议 |
 | `Payload` | `RequestBodyReader` | 松类型 JSON 对象；解析失败或根节点不是对象时为 `null` |
-| `AuthorizationHeader` | HTTP `Authorization` | 只用于 OpenCodex 访问密钥认证；不直接透传给上游 |
 | `RequestMetadata` | 方法、路径、IP、脱敏请求头 | 用于日志，以及 Responses→Responses 时筛选部分 Codex 请求头 |
 | `StreamWriter` | `ProxyStreamResponseWriter` | 延迟准备 SSE 响应并逐行写出 |
 | `CancellationToken` | `HttpContext.RequestAborted` | 客户端断连/取消向下游和上游传播 |
+
+访问密钥认证已移出该上下文：`ProxyController` / `ImagesController` 通过
+`OpenCodexProxyBearer` 认证方案认证，身份经 `HttpContext.User` 由 `IProxyIdentityContext` 读取。
 
 ### 4.2 输出
 

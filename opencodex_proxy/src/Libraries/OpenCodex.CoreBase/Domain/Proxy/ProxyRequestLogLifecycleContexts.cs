@@ -15,7 +15,7 @@ public sealed class ProxyRequestLogQueuedContext
         IReadOnlyDictionary<string, string> requestHeaders,
         string requestType = ProxyRequestTypes.Main,
         Guid? parentRequestLogId = null,
-        string? rawRequestBody = null)
+        ReadOnlyMemory<byte>? rawRequestBody = null)
     {
         RequestId = requestId;
         OwnerUsername = ownerUsername;
@@ -56,7 +56,10 @@ public sealed class ProxyRequestLogQueuedContext
 
     public Guid? ParentRequestLogId { get; }
 
-    public string? RawRequestBody { get; }
+    /// <summary>
+    /// 获取入口读取到的原始 UTF-8 请求正文字节（如果可用）。
+    /// </summary>
+    public ReadOnlyMemory<byte>? RawRequestBody { get; }
 }
 
 public sealed class ProxyRequestLogProcessingContext
@@ -96,20 +99,4 @@ public sealed class ProxyRequestLogProcessingContext
     public string? ChannelType { get; }
 
     public bool IsStream { get; }
-}
-
-public sealed class ProxyRequestStreamLineCapture
-{
-    public ProxyRequestStreamLineCapture(int sequence, string source, string rawLine)
-    {
-        Sequence = sequence;
-        Source = source;
-        RawLine = rawLine;
-    }
-
-    public int Sequence { get; }
-
-    public string Source { get; }
-
-    public string RawLine { get; }
 }

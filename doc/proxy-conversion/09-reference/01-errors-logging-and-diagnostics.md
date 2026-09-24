@@ -386,18 +386,17 @@ main 完成时查找相同 `RequestId` 且 parent 为空的 OCR 日志，批量�
 
 所有这些 JSON 字符串写入前都经过 `SerializeForLog` 和深拷贝脱敏。
 
-### 7.3 `RequestLogStreamLine`
+### 7.3 流式请求的失败信息
 
-每条：
+逐行 SSE 已不再持久化（历史槽位 8 已废弃）。流式请求失败时，
+`RequestLog.Error` 由三部分合成，整体截断到 2000 字符：
 
 ```text
-RequestLogId + Sequence + OccurredAt + Source + RawLine
+<原错误消息或终止原因默认文案>｜终止:<Completed|UnexpectedEnd|UpstreamError|ClientCancelled>｜最后SSE:<最后一行非 [DONE] 的 data 行>
 ```
 
-`Source` 当前主要为：
-
-- `upstream`：上游原始 SSE；
-- `downstream`：转换后/模拟后写给客户端的 SSE。
+终止事件按客户端协议判定（Responses：`response.completed`/`failed`/`incomplete`；
+Messages：`message_stop`/`error`；Chat：`data: [DONE]`）。未收到终止事件即判定为断流并记为失败。
 
 完成日志时按 `Sequence` 排序；若本次有新 captures，先删除该日志已有行再插入，避免重复。
 
@@ -465,9 +464,11 @@ ModelUsageVector
 
 ### 9.2 为什么不保存每一行
 
-`CaptureLoggableStreamLines` 是有选择的诊断捕获，避免日志被 metadata、完整 final response output 或无意义 keep-alive 淹没。
+逐行捕获会在长流请求中把整个响应（上游与下游各一份）留在内存里直到请求结束，
+并且随流长度线性放大日志存储。现在只保留最后一行可读数据行与终止原因，
+既能把断流/失败定位到具体内容，又保证内存与日志体积是常量级。
 
-Responses 可记录事件：
+早期实现曾按事件类型过滤后记录行，保留的事件类型大致为：
 
 ```text
 response.completed
@@ -511,20 +512,9 @@ Chat 没有显式 event name 时，只要：
 
 `data: [DONE]` 总会记录。
 
-### 9.3 `response.completed` 摘要化
-
-为了不在 SSE line 表里重复保存完整 output，捕获时只保留其 `response` 下：
-
-```text
-id, object, created_at, completed_at, status, model,
-usage, error, incomplete_details
-```
-
-原完整响应仍可由 accumulator 放入 `UpstreamResponseBody`，这是两个不同的观测层。
-
-### 9.4 事件空行
-
-当某个可记录事件已经打开，后续空行会作为 `RawLine=""` 保存，以保留 SSE event 边界。无已记录事件的空行不会单独写日志。
+上述事件类型过滤、`response.completed` 摘要化与空行边界保存均属于已删除的旧实现。
+当前实现不做事件类型过滤，只保留最后一行非 `[DONE]` 的 `data:` 行，也不再保存空行边界；
+完整响应仍由 `StreamResponseCapture` 重建后写入 `UpstreamResponseBody`。
 
 ---
 
@@ -700,7 +690,7 @@ RequestLogDetail.UpstreamResponseBody
 3. 客户端实际收到的 Responses SSE；
 4. `StreamTimingsJson`。
 
-当前渠道诊断没有把逐行 SSE captures 传入 `ProxyLogContext.StreamLines`；它依赖完整响应捕获和时序日志。
+当前不存在逐行 SSE 日志字段；渠道诊断依赖完整响应捕获和时序日志。
 
 ---
 
@@ -763,7 +753,9 @@ RequestLogDetail.UpstreamResponseBody
 | 长 base64 不留存且不修改源 | `ProxyLogServiceTests.WriteLog_DoesNotRetainLongBase64SentinelOrMutateSource` |
 | byte[]/Stream 占位 | `ProxyLogServiceTests.WriteLog_ReplacesBinaryValuesWithoutEnumeratingThem` |
 | 流时序持久化 | `ProxyLogServiceTests.WriteLog_PersistsStreamTimingsJson` |
-| queued/processing/completed + SSE 行 | `ProxyLogServiceTests.LifecycleMethods_PersistStatusesAndStreamLines` |
+| queued/processing/completed + 内容槽位 | `ProxyLogServiceTests.LifecycleMethods_PersistStatusesAndContentSlots` |
+| 断流标记与最后一行 SSE 错误合成 | `ProxyStreamServiceTests.StreamAsync_PassThroughTruncated_LogsUnexpectedEndWithLastDataLine` |
+| 历史流日志槽位清理 | `StreamLineLogCleanupServiceTests.ExecuteAsync_KeepsBlocksSharedWithOtherSlots` |
 | 渠道诊断日志 secrets | `ChannelDiagnosticsLogTests.TestChannelStreamWritesRequestLogWithoutSecrets` |
 | completed 诊断事件 | `ChannelDiagnosticsLogTests.TestChannelStreamEmitsDiagnosticDetailEvent` |
 | Chat 转 Responses、日志留原响应 | `ChannelDiagnosticsLogTests.TestChannelStreamForChatChannelExtractsOutputText` |

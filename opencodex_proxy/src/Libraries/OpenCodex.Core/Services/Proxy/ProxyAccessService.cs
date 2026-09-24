@@ -1,5 +1,4 @@
 using OpenCodex.Core.Domain;
-using OpenCodex.Core.Errors;
 using OpenCodex.Core.Security;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Caching;
@@ -11,7 +10,6 @@ namespace OpenCodex.Core.Services.Proxy;
 
 public sealed class ProxyAccessService : IProxyAccessService
 {
-    private const string RequiredBearerMessage = "valid bearer api key required";
     private static readonly TimeSpan AuthCacheTtl = TimeSpan.FromSeconds(60);
 
     private readonly IRepository<AccessApiKey> _keyRepository;
@@ -28,31 +26,7 @@ public sealed class ProxyAccessService : IProxyAccessService
         _cache = cache;
     }
 
-    public async Task<AuthenticatedAccessApiKeyDto> AuthenticateBearerAsync(string? authorizationHeader)
-    {
-        const string prefix = "Bearer ";
-        var authorization = authorizationHeader ?? string.Empty;
-        if (!authorization.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-        {
-            throw Unauthorized();
-        }
-
-        var rawKey = authorization[prefix.Length..].Trim();
-        var accessKey = await AuthenticateAccessApiKeyAsync(rawKey);
-        if (accessKey is null)
-        {
-            throw Unauthorized();
-        }
-
-        return accessKey;
-    }
-
-    private static BadRequestException Unauthorized()
-    {
-        return new BadRequestException(RequiredBearerMessage, ProxyHttpStatus.Unauthorized);
-    }
-
-    private async Task<AuthenticatedAccessApiKeyDto?> AuthenticateAccessApiKeyAsync(string? rawKey)
+    public async Task<AuthenticatedAccessApiKeyDto?> AuthenticateRawKeyAsync(string? rawKey)
     {
         rawKey = (rawKey ?? string.Empty).Trim();
         if (rawKey.Length == 0)

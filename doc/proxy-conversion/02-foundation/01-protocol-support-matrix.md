@@ -143,10 +143,11 @@ ProtocolConverter.ConvertResponse(
 |---|---|---|
 | `EntryProtocol` | 控制器动作固定值 | 决定客户端协议 |
 | `Payload` | `RequestBodyReader.ReadJsonObjectAsync` | 弱类型 JSON 请求对象 |
-| `AuthorizationHeader` | 原始 `Authorization` 请求头 | Bearer API Key 鉴权 |
 | `RequestMetadata` | `ProxyRequestMetadataFactory.FromHttpRequest` | 方法、路径、IP、脱敏头 |
 | `StreamWriter` | `ProxyStreamResponseWriter` | 流式响应写出 |
 | `CancellationToken` | `HttpContext.RequestAborted` | 客户端取消传播 |
+
+`Authorization` 不再作为主链路输入透传：认证在授权中间件完成，身份由 `IProxyIdentityContext` 提供。
 
 ### 5.2 协议转换输入
 
@@ -286,7 +287,7 @@ DeepCopy(payload)
 
 1. 调用 `IUpstreamClient.StreamJsonAsync`；
 2. 不进入 `SseStreamConverter`；
-3. 上游行通过 `CaptureLoggableStreamLines` 和 `CapturePassThroughResponse`；
+3. 上游行通过 `CapturePassThroughResponse`，同时由 `CaptureStreamLogLines` 记录最后一行 data 行；
 4. 原始行写向客户端；
 5. `StreamResponseCapture` 尝试重建用于日志、Usage 和计费的上游响应。
 

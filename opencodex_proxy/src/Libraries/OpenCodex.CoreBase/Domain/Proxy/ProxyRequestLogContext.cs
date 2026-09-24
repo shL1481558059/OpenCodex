@@ -36,7 +36,6 @@ public sealed class ProxyRequestLogContext
     /// <param name="parentRequestLogId">父请求日志标识符（如果可用）。</param>
     /// <param name="ocrDetails">OCR 专用详情（如果可用）。</param>
     /// <param name="rawRequestBody">入口读取到的原始 UTF-8 请求正文（如果可用）。</param>
-    /// <param name="streamLines">按原始 SSE line 记录的上游流片段（如果可用）。</param>
     public ProxyRequestLogContext(
         string requestId,
         string ownerUsername,
@@ -63,8 +62,7 @@ public sealed class ProxyRequestLogContext
         string requestType = ProxyRequestTypes.Main,
         Guid? parentRequestLogId = null,
         Dictionary<string, object?>? ocrDetails = null,
-        string? rawRequestBody = null,
-        IReadOnlyList<ProxyRequestStreamLineCapture>? streamLines = null)
+        ReadOnlyMemory<byte>? rawRequestBody = null)
     {
         RequestId = requestId;
         OwnerUsername = ownerUsername;
@@ -92,7 +90,6 @@ public sealed class ProxyRequestLogContext
         ParentRequestLogId = parentRequestLogId;
         OcrDetails = ocrDetails;
         RawRequestBody = rawRequestBody;
-        StreamLines = streamLines;
     }
 
     /// <summary>
@@ -221,12 +218,8 @@ public sealed class ProxyRequestLogContext
     public Dictionary<string, object?>? OcrDetails { get; }
 
     /// <summary>
-    /// 获取入口读取到的原始 UTF-8 请求正文（如果可用）。
+    /// 获取入口读取到的原始 UTF-8 请求正文字节（如果可用）。
     /// </summary>
-    public string? RawRequestBody { get; }
+    public ReadOnlyMemory<byte>? RawRequestBody { get; }
 
-    /// <summary>
-    /// 获取按原始 SSE line 记录的上游流片段（如果可用）。
-    /// </summary>
-    public IReadOnlyList<ProxyRequestStreamLineCapture>? StreamLines { get; }
 }
