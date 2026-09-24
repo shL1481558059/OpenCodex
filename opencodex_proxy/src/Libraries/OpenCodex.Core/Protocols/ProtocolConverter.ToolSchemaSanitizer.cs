@@ -134,7 +134,11 @@ public static partial class ProtocolConverter
         schema = NormalizeJsonValue(schema);
         if (TryAsObject(schema, out var root))
         {
-            schema = ExpandSchemaDefs(root, root, depth: 0);
+            var context = new SchemaExpansionContext(
+                TryAsObject(GetValue(root, "$defs"), out var defsObject)
+                    ? defsObject
+                    : new Dictionary<string, object?>());
+            schema = ExpandSchemaDefs(root, context, depth: 0);
         }
 
         return SanitizeSchemaValue(schema);
@@ -157,32 +161,53 @@ public static partial class ProtocolConverter
     }
 
     private const int MaxSchemaDefDepth = 32;
+    private const int MaxSchemaExpansionNodes = 20_000;
+
+    /// <summary>
+    /// 展开工具 schema 的 $ref 时贯穿始终的状态：$defs 定义、当前正在展开的 $ref 链
+    /// （用于环检测），以及剩余节点预算（防止无环但多重引用导致的指数级膨胀）。
+    /// </summary>
+    private sealed class SchemaExpansionContext
+    {
+        public SchemaExpansionContext(Dictionary<string, object?> defs)
+        {
+            Defs = defs;
+        }
+
+        public Dictionary<string, object?> Defs { get; }
+
+        public HashSet<string> ActiveRefs { get; } = new(StringComparer.Ordinal);
+
+        public int RemainingNodes { get; set; } = MaxSchemaExpansionNodes;
+    }
+
+    private static Dictionary<string, object?> LooseObjectSchema() => new()
+    {
+        ["type"] = "object",
+        ["properties"] = new Dictionary<string, object?>()
+    };
 
     /// <summary>
     /// 把工具参数 schema 里的 $ref/$defs 内部引用就地展开为自包含结构。
     /// chat/messages 上游（含部分中转聚合层）不支持引用式 schema，遇到 $ref 会拒绝。
+    /// 展开时通过 <see cref="SchemaExpansionContext.ActiveRefs"/> 做环检测，并受节点预算
+    /// 约束，避免自引用或多重引用 schema 造成指数级膨胀甚至 OutOfMemoryException。
     /// </summary>
     private static Dictionary<string, object?> ExpandSchemaDefs(
         Dictionary<string, object?> schema,
-        Dictionary<string, object?> root,
+        SchemaExpansionContext context,
         int depth)
     {
-        if (depth > MaxSchemaDefDepth)
+        if (depth > MaxSchemaDefDepth || context.RemainingNodes <= 0)
         {
-            return new Dictionary<string, object?>
-            {
-                ["type"] = "object",
-                ["properties"] = new Dictionary<string, object?>()
-            };
+            return LooseObjectSchema();
         }
 
-        var defs = TryAsObject(GetValue(root, "$defs"), out var defsObject)
-            ? defsObject
-            : new Dictionary<string, object?>();
+        context.RemainingNodes--;
 
         var result = schema.ToDictionary(
             pair => pair.Key,
-            pair => ExpandSchemaDefsValue(pair.Value, root, defs, depth),
+            pair => ExpandSchemaDefsValue(pair.Value, context, depth),
             StringComparer.Ordinal);
 
         result.Remove("$defs");
@@ -190,9 +215,19 @@ public static partial class ProtocolConverter
         if (TryGetSchemaRef(result, out var refKey))
         {
             result.Remove("$ref");
-            if (defs.TryGetValue(refKey, out var definition))
+
+            // 环检测：该 $ref 已在当前展开链上（自引用或相互引用），停止内联，
+            // 保留同级已展开字段，为空则降级为宽松 object，杜绝无限展开。
+            if (context.ActiveRefs.Contains(refKey))
             {
-                var expanded = ExpandSchemaDefsValue(definition, root, defs, depth + 1);
+                return result.Count > 0 ? result : LooseObjectSchema();
+            }
+
+            if (context.Defs.TryGetValue(refKey, out var definition))
+            {
+                context.ActiveRefs.Add(refKey);
+                var expanded = ExpandSchemaDefsValue(definition, context, depth + 1);
+                context.ActiveRefs.Remove(refKey);
                 if (TryAsObject(expanded, out var expandedObject))
                 {
                     foreach (var (key, value) in expandedObject)
@@ -211,19 +246,23 @@ public static partial class ProtocolConverter
 
     private static object? ExpandSchemaDefsValue(
         object? value,
-        Dictionary<string, object?> root,
-        Dictionary<string, object?> defs,
+        SchemaExpansionContext context,
         int depth)
     {
+        if (context.RemainingNodes <= 0)
+        {
+            return LooseObjectSchema();
+        }
+
         if (TryAsObject(value, out var dictionary))
         {
-            return ExpandSchemaDefs(dictionary, root, depth);
+            return ExpandSchemaDefs(dictionary, context, depth);
         }
 
         if (TryAsList(value, out var list))
         {
             return list
-                .Select(item => ExpandSchemaDefsValue(item, root, defs, depth))
+                .Select(item => ExpandSchemaDefsValue(item, context, depth))
                 .ToList();
         }
 
