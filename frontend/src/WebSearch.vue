@@ -519,11 +519,16 @@ function buildWebSearchKeyFromDraft() {
 }
 
 function assignWebSearchConfig(data) {
+  const providers = normalizeWebSearchProviders(data?.providers);
+  const defaultKeyUsageLimit = normalizePositiveInteger(
+    data?.default_key_usage_limit || data?.key_usage_limit,
+    1000
+  );
   Object.assign(webSearchConfig, defaultWebSearchConfig(), data || {}, {
     mode: normalizeWebSearchMode(data?.mode),
-    providers: normalizeWebSearchProviders(data?.providers),
-    default_key_usage_limit: normalizePositiveInteger(data?.default_key_usage_limit || data?.key_usage_limit, 1000),
-    keys: normalizeWebSearchKeys(data?.keys || [])
+    providers,
+    default_key_usage_limit: defaultKeyUsageLimit,
+    keys: normalizeWebSearchKeys(data?.keys || [], providers, defaultKeyUsageLimit)
   });
 }
 
@@ -533,14 +538,14 @@ function normalizeWebSearchProviders(providers) {
   return normalized.length ? Array.from(new Set(normalized)) : ["tavily"];
 }
 
-function firstWebSearchProvider() {
-  return normalizeWebSearchProviders(webSearchConfig.providers)[0] || "tavily";
+function firstWebSearchProvider(providers = webSearchConfig.providers) {
+  return normalizeWebSearchProviders(providers)[0] || "tavily";
 }
 
-function normalizeWebSearchProvider(provider) {
-  const normalized = String(provider || firstWebSearchProvider()).trim().toLowerCase();
-  const options = normalizeWebSearchProviders(webSearchConfig.providers);
-  return options.includes(normalized) ? normalized : firstWebSearchProvider();
+function normalizeWebSearchProvider(provider, providers = webSearchConfig.providers) {
+  const options = normalizeWebSearchProviders(providers);
+  const normalized = String(provider || firstWebSearchProvider(options)).trim().toLowerCase();
+  return options.includes(normalized) ? normalized : firstWebSearchProvider(options);
 }
 
 function formatWebSearchProvider(provider) {
@@ -569,14 +574,14 @@ function webSearchKeyLimit(key) {
   return normalizePositiveInteger(key?.usage_limit || key?.key_usage_limit, defaultWebSearchKeyUsageLimit());
 }
 
-function normalizeWebSearchKeys(keys) {
+function normalizeWebSearchKeys(keys, providers = webSearchConfig.providers, fallbackUsageLimit = defaultWebSearchKeyUsageLimit()) {
   if (!Array.isArray(keys)) return [];
   return keys.map((item, index) => {
-    const usageLimit = normalizePositiveInteger(item?.usage_limit || item?.key_usage_limit, defaultWebSearchKeyUsageLimit());
+    const usageLimit = normalizePositiveInteger(item?.usage_limit || item?.key_usage_limit, fallbackUsageLimit);
     return {
       client_id: item?.id ? `saved-${item.id}` : item?.client_id || `new-${index}-${Date.now()}`,
       id: item?.id || null,
-      provider: normalizeWebSearchProvider(item?.provider),
+      provider: normalizeWebSearchProvider(item?.provider, providers),
       key: String(item?.key || item?.api_key || ""),
       enabled: item?.enabled !== false,
       usage_count: normalizeNonNegativeInteger(item?.usage_count, 0),
