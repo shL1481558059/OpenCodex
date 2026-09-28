@@ -1534,6 +1534,8 @@ function resolveDisplayStatus(row) {
 }
 
 function formatApiKeyName(row) {
+  // 渠道诊断没有 API Key，用日志类型占位，便于在列表里直接认出连接测试。
+  if (row.request_type === "diagnostic") return formatRequestType(row.request_type);
   const name = String(row.api_key_name || "").trim();
   if (name) return name;
   return row.api_key_id === null || row.api_key_id === undefined ? "" : `#${row.api_key_id}`;
