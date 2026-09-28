@@ -224,20 +224,15 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
         catch (ProxyException exception)
         {
             captureTermination = StreamCaptureTermination.UpstreamError;
-            upstreamResponse ??= responseCapture?
+            var capturedUpstreamResponse = responseCapture?
                 .Complete(captureTermination)
                 .Response;
             statusCode = exception.StatusCode;
             error = exception.Message;
             errorResponse = exception.ToResponse();
-            if (upstreamResponse is null
-                && exception is UpstreamException { Body: not null } upstream)
-            {
-                upstreamResponse = new Dictionary<string, object?>(StringComparer.Ordinal)
-                {
-                    ["error"] = upstream.Body
-                };
-            }
+            upstreamResponse = UpstreamErrorPayload.Combine(
+                capturedUpstreamResponse,
+                UpstreamErrorPayload.FromException(exception)) ?? upstreamResponse;
 
             await WriteSseEventAsync(
                 "channel_test.error",

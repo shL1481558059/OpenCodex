@@ -68,10 +68,16 @@ function applyChannelTestDetails(result, data) {
   }
 
   const statusCode = Number(data.status_code || 0);
-  const errorMessage = extractErrorMessage(data.error_response) || extractErrorMessage(data);
-  if (statusCode >= 400 || errorMessage) {
+  const statusError = extractErrorMessage(data);
+  const clientError = extractErrorMessage(data.error_response);
+  if (statusCode >= 400 || clientError || statusError) {
     result.phase = "error";
-    result.error = errorMessage || result.error || "上游请求失败";
+    // 诊断场景优先暴露上游原始错误；error_response 是给客户端看的脱敏文案，只做兜底。
+    result.error = extractDeepErrorMessage(data.upstream_response?.error)
+      || statusError
+      || clientError
+      || result.error
+      || "上游请求失败";
     return;
   }
 
@@ -135,9 +141,9 @@ export function formatChannelTestResult(result) {
     return responseText || "已连接到上游，正在接收响应...";
   }
   if (result.phase === "error") {
-    const details = extractErrorMessage(result.body);
     const primary = result.error || "上游请求失败";
-    return [primary, details].filter((text) => Boolean(text) && text !== primary).join("\n") || primary;
+    const statusError = String(result.details?.error || "").trim();
+    return statusError && statusError !== primary ? `${primary}\n${statusError}` : primary;
   }
   const responseText = extractResponseText(result.response);
   if (responseText) return responseText;
@@ -150,6 +156,24 @@ function extractErrorMessage(value) {
   if (typeof value.error === "string") return value.error;
   if (value.error?.message) return String(value.error.message);
   if (value.message) return String(value.message);
+  return "";
+}
+
+// 上游错误体经诊断接口透传后会再包一层 error，需要沿 error 链向下找第一条 message。
+function extractDeepErrorMessage(value, depth = 0) {
+  if (!value || depth > 4) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value !== "object") return "";
+
+  if (typeof value.message === "string" && value.message.trim()) {
+    return value.message.trim();
+  }
+  if (typeof value.error === "string") {
+    return value.error.trim();
+  }
+  if (value.error && typeof value.error === "object") {
+    return extractDeepErrorMessage(value.error, depth + 1);
+  }
   return "";
 }
 

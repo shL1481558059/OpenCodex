@@ -201,7 +201,7 @@ public sealed class ObservabilityService : IObservabilityService
         bool isSuperadmin)
     {
         var query = _logRepository.TableNoTracking
-            .Where(ExcludedRequestTypePredicate());
+            .Where(ExcludedFromStatsPredicate());
 
         if (!isSuperadmin)
         {
@@ -406,7 +406,10 @@ public sealed class ObservabilityService : IObservabilityService
         var parsedPageSize = ParseLogPageSize(pageSize);
         var parsedPage = ParseLogPage(page);
         var offset = (parsedPage - 1) * parsedPageSize;
-        var query = ApplyLogFilters(_logRepository.TableNoTracking, filters ?? new Dictionary<string, object?>());
+        var query = ApplyLogFilters(
+            _logRepository.TableNoTracking,
+            filters ?? new Dictionary<string, object?>(),
+            LogTypeFilterScope.List);
         var total = query.Count();
         var logs = query
             .OrderByDescending(log => log.CreatedAt)
@@ -478,7 +481,7 @@ public sealed class ObservabilityService : IObservabilityService
         var query = ApplyLogFilters(
             _logRepository.TableNoTracking,
             filters ?? new Dictionary<string, object?>(),
-            excludeAttemptsByDefault: false);
+            scope: null);
         var log = query
             .Where(item => item.Id == guidId)
             .Select(item => new RequestLogRow
@@ -561,7 +564,10 @@ public sealed class ObservabilityService : IObservabilityService
             return new Dictionary<string, object>(StringComparer.Ordinal);
         }
 
-        var logs = ApplyLogFilters(_logRepository.TableNoTracking, filters ?? new Dictionary<string, object?>());
+        var logs = ApplyLogFilters(
+            _logRepository.TableNoTracking,
+            filters ?? new Dictionary<string, object?>(),
+            LogTypeFilterScope.List);
         var values = field == "api_key_id"
             ? (object)DistinctApiKeyOptions(logs, query)
             : field == "channel_id"
@@ -605,10 +611,22 @@ public sealed class ObservabilityService : IObservabilityService
             errorDistribution);
     }
 
+    /// <summary>
+    /// 未显式筛选 request_type 时采用的默认口径。
+    /// </summary>
+    private enum LogTypeFilterScope
+    {
+        /// <summary>统计口径：只算真实业务流量，排除渠道尝试与渠道诊断。</summary>
+        Statistics,
+
+        /// <summary>列表口径：保留渠道诊断，仅折叠渠道尝试子日志。</summary>
+        List
+    }
+
     private IQueryable<RequestLog> ApplyLogFilters(
         IQueryable<RequestLog> query,
         IReadOnlyDictionary<string, object?> filters,
-        bool excludeAttemptsByDefault = true)
+        LogTypeFilterScope? scope = LogTypeFilterScope.Statistics)
     {
         var hasRequestTypeFilter = false;
         foreach (var (field, value) in filters)
@@ -626,20 +644,28 @@ public sealed class ObservabilityService : IObservabilityService
             query = ApplyLogFilter(query, field, value);
         }
 
-        if (excludeAttemptsByDefault && !hasRequestTypeFilter)
+        if (scope is { } effectiveScope && !hasRequestTypeFilter)
         {
-            query = query.Where(ExcludedRequestTypePredicate());
+            query = query.Where(effectiveScope == LogTypeFilterScope.Statistics
+                ? ExcludedFromStatsPredicate()
+                : ExcludedFromListPredicate());
         }
 
         return query;
     }
 
-    private static System.Linq.Expressions.Expression<Func<RequestLog, bool>> ExcludedRequestTypePredicate()
+    // 保持显式的 != 链，确保 EF Core 能将条件翻译成 SQL（SQLite / PostgreSQL 均可）。
+    private static System.Linq.Expressions.Expression<Func<RequestLog, bool>> ExcludedFromStatsPredicate()
     {
-        // 保持显式的 != 链，确保 EF Core 能将条件翻译成 SQL（SQLite / PostgreSQL 均可）。
         return log => log.RequestType == null
             || (log.RequestType != ProxyRequestTypes.Attempt
                 && log.RequestType != ProxyRequestTypes.Diagnostic);
+    }
+
+    private static System.Linq.Expressions.Expression<Func<RequestLog, bool>> ExcludedFromListPredicate()
+    {
+        return log => log.RequestType == null
+            || log.RequestType != ProxyRequestTypes.Attempt;
     }
 
     private IQueryable<RequestLog> ApplyLogFilter(

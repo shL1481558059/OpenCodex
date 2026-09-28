@@ -119,9 +119,9 @@ public sealed partial class ProxyStreamService : IProxyStreamService
             {
                 statusCode = proxyException.StatusCode;
                 errorResponse = proxyException.ToResponse();
-                upstreamResponse = CombineCapturedAndErrorResponse(
+                upstreamResponse = UpstreamErrorPayload.Combine(
                     capturedUpstreamResponse,
-                    UpstreamErrorBody(proxyException))
+                    UpstreamErrorPayload.FromException(proxyException))
                     ?? upstreamResponse;
             }
             else
@@ -203,52 +203,6 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         return (int)Math.Round(
             Stopwatch.GetElapsedTime(started).TotalMilliseconds,
             MidpointRounding.AwayFromZero);
-    }
-
-    private static Dictionary<string, object?>? UpstreamErrorBody(ProxyException exception)
-    {
-        if (exception is UpstreamException { Body: not null } upstream)
-        {
-            return new Dictionary<string, object?>(StringComparer.Ordinal)
-            {
-                ["error"] = upstream.Body
-            };
-        }
-
-        return null;
-    }
-
-    private static Dictionary<string, object?>? CombineCapturedAndErrorResponse(
-        Dictionary<string, object?>? captured,
-        Dictionary<string, object?>? errorResponse)
-    {
-        if (captured is null)
-        {
-            return errorResponse;
-        }
-
-        if (errorResponse is null)
-        {
-            return captured;
-        }
-
-        var hasProtocolResponse = captured.Keys.Any(key => key != "_opencodex_capture");
-        if (!hasProtocolResponse)
-        {
-            if (captured.TryGetValue("_opencodex_capture", out var captureMetadata))
-            {
-                errorResponse["_opencodex_capture"] = captureMetadata;
-            }
-
-            return errorResponse;
-        }
-
-        foreach (var (key, value) in errorResponse)
-        {
-            captured.TryAdd(key, value);
-        }
-
-        return captured;
     }
 
     internal static async IAsyncEnumerable<string> CapturePassThroughResponse(

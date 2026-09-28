@@ -294,6 +294,12 @@ statusCode >= 400 OR error 非空白 => failed
 | `main` | `ProxyEndpointService` | 一次客户端代理请求 |
 | `attempt` | 每个渠道候选结束时 | route failover 的一次渠道尝试 |
 | `ocr` | `ProxyOcrService` | 图片降级所调用的一次视觉识别 |
+| `diagnostic` | `ChannelDiagnosticsService` | 管理台发起的一次渠道连接测试 |
+
+未显式筛选 `request_type` 时的默认口径按用途区分：
+
+- 日志列表：保留 `diagnostic`，仅折叠 `attempt` 子日志；
+- 统计与「最近错误」：同时排除 `attempt` 与 `diagnostic`，避免连接测试污染业务用量。
 
 ### 6.2 关系图
 
@@ -674,6 +680,11 @@ data: {"error":{"message":"...","type":"config_error"}}
 
 代理/上游异常同样写 error + completed。外层 HTTP 因已准备 SSE，通常仍为 200；真实 400/429 等放在事件和日志的 `status_code` 中。
 
+上游异常时，`channel_test.completed.upstream_response` 会带上原始上游错误体（形如
+`{"error": <上游原始错误体>}`），与普通代理写入 `UpstreamResponseBody` 的内容一致。
+`channel_test.error` 与 `error_response` 仍是客户端形态的脱敏文案，用于对照客户端实际看到的响应，
+不应作为排障主依据。
+
 ### 11.6 日志记录转换前响应
 
 Chat/Messages 渠道的诊断客户端看到 Responses 事件，但：
@@ -702,6 +713,7 @@ RequestLogDetail.UpstreamResponseBody
 | 请求协议 | 由入口端点决定 | payload 按渠道协议构造 |
 | Chat/Messages 下游 | 保持客户端入口协议 | 统一转换成 Responses SSE |
 | HTTP error 暴露 | UpstreamException 对客户端统一 502 | SSE 内保留真实 status |
+| 上游错误原文 | 只进日志的 `UpstreamResponseBody` | 同时进 SSE `upstream_response` 与诊断日志 |
 | 完成信号 | 协议自身完成事件 | 额外 `channel_test.completed` |
 | 请求日志生命周期 | queued → processing → complete | 一次性 completed log |
 | attempt 子日志 | 有 | 无 |

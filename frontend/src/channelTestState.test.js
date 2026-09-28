@@ -89,3 +89,71 @@ test("收到 channel_test.completed 后应保存可展示的响应详情", () =>
   assert.deepEqual(state.details.upstream_request, { model: "upstream-model", stream: true });
   assert.equal(formatChannelTestResult(state), "pong");
 });
+
+test("上游失败时应展示原始错误信息而不是客户端脱敏文案", () => {
+  const state = createChannelTestState();
+
+  applyChannelTestStreamEvent(state, {
+    event: "channel_test.error",
+    data: {
+      error: {
+        message: "An upstream error occurred. Please try again later.",
+        type: "upstream_error"
+      }
+    }
+  });
+  applyChannelTestStreamEvent(state, {
+    event: "channel_test.completed",
+    data: {
+      status_code: 401,
+      duration_ms: 88,
+      error: "upstream returned HTTP 401",
+      upstream_response: {
+        error: {
+          error: {
+            message: "Incorrect API key provided",
+            type: "invalid_request_error"
+          }
+        },
+        _opencodex_capture: { completed: false, termination: "UpstreamError" }
+      },
+      error_response: {
+        error: {
+          message: "An upstream error occurred. Please try again later.",
+          type: "upstream_error"
+        }
+      }
+    }
+  });
+
+  assert.equal(state.phase, "error");
+  assert.equal(getChannelTestAlertTitle(state), "连接测试失败");
+  assert.equal(getChannelTestAlertType(state), "error");
+
+  const text = formatChannelTestResult(state);
+  assert.match(text, /Incorrect API key provided/);
+  assert.match(text, /upstream returned HTTP 401/);
+  assert.doesNotMatch(text, /An upstream error occurred/);
+});
+
+test("上游错误体不是 JSON 时也应展示原文", () => {
+  const state = createChannelTestState();
+
+  applyChannelTestStreamEvent(state, {
+    event: "channel_test.completed",
+    data: {
+      status_code: 502,
+      error: "upstream returned HTTP 502",
+      upstream_response: { error: "<html>502 Bad Gateway</html>" },
+      error_response: {
+        error: {
+          message: "An upstream error occurred. Please try again later.",
+          type: "upstream_error"
+        }
+      }
+    }
+  });
+
+  assert.equal(state.phase, "error");
+  assert.match(formatChannelTestResult(state), /502 Bad Gateway/);
+});

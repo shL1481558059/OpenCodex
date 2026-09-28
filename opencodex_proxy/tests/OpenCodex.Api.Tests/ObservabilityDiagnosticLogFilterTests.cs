@@ -25,7 +25,7 @@ public sealed class ObservabilityDiagnosticLogFilterTests
     private static readonly Guid MainErrorLogId = Guid.Parse("33333333-3333-3333-3333-333333334105");
 
     [Fact]
-    public void DiagnosticLogsExcludedFromStatsLogsAndRecentErrorsByDefault()
+    public void DiagnosticLogsVisibleInListButExcludedFromStatsAndRecentErrors()
     {
         var dbPath = NewDbPath();
         InsertLogs(dbPath);
@@ -44,11 +44,13 @@ public sealed class ObservabilityDiagnosticLogFilterTests
         var defaultLogs = service.ReadLogsPage(1, 20, new Dictionary<string, object?>());
         Assert.True(defaultLogs.Succeeded);
         var defaultIds = defaultLogs.Payload!.Events.Select(item => item.Id).ToHashSet();
-        Assert.Equal(2, defaultIds.Count);
+        // 列表口径保留渠道诊断日志，便于从管理台直接追溯连接测试。
+        Assert.Equal(4, defaultIds.Count);
         Assert.Contains(MainLogId, defaultIds);
         Assert.Contains(MainErrorLogId, defaultIds);
-        Assert.DoesNotContain(DiagLogId, defaultIds);
-        Assert.DoesNotContain(DiagErrorLogId, defaultIds);
+        Assert.Contains(DiagLogId, defaultIds);
+        Assert.Contains(DiagErrorLogId, defaultIds);
+        // 渠道尝试子日志仍折叠在列表之外。
         Assert.DoesNotContain(AttemptLogId, defaultIds);
 
         var recentErrors = service.ReadRecentErrors(10);

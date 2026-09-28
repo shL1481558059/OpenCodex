@@ -302,7 +302,11 @@
             </el-select>
           </el-form-item>
           <el-form-item label="日志类型">
-            <el-select v-model="draftLogFilters.request_type" clearable>
+            <el-select
+              v-model="draftLogFilters.request_type"
+              clearable
+              @visible-change="(visible) => handleFilterVisible('request_type', visible)"
+            >
               <el-option
                 v-for="item in filterOptions.request_types"
                 :key="item"
@@ -727,7 +731,7 @@ const filterOptions = reactive({
   paths: [],
   status_codes: [],
   request_statuses: ["queued", "processing", "success", "failed"],
-  request_types: ["main", "ocr", "attempt"]
+  request_types: ["main", "ocr", "attempt", "diagnostic"]
 });
 
 const filterOptionFieldMap = {
@@ -1491,12 +1495,14 @@ function formatLogCell(row, column) {
 function formatRequestType(value) {
   if (value === "ocr") return "OCR";
   if (value === "attempt") return "渠道尝试";
+  if (value === "diagnostic") return "连接测试";
   return value === "main" ? "主请求" : value || "";
 }
 
 function requestTypeTagType(value) {
   if (value === "ocr") return "warning";
   if (value === "attempt") return "danger";
+  if (value === "diagnostic") return "primary";
   return "info";
 }
 

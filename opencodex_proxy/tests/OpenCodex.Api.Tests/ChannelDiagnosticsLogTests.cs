@@ -218,7 +218,17 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
     public async Task TestChannelStreamForUpstreamErrorEmitsErrorEvent()
     {
         _factory.UpstreamClient = new FailingUpstreamClient(
-            new UpstreamException("upstream returned 429", 429));
+            new UpstreamException(
+                "upstream returned HTTP 401",
+                401,
+                body: new Dictionary<string, object?>
+                {
+                    ["error"] = new Dictionary<string, object?>
+                    {
+                        ["message"] = "Incorrect API key provided",
+                        ["type"] = "invalid_request_error"
+                    }
+                }));
         var cookie = await LoginAndReadSessionCookie();
         var channelId = await CreateChannelAsync(cookie);
 
@@ -236,13 +246,21 @@ public sealed class ChannelDiagnosticsLogTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, statusCode);
         Assert.Contains("channel_test.error", body, StringComparison.Ordinal);
         Assert.Contains("upstream_error", body, StringComparison.Ordinal);
-        Assert.Contains("429", body, StringComparison.Ordinal);
+        Assert.Contains("401", body, StringComparison.Ordinal);
+        // 诊断事件必须带上上游原始错误体，而不是只有捕获元数据。
+        Assert.Contains("Incorrect API key provided", body, StringComparison.Ordinal);
 
         using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={_factory.DbPath}");
         context.Database.Migrate();
         var log = Assert.Single(context.RequestLogs.Where(item => item.Path == "/test-channel/stream"));
-        Assert.Equal(429, log.StatusCode);
+        Assert.Equal(401, log.StatusCode);
         Assert.Equal(ProxyRequestTypes.Diagnostic, log.RequestType);
+
+        var detail = new LogContentStore(context).Read(log.Id);
+        Assert.Contains(
+            "Incorrect API key provided",
+            detail.Get(RequestLogContentSlot.UpstreamResponseBody),
+            StringComparison.Ordinal);
     }
 
     public void Dispose()
