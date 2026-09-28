@@ -1385,6 +1385,8 @@ public sealed class ModelCatalogServiceTests
         var tiers = Assert.IsType<List<object?>>(model["service_tiers"]);
         var tier = Assert.IsType<Dictionary<string, object?>>(Assert.Single(tiers));
         Assert.Equal("priority", tier["id"]);
+        Assert.True(Assert.IsType<bool>(model["supports_reasoning_summaries"]));
+        Assert.True(Assert.IsType<bool>(model["supports_reasoning_summary_parameter"]));
 
         // 语义校验要求 base_instructions 或 model_messages.instructions_template 至少一个。
         var baseInstructions = Assert.IsType<string>(model["base_instructions"]);
@@ -1396,6 +1398,30 @@ public sealed class ModelCatalogServiceTests
         // 模态必须是 codex 接受的变体,且不能凭 supports_image 顺带声明 audio/video。
         Assert.Equal(
             new List<object?> { "text" },
+            Assert.IsType<List<object?>>(model["input_modalities"]));
+    }
+
+    [Fact]
+    public void BuildProxyModelCatalogFiltersUnsupportedInputModalities()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddModel(context, provider.Id, "video-model", ModelMatchTypes.Exact, "video-model", 1m);
+            var catalogModel = context.ModelInfos.First(m => m.ModelKey == "video-model");
+            catalogModel.CatalogJson = """{"input_modalities":["text","image","video"]}""";
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+        var result = service.BuildProxyModelCatalog(
+            [new ProxyModelCapabilityDto("video-model", true, null, "", "video-model")]);
+
+        var model = Assert.Single(result);
+        Assert.Equal(
+            new List<object?> { "text", "image" },
             Assert.IsType<List<object?>>(model["input_modalities"]));
     }
 

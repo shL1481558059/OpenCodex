@@ -447,49 +447,20 @@ public sealed class ModelCatalogService : IModelCatalogService
         catalog["reasoning_summary_format"] = catalog.TryGetValue("reasoning_summary_format", out var summaryFormat)
             ? summaryFormat
             : "text";
-        // codex 只接受 auto/concise/detailed/none,数据库里历史数据存过 "short",
-        // 透传会让整份 /v1/models 缓存解析失败,统一归一化到 auto。
-        catalog["default_reasoning_summary"] = NormalizeDefaultReasoningSummary(
-            catalog.TryGetValue("default_reasoning_summary", out var defaultSummary)
-                ? defaultSummary
-                : null);
         catalog["support_verbosity"] = catalog.TryGetValue("support_verbosity", out var supportVerbosity)
             ? supportVerbosity
             : true;
         catalog["default_verbosity"] = catalog.TryGetValue("default_verbosity", out var defaultVerbosity)
             ? defaultVerbosity
             : "medium";
-        catalog["input_modalities"] = catalog.TryGetValue("input_modalities", out var inputModalities)
-            ? inputModalities
-            : supportsImage
-                ? new List<object?> { "text", "image" }
-                : new List<object?> { "text" };
-        catalog["supports_image_detail_original"] = supportsImage;
         catalog["supports_parallel_tool_calls"] = catalog.TryGetValue("supports_parallel_tool_calls", out var parallel)
             ? parallel
-            : true;
-        catalog["supports_reasoning_summaries"] = catalog.TryGetValue("supports_reasoning_summaries", out var summaries)
-            ? summaries
             : true;
         catalog["additional_speed_tiers"] = catalog.TryGetValue("additional_speed_tiers", out var speedTiers)
             ? speedTiers
             : new List<object?> { "fast" };
         catalog["context_window"] = contextWindow;
         catalog["max_context_window"] = contextWindow;
-
-        // 没有配置思考档位的模型也必须给出可选档位，否则客户端无法选择推理强度。
-        if (!catalog.TryGetValue("supported_reasoning_levels", out var configuredLevels)
-            || configuredLevels is not IEnumerable<object?> configuredLevelItems
-            || !configuredLevelItems.Any())
-        {
-            catalog["supported_reasoning_levels"] = DefaultReasoningLevels();
-        }
-
-        if (!catalog.ContainsKey("default_reasoning_level"))
-        {
-            catalog["default_reasoning_level"] = "medium";
-        }
-
         if (catalog.TryGetValue("truncation_policy", out var policyValue)
             && policyValue is Dictionary<string, object?> policy)
         {
@@ -504,111 +475,7 @@ public sealed class ModelCatalogService : IModelCatalogService
             };
         }
 
-        if (catalog.TryGetValue("supported_reasoning_levels", out var levelsValue)
-            && levelsValue is IEnumerable<object?> levels)
-        {
-            var efforts = levels
-                .Select(level => level as IReadOnlyDictionary<string, object?>)
-                .Where(level => level is not null)
-                .Select(level => ReadString(level!, "effort"))
-                .Where(effort => effort.Length > 0)
-                .ToList();
-            if (efforts.Count > 0)
-            {
-                var defaultLevel = ReadString(catalog, "default_reasoning_level");
-                if (!efforts.Contains(defaultLevel, StringComparer.OrdinalIgnoreCase))
-                {
-                    catalog["default_reasoning_level"] = efforts[0];
-                }
-            }
-        }
-
-        ApplyCodexRequiredContract(catalog, supportsImage);
-    }
-
-    private static void ApplyCodexRequiredContract(
-        Dictionary<string, object?> catalog,
-        bool supportsImage)
-    {
-        // codex 客户端要求这些字段必须存在,缺失会让整份 /v1/models 响应在解析阶段被丢弃。
-        catalog.TryAdd("experimental_supported_tools", new List<object?>());
-        catalog.TryAdd("service_tiers", new List<object?>
-        {
-            new Dictionary<string, object?>
-            {
-                ["id"] = "priority",
-                ["name"] = "Fast",
-                ["description"] = "1.5x speed, increased usage"
-            }
-        });
-        catalog.TryAdd("supports_search_tool", true);
-        catalog.TryAdd("use_responses_lite", false);
-        catalog.TryAdd("node_repl_disabled", false);
-        catalog.TryAdd("node_repl_auto_review_required", false);
-        catalog.TryAdd("include_apps_usage_instructions", true);
-        catalog.TryAdd("include_plugin_usage_instructions", true);
-        catalog.TryAdd("include_skills_usage_instructions", true);
-        catalog.TryAdd("effective_context_window_percent", 100);
-        catalog.TryAdd("availability_nux", null);
-        catalog.TryAdd("upgrade", null);
-
-        // codex 客户端只接受 text / image / audio 三种模态,出现 video 会导致整份响应解析失败;
-        // 且 supportsImage 只能推导出图片能力,不应顺带声明音频或视频。
-        if (!catalog.TryGetValue("input_modalities", out var modalities)
-            || modalities is not IEnumerable<object?> modalityItems
-            || !modalityItems.Any())
-        {
-            catalog["input_modalities"] = supportsImage
-                ? new List<object?> { "text", "image" }
-                : new List<object?> { "text" };
-        }
-
-        // codex 客户端语义校验要求每个模型至少提供 base_instructions 或
-        // model_messages.instructions_template,二者都缺失会导致整份响应校验失败。
-        if (!catalog.ContainsKey("base_instructions")
-            && !catalog.ContainsKey("model_messages"))
-        {
-            catalog["base_instructions"] = CodexModelInstructions.BaseInstructions;
-            catalog["model_messages"] = CodexModelInstructions.ModelMessages;
-        }
-    }
-
-    private static object NormalizeDefaultReasoningSummary(object? value)
-    {
-        if (value is string text
-            && text is "auto" or "concise" or "detailed" or "none")
-        {
-            return text;
-        }
-
-        return "auto";
-    }
-
-    private static List<object?> DefaultReasoningLevels()
-    {
-        return
-        [
-            new Dictionary<string, object?>
-            {
-                ["effort"] = "low",
-                ["description"] = "Quick responses with lighter reasoning"
-            },
-            new Dictionary<string, object?>
-            {
-                ["effort"] = "medium",
-                ["description"] = "Balances speed and reasoning depth for everyday tasks"
-            },
-            new Dictionary<string, object?>
-            {
-                ["effort"] = "high",
-                ["description"] = "Greater reasoning depth for complex problems"
-            },
-            new Dictionary<string, object?>
-            {
-                ["effort"] = "xhigh",
-                ["description"] = "Extra high reasoning depth for extremely complex logic"
-            }
-        ];
+        CodexModelCatalogContract.Apply(catalog, supportsImage);
     }
 
     private static Dictionary<string, object?> CloneDictionary(

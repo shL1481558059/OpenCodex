@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Logging;
+using OpenCodex.Core.Services;
 
 namespace OpenCodex.Api.Services;
 
@@ -12,11 +14,15 @@ public sealed class CodexOfficialModelCatalogService : ICodexOfficialModelCatalo
 
     private readonly string _resourcePath;
     private readonly Lazy<IReadOnlyList<Dictionary<string, object?>>> _baseModels;
+    private readonly ILogger<CodexOfficialModelCatalogService> _logger;
 
-    public CodexOfficialModelCatalogService(IWebHostEnvironment environment)
+    public CodexOfficialModelCatalogService(
+        IWebHostEnvironment environment,
+        ILogger<CodexOfficialModelCatalogService> logger)
     {
         _resourcePath = ResolveResourcePath(environment);
         _baseModels = new Lazy<IReadOnlyList<Dictionary<string, object?>>>(LoadBaseModels);
+        _logger = logger;
     }
 
     public IReadOnlyList<Dictionary<string, object?>> BuildCodexGptModels()
@@ -36,10 +42,34 @@ public sealed class CodexOfficialModelCatalogService : ICodexOfficialModelCatalo
 
             var clone = Clone(model);
             ApplyBaseModelLengthRules(clone, slug);
+            if (!TryApplyCodexContract(clone, slug))
+            {
+                continue;
+            }
+
             result.Add(clone);
         }
 
         return result;
+    }
+
+    private bool TryApplyCodexContract(Dictionary<string, object?> model, string slug)
+    {
+        try
+        {
+            CodexModelCatalogContract.Apply(
+                model,
+                ReadBoolean(model, "supports_image_detail_original") ?? false);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(
+                exception,
+                "Skipping invalid Codex official model template for {Slug}.",
+                slug);
+            return false;
+        }
     }
 
     private IReadOnlyList<Dictionary<string, object?>> LoadBaseModels()
@@ -137,6 +167,13 @@ public sealed class CodexOfficialModelCatalogService : ICodexOfficialModelCatalo
     private static string? ReadString(Dictionary<string, object?> source, string key)
     {
         return source.TryGetValue(key, out var value) ? value as string : null;
+    }
+
+    private static bool? ReadBoolean(Dictionary<string, object?> source, string key)
+    {
+        return source.TryGetValue(key, out var value) && value is bool boolean
+            ? boolean
+            : null;
     }
 
     private static Dictionary<string, object?> JsonObjectToDictionary(JsonObject source)
