@@ -559,6 +559,19 @@
               </div>
             </el-form-item>
           </el-col>
+          <el-col v-if="!isImagesChannel(channelDraft)" :span="12">
+            <el-form-item label="Multi-Agent v2">
+              <el-select v-model="compatTexts.multi_agent_v2_mode" class="full-width">
+                <el-option label="自动" value="" />
+                <el-option label="透传" value="passthrough" />
+                <el-option label="降级" value="downgrade" />
+                <el-option label="拒绝" value="reject" />
+              </el-select>
+              <div class="text-muted" style="margin-top: 4px; font-size: 12px">
+                自动：官方 Responses 透传，chat/messages 自动降级，其他 Responses 渠道拒绝；降级保留客户端侧明文 agent_message，官方密文替换为占位说明
+              </div>
+            </el-form-item>
+          </el-col>
           <el-col :span="12">
             <el-form-item label="认证方式">
               <el-select v-model="channelDraft.auth_mode" class="full-width">
@@ -1710,7 +1723,8 @@ const compatTexts = reactive({
   force_params: "",
   default_params: "",
   unsupported_params: "",
-  images_api_dialect: "openai"
+  images_api_dialect: "openai",
+  multi_agent_v2_mode: ""
 });
 
 const testResult = ref(null);
@@ -3239,7 +3253,8 @@ function assignCompat(compat) {
     force_params: formatAssignmentMap(compat.force_params || {}),
     default_params: formatAssignmentMap(compat.default_params || {}),
     unsupported_params: formatStringList(compat.unsupported_params || []),
-    images_api_dialect: compat.images_api_dialect || "openai"
+    images_api_dialect: compat.images_api_dialect || "openai",
+    multi_agent_v2_mode: compat.multi_agent_v2_mode || ""
   });
 }
 
@@ -3328,6 +3343,9 @@ function buildCompat() {
     default_params: parseAssignmentMap(compatTexts.default_params, true),
     unsupported_params: parseStringList(compatTexts.unsupported_params)
   };
+  if (!isImagesChannel(channelDraft) && compatTexts.multi_agent_v2_mode) {
+    compat.multi_agent_v2_mode = compatTexts.multi_agent_v2_mode;
+  }
   if (isImagesChannel(channelDraft)) {
     return buildImagesCompat({
       ...compat,

@@ -21,6 +21,70 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class ModelCatalogServiceTests
 {
+    [Theory]
+    [InlineData("{}", true, false)]
+    [InlineData("{\"v2_agent_simulation\":false}", true, false)]
+    [InlineData("{\"v2_agent_simulation\":true}", true, true)]
+    [InlineData("{\"v2_agent_simulation\":true}", false, false)]
+    public void SimulatesMultiAgentRequiresEnabledMatchingModelAndExplicitCapability(string capabilities, bool enabled, bool expected)
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            var model = AddModel(context, provider.Id, "simulation-model", ModelMatchTypes.Exact, "simulation-model", 1m);
+            model.CapabilitiesJson = capabilities; model.Enabled = enabled; context.SaveChanges();
+        }
+        var service = CreateService(dbPath);
+        Assert.Equal(expected, service.SimulatesMultiAgent("simulation-model"));
+        Assert.False(service.SimulatesMultiAgent("other-model"));
+        Assert.False(service.SimulatesMultiAgent(""));
+    }
+
+    [Fact]
+    public void SimulatesMultiAgentUsesExactBeforeBroaderPrefixMatching()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            var broad = AddModel(context, provider.Id, "broad", ModelMatchTypes.Prefix, "model-", 1m);
+            broad.CapabilitiesJson = "{\"v2_agent_simulation\":true}";
+            AddModel(context, provider.Id, "excluded", ModelMatchTypes.Exact, "model-excluded", 1m);
+            var narrow = AddModel(context, provider.Id, "narrow", ModelMatchTypes.Prefix, "model-private-", 1m);
+            narrow.CapabilitiesJson = "{\"v2_agent_simulation\":false}";
+            context.SaveChanges();
+        }
+        var service = CreateService(dbPath);
+        Assert.True(service.SimulatesMultiAgent("model-ordinary"));
+        Assert.False(service.SimulatesMultiAgent("model-excluded"));
+        Assert.False(service.SimulatesMultiAgent("model-private-task"));
+        Assert.False(service.SimulatesMultiAgent("unmatched"));
+    }
+
+    [Fact]
+    public void SimulatesMultiAgentSwitchPersistsAndUpdatesCachedDecisionImmediately()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}")) context.Database.Migrate();
+        var service = CreateService(dbPath, new InMemoryCacheService());
+        Assert.True(service.CreateProvider(new ModelProviderUpsertRequest { Code = "cache-test", Name = "Test", Enabled = true }).Succeeded);
+        var request = ModelRequest("switch-model", 1m);
+        var created = service.CreateModel(request);
+        Assert.True(created.Succeeded); Assert.NotNull(created.Payload);
+        Assert.False(service.SimulatesMultiAgent("switch-model"));
+        request.Capabilities = new Dictionary<string, object?> { ["v2_agent_simulation"] = true };
+        Assert.True(service.UpdateModel(created.Payload.Model.Id, request).Succeeded);
+        Assert.True(service.SimulatesMultiAgent("switch-model"));
+        Assert.True(CreateService(dbPath, new InMemoryCacheService()).SimulatesMultiAgent("switch-model"));
+        request.Capabilities["v2_agent_simulation"] = false;
+        Assert.True(service.UpdateModel(created.Payload.Model.Id, request).Succeeded);
+        Assert.False(service.SimulatesMultiAgent("switch-model"));
+        Assert.False(CreateService(dbPath, new InMemoryCacheService()).SimulatesMultiAgent("switch-model"));
+    }
+
     [Fact]
     public void CreateProviderCreatesManualProvider()
     {

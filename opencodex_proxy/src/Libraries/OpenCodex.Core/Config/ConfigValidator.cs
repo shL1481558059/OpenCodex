@@ -259,6 +259,15 @@ public static class ConfigValidator
             throw new ConfigException($"{label}.preserve_thinking_history must be a boolean");
         }
 
+        var multiAgentV2Mode = ConfigValue.PythonString(GetValue(compat, "multi_agent_v2_mode", string.Empty))
+            .Trim()
+            .ToLowerInvariant();
+        if (multiAgentV2Mode.Length > 0 && !OpenCodexConfig.MultiAgentV2Modes.Contains(multiAgentV2Mode))
+        {
+            throw new ConfigException(
+                $"{label}.multi_agent_v2_mode must be one of {ConfigValue.PythonList(OpenCodexConfig.MultiAgentV2Modes.Order(StringComparer.Ordinal))}");
+        }
+
         if (compat.TryGetValue("images_api_dialect", out var dialectValue)
             && dialectValue is not string)
         {

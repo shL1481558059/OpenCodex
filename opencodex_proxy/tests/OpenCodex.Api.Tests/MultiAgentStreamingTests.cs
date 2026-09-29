@@ -1,0 +1,303 @@
+using System.Collections.Concurrent;
+using System.Text.Json;
+using OpenCodex.Core.Services.MultiAgent;
+using OpenCodex.CoreBase.Abstractions;
+using Xunit;
+using D = System.Collections.Generic.Dictionary<string, object?>;
+
+namespace OpenCodex.Api.Tests;
+
+public sealed class MultiAgentStreamingTests
+{
+    [Fact]
+    public async Task TextDeltaIsObservableBeforeModelCompletionAndIsNotReplayed()
+    {
+        var entered = NewSignal();
+        var release = NewSignal();
+        var deltaArrived = NewSignal();
+        var events = new ConcurrentQueue<D>();
+        var run = Run();
+        MultiAgentModelCall model = async (_, emit, ct) =>
+        {
+            await StartMessage(emit, "hello", ct);
+            entered.SetResult();
+            await release.Task.WaitAsync(ct);
+            return await FinishMessage(emit, "hello", ct);
+        };
+        using var timeout = Deadline();
+        var operation = Runtime(run, model, events, e => { if (Type(e) == "response.output_text.delta") deltaArrived.TrySetResult(); }).ExecuteAsync(Request(), timeout.Token);
+        await entered.Task.WaitAsync(timeout.Token);
+        await deltaArrived.Task.WaitAsync(timeout.Token);
+        Assert.False(operation.IsCompleted);
+        Assert.DoesNotContain(events, e => Type(e) == "response.completed");
+        release.SetResult();
+        var response = await operation;
+        Assert.Equal("completed", response["status"]);
+        Assert.Single(events, e => Type(e) == "response.output_text.delta");
+        Assert.Single(events, e => Type(e) == "response.completed");
+        Assert.Contains("hello", JsonSerializer.Serialize(response["output"]));
+        AssertOrdered(events);
+    }
+
+    [Fact]
+    public async Task IdenticalUpstreamIdsAndIndexesRemainDistinctAcrossConcurrentAgents()
+    {
+        var a = NewSignal();
+        var b = NewSignal();
+        var release = NewSignal();
+        var bothDeltas = NewSignal();
+        var events = new ConcurrentQueue<D>();
+        var run = Run();
+        run.Agents["/root/a"] = new() { Name = "/root/a", Parent = "/root", Generation = 1 };
+        run.Agents["/root/b"] = new() { Name = "/root/b", Parent = "/root", Generation = 1 };
+        var rootCalls = 0;
+        MultiAgentModelCall model = async (payload, emit, ct) =>
+        {
+            var agent = Agent(payload);
+            if (agent == "/root")
+                return Interlocked.Increment(ref rootCalls) == 1
+                    ? Response(Call("ocxp_ma_wait_agent", new { timeout_ms = 60000 })) : Response(Message("ROOT_DONE"));
+            var text = agent.EndsWith("/a") ? "ALPHA" : "BETA";
+            await StartMessage(emit, text, ct);
+            (agent.EndsWith("/a") ? a : b).SetResult();
+            await release.Task.WaitAsync(ct);
+            return await FinishMessage(emit, text, ct);
+        };
+        using var timeout = Deadline();
+        var operation = Runtime(run, model, events, _ =>
+        {
+            if (events.Count(e => Type(e) == "response.output_text.delta") == 2) bothDeltas.TrySetResult();
+        }).ExecuteAsync(Request(), timeout.Token);
+        await Task.WhenAll(a.Task, b.Task).WaitAsync(timeout.Token);
+        await bothDeltas.Task.WaitAsync(timeout.Token);
+        var deltas = events.Where(e => Type(e) == "response.output_text.delta").ToArray();
+        Assert.Equal(2, deltas.Select(e => e["item_id"]).Distinct().Count());
+        Assert.Equal(2, deltas.Select(e => e["output_index"]).Distinct().Count());
+        Assert.Equal("ALPHA", Assert.Single(deltas, e => EventAgent(e) == "/root/a")["delta"]);
+        Assert.Equal("BETA", Assert.Single(deltas, e => EventAgent(e) == "/root/b")["delta"]);
+        release.SetResult();
+        await operation;
+        Assert.Single(events, e => Type(e) == "response.completed");
+        Assert.Single(events, e => Type(e) == "response.output_text.delta" && EventAgent(e) == "/root/a");
+        Assert.Single(events, e => Type(e) == "response.output_text.delta" && EventAgent(e) == "/root/b");
+        AssertOrdered(events);
+    }
+
+    [Theory]
+    [InlineData("function_call", "local_read", "arguments", "{\"path\":\"a\"}")]
+    [InlineData("custom_tool_call", "apply_patch", "input", "*** Begin Patch\n*** End Patch")]
+    public async Task ClientToolDonePublishesCompleteArgumentsAndRegistersPendingCall(string kind, string name, string field, string value)
+    {
+        var staged = NewSignal();
+        var release = NewSignal();
+        var events = new ConcurrentQueue<D>();
+        var run = Run();
+        var pendingAtDone = false;
+        MultiAgentModelCall model = async (_, emit, ct) =>
+        {
+            var item = new D { ["type"] = kind, ["id"] = "same_item", ["call_id"] = "same_call", ["name"] = name, [field] = "" };
+            await emit(new() { ["type"] = "response.output_item.added", ["output_index"] = 0, ["item"] = item }, ct);
+            await emit(new() { ["type"] = $"response.{kind}_{field}.delta", ["output_index"] = 0, ["item_id"] = "same_item", ["delta"] = value[..3] }, ct);
+            staged.SetResult();
+            await release.Task.WaitAsync(ct);
+            await emit(new() { ["type"] = $"response.{kind}_{field}.delta", ["output_index"] = 0, ["item_id"] = "same_item", ["delta"] = value[3..] }, ct);
+            item[field] = value;
+            await emit(new() { ["type"] = "response.output_item.done", ["output_index"] = 0, ["item"] = item }, ct);
+            return Response(item);
+        };
+        using var timeout = Deadline();
+        var runtime = new MultiAgentRuntime(run, model, e =>
+        {
+            events.Enqueue(e);
+            if (Type(e) == "response.output_item.done" && Type((D)e["item"]!) == kind)
+                pendingAtDone = run.PendingCalls.ContainsKey((string)((D)e["item"]!)["call_id"]!);
+            return Task.CompletedTask;
+        }, () => Task.CompletedTask, 20);
+        var operation = runtime.ExecuteAsync(Request(), timeout.Token);
+        await staged.Task.WaitAsync(timeout.Token);
+        Assert.Empty(run.PendingCalls);
+        Assert.DoesNotContain(events, e => Type(e) == "response.output_item.done" && Type((D)e["item"]!) == kind);
+        release.SetResult();
+        await operation;
+        var done = Assert.Single(events, e => Type(e) == "response.output_item.done" && Type((D)e["item"]!) == kind);
+        var final = (D)done["item"]!;
+        Assert.Equal(value, final[field]);
+        Assert.NotEqual("same_call", final["call_id"]);
+        Assert.True(pendingAtDone);
+        Assert.Equal("/root", run.PendingCalls[(string)final["call_id"]!]);
+        Assert.False(run.Finished);
+    }
+
+    [Fact]
+    public async Task InternalActionNeverLeaksAsAClientFunctionCall()
+    {
+        var events = new ConcurrentQueue<D>();
+        var calls = 0;
+        MultiAgentModelCall model = async (_, emit, ct) =>
+        {
+            if (++calls > 1) return Response(Message("DONE"));
+            var item = Call("ocxp_ma_list_agents", new { });
+            item["id"] = "same_item";
+            await emit(new() { ["type"] = "response.output_item.added", ["output_index"] = 0, ["item"] = item }, ct);
+            await emit(new() { ["type"] = "response.function_call_arguments.delta", ["output_index"] = 0, ["item_id"] = "same_item", ["delta"] = "{}" }, ct);
+            await emit(new() { ["type"] = "response.output_item.done", ["output_index"] = 0, ["item"] = item }, ct);
+            return Response(item);
+        };
+        using var timeout = Deadline();
+        await Runtime(Run(), model, events).ExecuteAsync(Request(), timeout.Token);
+        Assert.DoesNotContain(events, e => Type(e).StartsWith("response.function_call_", StringComparison.Ordinal));
+        Assert.DoesNotContain(events, e => e.TryGetValue("item", out var item) && Type((D)item!) == "function_call");
+        Assert.Contains(events, e => e.TryGetValue("item", out var item) && Type((D)item!) == "multi_agent_call");
+    }
+
+    [Fact]
+    public async Task InterruptedGenerationCannotPublishLateDelta()
+    {
+        var childStarted = NewSignal();
+        var cancelled = NewSignal();
+        var lateAttempted = NewSignal();
+        var events = new ConcurrentQueue<D>();
+        var run = Run();
+        run.Agents["/root/a"] = new() { Name = "/root/a", Parent = "/root", Generation = 1 };
+        var roots = 0;
+        var children = 0;
+        MultiAgentModelCall model = async (payload, emit, ct) =>
+        {
+            if (Agent(payload) == "/root")
+            {
+                if (++roots == 1)
+                {
+                    await childStarted.Task.WaitAsync(ct);
+                    return Response(Call("ocxp_ma_interrupt_agent", new { target = "a" }), Call("ocxp_ma_followup_task", new { target = "a", message = "NEW" }));
+                }
+                if (roots == 2) return Response(Call("ocxp_ma_wait_agent", new { timeout_ms = 60000 }));
+                return Response(Message("ROOT_DONE"));
+            }
+            if (++children > 1) return await StreamMessage(emit, "NEW_GENERATION", ct);
+            using var registration = ct.Register(() => cancelled.TrySetResult());
+            await StartMessage(emit, "OLD_FIRST", ct);
+            childStarted.SetResult();
+            await cancelled.Task;
+            await emit(new() { ["type"] = "response.output_text.delta", ["item_id"] = "same_item", ["output_index"] = 0, ["content_index"] = 0, ["delta"] = "STALE_LATE" }, CancellationToken.None);
+            lateAttempted.SetResult();
+            return Response(Message("OLD_FINAL"));
+        };
+        using var timeout = Deadline();
+        await Runtime(run, model, events).ExecuteAsync(Request(), timeout.Token);
+        Assert.True(lateAttempted.Task.IsCompletedSuccessfully);
+        Assert.DoesNotContain(events, e => e.TryGetValue("delta", out var delta) && Equals(delta, "STALE_LATE"));
+        Assert.Contains(events, e => e.TryGetValue("delta", out var delta) && Equals(delta, "NEW_GENERATION"));
+        Assert.Single(events, e => Type(e) == "response.completed");
+    }
+
+    [Theory]
+    [InlineData("failed")]
+    [InlineData("incomplete")]
+    public async Task UnsuccessfulRootDoesNotPublishSuccessfulCompletion(string status)
+    {
+        var events = new ConcurrentQueue<D>();
+        MultiAgentModelCall model = async (_, emit, ct) =>
+        {
+            await StartMessage(emit, "partial", ct);
+            var response = Response(Message("partial"));
+            response["status"] = status;
+            response["error"] = new D { ["code"] = "model_error", ["message"] = "failed" };
+            response["incomplete_details"] = new D { ["reason"] = "max_output_tokens" };
+            await emit(new() { ["type"] = "response." + status, ["response"] = response }, ct);
+            return response;
+        };
+        using var timeout = Deadline();
+        var response = await Runtime(Run(), model, events).ExecuteAsync(Request(), timeout.Token);
+        Assert.Equal(status, response["status"]);
+        Assert.DoesNotContain(events, e => Type(e) == "response.completed");
+        Assert.Single(events, e => Type(e) == "response." + status);
+        var closed = Assert.Single(events, e => Type(e) == "response.output_item.done" && Type((D)e["item"]!) == "message");
+        Assert.Equal("incomplete", ((D)closed["item"]!)["status"]);
+        Assert.Equal("response." + status, Type(events.Last()));
+    }
+
+    [Theory]
+    [InlineData("function_call", "arguments", "failed")]
+    [InlineData("function_call", "arguments", "incomplete")]
+    [InlineData("custom_tool_call", "input", "failed")]
+    [InlineData("custom_tool_call", "input", "incomplete")]
+    public async Task IncompleteToolArgumentsAreNeverPublishedAsExecutable(string kind, string field, string status)
+    {
+        var events = new ConcurrentQueue<D>();
+        var run = Run();
+        MultiAgentModelCall model = async (_, emit, ct) =>
+        {
+            var item = new D { ["type"] = kind, ["name"] = "local_tool", ["id"] = "same_item", ["call_id"] = "same_call", [field] = "" };
+            await emit(new() { ["type"] = "response.output_item.added", ["output_index"] = 0, ["item"] = item }, ct);
+            await emit(new() { ["type"] = $"response.{kind}_{field}.delta", ["item_id"] = "same_item", ["output_index"] = 0, ["delta"] = "unfinished" }, ct);
+            var response = Response();
+            response["status"] = status;
+            response["incomplete_details"] = new D { ["reason"] = "max_output_tokens" };
+            await emit(new() { ["type"] = "response." + status, ["response"] = response }, ct);
+            return response;
+        };
+        using var timeout = Deadline();
+        var result = await Runtime(run, model, events).ExecuteAsync(Request(), timeout.Token);
+        Assert.Equal(status, result["status"]);
+        Assert.Empty(run.PendingCalls);
+        Assert.DoesNotContain(events, e => Type(e) == "response.output_item.done" && Type((D)e["item"]!) == kind);
+        Assert.DoesNotContain(events, e => Type(e) == $"response.{kind}_{field}.done");
+        Assert.Equal("response." + status, Type(events.Last()));
+    }
+
+    private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private static CancellationTokenSource Deadline() => new(TimeSpan.FromSeconds(10));
+    private static string Type(D item) => JsonDictionaryValue.String(item, "type");
+    private static string EventAgent(D item) => JsonDictionaryValue.String((D)item["agent"]!, "agent_name");
+    private static string Agent(D payload) => ((string)payload["prompt_cache_key"]!).Split(':')[1];
+    private static D Request() => new() { ["model"] = "fake", ["store"] = false, ["input"] = new List<object?> { new D { ["role"] = "user", ["content"] = "work" } } };
+    private static MultiAgentRun Run() => new()
+    {
+        Model = "fake", Template = MultiAgentProtocol.NormalizeRequest(Request()),
+        Agents = new() { ["/root"] = new() { Name = "/root", History = MultiAgentProtocol.InitialHistory(Request()) } }
+    };
+    private static MultiAgentRuntime Runtime(MultiAgentRun run, MultiAgentModelCall model, ConcurrentQueue<D> events, Action<D>? observed = null) =>
+        new(run, model, e => { events.Enqueue(e); observed?.Invoke(e); return Task.CompletedTask; }, () => Task.CompletedTask, 30);
+    private static D Response(params D[] items) => new()
+    {
+        ["status"] = "completed", ["output"] = items.Cast<object?>().ToList(),
+        ["usage"] = new D { ["input_tokens"] = 1, ["output_tokens"] = 1 }
+    };
+    private static D Message(string text) => new()
+    {
+        ["type"] = "message", ["id"] = "same_item", ["role"] = "assistant", ["status"] = "completed",
+        ["content"] = new List<object?> { new D { ["type"] = "output_text", ["text"] = text } }
+    };
+    private static D Call(string name, object arguments) => new()
+    {
+        ["type"] = "function_call", ["name"] = name, ["call_id"] = Guid.NewGuid().ToString(), ["arguments"] = JsonSerializer.Serialize(arguments)
+    };
+    private static async Task StartMessage(Func<D, CancellationToken, Task> emit, string text, CancellationToken ct)
+    {
+        var item = Message("");
+        item["status"] = "in_progress";
+        await emit(new() { ["type"] = "response.output_item.added", ["output_index"] = 0, ["item"] = item }, ct);
+        await emit(new() { ["type"] = "response.content_part.added", ["item_id"] = "same_item", ["output_index"] = 0, ["content_index"] = 0, ["part"] = new D { ["type"] = "output_text", ["text"] = "" } }, ct);
+        await emit(new() { ["type"] = "response.output_text.delta", ["item_id"] = "same_item", ["output_index"] = 0, ["content_index"] = 0, ["delta"] = text }, ct);
+    }
+    private static async Task<D> FinishMessage(Func<D, CancellationToken, Task> emit, string text, CancellationToken ct)
+    {
+        var item = Message(text);
+        await emit(new() { ["type"] = "response.output_text.done", ["item_id"] = "same_item", ["output_index"] = 0, ["content_index"] = 0, ["text"] = text }, ct);
+        await emit(new() { ["type"] = "response.content_part.done", ["item_id"] = "same_item", ["output_index"] = 0, ["content_index"] = 0, ["part"] = ((List<object?>)item["content"]!)[0] }, ct);
+        await emit(new() { ["type"] = "response.output_item.done", ["output_index"] = 0, ["item"] = item }, ct);
+        var response = Response(item);
+        await emit(new() { ["type"] = "response.completed", ["response"] = response }, ct);
+        return response;
+    }
+    private static async Task<D> StreamMessage(Func<D, CancellationToken, Task> emit, string text, CancellationToken ct)
+    {
+        await StartMessage(emit, text, ct);
+        return await FinishMessage(emit, text, ct);
+    }
+    private static void AssertOrdered(IEnumerable<D> events)
+    {
+        var sequences = events.Select(e => Convert.ToInt64(e["sequence_number"])).ToArray();
+        Assert.True(sequences.Zip(sequences.Skip(1)).All(pair => pair.First < pair.Second));
+    }
+}

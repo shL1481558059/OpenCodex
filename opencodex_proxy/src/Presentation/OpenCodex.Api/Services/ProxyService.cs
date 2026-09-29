@@ -4,6 +4,7 @@ using OpenCodex.Api.Infrastructure;
 using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Domain.Proxy;
+using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Services;
 using OpenCodex.CoreBase.Services.Proxy;
 
@@ -116,6 +117,11 @@ public sealed class ProxyService : IProxyService
     {
         var started = Stopwatch.GetTimestamp();
         var payload = await _bodyReader.ReadJsonObjectAsync(request, request.HttpContext.RequestAborted);
+        if (entryProtocol == ProtocolConverter.Responses && payload is not null
+            && _catalog.SimulatesMultiAgent(JsonDictionaryValue.String(payload, "model")))
+        {
+            return await request.HttpContext.RequestServices.GetRequiredService<MultiAgentResponseService>().Responses(payload);
+        }
         var probeRequestId = Guid.NewGuid().ToString();
         if (payload is not null
             && _proxySettings.GetBool("intercept_probe_requests", false)

@@ -1,0 +1,126 @@
+using OpenCodex.Core.Errors;
+using OpenCodex.Core.Services.MultiAgent;
+using OpenCodex.CoreBase.Abstractions;
+using Xunit;
+using static OpenCodex.Api.Tests.MultiAgentTestHarness;
+
+namespace OpenCodex.Api.Tests;
+
+public sealed class MultiAgentLifecycleTests
+{
+    [Fact]
+    public async Task RawCustomToolJson_IsNotMistakenForChatInputEnvelope()
+    {
+        const string rawInput = "{\"query\":\"keep literal JSON\"}";
+        var run = Run();
+        var events = new List<Dictionary<string, object?>>();
+        MultiAgentModelCall model = async (_, emit, ct) =>
+        {
+            var item = new Dictionary<string, object?>
+            {
+                ["type"] = "custom_tool_call", ["id"] = "source-item", ["call_id"] = "source-call",
+                ["name"] = "custom_json", ["input"] = ""
+            };
+            await emit(new() { ["type"] = "response.output_item.added", ["output_index"] = 0, ["item"] = item }, ct);
+            await emit(new() { ["type"] = "response.custom_tool_call_input.delta", ["output_index"] = 0, ["delta"] = rawInput[..1] }, ct);
+            await emit(new() { ["type"] = "response.custom_tool_call_input.delta", ["output_index"] = 0, ["delta"] = rawInput[1..] }, ct);
+            await emit(new() { ["type"] = "response.custom_tool_call_input.done", ["output_index"] = 0, ["input"] = rawInput }, ct);
+            item["input"] = rawInput;
+            return Response(item);
+        };
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await new MultiAgentRuntime(run, model, e => { events.Add(e); return Task.CompletedTask; }, () => Task.CompletedTask, 10)
+            .ExecuteAsync(new(), deadline.Token);
+        var deltas = string.Concat(events.Where(e => JsonDictionaryValue.String(e, "type") == "response.custom_tool_call_input.delta")
+            .Select(e => JsonDictionaryValue.String(e, "delta")));
+        Assert.Equal(rawInput, deltas);
+        var done = Assert.Single(events, e => JsonDictionaryValue.String(e, "type") == "response.custom_tool_call_input.done");
+        Assert.Equal(rawInput, JsonDictionaryValue.String(done, "input"));
+        Assert.Single(run.PendingCalls);
+    }
+
+    [Theory]
+    [InlineData("failed")]
+    [InlineData("incomplete")]
+    public async Task RootTerminalError_ClosesItsTaskAndPersistsTheTerminalAgentStatus(string status)
+    {
+        var run = Run();
+        var events = await Execute(run, (payload, ct) => Task.FromResult(new Dictionary<string, object?>
+        {
+            ["status"] = status,
+            ["output"] = new List<object?>(),
+            ["error"] = new Dictionary<string, object?> { ["message"] = "root failed" },
+            ["incomplete_details"] = new Dictionary<string, object?> { ["reason"] = "max_output_tokens" }
+        }));
+        Assert.Contains(events, e => JsonDictionaryValue.String(e, "type") == "response." + status);
+        Assert.Equal(status, run.Agents["/root"].Status);
+        Assert.False(run.Agents["/root"].TaskStarted);
+        Assert.Equal(status, Assert.Single(run.Agents["/root"].CompletedTurns).Status);
+        Assert.False(run.Finished);
+    }
+
+    [Fact]
+    public async Task Child_failure_is_reported_to_parent_without_cancelling_sibling()
+    {
+        var run = Run();
+        var counts = new Dictionary<string, int>();
+        var siblingCompleted = false;
+        var events = await Execute(run, (payload, ct) =>
+        {
+            var name = Agent(payload); counts[name] = counts.GetValueOrDefault(name) + 1;
+            if (name == "/root/a") throw new UpstreamException("child-a-failed", 502);
+            if (name == "/root/b") { siblingCompleted = true; return Task.FromResult(Response(Message("CHILD_B_OK"))); }
+            if (counts[name] == 1) return Task.FromResult(Response(
+                Call("ocxp_ma_spawn_agent", new { task_name = "a", message = "A", fork_turns = "none" }),
+                Call("ocxp_ma_spawn_agent", new { task_name = "b", message = "B", fork_turns = "none" })));
+            return Task.FromResult(History(payload).Contains("child-a-failed") && History(payload).Contains("CHILD_B_OK")
+                ? Response(Message("RECOVERED")) : Response(Call("ocxp_ma_wait_agent", new { timeout_ms = 100 })));
+        });
+        Assert.True(siblingCompleted);
+        Assert.Equal("failed", run.Agents["/root/a"].Status);
+        Assert.True(run.Finished);
+        Assert.Single(events.Where(e => JsonDictionaryValue.String(e, "type") == "response.completed"));
+    }
+
+    [Fact]
+    public async Task Root_early_final_waits_for_child_report_and_synthesizes_again()
+    {
+        var run = Run();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var rootCalls = 0;
+        var events = await Execute(run, async (payload, ct) =>
+        {
+            if (Agent(payload) != "/root") { await release.Task.WaitAsync(ct); return Response(Message("CHILD_RESULT")); }
+            rootCalls++;
+            if (rootCalls == 1) return Response(Call("ocxp_ma_spawn_agent", new { task_name = "a", message = "A" }));
+            if (rootCalls == 2) { release.SetResult(); return Response(Message("PREMATURE")); }
+            Assert.Contains("CHILD_RESULT", History(payload));
+            return Response(Message("COMBINED"));
+        });
+        Assert.Equal(3, rootCalls);
+        var finals = events.Where(e => JsonDictionaryValue.String(e, "type") == "response.output_item.done")
+            .Select(e => JsonDictionaryValue.Object(e, "item", WebSearchPayload.DeepCopyObject))
+            .Where(i => JsonDictionaryValue.String(i, "phase") == "final_answer"
+                && JsonDictionaryValue.String(JsonDictionaryValue.Object(i, "agent", WebSearchPayload.DeepCopyObject), "agent_name") == "/root");
+        Assert.Single(finals);
+        Assert.Contains("COMBINED", System.Text.Json.JsonSerializer.Serialize(finals.Single()));
+        Assert.True(run.Finished);
+    }
+
+    [Fact]
+    public async Task Http_tool_pause_does_not_finish_run_and_duplicate_results_are_not_reapplied()
+    {
+        var run = Run(); var calls = 0;
+        Task<Dictionary<string, object?>> Model(Dictionary<string, object?> p, CancellationToken ct) =>
+            Task.FromResult(++calls == 1 ? Response(Call("local_read", new { })) : Response(Message("DONE")));
+        await Execute(run, Model);
+        Assert.False(run.Finished);
+        var id = Assert.Single(run.PendingCalls).Key;
+        var output = new Dictionary<string, object?> { ["type"] = "function_call_output", ["call_id"] = id, ["output"] = "VALUE" };
+        await Execute(run, Model, new() { ["input"] = new List<object?> { output, output } });
+        Assert.True(run.Finished);
+        Assert.Single(run.ReceivedCalls);
+        Assert.Single(run.Agents["/root"].History.OfType<Dictionary<string, object?>>()
+            .Where(i => JsonDictionaryValue.String(i, "type") == "function_call_output"));
+    }
+}

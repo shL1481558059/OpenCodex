@@ -20,6 +20,25 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class ProxyControllerTests
 {
+    [Theory]
+    [InlineData("ordinary-model")]
+    [InlineData("deepseek-v4.1-flash")]
+    public async Task Responses_ModelWithoutSimulationUsesOriginalProxyWithoutRuntimeServices(string model)
+    {
+        var proxy = new StubProxyEndpointService();
+        var controller = CreateController(new StubRequestBodyReader(new()
+        {
+            ["model"] = model, ["input"] = "hello"
+        }), proxy, interceptProbeRequests: false);
+        controller.HttpContext.Request.Path = "/v1/responses";
+        // No MultiAgentResponseService is registered: ordinary routing must not resolve it.
+        var action = await controller.Responses();
+        var result = Assert.IsType<ObjectResult>(action);
+        Assert.Equal(200, result.StatusCode);
+        Assert.True(proxy.Called);
+        Assert.Equal("forwarded", Assert.IsType<Dictionary<string, object?>>(result.Value)["routed"]);
+    }
+
     [Fact]
     public async Task Messages_EnabledProbeInterception_ReturnsFakeResponseWithoutProxy()
     {

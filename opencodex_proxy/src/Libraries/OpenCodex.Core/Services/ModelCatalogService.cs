@@ -1978,6 +1978,13 @@ public sealed class ModelCatalogService : IModelCatalogService
         return result;
     }
 
+    public bool SimulatesMultiAgent(string model)
+    {
+        var info = ResolveGlobalModel(model);
+        return info is not null
+            && ReadBoolean(DeserializeObject(info.CapabilitiesJson), "v2_agent_simulation") == true;
+    }
+
     private ModelInfo? ResolveGlobalModel(string modelName)
     {
         var normalized = Normalize(modelName);

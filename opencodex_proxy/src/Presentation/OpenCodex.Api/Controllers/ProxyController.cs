@@ -26,6 +26,10 @@ public sealed class ProxyController : ApiControllerBase
         return _proxyService.ModelsAsync(Request, Response);
     }
 
+    [HttpGet("/responses")]
+    [HttpGet("/v1/responses")]
+    public Task<IActionResult> ResponsesWebSocket() => HttpContext.RequestServices.GetRequiredService<MultiAgentResponseService>().ResponsesWebSocket();
+
     [HttpPost("/responses")]
     [HttpPost("/v1/responses")]
     public Task<IActionResult> Responses()

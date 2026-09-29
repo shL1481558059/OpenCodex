@@ -8,6 +8,8 @@ namespace OpenCodex.CoreBase.Services;
 
 public interface IModelCatalogService
 {
+    bool SimulatesMultiAgent(string model) => false;
+
     ApiOpResult<ModelProviderListResponse> ListProviders(bool includeDisabled = false);
 
     ApiOpResult<ModelProviderResponsePayload> CreateProvider(ModelProviderUpsertRequest request);

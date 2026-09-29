@@ -44,6 +44,8 @@ public static class OpenCodexApplicationBuilderExtensions
         }
 
         app.UseAuthentication();
+        app.UseWhen(context => (context.Request.Path == "/v1/responses" || context.Request.Path == "/responses"),
+            branch => branch.UseWebSockets());
         app.UseAuthorization();
         app.MapControllers();
         app.MapMethods("/admin/", ["GET", "HEAD"], (IWebHostEnvironment environment) =>

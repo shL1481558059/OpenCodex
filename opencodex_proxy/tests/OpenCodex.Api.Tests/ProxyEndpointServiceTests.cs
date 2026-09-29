@@ -53,6 +53,232 @@ public sealed class ProxyEndpointServiceTests
     }
 
     [Fact]
+    public void ApplyResponsesPassthroughHeaders_MergesOpenAiBetaValues()
+    {
+        var channel = CreateChannel("beta", 0, type: ProtocolConverter.Responses);
+        channel["baseurl"] = "https://api.openai.com/v1";
+        channel["headers"] = new Dictionary<string, object?>
+        {
+            ["OpenAI-Beta"] = "assistants=v2"
+        };
+        var route = CreateRoute(channel, "model", "upstream");
+        var metadata = new ProxyRequestMetadata(
+            "POST",
+            "/v1/responses",
+            null,
+            new Dictionary<string, string>
+            {
+                ["OpenAI-Beta"] = "responses_multi_agent=v1"
+            });
+
+        var result = ProxyEndpointService.ApplyResponsesPassthroughHeaders(
+            route,
+            ProtocolConverter.Responses,
+            ProtocolConverter.Responses,
+            metadata);
+
+        var headers = Assert.IsType<Dictionary<string, object?>>(result.Channel["headers"]);
+        Assert.Equal(
+            "assistants=v2, responses_multi_agent=v1",
+            headers["OpenAI-Beta"]);
+    }
+
+    [Fact]
+    public void ApplyResponsesPassthroughHeaders_DowngradeDoesNotInjectOpenAiBeta()
+    {
+        var channel = CreateChannel("downgrade", 0, type: ProtocolConverter.Responses);
+        channel["baseurl"] = "https://example.com/v1";
+        var route = CreateRoute(channel, "model", "upstream");
+        var metadata = new ProxyRequestMetadata(
+            "POST",
+            "/v1/responses",
+            null,
+            new Dictionary<string, string>
+            {
+                ["OpenAI-Beta"] = "responses_multi_agent=v1"
+            });
+
+        var result = ProxyEndpointService.ApplyResponsesPassthroughHeaders(
+            route,
+            ProtocolConverter.Responses,
+            ProtocolConverter.Responses,
+            metadata,
+            MultiAgentV2Action.Downgrade);
+
+        var headers = Assert.IsType<Dictionary<string, object?>>(result.Channel["headers"]);
+        Assert.DoesNotContain("OpenAI-Beta", headers.Keys, StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ProxyAsync_MultiAgentV2OnThirdPartyResponses_RejectsBeforeUpstream()
+    {
+        var calls = 0;
+        var channel = CreateChannel("third-party", 0, type: ProtocolConverter.Responses);
+        channel["baseurl"] = "https://example.com/v1";
+        var nonStreams = new StubProxyNonStreamService(_ =>
+        {
+            calls++;
+            return Task.FromResult(new ProxyNonStreamResult(200, new { ok = true }));
+        });
+        var service = CreateService(
+            new ChannelCapacityService(),
+            new StubProxyRouteService([CreateRoute(channel, "gpt-5.6-terra", "upstream")]),
+            nonStreams: nonStreams);
+        var request = CreateResponsesContext("gpt-5.6-terra", new Dictionary<string, string>());
+        request.Payload!["multi_agent"] = new Dictionary<string, object?>
+        {
+            ["enabled"] = true
+        };
+
+        var result = await service.ProxyAsync(request);
+
+        Assert.Equal(400, result.StatusCode);
+        Assert.Equal(0, calls);
+    }
+
+    [Fact]
+    public async Task ProxyAsync_MultiAgentV2OnChatWithDowngrade_RewritesBeforeConversion()
+    {
+        var channel = CreateChannel(
+            "chat-downgrade",
+            0,
+            type: ProtocolConverter.Chat,
+            compat: new Dictionary<string, object?>
+            {
+                [MultiAgentV2Policy.CompatKey] = "downgrade"
+            });
+        var nonStreams = new StubProxyNonStreamService(_ =>
+            Task.FromResult(new ProxyNonStreamResult(200, new { ok = true })));
+        var service = CreateService(
+            new ChannelCapacityService(),
+            new StubProxyRouteService([CreateRoute(channel, "gpt-5.6-terra", "upstream")]),
+            nonStreams: nonStreams);
+        var request = CreateResponsesContext("gpt-5.6-terra", new Dictionary<string, string>());
+        request.Payload!["multi_agent"] = new Dictionary<string, object?>
+        {
+            ["enabled"] = true
+        };
+        request.Payload!["input"] = new List<object?>
+        {
+            new Dictionary<string, object?>
+            {
+                ["type"] = "agent_message",
+                ["content"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "input_text",
+                        ["text"] = "result text"
+                    }
+                }
+            }
+        };
+
+        var result = await service.ProxyAsync(request);
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.NotNull(nonStreams.LastContext);
+        Assert.False(nonStreams.LastContext!.Payload.ContainsKey("multi_agent"));
+        var messages = Assert.IsType<List<object?>>(nonStreams.LastContext.UpstreamRequest["messages"]);
+        var message = Assert.IsType<Dictionary<string, object?>>(Assert.Single(messages));
+        Assert.Equal("user", message["role"]);
+        Assert.Equal("result text", message["content"]);
+    }
+
+    [Fact]
+    public async Task ProxyAsync_MultiAgentV2OnChatWithoutCompat_DowngradesByDefault()
+    {
+        var channel = CreateChannel("chat-default", 0, type: ProtocolConverter.Chat);
+        var nonStreams = new StubProxyNonStreamService(_ =>
+            Task.FromResult(new ProxyNonStreamResult(200, new { ok = true })));
+        var service = CreateService(
+            new ChannelCapacityService(),
+            new StubProxyRouteService([CreateRoute(channel, "gpt-5.6-terra", "upstream")]),
+            nonStreams: nonStreams);
+        var request = CreateResponsesContext("gpt-5.6-terra", new Dictionary<string, string>());
+        request.Payload!["multi_agent"] = new Dictionary<string, object?>
+        {
+            ["enabled"] = true
+        };
+        request.Payload!["input"] = new List<object?>
+        {
+            new Dictionary<string, object?>
+            {
+                ["type"] = "agent_message",
+                ["content"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "encrypted_content",
+                        ["encrypted_content"] = "task text"
+                    }
+                }
+            }
+        };
+
+        var result = await service.ProxyAsync(request);
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.NotNull(nonStreams.LastContext);
+        Assert.False(nonStreams.LastContext!.Payload.ContainsKey("multi_agent"));
+        var messages = Assert.IsType<List<object?>>(nonStreams.LastContext.UpstreamRequest["messages"]);
+        var message = Assert.IsType<Dictionary<string, object?>>(Assert.Single(messages));
+        Assert.Equal("user", message["role"]);
+        Assert.Equal("task text", message["content"]);
+    }
+
+    [Fact]
+    public async Task ProxyAsync_RepeatedSubAgentTurns_InjectRepeatGuardReminder()
+    {
+        var channel = CreateChannel("chat-repeat-guard", 0, type: ProtocolConverter.Chat);
+        var payloads = new List<Dictionary<string, object?>>();
+        var nonStreams = new StubProxyNonStreamService(context =>
+        {
+            payloads.Add(context.Payload);
+            return Task.FromResult(new ProxyNonStreamResult(200, new { ok = true }));
+        });
+        var service = CreateService(
+            new ChannelCapacityService(),
+            new StubProxyRouteService([CreateRoute(channel, "gpt-5.6-terra", "upstream")]),
+            nonStreams: nonStreams);
+
+        for (var turn = 1; turn <= MultiAgentRepeatGuard.TurnLimit + 1; turn++)
+        {
+            var request = CreateResponsesContext(
+                "gpt-5.6-terra",
+                new Dictionary<string, string> { ["session-id"] = "session-repeat-guard" });
+            request.Payload!["input"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "agent_message",
+                    ["id"] = "amsg_repeat",
+                    ["author"] = "/root",
+                    ["recipient"] = "/root/researcher",
+                    ["content"] = new List<object?>
+                    {
+                        new Dictionary<string, object?>
+                        {
+                            ["type"] = "encrypted_content",
+                            ["encrypted_content"] = "task payload"
+                        }
+                    }
+                }
+            };
+
+            var result = await service.ProxyAsync(request);
+
+            Assert.Equal(200, result.StatusCode);
+        }
+
+        Assert.Equal(MultiAgentRepeatGuard.TurnLimit + 1, payloads.Count);
+        Assert.False(payloads[^2].ContainsKey("instructions"));
+        var reminder = Convert.ToString(payloads[^1]["instructions"]) ?? string.Empty;
+        Assert.Contains("multi_agent_repeat_guard", reminder);
+        Assert.Contains("/root/researcher", reminder);
+    }
+
+    [Fact]
     public async Task ProxyAsync_SamePriorityPrefersLessBusyChannel()
     {
         var capacity = new ChannelCapacityService();
@@ -1133,7 +1359,8 @@ public sealed class ProxyEndpointServiceTests
                 Task.FromResult(new ProxyNonStreamResult(200, new { ok = true }))),
             streams ?? new StubProxyStreamService(_ => Task.CompletedTask),
             webSearch ?? new StubWebSearchToolExecutor(),
-            WebSearchTestStore.Create());
+            WebSearchTestStore.Create(),
+            new MultiAgentRepeatGuard());
     }
 
     private static ProxyEndpointContext CreateChatContext(string model)

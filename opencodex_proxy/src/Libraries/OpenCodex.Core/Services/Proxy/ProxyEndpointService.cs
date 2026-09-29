@@ -19,6 +19,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
 
     private static readonly string[] ResponsesPassthroughHeaders =
     [
+        "OpenAI-Beta",
         "User-Agent",
         "x-oai-attestation",
         "x-codex-turn-metadata",
@@ -42,6 +43,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
     private readonly IProxyStreamService _streams;
     private readonly IWebSearchToolExecutor _webSearch;
     private readonly WebSearchContinuationStore _webSearchHistory;
+    private readonly MultiAgentRepeatGuard _multiAgentRepeatGuard;
 
     public ProxyEndpointService(
         IProxyLogService logs,
@@ -55,7 +57,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         IProxyNonStreamService nonStreams,
         IProxyStreamService streams,
         IWebSearchToolExecutor webSearch,
-        WebSearchContinuationStore webSearchHistory)
+        WebSearchContinuationStore webSearchHistory,
+        MultiAgentRepeatGuard multiAgentRepeatGuard)
     {
         _logs = logs;
         _requests = requests;
@@ -69,6 +72,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         _streams = streams;
         _webSearch = webSearch;
         _webSearchHistory = webSearchHistory;
+        _multiAgentRepeatGuard = multiAgentRepeatGuard;
     }
 
     public async Task<ProxyEndpointResult> ProxyAsync(ProxyEndpointContext context)
@@ -202,7 +206,24 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                     upstreamModel = route.UpstreamModel;
                     attemptChannelType = channelType;
                     attemptUpstreamModel = upstreamModel;
-                    route = ApplyResponsesPassthroughHeaders(route, context.EntryProtocol, channelType, requestMetadata);
+                    var multiAgentAction = MultiAgentV2Policy.Resolve(
+                        context.EntryProtocol,
+                        channelType,
+                        route.Channel,
+                        payload);
+                    if (multiAgentAction == MultiAgentV2Action.Reject)
+                    {
+                        throw new BadRequestException(
+                            "multi-agent v2 is not supported by this channel; " +
+                            $"set compat.{MultiAgentV2Policy.CompatKey} to downgrade or passthrough to override");
+                    }
+
+                    route = ApplyResponsesPassthroughHeaders(
+                        route,
+                        context.EntryProtocol,
+                        channelType,
+                        requestMetadata,
+                        multiAgentAction);
                     route = ProxySessionHeaderTemplate.Apply(route, sessionId);
 
                     effectivePayload = payload;
@@ -242,6 +263,12 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         channelType,
                         ownerRole,
                         ownerUserId);
+                    if (multiAgentAction == MultiAgentV2Action.Downgrade)
+                    {
+                        effectivePayload = _multiAgentRepeatGuard.Apply(sessionId, effectivePayload);
+                    }
+
+                    effectivePayload = MultiAgentV2RequestRewriter.Apply(effectivePayload, multiAgentAction);
                     if (context.EntryProtocol == ProtocolConverter.Responses
                         && channelType is ProtocolConverter.Chat or ProtocolConverter.Messages)
                     {
@@ -679,7 +706,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         ProxyRouteDto route,
         string entryProtocol,
         string channelType,
-        ProxyRequestMetadata requestMetadata)
+        ProxyRequestMetadata requestMetadata,
+        MultiAgentV2Action multiAgentAction = MultiAgentV2Action.None)
     {
         if (entryProtocol != ProtocolConverter.Responses || channelType != ProtocolConverter.Responses)
         {
@@ -699,9 +727,23 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             : new Dictionary<string, object?>(StringComparer.Ordinal);
         foreach (var (name, value) in passthroughHeaders)
         {
+            if (string.Equals(name, "OpenAI-Beta", StringComparison.OrdinalIgnoreCase)
+                && multiAgentAction == MultiAgentV2Action.Downgrade)
+            {
+                continue;
+            }
+
             if (!ContainsHeader(headers, name!))
             {
                 headers[name!] = value;
+                continue;
+            }
+
+            if (string.Equals(name, "OpenAI-Beta", StringComparison.OrdinalIgnoreCase))
+            {
+                headers[name!] = MergeOpenAiBetaHeader(
+                    TryGetHeaderValue(headers, name!) ?? string.Empty,
+                    value!);
             }
         }
 
@@ -815,6 +857,29 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         }
 
         return false;
+    }
+
+    private static string? TryGetHeaderValue(IReadOnlyDictionary<string, object?> headers, string headerName)
+    {
+        foreach (var (key, value) in headers)
+        {
+            if (string.Equals(key, headerName, StringComparison.OrdinalIgnoreCase))
+            {
+                return value?.ToString();
+            }
+        }
+
+        return null;
+    }
+
+    private static string MergeOpenAiBetaHeader(string existingValue, string incomingValue)
+    {
+        var values = existingValue
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Concat(incomingValue.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        return string.Join(", ", values);
     }
 
     private static int PriorityValue(IReadOnlyDictionary<string, object?> channel)

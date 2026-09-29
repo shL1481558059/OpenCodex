@@ -512,6 +512,11 @@
           </el-col>
         </el-row>
 
+        <el-form-item label="v2 Agent 模拟">
+          <el-switch v-model="modelDraft.capabilities.v2_agent_simulation" />
+          <span class="form-tip">按此模型的匹配规则对请求模型生效，客户端 base_url 保持 /v1。开启后由服务器调度子代理，会增加模型调用。</span>
+        </el-form-item>
+
         <el-divider content-position="left">计费规则</el-divider>
         <div class="off-peak-panel">
           <div class="off-peak-panel__head">
@@ -1135,7 +1140,9 @@ function openModelDialog(row = null) {
       match_patterns: matchPatternList(row),
       enabled: row.enabled !== false,
       capabilities: {
+        ...row.capabilities,
         supports_image: row.capabilities?.supports_image === true,
+        v2_agent_simulation: row.capabilities?.v2_agent_simulation === true,
         context_window: Number(row.capabilities?.context_window || 0)
       },
       pricing: normalizePricing(row.pricing)
@@ -1383,6 +1390,7 @@ function emptyModelDraft() {
     catalog: {},
     capabilities: {
       supports_image: false,
+      v2_agent_simulation: false,
       context_window: 128000
     },
     pricing: normalizePricing(null),

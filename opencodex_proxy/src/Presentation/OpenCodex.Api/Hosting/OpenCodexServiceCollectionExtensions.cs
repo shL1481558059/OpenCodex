@@ -52,6 +52,8 @@ public static class OpenCodexServiceCollectionExtensions
             });
         });
         services.AddOpenCodexServices();
+        services.AddSingleton(serviceProvider => new OpenCodex.Core.Services.MultiAgent.MultiAgentRunStore(
+            serviceProvider.GetRequiredService<IConfiguration>()["MultiAgent:StateDirectory"] ?? "logs/multi-agent-runs"));
         services.AddOpenCodexAuthentication(configuration);
 
         return services;
@@ -196,6 +198,7 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddSingleton<IChannelCapacityService, ChannelCapacityService>();
         services.AddSingleton<IChannelCircuitBreakerService, ChannelCircuitBreakerService>();
         services.AddSingleton<IChannelAffinityService, ChannelAffinityService>();
+        services.AddSingleton<MultiAgentRepeatGuard>();
         services.AddScoped<IProxyOcrService, ProxyOcrService>();
         services.AddScoped<IProxyRequestService, ProxyRequestService>();
         services.AddScoped<IProxyRouteService, ProxyRouteService>();
@@ -206,6 +209,7 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<WebSearchContinuationStore>();
         services.AddScoped<IRealtimeStreamService, RealtimeStreamService>();
         services.AddScoped<IProxyService, ProxyService>();
+        services.AddScoped<MultiAgentResponseService>();
         services.AddScoped<IObservabilityQueryService, ObservabilityQueryService>();
         services.AddScoped<ISessionControllerService, SessionControllerService>();
         services.AddScoped<ISetupControllerService, SetupControllerService>();
