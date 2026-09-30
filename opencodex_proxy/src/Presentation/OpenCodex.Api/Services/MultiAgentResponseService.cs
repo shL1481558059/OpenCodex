@@ -75,8 +75,6 @@ public sealed partial class MultiAgentResponseService(
             if (run.Model != model) throw new BadRequestException("A multi-agent session keeps its initial model. Start a new session to change models.");
             var stream = JsonDictionaryValue.Get(request, "stream") is true;
             var persist = JsonDictionaryValue.Get(request, "store") is not false;
-            var budget = configuration.GetValue("MultiAgent:MaxModelTurns", 128);
-            if (budget < 1) throw new InvalidOperationException("MultiAgent:MaxModelTurns must be positive.");
             var sequence = 0;
             async Task Emit(Dictionary<string, object?> item)
             {
@@ -93,7 +91,7 @@ public sealed partial class MultiAgentResponseService(
             }
 
             var runtime = new MultiAgentRuntime(run, CallModel, Emit,
-                () => store.SaveAsync(run, CancellationToken.None, persist), budget);
+                () => store.SaveAsync(run, CancellationToken.None, persist));
             try
             {
                 var response = await runtime.ExecuteAsync(request, ct);

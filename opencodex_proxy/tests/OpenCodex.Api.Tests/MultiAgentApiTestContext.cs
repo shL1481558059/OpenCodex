@@ -46,7 +46,7 @@ internal sealed class MultiAgentApiTestContext : IDisposable
         ((CatalogProxy)(object)catalog).Enabled = () => CatalogEnabled;
         Service = new MultiAgentResponseService(new HttpContextAccessor { HttpContext = Http }, catalog,
             new Identity(Key), FakeEndpoint, Store, _services.GetRequiredService<IServiceScopeFactory>(),
-            new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["MultiAgent:MaxModelTurns"] = "20" }).Build(),
+            new ConfigurationBuilder().Build(),
             NullLogger<MultiAgentResponseService>.Instance);
     }
 

@@ -64,10 +64,8 @@ public sealed partial class MultiAgentResponseService
             try
             {
                 var persist = JsonDictionaryValue.Get(request, "store") is not false;
-                var budget = configuration.GetValue("MultiAgent:MaxModelTurns", 128);
-                if (budget < 1) throw new InvalidOperationException("MultiAgent:MaxModelTurns must be positive.");
                 var runtime = new MultiAgentRuntime(run, (payload, onEvent, token) => CallModelAsync(payload, metadata, onEvent, token), Send,
-                    () => store.SaveAsync(run, CancellationToken.None, persist), budget);
+                    () => store.SaveAsync(run, CancellationToken.None, persist));
                 await runtime.ExecuteAsync(request, ct, channel.Reader);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }

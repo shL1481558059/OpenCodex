@@ -2,6 +2,7 @@ using OpenCodex.Core.Services.Proxy;
 using System.Text;
 using System.Text.Json;
 using OpenCodex.Core.Protocols;
+using OpenCodex.Core.Errors;
 using Xunit;
 
 namespace OpenCodex.Api.Tests;
@@ -961,6 +962,144 @@ public sealed class SseStreamConverterTests
         Assert.Equal(streamedInput, done!["input"]?.ToString());
         Assert.DoesNotContain(parsed, entry => (string?)entry["type"] == "response.function_call_arguments.done");
     }
+
+    [Theory]
+    [InlineData("text(1+1);")]
+    [InlineData("{\"input\":\"literal\"}")]
+    [InlineData("text(\"雪😀\\path\");\r\ntext('next');")]
+    [InlineData("{}")]
+    [InlineData("")]
+    public async Task Chat_MappedCustomTool_DecodesFragmentedEnvelopeExactlyOnce(string input)
+    {
+        var blocks = new List<string>
+        {
+            SseBlock(ChatChunk(toolCalls: new[] { ChatToolCall(0, "call_exec", "exec") }))
+        };
+        foreach (var fragment in SplitEvery(JsonSerializer.Serialize(new { input }), 1))
+        {
+            blocks.Add(SseBlock(ChatChunk(toolCalls: new[] { ChatToolCall(0, arguments: fragment) })));
+        }
+        blocks.Add(SseBlock(ChatChunk(finishReason: "tool_calls")));
+        blocks.Add(SseBlock("[DONE]"));
+
+        var events = await CollectAsync(SseStreamConverter.ChatToResponsesEvents(
+            SseLines(blocks.ToArray()), "gpt-5", CustomToolStreamResult(), CancellationToken.None));
+        var parsed = ParseEvents(events);
+        var delta = Assert.Single(AllByType(parsed, "response.custom_tool_call_input.delta"));
+        Assert.Equal(input, delta["delta"]);
+        Assert.Equal(input, ByType(parsed, "response.custom_tool_call_input.done")!["input"]);
+        var item = Assert.IsType<Dictionary<string, object?>>(ByType(parsed, "response.output_item.done")!["item"]);
+        Assert.Equal(input, item["input"]);
+        var response = Assert.IsType<Dictionary<string, object?>>(ByType(parsed, "response.completed")!["response"]);
+        var output = Assert.IsType<List<object?>>(response["output"]);
+        Assert.Equal(input, Assert.IsType<Dictionary<string, object?>>(Assert.Single(output))["input"]);
+        Assert.DoesNotContain(parsed, e => (string?)e["type"] == "response.function_call_arguments.delta");
+    }
+
+    [Fact]
+    public async Task Chat_MappedCustomTools_InterleavedCallsKeepSeparateInputs()
+    {
+        var first = JsonSerializer.Serialize(new { input = "text('first');" });
+        var second = JsonSerializer.Serialize(new { input = "{\"input\":\"second\"}" });
+        var lines = SseLines(
+            SseBlock(ChatChunk(toolCalls: new[] { ChatToolCall(0, "first", "exec", first[..8]) })),
+            SseBlock(ChatChunk(toolCalls: new[] { ChatToolCall(1, "second", "exec", second[..8]) })),
+            SseBlock(ChatChunk(toolCalls: new[] { ChatToolCall(2, "search", "search", "{\"q\":1}") })),
+            SseBlock(ChatChunk(toolCalls: new[] { ChatToolCall(1, arguments: second[8..]) })),
+            SseBlock(ChatChunk(toolCalls: new[] { ChatToolCall(0, arguments: first[8..]) })),
+            SseBlock(ChatChunk(finishReason: "tool_calls")),
+            SseBlock("[DONE]"));
+
+        var parsed = ParseEvents(await CollectAsync(SseStreamConverter.ChatToResponsesEvents(
+            lines, "gpt-5", CustomToolStreamResult(), CancellationToken.None)));
+        var items = AllByType(parsed, "response.output_item.done")
+            .Select(e => Assert.IsType<Dictionary<string, object?>>(e["item"]))
+            .ToDictionary(i => i["call_id"]!.ToString()!);
+        Assert.Equal("text('first');", items["first"]["input"]);
+        Assert.Equal("{\"input\":\"second\"}", items["second"]["input"]);
+        Assert.Equal("{\"q\":1}", items["search"]["arguments"]);
+        Assert.Equal(2, AllByType(parsed, "response.custom_tool_call_input.delta").Count());
+        Assert.Single(AllByType(parsed, "response.function_call_arguments.delta"));
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"code\":\"text(1);\"}")]
+    [InlineData("{\"input\":null}")]
+    [InlineData("{\"input\":123}")]
+    [InlineData("{\"input\":\"x\",\"extra\":true}")]
+    [InlineData("{\"input\":\"x\",\"input\":\"y\"}")]
+    [InlineData("{\"input\":\"unfinished")]
+    public async Task Chat_MappedCustomTool_InvalidEnvelopeNeverCompletes(string arguments)
+    {
+        var lines = SseLines(
+            SseBlock(ChatChunk(toolCalls: new[] { ChatToolCall(0, "call_exec", "exec", arguments) })),
+            SseBlock(ChatChunk(finishReason: "tool_calls")), SseBlock("[DONE]"));
+        var emitted = new List<string>();
+
+        await Assert.ThrowsAsync<UpstreamException>(async () =>
+        {
+            await foreach (var e in SseStreamConverter.ChatToResponsesEvents(
+                lines, "gpt-5", CustomToolStreamResult(), CancellationToken.None))
+            {
+                emitted.Add(e);
+            }
+        });
+
+        Assert.DoesNotContain(ParseEvents(emitted), e => (string?)e["type"] is
+            "response.custom_tool_call_input.delta" or "response.custom_tool_call_input.done"
+            or "response.output_item.done" or "response.completed");
+    }
+
+    [Theory]
+    [InlineData("length", true)]
+    [InlineData("content_filter", true)]
+    [InlineData(null, false)]
+    public async Task Chat_MappedCustomTool_InterruptedStreamNeverCompletes(string? finishReason, bool done)
+    {
+        var blocks = new List<string>
+        {
+            SseBlock(ChatChunk(toolCalls: new[] { ChatToolCall(0, "call_exec", "exec", "{\"input\":\"text(1);\"}") }))
+        };
+        if (finishReason is not null) blocks.Add(SseBlock(ChatChunk(finishReason: finishReason)));
+        if (done) blocks.Add(SseBlock("[DONE]"));
+        var emitted = new List<string>();
+        await Assert.ThrowsAsync<UpstreamException>(async () =>
+        {
+            await foreach (var e in SseStreamConverter.ChatToResponsesEvents(
+                SseLines(blocks.ToArray()), "gpt-5", CustomToolStreamResult(), CancellationToken.None))
+            {
+                emitted.Add(e);
+            }
+        });
+        Assert.DoesNotContain(ParseEvents(emitted), e => (string?)e["type"] is
+            "response.custom_tool_call_input.delta" or "response.custom_tool_call_input.done"
+            or "response.output_item.done" or "response.completed");
+    }
+
+    [Fact]
+    public async Task Chat_NativeCustomTool_PreservesJsonShapedRawInput()
+    {
+        const string input = "{\"input\":\"literal\"}";
+        var lines = SseLines(
+            SseBlock(ChatChunk(toolCalls: new[]
+            {
+                new { index = 0, id = "call_exec", type = "custom", custom = new { name = "exec", input } }
+            })),
+            SseBlock(ChatChunk(finishReason: "tool_calls")), SseBlock("[DONE]"));
+        var parsed = ParseEvents(await CollectAsync(SseStreamConverter.ChatToResponsesEvents(
+            lines, "gpt-5", CustomToolStreamResult(), CancellationToken.None)));
+        Assert.Equal(input, ByType(parsed, "response.custom_tool_call_input.delta")!["delta"]);
+        Assert.Equal(input, ByType(parsed, "response.custom_tool_call_input.done")!["input"]);
+    }
+
+    private static ConvertedStreamResult CustomToolStreamResult() => new()
+    {
+        ToolCallMappings = new Dictionary<string, ResponsesToolCallMapping>
+        {
+            ["exec"] = new() { ChatName = "exec", ResponsesName = "exec", NativeType = "custom" }
+        }
+    };
 
     [Fact]
     public async Task Chat_ApplyPatchTool_StreamsCustomToolCallInputDeltasAndDone()

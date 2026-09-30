@@ -14,7 +14,6 @@ public sealed partial class MultiAgentRuntime
     private readonly MultiAgentModelCall _model;
     private readonly Func<Dictionary<string, object?>, Task> _emit;
     private readonly Func<Task> _save;
-    private readonly int _turnBudget;
     private readonly TimeProvider _time;
     private readonly Dictionary<string, (Task<Dictionary<string, object?>> Task, CancellationTokenSource Stop, int Generation, string Round)> _active = [];
     private readonly List<object?> _output = [];
@@ -22,17 +21,16 @@ public sealed partial class MultiAgentRuntime
 
     public MultiAgentRuntime(MultiAgentRun run,
         Func<Dictionary<string, object?>, CancellationToken, Task<Dictionary<string, object?>>> model,
-        Func<Dictionary<string, object?>, Task> emit, Func<Task> save, int turnBudget, TimeProvider? timeProvider = null)
-        : this(run, (payload, _, token) => model(payload, token), emit, save, turnBudget, timeProvider) { }
+        Func<Dictionary<string, object?>, Task> emit, Func<Task> save, TimeProvider? timeProvider = null)
+        : this(run, (payload, _, token) => model(payload, token), emit, save, timeProvider) { }
 
     public MultiAgentRuntime(MultiAgentRun run, MultiAgentModelCall model,
-        Func<Dictionary<string, object?>, Task> emit, Func<Task> save, int turnBudget, TimeProvider? timeProvider = null)
+        Func<Dictionary<string, object?>, Task> emit, Func<Task> save, TimeProvider? timeProvider = null)
     {
         _run = run;
         _model = model;
         _emit = emit;
         _save = save;
-        _turnBudget = turnBudget;
         _time = timeProvider ?? TimeProvider.System;
     }
 
@@ -81,8 +79,6 @@ public sealed partial class MultiAgentRuntime
                         continue;
                     var compact = agent.LastInputTokens >= _run.CompactThresholdTokens;
                     var calls = compact ? 2 : 1;
-                    if (_run.ModelTurns + calls > _turnBudget)
-                        throw new BadRequestException($"Multi-agent run reached the configured {_turnBudget} model-turn budget. Start a new task or increase MultiAgent:MaxModelTurns.");
                     BeginTask(agent);
                     DeliverMailbox(agent);
                     var payload = WebSearchPayload.DeepCopyObject(_run.Template);
@@ -324,18 +320,6 @@ public sealed partial class MultiAgentRuntime
             var item = WebSearchPayload.DeepCopyObject(raw);
             item.Remove("agent");
             var type = Text(item, "type");
-            if (type == "custom_tool_call")
-            {
-                // Chat represents a freeform tool as a JSON function with one input property.
-                // The client expects that property's text, not the JSON function envelope.
-                var input = Text(item, "input");
-                if (System.Text.RegularExpressions.Regex.IsMatch(input, "^\\s*\\{\\s*\"input\"\\s*:"))
-                {
-                    using var document = JsonDocument.Parse(input);
-                    if (document.RootElement.TryGetProperty("input", out var source) && source.ValueKind == JsonValueKind.String)
-                        item["input"] = source.GetString();
-                }
-            }
             if (type is "function_call" or "custom_tool_call")
                 item["call_id"] = FindLiveItem(round, sourceIndex)?.CallId ?? Id("call_ma");
             agent.History.Add(item);
@@ -408,8 +392,9 @@ public sealed partial class MultiAgentRuntime
         else if (type is "function_call" or "custom_tool_call")
         {
             var field = type == "function_call" ? "arguments" : "input";
-            await Event($"response.{type}_{field}.delta", ("item_id", item["id"]), ("output_index", index), ("delta", Text(item, field)), ("agent", item["agent"]));
-            await Event($"response.{type}_{field}.done", ("item_id", item["id"]), ("output_index", index), (field, Text(item, field)), ("agent", item["agent"]));
+            var input = JsonDictionaryValue.Get(item, field)?.ToString() ?? "";
+            await Event($"response.{type}_{field}.delta", ("item_id", item["id"]), ("output_index", index), ("delta", input), ("agent", item["agent"]));
+            await Event($"response.{type}_{field}.done", ("item_id", item["id"]), ("output_index", index), (field, input), ("agent", item["agent"]));
         }
         await Event("response.output_item.done", ("output_index", index), ("item", item), ("agent", item["agent"]));
     }

@@ -98,7 +98,7 @@ flowchart LR
 | 分布式容量锁 | TTL 5 秒，重试 3 次，间隔 10ms | 锁失败后存在无锁占位退化路径 |
 | 通用缓存 TTL | 300 秒 | 特定鉴权、路由、定价缓存另有 60 秒 TTL |
 | 多代理子代理并发 | `multi_agent.max_concurrent_subagents` 默认 3 | 请求可覆盖；`<1` 返回 400 |
-| 多代理模型回合预算 | `MultiAgent:MaxModelTurns` 默认 128 | 整次运行共享；`<1` 抛 `InvalidOperationException` |
+| 多代理模型调用计数 | `MultiAgentRun.ModelTurns` 累计，不设上限 | 按调度累计：普通回合计 1，需要摘要的回合预先计 2；用于续接输入判定，不限制运行 |
 | 多代理上下文压缩阈值 | `MultiAgent:CompactThresholdTokens` 默认 64000 | 请求 `context_management.compact_threshold` 可覆盖；`<1` 返回 400 |
 | 流捕获总预算 | 1 MiB | 用于重建完整响应与日志摘要，不限制真实下游响应大小 |
 | 流集合上限 | 256 项 | 超限标记截断 |
@@ -473,7 +473,7 @@ flowchart TD
 | REQ-NFR-032 | MUST | 任何 SLA/SLO 变更必须版本化并关联监控、报警和容量测试。 | 缺口 | PRD、仪表盘、告警规则和压测基准中的指标编号一致；变更有评审记录。 |
 | REQ-NFR-033 | MUST | 大列表与统计读取必须投影列并下推聚合，禁止为统计整表加载大字段（如 `PricingSnapshotJson`）。 | 已实现（核心路径有 SQL 级测试） | `ServiceQueryGovernanceTests`、`ObservabilityAggregationSqlTests` 通过 `SqlCapture` 断言 SQL 语义与语句条数；新增列表接口不得回归为全量加载。 |
 | REQ-NFR-034 | MUST | 缓存必须按 L1 进程内 + Redis L2 两级工作，Redis 不可用时降级为纯 L1 且不阻塞主请求，写路径通过广播失效其他实例 L1。 | 已实现（缺 Redis 集成测试） | `TwoLevelCacheService` 实现读回写与广播失效；`RedisConnectionProviderTests` 验证不可达时快速降级；失效广播与多实例一致性仍无直接用例（见 [16-testing-and-acceptance.md](./16-testing-and-acceptance.md)）。 |
-| REQ-NFR-035 | MUST | 多代理 v2 运行必须受子代理并发（默认 3）、整运行模型回合预算（默认 128）与上下文压缩阈值（默认 64000）约束，非法值必须显式拒绝。 | 已实现 | `multi_agent.max_concurrent_subagents<1` 返回 400；`MultiAgent:MaxModelTurns<1` 抛 `InvalidOperationException`；超预算返回明确错误；`context_management.compact_threshold` 覆盖生效。 |
+| REQ-NFR-035 | MUST | 多代理 v2 保留子代理并发上限（默认 3）与上下文压缩阈值（默认 64000），模型调用次数不设上限且不触发压缩；取消与失败隔离必须继续有效。 | 已实现 | `multi_agent.max_concurrent_subagents<1` 与 `context_management.compact_threshold<1` 返回 400；请求阈值覆盖生效；超过旧调用上限仍可完成或取消；普通回合预先计 1，需要摘要的回合预先计 2。 |
 | REQ-NFR-036 | MUST | 价格比较与排序不得下推到数据库，因为 SQLite 价格列为 `TEXT`、PostgreSQL 为 `numeric(18,8)`。 | 已记录并遵守 | SQL 捕获用例证明定价解析与比较留在内存；双 provider 迁移同步新增价格列。 |
 | REQ-NFR-037 | MUST | 日志与导出文件的访问控制、磁盘加密属于部署方责任边界，必须在发布文档中显式声明，不得宣称应用层已脱敏。 | 缺口（文档不一致） | README/DEPLOYMENT 不再声称日志已脱敏；发布文档列出部署方必须提供的访问控制与加密措施；`REQ-NFR-018` 边界变更时同步更新。 |
 

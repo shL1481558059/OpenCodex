@@ -132,10 +132,11 @@ flowchart TD
 | `DOCKER_LOG_MAX_SIZE` | `50m` | Docker json-file 单文件轮转上限 | 部署脚本/Compose |
 | `DOCKER_LOG_MAX_FILE` | `5` | Docker json-file 保留文件数 | 部署脚本/Compose |
 | `MultiAgent:StateDirectory` | 未设置时为 `logs/multi-agent-runs` | 多代理 v2 运行快照目录；请求 `store:false` 时仅内存保存 | 未列出 |
-| `MultiAgent:MaxModelTurns` | `128` | 多代理整次运行共享的模型回合预算；`<1` 时抛 `InvalidOperationException` | 未列出 |
 | `MultiAgent:CompactThresholdTokens` | `64000` | 多代理上下文压缩阈值默认值，可被请求 `context_management.compact_threshold` 覆盖 | 未列出 |
 
-`MultiAgent:*` 由 `IConfiguration` 直接读取，不经过 `OpenCodexRuntimeSettingsProvider`；环境变量形式为 `MultiAgent__*`（例如 `MultiAgent__MaxModelTurns`），`.env.example` 与 Compose 均未列出。
+`MultiAgent:*` 由 `IConfiguration` 直接读取，不经过 `OpenCodexRuntimeSettingsProvider`；环境变量形式为 `MultiAgent__*`（例如 `MultiAgent__CompactThresholdTokens`），`.env.example` 与 Compose 均未列出。
+
+多代理运行没有模型调用次数上限，旧配置 `MultiAgent:MaxModelTurns` 及其环境变量形式不再读取。按 token 阈值触发的自动上下文压缩继续有效；请求 `context_management.compact_threshold` 在本地解析和校验，随后 `context_management` 由多代理规范化层移除，不透传给上游。调用次数不会触发压缩。
 
 ### 4.3 README 配置漂移
 
@@ -411,7 +412,7 @@ PRD 将 Redis 定义为**可选的共享状态与缓存组件，而非主数据�
 | REQ-CFG-024 | MUST | 配置变更必须产生不含秘密的审计记录。 | TBD/缺口 | 修改系统、渠道、Web Search 和用户安全配置后，可按操作者与对象检索审计事件；明文秘密不存在。 |
 | REQ-CFG-025 | SHOULD | 桌面设置文件损坏时应保留损坏副本并以可见方式恢复默认，而非静默覆盖。 | 缺口 | 注入非法 JSON，桌面生成带时间戳备份、恢复默认并显示提示；服务可继续启动。 |
 | REQ-CFG-026 | MUST | README、DEPLOYMENT、`.env.example` 与配置目录必须在发布门禁中保持一致。 | 缺口 | CI 对变量名、默认值和废弃项做静态核对；本文列出的 README 漂移被修复。 |
-| REQ-CFG-027 | MUST | 多代理运行参数必须纳入配置目录并定义默认值与非法值行为。 | 部分实现 | `MultiAgent:StateDirectory`（默认 `logs/multi-agent-runs`）、`MultiAgent:MaxModelTurns`（默认 128，`<1` 抛异常）、`MultiAgent:CompactThresholdTokens`（默认 64000）写入配置目录，并在 `.env.example` 或文档说明 `MultiAgent__*` 环境变量形式。 |
+| REQ-CFG-027 | MUST | 多代理运行参数必须纳入配置目录并定义默认值与非法值行为。 | 部分实现 | `MultiAgent:StateDirectory`（默认 `logs/multi-agent-runs`）、`MultiAgent:CompactThresholdTokens`（默认 64000）写入配置目录，并在 `.env.example` 或文档说明 `MultiAgent__*` 环境变量形式；旧 `MultiAgent:MaxModelTurns` 不再读取。 |
 | REQ-CFG-028 | MUST | Web Search 的 provider 必须限定为受支持集合，并随密钥记录持久化。 | 已实现 | `WebSearchService` 只接受 `tavily`/`keenable`，缺省归一为 `tavily`，非法值返回 400；测试覆盖 provider 路由与非法值。 |
 | REQ-CFG-029 | MUST | 视觉转移配置必须按 owner 隔离，普通用户不能读写他人配置。 | 已实现 | `VisionTransferSettingsService.CurrentScope` 强制 owner 收敛；`VisionTransferSettingsServiceTests` 覆盖 owner 隔离、候选过滤与快照读取。 |
 
@@ -428,7 +429,7 @@ PRD 将 Redis 定义为**可选的共享状态与缓存组件，而非主数据�
 | TBD-CFG-005 | 配置审计日志保存多久、是否可导出。 | 合规 + 产品 | 影响数据库容量 |
 | TBD-CFG-006 | 桌面残留的 `DesktopSettings.intercept_probe_requests` 与 `OPENCODEX_INTERCEPT_PROBE_REQUESTS` 注入是删除还是转为显式兼容。 | 产品 + 后端 | 影响桌面设置契约与文档一致性 |
 | TBD-CFG-007 | 是否支持外部 secret manager，以及首批支持的实现。 | 运维 + 安全 | 影响生产秘密治理 |
-| TBD-CFG-008 | `MultiAgent:*` 运行参数是否进入对外 `.env.example`/Compose，还是保持内部配置。 | 产品 + 运维 | 影响多代理预算与快照目录的可见性 |
+| TBD-CFG-008 | `MultiAgent:*` 运行参数是否进入对外 `.env.example`/Compose，还是保持内部配置。 | 产品 + 运维 | 影响多代理压缩阈值与快照目录的可见性 |
 
 ---
 

@@ -9,6 +9,7 @@ using OpenCodex.CoreBase.DTOs.Proxy;
 using OpenCodex.CoreBase.Services.Proxy;
 using OpenCodex.CoreBase.Services.WebSearch;
 using Xunit;
+using D = System.Collections.Generic.Dictionary<string, object?>;
 
 namespace OpenCodex.Api.Tests;
 
@@ -148,6 +149,117 @@ public sealed class ProtocolConversionMatrixTests
         }
 
         Assert.Null(logs.LastContext.Error);
+    }
+
+    public static IEnumerable<object[]> CustomToolRoundTripCases()
+    {
+        foreach (var channelProtocol in Protocols())
+        foreach (var input in new[] { "text(1+1);", "{\"input\":\"literal\"}", " \ntext(\"中文 😀 \\\"quoted\\\"\");\n " })
+            yield return [channelProtocol, input];
+    }
+
+    [Theory]
+    [MemberData(nameof(CustomToolRoundTripCases))]
+    public async Task ResponsesCustomTool_TwoTurns_PreservesRawInputAndResultAcrossChannels(
+        string channelProtocol, string rawInput)
+    {
+        var request = RequestPayload(ProtocolConverter.Responses, stream: false);
+        request["tools"] = new List<object?> { new D { ["type"] = "custom", ["name"] = "exec" } };
+        var wrappedInput = new D { ["input"] = rawInput };
+        var upstreamResponse = channelProtocol switch
+        {
+            ProtocolConverter.Chat => new D
+            {
+                ["id"] = "chat-custom", ["model"] = "upstream-model",
+                ["choices"] = new List<object?> { new D
+                {
+                    ["index"] = 0, ["finish_reason"] = "tool_calls", ["message"] = new D
+                    {
+                        ["role"] = "assistant", ["tool_calls"] = new List<object?> { new D
+                        {
+                            ["id"] = "call-custom", ["type"] = "function", ["function"] = new D
+                            { ["name"] = "exec", ["arguments"] = JsonSerializer.Serialize(wrappedInput) }
+                        } }
+                    }
+                } }
+            },
+            ProtocolConverter.Messages => new D
+            {
+                ["id"] = "msg-custom", ["type"] = "message", ["model"] = "upstream-model",
+                ["role"] = "assistant", ["stop_reason"] = "tool_use", ["content"] = new List<object?>
+                { new D { ["type"] = "tool_use", ["id"] = "call-custom", ["name"] = "exec", ["input"] = wrappedInput } }
+            },
+            _ => new D
+            {
+                ["id"] = "resp-custom", ["object"] = "response", ["status"] = "completed",
+                ["model"] = "upstream-model", ["output"] = new List<object?> { new D
+                {
+                    ["type"] = "custom_tool_call", ["id"] = "custom-item", ["call_id"] = "call-custom",
+                    ["name"] = "exec", ["input"] = rawInput, ["status"] = "completed"
+                } }
+            }
+        };
+        var upstream = new MatrixUpstreamClient(upstreamResponse, []);
+        var service = new ProxyNonStreamService(upstream, new MatrixLogService(),
+            new DisabledWebSearchToolExecutor(), WebSearchTestStore.Create());
+
+        async Task<D> Send(D payload)
+        {
+            var converted = ProtocolConverter.ConvertRequest(payload, ProtocolConverter.Responses,
+                channelProtocol, "upstream-model");
+            var result = await service.SendAsync(new ProxyNonStreamContext(
+                Stopwatch.GetTimestamp(), Guid.NewGuid(), "req-custom-roundtrip", "admin", null,
+                payload, payload, converted, ProtocolConverter.Responses, Route(channelProtocol), channelProtocol,
+                "channel-matrix", "superadmin", "upstream-model", "client-model", 120,
+                RequestMetadata(ProtocolConverter.Responses), CancellationToken.None));
+            Assert.Equal(200, result.StatusCode);
+            return AsObject(result.Payload);
+        }
+
+        var firstResponse = await Send(request);
+        var call = Assert.IsType<D>(Assert.Single(JsonDictionaryValue.List(firstResponse, "output")));
+        Assert.Equal("custom_tool_call", call["type"]);
+        Assert.Equal("exec", call["name"]);
+        Assert.Equal(rawInput, call["input"]);
+        var input = JsonDictionaryValue.List(request, "input");
+        input.Add(call);
+        input.Add(new D { ["type"] = "custom_tool_call_output", ["call_id"] = call["call_id"], ["output"] = "EXECUTED" });
+        await Send(request);
+
+        var secondRequest = JsonSerializer.SerializeToElement(upstream.LastPostPayload);
+        if (channelProtocol == ProtocolConverter.Chat)
+        {
+            var messages = secondRequest.GetProperty("messages").EnumerateArray().ToArray();
+            var historyCall = Assert.Single(messages.Where(message => message.TryGetProperty("tool_calls", out _))
+                .SelectMany(message => message.GetProperty("tool_calls").EnumerateArray()));
+            using var arguments = JsonDocument.Parse(historyCall.GetProperty("function").GetProperty("arguments").GetString()!);
+            Assert.Equal(rawInput, arguments.RootElement.GetProperty("input").GetString());
+            Assert.Single(arguments.RootElement.EnumerateObject());
+            var output = Assert.Single(messages, message => message.GetProperty("role").GetString() == "tool");
+            Assert.Equal(historyCall.GetProperty("id").GetString(), output.GetProperty("tool_call_id").GetString());
+            Assert.Equal("EXECUTED", output.GetProperty("content").GetString());
+        }
+        else if (channelProtocol == ProtocolConverter.Messages)
+        {
+            var blocks = secondRequest.GetProperty("messages").EnumerateArray()
+                .SelectMany(message => message.GetProperty("content").EnumerateArray()).ToArray();
+            var historyCall = Assert.Single(blocks, block => block.GetProperty("type").GetString() == "tool_use");
+            Assert.Equal(rawInput, historyCall.GetProperty("input").GetProperty("input").GetString());
+            Assert.Single(historyCall.GetProperty("input").EnumerateObject());
+            var output = Assert.Single(blocks, block => block.GetProperty("type").GetString() == "tool_result");
+            Assert.Equal(historyCall.GetProperty("id").GetString(), output.GetProperty("tool_use_id").GetString());
+            Assert.Equal("EXECUTED", output.GetProperty("content").GetString());
+        }
+        else
+        {
+            var items = secondRequest.GetProperty("input").EnumerateArray()
+                .Where(item => item.TryGetProperty("type", out _)).ToArray();
+            var historyCall = Assert.Single(items, item => item.GetProperty("type").GetString() == "custom_tool_call");
+            Assert.Equal(rawInput, historyCall.GetProperty("input").GetString());
+            var output = Assert.Single(items, item => item.GetProperty("type").GetString() == "custom_tool_call_output");
+            Assert.Equal(historyCall.GetProperty("call_id").GetString(), output.GetProperty("call_id").GetString());
+            Assert.Equal("EXECUTED", output.GetProperty("output").GetString());
+        }
     }
 
     private static IReadOnlyList<string> Protocols() =>

@@ -71,7 +71,13 @@ public static partial class ProtocolConverter
 
             var arguments = ResponsesToolCallArguments(inputItem);
             arguments = EnrichMcpToolCallArguments(name, arguments);
-            arguments = NormalizeApplyPatchArguments(itemType ?? string.Empty, name, arguments);
+            var argumentName = NamespaceCallParts(name).BareName;
+            arguments = NormalizeApplyPatchArguments(itemType ?? string.Empty, argumentName, arguments);
+            if (itemType == "custom_tool_call" && !IsApplyPatchPublic(argumentName))
+            {
+                // Responses custom input is source text, even when the text itself is JSON.
+                arguments = Obj(("input", arguments));
+            }
             return
             [
                 Obj(

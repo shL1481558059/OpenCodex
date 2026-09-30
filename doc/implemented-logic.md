@@ -181,7 +181,9 @@ OpenCodex 是多协议 LLM 代理与配套管理台：接收客户端 Responses�
 - 服务端提供 `ocxp_ma_spawn_agent`、`send_message`、`followup_task`、`wait_agent`、`interrupt_agent`、`list_agents`；客户端工具（命令、文件等）仍由 Codex 执行，服务端分配独立 `call_id` 并维护归属。
 - 每次模型调用独立 DI 作用域，复用流式管线的路由/认证/转换/日志/计量；增量文本、推理、工具参数即时转发，统一分配代理归属、item ID、output index 与事件序号。
 - 会话按 API Key + 会话标识隔离，`previous_response_id` 同域查询；会话标识依次取 `client_metadata.session_id`、`thread_id`、`session-id`/`X-OpenCodex-Multi-Agent-Session` 请求头、`prompt_cache_key`，未提供时生成并通过响应头返回。
-- `store: false` 仅内存保存；否则写入 `logs/multi-agent-runs` JSON 快照（`MultiAgent:StateDirectory` 可改）。`multi_agent.max_concurrent_subagents` 默认 3，`MaxModelTurns` 默认 128（整运行共享），上下文阈值默认 64000，超阈值时在推理前请求独立摘要。
+- `store: false` 仅内存保存；否则写入 `logs/multi-agent-runs` JSON 快照（`MultiAgent:StateDirectory` 可改）。`multi_agent.max_concurrent_subagents` 默认 3；取消、中断和子代理失败隔离继续有效。
+- `ModelTurns` 按调度预先累计并用于续接输入判定：普通回合计 1，需要摘要的回合计 2，摘要失败而主调用未发起时也不回退。该计数不限制运行，也不会触发压缩；旧配置 `MultiAgent:MaxModelTurns` 不再读取。
+- 按 token 阈值自动压缩继续有效：`MultiAgent:CompactThresholdTokens` 默认 64000，可由请求 `context_management.compact_threshold` 覆盖，小于 1 返回 400。达到阈值时先请求独立摘要，再以摘要和保留的历史尾部继续主调用；摘要成功且主回合进入处理流程后合并两次调用的 usage。阈值由本地消费，`context_management` 在规范化时移除，不透传上游。
 - 当前为单实例实现，不包含多实例协调或 Redis 状态方案。
 
 ### 8.4 管理台与 API

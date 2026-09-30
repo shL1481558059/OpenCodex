@@ -154,13 +154,16 @@ public static partial class ProtocolConverter
                 ? toolName
                 : shape.Name;
             var (namespaceName, _) = NamespaceCallParts(responseName, shape.Namespace);
+            var arguments = callType == "custom"
+                ? GetValue(callPayload, "input") ?? string.Empty
+                : GetValue(callPayload, "arguments") ?? "{}";
+            if (callType == "function" && UsesCustomInputEnvelope(toolName, toolCallMappings))
+                arguments = DecodeCustomToolArguments(arguments);
             var canonicalToolCall = Obj(
                 ("id", GetValue(toolCall, "id") ?? NewId("call")),
                 ("name", responseName),
                 ("namespace", namespaceName),
-                ("arguments", callType == "custom"
-                    ? GetValue(callPayload, "input") ?? string.Empty
-                    : GetValue(callPayload, "arguments") ?? "{}"));
+                ("arguments", arguments));
             if (callType == "custom")
             {
                 canonicalToolCall["native_type"] = "custom";
@@ -168,7 +171,7 @@ public static partial class ProtocolConverter
             if (shape.Kind != ResponsesToolCallKind.Function)
             {
                 canonicalToolCall["native_type"] = shape.Kind == ResponsesToolCallKind.CustomTool
-                    ? "custom"
+                    ? "apply_patch"
                     : shape.ItemType == "custom_tool_call"
                         ? "custom"
                         : shape.ItemType.EndsWith("_call", StringComparison.Ordinal)
@@ -240,10 +243,13 @@ public static partial class ProtocolConverter
             else if (blockType is "tool_use" or "mcp_tool_use")
             {
                 var toolName = GetValue(block, "name");
+                var arguments = JsonDumps(GetValue(block, "input") ?? new Dictionary<string, object?>());
+                if (blockType == "tool_use" && UsesCustomInputEnvelope(toolName, toolCallMappings))
+                    arguments = DecodeCustomToolArguments(arguments);
                 var call = Obj(
                     ("id", GetValue(block, "id") ?? NewId("call")),
                     ("name", toolName),
-                    ("arguments", JsonDumps(GetValue(block, "input") ?? new Dictionary<string, object?>())));
+                    ("arguments", arguments));
                 if (blockType == "mcp_tool_use")
                 {
                     call["native_type"] = "mcp";
@@ -255,7 +261,7 @@ public static partial class ProtocolConverter
                     if (shape.Kind != ResponsesToolCallKind.Function)
                     {
                         call["native_type"] = shape.Kind == ResponsesToolCallKind.CustomTool
-                            ? "custom"
+                            ? "apply_patch"
                             : shape.ItemType == "custom_tool_call"
                                 ? "custom"
                                 : shape.ItemType.EndsWith("_call", StringComparison.Ordinal)

@@ -1,12 +1,156 @@
 using System.Text;
 using System.Text.Json;
 using OpenCodex.Core.Protocols;
+using OpenCodex.Core.Errors;
 using Xunit;
 
 namespace OpenCodex.Api.Tests;
 
 public sealed class ChatMessagesStreamingCompatibilityTests
 {
+    [Theory]
+    [InlineData("text(1+1);")]
+    [InlineData("{\"input\":\"literal\"}")]
+    [InlineData("text(\"雪😀\\path\");\r\ntext('next');")]
+    [InlineData("{}")]
+    [InlineData("")]
+    public async Task MessagesToResponses_MappedCustomTool_DecodesFragmentedEnvelopeExactlyOnce(string input)
+    {
+        var blocks = new List<string> { MessagesToolStart(0, "call_exec", "exec") };
+        foreach (var fragment in JsonSerializer.Serialize(new { input }).Select(c => c.ToString()))
+        {
+            blocks.Add(MessagesInputDelta(0, fragment));
+        }
+        blocks.Add(MessagesFinish("tool_use"));
+        blocks.Add(SseData(new { type = "message_stop" }));
+
+        var parsed = ParseEvents(await CollectAsync(SseStreamConverter.MessagesToResponsesEvents(
+            SseLines(blocks.ToArray()), "claude", CustomToolStreamResult(), CancellationToken.None)));
+        var delta = Assert.Single(parsed, e => e.EventName == "response.custom_tool_call_input.delta");
+        Assert.Equal(input, delta.Payload["delta"]);
+        var done = Assert.Single(parsed, e => e.EventName == "response.custom_tool_call_input.done");
+        Assert.Equal(input, done.Payload["input"]);
+        var itemDone = Assert.Single(parsed, e => e.EventName == "response.output_item.done");
+        Assert.Equal(input, Assert.IsType<Dictionary<string, object?>>(itemDone.Payload["item"])["input"]);
+        var completed = Assert.Single(parsed, e => e.EventName == "response.completed");
+        var response = Assert.IsType<Dictionary<string, object?>>(completed.Payload["response"]);
+        var output = Assert.IsType<List<object?>>(response["output"]);
+        Assert.Equal(input, Assert.IsType<Dictionary<string, object?>>(Assert.Single(output))["input"]);
+    }
+
+    [Fact]
+    public async Task MessagesToResponses_MappedCustomTool_InitialInputWithoutDeltasIsDecoded()
+    {
+        const string input = "{\"input\":\"literal\"}";
+        var lines = SseLines(
+            SseData(new { type = "content_block_start", index = 0,
+                content_block = new { type = "tool_use", id = "call_exec", name = "exec", input = new { input } } }),
+            MessagesFinish("tool_use"), SseData(new { type = "message_stop" }));
+        var parsed = ParseEvents(await CollectAsync(SseStreamConverter.MessagesToResponsesEvents(
+            lines, "claude", CustomToolStreamResult(), CancellationToken.None)));
+        Assert.Equal(input, Assert.Single(parsed, e => e.EventName == "response.custom_tool_call_input.delta").Payload["delta"]);
+        Assert.Equal(input, Assert.Single(parsed, e => e.EventName == "response.custom_tool_call_input.done").Payload["input"]);
+    }
+
+    [Fact]
+    public async Task MessagesToResponses_MappedCustomTools_InterleavedCallsKeepSeparateInputs()
+    {
+        var first = JsonSerializer.Serialize(new { input = "text('first');" });
+        var second = JsonSerializer.Serialize(new { input = "{\"input\":\"second\"}" });
+        var lines = SseLines(
+            MessagesToolStart(0, "first", "exec"), MessagesInputDelta(0, first[..8]),
+            MessagesToolStart(1, "second", "exec"), MessagesInputDelta(1, second[..8]),
+            MessagesToolStart(2, "search", "search"), MessagesInputDelta(2, "{\"q\":1}"),
+            MessagesInputDelta(1, second[8..]), MessagesInputDelta(0, first[8..]),
+            MessagesFinish("tool_use"), SseData(new { type = "message_stop" }));
+        var parsed = ParseEvents(await CollectAsync(SseStreamConverter.MessagesToResponsesEvents(
+            lines, "claude", CustomToolStreamResult(), CancellationToken.None)));
+        var items = parsed.Where(e => e.EventName == "response.output_item.done")
+            .Select(e => Assert.IsType<Dictionary<string, object?>>(e.Payload["item"]))
+            .ToDictionary(i => i["call_id"]!.ToString()!);
+        Assert.Equal("text('first');", items["first"]["input"]);
+        Assert.Equal("{\"input\":\"second\"}", items["second"]["input"]);
+        Assert.Equal("{\"q\":1}", items["search"]["arguments"]);
+        Assert.Equal(2, parsed.Count(e => e.EventName == "response.custom_tool_call_input.delta"));
+        Assert.Single(parsed, e => e.EventName == "response.function_call_arguments.delta");
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"code\":\"text(1);\"}")]
+    [InlineData("{\"input\":null}")]
+    [InlineData("{\"input\":123}")]
+    [InlineData("{\"input\":\"x\",\"extra\":true}")]
+    [InlineData("{\"input\":\"x\",\"input\":\"y\"}")]
+    [InlineData("{\"input\":\"unfinished")]
+    public async Task MessagesToResponses_MappedCustomTool_InvalidEnvelopeNeverCompletes(string arguments)
+    {
+        var lines = SseLines(MessagesToolStart(0, "call_exec", "exec"), MessagesInputDelta(0, arguments),
+            MessagesFinish("tool_use"), SseData(new { type = "message_stop" }));
+        var emitted = new List<string>();
+        await Assert.ThrowsAsync<UpstreamException>(async () =>
+        {
+            await foreach (var e in SseStreamConverter.MessagesToResponsesEvents(
+                lines, "claude", CustomToolStreamResult(), CancellationToken.None))
+            {
+                emitted.Add(e);
+            }
+        });
+        Assert.DoesNotContain(ParseEvents(emitted), e => e.EventName is
+            "response.custom_tool_call_input.delta" or "response.custom_tool_call_input.done"
+            or "response.output_item.done" or "response.completed");
+    }
+
+    [Theory]
+    [InlineData("max_tokens", true)]
+    [InlineData("refusal", true)]
+    [InlineData(null, false)]
+    public async Task MessagesToResponses_MappedCustomTool_InterruptedStreamNeverCompletes(string? stopReason, bool stopped)
+    {
+        var blocks = new List<string>
+        {
+            MessagesToolStart(0, "call_exec", "exec"), MessagesInputDelta(0, "{\"input\":\"text(1);\"}")
+        };
+        if (stopReason is not null) blocks.Add(MessagesFinish(stopReason));
+        if (stopped) blocks.Add(SseData(new { type = "message_stop" }));
+        var emitted = new List<string>();
+        await Assert.ThrowsAsync<UpstreamException>(async () =>
+        {
+            await foreach (var e in SseStreamConverter.MessagesToResponsesEvents(
+                SseLines(blocks.ToArray()), "claude", CustomToolStreamResult(), CancellationToken.None))
+            {
+                emitted.Add(e);
+            }
+        });
+        Assert.DoesNotContain(ParseEvents(emitted), e => e.EventName is
+            "response.custom_tool_call_input.delta" or "response.custom_tool_call_input.done"
+            or "response.output_item.done" or "response.completed");
+    }
+
+    private static ConvertedStreamResult CustomToolStreamResult() => new()
+    {
+        ToolCallMappings = new Dictionary<string, ResponsesToolCallMapping>
+        {
+            ["exec"] = new() { ChatName = "exec", ResponsesName = "exec", NativeType = "custom" }
+        }
+    };
+
+    private static string MessagesToolStart(int index, string id, string name) => SseData(new
+    {
+        type = "content_block_start", index,
+        content_block = new { type = "tool_use", id, name, input = new Dictionary<string, object?>() }
+    });
+
+    private static string MessagesInputDelta(int index, string fragment) => SseData(new
+    {
+        type = "content_block_delta", index, delta = new { type = "input_json_delta", partial_json = fragment }
+    });
+
+    private static string MessagesFinish(string stopReason) => SseData(new
+    {
+        type = "message_delta", delta = new { stop_reason = stopReason }, usage = new { output_tokens = 1 }
+    });
+
     [Fact]
     public async Task ChatToMessages_InterleavedParallelTools_NeverDeltaAfterBlockStop()
     {

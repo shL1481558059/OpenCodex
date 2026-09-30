@@ -25,7 +25,7 @@ internal static class MultiAgentTestHarness
     {
         var events = new List<Dictionary<string, object?>>();
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var runtime = new MultiAgentRuntime(run, model, e => { events.Add(e); return Task.CompletedTask; }, () => Task.CompletedTask, 40);
+        var runtime = new MultiAgentRuntime(run, model, e => { events.Add(e); return Task.CompletedTask; }, () => Task.CompletedTask);
         await runtime.ExecuteAsync(request ?? new(), deadline.Token);
         return events;
     }

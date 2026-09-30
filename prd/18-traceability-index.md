@@ -662,7 +662,7 @@
 | `REQ-NFR-032` | MUST | 任何 SLA/SLO 变更必须版本化并关联监控、报警和容量测试。 | [非功能要求](13-non-functional-requirements.md) | 跨模块源码；压测/故障注入/安全测试与当前缺口 |
 | `REQ-NFR-033` | MUST | 大列表与统计读取必须投影列并下推聚合，禁止为统计整表加载大字段。 | [非功能要求](13-non-functional-requirements.md) | 跨模块源码；压测/故障注入/安全测试与当前缺口 |
 | `REQ-NFR-034` | MUST | 缓存必须按 L1 进程内 + Redis L2 两级工作，Redis 不可用时降级为纯 L1 且不阻塞主请求。 | [非功能要求](13-non-functional-requirements.md) | 跨模块源码；压测/故障注入/安全测试与当前缺口 |
-| `REQ-NFR-035` | MUST | 多代理 v2 必须受子代理并发、模型回合预算与上下文压缩阈值约束，非法值显式失败。 | [非功能要求](13-non-functional-requirements.md)；[多代理模拟](19-multi-agent-simulation.md) | MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-NFR-035` | MUST | 多代理 v2 保留子代理并发上限与 token 压缩阈值，调用次数不设上限且不触发压缩，取消与失败隔离继续有效。 | [非功能要求](13-non-functional-requirements.md)；[多代理模拟](19-multi-agent-simulation.md) | MultiAgentRuntime；MultiAgent 测试 |
 | `REQ-NFR-036` | MUST | 价格比较与排序不得下推到数据库（SQLite `TEXT` 与 PostgreSQL `numeric` 差异）。 | [非功能要求](13-non-functional-requirements.md) | 跨模块源码；压测/故障注入/安全测试与当前缺口 |
 | `REQ-NFR-037` | MUST | 日志与导出文件的访问控制、磁盘加密属于部署方责任边界，不得宣称应用层已脱敏。 | [非功能要求](13-non-functional-requirements.md) | 跨模块源码；压测/故障注入/安全测试与当前缺口 |
 | `REQ-MIG-001` | MUST | SQLite/PostgreSQL 必须是用户、渠道、Key、模型、价格和请求日志的唯一业务主数据源。 | [数据与迁移](14-data-and-migrations.md) | DbContext；Migrations；DatabaseInitializer；双库迁移测试 |
@@ -794,7 +794,7 @@
 | `REQ-MA-025` | MUST | 快照持久化与恢复 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
 | `REQ-MA-026` | MUST | 旧快照兼容与不猜测 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
 | `REQ-MA-027` | MUST | 客户端回传历史边界 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
-| `REQ-MA-028` | MUST | 模型回合预算 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-028` | MUST | 模型调用计数与无次数上限 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
 | `REQ-MA-029` | MUST | 上下文压缩与摘要语义 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
 | `REQ-MA-030` | MUST | 普通管线 v2 策略选择 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
 | `REQ-MA-031` | MUST | downgrade 改写保真 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |

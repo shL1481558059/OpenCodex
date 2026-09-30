@@ -164,7 +164,7 @@ public sealed class MultiAgentWaitTests
     }
 
     private static MultiAgentRuntime Runtime(MultiAgentRun run, TimeProvider clock, Func<D, CancellationToken, Task<D>> model)
-        => new(run, model, _ => Task.CompletedTask, () => Task.CompletedTask, 40, clock);
+        => new(run, model, _ => Task.CompletedTask, () => Task.CompletedTask, clock);
 
     private static JsonElement Result(MultiAgentRun run, string name)
     {

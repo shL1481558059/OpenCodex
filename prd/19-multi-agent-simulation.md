@@ -30,7 +30,7 @@
 3. 将模型返回的文本、reasoning、工具参数和工具调用转换为带代理归属的 Responses 事件。
 4. 将客户端工具调用交给客户端执行，并通过 `call_id` 与服务器状态重新挂接结果。
 5. 在进程内或本地 JSON 快照中保存运行状态，支持同一 API key 与同一会话范围内的 `previous_response_id` 续接。
-6. 对整次运行施加模型回合预算、子代理并发上限和上下文压缩阈值。
+6. 按调度累计整次运行的模型调用计数，保留子代理并发上限和按 token 阈值触发的上下文压缩；不因调用计数终止或触发压缩。
 7. 对未进入服务端运行器的普通管线请求，按渠道配置处理上游 v2 语义。
 8. 明确失败、恢复、跨实例、安全和可观测性边界，避免把“工具可执行”误写成“官方 v2 全等价”或“客户端原生代理树已实现”。
 
@@ -44,7 +44,7 @@
 - 文本、reasoning、函数调用参数、自定义工具输入等增量事件的服务端分发与身份分配。
 - API key 加会话标识的状态隔离、会话标识来源顺序、`previous_response_id` 查询与固定模型。
 - `store:false` 内存模式、JSON 快照、重启恢复、快照兼容与不猜测旧回合。
-- 模型回合预算、子代理并发上限、上下文压缩阈值和摘要调用。
+- 模型调用计数、子代理并发上限、上下文压缩阈值和摘要调用。
 - 普通管线中的 `multi_agent_v2_mode` 自动/显式策略、降级改写和重复轮次软性护栏。
 - 已知限制、TBD、源码与测试追溯、发布验收建议。
 
@@ -69,7 +69,7 @@
 | API 客户端 | Responses 请求格式、SSE/WebSocket 事件、客户端工具调用与结果回传 |
 | 模型目录管理员 | 全局模型能力 `capabilities.v2_agent_simulation` 的开启与匹配范围 |
 | 渠道管理员 | 普通管线 `multi_agent_v2_mode` 的透传、降级或拒绝策略 |
-| 后端开发者 | 代理运行、会话状态、任务代次、预算、压缩与快照 |
+| 后端开发者 | 代理运行、会话状态、任务代次、调用计数、压缩与快照 |
 | 测试人员 | 入口分流、协作动作、流式顺序、错误码、恢复和隔离 |
 | SRE | 单实例边界、快照目录、容量、清理、可观测性与多实例限制 |
 
@@ -89,7 +89,7 @@
 | 术语 | 定义 |
 |---|---|
 | 服务端多代理模拟 | OpenCodex 在服务端调用模型、维护代理树并产生 Responses 事件的运行模式 |
-| 运行（Run） | 一个 `MultiAgentRun`，包含模板、代理表、待处理调用、输出历史、预算与 usage |
+| 运行（Run） | 一个 `MultiAgentRun`，包含模板、代理表、待处理调用、输出历史、调用计数与 usage |
 | 代理（Agent） | `MultiAgentState`，路径以 `/root` 开始，可为根代理或子代理 |
 | 根代理 | 路径为 `/root` 的代理；最终回答由根代理汇总 |
 | 子代理 | 路径为 `/root/...` 的代理；用于执行委派任务 |
@@ -103,6 +103,7 @@
 | Hosted 多代理 | 上游服务托管的 `multi_agent_call`、`multi_agent_call_output` 与密文历史 |
 | 会话键 | API key 标识与解析出的会话标识组成的隔离键 |
 | 快照 | `MultiAgentRunStore` 写入的 JSON 运行状态 |
+| 模型调用计数 | `MultiAgentRun.ModelTurns` 按调度累计：普通回合预先计 1，需要摘要的回合预先计 2；用于续接输入判定，不设次数上限 |
 | 压缩 | 在代理上下文达到阈值时，先用摘要模型调用生成参考摘要，再继续主模型调用 |
 
 ---
@@ -194,7 +195,7 @@ flowchart TD
 3. 根代理不计入子代理并发上限。
 4. 处于 `waiting`、`tool_wait` 或已有活动调用的代理不会被重复调度。
 5. `PendingTasks` 按先进先出执行；`StartNextTask` 取队列首项并立即占用任务代次。
-6. 同一运行的模型调用共享 `MultiAgentRun.ModelTurns` 预算。
+6. 同一运行的 `MultiAgentRun.ModelTurns` 按调度预先累计：普通回合加 1，需要摘要的回合加 2；不设置次数上限。
 7. `wait_agent` 超时或收到邮箱消息后会生成成对的工具调用结果。
 8. `interrupt_agent` 会取消活动模型令牌，结束当前任务回合；后续 follow-up 作为新任务代次执行。
 
@@ -229,17 +230,18 @@ flowchart TD
 9. `response.failed` 与 `response.incomplete` 不会与 `response.completed` 同时发布。
 10. 内部 `ocxp_ma_*` 函数调用对客户端隐藏，不作为普通函数增量转发；运行器改为发出 `multi_agent_call` 与 `multi_agent_call_output` 项。
 
-### 4.8 上下文压缩与预算
+### 4.8 上下文压缩与调用计数
 
 1. 运行器在调度代理前检查该代理的 `LastInputTokens` 是否达到 `CompactThresholdTokens`。
 2. 压缩阈值默认 `64000`，可由 `MultiAgent:CompactThresholdTokens` 配置，也可由请求 `context_management.compact_threshold` 覆盖；小于 `1` 返回 400。
-3. 达到阈值时，先发起一次摘要模型调用，再发起一次主模型调用，因此一次压缩回合占用两个模型回合预算。
+3. 达到阈值时，调度先将 `ModelTurns` 加 2，再发起摘要调用；摘要成功后继续主调用。若摘要失败，主调用不会发起，但已累计的 2 不回退，因此该计数不等于实际完成或已发出的调用次数。
 4. 摘要请求复用原来的模型调用管线，但清空 `tools` 并移除 `tool_choice`。
 5. 摘要保留 system/developer 约束，将原历史摘要为参考数据，并保留当前任务所需的历史尾部。
 6. 摘要成功且主模型回合进入 `ProcessTurn` 后，摘要调用的 input/output usage 与主模型调用一并计入运行的 input/output tokens；摘要成功后主调用直接抛错的失败终态不包含该摘要 usage。
 7. 摘要状态为 `failed`、`incomplete` 或摘要文本为空时，历史不被摘要替换，运行按失败路径处理。
-8. `MultiAgent:MaxModelTurns` 默认 `128`，整次运行共享；小于 `1` 抛配置错误。
-9. 预算检查发生在启动模型调用前；不足两个剩余回合时，压缩不会开始。
+8. `ModelTurns` 按根代理和子代理的调度累计，包含需要摘要时预先计入的两次调用，也用于续接输入判定，不设次数上限；旧 `MultiAgent:MaxModelTurns` 配置不再读取。
+9. 压缩只根据 token 阈值触发，与累计调用次数无关；摘要与后续主调用不受剩余调用次数限制。
+10. 请求 `context_management.compact_threshold` 在本地解析和校验；`context_management` 随后由多代理规范化层移除，不透传给上游。
 
 ### 4.9 终态、失败隔离与客户端工具暂停
 
@@ -741,18 +743,19 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 3. `MultiAgentProtocolTests.InitialHistory_RejectsExternalEncryptedAgentMessage` 验证 `enc_` 密文被拒绝。
 4. 续接请求必须提供相同 API key、会话与 `previous_response_id`，或者继续在同一进程内使用内存状态。
 
-### REQ-MA-028 模型回合预算（MUST）
+### REQ-MA-028 模型调用计数与无次数上限（MUST）
 
 **状态：** CURRENT（已实现）
 
-**要求：** 整次运行必须共享 `MultiAgent:MaxModelTurns` 预算；默认 128，小于 1 拒绝；压缩回合占用两个预算槽。
+**要求：** 整次运行必须按根代理与子代理的调度累计 `ModelTurns`：普通回合预先计 1，需要摘要的回合预先计 2；该计数继续支持续接输入判定，但不得用于终止运行。
 
 **验收标准：**
 
-1. `MultiAgentContextTests.SummaryStartsAtConfiguredThresholdAndAccountsForBothCalls` 验证普通调用与压缩调用的计数。
-2. `MultiAgentContextTests.SummaryAndContinuationRequireTwoRemainingBudgetSlots` 验证只剩一个预算槽时压缩不会开始。
-3. 运行器的预算检查发生在启动模型调用前。
-4. `MultiAgentApiTestContext` 把测试预算固定为 20，验证测试可注入。
+1. `MultiAgentContextTests` 验证超过旧的 128 次上限后仍可继续调用并正常完成。
+2. 调度普通回合时 `ModelTurns` 预先加 1，需要摘要时预先加 2；摘要失败导致主调用未发起时，仍保留已累计的 2。
+3. 超过旧上限后，取消仍能停止在途调用，后续用户输入继续按原有规则入队。
+4. HTTP 与 WebSocket 入口不读取 `MultiAgent:MaxModelTurns`，运行器不再包含调用次数配置或预算检查。
+5. 高累计调用次数不会触发压缩；达到 token 阈值后仍执行摘要和主调用，二者不受旧上限影响。
 
 ### REQ-MA-029 上下文压缩与摘要语义（MUST）
 
@@ -881,7 +884,7 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 
 ### 9.1 数据
 
-1. 持久化快照包含模型模板、代理历史、待处理调用、已接收调用、输出历史、任务队列、阻塞状态、预算与 usage。
+1. 持久化快照包含模型模板、代理历史、待处理调用、已接收调用、输出历史、任务队列、阻塞状态、调用计数与 usage。
 2. 默认快照目录为 `logs/multi-agent-runs`；`store=false` 时不写磁盘，但进程内仍保留状态。
 3. 快照键按 API key 与会话隔离；文件名使用哈希，不对目录暴露原始 API key 或会话标识。
 4. 运行状态可能包含用户请求、工作区任务、客户端工具结果和代理间消息，应按敏感业务数据管理。
@@ -899,7 +902,7 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 
 1. 记录运行 ID、模型、会话哈希、代理路径、任务代次、模型回合类型与终态。
 2. 区分普通模型回合、压缩摘要回合和子代理模型回合。
-3. 统计子代理并发峰值、等待超时、中断、失败隔离、客户端工具暂停、重复结果拒绝和预算耗尽。
+3. 统计子代理并发峰值、等待超时、中断、失败隔离、客户端工具暂停、重复结果拒绝和上游上下文窗口错误。
 4. 统计快照写入失败、加载失败、旧快照默认字段命中、`running` 到 `ready` 恢复与冲突检测。
 5. 当前实现未发现多代理专用指标与专用日志字段，以上为产品化建议，不作为 CURRENT 声明。
 
@@ -917,9 +920,9 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 8. 客户端工具调用没有独立超时；客户端不返回结果时，HTTP 运行保持 pending，WebSocket 等待注入或断开。
 9. `multi_agent.enabled=false` 是顶层字段回退，不是完整的 v2 标记清理；其它 v2 标记仍可能触发普通管线策略。
 10. `v2_agent_simulation` 只从全局模型目录解析，渠道级模型覆盖编辑器没有该能力开关。
-11. 模型回合预算包含摘要调用和所有子代理调用；当前没有单独的代理级预算或费用科目。
+11. 模型调用次数没有上限；`ModelTurns` 按调度预先累计，并非实际发出或完成的调用数。运行由正常完成、取消或错误结束，当前没有单独的代理级费用科目。
 12. 快照以明文 JSON 写入本地目录，当前没有静态加密、保留期限、容量配额或自动清理。
-13. 没有对代理数量、路径深度、单代理历史长度、工具输出大小或快照大小设置独立上限；现有上限主要来自整次运行的模型回合预算、HTTP/WebSocket 请求体限制和系统资源。
+13. 没有对代理数量、路径深度、单代理历史长度、工具输出大小或快照大小设置独立上限；实际仍受上游模型上下文窗口、HTTP/WebSocket 请求体限制和系统资源约束。
 14. 普通管线降级会把 hosted 输入转为文本，可能丢失 hosted 调用结构；这是当前明确的功能边界，不是服务端模拟能力。
 15. 摘要成功后主模型调用直接抛错时，失败终态不会累计摘要调用的 usage。
 16. 当前实现不声称与 OpenAI 官方 hosted multi-agent v2 的全部语义等价。
@@ -962,7 +965,7 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 | 会话与快照 | `MultiAgentRunStore`、`MultiAgentRun` | `MultiAgentRunStoreTests` |
 | 普通管线 v2 策略 | `MultiAgentV2Policy`、`MultiAgentV2RequestRewriter` | `MultiAgentV2PolicyTests`、`MultiAgentV2RequestRewriterTests`、`ProxyEndpointServiceTests` |
 | 重复轮次护栏 | `MultiAgentRepeatGuard`、`MultiAgentTurnContext` | `MultiAgentRepeatGuardTests` |
-| 模型回合预算 | `MultiAgentResponseService`、`MultiAgentRuntime` | `MultiAgentContextTests` |
+| 模型调用计数与无次数上限 | `MultiAgentRun.ModelTurns`、`MultiAgentRuntime` | `MultiAgentContextTests` |
 | 配置项 | `OpenCodexServiceCollectionExtensions`、`ConfigValidator` | `ConfigValidatorCompatTests`、`MultiAgentApiTestContext` |
 
 ---
@@ -980,6 +983,6 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 4. 覆盖六个协作动作、路径解析、并发上限、follow-up 队列、等待超时、中断和迟到事件。
 5. 覆盖子代理失败隔离、根代理提前汇总、根代理 `failed`/`incomplete`、缺少终结事件和成功终结无输出。
 6. 覆盖 API key 与会话隔离、`previous_response_id` 同域查询、自动会话标识、固定模型、`store=false` 和重启恢复。
-7. 覆盖压缩阈值、摘要调用计费、预算不足、摘要失败不丢历史。
+7. 覆盖超过旧调用上限后的正常完成与取消、调用次数不触发压缩、token 阈值与请求覆盖、摘要调用计费、摘要失败不丢历史，以及达到阈值后摘要和主调用不受旧次数上限影响。
 8. 覆盖普通管线 `passthrough`、`downgrade`、`reject`、配置覆盖与 `multi_agent.enabled=false` 的边界。
 9. 在发布说明中明确单实例边界、快照目录、明文状态、无原生代理树 UI、无官方密文互通和无多实例 Redis 协调。

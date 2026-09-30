@@ -1,3 +1,4 @@
+using System.Text.Json;
 using OpenCodex.Core.Errors;
 using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.Proxy;
@@ -7,6 +8,231 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class ProtocolStructuralCompatibilityTests
 {
+    public static IEnumerable<object[]> CustomToolInputs()
+    {
+        foreach (var protocol in new[] { ProtocolConverter.Chat, ProtocolConverter.Messages })
+        foreach (var input in new[] { "text(1+1);", "{\"input\":\"literal\"}", "{\"code\":\"literal\"}", "{}", "", " \ntext(\"中文 😀\");\r\n\\path" })
+            yield return new object[] { protocol, input };
+    }
+
+    [Theory]
+    [MemberData(nameof(CustomToolInputs))]
+    public void CustomToolHistory_WrapsTheEntireOriginalInput(string protocol, string input)
+    {
+        var request = new Dictionary<string, object?>
+        {
+            ["model"] = "public",
+            ["tools"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "namespace", ["name"] = "functions",
+                    ["tools"] = new List<object?>
+                    {
+                        new Dictionary<string, object?> { ["type"] = "custom", ["name"] = "exec", ["format"] = new Dictionary<string, object?> { ["type"] = "text" } }
+                    }
+                }
+            },
+            ["input"] = new List<object?>
+            {
+                new Dictionary<string, object?> { ["type"] = "custom_tool_call", ["name"] = "exec", ["namespace"] = "functions", ["call_id"] = "call_custom", ["input"] = input },
+                new Dictionary<string, object?> { ["type"] = "custom_tool_call_output", ["call_id"] = "call_custom", ["output"] = "done" }
+            }
+        };
+        var converted = ProtocolConverter.ConvertRequest(request, ProtocolConverter.Responses, protocol, "upstream");
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(converted));
+        var messages = document.RootElement.GetProperty("messages").EnumerateArray();
+        if (protocol == ProtocolConverter.Chat)
+        {
+            var call = messages.Single(m => m.TryGetProperty("tool_calls", out _)).GetProperty("tool_calls")[0];
+            Assert.Equal("functions__exec", call.GetProperty("function").GetProperty("name").GetString());
+            using var arguments = JsonDocument.Parse(call.GetProperty("function").GetProperty("arguments").GetString()!);
+            Assert.Equal(input, arguments.RootElement.GetProperty("input").GetString());
+            Assert.Single(arguments.RootElement.EnumerateObject());
+        }
+        else
+        {
+            var call = messages.SelectMany(m => m.GetProperty("content").EnumerateArray())
+                .Single(b => b.GetProperty("type").GetString() == "tool_use");
+            Assert.Equal("functions__exec", call.GetProperty("name").GetString());
+            Assert.Equal(input, call.GetProperty("input").GetProperty("input").GetString());
+            Assert.Single(call.GetProperty("input").EnumerateObject());
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(CustomToolInputs))]
+    public void CustomToolResponse_DecodesOnlyTheFunctionEnvelope(string protocol, string input)
+    {
+        var response = CustomResponse(protocol, JsonSerializer.Serialize(new { input }));
+        var converted = ProtocolConverter.ConvertResponse(response, ProtocolConverter.Responses, protocol, "public", toolCallMappings: CustomMappings());
+        var call = List(converted, "output").Select(Object).Single(i => String(i, "type") == "custom_tool_call");
+        Assert.Equal(input, Assert.IsType<string>(call["input"]));
+        Assert.Equal("functions", String(call, "namespace"));
+        Assert.Equal("exec", String(call, "name"));
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"code\":\"text(1);\"}")]
+    [InlineData("{\"input\":null}")]
+    [InlineData("{\"input\":123}")]
+    [InlineData("{\"input\":\"ok\",\"extra\":true}")]
+    [InlineData("{\"input\":\"first\",\"input\":\"second\"}")]
+    [InlineData("{\"input\":\"unfinished")]
+    [InlineData("[]")]
+    [InlineData("\"source\"")]
+    [InlineData("text(1+1);")]
+    public void CustomToolResponse_RejectsInvalidEnvelope(string arguments)
+    {
+        var exception = Assert.Throws<UpstreamException>(() => ProtocolConverter.ConvertResponse(
+            CustomResponse(ProtocolConverter.Chat, arguments), ProtocolConverter.Responses, ProtocolConverter.Chat,
+            "public", toolCallMappings: CustomMappings()));
+        Assert.Equal("upstream_error", exception.ErrorType);
+        Assert.DoesNotContain(arguments, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("{\"input\":\"literal\"}")]
+    [InlineData("{}")]
+    [InlineData("")]
+    public void NativeChatCustomResponse_PreservesOriginalInput(string input)
+    {
+        var response = new Dictionary<string, object?>
+        {
+            ["choices"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["finish_reason"] = "tool_calls",
+                    ["message"] = new Dictionary<string, object?>
+                    {
+                        ["tool_calls"] = new List<object?>
+                        {
+                            new Dictionary<string, object?> { ["type"] = "custom", ["id"] = "call_custom", ["custom"] = new Dictionary<string, object?> { ["name"] = "functions__exec", ["input"] = input } }
+                        }
+                    }
+                }
+            }
+        };
+        var converted = ProtocolConverter.ConvertResponse(response, ProtocolConverter.Responses, ProtocolConverter.Chat, "public", toolCallMappings: CustomMappings());
+        var call = List(converted, "output").Select(Object).Single(i => String(i, "type") == "custom_tool_call");
+        Assert.Equal(input, call["input"]);
+    }
+
+    private static Dictionary<string, ResponsesToolCallMapping> CustomMappings() => new()
+    {
+        ["functions__exec"] = new ResponsesToolCallMapping { ChatName = "functions__exec", NativeType = "custom", ResponsesName = "exec", Namespace = "functions" }
+    };
+
+    [Theory]
+    [InlineData(ProtocolConverter.Chat)]
+    [InlineData(ProtocolConverter.Messages)]
+    public void NamespacedApplyPatch_KeepsItsPatchContractInBothDirections(string protocol)
+    {
+        const string patch = "*** Begin Patch\n*** End Patch";
+        var request = new Dictionary<string, object?>
+        {
+            ["model"] = "public",
+            ["tools"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "namespace", ["name"] = "functions",
+                    ["tools"] = new List<object?> { new Dictionary<string, object?> { ["type"] = "custom", ["name"] = "apply_patch" } }
+                }
+            },
+            ["input"] = new List<object?>
+            {
+                new Dictionary<string, object?> { ["type"] = "custom_tool_call", ["name"] = "apply_patch", ["namespace"] = "functions", ["call_id"] = "call_patch", ["input"] = patch },
+                new Dictionary<string, object?> { ["type"] = "custom_tool_call_output", ["call_id"] = "call_patch", ["output"] = "done" }
+            }
+        };
+        var convertedRequest = ProtocolConverter.ConvertRequest(request, ProtocolConverter.Responses, protocol, "upstream");
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(convertedRequest));
+        var messages = document.RootElement.GetProperty("messages").EnumerateArray();
+        if (protocol == ProtocolConverter.Chat)
+        {
+            var arguments = messages.Single(m => m.TryGetProperty("tool_calls", out _))
+                .GetProperty("tool_calls")[0].GetProperty("function").GetProperty("arguments").GetString()!;
+            using var parsed = JsonDocument.Parse(arguments);
+            Assert.Equal(patch, parsed.RootElement.GetProperty("patch").GetString());
+        }
+        else
+        {
+            var call = messages.SelectMany(m => m.GetProperty("content").EnumerateArray())
+                .Single(b => b.GetProperty("type").GetString() == "tool_use");
+            Assert.Equal(patch, call.GetProperty("input").GetProperty("patch").GetString());
+        }
+
+        var response = CustomResponse(protocol, JsonSerializer.Serialize(new { patch }));
+        if (protocol == ProtocolConverter.Chat)
+        {
+            var message = Object(Object(List(response, "choices")[0])["message"]);
+            Object(Object(List(message, "tool_calls")[0])["function"])["name"] = "functions__apply_patch";
+        }
+        else Object(List(response, "content")[0])["name"] = "functions__apply_patch";
+        var convertedResponse = ProtocolConverter.ConvertResponse(response, ProtocolConverter.Responses, protocol, "public",
+            toolCallMappings: ProtocolConverter.BuildResponsesToolCallMappings(request));
+        var output = List(convertedResponse, "output").Select(Object).Single(i => String(i, "type") == "custom_tool_call");
+        Assert.Equal(patch, output["input"]);
+        Assert.Equal("apply_patch", output["name"]);
+        Assert.Equal("functions", output["namespace"]);
+    }
+
+    [Theory]
+    [InlineData("parameters")]
+    [InlineData("input_schema")]
+    [InlineData("schema")]
+    public void CustomToolDefinition_AlwaysUsesTheFreeformInputContract(string schemaField)
+    {
+        var tool = new Dictionary<string, object?>
+        {
+            ["type"] = "custom", ["name"] = "exec",
+            [schemaField] = new Dictionary<string, object?>
+            {
+                ["type"] = "object", ["properties"] = new Dictionary<string, object?> { ["code"] = new Dictionary<string, object?> { ["type"] = "string" } },
+                ["required"] = new List<object?> { "code" }
+            }
+        };
+        var request = new Dictionary<string, object?> { ["model"] = "public", ["input"] = "hello", ["tools"] = new List<object?> { tool } };
+        var converted = ProtocolConverter.ConvertRequest(request, ProtocolConverter.Responses, ProtocolConverter.Chat, "upstream");
+        var parameters = Object(Object(Object(List(converted, "tools")[0])["function"])["parameters"]);
+        Assert.Equal("input", Assert.Single(List(parameters, "required")));
+        Assert.Equal("string", String(Object(Object(parameters["properties"])["input"]), "type"));
+        Assert.Single(Object(parameters["properties"]));
+    }
+
+    private static Dictionary<string, object?> CustomResponse(string protocol, string arguments)
+    {
+        if (protocol == ProtocolConverter.Messages)
+            return new Dictionary<string, object?>
+            {
+                ["stop_reason"] = "tool_use",
+                ["content"] = new List<object?>
+                {
+                    new Dictionary<string, object?> { ["type"] = "tool_use", ["id"] = "call_custom", ["name"] = "functions__exec", ["input"] = JsonSerializer.Deserialize<JsonElement>(arguments) }
+                }
+            };
+        return new Dictionary<string, object?>
+        {
+            ["choices"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["finish_reason"] = "tool_calls",
+                    ["message"] = new Dictionary<string, object?>
+                    {
+                        ["tool_calls"] = new List<object?>
+                        {
+                            new Dictionary<string, object?> { ["type"] = "function", ["id"] = "call_custom", ["function"] = new Dictionary<string, object?> { ["name"] = "functions__exec", ["arguments"] = arguments } }
+                        }
+                    }
+                }
+            }
+        };
+    }
+
     [Fact]
     public void ResponsesToChat_ConvertsSupportedParametersWithoutLeakingResponsesOnlyFields()
     {

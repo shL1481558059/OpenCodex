@@ -469,7 +469,12 @@ public static partial class ProtocolConverter
             ?? GetValue(tool, "schema");
 
         Dictionary<string, object?> parameters;
-        if (TryAsObject(providedSchema, out var explicitSchema) && explicitSchema.Count > 0)
+        if (toolType is "custom" or "custom_tool")
+        {
+            // Custom tools carry source text; this schema describes only the function envelope.
+            parameters = BuildCustomFreeformParameters(tool);
+        }
+        else if (TryAsObject(providedSchema, out var explicitSchema) && explicitSchema.Count > 0)
         {
             parameters = explicitSchema;
         }
@@ -486,10 +491,6 @@ public static partial class ProtocolConverter
                 ("type", "object"),
                 ("properties", Obj(("patch", Obj(("type", "string"))))),
                 ("required", new List<object?> { "patch" }));
-        }
-        else if (toolType is "custom" or "custom_tool")
-        {
-            parameters = BuildCustomFreeformParameters(tool);
         }
         else
         {

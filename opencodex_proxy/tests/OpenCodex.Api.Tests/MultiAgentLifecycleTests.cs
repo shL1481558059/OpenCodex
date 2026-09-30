@@ -8,10 +8,21 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class MultiAgentLifecycleTests
 {
-    [Fact]
-    public async Task RawCustomToolJson_IsNotMistakenForChatInputEnvelope()
+    [Theory]
+    [InlineData("{\"query\":\"keep literal JSON\"}", false)]
+    [InlineData("{\"query\":\"keep literal JSON\"}", true)]
+    [InlineData("{\"input\":\"literal\"}", false)]
+    [InlineData("{\"input\":\"literal\"}", true)]
+    [InlineData("", false)]
+    [InlineData("", true)]
+    [InlineData("{}", false)]
+    [InlineData("{}", true)]
+    [InlineData("{\"input\":\"\\u4e2d\\u6587\\n\\\"quoted\\\"\\\\path\\ud83d\\ude00\"}", false)]
+    [InlineData("{\"input\":\"\\u4e2d\\u6587\\n\\\"quoted\\\"\\\\path\\ud83d\\ude00\"}", true)]
+    [InlineData("text(\"中文😀\\n\\\"quoted\\\"\\\\path\");\n", false)]
+    [InlineData("text(\"中文😀\\n\\\"quoted\\\"\\\\path\");\n", true)]
+    public async Task RawCustomToolJson_IsNotMistakenForChatInputEnvelope(string rawInput, bool streaming)
     {
-        const string rawInput = "{\"query\":\"keep literal JSON\"}";
         var run = Run();
         var events = new List<Dictionary<string, object?>>();
         MultiAgentModelCall model = async (_, emit, ct) =>
@@ -21,22 +32,65 @@ public sealed class MultiAgentLifecycleTests
                 ["type"] = "custom_tool_call", ["id"] = "source-item", ["call_id"] = "source-call",
                 ["name"] = "custom_json", ["input"] = ""
             };
-            await emit(new() { ["type"] = "response.output_item.added", ["output_index"] = 0, ["item"] = item }, ct);
-            await emit(new() { ["type"] = "response.custom_tool_call_input.delta", ["output_index"] = 0, ["delta"] = rawInput[..1] }, ct);
-            await emit(new() { ["type"] = "response.custom_tool_call_input.delta", ["output_index"] = 0, ["delta"] = rawInput[1..] }, ct);
-            await emit(new() { ["type"] = "response.custom_tool_call_input.done", ["output_index"] = 0, ["input"] = rawInput }, ct);
+            if (streaming)
+            {
+                await emit(new() { ["type"] = "response.output_item.added", ["output_index"] = 0, ["item"] = item }, ct);
+                foreach (var fragment in rawInput.Select(character => character.ToString()))
+                    await emit(new() { ["type"] = "response.custom_tool_call_input.delta", ["output_index"] = 0, ["delta"] = fragment }, ct);
+                await emit(new() { ["type"] = "response.custom_tool_call_input.done", ["output_index"] = 0, ["input"] = rawInput }, ct);
+            }
             item["input"] = rawInput;
+            if (streaming)
+                await emit(new() { ["type"] = "response.output_item.done", ["output_index"] = 0, ["item"] = item }, ct);
             return Response(item);
         };
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        await new MultiAgentRuntime(run, model, e => { events.Add(e); return Task.CompletedTask; }, () => Task.CompletedTask, 10)
+        var response = await new MultiAgentRuntime(run, model, e => { events.Add(e); return Task.CompletedTask; }, () => Task.CompletedTask)
             .ExecuteAsync(new(), deadline.Token);
         var deltas = string.Concat(events.Where(e => JsonDictionaryValue.String(e, "type") == "response.custom_tool_call_input.delta")
-            .Select(e => JsonDictionaryValue.String(e, "delta")));
+            .Select(e => Assert.IsType<string>(e["delta"])));
         Assert.Equal(rawInput, deltas);
         var done = Assert.Single(events, e => JsonDictionaryValue.String(e, "type") == "response.custom_tool_call_input.done");
-        Assert.Equal(rawInput, JsonDictionaryValue.String(done, "input"));
-        Assert.Single(run.PendingCalls);
+        Assert.Equal(rawInput, Assert.IsType<string>(done["input"]));
+        var itemDone = JsonDictionaryValue.Object(
+            Assert.Single(events, e => JsonDictionaryValue.String(e, "type") == "response.output_item.done"),
+            "item", WebSearchPayload.DeepCopyObject);
+        var pending = Assert.Single(run.PendingCalls);
+        Assert.Equal("/root", pending.Value);
+        Assert.Equal(pending.Key, JsonDictionaryValue.String(itemDone, "call_id"));
+        Assert.Equal(rawInput, Assert.IsType<string>(itemDone["input"]));
+        var responseItem = Assert.IsType<Dictionary<string, object?>>(Assert.Single(JsonDictionaryValue.List(response, "output")));
+        Assert.Equal(rawInput, Assert.IsType<string>(responseItem["input"]));
+        var historyItem = Assert.Single(run.Agents["/root"].History.OfType<Dictionary<string, object?>>(),
+            i => JsonDictionaryValue.String(i, "type") == "custom_tool_call");
+        Assert.Equal(rawInput, Assert.IsType<string>(historyItem["input"]));
+        Assert.Equal(pending.Key, JsonDictionaryValue.String(historyItem, "call_id"));
+        Assert.Equal(rawInput, Assert.IsType<string>(
+            Assert.IsType<Dictionary<string, object?>>(Assert.Single(run.OutputHistory))["input"]));
+    }
+
+    [Fact]
+    public async Task FunctionArguments_AreForwardedWithoutTrimming()
+    {
+        const string arguments = " \n{\"value\":\"literal\"}\n\t";
+        var run = Run();
+        var events = await Execute(run, (_, _) => Task.FromResult(Response(new Dictionary<string, object?>
+        {
+            ["type"] = "function_call", ["call_id"] = "source-call", ["name"] = "local_read",
+            ["arguments"] = arguments
+        })));
+
+        var delta = Assert.Single(events, e => JsonDictionaryValue.String(e, "type") == "response.function_call_arguments.delta");
+        var done = Assert.Single(events, e => JsonDictionaryValue.String(e, "type") == "response.function_call_arguments.done");
+        var item = JsonDictionaryValue.Object(
+            Assert.Single(events, e => JsonDictionaryValue.String(e, "type") == "response.output_item.done"),
+            "item", WebSearchPayload.DeepCopyObject);
+        Assert.Equal(arguments, Assert.IsType<string>(delta["delta"]));
+        Assert.Equal(arguments, Assert.IsType<string>(done["arguments"]));
+        Assert.Equal(arguments, Assert.IsType<string>(item["arguments"]));
+        var historyItem = Assert.Single(run.Agents["/root"].History.OfType<Dictionary<string, object?>>(),
+            i => JsonDictionaryValue.String(i, "type") == "function_call");
+        Assert.Equal(arguments, Assert.IsType<string>(historyItem["arguments"]));
     }
 
     [Theory]

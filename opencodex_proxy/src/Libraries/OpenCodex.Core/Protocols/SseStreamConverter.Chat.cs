@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using OpenCodex.Core.Errors;
 
 namespace OpenCodex.Core.Protocols;
 
@@ -453,6 +454,13 @@ public static partial class SseStreamConverter
                         continue;
                     }
 
+                    if (aggregate.Type == "function"
+                        && ProtocolConverter.UsesCustomInputEnvelope(aggregate.Name, toolCallMappings))
+                    {
+                        // Validate the complete JSON envelope before exposing executable custom input.
+                        continue;
+                    }
+
                     if (state.CallKind == ResponsesToolCallKind.CustomTool)
                     {
                         var decodedDelta = state.ApplyPatchDecoder?.Append(
@@ -532,6 +540,26 @@ public static partial class SseStreamConverter
         result.UpstreamResponse = upstreamResponseAccumulator.BuildResponse()
             ?? BuildEmptyChatCompletion(responseModel, createdAt, finishReason, usage);
         result.UpstreamCompleted = upstreamResponseAccumulator.IsComplete;
+
+        var decodedCustomInputs = new Dictionary<int, string>();
+        foreach (var (index, aggregate) in toolCalls)
+        {
+            if (aggregate.Type != "function"
+                || string.IsNullOrEmpty(aggregate.Id)
+                || string.IsNullOrEmpty(aggregate.Name)
+                || SkipToolNames?.Contains(aggregate.Name) is true
+                || !ProtocolConverter.UsesCustomInputEnvelope(aggregate.Name, toolCallMappings))
+            {
+                continue;
+            }
+
+            if (!result.UpstreamCompleted || finishReason is not ("stop" or "tool_calls" or "function_call"))
+            {
+                throw new UpstreamException("The upstream stream ended without completing the custom tool arguments.");
+            }
+
+            decodedCustomInputs[index] = ProtocolConverter.DecodeCustomToolArguments(aggregate.Arguments);
+        }
 
         if (combinedReasoning.Length > 0)
         {
@@ -643,6 +671,7 @@ public static partial class SseStreamConverter
                 : EnsureToolStreamState(index);
             var itemId = state.ItemId ?? $"fc_{Guid.NewGuid():N}";
             var outputIndex = state.OutputIndex ?? AllocateOutputIndex();
+            var hasCustomEnvelope = decodedCustomInputs.TryGetValue(index, out var customInput);
             var functionItem = aggregate.Type == "custom"
                 ? new Dictionary<string, object?>
                 {
@@ -656,7 +685,7 @@ public static partial class SseStreamConverter
                 : ProtocolConverter.ResponsesToolCallItemFromToolCall(
                     aggregate.Id,
                     aggregate.Name,
-                    aggregate.Arguments,
+                    hasCustomEnvelope ? customInput : aggregate.Arguments,
                     itemId: itemId,
                     mappings: toolCallMappings);
             var functionItemType = functionItem.TryGetValue("type", out var itemType)
@@ -703,6 +732,18 @@ public static partial class SseStreamConverter
             }
             else if (functionItemType == "custom_tool_call")
             {
+                if (hasCustomEnvelope)
+                {
+                    yield return Emit(
+                        "response.custom_tool_call_input.delta",
+                        new Dictionary<string, object?>
+                        {
+                            ["item_id"] = itemId,
+                            ["output_index"] = outputIndex,
+                            ["delta"] = customInput
+                        });
+                }
+
                 yield return Emit(
                     "response.custom_tool_call_input.done",
                     new Dictionary<string, object?>

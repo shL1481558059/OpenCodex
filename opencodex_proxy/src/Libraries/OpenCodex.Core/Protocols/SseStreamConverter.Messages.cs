@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using OpenCodex.Core.Errors;
 using OpenCodex.CoreBase.Abstractions;
 
 namespace OpenCodex.Core.Protocols;
@@ -458,6 +459,12 @@ public static partial class SseStreamConverter
                             continue;
                         }
 
+                        if (ProtocolConverter.UsesCustomInputEnvelope(GetValue(block, "name"), toolCallMappings))
+                        {
+                            // Validate the complete JSON envelope before exposing executable custom input.
+                            continue;
+                        }
+
                         var state = EnsureToolState(index);
                         if (state.CallKind == ResponsesToolCallKind.CustomTool)
                         {
@@ -531,8 +538,39 @@ public static partial class SseStreamConverter
             }
         }
 
+        result.UpstreamCompleted = upstreamResponseAccumulator.IsComplete;
+
+        var decodedCustomInputs = new Dictionary<int, string>();
+        foreach (var (index, block) in contentBlocks)
+        {
+            var name = StringValue(block, "name", string.Empty);
+            if (StringValue(block, "type", string.Empty) != "tool_use"
+                || SkipToolNames?.Contains(name) is true
+                || !ProtocolConverter.UsesCustomInputEnvelope(name, toolCallMappings))
+            {
+                continue;
+            }
+
+            if (!result.UpstreamCompleted || stopReason is not ("tool_use" or "end_turn" or "stop_sequence"))
+            {
+                throw new UpstreamException("The upstream stream ended without completing the custom tool arguments.");
+            }
+
+            var arguments = inputJsonParts.TryGetValue(index, out var fragments)
+                ? string.Concat(fragments)
+                : GetValue(block, "input");
+            decodedCustomInputs[index] = ProtocolConverter.DecodeCustomToolArguments(arguments);
+        }
+
+        result.UpstreamResponse = upstreamResponseAccumulator.BuildResponse();
+
         foreach (var (index, parts) in inputJsonParts)
         {
+            if (decodedCustomInputs.ContainsKey(index))
+            {
+                continue;
+            }
+
             if (!contentBlocks.TryGetValue(index, out var block))
             {
                 block = new Dictionary<string, object?>(StringComparer.Ordinal)
@@ -555,9 +593,6 @@ public static partial class SseStreamConverter
                 block["input"] = ParseJsonObject(string.Concat(parts));
             }
         }
-
-        result.UpstreamResponse = upstreamResponseAccumulator.BuildResponse();
-        result.UpstreamCompleted = upstreamResponseAccumulator.IsComplete;
 
         var output = new List<object?>();
         var combinedReasoning = string.Concat(reasoningParts);
@@ -688,7 +723,10 @@ public static partial class SseStreamConverter
                 : EnsureToolState(index);
             var itemId = state.ItemId ?? $"fc_{Guid.NewGuid():N}";
             var outputIndex = state.OutputIndex ?? AllocateOutputIndex();
-            var arguments = WebSearchPayload.JsonDumps(GetValue(block, "input") ?? new Dictionary<string, object?>());
+            var hasCustomEnvelope = decodedCustomInputs.TryGetValue(index, out var customInput);
+            var arguments = hasCustomEnvelope
+                ? customInput
+                : WebSearchPayload.JsonDumps(GetValue(block, "input") ?? new Dictionary<string, object?>());
             var functionItem = ProtocolConverter.ResponsesToolCallItemFromToolCall(
                 callId,
                 name,
@@ -712,6 +750,18 @@ public static partial class SseStreamConverter
             else if (functionItem.TryGetValue("type", out functionItemType)
                 && string.Equals(functionItemType?.ToString(), "custom_tool_call", StringComparison.Ordinal))
             {
+                if (hasCustomEnvelope)
+                {
+                    yield return Emit(
+                        "response.custom_tool_call_input.delta",
+                        new Dictionary<string, object?>
+                        {
+                            ["item_id"] = itemId,
+                            ["output_index"] = outputIndex,
+                            ["delta"] = customInput
+                        });
+                }
+
                 yield return Emit(
                     "response.custom_tool_call_input.done",
                     new Dictionary<string, object?>

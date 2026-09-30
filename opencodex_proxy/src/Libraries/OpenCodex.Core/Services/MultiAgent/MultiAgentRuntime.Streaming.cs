@@ -1,4 +1,3 @@
-using System.Text;
 using System.Threading.Channels;
 using OpenCodex.CoreBase.Abstractions;
 
@@ -22,8 +21,6 @@ public sealed partial class MultiAgentRuntime
         public bool Hidden { get; init; }
         public bool Finished { get; set; }
         public string CallId => Text(Item, "call_id");
-        public StringBuilder CustomInput { get; } = new();
-        public string SentCustomInput { get; set; } = "";
     }
     private readonly Channel<ModelEvent> _modelEvents = Channel.CreateBounded<ModelEvent>(new BoundedChannelOptions(64)
     { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
@@ -88,23 +85,11 @@ public sealed partial class MultiAgentRuntime
             if (type == "response.function_call_arguments.delta")
                 state.Item["arguments"] = (JsonDictionaryValue.Get(state.Item, "arguments")?.ToString() ?? "") + JsonDictionaryValue.Get(data, "delta");
             if (type == "response.custom_tool_call_input.delta")
-            {
-                state.CustomInput.Append(JsonDictionaryValue.Get(data, "delta"));
-                var decoded = DecodeCustomInput(state.CustomInput.ToString());
-                var delta = decoded[state.SentCustomInput.Length..];
-                state.SentCustomInput = decoded;
-                state.Item["input"] = decoded;
-                if (delta.Length == 0) return;
-                forwarded["delta"] = delta;
-            }
+                state.Item["input"] = (JsonDictionaryValue.Get(state.Item, "input")?.ToString() ?? "") + JsonDictionaryValue.Get(data, "delta");
             if (type == "response.custom_tool_call_input.done")
             {
-                var raw = JsonDictionaryValue.Get(data, "input")?.ToString() ?? state.CustomInput.ToString();
-                var complete = DecodeCustomInput(raw, complete: true);
-                if (complete.Length > state.SentCustomInput.Length)
-                    await Event("response.custom_tool_call_input.delta", ("output_index", state.Index), ("item_id", state.Item["id"]),
-                        ("agent", state.Item["agent"]), ("delta", complete[state.SentCustomInput.Length..]));
-                state.SentCustomInput = complete;
+                var complete = JsonDictionaryValue.Get(data, "input")?.ToString()
+                    ?? JsonDictionaryValue.Get(state.Item, "input")?.ToString() ?? "";
                 state.Item["input"] = complete;
                 forwarded["input"] = complete;
             }
@@ -146,40 +131,5 @@ public sealed partial class MultiAgentRuntime
             state.Item["phase"] = "commentary";
             await Event("response.output_item.done", ("output_index", state.Index), ("item", WebSearchPayload.DeepCopyObject(state.Item)), ("agent", state.Item["agent"]));
         }
-    }
-
-    // Chat represents custom input as one JSON string. Decode only complete characters,
-    // retaining an unfinished escape until its next network fragment arrives.
-    private static string DecodeCustomInput(string input, bool complete = false)
-    {
-        if (!input.TrimStart().StartsWith('{')) return input;
-        var offset = 0;
-        foreach (var token in new[] { "{", "\"input\"", ":", "\"" })
-        {
-            while (offset < input.Length && char.IsWhiteSpace(input[offset])) offset++;
-            foreach (var expected in token)
-            {
-                if (offset == input.Length) return complete ? input : "";
-                if (input[offset++] != expected) return input;
-            }
-        }
-        var decoded = new StringBuilder();
-        for (var i = offset; i < input.Length; i++)
-        {
-            var c = input[i];
-            if (c == '"') break;
-            if (c != '\\') { decoded.Append(c); continue; }
-            if (++i == input.Length) break;
-            var escape = input[i];
-            if (escape == 'u')
-            {
-                if (i + 4 >= input.Length) break;
-                decoded.Append((char)Convert.ToInt32(input.Substring(i + 1, 4), 16));
-                i += 4;
-            }
-            else decoded.Append(escape switch { 'n' => '\n', 'r' => '\r', 't' => '\t', 'b' => '\b', 'f' => '\f', _ => escape });
-        }
-        if (decoded.Length > 0 && char.IsHighSurrogate(decoded[^1])) decoded.Length--;
-        return decoded.ToString();
     }
 }

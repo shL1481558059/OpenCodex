@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.MultiAgent;
 using OpenCodex.CoreBase.Abstractions;
 using Xunit;
@@ -9,6 +10,161 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class MultiAgentStreamingTests
 {
+    [Theory]
+    [InlineData("text(1+1);")]
+    [InlineData("{\"input\":\"literal\"}")]
+    [InlineData(" \ntext(\"中文 😀 \\\"quoted\\\"\");\n ")]
+    public async Task ConvertedCustomToolSurvivesClientExecutionAndSecondModelTurn(string rawInput)
+    {
+        await AssertConvertedCustomRoundTrip(new Dictionary<string, string>
+        {
+            ["/root"] = rawInput
+        });
+    }
+
+    [Fact]
+    public async Task ConcurrentConvertedCustomToolsKeepHistoryAndResultsWithTheirOwningAgent()
+    {
+        await AssertConvertedCustomRoundTrip(new Dictionary<string, string>
+        {
+            ["/root"] = "text('root');",
+            ["/root/a"] = "{\"input\":\"literal\"}",
+            ["/root/b"] = " \ntext(\"中文 😀\");\n "
+        });
+    }
+
+    private static async Task AssertConvertedCustomRoundTrip(IReadOnlyDictionary<string, string> inputs)
+    {
+        var request = Request();
+        request["tools"] = new List<object?> { new D { ["type"] = "custom", ["name"] = "exec" } };
+        var run = Run();
+        run.Template = MultiAgentProtocol.NormalizeRequest(request);
+        foreach (var name in inputs.Keys.Where(name => name != "/root"))
+            run.Agents[name] = new() { Name = name, Parent = "/root", Generation = 1 };
+        var started = 0;
+        var allStarted = NewSignal();
+        var turns = new ConcurrentDictionary<string, int>();
+        var nextRequests = new ConcurrentDictionary<string, D>();
+        var events = new ConcurrentQueue<D>();
+        MultiAgentModelCall model = async (payload, emit, ct) =>
+        {
+            var agent = Agent(payload);
+            var chatRequest = ProtocolConverter.ConvertRequest(payload, ProtocolConverter.Responses,
+                ProtocolConverter.Chat, "upstream");
+            if (turns.AddOrUpdate(agent, 1, (_, current) => current + 1) == 1)
+            {
+                if (Interlocked.Increment(ref started) == inputs.Count) allStarted.TrySetResult();
+                await allStarted.Task.WaitAsync(ct);
+                return await StreamConvertedCustom(payload, inputs[agent], emit, ct);
+            }
+            nextRequests[agent] = chatRequest;
+            return Response(Message(agent + " finished"));
+        };
+        using var timeout = Deadline();
+        var firstResponse = await Runtime(run, model, events).ExecuteAsync(request, timeout.Token);
+        var calls = JsonDictionaryValue.List(firstResponse, "output").OfType<D>()
+            .Where(item => Type(item) == "custom_tool_call").ToArray();
+        Assert.Equal(inputs.Count, calls.Length);
+        Assert.Equal(inputs.Count, calls.Select(call => call["call_id"]).Distinct().Count());
+        Assert.Equal(inputs.Count, calls.Select(call => call["id"]).Distinct().Count());
+        var owners = new Dictionary<string, string>(run.PendingCalls);
+        Assert.Equal(inputs.Count, owners.Count);
+        foreach (var call in calls)
+        {
+            var agent = owners[(string)call["call_id"]!];
+            Assert.Equal(inputs[agent], call["input"]);
+            Assert.Equal(agent, EventAgent(call));
+            var itemId = (string)call["id"]!;
+            var deltas = events.Where(e => Type(e) == "response.custom_tool_call_input.delta"
+                && Equals(e["item_id"], itemId));
+            Assert.Equal(inputs[agent], string.Concat(deltas.Select(e => e["delta"])));
+            var done = Assert.Single(events, e => Type(e) == "response.custom_tool_call_input.done"
+                && Equals(e["item_id"], itemId));
+            Assert.Equal(inputs[agent], done["input"]);
+        }
+
+        var continuation = new D
+        {
+            ["input"] = calls.Reverse().Select(call => (object?)new D
+            {
+                ["type"] = "custom_tool_call_output", ["call_id"] = call["call_id"],
+                ["output"] = "RESULT:" + owners[(string)call["call_id"]!]
+            }).ToList()
+        };
+        await Runtime(run, model, new ConcurrentQueue<D>()).ExecuteAsync(continuation, timeout.Token);
+        Assert.Empty(run.PendingCalls);
+        Assert.True(run.Finished);
+        Assert.Equal(inputs.Count, nextRequests.Count);
+        foreach (var (agent, chatRequest) in nextRequests)
+        {
+            var messages = JsonDictionaryValue.List(chatRequest, "messages").OfType<D>().ToArray();
+            var historyCall = Assert.Single(messages.SelectMany(message =>
+                JsonDictionaryValue.List(message, "tool_calls").OfType<D>()));
+            var function = Assert.IsType<D>(historyCall["function"]);
+            Assert.Equal("exec", function["name"]);
+            using var arguments = JsonDocument.Parse(Assert.IsType<string>(function["arguments"]));
+            Assert.Equal(inputs[agent], arguments.RootElement.GetProperty("input").GetString());
+            Assert.Single(arguments.RootElement.EnumerateObject());
+            var toolResult = Assert.Single(messages, message => JsonDictionaryValue.String(message, "role") == "tool");
+            Assert.Equal(historyCall["id"], toolResult["tool_call_id"]);
+            Assert.Equal(agent, owners[Assert.IsType<string>(toolResult["tool_call_id"])]);
+            Assert.Equal("RESULT:" + agent, toolResult["content"]);
+        }
+        if (inputs.Count == 1) Assert.Equal(2, turns["/root"]);
+    }
+
+    private static async Task<D> StreamConvertedCustom(D payload, string rawInput,
+        Func<D, CancellationToken, Task> emit, CancellationToken ct)
+    {
+        var result = new ConvertedStreamResult
+        {
+            ToolCallMappings = ProtocolConverter.BuildResponsesToolCallMappings(payload)
+        };
+        var converted = SseStreamConverter.ChatToResponsesEvents(CustomChatLines(rawInput), "fake", result, ct);
+        D? response = null;
+        await foreach (var e in SseStreamConverter.ParseEvents(SplitEventBlocks(converted), ct))
+        {
+            var data = Assert.IsType<D>(e.Data);
+            await emit(data, ct);
+            if (e.EventName == "response.completed") response = Assert.IsType<D>(data["response"]);
+        }
+        return Assert.IsType<D>(response);
+    }
+
+    private static async IAsyncEnumerable<string> SplitEventBlocks(IAsyncEnumerable<string> blocks)
+    {
+        await foreach (var block in blocks)
+            foreach (var line in block.Split('\n'))
+                yield return line;
+    }
+
+    private static async IAsyncEnumerable<string> CustomChatLines(string rawInput)
+    {
+        var arguments = JsonSerializer.Serialize(new D { ["input"] = rawInput });
+        for (var offset = 0; offset < arguments.Length; offset += 3)
+        {
+            var function = new D { ["arguments"] = arguments.Substring(offset, Math.Min(3, arguments.Length - offset)) };
+            var call = new D { ["index"] = 0, ["function"] = function };
+            if (offset == 0)
+            {
+                function["name"] = "exec";
+                call["id"] = "same_upstream_call";
+                call["type"] = "function";
+            }
+            yield return "data: " + JsonSerializer.Serialize(new D
+            {
+                ["id"] = "same_upstream_response", ["model"] = "upstream",
+                ["choices"] = new[] { new D { ["index"] = 0, ["delta"] = new D { ["tool_calls"] = new[] { call } } } }
+            });
+            yield return "";
+        }
+        yield return "data: {\"id\":\"same_upstream_response\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}";
+        yield return "";
+        yield return "data: [DONE]";
+        yield return "";
+        await Task.CompletedTask;
+    }
+
     [Fact]
     public async Task TextDeltaIsObservableBeforeModelCompletionAndIsNotReplayed()
     {
@@ -112,7 +268,7 @@ public sealed class MultiAgentStreamingTests
             if (Type(e) == "response.output_item.done" && Type((D)e["item"]!) == kind)
                 pendingAtDone = run.PendingCalls.ContainsKey((string)((D)e["item"]!)["call_id"]!);
             return Task.CompletedTask;
-        }, () => Task.CompletedTask, 20);
+        }, () => Task.CompletedTask);
         var operation = runtime.ExecuteAsync(Request(), timeout.Token);
         await staged.Task.WaitAsync(timeout.Token);
         Assert.Empty(run.PendingCalls);
@@ -257,7 +413,7 @@ public sealed class MultiAgentStreamingTests
         Agents = new() { ["/root"] = new() { Name = "/root", History = MultiAgentProtocol.InitialHistory(Request()) } }
     };
     private static MultiAgentRuntime Runtime(MultiAgentRun run, MultiAgentModelCall model, ConcurrentQueue<D> events, Action<D>? observed = null) =>
-        new(run, model, e => { events.Enqueue(e); observed?.Invoke(e); return Task.CompletedTask; }, () => Task.CompletedTask, 30);
+        new(run, model, e => { events.Enqueue(e); observed?.Invoke(e); return Task.CompletedTask; }, () => Task.CompletedTask);
     private static D Response(params D[] items) => new()
     {
         ["status"] = "completed", ["output"] = items.Cast<object?>().ToList(),
