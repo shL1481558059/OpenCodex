@@ -68,13 +68,39 @@ public sealed class ProxyControllerTests
     }
 
     [Fact]
-    public async Task Responses_ModelWithSimulationOnThirdPartyResponsesChannel_UsesRuntimeInsteadOfPassthrough()
+    public async Task Responses_ModelWithSimulationOnThirdPartyResponsesChannel_SkipsRuntimeAndForwardsToProxy()
     {
         var proxy = new StubProxyEndpointService();
         var channel = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
-            ["id"] = "relay-responses",
+            ["id"] = "anyrouter",
             ["type"] = ProtocolConverter.Responses,
+            ["baseurl"] = "https://anyrouter.top"
+        };
+        var controller = CreateController(new StubRequestBodyReader(new()
+        {
+            ["model"] = "gpt-5.6-terra", ["input"] = "hello"
+        }), proxy, interceptProbeRequests: false,
+            simulatesMultiAgent: true,
+            routeCandidates: [new ProxyRouteDto(channel, "gpt-5.6-terra", "upstream", false, true)]);
+        controller.HttpContext.Request.Path = "/v1/responses";
+
+        var action = await controller.Responses();
+
+        var result = Assert.IsType<ObjectResult>(action);
+        Assert.Equal(200, result.StatusCode);
+        Assert.True(proxy.Called);
+        Assert.Equal("forwarded", Assert.IsType<Dictionary<string, object?>>(result.Value)["routed"]);
+    }
+
+    [Fact]
+    public async Task Responses_ModelWithSimulationOnChatChannel_UsesRuntimeInsteadOfPassthrough()
+    {
+        var proxy = new StubProxyEndpointService();
+        var channel = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["id"] = "relay-chat",
+            ["type"] = ProtocolConverter.Chat,
             ["baseurl"] = "https://example.com/v1"
         };
         var controller = CreateController(new StubRequestBodyReader(new()

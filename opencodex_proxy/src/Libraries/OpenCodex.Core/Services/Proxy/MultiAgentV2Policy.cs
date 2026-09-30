@@ -41,7 +41,7 @@ public static class MultiAgentV2Policy
             return configured;
         }
 
-        if (IsNativeResponsesPassthrough(entryProtocol, channelType, channel))
+        if (IsNativeResponsesPassthrough(entryProtocol, channelType))
         {
             return MultiAgentV2Action.Passthrough;
         }
@@ -56,33 +56,21 @@ public static class MultiAgentV2Policy
     }
 
     /// <summary>
-    /// 判断请求是否按 responses -> responses 原生直通处理。
+    /// 判断请求是否按 responses -> responses 直通处理。
     /// responses 接口由 OpenAI 原生支持，且本身只有 OpenAI 模型能完整使用 v2，
     /// 因此入口与上游同为 responses 时保持透传：不进入服务端多代理模拟，也不注入服务端协作工具。
-    /// 未显式配置 compat.multi_agent_v2_mode 时只认官方 OpenAI/ChatGPT 域名。
+    /// 判定只看入口协议与上游渠道协议，不按渠道域名或 compat 配置收窄；显式 compat 仍由
+    /// <see cref="Resolve"/> 优先处理。
     /// </summary>
     /// <param name="entryProtocol">入口协议。</param>
     /// <param name="channelType">上游通道协议类型。</param>
-    /// <param name="channel">上游通道配置。</param>
     /// <returns>需要保持 responses -> responses 直通时为 true。</returns>
     public static bool IsNativeResponsesPassthrough(
         string entryProtocol,
-        string channelType,
-        IReadOnlyDictionary<string, object?> channel)
+        string channelType)
     {
-        if (entryProtocol != ProtocolConverter.Responses
-            || channelType != ProtocolConverter.Responses)
-        {
-            return false;
-        }
-
-        var configured = ReadConfiguredAction(channel);
-        if (configured != MultiAgentV2Action.None)
-        {
-            return configured == MultiAgentV2Action.Passthrough;
-        }
-
-        return IsOfficialOpenAiChannel(channel);
+        return entryProtocol == ProtocolConverter.Responses
+            && channelType == ProtocolConverter.Responses;
     }
 
     public static bool IsV2Request(IReadOnlyDictionary<string, object?> payload)
@@ -127,22 +115,5 @@ public static class MultiAgentV2Policy
             "reject" => MultiAgentV2Action.Reject,
             _ => MultiAgentV2Action.None
         };
-    }
-
-    private static bool IsOfficialOpenAiChannel(IReadOnlyDictionary<string, object?> channel)
-    {
-        var baseUrl = JsonDictionaryValue.String(channel, "baseurl");
-        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri))
-        {
-            return false;
-        }
-
-        return IsOfficialHost(uri.Host, "openai.com") || IsOfficialHost(uri.Host, "chatgpt.com");
-    }
-
-    private static bool IsOfficialHost(string host, string officialDomain)
-    {
-        return host.Equals(officialDomain, StringComparison.OrdinalIgnoreCase)
-            || host.EndsWith($".{officialDomain}", StringComparison.OrdinalIgnoreCase);
     }
 }

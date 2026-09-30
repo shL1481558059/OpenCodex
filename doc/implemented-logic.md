@@ -177,7 +177,7 @@ OpenCodex 是多协议 LLM 代理与配套管理台：接收客户端 Responses�
 ### 8.3 多代理模拟（v2）
 
 - 由模型能力开关 `capabilities.v2_agent_simulation` 控制，默认关闭；开启后 Responses 请求进入服务端多代理运行器，HTTP 请求可传 `multi_agent.enabled: false` 交回普通管线；Chat/Messages 入口不受影响。
-- 入口为 responses 且首个路由候选渠道本身支持 responses 直通（官方 OpenAI/ChatGPT 域名，或渠道显式配置 `compat.multi_agent_v2_mode=passthrough`）时跳过运行器：保持 `responses -> responses` 透传，不注入 `ocxp_ma_*` 协作工具。判定只看首个路由候选，亲和、容量与熔断导致的渠道切换仍由普通管线按渠道策略处理；第三方 responses 渠道默认继续运行模拟器。
+- 入口为 responses 且首个路由候选渠道类型为 responses 时跳过运行器：保持 `responses -> responses` 透传，不注入 `ocxp_ma_*` 协作工具。判定只看入口协议与首个路由候选的渠道类型，不按 baseurl 收窄；显式 `compat.multi_agent_v2_mode` 仍由普通管线优先处理。亲和、容量与熔断导致的渠道切换仍由普通管线按渠道策略处理。
 - 服务端提供 `ocxp_ma_spawn_agent`、`send_message`、`followup_task`、`wait_agent`、`interrupt_agent`、`list_agents`；客户端工具（命令、文件等）仍由 Codex 执行，服务端分配独立 `call_id` 并维护归属。
 - 每次模型调用独立 DI 作用域，复用流式管线的路由/认证/转换/日志/计量；增量文本、推理、工具参数即时转发，统一分配代理归属、item ID、output index 与事件序号。
 - 会话按 API Key + 会话标识隔离，`previous_response_id` 同域查询；会话标识依次取 `client_metadata.session_id`、`thread_id`、`session-id`/`X-OpenCodex-Multi-Agent-Session` 请求头、`prompt_cache_key`，未提供时生成并通过响应头返回。

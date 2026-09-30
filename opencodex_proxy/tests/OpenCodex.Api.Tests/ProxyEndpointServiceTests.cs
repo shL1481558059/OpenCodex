@@ -110,7 +110,7 @@ public sealed class ProxyEndpointServiceTests
     }
 
     [Fact]
-    public async Task ProxyAsync_MultiAgentV2OnThirdPartyResponses_RejectsBeforeUpstream()
+    public async Task ProxyAsync_MultiAgentV2OnThirdPartyResponses_PassesThroughToUpstream()
     {
         var calls = 0;
         var channel = CreateChannel("third-party", 0, type: ProtocolConverter.Responses);
@@ -132,8 +132,8 @@ public sealed class ProxyEndpointServiceTests
 
         var result = await service.ProxyAsync(request);
 
-        Assert.Equal(400, result.StatusCode);
-        Assert.Equal(0, calls);
+        Assert.Equal(200, result.StatusCode);
+        Assert.Equal(1, calls);
     }
 
     [Fact]

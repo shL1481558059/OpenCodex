@@ -217,11 +217,10 @@ public sealed class ProxyService : IProxyService
             return false;
         }
 
-        var channel = routeCandidates[0].Channel;
+        var channelType = JsonDictionaryValue.String(routeCandidates[0].Channel, "type");
         return MultiAgentV2Policy.IsNativeResponsesPassthrough(
             ProtocolConverter.Responses,
-            JsonDictionaryValue.String(channel, "type"),
-            channel);
+            channelType);
     }
 
     private static bool IsCodexClient(HttpRequest request)

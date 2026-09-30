@@ -19,7 +19,7 @@ public sealed class MultiAgentV2PolicyTests
     }
 
     [Fact]
-    public void Resolve_OfficialResponsesV2_ReturnsPassthrough()
+    public void Resolve_ResponsesV2_ReturnsPassthrough()
     {
         var action = MultiAgentV2Policy.Resolve(
             ProtocolConverter.Responses,
@@ -31,7 +31,7 @@ public sealed class MultiAgentV2PolicyTests
     }
 
     [Fact]
-    public void Resolve_ThirdPartyResponsesV2_ReturnsReject()
+    public void Resolve_ThirdPartyResponsesV2_ReturnsPassthrough()
     {
         var action = MultiAgentV2Policy.Resolve(
             ProtocolConverter.Responses,
@@ -39,7 +39,7 @@ public sealed class MultiAgentV2PolicyTests
             Channel("https://example.com/v1"),
             V2Payload());
 
-        Assert.Equal(MultiAgentV2Action.Reject, action);
+        Assert.Equal(MultiAgentV2Action.Passthrough, action);
     }
 
     [Fact]
@@ -79,7 +79,7 @@ public sealed class MultiAgentV2PolicyTests
     }
 
     [Fact]
-    public void Resolve_ConfiguredDowngrade_OverridesDefaultReject()
+    public void Resolve_ConfiguredDowngrade_OnChat_ReturnsDowngrade()
     {
         var action = MultiAgentV2Policy.Resolve(
             ProtocolConverter.Responses,
@@ -90,25 +90,43 @@ public sealed class MultiAgentV2PolicyTests
         Assert.Equal(MultiAgentV2Action.Downgrade, action);
     }
 
+    [Fact]
+    public void Resolve_ConfiguredReject_OnResponses_OverridesDefaultPassthrough()
+    {
+        var action = MultiAgentV2Policy.Resolve(
+            ProtocolConverter.Responses,
+            ProtocolConverter.Responses,
+            Channel("https://example.com/v1", "reject"),
+            V2Payload());
+
+        Assert.Equal(MultiAgentV2Action.Reject, action);
+    }
+
+    [Fact]
+    public void Resolve_ConfiguredDowngrade_OnResponses_OverridesDefaultPassthrough()
+    {
+        var action = MultiAgentV2Policy.Resolve(
+            ProtocolConverter.Responses,
+            ProtocolConverter.Responses,
+            Channel("https://example.com/v1", "downgrade"),
+            V2Payload());
+
+        Assert.Equal(MultiAgentV2Action.Downgrade, action);
+    }
+
     [Theory]
-    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Responses, "https://api.openai.com/v1", null, true)]
-    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Responses, "https://chatgpt.com/backend-api/codex", null, true)]
-    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Responses, "https://example.com/v1", null, false)]
-    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Responses, "https://example.com/v1", "passthrough", true)]
-    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Responses, "https://example.com/v1", "reject", false)]
-    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Chat, "https://api.openai.com/v1", null, false)]
-    [InlineData(ProtocolConverter.Chat, ProtocolConverter.Responses, "https://api.openai.com/v1", null, false)]
-    public void IsNativeResponsesPassthrough_ResolvesByProtocolAndChannelConfig(
+    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Responses, true)]
+    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Chat, false)]
+    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Messages, false)]
+    [InlineData(ProtocolConverter.Chat, ProtocolConverter.Responses, false)]
+    public void IsNativeResponsesPassthrough_ResolvesByProtocolsOnly(
         string entryProtocol,
         string channelType,
-        string baseUrl,
-        string? configuredMode,
         bool expected)
     {
         var result = MultiAgentV2Policy.IsNativeResponsesPassthrough(
             entryProtocol,
-            channelType,
-            Channel(baseUrl, configuredMode));
+            channelType);
 
         Assert.Equal(expected, result);
     }
