@@ -1,9 +1,11 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.DependencyInjection;
 using OpenCodex.Api.Configuration;
 using OpenCodex.Api.Controllers;
 using OpenCodex.Api.Infrastructure;
 using OpenCodex.Api.Services;
+using OpenCodex.Core.Protocols;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Models;
 using OpenCodex.CoreBase.Domain.Proxy;
@@ -37,6 +39,56 @@ public sealed class ProxyControllerTests
         Assert.Equal(200, result.StatusCode);
         Assert.True(proxy.Called);
         Assert.Equal("forwarded", Assert.IsType<Dictionary<string, object?>>(result.Value)["routed"]);
+    }
+
+    [Fact]
+    public async Task Responses_ModelWithSimulationOnNativeResponsesChannel_SkipsRuntimeAndForwardsToProxy()
+    {
+        var proxy = new StubProxyEndpointService();
+        var channel = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["id"] = "openai-responses",
+            ["type"] = ProtocolConverter.Responses,
+            ["baseurl"] = "https://api.openai.com/v1"
+        };
+        var controller = CreateController(new StubRequestBodyReader(new()
+        {
+            ["model"] = "gpt-5.6-terra", ["input"] = "hello"
+        }), proxy, interceptProbeRequests: false,
+            simulatesMultiAgent: true,
+            routeCandidates: [new ProxyRouteDto(channel, "gpt-5.6-terra", "upstream", false, true)]);
+        controller.HttpContext.Request.Path = "/v1/responses";
+
+        var action = await controller.Responses();
+
+        var result = Assert.IsType<ObjectResult>(action);
+        Assert.Equal(200, result.StatusCode);
+        Assert.True(proxy.Called);
+        Assert.Equal("forwarded", Assert.IsType<Dictionary<string, object?>>(result.Value)["routed"]);
+    }
+
+    [Fact]
+    public async Task Responses_ModelWithSimulationOnThirdPartyResponsesChannel_UsesRuntimeInsteadOfPassthrough()
+    {
+        var proxy = new StubProxyEndpointService();
+        var channel = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["id"] = "relay-responses",
+            ["type"] = ProtocolConverter.Responses,
+            ["baseurl"] = "https://example.com/v1"
+        };
+        var controller = CreateController(new StubRequestBodyReader(new()
+        {
+            ["model"] = "gpt-5.6-terra", ["input"] = "hello"
+        }), proxy, interceptProbeRequests: false,
+            simulatesMultiAgent: true,
+            routeCandidates: [new ProxyRouteDto(channel, "gpt-5.6-terra", "upstream", false, true)]);
+        controller.HttpContext.Request.Path = "/v1/responses";
+        // 未注册 MultiAgentResponseService：解析运行器失败即证明请求进入模拟器而不是普通代理。
+        controller.HttpContext.RequestServices = new ServiceCollection().BuildServiceProvider();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => controller.Responses());
+        Assert.False(proxy.Called);
     }
 
     [Fact]
@@ -184,14 +236,16 @@ public sealed class ProxyControllerTests
         bool interceptProbeRequests,
         IReadOnlyList<Dictionary<string, object?>>? modelCatalog = null,
         ICodexOfficialModelCatalogService? codexModels = null,
-        IProxyLogService? logs = null)
+        IProxyLogService? logs = null,
+        bool simulatesMultiAgent = false,
+        IReadOnlyList<ProxyRouteDto>? routeCandidates = null)
     {
         var proxyService = new ProxyService(
             bodyReader,
             proxy,
             new StubProxyIdentityContext(),
-            new StubProxyRouteService(),
-            new StubModelCatalogService(modelCatalog),
+            new StubProxyRouteService(routeCandidates),
+            new StubModelCatalogService(modelCatalog, simulatesMultiAgent),
             codexModels ?? new StubCodexOfficialModelCatalogService(),
             new StubProxySettingsService(interceptProbeRequests),
             logs ?? new StubProxyLogService());
@@ -327,11 +381,18 @@ public sealed class ProxyControllerTests
 
     private sealed class StubProxyRouteService : IProxyRouteService
     {
+        private readonly IReadOnlyList<ProxyRouteDto> _candidates;
+
+        public StubProxyRouteService(IReadOnlyList<ProxyRouteDto>? candidates = null)
+        {
+            _candidates = candidates ?? [];
+        }
+
         public Task<IReadOnlyList<ProxyRouteDto>> ListRouteCandidatesAsync(
             string ownerUsername,
             string? model)
         {
-            return Task.FromResult<IReadOnlyList<ProxyRouteDto>>([]);
+            return Task.FromResult(_candidates);
         }
 
         public Task<VisionTransferRoutesDto> ListVisionTransferRoutesAsync(string ownerUsername)
@@ -348,11 +409,17 @@ public sealed class ProxyControllerTests
     private sealed class StubModelCatalogService : IModelCatalogService
     {
         private readonly IReadOnlyList<Dictionary<string, object?>> _modelCatalog;
+        private readonly bool _simulatesMultiAgent;
 
-        public StubModelCatalogService(IReadOnlyList<Dictionary<string, object?>>? modelCatalog = null)
+        public StubModelCatalogService(
+            IReadOnlyList<Dictionary<string, object?>>? modelCatalog = null,
+            bool simulatesMultiAgent = false)
         {
             _modelCatalog = modelCatalog ?? [];
+            _simulatesMultiAgent = simulatesMultiAgent;
         }
+
+        public bool SimulatesMultiAgent(string model) => _simulatesMultiAgent;
 
         public ApiOpResult<ModelProviderListResponse> ListProviders(bool includeDisabled = false)
         {

@@ -41,9 +41,7 @@ public static class MultiAgentV2Policy
             return configured;
         }
 
-        if (entryProtocol == ProtocolConverter.Responses
-            && channelType == ProtocolConverter.Responses
-            && IsOfficialOpenAiChannel(channel))
+        if (IsNativeResponsesPassthrough(entryProtocol, channelType, channel))
         {
             return MultiAgentV2Action.Passthrough;
         }
@@ -55,6 +53,36 @@ public static class MultiAgentV2Policy
         }
 
         return MultiAgentV2Action.Reject;
+    }
+
+    /// <summary>
+    /// 判断请求是否按 responses -> responses 原生直通处理。
+    /// responses 接口由 OpenAI 原生支持，且本身只有 OpenAI 模型能完整使用 v2，
+    /// 因此入口与上游同为 responses 时保持透传：不进入服务端多代理模拟，也不注入服务端协作工具。
+    /// 未显式配置 compat.multi_agent_v2_mode 时只认官方 OpenAI/ChatGPT 域名。
+    /// </summary>
+    /// <param name="entryProtocol">入口协议。</param>
+    /// <param name="channelType">上游通道协议类型。</param>
+    /// <param name="channel">上游通道配置。</param>
+    /// <returns>需要保持 responses -> responses 直通时为 true。</returns>
+    public static bool IsNativeResponsesPassthrough(
+        string entryProtocol,
+        string channelType,
+        IReadOnlyDictionary<string, object?> channel)
+    {
+        if (entryProtocol != ProtocolConverter.Responses
+            || channelType != ProtocolConverter.Responses)
+        {
+            return false;
+        }
+
+        var configured = ReadConfiguredAction(channel);
+        if (configured != MultiAgentV2Action.None)
+        {
+            return configured == MultiAgentV2Action.Passthrough;
+        }
+
+        return IsOfficialOpenAiChannel(channel);
     }
 
     public static bool IsV2Request(IReadOnlyDictionary<string, object?> payload)

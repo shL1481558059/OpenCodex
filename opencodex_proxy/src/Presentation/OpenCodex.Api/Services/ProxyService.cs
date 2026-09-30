@@ -1,10 +1,12 @@
 using System.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
 using OpenCodex.Api.Infrastructure;
+using OpenCodex.Core.Errors;
 using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.DTOs.Proxy;
 using OpenCodex.CoreBase.Services;
 using OpenCodex.CoreBase.Services.Proxy;
 
@@ -118,7 +120,8 @@ public sealed class ProxyService : IProxyService
         var started = Stopwatch.GetTimestamp();
         var payload = await _bodyReader.ReadJsonObjectAsync(request, request.HttpContext.RequestAborted);
         if (entryProtocol == ProtocolConverter.Responses && payload is not null
-            && _catalog.SimulatesMultiAgent(JsonDictionaryValue.String(payload, "model")))
+            && _catalog.SimulatesMultiAgent(JsonDictionaryValue.String(payload, "model"))
+            && !await IsNativeResponsesPassthroughAsync(payload))
         {
             return await request.HttpContext.RequestServices.GetRequiredService<MultiAgentResponseService>().Responses(payload);
         }
@@ -182,6 +185,43 @@ public sealed class ProxyService : IProxyService
         }
 
         return StatusCodeResult(response, result.StatusCode, result.Payload);
+    }
+
+    /// <summary>
+    /// responses 接口由 OpenAI 原生支持，且只有 OpenAI 模型能完整使用 v2，
+    /// 因此 responses -> responses 直通时命中 v2 模拟的模型也取消注入，保持透传。
+    /// 判定使用按优先级排序的首个路由候选渠道；亲和、容量与熔断导致的渠道切换仍由普通管线处理。
+    /// </summary>
+    private async Task<bool> IsNativeResponsesPassthroughAsync(Dictionary<string, object?> payload)
+    {
+        var model = JsonDictionaryValue.String(payload, "model");
+        if (model.Length == 0)
+        {
+            return false;
+        }
+
+        IReadOnlyList<ProxyRouteDto> routeCandidates;
+        try
+        {
+            var identity = _identity.RequireIdentity();
+            routeCandidates = await _routes.ListRouteCandidatesAsync(identity.OwnerUsername, model);
+        }
+        catch (RoutingException)
+        {
+            // 路由失败保持原有行为：继续交给多代理运行器或普通管线报告错误。
+            return false;
+        }
+
+        if (routeCandidates.Count == 0)
+        {
+            return false;
+        }
+
+        var channel = routeCandidates[0].Channel;
+        return MultiAgentV2Policy.IsNativeResponsesPassthrough(
+            ProtocolConverter.Responses,
+            JsonDictionaryValue.String(channel, "type"),
+            channel);
     }
 
     private static bool IsCodexClient(HttpRequest request)

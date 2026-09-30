@@ -90,6 +90,29 @@ public sealed class MultiAgentV2PolicyTests
         Assert.Equal(MultiAgentV2Action.Downgrade, action);
     }
 
+    [Theory]
+    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Responses, "https://api.openai.com/v1", null, true)]
+    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Responses, "https://chatgpt.com/backend-api/codex", null, true)]
+    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Responses, "https://example.com/v1", null, false)]
+    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Responses, "https://example.com/v1", "passthrough", true)]
+    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Responses, "https://example.com/v1", "reject", false)]
+    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Chat, "https://api.openai.com/v1", null, false)]
+    [InlineData(ProtocolConverter.Chat, ProtocolConverter.Responses, "https://api.openai.com/v1", null, false)]
+    public void IsNativeResponsesPassthrough_ResolvesByProtocolAndChannelConfig(
+        string entryProtocol,
+        string channelType,
+        string baseUrl,
+        string? configuredMode,
+        bool expected)
+    {
+        var result = MultiAgentV2Policy.IsNativeResponsesPassthrough(
+            entryProtocol,
+            channelType,
+            Channel(baseUrl, configuredMode));
+
+        Assert.Equal(expected, result);
+    }
+
     [Fact]
     public void IsV2Request_DetectsAgentMessageWithoutTopLevelConfiguration()
     {

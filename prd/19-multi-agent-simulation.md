@@ -116,6 +116,7 @@
 | 入口 | 当前分流条件 | 当前行为 |
 |---|---|---|
 | `POST /responses`、`POST /v1/responses` | `SimulatesMultiAgent(model)` 为 `true` | 进入 `MultiAgentResponseService.Responses` |
+| `POST /responses`、`POST /v1/responses` | 模型能力开启且首个路由候选为 responses 原生直通渠道（官方 OpenAI/ChatGPT 域名，或显式配置 `compat.multi_agent_v2_mode=passthrough`） | 跳过运行器，保持 `responses -> responses` 透传，不注入 `ocxp_ma_*` 协作工具 |
 | `POST /responses`、`POST /v1/responses` | 能力未开启或模型不匹配 | 继续普通管线 |
 | `POST /responses` 且 `multi_agent.enabled=false` | 即使模型能力开启 | 顶层 `multi_agent` 被移除，直接调用普通管线 |
 | `GET /responses`、`GET /v1/responses` WebSocket 升级 | 始终 | 固定由 `MultiAgentResponseService.ResponsesWebSocket` 处理；在 `response.create` 内检查模型能力 |
@@ -128,7 +129,9 @@ flowchart TD
     B -- 否 --> P[普通管线]
     B -- 是 --> C{模型能力 v2_agent_simulation?}
     C -- 否 --> P
-    C -- 是 --> D{multi_agent.enabled=false?}
+    C -- 是 --> N{首个路由候选为 responses 原生直通?}
+    N -- 是 --> P
+    N -- 否 --> D{multi_agent.enabled=false?}
     D -- 是 --> P
     D -- 否 --> M[MultiAgentResponseService]
     W[GET /responses WebSocket] --> M
@@ -288,6 +291,7 @@ flowchart TD
 |---|---|
 | 非 Responses 入口 | 不进入服务端多代理运行器 |
 | Responses 模型能力未开启 | 普通管线 |
+| Responses 模型能力开启且首个路由候选为 responses 原生直通 | 跳过服务端多代理运行器，保持 `responses -> responses` 透传 |
 | Responses 模型能力开启且 `multi_agent.enabled=false` | 移除顶层 `multi_agent` 后进入普通管线 |
 | Responses 模型能力开启且未显式关闭 | 服务端多代理运行器 |
 | WebSocket 升级请求 | 固定进入 `MultiAgentResponseService` |
@@ -415,6 +419,7 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 2. `ProxyControllerTests.Responses_ModelWithoutSimulationUsesOriginalProxyWithoutRuntimeServices` 验证普通模型不会解析运行器服务。
 3. Chat 与 Messages 路由仍进入普通代理、Compat 与协议转换管线。
 4. WebSocket 升级路径由 `ProxyController.ResponsesWebSocket` 固定转发到运行器。
+5. `MultiAgentV2PolicyTests.IsNativeResponsesPassthrough_ResolvesByProtocolAndChannelConfig` 与 `ProxyControllerTests.Responses_ModelWithSimulationOnNativeResponsesChannel_SkipsRuntimeAndForwardsToProxy` 验证 responses -> responses 原生直通时命中 v2 模拟的模型也不进入运行器、不注入协作工具。
 
 ### REQ-MA-003 HTTP 显式回退（MUST）
 
