@@ -81,7 +81,7 @@
 
 ### 4.1 峰谷计费批 5（可选批次，待实施）
 
-- 日志详情页不展示 `pricing_phase`；`prd/11` 与 `prd/18` 未补 `REQ-OBS` 条目；没有只读试算端点。
+- 日志详情页不展示 `pricing_phase`；没有只读试算端点。`prd/11` 的 `REQ-OBS-021`～`024` 与 `prd/18` 追溯条目已随本轮 PRD 更新补齐，展示与试算仍为 TBD。
 - 每请求的 `pricing_phase`/`phase_source`/`billing_instant`/`time_zone`/`matched_window` 已写入快照，展示与文档同步属于剩余工作。
 - 注意：导出文档版本已升到 2，v1 文档覆盖导入会抹掉本地峰谷配置；跨版本互导需要按新版本说明执行。
 
@@ -101,8 +101,9 @@
 4. 是否引入 Testcontainers（`postgres:17-alpine`）让统计与聚合用例在两个 provider 各跑一遍；这是当前最大的测试缺口。
 5. Dashboard 队列/错误卡片是否为刚需实时视图；当前保留重复端点与伪轮询遗留逻辑，若无刚需可评估删除而不必改造。
 6. 管理台导入导出的增强范围：明文密钥保留为前提，可做的只有超管权限、schema 校验、冲突预览与审计记录。
+7. `/images/*` 端点当前是「假入口」：`ImagesController` 与 `ImagesProxyService`、双 dialect 代码存在，但 `IProxyImagesEndpointService` 没有实现类，`IImagesProxyService`/`ImagesProxyService`/`IImagesUpstreamClient` 也未注册到 DI，请求会以依赖解析失败暴露；需要决定「补齐实现并注册」还是「移除路由与契约」，在此之前不得对外宣称可用。
 
-已解决、无需再决策的历史问题（留档避免重复讨论）：`/images` 已补齐实现（含 channels `images` 类型与双 dialect）；`/pricing` 整链已删除；`intercept_probe_requests` 与渠道诊断确认在用；部署形态为 PostgreSQL + Redis；桌面设置跨语言覆盖 Bug 已修复。
+已解决、无需再决策的历史问题（留档避免重复讨论）：`/pricing` 整链已删除；`intercept_probe_requests` 已迁移到数据库 `ProxySetting` 表（Rust 侧遗留字段与 `OPENCODEX_INTERCEPT_PROBE_REQUESTS` 注入当前无 .NET 消费者）；渠道诊断确认在用；部署形态为 PostgreSQL + Redis；桌面设置跨语言覆盖 Bug 已修复。
 
 ## 6. 已接受的边界（明确不做或暂不覆盖）
 
@@ -114,7 +115,7 @@
 - **SSE 存储粒度**：只保存规范化逻辑行，不保存原始 TCP/HTTP chunk、CRLF 与空行逐字节边界。
 - **多代理（v2）**：单实例实现，不含多实例协调或 Redis 共享状态；官方密文互通与外部 hosted 运行导入不在支持范围；客户端回传历史会丢弃 hosted 多代理事件与 `agent` 属性，因此必须保留服务器状态与调用映射；不宣称与官方 v2 全部行为一致，Codex UI 也不保证原生显示服务端代理树。
 - **峰谷计费**：不做按用户/API Key/渠道的差异化峰谷，不做上游账单对账与历史成本重算，不做谷段配额。
-- **独立 Images API**：不做上游重试，不产生 attempt 子日志语义；`stream=true` 明确拒绝。
+- **独立 Images API（GAP）**：代码语义为不做上游重试、不产生 attempt 子日志、`stream=true` 明确拒绝；但当前依赖未注册、接口无实现，端点实际不可用，补齐或移除的决策见第 5 节第 7 条。
 - **渠道诊断**：与普通代理的行为差异（SSE 内暴露真实上游状态与响应原文、无 attempt 子日志、完成事件为 `channel_test.completed`）为有意保留，不拉平。
 - **视觉转移前置**：每个有图片流量的 owner 必须显式配置主与兜底视觉路由；视觉模型必须先在模型信息中标注 `supports_image`，否则候选列表为空、配置无法生效。未配置时带图请求返回 400 是预期行为。
 - **Redis 依赖度**：Redis 不可用时容量、熔断、亲和都会降级为本进程语义，不阻塞请求；多实例下这是有意的可用性优先取舍。

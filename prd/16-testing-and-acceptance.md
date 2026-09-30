@@ -1,7 +1,8 @@
 # 16. 测试与验收
 
 > 需求前缀：`REQ-TST`  
-> 代码基线：`main@3827590`  
+> 代码基线：`main@235da3f4`  
+> 最后核对日期：2026-09-30  
 > 目标：建立从需求、接口、协议、数据到发布形态的完整质量门禁
 
 ## 1. 质量原则
@@ -21,22 +22,29 @@
 
 ### 2.1 后端
 
-当前存在约 43 个 .NET 测试类，静态统计约包括：
+当前唯一后端测试项目及入口：
 
-- 416 个 `[Fact]`；
-- 25 个 `[Theory]`；
-- 70 个 `[InlineData]`；
-- 未发现显式 Skip；
-- 覆盖协议转换、SSE、路由、熔断、亲和、日志、图片、MCP、模型目录和 Probe 等。
+- 项目：`opencodex_proxy/tests/OpenCodex.Api.Tests/OpenCodex.Api.Tests.csproj`；
+- 入口：`dotnet test opencodex_proxy/OpenCodex.sln --configuration Release`；多代理专项用 `--filter 'FullyQualifiedName~MultiAgent'`；
+- 静态统计：90 个 `*Tests.cs` 测试类、809 个 `[Fact]`、65 个 `[Theory]`、182 个 `[InlineData]`、6 个 `[MemberData]`，未发现显式 `Skip`；
+- 仓库记录：基线提交 `main@235da3f4` 为 1029 个测试全绿（`doc/implemented-logic.md`；本文件更新时未重跑 `dotnet test`）；
+- 覆盖协议转换、SSE、路由、熔断、亲和、多代理、渠道诊断、SQL 治理、日志、图片、MCP、模型目录和 Probe。
 
 ### 2.2 前端
 
-当前存在：
+当前存在 9 个 `node:test` 测试文件：
 
-- `channelImagesState.test.js`；
-- `channelTestState.test.js`。
+- `frontend/src/channelImagesState.test.js`；
+- `frontend/src/channelOrdering.test.js`；
+- `frontend/src/channelTestState.test.js`；
+- `frontend/src/channelTestStream.test.js`；
+- `frontend/src/logTps.test.js`；
+- `frontend/src/modelCatalogImportState.test.js`；
+- `frontend/src/pricingOffPeak.test.js`；
+- `frontend/src/visionTransferState.test.js`；
+- `frontend/src/api/sseClient.test.js`。
 
-但 `frontend/package.json` 没有标准 `test` 脚本，CI 也未运行这些测试。
+在 `frontend/` 下执行 `node --test` 可发现这 9 个文件并运行 68 个用例（Node v24.18.0 实测全绿）；但 `frontend/package.json` 没有标准 `test` 脚本，CI 也未运行这些测试。
 
 ### 2.3 桌面端
 
@@ -44,28 +52,25 @@
 
 ### 2.4 CI
 
-当前 workflow：
+当前有 2 个 workflow：
 
-- 仅手工触发或 tag 触发；
-- validate 只执行后端测试；
-- 不执行前端单测、lint、前端独立 build、Rust 测试、Docker 冒烟、安全扫描或 E2E；
-- 普通 PR 和 push 缺少自动门禁。
+- `deploy-dev.yml`：push `main` 或手动触发；validate 执行 `npm --prefix frontend ci`、`npm --prefix frontend run build` 与 `dotnet test opencodex_proxy/OpenCodex.sln --configuration Release`，随后构建推送 GHCR dev 镜像（`dev-<commit>`）并部署 dev；
+- `desktop-release.yml`：手动或 `v*` tag 触发；validate 只跑后端测试，随后三平台桌面构建。
+
+两个 workflow 都不运行前端 node 测试、前端 lint/typecheck、Rust 测试、Docker 冒烟、安全扫描或 E2E；普通 PR 没有任何自动门禁。
 
 ### 2.5 当前真实环境和测试工具缺口
 
 当前自动化测试数量较多，但尚未形成以下发布级证据：
 
-- 未发现使用真实或容器化 PostgreSQL 执行完整迁移矩阵、约束和升级恢复的测试；
+- PostgreSQL 端到端零覆盖：`ObservabilityAggregationSqlTests.PostgresBucketQuery_TranslatesFloorAndDoesNotCastToBigint` 只对 `DbContext` 执行 `ToQueryString()`（连接串为 `Host=localhost;Database=none;...`），没有真实 PG 实例；迁移、CRUD、统计聚合均未在 PostgreSQL 上端到端运行；
 - 未发现连接真实 Redis 的共享状态、多实例一致性或网络分区测试，现有 Redis 相关单测主要使用 `redis: null`、Fake 或进程内状态；
 - 未发现正式的数据库备份恢复、从上一发布版本升级、迁移失败恢复或回滚数据校验；
-- Web Search 已有代理服务级多轮、混合工具、预算和异常测试；真实 HTTP/Tavily 联调及多实例 Redis 仍需单独验收。
-
-仓库中的手工流式工具也存在漂移：
-
-- `capture_real_sse.sh` 调用旧的 `/api/auth/login` 并假定返回 token，与当前 Cookie 登录和访问 Key 流程不一致；
-- `extract_sse_test_data.sh` 假定远端为 SQLite、查询历史表结构，并默认使用个人 SSH Key 路径；
-- `test_streaming.py` 依赖未声明的 Python `requests` 包；多个脚本默认使用 `change-me` 作为 Key；
-- 这些脚本当前只能视为历史辅助材料，不能作为自动化验收通过的证据。
+- 没有浏览器 E2E 基础设施：仓库没有 Playwright/Cypress 配置与用例；
+- 没有超大 SSE 日志详情的性能/内存用例：日志详情仍为一次获取整包并整体渲染（`Logs.vue` 的 `/logs/{id}` 详情路径）；
+- 工具 schema `$ref` 展开的节点预算/深度降级分支（`MaxSchemaExpansionNodes`/`MaxSchemaDefDepth` 触发的 `LooseObjectSchema` 降级）没有直接用例，现有用例只覆盖自引用环与普通内联；
+- Web Search 已有代理服务级多轮、混合工具、预算和异常测试；真实 HTTP/Tavily 联调及多实例 Redis 仍需单独验收；
+- 旧的手工脚本（`capture_real_sse.sh`、`extract_sse_test_data.sh`、`test_streaming.py`）已在基线中删除（`scripts/` 现只有 `deploy-ocxp-dev.sh` 与 `prepare_tauri_sidecar.mjs`），不再是验收证据来源。
 
 ## 3. 测试层级
 
@@ -141,6 +146,8 @@ flowchart TB
 | 自己的日志 | 拒绝 | 允许 | 允许 | 不能直接查询管理 API |
 | 全局日志/清空 | 拒绝 | 拒绝 | 允许 | 拒绝 |
 | `/v1/responses` | 拒绝 | Cookie 不足 | Cookie 不足 | 允许 |
+
+当前 `ProtocolConversionMatrixTests` 用两个 `[Theory]`（`NonStream_AllProtocolPairs_ConvertRequestAndResponse`、`Stream_AllProtocolPairs_UseCorrectBranchAndPreserveSseLogs`）覆盖全部 3×3 组合；`ProtocolStructuralCompatibilityTests` 补充结构断言。
 
 必测负向用例：
 
@@ -322,6 +329,8 @@ flowchart TB
 - 自动播种幂等；
 - 多实例迁移竞争；
 - 迁移失败恢复。
+
+SQL 级验收设施：`Infrastructure/SqlCapture.cs`（`DbCommandInterceptor`）用于断言下推 SQL；当前入口为 `ServiceQueryGovernanceTests`、`ObservabilityAggregationSqlTests`、`ObservabilityServiceTests`、`ProxyVisionRoutingTests`。
 
 ### 8.2 内容寻址日志
 
@@ -506,7 +515,11 @@ flowchart TB
 | `REQ-TST-015` | SHOULD | 建立性能基线和自动回归比较 |
 | `REQ-TST-016` | MUST | 每个 MUST 需求在追踪索引中有测试证据或缺口状态 |
 | `REQ-TST-017` | MUST | `ContentAddressedLogs` 必须以非空旧库验证 Up/Down 数据影响，任何预期数据丢弃都需显式验收 |
-| `REQ-TST-018` | MUST | 手工测试和数据采集脚本必须与当前认证、数据库 Schema、部署形态和依赖声明同步，否则从验收证据中排除 |
+| `REQ-TST-018` | MUST | 手工测试和数据采集脚本必须与当前认证、数据库 Schema、部署形态和依赖声明同步，否则从验收证据中排除（旧流式/采集脚本已在基线删除） |
+| `REQ-TST-019` | MUST | PostgreSQL 端到端测试（真实实例或 Testcontainers `postgres:17-alpine`）覆盖迁移、约束、日志写读与统计聚合 |
+| `REQ-TST-020` | MUST | 超大 SSE 日志详情具备性能/内存验收用例，覆盖分段读取与整体渲染边界 |
+| `REQ-TST-021` | MUST | 工具 schema `$ref` 展开的节点预算与深度降级分支具备直接用例 |
+| `REQ-TST-022` | MUST | 管理台浏览器 E2E 基线（初始化、登录、渠道、Key、日志）纳入 CI |
 
 ## 15. 当前测试文件索引
 
@@ -514,12 +527,15 @@ flowchart TB
 |---|---|
 | 路由/可靠性 | `RouteTests.cs`、`ChannelAffinityServiceTests.cs`、`ChannelCircuitBreakerServiceTests.cs`、`ProxyFailoverPolicyTests.cs` |
 | 代理编排 | `ProxyEndpointServiceTests.cs`、`ProxyCompatibilityTests.cs` |
-| 协议矩阵 | `ProtocolConversionMatrixTests.cs`、`ProtocolStructuralCompatibilityTests.cs` |
+| 协议矩阵 | `ProtocolConversionMatrixTests.cs`（两个 `[Theory]` 覆盖 3×3 非流与流式）、`ProtocolStructuralCompatibilityTests.cs` |
 | 流式 | `SseStreamConverterTests.cs`、`StreamingIntegrationTests.cs`、`ProxyStreamServiceTests.cs` |
 | MCP | `NativeMcpConfigurationTests.cs`、`NativeMcpProtocolTests.cs`、`NativeMcpHistoryTests.cs`、`NativeMcpResponseTests.cs` |
 | 图片 | `ImagesControllerTests.cs`、`ProxyImageFallbackTests.cs`、`ProxyVisionRoutingTests.cs` |
-| 日志 | `ProxyLogServiceTests.cs`、`ObservabilityServiceTests.cs`、`LogContentCodecTests.cs`、`LogContentStoreTests.cs` |
+| 日志 | `ProxyLogServiceTests.cs`、`ObservabilityServiceTests.cs`、`LogContentCodecTests.cs`、`LogContentStoreTests.cs`、`ObservabilityAggregationSqlTests.cs`、`ServiceQueryGovernanceTests.cs` |
 | 模型和价格 | `ModelCatalogServiceTests.cs`、`ModelPricingServiceTests.cs`、`ProxyControllerTests.cs`（统一 `/models` 返回） |
 | Probe | `ProbeRequestInterceptorTests.cs`、`ProxyControllerTests.cs` |
-| 前端状态 | `channelImagesState.test.js`、`channelTestState.test.js` |
-| 手工流式工具（当前漂移） | `capture_real_sse.sh`、`extract_sse_test_data.sh`、`test_streaming.py` |
+| 多代理 | `MultiAgentResponseServiceTests.cs`、`MultiAgentWebSocketTests.cs`、`MultiAgentRunStoreTests.cs`、`MultiAgentV2PolicyTests.cs` |
+| 渠道诊断与目录同步 | `ChannelDiagnosticsGuardTests.cs`、`ChannelDiagnosticsLogTests.cs`、`ModelCatalogSyncServiceTests.cs`、`CodexOfficialModelCatalogServiceTests.cs` |
+| 工具 schema | `ToolSchemaExpansionTests.cs` |
+| 前端状态 | `channelImagesState.test.js`、`channelOrdering.test.js`、`channelTestState.test.js`、`channelTestStream.test.js`、`logTps.test.js`、`modelCatalogImportState.test.js`、`pricingOffPeak.test.js`、`visionTransferState.test.js`、`api/sseClient.test.js` |
+| 部署脚本（无自动化测试） | `scripts/deploy-ocxp-dev.sh`、`prepare_tauri_sidecar.mjs`、`update_remote_image.sh` |

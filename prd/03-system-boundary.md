@@ -1,7 +1,8 @@
 # 03. 系统边界
 
 > 需求前缀：`REQ-SYS`  
-> 代码基线：`main@3827590`  
+> 代码基线：`main@235da3f4`  
+> 最后核对日期：2026-09-30  
 > 目标：明确 OpenCodex 的系统上下文、内部组件、部署形态、外部依赖、数据流和信任边界
 
 ## 1. 范围定义
@@ -89,10 +90,11 @@ flowchart TB
 
 ### 3.2 API 调用方
 
-- 通过 `/v1/models`、`/v1/responses`、`/v1/chat/completions`、`/v1/messages` 调用；Images 路由虽存在于控制器，但当前缺少生产实现和 DI 注册，不能作为可用入口；
-- 必须携带 OpenCodex 访问 Key；
+- 通过 `/models`、`/responses`、`/chat/completions`、`/messages` 及其 `/v1` 别名调用；
+- 必须携带 OpenCodex 访问 Key（代理 Bearer 方案，与管理 Cookie 会话相互独立）；
 - 请求租户由访问 Key 所属用户决定；
-- 不获得任何管理台权限。
+- 不获得任何管理台权限；
+- `/images/generations`、`/images/edits` 及其 `/v1` 别名当前只有控制器路由和 `ImagesProxyService` 编排层，生产代码缺少 `IProxyImagesEndpointService` 实现与 `IImagesProxyService`/`IProxyImagesEndpointService` 的 DI 注册，不能作为可用入口。
 
 ### 3.3 AI 上游服务
 
@@ -112,7 +114,7 @@ flowchart TB
 
 - SQLite：单文件数据库，适用于桌面或单实例；
 - PostgreSQL：面向服务端和多实例；
-- EF Core 在应用启动时执行迁移和默认数据播种；
+- 应用启动时由 `OpenCodexDatabaseInitializer.Initialize` 执行 EF Core 迁移；当前代码与迁移中没有默认数据播种逻辑；
 - 数据库保存用户、访问 Key 哈希及当前明文副本、渠道/Web Search 凭证、模型、价格、日志及内容寻址对象。
 
 ### 3.6 Redis
@@ -120,6 +122,7 @@ flowchart TB
 - 可选依赖；
 - 用作二级缓存以及跨实例亲和、容量和熔断状态；
 - 不可用时当前实现降级到进程内状态；
+- 连接串为空或首次建连失败都会降级；`RedisConnectionProvider` 在首次建连失败后置位 `_connectionFailed`，本进程不再重试建连；
 - 降级后不同实例之间不再共享这些运行时状态。
 
 ## 4. 内部逻辑组件
@@ -162,7 +165,7 @@ flowchart TB
 
 ### 5.3 Docker SQLite 模式
 
-- 当前 Compose 将宿主端口映射到 `127.0.0.1`；
+- 当前 Compose 将宿主 `127.0.0.1:8002` 映射到容器 `8080`；
 - `/app/logs` 挂载到宿主目录；
 - 数据库和 Data Protection Key 应位于持久卷；
 - 容器重建不应丢失登录 Cookie 解密能力或业务数据。
@@ -201,21 +204,24 @@ flowchart TB
 
 ### 6.2 管理入口
 
-管理 API 使用 Cookie 身份，并按 `RequireUser` 或 `RequireSuperadmin` 执行授权。主要资源包括：
+管理 API 不挂 `[Authorize]`，由控制器方法调用 `RequireUser`/`RequireSuperadmin` 在服务层按 Cookie 会话校验身份；Cookie 方案与代理 Bearer 方案相互独立，不能交叉代签。主要资源包括：
 
 - `/users`
-- `/api-keys`
-- `/channels`
-- `/model-providers`、`/model-infos`
-- `/model-catalog/export`、`/model-catalog/import`（仅超级管理员）
-- `/pricing`
-- `/web-search`
+- `/api-keys`（含 `/api-keys/import`）
+- `/channels`（含 `/channels/runtime`、`/channels/bulk-import`、`/channels/discover-models`、`/channels/test/stream`、`/channels/{id}/health-reset` 与 `/channels/{id}/reset-health`）
+- `/model-providers`、`/model-infos`（含 `/model-infos/batch`）、`/channels/{channelId}/model-infos`
+- `/model-catalog/export`、`/model-catalog/import`、`/model-catalog/sync`（仅超级管理员）
+- `/web-search`（含 `/web-search/import`、`/web-search/test-key`，仅超级管理员）
 - `/logs`、`/stats`
-- `/system-settings`
+- `/log-filter-options`、`/monitor/active-channels`、`/monitor/recent-errors`
+- 实时流 `/channels/runtime/stream`、`/monitor/active-channels/stream`、`/monitor/recent-errors/stream`、`/logs/stream`
+- `/system-settings`、`/system-settings/proxy-settings`（仅超级管理员）、`/system-settings/vision-transfer*`（`RequireUser`，超级管理员可代其他 owner 操作）
+
+当前没有 `/pricing` 路由；模型价格通过 `/model-infos` 与 `/channels/{channelId}/model-infos` 维护，美元兑人民币汇率通过 `/system-settings/proxy-settings` 的 `usd_cny_rate` 键维护。
 
 ### 6.3 代理入口
 
-代理 API 使用 Bearer 访问 Key：
+代理 API 使用 Bearer 访问 Key：`ProxyController`、`ImagesController` 通过 `[Authorize(AuthenticationSchemes = ProxyBearerAuthenticationDefaults.Scheme)]` 强制；管理台 Cookie 只在管理 API 生效。
 
 - `/models`、`/v1/models`
 - `/responses`、`/v1/responses`
@@ -223,6 +229,10 @@ flowchart TB
 - `/messages`、`/v1/messages`
 - `/images/generations`、`/v1/images/generations`
 - `/images/edits`、`/v1/images/edits`
+
+访问 Key 合法时，Images 端点会在依赖解析阶段因缺少 `IImagesProxyService` 注册失败，当前不可用，属于 GAP；管理台 Cookie 不能替代 Bearer Key 使用这些入口。
+
+`GET /responses`（WebSocket）固定由 `MultiAgentResponseService` 接管；模型能力 `v2_agent_simulation` 为 true 时，`POST /responses` 也进入该服务，Chat/Messages 入口不受影响。多代理 v2 的完整边界与运行机制见 PRD 19，本文不展开。
 
 `REQ-SYS-001`（MUST）：同一路径别名必须具有一致的鉴权、路由、转换和错误语义。
 
@@ -401,8 +411,9 @@ flowchart LR
 | `REQ-SYS-011` | MUST | 任何失败不得导致请求路由到其他用户渠道 | CURRENT 核心规则 |
 | `REQ-SYS-012` | SHOULD | 管理接口权限应采用集中式声明或自动化覆盖检查，降低遗漏风险 | GAP |
 | `REQ-SYS-013` | SHOULD | 所有运行形态应公开版本、构建提交和就绪状态 | GAP |
-| `REQ-SYS-014` | MUST | 系统配置、数据迁移和文档必须使用同一组有效环境变量 | GAP，现有 README 漂移 |
+| `REQ-SYS-014` | MUST | 系统配置、数据迁移和文档必须使用同一组有效环境变量 | GAP：README/DEPLOYMENT 仍描述 BASIC/DEBUG/TRACE 日志展示等级，源码中没有对应运行时设置 |
 | `REQ-SYS-015` | MUST | 正文内容存储损坏或哈希不一致时不得返回伪造内容 | CURRENT 有哈希校验基础，产品错误语义需确认 |
+| `REQ-SYS-016` | MUST | Images 端点必须在补齐实现与 DI 注册前显式声明不可用或返回明确错误语义，不得以依赖解析失败的 500 暴露 | GAP：`ImagesController` 路由已注册；`IProxyImagesEndpointService` 无实现也无 DI 注册，`IImagesProxyService`/`ImagesProxyService` 未注册 |
 
 ## 12. 系统级验收标准
 

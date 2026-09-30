@@ -7,8 +7,8 @@
 | 文档编号 | PRD-06 |
 | 需求前缀 | `REQ-CH` |
 | 文档状态 | 基于现状反向建模，待产品评审 |
-| 基线版本 | `main@3827590` |
-| 最后核对日期 | 2026-08-17 |
+| 基线版本 | `main@235da3f4` |
+| 最后核对日期 | 2026-09-30 |
 | 适用对象 | 产品、后端、前端、测试、运维、安全 |
 | 相关文档 | [路由与可靠性](./07-routing-and-reliability.md)、[协议转换](./08-protocol-conversion.md) |
 | 事实优先级 | 当前源码与迁移 > 自动化测试 > 当前运行配置 > 说明性文档 |
@@ -34,13 +34,13 @@
 
 本文覆盖：
 
-- 渠道列表、创建、更新、批量更新、删除。
+- 渠道列表、详情、运行时快照、创建、更新、批量更新、删除。
 - 渠道配置导入与合并。
-- 渠道模型映射及映射表同步。
+- 渠道模型映射、渠道模型信息覆盖、匹配键数组及模型信息同步。
 - 渠道兼容性配置。
 - 渠道实时容量与健康状态展示。
 - 渠道熔断状态重置。
-- 上游模型发现、流式渠道测试。
+- 上游模型发现、已保存渠道的流式连接测试。
 - 渠道配置的权限、安全、缓存和审计影响。
 
 ### 1.3 不在本文范围
@@ -83,7 +83,9 @@
 | 渠道 Channel | 一个具体上游服务配置，包含协议、地址、鉴权和可靠性参数 |
 | 渠道类型 | 上游协议类型：`responses`、`chat`、`messages`、`images` |
 | 所有者 Owner | 渠道所属用户；路由时只加载访问 API Key 所属用户的渠道 |
-| 模型映射 | 客户端模型名 `model` 到上游模型名 `upstream_model` 的映射 |
+| 模型映射 | 渠道 `models` 中客户端模型名 `model` 到上游模型名 `upstream_model` 的映射 |
+| 渠道模型信息 | `ChannelModelInfo` 保存的渠道级模型覆盖，可携带 provider、匹配键、能力、定价等信息 |
+| 匹配键数组 | `match_patterns`；精确匹配时可由多个字符串共同命中，非精确匹配只允许一个模式 |
 | 位置 Position | 持久化顺序字段，参与候选渠道的稳定排序 |
 | 优先级 Priority | 数值越小优先级越高 |
 | 容量 Capacity | 渠道允许同时占用的主请求数量上限 |
@@ -106,31 +108,45 @@
 5. 更新和删除均通过“渠道 ID + 当前权限范围”查找，普通用户无法通过猜测 UUID 操作他人渠道。
 6. 更新渠道时所有者不变；请求体中的 ID 也不决定目标，以路径参数为准。
 
-### 4.2 列表排序与运行时字段
+### 4.2 列表、详情与运行时字段
 
-当前 `GET /channels` 返回 `channels` 数组，并附带运行时字段：
+当前渠道读取分为配置读取与运行时读取：
 
-- `active_requests`：当前进程视角下的活跃请求数量。
-- `health_status`：熔断服务计算出的状态。
+1. `GET /channels`：返回当前权限范围内的渠道配置，并附加 `active_requests`、`health_status`。
+2. `GET /channels/{channelId:guid}`：返回单条渠道配置，并附加同样两个运行时字段。
+3. `GET /channels/runtime`：只返回 `id`、`active_requests`、`health_status`、`capacity`、`enabled`；可用逗号分隔的 `ids` 过滤。
+4. `GET /channels/select-list`：返回 `id/name` 下拉选项，可按名称模糊查询；超级管理员可用 `owner_username` 限定所有者。
 
-排序规则：
+运行时字段语义：
 
-- 普通用户：启用渠道在前，其次按 `updated_at` 倒序，再按 ID。
-- 超级管理员：先按所有者用户名，再按启用状态、更新时间、ID。
-- 此列表排序不是实际路由优先顺序；实际路由还会使用 `priority`、`position`、亲和与负载。
+- `active_requests`：当前进程内计数，多实例部署时不是全局并发真值。
+- `health_status`：熔断服务按 `enabled` 与 `circuit_break_duration_seconds` 计算出的 `disabled/healthy/open/half_open`。
+- `position` 持久化并参与路由稳定排序，但当前 `ChannelResponse` 不公开该字段。
+
+`ChannelService.LoadAllChannelDtos` 的排序规则为：
+
+1. `owner_username ASC`。
+2. `enabled DESC`。
+3. `updated_at DESC`。
+4. `id ASC`。
+
+普通用户只包含一个所有者，因此实际表现为“启用优先、更新时间倒序、ID”；超级管理员先按所有者分组。该列表排序不是实际路由顺序。渠道列表 DTO 使用 10 秒内存缓存。
 
 ### 4.3 创建与更新
 
 1. 创建请求未提供 ID 时，由服务生成 UUID。
-2. 当前创建逻辑将新渠道 `Position` 初始化为 15，未从现有列表尾部连续计算。
-3. 新渠道默认启用。
-4. 同一所有者下渠道名称必须唯一。
-5. 更新时：
-   - 路径 ID 是唯一目标 ID。
+2. 当前创建逻辑将新渠道 `Channel.Position` 固定初始化为 15，不计算已有列表尾部。
+3. 未传 `priority` 时，`ConfigNormalizer.Normalize` 会按单渠道校验序号写入 `0`；服务层仍保留一个未命中的 fallback。
+4. 未传 `enabled` 时默认启用。
+5. 当前创建与更新都通过 `ConfigValidator.ValidateChannel`；`capacity` 必须提供正整数，Images 渠道 `retry_count` 必须为 0。
+6. 同一所有者下渠道名称使用实体字符串直接比较，未做大小写归一化。
+7. 更新时：
+   - 路径 ID 是唯一目标 ID，请求体 ID 不决定目标。
    - 所有者保持不变。
    - `group_name` 未提供时保留原值。
    - 其他主要配置按请求内容覆盖。
-6. 创建或更新后会重建该渠道的 `ChannelModelMapping` 行。
+8. 创建或更新成功返回单条 `ChannelResponse`，不是完整渠道列表。
+9. 创建或更新后会删除该渠道旧 `ChannelModelMapping`，再按 `models` 顺序重建。
 
 ### 4.4 批量更新
 
@@ -151,6 +167,7 @@
 3. `patch` 至少包含一个支持字段。
 4. 任一渠道不存在或超出当前用户权限范围时，整批返回 404，不修改任何渠道。
 5. 所有字段先统一验证，再在同一个 EF Core 跟踪上下文中保存。
+6. 成功返回 `updated_ids` 与 `count`，不再返回渠道列表。
 
 ### 4.5 导入与合并
 
@@ -162,10 +179,11 @@
 6. 普通用户导入的所有渠道都归属自己。
 7. 超级管理员可以通过 `owner_username` 指定所有者。
 8. 当前实现对超级管理员导入中的未知所有者存在回落到默认管理员 ID 的路径，属于已知风险，不应作为产品规则固化。
+9. `POST /channels/bulk-import` 当前返回 `ChannelBatchUpdateResult`，其中 `updated_ids` 为空、`count=0`，不返回实际新增或更新的渠道 ID。
 
-### 4.6 模型映射同步
+### 4.6 模型映射与匹配键数组
 
-渠道 `models` 当前只保留两个正式字段：
+渠道 `models` 保存可用于核心路由的映射。当前正式字段只有：
 
 ```json
 {
@@ -179,12 +197,33 @@
 1. `model` 必填。
 2. `upstream_model` 为空时自动等于 `model`。
 3. 同一渠道内 `model` 不得重复。
-4. 标准化时会删除映射对象中的其他未知字段。
-5. 同步生成的 `ChannelModelMapping` 默认：
-   - `SupportsImage=false`
-   - `PricingMode=inherit_global`
-   - `Enabled=true`
-6. 图片能力的最终判断来自模型目录服务，不依赖这个默认 `SupportsImage=false`。
+4. `ConfigNormalizer.Normalize` 会删除映射对象中的其他未知字段。
+5. 同步生成的 `ChannelModelMapping` 当前字段为：
+   - `Position`：按 `models` 数组顺序从 0 递增。
+   - `RequestModel`：来自 `model`。
+   - `UpstreamModel`：来自 `upstream_model`，为空时回填 `model`。
+   - `Enabled=true`。
+6. 旧的 `SupportsImage`、`PricingMode` 映射列已由迁移删除；图片能力与定价改由 `ModelCatalogService`、`ChannelModelInfo` 和全局 `ModelInfo` 判断。
+7. 核心路由只按渠道 `models.model` 做字符串匹配；`ChannelModelInfo.match_patterns` 当前不参与核心候选匹配。
+
+#### 4.6.1 渠道模型信息覆盖
+
+当前存在一组独立的渠道模型信息接口：
+
+- `GET /channels/{channelId:guid}/model-infos`
+- `PUT /channels/{channelId:guid}/model-infos`
+- `DELETE /channels/{channelId:guid}/model-infos/{id:guid}`
+
+当前行为：
+
+1. 读取接口合并核心 `ChannelModelMapping`、渠道级 `ChannelModelInfo` 与全局模型信息，返回 `request_model`、`upstream_model`、`overridden`、`global_model`、`override_model`。
+2. `PUT`/`DELETE` 使用与渠道读取相同的权限范围；普通用户只能操作自己的渠道。
+3. `ChannelModelInfo` 保存 `RequestModel`、`UpstreamModel`、`ProviderId`、`ModelKey`、`DisplayName`、`Description`、`MatchType`、`MatchPattern`、`MatchPatternsJson`、`CatalogJson`、`CapabilitiesJson`、`Enabled`、`Source`。
+4. `match_type` 支持 `exact/prefix/suffix/contains`，空值按 `exact` 处理。
+5. `match_patterns` 会 Trim、去空、按忽略大小写去重；全部为空时回落到 `model_key`。
+6. 只有 `exact` 允许 `match_patterns` 多于一项；非精确匹配传入多个模式返回 400。
+7. `match_pattern` 等于归一化后的第一个 `match_patterns` 元素。
+8. `request_model` 若显式提供，必须与该渠道已有映射的 `upstream_model` 一致；否则可回落到上游模型名。
 
 ### 4.7 环境变量展开
 
@@ -197,9 +236,45 @@
 
 ### 4.8 诊断
 
-- 模型发现接受临时渠道配置，向上游请求模型列表。
-- 渠道测试以 SSE 返回过程事件、转换详情、完成事件或错误事件。
-- 诊断服务对授权、API Key、Cookie、密码等敏感字段进行脱敏后写日志。
+#### 上游模型发现
+
+当前控制器路由：
+
+- `POST /channels/discover-models`
+- `POST /discover-models`（兼容路径）
+
+请求既可使用嵌套 `channel`，也可使用扁平渠道字段。当前实现会：
+
+1. 拒绝渠道配置中的环境变量占位符。
+2. 校验 `baseurl`；域名不做 DNS 解析，直接拒绝 localhost、`.internal`、`.local`、私网/回环/链路本地 IP 与云元数据地址。
+3. 将诊断超时钳制到最多 60 秒，将 `retry_count` 强制为 0。
+4. 返回上游模型 ID 列表、原始响应与诊断耗时。
+
+#### 流式连接测试
+
+当前控制器路由：
+
+- `POST /channels/test/stream`
+- `POST /test-channel/stream`（管理台当前使用）
+
+当前行为：
+
+1. 请求按 `channel_id` 读取已保存渠道，并执行权限范围检查，不接收未保存草稿。
+2. SSE 事件包含上游事件、`channel_test.error`、`channel_test.completed`。
+3. chat/messages 渠道的上游事件会转换为 Responses 风格输出；连接测试日志仍捕获转换前的上游响应。
+4. 诊断响应中的请求头、API Key、Cookie、密码等键会被脱敏为 `...`。
+5. 失败响应会在 `channel_test.completed.upstream_response` 中携带上游原始错误体；前端 `formatChannelTestResult` 优先展示上游原始错误消息，而不是客户端 502 脱敏文案。
+6. 请求日志列表在 `request_type=diagnostic` 时，把 API Key 列显示为“连接测试”。
+7. `frontend/src/api/channels.js` 仍导出 `probeModels`、`probeStream`，分别指向 `/channels/{id}/probe-models`、`/channels/{id}/probe-stream`；当前前端没有调用这两个函数，后端也没有对应控制器 Action。
+
+#### 健康重置
+
+当前控制器同时暴露：
+
+- `POST /channels/{channelId:guid}/health-reset`
+- `POST /channels/{channelId:guid}/reset-health`（管理台当前使用）
+
+两者调用同一个 `ResetChannelHealthAsync`，重置熔断状态但不修改渠道配置。
 
 ---
 
@@ -210,25 +285,25 @@
 | 字段 | 类型 | 当前实现规则 | 产品化要求 |
 |---|---|---|---|
 | `id` | UUID/字符串 | 创建可省略；更新以路径 ID 为准 | 对外统一 UUID；创建成功后不可变 |
-| `owner_username` | 字符串 | 普通用户强制为自己；超管可指定 | 必须解析为现存用户，未知用户必须明确报错 |
-| `name` | 字符串 | 同一所有者下唯一；当前未明确禁止空字符串 | 必填、Trim 后 1–100 字符，租户内唯一 |
+| `owner_username` | 字符串 | 普通用户强制为自己；超管可指定；单条创建时未知用户返回 400 | 必须解析为现存用户，未知用户必须明确报错 |
+| `name` | 字符串 | 同一所有者下直接字符串比较；未禁止空字符串 | 必填、Trim 后 1–100 字符，租户内唯一 |
 | `group_name` | 字符串 | 可为空；更新省略时保留 | 可选，Trim 后不超过 100 字符 |
 | `type` | 枚举 | `responses/chat/messages/images` | 必填且不可为未知值 |
 | `baseurl` | 字符串 | 必填，必须以 `http://` 或 `https://` 开头 | 生产环境 SHOULD 默认要求 HTTPS；禁止控制字符 |
 | `apikey` | 字符串 | 明文落库并在配置响应返回 | MUST 加密落库；默认响应仅返回掩码，显式替换时才接收新值 |
 | `auth_mode` | 枚举 | `config/none`，默认 `config` | `none` 时不得自动注入认证头 |
 | `headers` | JSON 对象 | 可为空；值转换为字符串后发往上游 | Header 名大小写不敏感；禁止 Host/Content-Length 等危险头 |
-| `timeout_seconds` | 正整数 | 缺省使用系统默认超时 | 建议范围 1–3600 秒，超范围返回 400 |
-| `circuit_break_duration_seconds` | 非负整数 | 默认 0 | 0 表示关闭状态保持；建议最大 86400 秒 |
+| `timeout_seconds` | 正整数 | 缺省使用系统默认超时；校验必须为正整数 | 建议范围 1–3600 秒，超范围返回 400 |
+| `circuit_break_duration_seconds` | 非负整数 | 默认 0；0 时熔断服务清除状态并视为健康 | 0 表示关闭状态保持；建议最大 86400 秒 |
 | `retry_count` | 非负整数 | 默认 3；Images 必须为 0 | 建议上限 10；界面需说明是“单渠道内部重试” |
-| `priority` | 非负整数 | 越小越优先 | 0–10000；同优先级允许存在 |
-| `capacity` | 正整数 | 当前校验为必填；历史空值可回填 3 | MUST 明确是否允许“无限制”；建议 1–10000 |
-| `compat` | JSON 对象 | 只接受白名单字段 | 必须逐字段验证类型，不允许静默接收未知字段 |
-| `models` | 数组 | 模型名精确匹配；上游名可缺省 | 同一渠道 `model` 唯一，保存顺序稳定 |
+| `priority` | 非负整数 | 越小越优先；未传时标准化默认值为 0 | 0–10000；同优先级允许存在 |
+| `capacity` | 正整数 | 保存校验为必填正整数；服务层对 `capacity<=0` 按无硬限处理 | MUST 明确是否允许“无限制”；建议 1–10000 |
+| `compat` | JSON 对象 | 只接受白名单字段；当前白名单见 5.2 | 必须逐字段验证类型，不允许静默接收未知字段 |
+| `models` | 数组 | 只保留 `model/upstream_model`；核心路由按 `model` 精确匹配 | 同一渠道 `model` 唯一，保存顺序稳定 |
 | `enabled` | 布尔 | 默认 true | 停用后不再参与新请求路由 |
-| `active_requests` | 只读整数 | 进程内近似值 | 标明采样时间及是否为全局值 |
+| `active_requests` | 只读整数 | 本实例进程内计数；Redis 路径仅用于排序/展示 | 标明采样时间及是否为全局值 |
 | `health_status` | 只读枚举 | `disabled/healthy/open/half_open` | 与路由状态机定义保持一致 |
-| `position` | 内部整数 | 持久化但当前配置响应未突出排序管理 | TBD：是否提供显式拖拽排序接口 |
+| `position` | 内部整数 | 新建固定 15；参与稳定排序，但 API 配置响应不公开 | TBD：是否提供显式拖拽排序接口 |
 
 ### 5.2 Compat 字段表
 
@@ -240,10 +315,10 @@
 | `force_params` | 对象 | 无条件覆盖指定参数 | 高风险，应在 UI 明示 |
 | `drop_tool_types` | 数组 | 删除对应工具、tool_choice、include 项 | 例如删除图片生成工具 |
 | `unsupported_params` | 数组 | 请求出现对应参数时返回本地 400 | 不调用上游 |
-| `preserve_thinking_history` | 布尔 | 允许 Messages 转换保留 thinking/reasoning 历史 | 可能以文本降级 |
-| `enable_apply_patch_prompt_compat` | 布尔 | 对 apply_patch 工具说明进行兼容改写 | 协议转换专用 |
+| `preserve_thinking_history` | 布尔 | 管理台对 chat/messages 开放：chat 回传 `assistant.reasoning_content`；messages 恢复 Anthropic thinking blocks，缺签名时降级为文本块 | 后端校验器接受布尔值；其他渠道类型未在 UI 开放 |
+| `enable_apply_patch_prompt_compat` | 布尔 | 对 `apply_patch` 工具说明进行兼容改写 | 管理台对 chat/messages 开放，协议转换专用 |
+| `multi_agent_v2_mode` | 枚举 | `passthrough/downgrade/reject`；空值表示自动策略 | 非 Images 渠道可选；校验器拒绝其他值 |
 | `images_api_dialect` | 枚举 | `openai/xai` 图片接口方言 | 仅 Images 渠道可用且必填 |
-| `intercept_probe_requests` | 布尔 | 仍在白名单，但当前实际探测拦截已迁至系统级 | 遗留字段，SHOULD 废弃 |
 
 ### 5.3 渠道状态组合
 
@@ -292,7 +367,7 @@ flowchart TD
     J --> K[删除旧 ChannelModelMapping]
     K --> L[按 models 重建映射]
     L --> M[失效路由缓存]
-    M --> N[返回当前权限范围内的完整渠道列表]
+    M --> N[返回单条渠道响应]
 ```
 
 ### 6.2 配置导入
@@ -319,7 +394,7 @@ sequenceDiagram
         SVC->>DB: 重建模型映射
     end
     SVC->>CACHE: 失效相关路由缓存
-    SVC-->>UI: 返回合并后的渠道列表
+    SVC-->>UI: 返回 ChannelBatchUpdateResult（当前 updated_ids 为空、count=0）
 ```
 
 ---
@@ -330,15 +405,21 @@ sequenceDiagram
 
 | 方法与路径 | 权限 | 请求摘要 | 成功响应 | 常见错误 |
 |---|---|---|---|---|
-| `GET /channels` | 已登录 | 无 | 当前范围的 `channels` | 401 |
-| `POST /channels` | 已登录 | `ChannelRequest` | 更新后的渠道列表 | 400/401 |
-| `PUT /channels/{channelId}` | 已登录 | 完整渠道配置 | 更新后的渠道列表 | 400/401/404 |
-| `PATCH /channels/batch` | 已登录 | `{channel_ids, patch}` | 更新后的渠道列表 | 400/401/404 |
-| `DELETE /channels/{channelId}` | 已登录 | 无 | 删除后的渠道列表 | 400/401/404 |
-| `POST /channels/bulk-import` | 已登录 | `{channels:[...]}` | 合并后的渠道列表 | 400/401 |
-| `POST /channels/{channelId}/reset-health` | 已登录 | 无 | 成功空载荷 | 400/401/404 |
-| `POST /channels/discover-models` | 已登录 | 临时渠道配置 | 上游模型列表 | 400/401/502/504 |
-| `POST /channels/test/stream` | 已登录 | 临时渠道配置 | SSE 诊断流 | 400/401/上游错误事件 |
+| `GET /channels` | 已登录 | 无 | `ChannelListResponse`，含配置与运行时字段 | 401 |
+| `GET /channels/{channelId:guid}` | 已登录 | 无 | 单条 `ChannelResponse` | 400/401/404 |
+| `GET /channels/runtime` | 已登录 | 可选 `ids` 逗号分隔 | 仅 `id/active_requests/health_status/capacity/enabled` | 401 |
+| `GET /channels/select-list` | 已登录 | `q/owner_username` | `id/name` 选项 | 401 |
+| `POST /channels` | 已登录 | `ChannelRequest` | 单条 `ChannelResponse` | 400/401 |
+| `PUT /channels/{channelId:guid}` | 已登录 | 完整渠道配置 | 单条 `ChannelResponse` | 400/401/404 |
+| `PATCH /channels`、`PATCH /channels/batch` | 已登录 | `{channel_ids, patch}` | `updated_ids/count` | 400/401/404 |
+| `DELETE /channels/{channelId:guid}` | 已登录 | 无 | `{deleted,id}` | 400/401/404 |
+| `POST /channels/bulk-import` | 已登录 | `{channels:[...]}` | 当前为空 ID 的 `ChannelBatchUpdateResult` | 400/401 |
+| `GET /channels/{channelId:guid}/model-infos` | 已登录 | 无 | 合并后的渠道模型信息列表 | 401/404 |
+| `PUT /channels/{channelId:guid}/model-infos` | 已登录 | `ChannelModelInfoUpsertRequest` | `{model}` | 400/401/404 |
+| `DELETE /channels/{channelId:guid}/model-infos/{id:guid}` | 已登录 | 无 | 成功空载荷 | 401/404 |
+| `POST /channels/{channelId:guid}/health-reset`、`POST /channels/{channelId:guid}/reset-health` | 已登录 | 无 | `{reset:true,id}` | 400/401/404 |
+| `POST /channels/discover-models`、`POST /discover-models` | 已登录 | 临时渠道配置 | 上游模型列表与原始响应 | 400/401/上游状态 |
+| `POST /channels/test/stream`、`POST /test-channel/stream` | 已登录 | `{channel_id,model,input,max_output_tokens}` | SSE 诊断流 | 401；业务失败写入 SSE 事件 |
 
 ### 7.1 示例：创建普通文本渠道
 
@@ -387,20 +468,21 @@ sequenceDiagram
 ## 8. 异常与边界
 
 1. 渠道 ID 为空、格式错误或不在权限范围内：400 或 404，不泄露真实所有者。
-2. 同租户渠道名称重复：400。
+2. 同租户渠道名称重复：400；名称比较当前未做大小写归一化。
 3. `baseurl` 非 HTTP(S)：400。
-4. 未提供 `capacity`：当前新配置校验失败；历史空容量可被兼容回填为 3。
+4. 未提供 `capacity` 或值非正整数：400。服务层会把 `capacity<=0` 视为无硬限，但管理接口当前无法保存这种渠道。
 5. Images 渠道 `retry_count != 0`：400。
-6. Images 渠道缺少方言或模型映射：400。
+6. Images 渠道缺少方言或对象型模型映射：400。
 7. Compat 出现未知字段或字段类型错误：400。
-8. 批量更新部分 ID 无权限：整批 404，不允许部分成功。
-9. 导入项同一 owner 下名称重复：当前字典构建可能产生异常；产品化实现应返回可理解的 400。
-10. 环境变量不存在：当前保留占位符，随后可能导致上游鉴权失败；产品化界面应预检并提示。
-11. 渠道测试不应修改正式渠道或正式路由缓存。
-12. 删除渠道时正在处理的请求不被强制终止；删除只影响后续新请求。
-13. 修改容量、优先级或启停后，多实例及其他用户缓存可能存在最长约 60 秒的可见延迟。
-
----
+8. `match_patterns` 多于一项且 `match_type!=exact`：400。
+9. 批量更新部分 ID 无权限：整批 404，不允许部分成功。
+10. 导入项同一 owner 下名称重复：当前校验没有对请求内的名称重复做统一检查，行为需通过复现测试固定。
+11. 环境变量不存在：路由读取时保留占位符，随后可能导致上游鉴权失败；产品化界面应预检并提示。
+12. 诊断接口不允许环境变量占位符；模型发现还会拒绝私网/回环/链路本地地址。
+13. 渠道测试不应修改正式渠道；当前会写入 `request_type=diagnostic` 日志，不会调用正式路由缓存。
+14. 删除渠道时同一事务中清理 `ChannelModelMapping`，并清理引用该渠道的视觉转移配置；在途请求不被强制终止。
+15. 修改容量、优先级或启停后，渠道配置列表缓存为 10 秒；路由原始渠道缓存为 60 秒。普通用户变更会精确失效本人缓存；超级管理员修改他人渠道时当前仍可能等待 60 秒 TTL，见已知限制。
+16. 诊断日志当前会把测试渠道请求内容写入日志内容存储，现有测试断言其中可见上游 API Key 与敏感 header；产品化要求必须改为脱敏或加密存储。
 
 ## 9. 产品化需求与验收标准
 
@@ -471,8 +553,9 @@ sequenceDiagram
 **验收标准：**
 
 1. 删除成功后 Channel 和 ChannelModelMapping 均不可查询。
-2. 已在途请求不被异常中断。
-3. 新请求不再选择该渠道。
+2. 引用该渠道的视觉转移主配置被删除，兜底引用被清空。
+3. 已在途请求不被异常中断。
+4. 新请求不再选择该渠道。
 
 ### REQ-CH-008 配置导入为合并操作（MUST）
 
@@ -493,8 +576,9 @@ sequenceDiagram
 
 1. 空 `model` 返回 400。
 2. 同渠道重复 `model` 返回 400。
-3. 保存后映射顺序与请求顺序一致。
-4. 更新渠道后旧映射被完整替换。
+3. 保存后 ChannelModelMapping.Position 与请求顺序一致。
+4. 同步映射写出 RequestModel/UpstreamModel/Enabled=true。
+5. 更新渠道后旧映射被完整替换。
 
 ### REQ-CH-010 Images 渠道约束（MUST）
 
@@ -515,7 +599,8 @@ sequenceDiagram
 
 1. 未知字段返回 400。
 2. 自动化测试覆盖 default → rename → drop → force → drop tools → unsupported 的顺序。
-3. `intercept_probe_requests` 不再作为渠道级生效字段；保留时须标记废弃。
+3. `preserve_thinking_history` 对 chat/messages 的类型与布尔值校验通过。
+4. `multi_agent_v2_mode` 只接受 `passthrough/downgrade/reject` 或空值。
 
 ### REQ-CH-012 上游凭证保护（MUST）
 
@@ -564,9 +649,11 @@ sequenceDiagram
 
 **验收标准：**
 
-1. 使用请求中的临时配置调用上游。
-2. 支持常见对象根和数组根模型列表格式。
-3. 失败返回可理解的网络、认证、超时或格式错误。
+1. 使用请求中的临时配置调用上游，不写入正式渠道。
+2. 支持对象根和数组根模型列表格式。
+3. 拒绝环境变量占位符和非公开 baseurl。
+4. 诊断超时最多 60 秒、retry_count 强制为 0。
+5. 失败返回可理解的网络、认证、超时或格式错误。
 
 ### REQ-CH-017 流式渠道测试（SHOULD）
 
@@ -574,9 +661,11 @@ sequenceDiagram
 
 **验收标准：**
 
-1. 包含开始、请求兼容详情、上游事件、完成或错误事件。
-2. 客户端取消后立即停止上游读取。
-3. 日志中授权和密码字段被脱敏。
+1. 包含上游事件、`channel_test.completed` 与失败时的 `channel_test.error`。
+2. 客户端取消后停止上游读取并传播取消。
+3. SSE 诊断响应中授权和密码字段被脱敏。
+4. 连接测试日志的存储内容当前未满足脱敏要求，必须作为 GAP 跟踪。
+5. 失败时优先向上游排障人员展示原始上游错误，列表 API Key 列显示“连接测试”。
 
 ### REQ-CH-018 缓存一致性（MUST）
 
@@ -608,6 +697,60 @@ sequenceDiagram
 2. 版本冲突返回 409。
 3. 冲突时数据库保持先提交版本。
 
+
+### REQ-CH-021 渠道运行时快照（MUST）
+
+**要求：** 渠道配置读取与高频运行时读取必须分离。
+
+**验收标准：**
+
+1. `GET /channels/runtime` 只返回运行时字段，不携带 apikey、headers、compat、models。
+2. `ids` 为空或全部非法时按全量权限范围返回；合法 id 仅过滤授权范围内渠道。
+3. 运行时读取不修改渠道配置与缓存。
+
+### REQ-CH-022 渠道模型信息覆盖与匹配键（MUST）
+
+**要求：** 渠道模型信息必须支持渠道级覆盖、全局模型回退和匹配键数组。
+
+**验收标准：**
+
+1. `GET /channels/{id}/model-infos` 合并核心映射、渠道覆盖和全局模型。
+2. `match_patterns` Trim、去空、忽略大小写去重；空数组回落到 `model_key`。
+3. 仅 `exact` 允许多个匹配模式，其他类型多值返回 400。
+4. 普通用户不能读写他人渠道模型信息。
+5. 当前核心路由不消费 `match_patterns`，该差异需在产品决策前保持显式说明。
+
+### REQ-CH-023 诊断端点命名一致性（MUST）
+
+**要求：** 文档、管理台调用和后端路由必须使用同一组诊断端点。
+
+**验收标准：**
+
+1. 管理台使用 `/discover-models` 与 `/test-channel/stream`，或迁移到后端实际注册的新端点。
+2. `probe-models/probe-stream` 在无后端 Action 前不得作为已实现能力展示。
+3. 新增端点别名必须同时更新 `frontend/src/api/channels.js` 的调用方与路由测试。
+
+### REQ-CH-024 连接测试错误可诊断性（MUST）
+
+**要求：** 连接测试失败时必须保留可供授权管理员排障的上游原始错误。
+
+**验收标准：**
+
+1. `channel_test.completed.upstream_response` 包含上游原始错误体。
+2. 前端优先显示深层上游错误 message，不用客户端 502 脱敏文案覆盖。
+3. 日志列表在 `request_type=diagnostic` 时把 Key 名称列显示为“连接测试”。
+
+### REQ-CH-025 诊断日志秘密保护（MUST）
+
+**要求：** 连接测试日志不得以可直接使用的形式保存上游秘密。
+
+**验收标准：**
+
+1. `apikey`、Authorization、`x-api-key`、Cookie 与密码不得明文进入日志内容存储。
+2. SSE 响应仍可展示上游错误原文，但必须按敏感键递归脱敏。
+3. 数据库备份与日志导出中无法恢复上游可用凭证。
+
+
 ---
 
 ## 10. 数据、安全与可观测性影响
@@ -616,14 +759,17 @@ sequenceDiagram
 
 - 渠道主体存储在 `Channels`。
 - `headers`、`compat`、`models` 当前以 JSON 字符串存储。
-- 模型映射同时同步到 `ChannelModelMappings`，修改逻辑必须维持双写一致性。
+- 核心模型映射同时同步到 `ChannelModelMappings`，当前字段为 `RequestModel/UpstreamModel/Enabled/Position`。
+- 渠道级模型覆盖存储在 `ChannelModelInfos`，`MatchPatternsJson` 保存匹配键数组。
+- `DELETE /channels/{id}` 会清理 `ChannelModelMappings` 与视觉转移配置引用。
 - 删除用户时会删除其渠道，但数据库模型未通过导航属性表达完整级联，需通过服务层保证。
 
 ### 10.2 安全
 
-- 当前 `Channel.ApiKey` 为明文字段，是产品化必须整改项。
+- 当前 `Channel.ApiKey` 为明文字段，并在配置响应中返回，是产品化必须整改项。
 - 自定义 headers 可能包含 `Authorization`、`x-api-key` 等秘密，也应按敏感配置处理。
-- `baseurl` 可指向任意 HTTP(S) 地址，存在 SSRF 边界；产品化应支持地址策略、私网策略和 DNS 重绑定防护。
+- `baseurl` 保存时可指向任意 HTTP(S) 地址；诊断路径会额外拒绝私网/回环/链路本地地址，但正式路由仍承接 SSRF 边界。
+- 连接测试的 SSE 响应会递归脱敏敏感键；连接测试日志目前会把渠道请求内容按原文写入日志内容存储，已有测试断言其中可见 API Key 与敏感 header。
 - LAN 模式下后台接口可从局域网访问，不能依赖“仅本机”作为安全假设。
 
 ### 10.3 可观测性
@@ -643,17 +789,19 @@ sequenceDiagram
 ## 11. 已知限制
 
 1. 上游 `apikey` 和 headers 当前明文存储、明文返回。
-2. `capacity` 的 DTO 说明“可空代表不限”，但验证器要求必填正整数。
-3. 新建渠道 Position 固定为 15，不能反映真实插入顺序。
+2. `capacity` 的 DTO 注释仍写“可空表示不限”，服务层也把 `capacity<=0` 视为无硬限，但保存校验要求必填正整数。
+3. 新建渠道 `Position` 固定为 15，不能反映真实插入顺序。
 4. 未提供显式渠道排序 API。
-5. 超级管理员修改他人渠道时，当前缓存失效目标可能不正确，存在约 60 秒陈旧窗口。
+5. 超级管理员修改他人渠道时，`ChannelService.InvalidateRouteCache` 只失效当前登录用户名；他人路由缓存仍可能等待 60 秒 TTL。
 6. 超级管理员导入未知所有者时存在回落到默认管理员的实现路径。
-7. Compat 白名单仍含已经迁移为系统级的 `intercept_probe_requests`。
-8. 导入不是事务化的显式业务操作，逐项仓储保存可能造成大量数据库往返。
-9. 没有乐观锁或 ETag，并发更新可能后写覆盖先写。
-10. `GET /channels` 的排序与实际路由排序不同，容易造成产品认知偏差。
-
----
+7. `intercept_probe_requests` 已从渠道 Compat 白名单移除，改由系统级 `ProxySettings` 控制；其执行发生在 `ProxyService`，不再由渠道字段控制。
+8. 导入返回空 `updated_ids` 且 `count=0`，调用方无法从响应获知实际写入结果。
+9. 导入不是显式事务业务操作，逐项仓储保存可能造成大量数据库往返。
+10. 没有乐观锁或 ETag，并发更新可能后写覆盖先写。
+11. `GET /channels` 的排序与实际路由顺序不同，容易造成产品认知偏差。
+12. `frontend/src/api/channels.js` 中的 `probeModels`、`probeStream` 没有调用方，后端也没有 `probe-models/probe-stream` Action。
+13. `ChannelModelInfo.match_patterns` 目前不参与核心路由候选匹配，只在模型目录、能力判断、图片支持和定价场景消费。
+14. 连接测试日志内容存储当前保留上游 API Key 与敏感 header 原文；`ChannelDiagnosticsLogTests.TestChannelStreamWritesCompleteRequestLogContent` 明确断言该行为。
 
 ## 12. 待确认 TBD
 
@@ -669,6 +817,11 @@ sequenceDiagram
 | TBD-CH-008 | 删除渠道是否需要软删除和恢复 | 建议首版继续硬删除，但增加审计 |
 | TBD-CH-009 | 渠道测试是否计入正式成本统计 | 建议单独标记 `diagnostic`，不计正式消费 |
 | TBD-CH-010 | Compat 是否开放原始 JSON 编辑 | 默认高级模式开放，并提供结构化校验 |
+| TBD-CH-011 | `probe-models/probe-stream` 是否作为正式诊断路径保留 | 统一为单一路径并删除死代码 |
+| TBD-CH-012 | `match_patterns` 是否进入核心路由候选 | 若产品需要别名路由，应由路由服务直接消费 |
+| TBD-CH-013 | 连接测试日志是否允许保存原始秘密 | 不允许；SSE 可展示脱敏后的上游原文，日志必须加密或脱敏 |
+| TBD-CH-014 | `multi_agent_v2_mode` 空值自动策略是否在 UI 明确展示 | 展示“自动”并给出当前入口协议结论 |
+| TBD-CH-015 | 新建渠道 Position 是否改为尾部连续分配 | 是；并补显式排序接口 |
 
 ---
 
@@ -676,27 +829,33 @@ sequenceDiagram
 
 | 能力 | 源码锚点 | 现有测试锚点 |
 |---|---|---|
-| 渠道接口 | `opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/ChannelController.cs` | `RouteTests.NewAdminRoutesAreAvailable` |
-| 渠道 CRUD/导入 | `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/ChannelService.cs` | `RouteTests.UpdateChannel_OnlyTouchesTargetChannel`、`UpdateChannel_UsesPathIdAndKeepsOwner` |
+| 渠道接口 | `ChannelController.cs` | `RouteTests.NewAdminRoutesAreAvailable` |
+| 渠道运行时快照 | `ChannelService.ReadChannelRuntime`、`ChannelControllerService.ReadChannelRuntime` | `RouteTests.ConfigEndpoint_ReturnsCurrentChannelCapacityUsage` |
+| 渠道 CRUD/导入 | `ChannelService.SaveSingleChannel`、`PatchChannels`、`MergeChannels` | `RouteTests.UpdateChannel_OnlyTouchesTargetChannel`、`UpdateChannel_UsesPathIdAndKeepsOwner` |
 | 分组保留 | `ChannelService.SaveSingleChannel` | `RouteTests.UpdateChannel_PreservesExistingGroupWhenRequestOmitsGroupName` |
 | 批量更新 | `ChannelService.PatchChannels` | `RouteTests.BatchUpdateChannels_PatchesOnlySelectedChannels` |
 | 名称唯一 | `ChannelService.SaveSingleChannel` | `RouteTests.CreateChannel_RejectsDuplicateNameForSameOwner` |
 | 容量兼容 | `ConfigValidator.ValidateChannel`、`ChannelService.CapacityValue` | `RouteTests.ConfigSave_BackfillsHistoricalNullCapacityToThreeAndRejectsNewNullCapacity` |
-| 实时容量 | `ChannelService.ResolveActiveRequests` | `RouteTests.ConfigEndpoint_ReturnsCurrentChannelCapacityUsage` |
 | 健康状态/重置 | `ChannelService.ResolveHealthStatus`、`ResetChannelHealthAsync` | `RouteTests.ConfigEndpoint_ReturnsOpenHealthStatusWhenCircuitIsOpen`、`ResetChannelHealthEndpoint_ClearsOpenCircuit` |
-| 配置校验 | `opencodex_proxy/src/Libraries/OpenCodex.Core/Config/ConfigValidator.cs` | 由 `RouteTests`、`ProxyCompatibilityTests` 间接覆盖 |
-| Compat 改写 | `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/ChannelCompatRequestRewriter.cs` | `ProxyCompatibilityTests.ResponsesProxy_DropToolTypes_StripsImageGenerationToolsOnly` |
-| 模型发现/渠道测试 | `ChannelDiagnosticsController.cs`、`ChannelDiagnosticsService.cs` | `ChannelDiagnosticsLogTests.cs`、`ProxyCompatibilityTests.ListModelsAsync_NormalizesArrayRootResponses` |
-| 路由缓存 | `ProxyRouteService.cs`、`CacheKeys.cs` | `ProxyEndpointServiceTests.cs` 间接覆盖 |
-| 数据模型 | `OpenCodex.Domain/Domain/Channel.cs`、`ChannelModelMapping.cs` | EF 迁移与集成测试 |
+| 配置校验 | `ConfigValidator.ValidateChannel`、`ValidateCompat` | `ConfigValidatorCompatTests`、`RouteTests` |
+| Compat 改写 | `ChannelCompatRequestRewriter.Apply` | `ProxyCompatibilityTests.ResponsesProxy_DropToolTypes_StripsImageGenerationToolsOnly` |
+| 思考历史 | `ProtocolConverter.Requests`、`ChannelCompatRequestRewriter` | `ProtocolStructuralCompatibilityTests` |
+| 多 Agent v2 Compat | `MultiAgentV2Policy`、`ConfigValidator.ValidateCompatFields` | `ConfigValidatorCompatTests`、`ProxyEndpointServiceTests` |
+| 模型发现/连接测试 | `ChannelDiagnosticsController`、`ChannelDiagnosticsService` | `ChannelDiagnosticsLogTests`、`ChannelDiagnosticsGuardTests`、`ProxyCompatibilityTests.ListModelsAsync_NormalizesArrayRootResponses` |
+| 连接测试错误展示 | `frontend/src/channelTestState.js` | `channelTestState.test.js` |
+| 连接测试 Key 展示 | `frontend/src/Logs.vue.formatApiKeyName` | 现有前端测试未覆盖；需补日志列表用例 |
+| 渠道模型信息/匹配键 | `ModelCatalogController`、`ModelCatalogService.ListChannelModelInfos`、`UpsertChannelModelInfo` | `ModelCatalogServiceTests` |
+| 路由缓存 | `ProxyRouteService.ReadExpandedChannelValuesAsync`、`ChannelService.InvalidateRouteCache` | `RouteTests`、服务层间接覆盖 |
+| 数据模型 | `Channel.cs`、`ChannelModelMapping.cs`、`ChannelModelInfo.cs` | EF 迁移与集成测试 |
 
 ---
 
 ## 14. 发布验收建议
 
-1. 用两个普通用户和一个超级管理员完成完整权限矩阵测试。
-2. 对四类渠道分别执行保存、读取、模型发现和测试请求。
-3. 验证同名、空容量、非法 URL、非法 Compat、重复模型等负向用例。
-4. 在 Redis 单实例、多实例和无 Redis 三种环境验证配置生效延迟。
-5. 验证数据库、API 响应、日志中均不出现上游秘密明文后，方可认定凭证保护需求完成。
-6. 执行 `dotnet test opencodex_proxy/OpenCodex.sln`，并将本 PRD 每条 MUST 需求映射到至少一个自动化测试或发布检查项。
+1. 用两个普通用户和一个超级管理员完成完整权限矩阵测试，覆盖单条 CRUD、批量、导入、运行时快照和模型信息覆盖。
+2. 对四类渠道分别执行保存、读取、模型发现和连接测试；Images 渠道额外验证方言与模型映射。
+3. 验证同名、缺失容量、非法 URL、非法 Compat、重复模型、非 exact 多匹配键等负向用例。
+4. 在 Redis 单实例、多实例和无 Redis 三种环境验证配置生效延迟与容量并发。
+5. 验证数据库、API 响应、SSE 响应、日志内容存储中均不出现上游秘密明文后，方可认定凭证保护需求完成。
+6. 用复现测试固定连接测试日志的原始秘密行为，再决定脱敏改造；不得在无测试时直接改变排障语义。
+7. 执行 `dotnet test opencodex_proxy/OpenCodex.sln`，并将本 PRD 每条 MUST 需求映射到至少一个自动化测试或发布检查项。

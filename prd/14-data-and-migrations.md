@@ -7,9 +7,9 @@
 | 文档编号 | PRD-MIG-014 |
 | 需求编号前缀 | `REQ-MIG` |
 | 产品 | OpenCodex Proxy |
-| 基线提交 | `3827590eb33acb67dd063054c4a36d2b87b09002` |
+| 基线提交 | `main@235da3f4` |
 | 文档状态 | 当前实现基线审计 + 目标要求 |
-| 最后核对日期 | 2026-08-17 |
+| 最后核对日期 | 2026-09-30 |
 | 事实来源 | EF Core DbContext、双 provider migrations、初始化器、实体、日志内容存储、Compose、测试 |
 | 目标读者 | 后端、数据库、运维、测试、安全、合规与发布负责人 |
 
@@ -29,7 +29,7 @@
 1. SQLite、PostgreSQL、Redis 和本地文件的职责边界；
 2. 业务实体、日志元数据和内容寻址正文的持久化模型；
 3. SQLite/PostgreSQL 两套 EF Core context、migration 与 snapshot；
-4. 应用启动自动迁移和默认数据播种；
+4. 应用启动自动迁移（当前没有默认数据播种）；
 5. schema 变更、数据迁移、兼容发布和回滚；
 6. 备份、恢复、灾难恢复、完整性验证和数据保留；
 7. 数据安全、秘密、租户隔离和审计。
@@ -82,7 +82,7 @@ flowchart TD
 | 默认 SQLite 连接串 | `Data Source=logs/opencodex.db` | 桌面改为 app data/logs 绝对路径 | `/app/logs/opencodex.db` | 不适用 |
 | Redis | 空连接串表示禁用 | 默认禁用 | 默认禁用 | Compose 强制 `redis:6379` |
 | migration | 应用启动自动执行 | 是 | 是 | 是 |
-| seed | migration 后执行 | 是 | 是 | 是 |
+| seed | 当前启动流程不执行 seed，仅执行 `Database.Migrate()` | 无 | 无 | 无 |
 | 数据持久化优先级 | 主数据库 > 可重建缓存；Data Protection keys 与数据库共同组成会话恢复单元 | app data + app config | `./logs` 挂载 | `./postgres-data` + `./logs`；Redis为辅助状态 |
 | 备份现状 | 无内建任务 | 依赖用户/平台 | 依赖宿主 | 依赖宿主/运维 |
 
@@ -102,18 +102,21 @@ flowchart TD
 | `WebSearchSettings` | Web Search 模式与系统设置 | 主键 | 中 |
 | `TavilyKeys` | 搜索 provider Key、顺序与使用状态 | `Position` 索引 | **高：当前实体保存 ApiKey 字符串** |
 | `WebSearchContinuationEntries` | Web Search 跨请求续传结果 | `(OwnerUserId, EntryKey)` 唯一；用户外键级联 | 中：包含搜索摘要与来源 |
-| `ModelPricings` | 旧/全局模型价格规则 | `ModelId` 唯一，vendor/enabled/match 索引 | 中 |
+| `VisionTransferSettings` | 每个 owner 的图片识别转移主/兜底渠道与模型 | `OwnerUserId` 唯一；无数据库外键 | 中：含渠道与模型标识 |
+| `ProxySettings` | 代理功能开关与系统设置的 key/value | `Key` 唯一 | 中：`usd_cny_rate`、`intercept_probe_requests` 等 |
 | `ModelProviders` | 模型厂商目录 | `Code` 唯一，enabled/sort 索引 | 低 |
 | `ModelInfos` | 全局/provider/channel scope 模型信息和 capabilities/catalog JSON | scope/provider/model 与 scope/channel/model 索引 | 中 |
-| `ChannelModelInfos` | 渠道上游模型信息覆盖 | `(ChannelId, UpstreamModel)` 唯一 | 中 |
-| `ModelPricingPlans` | 模型、渠道模型或渠道价格方案 | model/channel/enabled 索引 | 中 |
-| `ModelPricingRules` | input/output/cache 等计费项规则 | price precision 18,8；plan/item/enabled 索引 | 中 |
-| `ChannelModelMappings` | 请求模型到上游模型、价格策略的有序映射 | channel/position、channel/request model 索引 | 中 |
+| `ChannelModelInfos` | 渠道级模型信息覆盖（展示、能力、目录与定价） | `(ChannelId, RequestModel)` 唯一；`(ChannelId, UpstreamModel)` 普通索引 | 中 |
+| `ModelPricingPlans` | 模型、渠道模型或渠道价格方案（含峰谷时区与窗口） | model/channel/enabled 索引 | 中 |
+| `ModelPricingRules` | input/output/cache 等计费项规则（含峰谷单价与阶梯） | `UnitPrice`/`OffPeakUnitPrice` precision 18,8；plan/item/enabled 索引 | 中 |
+| `ChannelModelMappings` | 请求模型到上游模型的有序映射（不含能力与价格列） | channel/position、channel/request model、enabled 索引 | 中 |
 | `RequestLogs` | 请求生命周期、路由、token、成本、会话索引、错误摘要 | created/model/channel/path/status/owner/conversation 等大量索引 | 高 |
 | `LogContentBlocks` | 去重后的原始正文分块或其压缩数据 | `Sha256` 唯一 | 高 |
 | `LogContentManifests` | 一份完整正文的不可变清单 | `Sha256` 唯一 | 高 |
 | `LogContentManifestChunks` | manifest 到 block 的有序映射 | `(ManifestId, Ordinal)` 唯一；block 索引 | 高 |
 | `RequestLogContentRefs` | RequestLog 每个内容槽位到 manifest 的引用 | `(RequestLogId, Slot)` 唯一；manifest 索引 | 高 |
+
+历史表 `ModelPricings`（旧扁平模型价格）已由 `DropChannelModelMappingDeadColumns` 迁移删除，当前价格实体只有 `ModelPricingPlans` 与 `ModelPricingRules`。
 
 ### 4.2 当前关系约束边界
 
@@ -121,16 +124,18 @@ flowchart TD
   - 删除 `RequestLogs` 时级联删除 `RequestLogContentRefs`；
   - 删除 manifest 时级联删除其 chunk 映射；
   - block 与 manifest、manifest 与 request ref 采用 Restrict，防止仍被引用时删除。
-- 大部分业务实体使用 `OwnerUserId`、`ChannelId`、`ProviderId` 等 ID 和索引，但当前 `OpenCodexDbContextBase` 未为全部业务关系显式配置导航外键和级联策略。
+- `WebSearchContinuationEntries.OwnerUserId` 配置了指向 `Users` 的外键并级联删除；清空日志时由 `ObservabilityService.ClearLogs` 显式删除该表。
+- 其余业务实体使用 `OwnerUserId`、`ChannelId`、`ProviderId` 等 ID 和索引，但当前 `OpenCodexDbContextBase` 未为这些关系配置数据库外键，引用清理依赖服务层：`ChannelService.DeleteChannelAsync` 删除该渠道的 `ChannelModelMappings` 并清理 `VisionTransferSettings` 引用，`UserService.DeleteUser` 批量删除访问 Key、渠道与视觉转移配置。
+- 已知缺口：`ChannelService.DeleteChannelAsync` 与 `UserService.DeleteUser` 均不清理 `ChannelModelInfos` 和 `ModelPricingPlans` 中的渠道/owner 记录，这些记录可能成为孤立行（去留策略 `TBD`）。
 - 当前未配置 row version 或 EF optimistic concurrency token；并发更新主要依赖应用逻辑和数据库约束。
 
-**风险：** 缺少数据库外键的业务引用可能产生孤立记录；没有并发版本字段可能出现最后写入覆盖前一写入。目标关系和冲突策略必须逐实体定义，不能只依赖 UI 串行操作。
+**风险：** 缺少数据库外键的业务引用已经可能产生孤立记录（渠道模型信息、价格计划）；没有并发版本字段可能出现最后写入覆盖前一写入。目标关系和冲突策略必须逐实体定义，不能只依赖 UI 串行操作。
 
 ### 4.3 时间与金额
 
 - 多数实体时间使用 `double`，业务代码通常写入 Unix epoch 秒（由毫秒除以 1000.0），可能包含小数；
 - `RequestLog` 的创建、处理开始、完成时间均为可空 double；
-- 价格规则 `UnitPrice` 使用数据库 precision `(18,8)`；
+- 价格规则 `UnitPrice` 与 `OffPeakUnitPrice` 使用数据库 precision `(18,8)`；
 - `RequestLog.Cost` 当前为 double，货币默认 `USD`。
 
 目标要求必须统一说明时间单位、UTC/显示时区、金额精度和舍入规则，避免把 double 金额用于财务级结算真值。
@@ -171,7 +176,15 @@ SQLite 配置会从连接串中解析 `Data Source`、`DataSource` 或 `Filename
 | 5 | `20260703000000_ChannelGroupName` | 同名时间戳 | 渠道分组名 |
 | 6 | `20260705110840_WebSearchMode` | `20260705110856_WebSearchMode` | Web Search 模式 |
 | 7 | `20260810233458_ContentAddressedLogs` | `20260810233510_ContentAddressedLogs` | 内容寻址日志和会话索引；删除旧日志详情/流行表 |
-| 8 | `20260913121301_WebSearchContinuationEntries` | `20260913121314_WebSearchContinuationEntries` | Web Search 数据库续传记录 |
+| 8 | `20260823130433_DropChannelModelMappingDeadColumns` | `20260823130445_DropChannelModelMappingDeadColumns` | 删除 `ModelPricings` 表与 `ChannelModelMappings` 的 `SupportsImage`/`ModelInfoId`/`PricingMode`/`PricingPlanId` 列 |
+| 9 | `20260827065350_PricingPeakOffPeak` | `20260827065604_PricingPeakOffPeak` | `ModelPricingPlans` 增加 `TimeZoneId`/`OffPeakWindowsJson`；`ModelPricingRules` 增加 `OffPeakEnabled`/`OffPeakUnitPrice`/`OffPeakTiersJson` |
+| 10 | `20260828035005_VisionTransferSettings` | `20260828035018_VisionTransferSettings` | 视觉识别转移设置表（按 owner 唯一） |
+| 11 | `20260830091102_ProxySettings` | `20260830091102_ProxySettings` | 代理设置 key/value 表（`Key` 唯一） |
+| 12 | `20260910015400_ModelMatchPatternsArray` | `20260910015415_ModelMatchPatternsArray` | `ModelInfos`/`ChannelModelInfos` 增加 `MatchPatternsJson` |
+| 13 | `20260911073139_ChannelModelRequestKey` | `20260911073153_ChannelModelRequestKey` | `ChannelModelInfos` 增加 `RequestModel` 并按 `UpstreamModel` 回填，唯一键改为 `(ChannelId, RequestModel)` |
+| 14 | `20260913121301_WebSearchContinuationEntries` | `20260913121314_WebSearchContinuationEntries` | Web Search 数据库续传记录（`OwnerUserId` 外键级联） |
+
+两套目录当前各有 14 个 migration，且一一对应；`ModelCatalog`、`ChannelModelInfo`、`ContentAddressedLogs`、`DropChannelModelMappingDeadColumns` 等相同逻辑变更在两 provider 的时间戳不同，`InitialCreate`、`ChannelCircuitBreakDuration`、`ChannelGroupName`、`ProxySettings` 使用相同时间戳。
 
 ### 5.4 Pending model changes
 
@@ -202,12 +215,13 @@ sequenceDiagram
 
 1. `OpenCodexDatabaseInitializer.Initialize(app)` 在 middleware 和 controller mapping 前同步执行；
 2. `Database.Migrate()` 失败会阻止应用正常启动；
-3. 当前未见应用级"单迁移 leader"或显式分布式锁，多实例同时启动时依赖数据库/EF migration 自身行为；
-4. `/health` 当前不报告 migration 版本或 readiness，且仅静态返回 ok。
+3. 初始化只调用 `Database.Migrate()`：当前没有任何应用级 seed，模型目录、价格与 Web Search 默认数据都不会在启动阶段写入；默认模型目录由管理台 `/model-catalog/import`、`/model-catalog/sync` 或手工创建产生；
+4. 当前未见应用级"单迁移 leader"或显式分布式锁，多实例同时启动时依赖数据库/EF migration 自身行为；
+5. `/health` 当前不报告 migration 版本或 readiness，且仅静态返回 ok。
 
 ### 6.2 目标启动门禁
 
-- 迁移、关键 seed 和完整性检查完成前实例不得进入 ready；
+- 迁移与完整性检查完成前实例不得进入 ready；若引入 seed，seed 必须先完成且幂等；
 - migration 失败必须输出 migration ID、provider 和安全错误摘要，但不得输出连接串密码；
 - 多实例部署必须保证同一 schema 只由一个受控迁移作业执行，或证明 EF/provider 并发迁移安全；
 - 生产环境应支持“仅验证 migration、暂不启动服务”的 preflight；
@@ -296,15 +310,16 @@ flowchart LR
 ### 7.5 清理语义
 
 - 替换某个日志槽位时会清理被替换且已无引用的 manifest/block；
-- 超级管理员清空全部日志：
-  - PostgreSQL 使用单条 `TRUNCATE ... RESTART IDENTITY CASCADE`；
-  - SQLite 依次执行 5 条 `DELETE`，当前 `ClearLogs` 未显式开启跨语句事务；中途失败可能留下部分清空状态；
+- 超级管理员清空全部日志（`ObservabilityService.ClearLogs`）：
+  - 在同一个显式数据库事务内按外键依赖顺序删除：`WebSearchContinuationEntries` → `RequestLogContentRefs` → `LogContentManifestChunks` → `RequestLogs` → `LogContentManifests` → `LogContentBlocks`；
+  - 两个 provider 都通过 EF Core `ExecuteDelete` 执行，SQLite 与 PostgreSQL 均不再使用 `TRUNCATE`；中途失败回滚整批，不会留下部分清空状态；
+  - 响应返回删除的日志、内容引用、内容块与续传记录数量；
 - 当前没有按保留期、容量或批次自动清理；
-- 当前没有后台全库孤立 manifest/block 垃圾回收任务。
+- 当前没有后台全库孤立 manifest/block 垃圾回收任务，只有一次性命令 `--cleanup-legacy-stream-lines` 用于清理历史槽位 `8` 的正文（见 `StreamLineLogCleanupService`）。
 
 ---
 
-## 8. ContentAddressedLogs migration 的数据风险
+## 8. 破坏性 migration 的数据风险
 
 ### 8.1 当前 Up 行为
 
@@ -335,6 +350,15 @@ Down 同样不会把新日志正文重建回旧表，因此回退也是数据破
 - 回滚 schema 会丢失升级后写入的新正文；
 - 若该数据丢失是有意的产品决策，必须在发布说明、备份要求和升级确认中显式说明；
 - 若要求无损升级，则必须新增离线/在线数据迁移阶段，而不能把当前 migration 描述为无损。
+
+### 8.4 DropChannelModelMappingDeadColumns 的数据影响
+
+`DropChannelModelMappingDeadColumns`（SQLite `20260823130433`、PostgreSQL `20260823130445`）是另一处破坏性 schema 变更：
+
+1. Up 直接删除 `ModelPricings` 表，并移除 `ChannelModelMappings` 的 `SupportsImage`、`ModelInfoId`、`PricingMode`、`PricingPlanId` 列；
+2. 旧扁平价格行不会回填到 `ModelPricingPlans`/`ModelPricingRules`，升级后价格只保留管理员已通过模型目录维护的部分；
+3. Down 只按旧 schema 重建空表与空列（`PricingMode` 默认空串、`SupportsImage` 默认 false），不还原任何数据；
+4. 产品判定：这是不可逆的数据删除，必须在发布说明与升级确认中标注；需要保留旧价格的部署必须先自行导出 `ModelPricings`。
 
 ---
 
@@ -429,7 +453,8 @@ flowchart TD
 3. 新旧应用并行或蓝绿切换时，schema 必须处于两者兼容的扩展阶段；
 4. 回滚应用前必须核对其能否读取当前 schema；
 5. ContentAddressedLogs 当前 Up/Down 都是正文破坏性的，不能作为无损回滚机制；
-6. 自动 `Database.Migrate()` 不应替代发布计划、备份和兼容矩阵。
+6. `DropChannelModelMappingDeadColumns` 删除 `ModelPricings` 表，Down 只重建空表，旧价格数据同样不可回滚；
+7. 自动 `Database.Migrate()` 不应替代发布计划、备份和兼容矩阵。
 
 ---
 
@@ -486,7 +511,7 @@ flowchart TD
 
 | 维度 | 当前实现基线 | 目标要求 |
 |---|---|---|
-| 可靠性 | 内容正文写入使用事务和完整性校验；启动 migration 失败会阻止应用正常启动 | 必须增加 readiness、备份恢复、破坏性 migration 门禁和双 provider 升级测试 |
+| 可靠性 | 内容正文写入与清空日志均使用显式事务和完整性校验；启动 migration 失败会阻止应用正常启动 | 必须增加 readiness、备份恢复、破坏性 migration 门禁和双 provider 升级测试 |
 | Schema 可维护性 | 两套 migration 目录由人工同步；运行时忽略 pending model warning | CI 必须自动检查 snapshot、provider parity 和未生成 migration 的模型变化 |
 | 数据模型可维护性 | JSON 字段为扩展提供灵活性，但数据库难以约束其内部 schema | 所有 JSON 持久化字段必须有版本、验证器和兼容策略；新增字段需回归导入/导出 |
 | 日志存储可维护性 | 分块、manifest、ref 和清理逻辑复杂，已有 codec/store 单测 | 必须提供一致性检查、孤立内容 dry-run/GC、容量指标和故障注入测试 |
@@ -499,13 +524,13 @@ flowchart TD
 | 故障 | 当前行为 | 目标要求 |
 |---|---|---|
 | migration SQL 失败 | 应用启动失败 | 保持 fail-closed；输出 provider/migration ID；readiness 不成功 |
-| seed 失败 | 启动失败 | 保持主数据一致；seed 必须可重试且幂等 |
+| seed | 当前启动流程不执行 seed | 若引入 seed，必须幂等可重试，失败不得留下部分默认数据 |
 | SQLite 目录不存在 | 自动创建父目录 | 目录不可写时明确失败 |
 | SQLite 磁盘满 | 数据库写失败 | 产生容量告警；保护已有数据；不得继续报告 ready |
 | PostgreSQL 暂时不可达 | 启动或请求失败 | readiness 失败；恢复策略和连接池行为需测试 |
 | 日志 block hash 不匹配 | 抛数据损坏异常 | 不返回伪正文；告警并保留证据 |
 | 日志写入部分失败 | 事务回滚当前槽位写入 | 不得留下 ref 指向缺失 manifest/block |
-| SQLite ClearLogs 中途失败 | 当前多条无显式事务 DELETE 可能部分完成 | 必须改为原子事务或可恢复幂等操作 |
+| ClearLogs 中途失败 | 显式事务回滚整批，六类表要么全部清空、要么全部保留 | 保持原子性并覆盖 `WebSearchContinuationEntries`（已实现） |
 | Redis 全部丢失 | 主数据库不丢数据，共享状态重置 | 明确 degraded/cold-start，不执行数据库恢复 |
 | Data Protection key 丢失 | 旧 Cookie 失效 | 提示重新登录；数据库恢复报告必须标记 key ring 缺失 |
 
@@ -519,7 +544,7 @@ flowchart TD
 | REQ-MIG-002 | MUST | provider 只允许 `sqlite` 与规范化后的 `postgres`。 | 已实现 | sqlite/postgres/postgresql/pgsql 测试通过；未知值启动失败且错误脱敏。 |
 | REQ-MIG-003 | MUST | SQLite 与 PostgreSQL 必须维护逻辑等价的 schema、索引和业务约束。 | 双迁移存在 | CI 比较模型 metadata/snapshot，并在两 provider 执行相同核心 CRUD 与日志测试；差异必须有批准说明。 |
 | REQ-MIG-004 | MUST | 每次模型变更必须同时提交两套 migration 与 snapshot。 | 流程要求未自动门禁 | CI 检测只有单 provider migration、snapshot 漂移或 pending model changes 时失败。 |
-| REQ-MIG-005 | MUST | 应用进入 ready 前必须完成 `Database.Migrate()` 和关键 seed。 | 迁移同步执行，readiness 缺失 | 故意延迟/失败 migration，实例不得 ready；成功后才接入请求。 |
+| REQ-MIG-005 | MUST | 应用进入 ready 前必须完成 `Database.Migrate()`；若引入 seed，seed 也必须完成。 | 迁移同步执行；当前无应用级 seed，readiness 缺失 | 故意延迟/失败 migration，实例不得 ready；成功后才接入请求。 |
 | REQ-MIG-006 | MUST | migration 失败必须阻断启动，并提供不泄露连接串的诊断。 | 基本实现 | 错误包含 provider、migration/阶段和内部关联 ID，不包含 password/API key；进程返回非成功状态。 |
 | REQ-MIG-007 | MUST | 生产 schema 变更前必须创建并验证可恢复备份。 | 缺口 | 发布流水线记录备份 ID、校验和、migration history 和恢复抽检；缺失时阻断迁移。 |
 | REQ-MIG-008 | MUST | 破坏性 migration 必须被自动或人工门禁识别。 | 缺口 | DropTable/DropColumn/raw destructive SQL 触发发布审批；文档列出数据处理和回滚策略。 |
@@ -527,17 +552,17 @@ flowchart TD
 | REQ-MIG-010 | MUST | 新的破坏性变更必须使用 expand-migrate-contract 或等价兼容策略。 | 缺口 | 旧版本和新版本在扩展阶段均能运行；回填可暂停/续跑；收缩在批准兼容窗口后执行。 |
 | REQ-MIG-011 | MUST | migration Down 必须标记“无损、有限损失或不可逆”，不得仅因存在 Down 方法就宣称可回滚。 | 缺口 | 每个 release migration 有回滚分类；ContentAddressedLogs 标记为正文数据不可逆。 |
 | REQ-MIG-012 | MUST | 多实例部署必须避免多个实例无协调地同时执行生产 migration。 | 缺口 | 使用单独 migration job、leader lock 或经验证 provider lock；并发启动测试只应用一次 migration。 |
-| REQ-MIG-013 | MUST | 默认价格和模型目录 seed 必须幂等，不得覆盖管理员明确修改的数据。 | 部分实现 | 连续启动两次数据不重复；管理员修改后重启保持；缺失默认项的补齐策略有测试。 |
+| REQ-MIG-013 | MUST | 默认价格和模型目录数据必须由显式、幂等的导入/同步或管理操作产生，不得依赖启动阶段隐式写入，也不得覆盖管理员明确修改的数据。 | 缺口（当前无应用级 seed） | 连续启动两次不产生重复默认数据；管理员修改后重启保持；导入/同步操作幂等且不覆盖手工修改，有测试覆盖。 |
 | REQ-MIG-014 | MUST | SQLite 备份必须是含 WAL 语义的一致快照。 | 缺口 | 写入负载下执行备份并恢复；`integrity_check` 成功、行数/哈希抽样一致。 |
 | REQ-MIG-015 | MUST | PostgreSQL 必须具备自动备份、加密、校验和隔离恢复演练。 | 缺口 | 按批准周期生成备份；在隔离环境恢复后双 provider无关的核心验收全部通过。 |
 | REQ-MIG-016 | MUST | Data Protection key ring 必须与数据库恢复计划绑定。 | 部分持久化，无统一备份 | 恢复报告同时验证 key ring；有 key 时旧 Cookie 行为符合策略，无 key 时明确要求重新登录。 |
 | REQ-MIG-017 | MUST | Redis 备份不得替代主数据库备份。 | 当前架构符合 | 删除 Redis volume 后业务主数据校验通过；恢复手册把 Redis 标为可选共享状态。 |
-| REQ-MIG-018 | MUST | `RequestLogContentSlot` 已发布数值只能追加，禁止重排和复用。 | 源码注释已规定 | 持久化兼容测试固定 1–8 映射；新增槽位只能使用新数值。 |
+| REQ-MIG-018 | MUST | `RequestLogContentSlot` 已发布数值只能追加，禁止重排和复用；历史槽位 `8` 已移除且只能由 `--cleanup-legacy-stream-lines` 清理。 | 源码注释已规定；当前枚举为 1–7 | 持久化兼容测试固定 1–7 映射；新增槽位只能使用新数值。 |
 | REQ-MIG-019 | MUST | 日志内容块和 manifest 必须执行完整 SHA-256 与长度校验。 | 已实现 | 篡改 block、manifest、顺序、长度和 encoding 的测试均检测损坏。 |
 | REQ-MIG-020 | MUST | 内容寻址写入必须原子，不得产生 ref 指向缺失内容。 | 已实现一部分 | 在 ensure block、manifest、ref、orphan cleanup 各阶段故障注入；事务回滚后外键和引用检查通过。 |
 | REQ-MIG-021 | MUST | 内容去重必须处理并发插入，不因相同 hash 产生重复块或 manifest。 | provider SQL 已处理冲突 | 两实例并发写相同正文，最终 block/manifest hash 唯一且所有 ref 可读。 |
 | REQ-MIG-022 | MUST | hash 冲突或相同 hash 不同长度必须 fail-closed。 | 已实现长度检查 | 构造冲突元数据，写入/读取报数据完整性错误，不复用错误内容。 |
-| REQ-MIG-023 | MUST | 清空日志必须跨 RequestLogs、refs、manifests、chunks、blocks 原子执行。 | PostgreSQL较强；SQLite缺口 | SQLite 故障注入中不会留下部分清空；PostgreSQL/SQLite 清空后五类表计数均为 0。 |
+| REQ-MIG-023 | MUST | 清空日志必须在同一事务内跨 RequestLogs、WebSearchContinuationEntries、refs、manifests、chunks、blocks 原子执行。 | 已实现（`ObservabilityService.ClearLogs`） | 六类表清空后计数均为 0；`ExecuteDelete` 任一阶段失败时整批回滚，不留下部分清空或孤儿 manifest/block。 |
 | REQ-MIG-024 | SHOULD | 系统应提供可重复运行的全库孤立日志内容检查与垃圾回收。 | 缺口 | dry-run 报告孤立数量/字节；执行后不删除仍被引用内容；二次执行无变化。 |
 | REQ-MIG-025 | MUST | 请求日志必须定义保留期、容量上限、清理批次和归档策略。 | TBD/缺口 | 参数经批准；超过阈值产生告警/清理；恢复与审计要求仍满足。 |
 | REQ-MIG-026 | MUST | 备份和日志正文必须按高敏数据保护，去重/压缩不得被视为加密。 | 缺口/TBD | 威胁模型完成；静态加密、访问控制和密钥管理策略经安全验收。 |
@@ -549,6 +574,9 @@ flowchart TD
 | REQ-MIG-032 | SHOULD | 生产应支持只运行 migration/preflight 而不启动 API。 | 缺口 | 独立命令验证连接、pending migration、备份和磁盘；成功后退出 0，不监听业务端口。 |
 | REQ-MIG-033 | MUST | 渠道和 Tavily 明文秘密的数据库保护策略必须在生产发布前确定。 | 高风险/TBD | 完成应用层加密或经批准的数据库/磁盘加密方案；备份同等级保护；读取权限测试通过。 |
 | REQ-MIG-034 | MUST | 数据恢复必须在隔离环境通过完整性和业务冒烟后才切换流量。 | 流程缺口 | 恢复演练报告包含 migration history、DB完整性、登录、Key、渠道、日志 hash 和 readiness 结果。 |
+| REQ-MIG-035 | MUST | PostgreSQL 端到端验收必须在可连接实例上执行：迁移应用、仓储读写与内容寻址日志写入/读取，不得只以 `ToQueryString()` 翻译测试代替。 | 缺口（仅有翻译测试，见 `ObservabilityAggregationSqlTests.PostgresBucketQuery_TranslatesFloorAndDoesNotCastToBigint`） | 可连接 PG 实例上执行空库迁移、核心 CRUD 与日志正文写入/读取；缺少实例时必须显式报错而不是静默跳过。 |
+| REQ-MIG-036 | MUST | 应用启动初始化只执行 `Database.Migrate()`，不得隐式写入模型目录、价格或 Web Search 默认数据；默认数据必须由显式管理操作产生。 | 已实现 | 启动后数据库没有自动写入的默认模型/价格行；`/model-catalog/import`、`/model-catalog/sync` 等显式操作可产生数据并可重复执行。 |
+| REQ-MIG-037 | MUST | `DropChannelModelMappingDeadColumns` 删除 `ModelPricings` 表属于不可逆数据删除，必须在发布说明、升级确认与回滚分类中标注。 | 高风险/TBD | 发布说明列出被删除的表与列；Down 不还原数据的结论有验证；需要保留旧价格的部署有导出指引。 |
 
 ---
 
@@ -577,12 +605,13 @@ flowchart TD
 | ContentAddressedLogs Down 同样丢新正文 | **高** | Down 仅重建空旧表 | 不得作为无损回滚 |
 | 发布脚本迁移前无自动备份 | **高** | 应用启动直接 `Database.Migrate()` | REQ-MIG-007、014、015 |
 | `/health` 不感知 migration/数据库 | **高** | 静态 ok | REQ-MIG-005、006 |
-| SQLite ClearLogs 非显式跨语句事务 | 高 | 依次执行 DELETE | REQ-MIG-023 |
+| DropChannelModelMappingDeadColumns 删除 ModelPricings 表 | 高 | Up 直接 DropTable，Down 只重建空表 | REQ-MIG-008、011、037 |
+| PostgreSQL 缺少实例级端到端验收 | 高 | 测试仅使用 `ToQueryString()` 翻译断言 | REQ-MIG-035 |
 | 无日志保留和容量配额 | 高 | 只有手工全清 | REQ-MIG-025 |
 | 渠道/Tavily秘密明文列 | 高 | 实体字段为字符串 | REQ-MIG-026、033 |
 | 忽略 PendingModelChangesWarning | 中 | DbContextFactory 显式 ignore | REQ-MIG-004、030 |
 | 多实例同时自动迁移 | 中 | 无应用级 migration leader | REQ-MIG-012 |
-| 大部分业务 ID 关系无数据库外键 | 中 | DbContext 未全部配置关系 | REQ-MIG-027 |
+| 大部分业务 ID 关系无数据库外键 | 中 | 内容寻址日志与 Web Search 续传已有外键，`ChannelModelInfos`/`ModelPricingPlans` 等仍依赖服务层 | REQ-MIG-027、037 |
 | 无并发 token | 中 | 未配置 row version | REQ-MIG-028 |
 | Redis RDB 被误认为业务备份 | 中 | Compose 持久化 Redis | REQ-MIG-017 |
 
@@ -598,12 +627,16 @@ flowchart TD
 | provider 工厂 | [OpenCodexDbContextFactory.cs](../opencodex_proxy/src/Libraries/OpenCodex.Data/OpenCodexDbContextFactory.cs) |
 | SQLite context | [OpenCodexSqliteDbContext.cs](../opencodex_proxy/src/Libraries/OpenCodex.Data/OpenCodexSqliteDbContext.cs) |
 | PostgreSQL context | [OpenCodexPostgresDbContext.cs](../opencodex_proxy/src/Libraries/OpenCodex.Data/OpenCodexPostgresDbContext.cs) |
-| 启动迁移与播种 | [OpenCodexDatabaseInitializer.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Infrastructure/OpenCodexDatabaseInitializer.cs) |
+| 启动迁移（无 seed） | [OpenCodexDatabaseInitializer.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Infrastructure/OpenCodexDatabaseInitializer.cs) |
 | RequestLog 元数据 | [RequestLog.cs](../opencodex_proxy/src/Libraries/OpenCodex.Domain/Domain/RequestLog.cs) |
 | 内容寻址实体/slot | [LogContent.cs](../opencodex_proxy/src/Libraries/OpenCodex.Domain/Domain/LogContent.cs) |
+| Web Search 续传实体与存储 | [WebSearchContinuationEntry.cs](../opencodex_proxy/src/Libraries/OpenCodex.Domain/Domain/WebSearchContinuationEntry.cs)、[WebSearchContinuationStore.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/WebSearch/WebSearchContinuationStore.cs) |
+| 视觉转移设置实体与服务 | [VisionTransferSettings.cs](../opencodex_proxy/src/Libraries/OpenCodex.Domain/Domain/VisionTransferSettings.cs)、[VisionTransferSettingsService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/VisionTransferSettingsService.cs) |
+| 代理设置实体与服务 | [ProxySetting.cs](../opencodex_proxy/src/Libraries/OpenCodex.Domain/Domain/ProxySetting.cs)、[ProxySettingsService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/ProxySettingsService.cs) |
 | 内容编码 | [LogContentCodec.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/LogContentCodec.cs) |
 | 内容读写与回收 | [LogContentStore.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/LogContentStore.cs) |
 | 全量日志清理 | [ObservabilityService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/ObservabilityService.cs) |
+| 历史槽位清理 | [StreamLineLogCleanupService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/LogMaintenance/StreamLineLogCleanupService.cs) |
 
 ### 18.2 迁移目录
 
@@ -611,6 +644,8 @@ flowchart TD
 - [PostgreSQL migrations](../opencodex_proxy/src/Libraries/OpenCodex.Data/Migrations/PostgresMigrations)
 - [SQLite ContentAddressedLogs migration](../opencodex_proxy/src/Libraries/OpenCodex.Data/Migrations/SqliteMigrations/20260810233458_ContentAddressedLogs.cs)
 - [PostgreSQL ContentAddressedLogs migration](../opencodex_proxy/src/Libraries/OpenCodex.Data/Migrations/PostgresMigrations/20260810233510_ContentAddressedLogs.cs)
+- [SQLite DropChannelModelMappingDeadColumns migration](../opencodex_proxy/src/Libraries/OpenCodex.Data/Migrations/SqliteMigrations/20260823130433_DropChannelModelMappingDeadColumns.cs)
+- [PostgreSQL DropChannelModelMappingDeadColumns migration](../opencodex_proxy/src/Libraries/OpenCodex.Data/Migrations/PostgresMigrations/20260823130445_DropChannelModelMappingDeadColumns.cs)
 - [DEPLOYMENT migration commands](../DEPLOYMENT.md)
 
 ### 18.3 测试锚点
@@ -620,8 +655,11 @@ flowchart TD
 - [ProxyLogServiceTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ProxyLogServiceTests.cs)
 - [ObservabilityServiceTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ObservabilityServiceTests.cs)
 - [ObservabilityControllerTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ObservabilityControllerTests.cs)
+- [ObservabilityAggregationSqlTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ObservabilityAggregationSqlTests.cs)
 - [ModelCatalogServiceTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ModelCatalogServiceTests.cs)
-- [ModelPricingServiceTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ModelPricingServiceTests.cs)
+- [VisionTransferSettingsServiceTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/VisionTransferSettingsServiceTests.cs)
+- [ProxySettingsServiceTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ProxySettingsServiceTests.cs)
+- [WebSearchContinuationStoreTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/WebSearchContinuationStoreTests.cs)
 
 ### 18.4 当前测试缺口
 
@@ -629,8 +667,9 @@ flowchart TD
 
 1. 上一正式版本数据库升级到最新；
 2. SQLite/PostgreSQL schema parity；
-3. ContentAddressedLogs 旧正文数据保留或明确丢弃；
+3. ContentAddressedLogs 与 DropChannelModelMappingDeadColumns 的历史数据保留或明确丢弃；
 4. migration Down 的数据影响；
 5. 备份恢复；
 6. 多实例并发自动迁移；
-7. SQLite ClearLogs 中途失败的原子性。
+7. ClearLogs 中途失败的故障注入（现有 `ObservabilityServiceTests.ClearLogs_RemovesContentRefsManifestsBlocksAndLogs` 只覆盖成功路径）；
+8. 可连接 PostgreSQL 实例上的端到端验收（迁移应用、仓储读写、内容寻址日志写入/读取）；当前与 PG 相关的自动化测试只有 `ObservabilityAggregationSqlTests.PostgresBucketQuery_TranslatesFloorAndDoesNotCastToBigint` 的 `ToQueryString()` 翻译断言。

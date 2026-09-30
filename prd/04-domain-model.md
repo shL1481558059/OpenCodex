@@ -1,7 +1,8 @@
 # 04. 领域模型与数据字典
 
 > 需求前缀：`REQ-DAT`  
-> 代码基线：`main@3827590`  
+> 代码基线：`main@235da3f4`  
+> 最后核对日期：2026-09-30  
 > 持久化基线：SQLite 与 PostgreSQL 双迁移
 
 ## 1. 建模原则
@@ -22,6 +23,8 @@ erDiagram
     USER ||--o{ ACCESS_API_KEY : owns
     USER ||--o{ CHANNEL : owns
     USER ||--o{ REQUEST_LOG : owns
+    USER ||--o{ VISION_TRANSFER_SETTINGS : configures
+    USER ||--o{ WEB_SEARCH_CONTINUATION_ENTRY : owns
     CHANNEL ||--o{ CHANNEL_MODEL_MAPPING : exposes
     CHANNEL ||--o{ CHANNEL_MODEL_INFO : overrides
     MODEL_PROVIDER ||--o{ MODEL_INFO : publishes
@@ -45,20 +48,24 @@ erDiagram
 | `User` | 管理台用户和代理租户主体 | 全局唯一用户名 | 创建、启停、删除 |
 | `AccessApiKey` | 调用代理的 Bearer 凭证 | 一个用户 | 创建、启停、删除、轮换 |
 | `Channel` | 上游服务连接与路由策略 | 一个用户 | 创建、编辑、启停、删除 |
-| `ChannelModelMapping` | 请求模型到上游模型的映射 | 一个渠道 | 新增、编辑、停用、删除 |
+| `ChannelModelMapping` | 请求模型到上游模型的映射（不含能力与价格字段） | 一个渠道 | 新增、编辑、停用、删除 |
 | `ModelProvider` | 全局模型供应商 | 全局 | 创建、启停 |
 | `ModelInfo` | 全局模型元数据与能力 | 全局/供应商 | 创建、编辑、停用 |
 | `ChannelModelInfo` | 渠道级模型元数据覆盖 | 一个渠道 | 覆盖、恢复全局 |
-| `ModelPricing` | 兼容旧模型价格的扁平定义 | 全局 | 播种/维护 |
+| `VisionTransferSettings` | 图片识别转移的主/兜底渠道与模型 | 一个 owner（数据库唯一行） | 保存、覆盖、随渠道/用户删除清理 |
 | `ModelPricingPlan` | 模型、渠道或渠道模型的价格计划 | 多层作用域 | 创建、启用/停用 |
 | `ModelPricingRule` | 价格计划中的计费规则 | 一个价格计划 | 创建、编辑、启用/停用 |
 | `WebSearchSettings` | Web Search 模式和全局限制 | 全局 | 单例更新 |
 | `TavilyKey` | Tavily 搜索凭证和用量 | 全局 | 新增、编辑、启停、删除 |
+| `WebSearchContinuationEntry` | Web Search 跨请求续传结果 | 一个用户（数据库外键级联） | 写入、按 owner 读取、清空日志时删除 |
+| `ProxySetting` | 代理功能开关与系统设置的 key/value 存储 | 全局 | 新增、更新 |
 | `RequestLog` | 主请求、渠道尝试或 OCR 子请求的元数据 | 一个用户 | 排队、处理、完成、清理 |
 | `LogContentBlock` | 内容寻址压缩块 | 全局共享 | 写入、复用、孤立清理 |
 | `LogContentManifest` | 一个完整正文的分块清单 | 全局共享 | 写入、引用、孤立清理 |
 | `LogContentManifestChunk` | Manifest 到 Block 的顺序关系 | Manifest | 随 Manifest 创建/清理 |
 | `RequestLogContentRef` | 日志正文槽位到 Manifest 的引用 | 一个请求日志 | 写入、替换、删除 |
+
+历史实体 `ModelPricing` 及其表 `ModelPricings` 已由迁移 `DropChannelModelMappingDeadColumns` 删除，价格信息当前只存在于 `ModelPricingPlan` 与 `ModelPricingRule`。
 
 ## 4. 用户和凭证模型
 
@@ -145,7 +152,7 @@ erDiagram
 | `RetryCount` | int | 非负 | 同渠道重试次数 |
 | `Capacity` | int | 当前校验要求正数 | 并发槽位数 |
 | `CompatJson` | JSON | 默认 `{}` | 参数、工具和历史兼容规则 |
-| `ModelsJson` | JSON 数组 | 默认 `[]` | 旧/兼容模型映射载荷 |
+| `ModelsJson` | JSON 数组 | 默认 `[]` | 渠道模型映射载荷：管理侧映射表的写入来源，网关路由候选也由该字段构建 |
 | `Enabled` | bool | 默认 `true` | 是否参与路由 |
 | `CreatedAt/UpdatedAt` | epoch/double | 必填 | 生命周期 |
 
@@ -168,19 +175,20 @@ erDiagram
 | `Position` | int | 渠道内排序 | 同模型多个映射时稳定排序 |
 | `RequestModel` | string | 非空 | 客户端模型名 |
 | `UpstreamModel` | string | 非空 | 上游模型名 |
-| `SupportsImage` | bool | 明确值 | 视觉能力路由和降级 |
-| `ModelInfoId` | UUID? | 可选 | 关联全局模型 |
-| `PricingMode` | string | 持久化值可为 `inherit_global` / `override_pricing` / `private_model` | 当前仅保存；成本解析器未读取该字段 |
-| `PricingPlanId` | UUID? | 可选 | 当前仅保存和建索引；成本解析器未通过映射读取该字段 |
 | `Enabled` | bool | 默认 `true` | 是否命中 |
+| `CreatedAt`/`UpdatedAt` | epoch/double | 必填 | 生命周期 |
 
 模型映射规则：
 
-1. 如果任一启用渠道存在模型映射，请求模型原则上必须精确命中启用映射；
-2. 若所有启用渠道均无映射，系统可使用排序后的首个启用渠道并原样传递模型名；
-3. 一旦进入映射模式，未配置映射的通用渠道不自动成为兜底；
-4. 图片请求只有在候选映射明确支持图片时才直接路由；
-5. 模型映射的请求名、上游名和能力状态必须在日志中可见。
+1. 管理侧读取映射（`ModelCatalogService.ListChannelModelMappings`）优先使用 `ChannelModelMappings` 表（仅 `Enabled` 行、按 `Position` 排序）；只有当该渠道在表中没有任何启用行时，才回退解析 `Channel.ModelsJson` 中的 `model`/`upstream_model`；
+2. 渠道保存与导入会按 `ModelsJson` 重写该渠道的映射表记录（`ChannelService.SyncChannelModelMappings`），网关路由候选仍从渠道行的 `ModelsJson` 快照构建；
+3. 如果任一启用渠道存在模型映射，请求模型原则上必须精确命中启用映射；
+4. 若所有启用渠道均无映射，系统可使用排序后的首个启用渠道并原样传递模型名；
+5. 一旦进入映射模式，未配置映射的通用渠道不自动成为兜底；
+6. 图片能力不再由映射表承载：`IModelCatalogService.SupportsImage` 先读渠道覆盖 `ChannelModelInfo.CapabilitiesJson.supports_image`，未声明时再读全局 `ModelInfo.CapabilitiesJson`；
+7. 模型映射的请求名、上游名和能力状态必须在日志中可见。
+
+> 旧字段 `SupportsImage`、`ModelInfoId`、`PricingMode`、`PricingPlanId` 已由迁移 `DropChannelModelMappingDeadColumns` 从映射表删除；能力、目录与价格覆盖统一由 `ChannelModelInfo` 承担，禁止回写映射表。
 
 ## 6. 模型目录和价格
 
@@ -198,9 +206,9 @@ erDiagram
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `Scope` | string | 当前主要为 global |
+| `Scope` | string | 当前仅 `global`（`ModelInfoScopes` 只定义 global；渠道级覆盖由 `ChannelModelInfo` 承担） |
 | `ProviderId` | UUID | 供应商 |
-| `ChannelId` | UUID? | 局部作用域时可用 |
+| `ChannelId` | UUID? | 当前创建与导入始终写入 null（渠道级覆盖由 `ChannelModelInfo` 承担） |
 | `ModelKey` | string | 对外模型标识 |
 | `DisplayName` | string | 展示名 |
 | `Description` | string | 描述 |
@@ -210,7 +218,7 @@ erDiagram
 | `CatalogJson` | JSON | Codex/客户端目录字段 |
 | `CapabilitiesJson` | JSON | 图片等能力 |
 | `Enabled` | bool | 删除操作实际通常是停用 |
-| `Source` | string | 官方、默认、用户等 |
+| `Source` | string | `manual` 或 `sync`（`ModelCatalogSources`） |
 
 ### 6.3 ChannelModelInfo
 
@@ -223,7 +231,12 @@ erDiagram
 - 全局模型计划：`ModelInfoId` 非空，`ChannelModelInfoId` 与 `ChannelId` 为空；
 - 渠道模型覆盖计划：`ChannelModelInfoId` 与对应 `ChannelId` 非空，`ModelInfoId` 为空。
 
-当前成本解析不会读取 `ChannelModelMapping.PricingMode/PricingPlanId`，也没有独立的“仅绑定渠道”价格回退层。解析顺序为：先按渠道与请求模型查找启用的 `ChannelModelInfo` 及其计划；请求模型未命中时，仅为迁移前旧行按上游模型精确回退。不存在渠道覆盖时，再按 `exact → prefix → suffix → contains` 查找启用的全局 `ModelInfo` 及其计划。若命中渠道覆盖但覆盖没有有效计划，当前实现直接生成零成本快照，不再回退到全局计划。
+当前成本解析不读取 `ChannelModelMapping`（旧 `PricingMode`/`PricingPlanId` 列已删除），也没有独立的“仅绑定渠道”价格回退层。解析顺序为：
+
+1. 按渠道与请求模型查找启用的 `ChannelModelInfo` 及其计划（渠道覆盖，`FindPlanForChannelModel`）；渠道覆盖未命中计划时继续走全局解析；
+2. 按请求模型（未命中且与上游名不同时再按上游模型）查找启用的全局 `ModelInfo`，匹配顺序为 `exact → prefix → suffix → contains`，再取该模型的全局计划（`FindPlanForModel`），上游模型命中记为 `global_model_match_upstream_fallback`；
+3. 命中渠道覆盖但覆盖没有启用计划时，当前实现回退全局模型计划（`ModelCatalogServiceTests.CalculateCostFallsBackToGlobalPricingWhenChannelModelInfoHasNoPricing` 覆盖该行为），不生成零成本快照；
+4. 只有“无模型/无计划命中”（`model_not_matched`）或“计划存在但没有启用规则”（`pricing_plan_has_no_rules`）时，成本才落为 0，并写入对应 `Resolution` 原因。
 
 每个计划包含多个计费规则，当前计费项包括：
 
@@ -238,7 +251,12 @@ erDiagram
 - `per_million_tokens`：按百万 Token；
 - `tiered_tokens`：按阶梯 Token。
 
-价格规则必须保存币种、单位价格、阶梯 JSON、启用状态和来源，并在请求完成时形成定价快照，避免未来改价重算历史成本。
+峰谷计费由计划和规则共同定义：
+
+- `ModelPricingPlan.TimeZoneId`（IANA 时区 ID，空串表示未启用）与 `ModelPricingPlan.OffPeakWindowsJson`（规范化后的谷段窗口，不跨午夜）；
+- `ModelPricingRule.OffPeakEnabled`、`OffPeakUnitPrice`、`OffPeakTiersJson`；规则未启用峰谷时谷段沿用基础单价与阶梯。
+
+时段判定由 `PricingWindowCalendar.Evaluate` 在每个请求按计费时刻现算（不得缓存时段结果），命中谷段且规则启用时使用谷段单价/阶梯。定价快照必须保存币种、单位价格、阶梯 JSON、启用状态、来源、相位与时段来源（`PricingPhases`/`PricingPhaseSources`），避免未来改价重算历史成本。
 
 ## 7. Web Search 模型
 
@@ -279,7 +297,7 @@ erDiagram
 | `PayloadJson` | 完整搜索结果或客户端调用映射 |
 | `CreatedAt` | 创建时间 |
 
-该表以数据库为唯一真源，不使用 Web Search 专用内存或 Redis 缓存，也不运行后台过期清理。生命周期跟随“清除全部日志”：清除请求日志时必须在同一事务中删除全部续传记录。
+该表以数据库为唯一真源，不使用 Web Search 专用内存或 Redis 缓存，也不运行后台过期清理。`OwnerUserId` 配置了指向 `Users` 的数据库外键并级联删除。生命周期跟随“清除全部日志”：`ObservabilityService.ClearLogs` 在同一显式事务中按序删除续传记录、内容引用、Manifest 分块、请求日志、Manifest 与内容块。
 
 ## 8. 请求日志模型
 
@@ -292,7 +310,7 @@ erDiagram
 | HTTP | `Method`、`Path`、`ClientIp` | 入口信息 |
 | 模型 | `Model`、`UpstreamModel` | 请求/上游模型 |
 | 渠道 | `ChannelId` | 命中渠道 |
-| 类型 | `RequestType` | `main`、`attempt`、`ocr` |
+| 类型 | `RequestType` | `main`、`attempt`、`ocr`、`diagnostic` |
 | 父子 | `ParentRequestLogId` | 主请求与子请求关联 |
 | 会话 | `ConversationKey`、`ConversationTurnId`、`ConversationWindowId`、`PreviousResponseId` | Codex/会话链路 |
 | 流式 | `IsStream`、`TtftMs` | 是否流式和首字延迟 |
@@ -320,6 +338,7 @@ stateDiagram-v2
 - `main`：客户端可见的一次完整请求；
 - `attempt`：主请求选择某个渠道的一次尝试，可有多个；
 - `ocr`：为图片降级生成的内部视觉识别请求；
+- `diagnostic`：管理台渠道测试/模型发现产生的日志，不计入业务统计；
 - 子日志必须通过 `ParentRequestLogId` 可回到主请求；
 - attempt 失败不等于主请求失败，最终状态以主请求为准。
 
@@ -332,7 +351,7 @@ stateDiagram-v2
 | `LogContentManifestChunk` | `ManifestId`、`Ordinal`、`BlockId`、`RawLength` | 按序重组正文 |
 | `RequestLogContentRef` | `RequestLogId`、`Slot`、`ManifestId` | 将请求日志槽位映射到正文 |
 
-当前持久化枚举严格定义 8 个槽位，枚举值属于数据库契约，只能追加：
+当前持久化枚举定义 7 个槽位（`1`–`7`），枚举值属于数据库契约，只能追加：
 
 | 枚举值 | 槽位 | 内容 |
 |---:|---|---|
@@ -363,12 +382,18 @@ stateDiagram-v2
 - User.Username 唯一；
 - AccessApiKey.KeyHash 唯一；
 - Channel 按 Owner + Position、Owner + Priority + Position；
-- ChannelModelInfo 按 Channel + RequestModel 唯一；UpstreamModel 使用普通索引；
-- ModelProvider.Code 唯一；
-- ModelPricing.ModelId 唯一；
-- RequestLog 按创建时间、模型、上游模型、渠道、类型、状态、父 ID、会话字段、路径、状态码、Key、Owner + Id；
+- ChannelModelMapping 按 Channel + Position、Channel + RequestModel、Enabled 建索引；
+- ChannelModelInfo 按 Channel + RequestModel 唯一；Channel + UpstreamModel、ProviderId、Enabled、MatchPattern、MatchType 使用普通索引；
+- ModelProvider.Code 唯一，Enabled、SortOrder 建索引；
+- ModelInfo 按 Scope + ProviderId + ModelKey、Scope + ChannelId + ModelKey、ProviderId、ChannelId、Enabled、MatchPattern、MatchType 建索引；
+- ModelPricingPlan 按 ModelInfoId、ChannelModelInfoId、ChannelId、Enabled 建索引；ModelPricingRule 按 PricingPlanId、BillingItem、Enabled 建索引，`UnitPrice` 与 `OffPeakUnitPrice` precision `(18,8)`；
+- VisionTransferSettings.OwnerUserId 唯一；ProxySettings.Key 唯一；
+- WebSearchContinuationEntries 按 Owner + EntryKey 唯一，并带指向 `Users` 的级联外键；
+- RequestLog 按创建时间、模型、上游模型、渠道、定价模型、定价计划、类型、状态、父 ID、会话字段、路径、状态码、Key、Owner + Id；
 - LogContentBlock.Sha256 唯一；
 - LogContentManifest.Sha256 唯一。
+
+数据库外键当前只覆盖内容寻址日志与 Web Search 续传记录：删除 `RequestLogs` 级联删除 `RequestLogContentRefs`，删除 `LogContentManifests` 级联删除 `LogContentManifestChunks`，`LogContentManifestChunks.BlockId` 与 `RequestLogContentRefs.ManifestId` 为 Restrict，`WebSearchContinuationEntries.OwnerUserId` 为级联。其余业务关系（渠道模型信息、价格计划、视觉转移设置等）没有数据库外键，引用清理依赖服务层：`ChannelService.DeleteChannelAsync` 删除该渠道的 `ChannelModelMappings` 并清理 `VisionTransferSettings` 引用，`UserService.DeleteUser` 批量删除访问 Key、渠道与视觉转移配置；渠道删除不清理 `ChannelModelInfos`/`ModelPricingPlans` 的渠道记录，其去留策略为 `TBD`。
 
 `REQ-DAT-002`（MUST）：所有租户资源查询必须在数据库查询或服务层使用 Owner/User 约束，不能只在前端隐藏记录。
 
@@ -378,23 +403,37 @@ stateDiagram-v2
 
 `REQ-DAT-005`（SHOULD）：凭证和日志正文应支持加密存储或外部密钥管理；当前明文字段和导出能力必须进入安全风险评审。
 
+`REQ-DAT-006`（MUST）：渠道模型映射只承载 `RequestModel → UpstreamModel` 的有序映射；`SupportsImage`、`ModelInfoId`、`PricingMode`、`PricingPlanId` 已由迁移 `DropChannelModelMappingDeadColumns` 删除，能力、目录与价格覆盖统一由 `ChannelModelInfo`/`ModelInfo` 承担，禁止回写映射表。
+
+`REQ-DAT-007`（MUST）：成本解析必须先按渠道与请求模型命中 `ChannelModelInfo` 覆盖；命中覆盖但不存在启用价格计划时必须回退全局 `ModelInfo` 计划，不得静默生成零成本快照；只有“无模型/无计划命中”或“计划无启用规则”才允许零成本，并必须保留 `Resolution` 原因供账单解释。
+
+`REQ-DAT-008`（MUST）：峰谷计费由 `ModelPricingPlan.TimeZoneId`/`OffPeakWindowsJson` 与 `ModelPricingRule.OffPeakEnabled`/`OffPeakUnitPrice`/`OffPeakTiersJson` 定义；时段必须按每请求的计费时刻现算（不得缓存时段结果），并把相位与时段来源写入定价快照。
+
+`REQ-DAT-009`（MUST）：Web Search 跨请求续传以 `WebSearchContinuationEntries` 为唯一真源，`OwnerUserId` 通过数据库外键级联删除；清空全部日志必须在同一事务内删除续传记录与内容寻址日志六类表，`ObservabilityService.ClearLogs` 已按该契约实现。
+
+`REQ-DAT-010`（MUST）：`VisionTransferSettings` 每个 owner 最多一行且 `PrimaryChannelId`/`PrimaryModel` 必填、兜底两列同时为空或同时非空（服务层不变式）；`ProxySetting` 以 `Key` 唯一存储全局开关；删除用户或渠道时必须清理相关视觉转移配置。
+
 ## 10. 数据生命周期
 
 ### 10.1 用户删除
 
-必须定义以下对象如何处理：
+当前实现（HTTP 入口 `UsersController.DeleteUser` 要求超级管理员；`UserService.DeleteUser` 额外禁止删除当前用户）：
 
-- 访问 Key：默认撤销后删除；
-- 渠道：停止路由并删除或转移；
-- 渠道模型映射：随渠道处理；
-- 日志元数据：保留、匿名化或删除（`TBD`）；
-- 日志正文引用：级联删除引用，保留仍被使用的共享内容；
-- 定价快照：历史统计若保留，则随日志保留；
+- 访问 Key：按 owner 批量 `ExecuteDelete`；
+- 渠道：按 owner 批量删除，但该路径不顺带清理渠道的 `ChannelModelMappings`、`ChannelModelInfos` 与 `ModelPricingPlans`；
+- 视觉转移设置：按 owner 批量删除；
+- Web Search 续传记录：由 `Users` 外键级联删除；
+- 请求日志元数据与正文引用：当前不清理，历史统计继续可查；
 - 会话 Cookie：用户被删除后立即失效。
+
+仍待定义（`TBD`）：
+
+- 日志元数据（可识别信息）的保留、匿名化或删除；
+- 用户删除后遗留的渠道级模型信息与价格计划去留策略。
 
 ### 10.2 日志清理
 
-当前提供超级管理员清空日志的入口，但没有产品化保留期。正式规则至少需要定义：
+当前提供超级管理员清空日志的入口（`ObservabilityService.ClearLogs` 在同一显式事务中原子清理 Web Search 续传记录、内容引用、Manifest 分块、请求日志、Manifest 与内容块），但没有产品化保留期。正式规则至少需要定义：
 
 - 元数据和正文是否同一保留期；
 - 是否支持按时间、用户、容量清理；
@@ -430,12 +469,14 @@ stateDiagram-v2
 
 | 模型区域 | 源码 |
 |---|---|
-| 用户、Key、渠道 | `opencodex_proxy/src/Libraries/OpenCodex.Domain/Domain/` |
-| 模型和价格 | `ModelInfo.cs`、`ModelPricingPlan.cs`、`ModelPricingRule.cs`、`ModelCatalogService.cs`、`ModelPricingService.cs` |
+| 用户、Key、渠道 | `opencodex_proxy/src/Libraries/OpenCodex.Domain/Domain/`、`OpenCodex.Core/Services/UserService.cs`、`ChannelService.cs` |
+| 模型和价格 | `ModelInfo.cs`、`ChannelModelInfo.cs`、`ModelPricingPlan.cs`、`ModelPricingRule.cs`、`ModelCatalogService.cs`、`ModelCatalogSyncService.cs` |
+| 视觉转移与代理设置 | `VisionTransferSettings.cs`、`ProxySetting.cs`、`VisionTransferSettingsService.cs`、`ProxySettingsService.cs` |
+| Web Search | `WebSearchSettings.cs`、`TavilyKey.cs`、`WebSearchContinuationEntry.cs`、`WebSearchContinuationStore.cs` |
 | 日志实体 | `RequestLog.cs`、`LogContent.cs` |
 | EF 模型 | `opencodex_proxy/src/Libraries/OpenCodex.Data/OpenCodexDbContextBase.cs` |
 | 迁移 | `opencodex_proxy/src/Libraries/OpenCodex.Data/Migrations/` |
 | 内容编码 | `OpenCodex.Core/Services/Proxy/LogContentCodec.cs` |
 | 内容存储 | `OpenCodex.Core/Services/Proxy/LogContentStore.cs` |
-| 日志写入 | `OpenCodex.Core/Services/Proxy/ProxyLogService.cs` |
-| 相关测试 | `LogContentCodecTests.cs`、`LogContentStoreTests.cs`、`ObservabilityServiceTests.cs`、`ModelPricingServiceTests.cs`、`ModelCatalogServiceTests.cs` |
+| 日志写入与清理 | `OpenCodex.Core/Services/Proxy/ProxyLogService.cs`、`OpenCodex.Core/Services/ObservabilityService.cs`、`OpenCodex.Core/Services/LogMaintenance/StreamLineLogCleanupService.cs` |
+| 相关测试 | `LogContentCodecTests.cs`、`LogContentStoreTests.cs`、`ObservabilityServiceTests.cs`、`ModelCatalogServiceTests.cs`、`VisionTransferSettingsServiceTests.cs`、`ProxySettingsServiceTests.cs`、`WebSearchContinuationStoreTests.cs` |

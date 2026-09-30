@@ -8,8 +8,9 @@
 | 需求编号前缀 | `REQ-AUTH` |
 | 文档状态 | Draft，基于当前代码反向梳理并补齐产品化要求 |
 | 版本 | 1.0 |
-| 代码基线 | `main@3827590` |
+| 代码基线 | `main@235da3f4` |
 | 编写日期 | 2026-08-17 |
+| 最后核对日期 | 2026-09-30 |
 | 适用端 | Web 管理台、Tauri 桌面端、管理 API |
 | 主要读者 | 产品、交互/UI、前端、后端、安全、测试、运维 |
 | 关联文档 | [02 用户与权限](./02-users-and-permissions.md)、[03 系统边界](./03-system-boundary.md)、[10 管理台](./10-admin-console.md)、[12 配置](./12-configuration.md) |
@@ -39,13 +40,13 @@ OpenCodex 同时支持服务端部署和 Tauri 桌面部署。一个全新实例
 
 1. 判断实例是否允许首次初始化；
 2. 创建第一个可登录的超级管理员；
-3. 确定后端监听范围、端口和 Probe 拦截设置，并在桌面端需要时重启后端。
+3. 确定后端监听范围、端口，并在桌面端需要时重启后端。
 
 初始化完成后，管理台还必须稳定处理登录、会话恢复、Cookie 续期、退出、用户停用或删除后的会话失效，以及浏览器刷新、后端重启和多实例部署时的票据验证。
 
 当前代码已经形成了可工作的主链路，但仍存在以下产品化问题：
 
-- 首次初始化写用户与写系统设置不在同一事务内，后半段失败可能留下“已有用户但设置未保存”的半初始化状态；
+- 首次初始化按“创建用户、保存桌面监听设置、同步模型目录、签发 Cookie”顺序执行，不在同一事务内；模型同步失败被吞掉并随响应报告，Cookie 签发失败可能留下已初始化但未建立会话的状态；
 - 用户名和密码只做“去首尾空格后非空”校验，没有长度、字符集、弱密码和泄漏密码规则；
 - 登录没有速率限制、失败锁定、验证码或风险检测；
 - Cookie 虽持久化并支持滑动续期，但没有会话版本、安全戳或服务端会话清单；密码重置后旧 Cookie 仍可能继续有效；
@@ -53,7 +54,7 @@ OpenCodex 同时支持服务端部署和 Tauri 桌面部署。一个全新实例
 - 没有 Vue Router，登录后无法可靠恢复原访问页面或浏览器历史；
 - Cookie 使用 `SecurePolicy=SameAsRequest`，在 HTTP 或局域网模式下不会携带 `Secure`；
 - 缺少显式 CSRF 令牌和统一的认证安全审计；
-- Tauri 的 Rust 设置结构不包含 `intercept_probe_requests`，重启时可能把该字段从设置文件中移除并恢复为 `false`。
+- 桌面设置文件由 C# 只写 `access_mode`、`bind_host`、`port`，Rust 结构仍要求 `intercept_probe_requests`；C# 保存后 Rust 再次读取时会因缺少必填字段反序列化失败并回退默认值，且 Rust 注入的 `OPENCODEX_INTERCEPT_PROBE_REQUESTS` 在 .NET 代码中没有消费者。
 
 本文定义从应用启动到会话终止的完整产品契约。
 
@@ -105,7 +106,7 @@ OpenCodex 同时支持服务端部署和 Tauri 桌面部署。一个全新实例
 | 身份域 | 凭证 | 使用入口 | 当前用途 | 本文要求 |
 |---|---|---|---|---|
 | 管理台身份 | Cookie `opencodex_admin_auth` | `/session`、用户、渠道、日志、配置等管理 API | 浏览器中的人机管理身份 | 仅管理 API 接受；每次敏感请求回查用户状态 |
-| 代理访问身份 | `Authorization: Bearer ocx_...` | `/v1/*` 兼容接口 | CLI/SDK/应用调用代理 | 不得登录管理台，不得替代 Cookie |
+| 代理访问身份 | `Authorization: Bearer <Access API Key>` | `/v1/*` 及根路径兼容接口 | CLI/SDK/应用调用代理 | 不得登录管理台，不得替代 Cookie |
 | 上游身份 | 渠道 API Key/Headers | OpenCodex 到模型供应商 | 上游请求认证 | 不得出现在管理台会话和认证日志中 |
 
 ### 3.2 角色与认证能力
@@ -119,11 +120,28 @@ OpenCodex 同时支持服务端部署和 Tauri 桌面部署。一个全新实例
 
 ### 3.3 当前服务端权限机制
 
-- `/setup/status`、`/setup`、`/login`、`/session`、`/logout` 位于 `AuthController`，不依赖 `[Authorize]` 特性。
+- `/setup/status`、`/setup` 位于 `SetupController`；`/login`、`/session`、`/logout` 位于 `SessionController`，均不依赖 `[Authorize]` 特性。
 - 其他管理控制器通过 `IWorkContext.RequireUser()` 或 `RequireSuperadmin()` 执行服务端最终鉴权。
 - Cookie 内含用户 ID、用户名、角色和 enabled Claim。
 - 受保护请求不会只信任 Cookie Claim；`SessionService` 会按用户 ID 回查用户表，并拒绝不存在或已停用的用户。
 - 角色由回查后的数据库值返回，因此后端权限判定可感知角色变更。
+
+### 3.4 代理 Bearer API Key 解析与校验顺序
+
+- `ProxyBearerAuthenticationHandler` 只处理 `Authorization` 头；头不存在、不是 `Bearer ` 前缀，或 token 去空格后为空时返回 `NoResult`，最终由授权中间件返回 401。
+- Bearer 前缀使用 `OrdinalIgnoreCase`，因此 `Bearer`/`bearer` 等大小写均可；前缀后必须有一个空格，额外空格会被 `Trim()` 去掉。
+- 当前没有 `ocx_` 前缀格式校验。`ocx_` 只是 `OpenCodexSecurity.GenerateAccessApiKey` 的生成约定；任何非空 token 都会计算 SHA-256 并查库，格式错误最终表现为未认证。
+- `ProxyAccessService.AuthenticateRawKeyAsync` 是 async 入口：先查 `auth:apikey:<SHA256>`，再查 `auth:user:<ownerUserId>`，缓存未命中才访问数据库；Key 不存在或停用、owner 不存在或停用均返回 `null`。
+- 认证成功后，处理器只把 Key ID、owner 用户 ID、owner 用户名和角色写入 Claims；下游通过 `IProxyIdentityContext.RequireIdentity()` 读取，不再重复解析 Bearer。
+- `ProxyLogService` 在请求作用域内用字典记忆 owner 用户名到用户 ID 的解析结果，空 GUID 不写入该请求内记忆。
+
+### 3.5 鉴权缓存与失效
+
+- 逻辑键固定为 `auth:apikey:<SHA256>` 和 `auth:user:<用户ID>`，TTL 均为 60 秒。
+- `TwoLevelCacheService` 使用进程内 L1 加 Redis L2；Redis 连接为空或不可用时自动降级为纯 L1。
+- 回源结果为 null 时不写 L1/L2，也不做负缓存。
+- `RemoveAsync` 删除本地 L1、Redis L2，并通过 `<RedisPrefix>:cache-invalidation` 广播其他实例删除各自 L1。
+- Key 启停、删除、导入更新失效新旧 hash；用户启停、删除失效用户键。密码重置只影响管理台登录，不失效代理鉴权缓存。
 
 ---
 
@@ -186,7 +204,7 @@ setup_required = (用户表中没有任何用户) AND (未配置环境变量超�
 | `setup_required` | boolean | 是否允许并要求首次初始化 |
 | `has_users` | boolean | 用户表是否至少存在一条用户记录，不区分启停或角色 |
 | `environment_superadmin_configured` | boolean | 运行配置中的管理员密码是否非空 |
-| `system_settings` | object | 当前监听设置，包括访问模式、绑定地址、端口、桌面托管、重启标识、Probe 拦截等 |
+| `system_settings` | object | 当前监听设置：`access_mode`、`bind_host`、`port`、`managed_by_desktop`、`restart_required`、`admin_url` |
 
 ### 5.3 判定矩阵
 
@@ -219,8 +237,7 @@ setup_required = (用户表中没有任何用户) AND (未配置环境变量超�
 5. 访问范围；
 6. LAN 风险提示；
 7. 后端端口；
-8. 拦截探测请求开关；
-9. 完成初始化按钮。
+8. 完成初始化按钮。
 
 ### 6.2 字段定义
 
@@ -230,7 +247,9 @@ setup_required = (用户表中没有任何用户) AND (未配置环境变量超�
 | `password` | 密码输入，可显隐 | 空 | 无显式 rule；Enter 可提交 | Trim 后非空；保存安全哈希 | 强度、最小长度、泄漏密码与确认输入策略明确 |
 | `access_mode` | 分段选择 | 设置值，否则 `localhost` | `localhost`/`lan` | 兼容 `local`/`network`，最终归一化 | UI 只提交规范值 |
 | `port` | 数字输入 | 设置值，否则 `18080` | 1024–65535，步长 1 | 1024–65535 | 校验端口占用并给出可恢复错误 |
-| `intercept_probe_requests` | 开关 | 设置值，否则 false | boolean | 缺失时沿用当前值 | 文案解释对 Probe 请求的影响 |
+
+`intercept_probe_requests` 不在 `/setup` 请求或 `SystemSettingsUpdateRequest` 中。它在登录后通过 `/system-settings/proxy-settings` 写入 `ProxySettings` 表；桌面 Rust 仍向 sidecar 注入 `OPENCODEX_INTERCEPT_PROBE_REQUESTS`，但 .NET 当前没有读取该环境变量。
+
 
 ### 6.3 密码当前事实
 
@@ -267,10 +286,11 @@ setup_required = (用户表中没有任何用户) AND (未配置环境变量超�
 ```mermaid
 sequenceDiagram
     participant UI as Setup.vue
-    participant API as AuthController
+    participant API as SetupController
     participant Store as DesktopSystemSettingsStore
     participant Auth as AuthService
     participant DB as User Repository
+    participant Catalog as Model Catalog Sync
     participant Cookie as Cookie Authentication
 
     UI->>API: POST /setup {username,password,system_settings}
@@ -288,30 +308,34 @@ sequenceDiagram
             Auth->>DB: 插入 enabled superadmin
             Auth-->>API: SessionResponse
             API->>Store: Save(settings)
+            API->>Catalog: SyncAsync(incremental, dryRun=false)
+            Catalog-->>API: completed/failed
             API->>Cookie: SignIn persistent cookie
-            API-->>UI: 201 {session,system_settings}
+            API-->>UI: 201 {session,system_settings,model_catalog_sync}
         end
     end
 ```
 
 ### 7.2 当前实现事实
 
-- 系统设置先归一化，后创建用户，可避免明显非法设置先写用户。
+- `SetupControllerService.SetupAsync` 先归一化系统设置，再调用 `AuthService.Initialize` 创建用户，然后保存桌面监听设置。
 - `AuthService.Initialize` 在插入前两次检查 setup/用户表。
 - 创建用户时角色固定 `superadmin`、状态固定 enabled。
+- 设置保存后调用模型目录增量同步；同步失败只记录 warning 并返回 `model_catalog_sync.status=failed`，不回滚用户或设置。
 - 重复初始化返回 HTTP 409，message 为 `setup is not available`。
-- 设置保存成功后才签发 Cookie，接口成功状态为 201。
-- 当前测试覆盖首次创建成功和第二次调用返回 409。
+- 模型目录同步结束后才签发 Cookie，接口成功状态为 201。
+- 当前测试覆盖首次创建成功、模型同步失败仍成功、第二次调用返回 409。
 
 ### 7.3 已知原子性问题
 
-用户写入数据库、设置文件写入和 Cookie 签发不在同一原子事务中：
+用户写入数据库、设置文件写入、模型目录同步和 Cookie 签发不在同一原子事务中：
 
-1. 用户已插入后，若设置文件写入失败，接口会异常失败；
-2. 后续 `/setup/status` 因已有用户而返回不再需要 setup；
-3. 用户可能仍可用提交的账号登录，但用户会认为初始化失败；
-4. 并发请求仍可能同时通过“无用户”检查，最终行为依赖数据库约束和异常处理；
-5. 当前没有持久化的 `installation_initialized` 标志或 setup 锁。
+1. 用户已插入后，若设置文件写入抛错，接口异常失败，但用户记录仍在；
+2. 后续 `/setup/status` 因已有用户而返回不再需要 setup，用户只能尝试用已提交账号登录；
+3. 模型目录同步失败已被转换为成功响应中的 `model_catalog_sync.status=failed`，不会回滚用户或设置；
+4. Cookie 签发发生在用户、设置和模型同步之后；若签发失败，接口失败但初始化状态已不可回退；
+5. 并发请求仍可能同时通过“无用户”检查，最终行为依赖数据库约束和异常处理；
+6. 当前没有持久化的 `installation_initialized` 标志或 setup 锁。
 
 ### 7.4 产品化恢复原则
 
@@ -350,8 +374,12 @@ sequenceDiagram
       "port": 18080,
       "managed_by_desktop": true,
       "restart_required": false,
-      "intercept_probe_requests": false,
       "admin_url": "http://127.0.0.1:18080/admin/"
+    },
+    "model_catalog_sync": {
+      "status": "completed",
+      "result": { "models": { "created": 1 } },
+      "error": null
     }
   }
 }
@@ -366,6 +394,7 @@ sequenceDiagram
 - 直接用响应中的 `session` 设置认证用户。
 - `activeTab` 设为 `dashboard`。
 - 管理台不额外调用一次 `/login`。
+- 若 `model_catalog_sync.status=completed`，显示同步模型数；若为 `failed`，提示初始化已完成但模型目录同步失败，可稍后重试。
 
 ### 8.3 Tauri 需要重启
 
@@ -374,8 +403,8 @@ sequenceDiagram
 1. 前端动态导入 `@tauri-apps/api/core`；
 2. 调用 `invoke("restart_backend")`；
 3. Rust 侧停止当前 sidecar；
-4. 从桌面设置文件重新加载访问模式和端口；
-5. 用新 `ASPNETCORE_URLS` 启动 sidecar；
+4. 从 app config dir 的 `desktop-settings.json` 重新加载 `access_mode`、`bind_host`、`port` 和 `intercept_probe_requests`；
+5. 用新 `ASPNETCORE_URLS` 启动 sidecar，并注入 SQLite 路径、Data Protection keys、OCR 缓存目录和 `OPENCODEX_INTERCEPT_PROBE_REQUESTS`；
 6. 最多等待 15 秒，按 `127.0.0.1:newPort` 探测端口；
 7. 返回 `http://127.0.0.1:<port>/admin/`；
 8. 页面用 `window.location.href` 导航到新地址。
@@ -384,7 +413,9 @@ sequenceDiagram
 
 - 后端重启会造成短暂不可用。
 - 管理台 origin 的端口发生变化后，旧 origin 的 Cookie 不一定能无缝作用于新 origin；Cookie 不按端口隔离，但 host、scheme、path 和浏览器策略仍需验证。
-- Rust `DesktopSettings` 当前只有 `access_mode`、`bind_host`、`port`；C# 文件中的 `intercept_probe_requests` 会在 Rust 读取并重写时丢失。
+- Rust `DesktopSettings` 包含 `access_mode`、`bind_host`、`port`、`intercept_probe_requests`；C# `DesktopSystemSettingsStore` 只持久化前三个，测试明确断言文件不写 `intercept_probe_requests`。
+- C# 运行时的探测请求拦截读取 `ProxySettings` 表的 `intercept_probe_requests`，由 `/system-settings/proxy-settings` 管理；Rust 注入的同名环境变量在 .NET 代码中没有消费者。
+- C# 保存 `desktop-settings.json` 后不会写 `intercept_probe_requests`。Rust 反序列化该文件没有默认值兜底；文件被 C# 重写后，Rust 再次读取会反序列化失败并回退 `DesktopSettings::default()`，四个字段都会恢复默认。
 - `wait_for_backend` 只验证 TCP 端口可连接，不验证数据库迁移、管理台静态文件或 `/session` 可用。
 - 重启失败后初始化账号可能已经创建，用户不应被引导重复 setup。
 
@@ -539,7 +570,7 @@ sequenceDiagram
 4. 同一用户数据源或一致用户状态；
 5. 时间同步。
 
-当前默认文件系统 key ring 更适合单实例；多实例共享路径、密钥轮换和并发写入策略需部署规范明确。
+当前默认文件系统 key ring 更适合单实例；多实例共享路径、密钥轮换和并发写入策略需部署规范明确。代理鉴权缓存可使用 Redis 做 L2 和失效广播，但 Redis 不能替代共享 Data Protection key ring 来解密管理台 Cookie。
 
 ---
 
@@ -740,8 +771,8 @@ sequenceDiagram
 1. `access_mode` 仅接受 `localhost` 或 `lan`。
 2. port 只接受整数 1024–65535。
 3. 端口被占用时返回可理解且可恢复的错误。
-4. `intercept_probe_requests` 必须按 boolean 保存并在重启后保持。
-5. 服务端拒绝非法值，不能只依赖 UI 控件边界。
+4. 服务端拒绝非法值，不能只依赖 UI 控件边界。
+
 
 #### REQ-AUTH-008（MUST）LAN 风险确认
 
@@ -781,10 +812,10 @@ sequenceDiagram
 #### REQ-AUTH-012（MUST）桌面设置字段无损持久化
 
 **验收标准**：
-1. Rust 与 C# 对同一设置文件采用兼容 schema。
-2. Rust 读取并重写文件后不丢失 `intercept_probe_requests` 或未来未知字段。
-3. 设置为 true 后连续重启两次仍为 true。
-4. 增加跨 Rust/C# 的设置往返自动化测试。
+1. C# 初始化设置只定义 `access_mode`、`bind_host`、`port`；Rust 必须能读取包含或不包含 `intercept_probe_requests` 的同一份文件。
+2. C# 保存设置后再次由 Rust 读取，不得因缺字段回退默认并覆盖监听设置或端口。
+3. `intercept_probe_requests` 的运行时事实源必须唯一：当前代码事实源为 `ProxySettings` 表，Rust 环境变量要么被消费，要么删除。
+4. 增加跨 Rust/C# 的设置往返自动化测试，覆盖字段存在和缺失两种文件。
 
 #### REQ-AUTH-013（SHOULD）重启使用应用就绪检查
 
@@ -987,6 +1018,40 @@ sequenceDiagram
 3. 两套认证失败消息和审计类型可区分。
 4. 自动化测试覆盖两种交叉使用均失败。
 
+
+### 15.9 补充需求
+
+#### REQ-AUTH-037（MUST）Bearer API Key 解析与校验顺序
+
+**要求**：代理入口必须以稳定、可测试的顺序解析 `Authorization`，不得把管理台 Cookie 当作 Bearer，也不得把格式校验隐式混入数据库查询。
+
+**验收标准**：
+1. `Bearer` 前缀大小写不敏感；空 token、缺少空格或非 Bearer 头返回 401。
+2. `ocx_` 前缀是生成约定；若不作为硬校验，必须在文档和测试中明确“非 `ocx_` token 会进入哈希查找并由未命中返回 401”。
+3. 校验顺序固定为 Key 缓存、Key 状态、owner 缓存、owner 状态。
+4. 成功认证后只通过 `IProxyIdentityContext` 读取 Key ID、owner ID、owner 用户名和角色。
+
+#### REQ-AUTH-038（MUST）鉴权缓存一致性与失效传播
+
+**要求**：`auth:apikey:<SHA256>` 与 `auth:user:<id>` 必须保持可验证的命中、空结果和失效语义。
+
+**验收标准**：
+1. 两层缓存 TTL 均为 60 秒；缓存未命中才回源数据库。
+2. null/未认证结果不得写入 L1 或 L2。
+3. Key 启停、删除、导入更新必须失效新旧 hash；用户启停、删除必须失效用户键。
+4. Redis 可用时失效必须广播到其他实例；Redis 不可用时文档明确跨实例只能等待 TTL。
+5. `LastUsedAt` 的持久化节奏必须与测试契约一致，不得把鉴权 DTO 的当前时间误称为每次调用已落库。
+
+#### REQ-AUTH-039（MUST）桌面设置注入与重启边界
+
+**要求**：桌面设置文件、sidecar 环境变量和数据库代理设置必须各自只有一个事实源，重启后不得互相覆盖。
+
+**验收标准**：
+1. C# 保存的桌面监听字段只有 `access_mode`、`bind_host`、`port`，Rust 读取时不因缺少旧字段回退默认。
+2. Rust 重启时从同一设置文件启动 sidecar，并保留 SQLite、Data Protection keys、OCR 和监听注入。
+3. `intercept_probe_requests` 的运行时开关以 `ProxySettings` 表为准；未消费的 `OPENCODEX_INTERCEPT_PROBE_REQUESTS` 不得被描述为已生效。
+4. 重启完成后导航到 Rust 返回的 `admin_url`，并重新执行 `/session` 判定。
+
 ---
 
 ## 16. 接口与数据依赖
@@ -996,7 +1061,7 @@ sequenceDiagram
 | 方法 | 路径 | 是否需登录 | 请求 | 成功响应 | 主要失败 |
 |---|---|---:|---|---|---|
 | GET | `/setup/status` | 否 | 无 | setup flags + system settings | 5xx/配置读取失败 |
-| POST | `/setup` | 否，但仅 setup 可用 | JSON：username/password/system_settings | 201 + session + settings + Set-Cookie | 400、409、5xx |
+| POST | `/setup` | 否，但仅 setup 可用 | JSON：username/password/system_settings | 201 + session + settings + model_catalog_sync + Set-Cookie | 400、409、5xx |
 | GET | `/session` | 否 | Cookie可选 | 200 + authenticated/user | 典型未登录仍为200 |
 | POST | `/login` | 否 | form-urlencoded username/password | 200 + session + Set-Cookie | 401、未来429 |
 | POST | `/logout` | 否/幂等 | 当前前端发送 `{}` | 200 + logged-out session + 删除 Cookie | 网络/5xx |
@@ -1008,7 +1073,7 @@ sequenceDiagram
 | access_mode | setup 或系统设置页 | desktop settings JSON | 决定绑定 localhost/LAN，可能需要重启 |
 | bind_host | access_mode 派生 | desktop settings JSON | `127.0.0.1` 或 `0.0.0.0` |
 | port | setup 或系统设置页 | desktop settings JSON | 改变 Tauri 管理台 origin |
-| intercept_probe_requests | setup 或系统设置页 | desktop settings JSON | 当前存在 Rust 重写丢失问题 |
+| proxy `intercept_probe_requests` | 登录后的系统设置页 | `ProxySettings` 数据库键值 | 控制器读取后立即生效；不属于 `/setup` 或桌面监听设置 |
 | managed_by_desktop | 是否设置桌面 settings path | 响应派生 | 决定是否具备桌面托管语义 |
 | restart_required | 新旧监听设置比较 | 响应派生 | 指导 Tauri 调用重启 |
 
@@ -1016,7 +1081,7 @@ sequenceDiagram
 
 - `User.Id`：Cookie user ID Claim和数据库回查键。
 - `User.Username`：登录查找、显示和环境管理员同步键。
-- `User.PasswordHash`：密码校验，不得返回前端。
+- `User.PasswordHash`：PBKDF2-SHA256、随机盐、200,000 次迭代；不得返回前端。
 - `User.Role`：`superadmin` 或 `user`。
 - `User.Enabled`：登录与会话最终有效性。
 - 当前没有 `SecurityStamp`、`SessionVersion`、`PasswordChangedAt` 或 session实体。
@@ -1031,6 +1096,9 @@ sequenceDiagram
 | `OPENCODEX_DATA_PROTECTION_KEYS_PATH` | Cookie加密/签名密钥目录 | 需持久、备份、权限控制 |
 | `OPENCODEX_SECRET_KEY` | 派生 Application Name | 默认值不适合生产 |
 | `OPENCODEX_DESKTOP_SETTINGS_PATH` | 桌面设置文件路径和托管判定 | Tauri 自动设置 |
+| `OPENCODEX_DB_PROVIDER` | `sqlite` 或 `postgres` | Tauri 固定注入 `sqlite`；服务端部署需与迁移匹配 |
+| `OPENCODEX_REDIS_CONNECTION` | 鉴权/路由/定价 L2 与跨实例共享状态 | 未配置时降级为纯进程内，跨实例鉴权失效只能等待 TTL |
+| `OPENCODEX_INTERCEPT_PROBE_REQUESTS` | Rust sidecar 注入 | 当前 .NET 代码没有消费者，运行时开关仍来自 `ProxySettings` 表 |
 
 ---
 
@@ -1047,11 +1115,16 @@ sequenceDiagram
 7. `/session` 会回查用户；停用或删除用户后会清除无效会话。
 8. Tauri 可通过 command 重启后端并导航到新端口。
 9. 管理台 Cookie 与 `/v1/*` Bearer身份相互独立。
+10. 代理认证由 `ProxyBearerAuthenticationHandler` 完成，业务层通过 `IProxyIdentityContext.RequireIdentity()` 读取身份。
+11. 代理鉴权缓存键为 `auth:apikey:<SHA256>`、`auth:user:<用户ID>`，TTL 60 秒；L1 为进程内缓存，L2 Redis 可选，空结果不缓存，失效带跨实例广播。
+12. `LastUsedAt` 只在 Key 缓存回源数据库时更新；缓存命中期间不会重复写库。
+13. 数据库 provider 支持 `sqlite` 与 `postgres`，默认 `sqlite`；Redis 未配置时鉴权只使用进程内 L1。
+14. setup 会执行模型目录增量同步；同步失败不回滚初始化，响应返回 `model_catalog_sync.status=failed`。
 
 ### 17.2 已知限制
 
-1. setup 的用户写入、设置文件写入和 Cookie签发不原子。
-2. setup 并发唯一性没有专门测试或锁。
+1. setup 的用户写入、设置文件写入、模型目录同步和 Cookie 签发不原子。
+2. setup 并发唯一性没有专门测试或锁，模型同步失败虽然可恢复但会增加半初始化排查成本。
 3. 用户名/密码缺少产品级格式和强度校验，且密码首尾空格被 Trim。
 4. 登录没有限流、锁定、风险检测或 MFA。
 5. Cookie 在 HTTP 下不带 Secure；LAN 模式默认仍是明文 HTTP。
@@ -1061,10 +1134,13 @@ sequenceDiagram
 9. 前端没有全局401/403处理，API helper不保留 HTTP status。
 10. 没有 Vue Router，登录后无法稳定恢复深链。
 11. 没有显式 CSRF token。
-12. Tauri Rust设置 schema 会丢失 `intercept_probe_requests`。
-13. Tauri 重启只进行 TCP 就绪检查。
-14. `/setup/status` 公开返回系统监听信息。
-15. 所有用户都停用时不会自动重新开放 setup，可能形成管理锁死。
+12. C# 桌面设置不写 `intercept_probe_requests`，Rust 结构却要求该字段；C# 重写文件后 Rust 读取会因缺少必填字段失败，并回退默认设置。
+13. Rust 注入的 `OPENCODEX_INTERCEPT_PROBE_REQUESTS` 在 .NET 代码中没有消费者；运行时开关实际来自 `ProxySettings` 表。
+14. Tauri 重启只进行 TCP 就绪检查。
+15. `/setup/status` 公开返回系统监听信息。
+16. 所有用户都停用时不会自动重新开放 setup，可能形成管理锁死。
+17. Redis 未配置时，用户停用/删除后的代理鉴权失效无法跨实例广播，其他实例只能等待 60 秒 TTL。
+18. 管理台 Cookie 没有安全戳；用户停用期间若无请求，重新启用后旧 Cookie 可再次生效。
 
 ### 17.3 TBD
 
@@ -1082,6 +1158,7 @@ sequenceDiagram
 | TBD-AUTH-010 | `/setup/status` 公开字段最小集 | 建议未认证仅返回分流必需字段 | 安全+产品 |
 | TBD-AUTH-011 | 多实例 key ring存储 | 共享卷、Redis/Blob或外部密钥服务 | 架构+运维 |
 | TBD-AUTH-012 | MFA/SSO版本计划 | 超出当前版本，保留扩展点 | 产品+安全 |
+| TBD-AUTH-013 | 桌面 `desktop-settings.json` 与 `OPENCODEX_INTERCEPT_PROBE_REQUESTS` 的所有权 | 监听设置由 C#/Rust 共享；探针开关只以 `ProxySettings` 表为运行时事实源，删除未消费环境变量或在 Rust 反序列化补默认值 | 桌面+架构+安全 |
 
 ---
 
@@ -1106,14 +1183,21 @@ sequenceDiagram
 
 ### 18.2 后端源码
 
-- `opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/AuthController.cs`
-- `opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/SessionState.cs`
+- `opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/SetupController.cs`
+- `opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/SessionController.cs`
+- `opencodex_proxy/src/Presentation/OpenCodex.Api/Services/SetupControllerService.cs`
+- `opencodex_proxy/src/Presentation/OpenCodex.Api/Services/SessionControllerService.cs`
+- `opencodex_proxy/src/Presentation/OpenCodex.Api/Authentication/ProxyBearerAuthenticationHandler.cs`
+- `opencodex_proxy/src/Presentation/OpenCodex.Api/Infrastructure/WebProxyIdentityContext.cs`
 - `opencodex_proxy/src/Presentation/OpenCodex.Api/Infrastructure/WebWorkContext.cs`
 - `opencodex_proxy/src/Presentation/OpenCodex.Api/Hosting/OpenCodexServiceCollectionExtensions.cs`
 - `opencodex_proxy/src/Presentation/OpenCodex.Api/Hosting/OpenCodexApplicationBuilderExtensions.cs`
 - `opencodex_proxy/src/Presentation/OpenCodex.Api/Configuration/DesktopSystemSettingsStore.cs`
 - `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/AuthService.cs`
 - `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/SessionService.cs`
+- `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/ProxyAccessService.cs`
+- `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Caching/TwoLevelCacheService.cs`
+- `opencodex_proxy/src/Libraries/OpenCodex.CoreBase/Caching/CacheKeys.cs`
 - `opencodex_proxy/src/Libraries/OpenCodex.CoreBase/DTOs/Auth/SetupRequests.cs`
 - `opencodex_proxy/src/Libraries/OpenCodex.CoreBase/DTOs/Auth/SetupResponses.cs`
 - `opencodex_proxy/src/Libraries/OpenCodex.CoreBase/DTOs/Auth/AuthResponses.cs`
@@ -1132,7 +1216,14 @@ sequenceDiagram
   - setup 创建超级管理员。
   - 重复 setup 返回 Conflict。
   - setup 后可用新账号登录。
-- `opencodex_proxy/tests/OpenCodex.Api.Tests/RouteTests.cs:825-869`
+  - 模型目录同步失败时初始化仍成功，并返回 `model_catalog_sync.status=failed`。
+- `opencodex_proxy/tests/OpenCodex.Api.Tests/ProxyAuthenticationPipelineTests.cs`
+  - Bearer 头、空 token、未知/停用 Key 和管理台 Cookie 交叉认证边界。
+- `opencodex_proxy/tests/OpenCodex.Api.Tests/DesktopSystemSettingsStoreTests.cs`
+  - 监听设置 round-trip，且 C# 写文件不含 `intercept_probe_requests`。
+- `opencodex_proxy/tests/OpenCodex.Api.Tests/ProxySettingsServiceTests.cs`
+  - 探测请求拦截位于 `ProxySettings` 键值存储。
+- `opencodex_proxy/tests/OpenCodex.Api.Tests/RouteTests.cs` 的 `LoginCookieRemainsValidAfterApplicationRestart`
   - 登录 Cookie包含持久化过期属性。
   - 数据库和 key ring路径不变时，应用重启后 Cookie仍有效。
 - 同文件其他路由测试覆盖普通用户访问超级管理员接口返回 403。
@@ -1151,17 +1242,18 @@ sequenceDiagram
 10. CSRF跨站请求矩阵。
 11. 全局401/403前端行为和并发401去重。
 12. Tauri改端口重启、端口占用、超时、旧/新origin Cookie。
-13. `intercept_probe_requests=true` 经Rust重启往返仍保持。
-14. 320px移动端、键盘、读屏、焦点和虚拟键盘测试。
+13. C# 写出的 3 字段桌面设置文件可由 Rust 读取，且不重置 `access_mode`、`bind_host`、`port`。
+14. `intercept_probe_requests` 在 `ProxySettings` 表的运行时行为，以及未消费环境变量的最终取舍。
+15. 320px移动端、键盘、读屏、焦点和虚拟键盘测试。
 
 ---
 
 ## 19. 文档自检
 
-- `REQ-AUTH-001` 至 `REQ-AUTH-036` 编号连续、无重复。
+- `REQ-AUTH-001` 至 `REQ-AUTH-039` 编号连续、无重复。
 - 每条 MUST/SHOULD 均包含可执行验收标准。
 - 已覆盖启动分流、首次初始化、字段、原子性、登录、Cookie、Data Protection、撤销、退出和Tauri重启。
 - 已明确区分当前实现事实、产品化要求、已知限制和TBD。
-- 已记录前端缺少全局401/403、无Router、密码重置不撤销Cookie及Rust设置字段丢失问题。
+- 已记录前端缺少全局 401/403、无 Router、密码重置不撤销 Cookie、鉴权缓存迁移和桌面设置跨语言字段不一致。
 - 已包含桌面/移动规则、加载/错误状态和可访问性要求。
 - 已链接 [02 用户与权限](./02-users-and-permissions.md) 与 [10 管理台](./10-admin-console.md)。

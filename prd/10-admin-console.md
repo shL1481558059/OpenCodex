@@ -8,8 +8,9 @@
 | 需求编号前缀 | `REQ-UI` |
 | 文档状态 | Draft，基于当前前端和管理 API 反向整理并补齐产品化要求 |
 | 版本 | 1.0 |
-| 代码基线 | `main@3827590` |
+| 代码基线 | `main@235da3f4` |
 | 编写日期 | 2026-08-17 |
+| 最后核对日期 | 2026-09-30 |
 | 适用端 | Web 管理台、Docker 部署管理台、Tauri 桌面管理台、移动浏览器 |
 | 主要读者 | 产品、交互/UI、前端、后端、测试、可访问性、安全、运维 |
 | 关联文档 | [02 用户与权限](./02-users-and-permissions.md)、[05 初始化与认证](./05-initialization-and-auth.md)、[06 渠道管理](./06-channel-management.md)、[11 可观测性与计费](./11-observability-and-billing.md)、[12 配置](./12-configuration.md) |
@@ -122,7 +123,7 @@ stateDiagram-v2
 - AccessKeys；
 - Users；
 - WebSearch；
-- Pricing；
+- ModelCatalog；
 - SystemSettings；
 - Logs。
 
@@ -168,8 +169,8 @@ flowchart LR
 | API Key管理 | `api-keys` | 否 | 是 | 是 | 普通用户自身；超级管理员全部 |
 | 用户管理 | `users` | 否 | 否 | 是 | 全部用户 |
 | Web Search | `web-search` | 否 | 否 | 是 | 全局配置 |
-| 模型信息 | `pricing` | 否 | 否 | 是 | 全局模型目录/计费 |
-| 系统设置 | `system-settings` | 否 | 否 | 是 | 全局监听与Probe配置 |
+| 模型信息 | `model-catalog` | 否 | 否 | 是 | 全局模型目录/计费/峰谷定价 |
+| 系统设置 | `system-settings` | 否 | 组件支持「仅图片识别」分区，但外壳仍会重定向 | 是 | 超管：监听/汇率/代理策略；图片识别按 owner |
 | 请求日志 | `logs` | 否 | 是 | 是 | 普通用户自身；超级管理员全部 |
 
 ### 4.3 当前权限实现
@@ -177,6 +178,7 @@ flowchart LR
 - `visibleMenuItems` 根据 `currentUser.role === "superadmin"` 过滤菜单。
 - 超级管理员专属 section 同时使用 `isSuperadmin && activeTab===...`。
 - `ensureAllowedActiveTab()` 会把普通用户的超级管理员 tab重置为 dashboard。
+- `SystemSettings.vue` 组件已支持按角色显示（普通用户只见「图片识别」，超管另有「服务配置」「汇率设置」「代理策略」），但 `ensureAllowedActiveTab()` 仍把 `system-settings` 列入普通用户禁用集合，普通用户当前会被重定向回仪表盘；这是 UI 与组件能力的现存冲突（见 TBD-UI-013）。
 - 这只是前端防误入；服务端控制器仍通过 `RequireUser()`/`RequireSuperadmin()` 作最终裁决。
 - 角色变更仅在重新读取 session或下次登录后刷新外壳中的 `currentUser`；当前没有周期性 session同步。
 
@@ -370,8 +372,10 @@ status, errorCode, message, requestId, retryAfter, details, isNetworkError, isAb
 ### 9.3 当前实时行为
 
 - 统计通过 `GET /stats` 获取。
-- 活跃渠道使用 `EventSource /stats/active-channels/stream`，携带 Cookie。
-- 近期错误使用 `EventSource /stats/recent-errors/stream`。
+- Dashboard 另可用拆分的 `/stats/summary`、`/stats/timeseries`、`/stats/model-distribution`、`/stats/error-distribution`，聚合入口与拆分端点并存。
+- 活跃渠道使用 `EventSource /monitor/active-channels/stream`，携带 Cookie。
+- 近期错误使用 `EventSource /monitor/recent-errors/stream`。
+- 仓库中不存在 `/stats/*/stream` 路由；`RealtimeStreamController` 共注册 4 条 SSE：`/channels/runtime/stream`、`/monitor/active-channels/stream`、`/monitor/recent-errors/stream`、`/logs/stream`。
 - 流有连接/断开文案和 stale timer；组件卸载时关闭流。
 - 点击错误项调用 `GET /logs/{id}` 打开详情。
 
@@ -543,10 +547,12 @@ status, errorCode, message, requestId, retryAfter, details, isNetworkError, isAb
 - enabled筛选；
 - 刷新、新增供应商、新增模型；
 - 导出、导入全局模型目录；
+- 远端同步下拉：「同步最新模型」（增量）与勾选「覆盖已有模型」；
+- 批量启用/停用/删除（两段式：启用→停用，停用后二次确认硬删除）；
 - 桌面用供应商Tabs，移动用Select；
 - 表格/卡片展示供应商、模型、名称、匹配规则、输入/输出/缓存价格、状态、来源；
 - 客户端分页，默认25，可选25/50/100；
-- 编辑/停用模型。
+- 编辑模型、启用/停用与二次确认删除。
 
 ### 14.2 模型编辑器
 
@@ -559,14 +565,17 @@ status, errorCode, message, requestId, retryAfter, details, isNetworkError, isAb
 - input/output/cache_write/cache_read规则；
 - billing mode：per_request/per_million_tokens/tiered_tokens；
 - unit price、tiers、enabled；
+- 峰谷：时区（IANA）、谷段窗口（起止时间 + 星期，最多 24 条）、谷段绝对单价与阶梯、`off_peak_enabled`；
 - Catalog JSON高级编辑。
 
 移动端模型Dialog全屏，计费规则由表格转换为卡片。
 
+`capabilities.v2_agent_simulation` 仅在全局模型编辑器出现；渠道级模型覆盖编辑器没有该字段（见 TBD-UI-014）。
+
 ### 14.3 当前限制
 
 - 列表从服务端加载全部匹配结果，再在前端分页；大数据量下性能和一致性有限。
-- 停用操作使用"删除"图标和DELETE接口，但产品结果是停用，语义需要统一。
+- 模型生命周期为两段式：启用↔停用，停用后再删除；按钮图标与文案仍需与实际阶段保持一致。
 - Catalog JSON和tiers错误主要在保存时Toast，没有字段定位。
 - 页面状态在切页/刷新后丢失。
 
@@ -606,20 +615,18 @@ status, errorCode, message, requestId, retryAfter, details, isNetworkError, isAb
 
 ### 15.1 当前页面内容
 
-- 仅超级管理员可见；
-- 刷新；
-- 访问范围 localhost/LAN；
-- LAN警告；
-- 端口1024–65535；
-- Probe拦截开关；
-- 当前绑定地址、管理台地址、是否桌面托管；
-- 保存；
-- 需要重启且处于Tauri时显示“立即重启服务”。
+- 页面 tabs：图片识别（组件对所有角色开放）、服务配置、汇率设置、代理策略（后三个仅超级管理员）；
+- 图片识别：按 owner 选择主视觉路由与兜底（候选需 `supports_image`），支持保存/删除；普通用户只能操作自己；
+- 服务配置：访问范围 localhost/LAN、LAN 警告、端口 1024–65535、当前绑定地址、管理台地址、是否桌面托管、保存与 Tauri 重启提示；
+- 汇率设置：`usd_cny_rate`，用于双币种折算展示；
+- 代理策略：Probe 拦截开关，经 `GET/PUT /system-settings/proxy-settings` 读写数据库 `ProxySetting`；
+- 注意：组件支持普通用户进入「图片识别」分区，但 `App.vue` 的 `ensureAllowedActiveTab()` 仍禁止普通用户停留在 system-settings，当前会被重定向（GAP，见 TBD-UI-013）。
 
 ### 15.2 当前交互
 
 - 页面进入即 `GET /system-settings`。
 - 保存 `PUT /system-settings`。
+- 代理策略单独走 `GET/PUT /system-settings/proxy-settings`；图片识别走 `GET/PUT/DELETE /system-settings/vision-transfer` 与 `GET /system-settings/vision-transfer/candidates`。
 - 返回 `restart_required=true` 时显示持久信息Alert。
 - Tauri重启成功后导航到新管理台URL。
 
@@ -628,7 +635,7 @@ status, errorCode, message, requestId, retryAfter, details, isNetworkError, isAb
 - 修改草稿后点击刷新或切页会直接覆盖/丢弃，没有确认。
 - Web/Docker形态保存后只能提示重启，没有具体操作指引或健康验证。
 - LAN模式仍可能使用明文HTTP。
-- Tauri Rust schema当前可能在重启时丢失 Probe拦截字段。
+- Probe 拦截开关已迁移到数据库 `ProxySetting`；Rust 侧仍定义 `intercept_probe_requests` 并注入 `OPENCODEX_INTERCEPT_PROBE_REQUESTS`，但 .NET 当前没有该环境变量的读取方，桌面设置与代理策略存在双事实源（见 TBD-UI-015）。
 - 端口占用只会在重启阶段暴露，保存前不预检。
 
 ---
@@ -675,6 +682,7 @@ status, errorCode, message, requestId, retryAfter, details, isNetworkError, isAb
 
 - 汇总卡：总请求、总Token、总计费、RPM、TPM；
 - 桌面表格列可配置；
+- 输出速度（TPS）列；状态含「成功（重试）」语义，并展示渠道尝试次数；
 - 移动卡片显示核心字段；
 - 服务端分页，默认20，可选20/50/100/200；
 - 筛选提交同时刷新列表和统计；任一失败时回滚原筛选和视图快照；
@@ -685,7 +693,7 @@ status, errorCode, message, requestId, retryAfter, details, isNetworkError, isAb
 - 基础：request ID、状态、类型、父日志、会话关联字段、模型、上游模型、渠道、状态码、尝试数、成本和时间；
 - 关联跳转：OCR子日志、渠道尝试、主请求；
 - 错误信息；
-- SSE：合并事件/原始行，复制当前视图；
+- SSE：细粒度逐行持久化已移除，详情不再提供逐行 SSE 面板；失败时仅保留最后一行 data 与终止原因（`RequestLog.Error`，上限 2000 字符）；
 - JSON区：请求头、原始请求、转换后请求、转换前响应、转换后响应等；
 - 每区支持复制；
 - 移动端详情全屏。
@@ -693,7 +701,7 @@ status, errorCode, message, requestId, retryAfter, details, isNetworkError, isAb
 ### 16.6 当前限制
 
 - 切到其他页面后筛选、页码、列设置和自动刷新全部丢失。
-- 详情可能包含凭证、Prompt、用户数据或上游响应，当前UI主要依赖后端存储内容，缺少统一脱敏视图和权限提示。
+- 详情可能包含凭证、Prompt、用户数据或上游响应；当前后端没有日志脱敏层，日志正文（含 Authorization/Cookie/图片 base64）完整入库，UI 主要依赖权限约束，缺少统一脱敏视图和揭示提示。
 - “清除全部日志”不可恢复，只用一次Popconfirm；缺少近期认证和影响数量预览。
 - 大型JSON和长SSE一次性渲染可能造成性能问题。
 - 复制按钮部分为纯图标，依赖Tooltip而非统一 `aria-label`。
@@ -750,7 +758,7 @@ flowchart LR
 | AccessKeys | 600px表格转卡片 |
 | WebSearch | 600px表格转卡片 |
 | Channels | 767px表格/表单转移动布局 |
-| Pricing | 767px表格/Tab转卡片/Select |
+| ModelCatalog | 767px表格/Tab转卡片/Select |
 | SystemSettings | 主要依赖全局900/600规则 |
 
 ### 18.2 当前全局移动规则
@@ -1200,6 +1208,56 @@ flowchart LR
 3. 不采集密码、Cookie、完整Key、Prompt正文等敏感数据。
 4. 提供错误率和关键流程成功率看板。
 
+#### REQ-UI-047（MUST）渠道实时状态与诊断接口契约一致
+
+**验收标准**：
+1. 渠道页实时状态只消费实际存在的 `/channels/runtime/stream`，不引用已删除或未实现的路由。
+2. 发现模型与连接测试调用实际的 `POST /discover-models`、`POST /test-channel/stream`；`frontend/src/api/channels.js` 中导出的 `probeModels`/`probeStream` 若保留，必须有对应后端 Action 或标注为未接线。
+3. 连接测试失败时页面能展示上游原始错误，日志列表对该类 Key 显示「连接测试」。
+
+#### REQ-UI-048（MUST）渠道级模型覆盖能力边界明确
+
+**验收标准**：
+1. 渠道模型覆盖编辑器只暴露后端支持的字段（匹配键、上游模型名、定价覆盖等）。
+2. 全局模型能力 `v2_agent_simulation` 是否允许渠道级覆盖按 TBD-UI-014 结论执行；在结论前 UI 不得展示无效开关。
+3. 覆盖保存/删除调用 `/channels/{channelId}/model-infos` 系列接口，并给出成功/失败反馈。
+
+#### REQ-UI-049（MUST）模型生命周期与批量删除两段式一致
+
+**验收标准**：
+1. 启用模型可停用；停用模型二次确认后才允许硬删除，两段式语义在文案、图标与确认框中一致。
+2. 批量操作遵守同一两段式规则，并展示受影响数量。
+3. 删除与停用后的列表、筛选和选择状态保持一致。
+
+#### REQ-UI-050（MUST）峰谷计费配置与价格展示一致
+
+**验收标准**：
+1. 模型编辑器支持 IANA 时区、谷段窗口（起止时间+星期，最多 24 条）与谷段绝对单价/阶梯，跨午夜窗口提示拆分规则。
+2. 列表摘要在启用峰谷时同时展示峰价与谷价。
+3. 前端校验与服务端校验一致（如 `tiered_tokens` 谷段阶梯不得为空）。
+
+#### REQ-UI-051（MUST）系统设置按角色和生效范围隔离
+
+**验收标准**：
+1. 图片识别分区按 owner 隔离，普通用户只能读写自己的配置；服务配置、汇率设置、代理策略仅超级管理员可用。
+2. 普通用户入口的开放策略按 TBD-UI-013 结论执行；在结论前外壳与组件行为必须一致，不得出现"组件可显示但立即被重定向"的中间态。
+3. 代理策略读写 `/system-settings/proxy-settings`，并与桌面端残留字段的唯一事实源策略保持一致（TBD-UI-015）。
+
+#### REQ-UI-052（MUST）日志实时刷新与详情内容完整
+
+**验收标准**：
+1. 日志列表使用 `/logs/stream` 事件驱动刷新，不再依赖固定轮询档位。
+2. 列表展示输出速度（TPS）、重试状态与渠道尝试次数。
+3. 详情不提供已删除的逐行 SSE 面板；失败流只展示最后一行 data 与终止原因（上限 2000 字符），其余正文按内容区展示。
+4. 清除日志使用 `DELETE /logs`，并在界面上说明不可恢复。
+
+#### REQ-UI-053（MUST）管理 API 分层完成迁移
+
+**验收标准**：
+1. 业务页面统一通过 `frontend/src/api/*` 分层模块调用管理 API，不再依赖 `App.vue` 注入的单一 `api()`。
+2. 旧路径别名（如 `/channels/batch`）在使用方全部迁移完成后再评估删除。
+3. 迁移过程中页面行为、错误处理与 401 语义保持不变。
+
 ---
 
 ## 21. 管理台接口依赖
@@ -1209,14 +1267,14 @@ flowchart LR
 | 页面 | 主要接口 |
 |---|---|
 | 启动/认证 | `/setup/status`、`/setup`、`/session`、`/login`、`/logout` |
-| 仪表盘 | `/stats`、`/stats/active-channels/stream`、`/stats/recent-errors/stream`、`/logs/{id}` |
-| 渠道 | `/channels`、`/channels/bulk-import`、`/channels/{id}`、`/channels/batch`、`/discover-models`、`/test-channel/stream`、渠道模型信息/健康接口 |
+| 仪表盘 | `/stats`、`/stats/summary`、`/stats/timeseries`、`/stats/model-distribution`、`/stats/error-distribution`、`/monitor/active-channels/stream`、`/monitor/recent-errors/stream`、`/logs/{id}` |
+| 渠道 | `/channels`、`/channels/select-list`、`/channels/{id}`、`/channels/runtime`、`/channels/runtime/stream`、`/channels/bulk-import`、`/channels/batch`（旧别名）、`/channels/{id}/health-reset`、`/channels/{id}/model-infos`、`POST /discover-models`、`POST /test-channel/stream` |
 | API Key | `/api-keys`、`/api-keys/{id}`、`/api-keys/import`、超级管理员创建时 `/users` |
 | 用户 | `/users`、`/users/{username}` |
 | Web Search | `/web-search`、`/web-search/import`、`/web-search/test-key` |
-| 模型信息 | `/model-providers`、`/model-infos`、`/model-infos/{id}`、`/model-catalog/export`、`/model-catalog/import` |
-| 系统设置 | `/system-settings`；Tauri `restart_backend` command |
-| 请求日志 | `/logs`、`/logs/{id}`、`/log-filter-options`、`/stats` |
+| 模型信息 | `/model-providers`、`/model-infos`、`/model-infos/select-list`、`/model-infos/{id}`、`/model-infos/batch`、`/model-catalog/export`、`/model-catalog/import`、`/model-catalog/sync`、`/channels/{channelId}/model-infos` |
+| 系统设置 | `/system-settings`、`/system-settings/proxy-settings`、`/system-settings/vision-transfer`、`/system-settings/vision-transfer/candidates`；Tauri `restart_backend` command |
+| 请求日志 | `/logs`、`DELETE /logs`、`/logs/{id}`、`/logs/stream`、`/log-filter-options`、`/stats` |
 
 ### 21.2 前端第三方依赖
 
@@ -1239,7 +1297,7 @@ flowchart LR
 3. 应用有顶栏、260/72px侧栏、移动280px Drawer。
 4. 普通用户和超级管理员菜单不同，服务端做最终权限校验。
 5. 八个主要页面均已有桌面交互；多数列表具备移动卡片。
-6. Dashboard使用历史统计+两个SSE实时流。
+6. Dashboard 使用历史统计 + 两条 SSE 实时流（`/monitor/active-channels/stream`、`/monitor/recent-errors/stream`）；全台共 4 条 SSE，另有 `/channels/runtime/stream` 与 `/logs/stream`。
 7. Logs具有草稿/已应用筛选、服务端分页、详情和SSE查看。
 8. 全局CSS已考虑100dvh、safe-area、44px触控和16px移动输入。
 
@@ -1255,14 +1313,14 @@ flowchart LR
 8. Dashboard可点击div和ECharts存在可访问性缺口。
 9. 部分图标按钮缺少aria-label，缺少reduced-motion规范。
 10. API Key明文文案、列表复制和导出与README冲突。
-11. API Key owner字段前后端不一致。
+11. 系统设置组件支持普通用户「图片识别」分区，但 `App.vue` 的 `ensureAllowedActiveTab()` 仍把 `system-settings` 列为普通用户禁用，普通用户会被重定向（UI 与组件能力冲突）。
 12. 渠道、API Key和Web Search导出含明文凭证。
 13. 导入没有预览、冲突策略、大小限制和逐项结果。
 14. Web Search本地先变更，保存失败缺少可靠回滚。
 15. 日志列设置不持久化，大JSON/SSE可能造成性能问题。
-16. 系统设置和Tauri setup存在Probe字段重启丢失问题。
+16. Probe 开关已迁移到数据库 `ProxySetting`，但 Rust 侧仍保留 `intercept_probe_requests` 并注入 `OPENCODEX_INTERCEPT_PROBE_REQUESTS`，.NET 无消费者，存在双事实源。
 17. 前端package scripts只有dev/build，没有正式test/a11y/e2e门禁。
-18. 当前仅有两个Node单元测试文件，集中在渠道测试/图片状态逻辑。
+18. `frontend/src` 现有 9 个 `node --test` 测试文件（渠道状态/顺序/流、日志 TPS、模型目录导入、峰谷定价、视觉转移、`api/sseClient.test.js`），但没有 `test` script，CI 也未运行这些用例。
 
 ### 22.3 TBD
 
@@ -1280,6 +1338,9 @@ flowchart LR
 | TBD-UI-010 | 前端错误采集平台和保留期 | 仅采集元数据，不采敏感正文 | 运维+安全 |
 | TBD-UI-011 | 是否支持暗色/高对比主题 | 高对比为可访问性优先，暗色可后续 | 设计+产品 |
 | TBD-UI-012 | 离开页面时后台测试是否继续 | 按任务类型定义，结果可回查 | 产品+后端 |
+| TBD-UI-013 | 普通用户是否允许进入系统设置的「图片识别」分区 | 组件已支持，建议放开外壳限制并保留服务端 owner 收敛 | 产品+前端+安全 |
+| TBD-UI-014 | 渠道级模型覆盖是否暴露 `v2_agent_simulation` 能力开关 | 与全局模型能力语义对齐后再决定 | 产品+后端 |
+| TBD-UI-015 | 桌面 `intercept_probe_requests` 残留字段与 `OPENCODEX_INTERCEPT_PROBE_REQUESTS` 注入的兼容/删除策略 | 明确唯一事实源为数据库 `ProxySetting` | 产品+桌面端 |
 
 ---
 
@@ -1307,12 +1368,14 @@ flowchart LR
 - `frontend/src/AccessKeys.vue`
 - `frontend/src/Users.vue`
 - `frontend/src/WebSearch.vue`
-- `frontend/src/Pricing.vue`
+- `frontend/src/ModelCatalog.vue`
 - `frontend/src/SystemSettings.vue`
 - `frontend/src/Logs.vue`
 - `frontend/src/Setup.vue`
 - `frontend/src/Login.vue`
 - `frontend/src/tauriBackend.js`
+- `frontend/src/pricingOffPeak.js`、`frontend/src/modelCatalogImportState.js`、`frontend/src/visionTransferState.js`
+- `frontend/src/api/*`（分层模块，业务页面迁移未完成；`sseClient.js` 已被页面直接复用）
 
 ### 23.3 当前前端测试
 
@@ -1320,6 +1383,16 @@ flowchart LR
   - 渠道测试连接、流式、成功/失败等状态转换。
 - `frontend/src/channelImagesState.test.js`
   - 图片渠道方言、retry=0和兼容规则处理。
+- `frontend/src/channelOrdering.test.js`、`frontend/src/channelTestStream.test.js`
+  - 渠道排序与流式测试状态。
+- `frontend/src/logTps.test.js`
+  - 日志输出速度（TPS）计算。
+- `frontend/src/modelCatalogImportState.test.js`
+  - 模型目录导入/远端同步预览状态机。
+- `frontend/src/pricingOffPeak.test.js`
+  - 峰谷窗口、时区与折扣换算纯逻辑。
+- `frontend/src/visionTransferState.test.js`
+  - 视觉转移主/兜底配置状态与校验。
 - `frontend/package.json`
   - 当前只有 `dev`、`build` script；没有正式test script。
 
@@ -1340,11 +1413,11 @@ flowchart LR
 5. 每页首次加载、空态、错误态、重试和后台刷新。
 6. Dashboard SSE断线/重连、图表文本等价和错误项键盘操作。
 7. 渠道创建编辑、模型发现、批量、单/批测试、移动卡片。
-8. API Key一次性明文策略、owner字段、导入导出。
+8. API Key一次性明文策略、owner 归属与导入导出。
 9. 用户保护、密码重置和删除影响确认。
 10. Web Search保存失败回滚、Key测试和明文操作。
 11. 模型搜索、provider、分页、Catalog/tiers错误和手机全屏编辑。
-12. 系统设置保存、Tauri重启、端口失败和Probe字段往返。
+12. 系统设置角色分区、保存、Tauri重启、端口失败和代理策略读写。
 13. 日志筛选回滚、列设置、关联详情、SSE、长JSON和清除全部。
 14. 320/375/600/768/900/1280px、横竖屏、200%缩放。
 15. 键盘、读屏、焦点、对比度、axe扫描和reduced motion。
@@ -1353,11 +1426,11 @@ flowchart LR
 
 ## 24. 文档自检
 
-- `REQ-UI-001` 至 `REQ-UI-046` 编号连续、无重复。
+- `REQ-UI-001` 至 `REQ-UI-053` 编号连续、无重复。
 - 每条 MUST/SHOULD 均包含可执行验收标准。
 - 已覆盖 `/admin/`入口、启动状态、信息架构、角色可见性、路由、页面状态和会话失效。
-- 已逐页覆盖 Dashboard、Channels、API Keys、Users、Web Search、Pricing、System Settings、Logs。
+- 已逐页覆盖 Dashboard、Channels、API Keys、Users、Web Search、ModelCatalog、System Settings、Logs。
 - 已覆盖桌面、移动、加载、空态、错误态、异步chunk、Dialog/Drawer和危险操作。
 - 已记录600/767/900断点混用、可点击div、ECharts文本替代、图标aria和reduced-motion缺口。
-- 已记录API Key敏感文案/owner契约冲突和Tauri Probe字段丢失问题。
+- 已记录 API Key 明文文案冲突、系统设置普通用户入口冲突、桌面 Probe 双事实源问题，以及峰谷定价与远端同步的当前事实。
 - 已链接 [02 用户与权限](./02-users-and-permissions.md)、[05 初始化与认证](./05-initialization-and-auth.md)、[06 渠道管理](./06-channel-management.md)、[11 可观测性与计费](./11-observability-and-billing.md)。

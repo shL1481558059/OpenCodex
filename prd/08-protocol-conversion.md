@@ -7,8 +7,8 @@
 | 文档编号 | PRD-08 |
 | 需求前缀 | `REQ-PRT` |
 | 文档状态 | 基于现状反向建模，待产品评审 |
-| 基线版本 | `main@3827590` |
-| 最后核对日期 | 2026-08-17 |
+| 基线版本 | `main@235da3f4` |
+| 最后核对日期 | 2026-09-30 |
 | 适用对象 | 产品、后端、测试、SDK/客户端、SRE |
 | 相关文档 | [渠道管理](./06-channel-management.md)、[路由与可靠性](./07-routing-and-reliability.md) |
 | 事实优先级 | 当前源码与迁移 > 自动化测试 > 当前运行配置 > 说明性文档 |
@@ -48,6 +48,7 @@
 - `/images/generations`、`/images/edits` 的图片二进制方言转换细节；它们是独立 Images API，不属于文本协议 3×3 矩阵。
 - Web Search 供应商 Key 管理。
 - 模型定价和成本计算。
+- 多代理 v2（multi-agent v2）的请求改写与流式策略；该主题由新增的 `prd/19` 承载。
 
 ---
 
@@ -177,17 +178,22 @@ flowchart TD
 
 ### 4.5 显式语义不兼容校验
 
-以下字段在指定跨协议方向出现非 null 值时，当前会返回本地 400，而不是静默丢弃：
+`ProtocolConverter.RequestValidation.cs` 的 `ValidateRequestSemanticCompatibility` 在跨协议转换前检查源请求载荷；命中下表字段且值非 null 时返回本地 400，不调用上游：
 
-| 源 → 目标 | 不支持字段 |
+| 源 → 目标 | 触发本地 400 的字段 |
 |---|---|
 | Responses → Chat | `background`、`context_management`、`conversation`、`previous_response_id`、`prompt` |
-| Responses → Messages | 上述字段；`parallel_tool_calls`、`reasoning` 在转换时静默移除 |
+| Responses → Messages | 与 Responses → Chat 相同的 5 个字段 |
 | Messages → Responses | `container`、`thinking` |
 | Messages → Chat | `container` |
 | Chat → Messages | `parallel_tool_calls`、`reasoning_effort` |
 
-当前策略只针对会明显改变语义的参数显式失败；其他未识别的新字段可能在 Canonical 过程中被忽略或降级。
+补充事实：
+
+1. Responses → Messages 不会因 `parallel_tool_calls`、`reasoning` 返回 400：这两个字段在 `CanonicalToMessagesRequest` 的 `DropResponsesOnlyParamsForMessages` 中被静默移除，`ProtocolStructuralCompatibilityTests.ResponsesToMessages_DropsReasoningAndParallelToolCalls` 覆盖该行为。
+2. `thinking` 只在 Messages → Responses 时触发 400；Messages → Chat 时 `thinking` 作为兼容扩展字段进入 Chat 白名单并被保留（`ProtocolStructuralCompatibilityTests.MessagesToChat_PreservesThinkingParameter`）。
+3. 该校验只判断值是否为 null；`false`、`0`、空字符串都会被判定为存在并触发 400。
+4. 该策略只覆盖上表字段，其他未识别的新字段可能在 `FilterRequestParameters` 的目标白名单过滤阶段被丢弃（见 4.7.4）。
 
 ### 4.6 Compat 改写顺序
 
@@ -201,7 +207,7 @@ flowchart TD
 6. `unsupported_params`：若请求仍含这些字段，抛本地 400。
 7. `preserve_thinking_history`：写入内部标记，供 Messages 生成逻辑使用。
 
-Web Search 模式处理发生在 Compat 之前。
+`WebSearchRequestPolicy.ApplyMode`（`disabled` 清理等）在 Compat 之前执行；`simulate` 的内置工具登记 `WebSearchRequestPolicy.RegisterBuiltin` 在 Compat 之后、`ProtocolConverter.ConvertRequest` 之前执行，转换完成后再由 `WebSearchRequestPolicy.FinalizeUpstreamRequest` 校验绑定仍在工具列表中。
 
 ### 4.7 请求字段与内容映射
 
@@ -218,6 +224,12 @@ Web Search 模式处理发生在 Compat 之前。
 | 工具 | `tools` | `tools`/旧 `functions` | `tools`/`mcp_servers` |
 | 工具选择 | `tool_choice` | `tool_choice` | `tool_choice` |
 | 流式 | `stream` | `stream` | `stream` |
+
+补充：
+
+- `max_output_tokens`（Responses）、`max_completion_tokens`/`max_tokens`（Chat）在 Canonical 中统一为 `max_tokens`；目标为 Messages 且转换结果缺少 `max_tokens` 时，`CanonicalToMessagesRequest` 在过滤参数后补 `max_tokens=4096`。
+- 该默认值只作用于跨协议转换到 Messages 的请求；Messages → Messages 的同协议路径不会补默认值。
+- `thinking` 是 Messages 原生字段，也是 Chat 渠道的兼容扩展字段；Responses 侧使用 `reasoning`。
 
 #### 4.7.2 角色与内容
 
@@ -239,6 +251,26 @@ Web Search 模式处理发生在 Compat 之前。
 - 缺失工具结果时，转换器会生成明确的占位文本，避免工具调用历史结构断裂。
 - `preserve_thinking_history=true` 时，会尽可能保留 thinking 内容和加密签名；无可用签名时可能用特殊文本标签降级。
 
+#### 4.7.4 Canonical 参数映射与目标白名单
+
+源请求除 `model`、`messages`/`input`、`instructions`、`system`、`tools`、`tool_choice` 外的顶层字段会原样进入 Canonical 的 `params`（`CopyCommonRequestParams`），再由目标协议白名单过滤（`FilterRequestParameters`）：
+
+| 语义 | Canonical | 目标协议落地 |
+|---|---|---|
+| 最大输出 | `max_tokens` | Responses `max_output_tokens`；Chat `max_tokens`；Messages `max_tokens`（缺失时补 4096） |
+| Reasoning | `reasoning`、`reasoning_effort`、`thinking` | Responses `reasoning.effort`；Chat `reasoning_effort`（`thinking` 保留透传）；Messages `thinking`（仅 Compat 标记触发时注入） |
+| 结构化输出 | `text.format`、`response_format`、`output_config.format` | 三向互转，落地为 Responses `text.format`、Chat `response_format`、Messages `output_config.format` |
+| 停止序列 | `stop`、`stop_sequences` | Chat `stop`；Messages `stop_sequences` |
+| 流式 | `stream` | 原样保留 |
+
+白名单内容（源码中的 `ResponsesRequestParameterNames`、`ChatRequestParameterNames`、`MessagesRequestParameterNames`）：
+
+- Responses：`background`、`context_management`、`conversation`、`include`、`input`、`instructions`、`max_output_tokens`、`max_tool_calls`、`metadata`、`model`、`moderation`、`parallel_tool_calls`、`previous_response_id`、`prompt`、`prompt_cache_key`、`prompt_cache_options`、`prompt_cache_retention`、`reasoning`、`safety_identifier`、`service_tier`、`store`、`stream`、`stream_options`、`temperature`、`text`、`tool_choice`、`tools`、`top_logprobs`、`top_p`、`truncation`、`user`。
+- Chat：`messages`、`model`、`audio`、`frequency_penalty`、`function_call`、`functions`、`logit_bias`、`logprobs`、`max_completion_tokens`、`max_tokens`、`metadata`、`modalities`、`moderation`、`n`、`parallel_tool_calls`、`prediction`、`presence_penalty`、`prompt_cache_key`、`prompt_cache_options`、`prompt_cache_retention`、`reasoning_effort`、`response_format`、`safety_identifier`、`seed`、`service_tier`、`stop`、`store`、`stream`、`stream_options`、`temperature`、`thinking`、`tool_choice`、`tools`、`top_logprobs`、`top_p`、`user`、`verbosity`、`web_search_options`。
+- Messages：`model`、`messages`、`max_tokens`、`cache_control`、`container`、`inference_geo`、`metadata`、`output_config`、`service_tier`、`stop_sequences`、`stream`、`system`、`temperature`、`thinking`、`tool_choice`、`tools`、`top_k`、`top_p`、`mcp_servers`。
+
+目标为 Messages 且 `preserve_thinking_history=true` 并注入带签名的 thinking 块时，若没有 `_ocxp_thinking_budget_tokens`，转换器会补 `thinking={"type":"enabled","budget_tokens":10000}`；无签名时降级为 `<previous_thinking>...</previous_thinking>` 文本块，不伪造签名。
+
 ### 4.8 工具映射
 
 #### 4.8.1 普通函数工具
@@ -255,19 +287,21 @@ Web Search 模式处理发生在 Compat 之前。
 
 #### 4.8.2 工具名称命名空间
 
-- 内部标准命名空间分隔符为 `__`。
-- 兼容历史 `.` 分隔符。
-- 转换器维护请求侧名称映射，在响应和流事件中恢复客户端原工具名。
+- 内部标准命名空间分隔符为 `__`（`NamespaceSeparator`），兼容历史 `.` 分隔符（`LegacyNamespaceSeparator`）。
+- `NamespaceCallParts` 按最后一个分隔符拆分命名空间与裸名；Responses 的 `function_call`/`custom_tool_call` 在识别出命名空间时输出独立 `namespace` 字段。
+- `ResponsesToolCallMapping` 保存 Chat 侧名称、Responses 侧名称、原生类型与命名空间，响应和流事件据此恢复客户端原工具名。
+- 以 `mcp__` 开头的命名空间工具按“旧式 MCP 命名空间模拟”处理，与 native remote MCP 是两种形态（`IsLegacyNamespaceMcpCanonicalTool`）。
 - 多个并行工具调用必须保持原顺序、各自 ID 和 output index。
 
 #### 4.8.3 apply_patch
 
-- 识别 `apply_patch` 及兼容名称。
-- Responses 中使用 `custom_tool_call`/`custom_tool_call_output` 语义。
+- `IsApplyPatchName` 识别 `apply_patch` 与带命名空间的 `<namespace>/apply_patch`，比较前先把 `-` 归一化为 `_`。
+- Responses 中 `type=custom` 且名为 apply_patch 的声明映射为 native_type `apply_patch`，输出使用 `custom_tool_call`/`custom_tool_call_output`，原始补丁文本放在 `input` 字段。
+- 从 Responses 输入取参时，字符串补丁文本会被规范化为 `{"patch": <文本>}`；对象只含 `input` 时改写为 `{"patch": ...}`（`NormalizeApplyPatchArguments`）。
+- 生成 Responses `custom_tool_call` 时，`ExtractPatchText` 依次尝试 `patch`、`input`、`command` 字段中的字符串作为补丁原文。
 - Chat/Messages 中转换为可表达的函数或 tool_use 结构。
-- 流式支持 patch 输入增量和完成事件。
-- 对转义 JSON delta 使用专门解码器恢复原始 patch 文本。
-- 从 Responses 转出时，原始字符串输入会标准化为目标工具可消费的 patch 对象。
+- 流式支持 patch 输入增量和完成事件；对转义 JSON delta 使用专门解码器 `ApplyPatchJsonDeltaDecoder` 恢复原始 patch 文本。
+- 进入 Chat/Messages 时 `custom_tool_call` 的 `input` 不逐字流出，而是在 `output_item.done` 时一次性序列化为 `arguments`/`input_json_delta`（见 `SseStreamConverter.ResponsesToChat.cs`、`SseStreamConverter.ResponsesToMessages.cs` 顶部说明）。
 
 #### 4.8.4 Tool Search 与 Web Search
 
@@ -275,6 +309,8 @@ Web Search 模式处理发生在 Compat 之前。
 - Server-executed Web Search 不应错误转换成客户端 function/tool_use，避免客户端重复执行。
 - Web Search 模拟模式由独立服务拦截工具调用并续传结果；转换器仍负责工具定义和事件形态。
 - `drop_tool_types` 可同时移除工具、tool_choice 和 include 中的引用。
+- Responses 输入中的 `additional_tools`、`tool_search_output` 项会把其中的 `tools` 并入 Canonical 工具列表（`ResponsesRequestToolsToCanonical`）。
+- `tool_search_call` 在 Responses 输出中使用 `arguments` 字段（不是 `input`），并被标记 `execution=client`；`execution=server` 的 `tool_search_call` 响应项在入站解析时被跳过，不作为客户端工具调用（`ProtocolConverter.NativeToolCalls.cs`、`ProtocolConverter.Responses.cs`）。
 
 #### 4.8.5 MCP
 
@@ -292,6 +328,29 @@ Web Search 模式处理发生在 Compat 之前。
 - Responses 输出到 Chat 的 native MCP 生命周期也会显式失败。
 - Responses ↔ Messages 对支持的 MCP 结构有专门转换和测试。
 - 旧式“工具名命名空间模拟 MCP”与 native remote MCP 是两种不同形态。
+
+#### 4.8.6 Schema 递归清洗与 $ref 展开
+
+发往 Chat/Messages 前，工具参数 Schema 由 `SanitizeRequestToolSchemas` → `SanitizeToolSchema` 处理（`ProtocolConverter.ToolSchemaSanitizer.cs`）：
+
+- 根级 `$defs` 与 `#/$defs/...` 形式的 `$ref` 会被就地内联为自包含 Schema，展开后移除 `$defs`。
+- 内联带环检测（`SchemaExpansionContext.ActiveRefs`），防止自引用或相互引用无限递归；同时受节点预算约束：深度上限 32（`MaxSchemaDefDepth`）、节点预算 20 000（`MaxSchemaExpansionNodes`）。
+- 命中深度或节点预算时降级为 `{"type":"object","properties":{}}` 宽松对象；环上的 `$ref` 若保留同级字段则保留，否则同样降级为宽松对象。
+- `type=object` 且缺少 `required` 时自动补空 `required` 数组；`enum` 中的空字符串会被移除（全部为空时删除 `enum` 并按剩余值推断类型）；`anyOf`/`oneOf`/`allOf` 递归清洗、去重，单分支时展开合并。
+- 该清洗只作用于目标为 Chat/Messages 的请求；目标为 Responses 时不展开 `$ref`。
+
+#### 4.8.7 tool_choice 映射
+
+`ProtocolConverter.Tools.cs` 的 `ToolChoiceToChat`、`ToolChoiceToResponses`、`ToolChoiceToMessages` 按目标协议做如下转换（`ConvertRequest` 结束后还会执行 `SanitizeRequestToolChoiceConsistency`，无有效工具时删除 `tool_choice`；`mcp_servers` 视为有效工具）：
+
+| 源形态 | → Chat | → Responses | → Messages |
+|---|---|---|---|
+| 字符串 `auto`/`none`/`required` | 原样 | 原样（`any`/`tool` → `required`） | `none`→`{type:none}`，`required`/`any`/`tool`→`{type:any}`，其余→`{type:auto}` |
+| `{type:function, name}` / `{type:custom, name}` | `{type:function, function:{name}}`（custom 保留 `{type:custom, custom:{name}}`） | 归一为 `{type, name}` | `{type:tool, name}` |
+| `{type:tool, name}`（Messages 形态） | `required`（对象同时带 `function.name` 时原样） | `{type:function, name}` | 原样 |
+| `allowed_tools` | `mode=required`→`required`，否则→`auto` | 原样透传 | `mode=required`→`{type:any}`，否则→`{type:auto}` |
+| apply_patch 选择 | `{type:function, function:{name:apply_patch}}` | 按 function/custom 分支输出 `{type,name}`，`{type:apply_patch}` 原样保留 | `{type:tool, name:apply_patch}` |
+| web_search 选择 | `{type:function, function:{name:web_search}}` | 按 function/custom 分支输出 `{type,name}` | `{type:tool, name:web_search}` |
 
 ### 4.9 Reasoning、refusal 与 annotation
 
@@ -324,21 +383,31 @@ Web Search 模式处理发生在 Compat 之前。
 
 ### 4.11 Usage 映射
 
-统一关心以下计量：
-
-- input tokens。
-- cached input/read tokens。
-- cache write tokens。
-- output tokens。
-- total tokens。
+Canonical usage 只有 4 个字段：`input_tokens`、`output_tokens`、`total_tokens`、`cached_tokens`（`ProtocolConverter.Usage.cs`）。
 
 来源差异：
 
-- Responses：`usage.input_tokens`、`usage.output_tokens` 及 details。
-- Chat：`prompt_tokens`、`completion_tokens`、`prompt_tokens_details.cached_tokens` 等。
-- Messages：`input_tokens`、`output_tokens`、`cache_creation_input_tokens`、`cache_read_input_tokens`。
+- Responses：`input_tokens`、`output_tokens`、`total_tokens`，缓存读在 `input_tokens_details.cached_tokens`。
+- Chat：`prompt_tokens`、`completion_tokens`、`total_tokens`，缓存在 `prompt_tokens_details.cached_tokens` 或 `input_tokens_details.cached_tokens`。
+- Messages：`input_tokens`、`output_tokens`，缓存读在 `cache_read_input_tokens`，缓存写在 `cache_creation_input_tokens`，无 `total_tokens`。
 
-流式 Chat 只有在请求 `stream_options.include_usage=true` 时应输出 usage chunk；其他入口按各自协议生成完成事件中的 usage。
+落地差异与字段损失：
+
+| 目标 | 当前写回字段 | 丢失内容 |
+|---|---|---|
+| Responses | `input_tokens`、`output_tokens`、`total_tokens`，`cached_tokens>0` 时写 `input_tokens_details.cached_tokens` | 非流式 Canonical 路径不保留 `output_tokens_details.reasoning_tokens` 等明细 |
+| Chat | `prompt_tokens`、`completion_tokens`、`total_tokens`，`cached_tokens>0` 时写 `prompt_tokens_details.cached_tokens` | 其他 token 明细不保留 |
+| Messages | `input_tokens`、`output_tokens`，`cached_tokens>0` 时写 `cache_read_input_tokens` | `total_tokens` 与缓存读写拆分丢失，缓存写语义不可还原 |
+
+其中 Messages 的 `cache_creation_input_tokens` 与 `cache_read_input_tokens` 在 Canonical 中先合并为单一 `cached_tokens`，反向生成 Messages 时只能落到 `cache_read_input_tokens`。
+
+流式另有独立映射：`SseStreamConverter.ChatUsageToResponsesUsage` 会把 Chat 的 `completion_tokens_details.reasoning_tokens` 写入 Responses `output_tokens_details.reasoning_tokens`，与上面非流式 Canonical 路径不一致；`MessagesUsageToResponsesUsage` 同样把 `cache_creation_input_tokens + cache_read_input_tokens` 合并为 `cached_tokens` 并把缓存量计入输入总量。
+
+流式 usage chunk 的当前行为按路径不同：
+
+- 入口 Chat + 上游 Messages：只有请求 `stream_options.include_usage=true` 时才输出独立 usage chunk（`MessagesToChatEvents` 的 `IncludeUsage`）。
+- 入口 Chat + 上游 Responses：归一化后的 input/output tokens 大于 0 即输出 usage chunk（`ResponsesToChatEvents`），不参考 `stream_options`。
+- 同协议透传：usage 形态完全取决于上游原始流。
 
 ### 4.12 结束原因与状态
 
@@ -349,6 +418,27 @@ Web Search 模式处理发生在 Compat 之前。
 | 工具调用 | 输出工具项 | `finish_reason=tool_calls` | `stop_reason=tool_use` |
 | 内容拒绝 | refusal/failed 或完成结构 | `content_filter`/refusal | `refusal` 或可表示降级 |
 | 上游失败 | `response.error/failed` | error，不能再发正常 done | error，不能再发 message_stop |
+
+入站归一（`ProtocolConverter.FinishReasons.cs`）：
+
+| 上游值 | Canonical |
+|---|---|
+| Responses `status=incomplete` 且 `incomplete_details.reason=content_filter` | `content_filter` |
+| Responses 其他 `status=incomplete` | `length` |
+| Responses `status=failed` 或 `cancelled` | `content_filter` |
+| Responses 其他且有工具调用 | `tool_calls` |
+| Responses 其他 | `stop` |
+| Chat `length`、`tool_calls`/`function_call`、`content_filter` | `length`、`tool_calls`、`content_filter` |
+| Chat 其他 | `stop` |
+| Messages `max_tokens`、`tool_use`、`refusal` | `length`、`tool_calls`、`content_filter` |
+| Messages 其他 | `stop` |
+
+出站映射与损失：
+
+- Responses 目标只区分 `length`、`content_filter` → `status=incomplete`（`incomplete_details.reason` 分别为 `max_output_tokens`、`content_filter`），其余 → `status=completed`；`tool_calls` 只通过输出中的工具项体现，没有独立结束字段。
+- Chat 目标直接使用 Canonical `finish_reason`（`stop`/`length`/`tool_calls`/`content_filter`）。
+- Messages 目标把 `length`→`max_tokens`、`tool_calls`→`tool_use`、`content_filter`→`refusal`，其余→`end_turn`。
+- 上游 `failed`/`cancelled` 归一为 `content_filter` 后，在 Messages 中表现为 `refusal`，原始失败原因不再保留在结束字段中，错误语义只能依赖错误通道。
 
 ### 4.13 SSE 事件转换
 
@@ -393,6 +483,18 @@ Web Search 模式处理发生在 Compat 之前。
 4. 错误终止与正常完成事件互斥。
 5. 同协议透传捕获完整终止状态；跨协议同时捕获上游和下游可诊断行。
 
+#### 解析、延迟准备与捕获（当前事实）
+
+- 解析规则（`SseStreamConverter.ParseEvents`）：按行读取；`event:` 设置事件名（默认 `message`）；`data:` 行以 `\n` 拼接；空行结束一个事件；注释行（`:` 开头）忽略；`data` 不是合法 JSON 时保留原始字符串。
+- 延迟准备（`ProxyStreamService.ConvertRoundsAsync` + `UpstreamStreamPrimer.PrimeAsync`）：先取上游第一行，第一行前失败会在写出前抛出；`TrackingProxyStreamWriter` 在首行真正写出时才调用 `PrepareSse`。
+- 三类累积器（`StreamResponseCapture`）：按目标协议选择 `ResponsesStreamResponseAccumulator`、`ChatStreamResponseAccumulator`、`MessagesStreamResponseAccumulator`，未知协议退化到 `UsageOnlyStreamResponseAccumulator`，从 SSE 重建上游响应用于日志。
+- 捕获预算：默认最多 1 MiB（`DefaultMaxCapturedBytes`）、集合类最多 256 项（`MaxCapturedCollectionItems`）；单个事件的多行 `data` 超过 256 KiB 或 1024 行（`MaxPendingSseDataBytes`/`MaxPendingSseDataLines`）时丢弃到下一个事件边界并计入 `malformed_events`。
+- 捕获元数据：非正常完成、截断、畸形事件或观察器失败时，累积结果带 `_opencodex_capture` 字段，含 `completed`、`termination`、`truncated`、`malformed_events`、`observer_failed`。
+- 终止信号（`StreamLogCapture`）：Responses 入口看 `response.completed`/`response.failed`/`response.incomplete`（事件名或 payload type）；Messages 入口看 `message_stop` 或 `error`；Chat 入口只看 `data: [DONE]`；没有终止信号记为 `UnexpectedEnd`，不伪造完成。
+- `[DONE]` 追加：下游流出现 `response.completed` 但没有 `data: [DONE]` 时，`EnsureCompletedStreamEndsWithDone` 与 `ProxyStreamResponseWriter` 会追加 `data: [DONE]`；`ProtocolConversionMatrixTests.AssertStreamShape` 对 Responses/Chat 入口断言该行。
+- TTFT：跨协议路径用 `SseStreamConverter.CountsForTtft` 判定，只认 `response.output_text.delta`、`response.reasoning_summary_text.delta`、`response.function_call_arguments.delta`、`response.custom_tool_call_input.delta`、`response.output_item.done` 这几类行；同协议透传路径以首个非空行（`line.Trim().Length > 0`）为准；统计只累计 `TtftMs > 0` 的请求。
+- Messages `message_start.usage.input_tokens=0`：Chat→Messages 与 Responses→Messages 均在 `message_start` 写 `input_tokens=0`，因为上游 usage 通常只在末尾出现；`output_tokens` 在 `message_delta` 按上游 usage 报告，避免为回填 usage 破坏实时流语义。
+
 ```mermaid
 sequenceDiagram
     participant U as 客户端
@@ -421,8 +523,9 @@ sequenceDiagram
 
 ### 4.14 Codex Responses headers
 
-仅在 Responses 入口 → Responses 上游的同协议路径中，代理会复制或补全：
+`ProxyEndpointService.ApplyResponsesPassthroughHeaders` 只在 Responses 入口 → Responses 上游时生效，白名单（`ResponsesPassthroughHeaders`）为：
 
+- `OpenAI-Beta`
 - `User-Agent`
 - `x-oai-attestation`
 - `x-codex-turn-metadata`
@@ -435,11 +538,27 @@ sequenceDiagram
 
 规则：
 
-1. 渠道显式 headers 优先，不被覆盖。
-2. 客户端缺少时，当前实现会注入测试/兼容默认值。
-3. Responses 转 Chat/Messages 时不复制这些 headers。
+1. 渠道已有同名 header 时不覆盖；`OpenAI-Beta` 例外，按值合并去重。
+2. 客户端缺少时注入测试占位默认值（CURRENT，见下表）；`User-Agent` 存在但不含 `Codex Desktop` 时也会替换为默认 UA。
+3. Responses 转 Chat/Messages 时不复制这些 headers（`ProxyEndpointServiceTests.ProxyAsync_ResponsesToChat_DoesNotCopyCodexHeaders`）。
 4. 普通上游请求根据渠道类型设置默认 User-Agent。
 5. Messages 使用 `x-api-key` 和默认 `anthropic-version=2023-06-01`；Responses/Chat 默认使用 Bearer Authorization。
+
+当前占位默认值（`DefaultResponsesHeaderValue`）：
+
+| Header | 客户端缺失时注入的当前默认值 |
+|---|---|
+| `User-Agent` | `Codex Desktop/0.140.0-alpha.2 (Mac OS 13.7.8; arm64) unknown (Codex Desktop; 26.609.71450)` |
+| `originator` | `Codex Desktop` |
+| `x-oai-attestation` | `test-attestation` |
+| `x-codex-turn-metadata` | `{"session_id":"test-session","thread_id":"test-thread","thread_source":"user","turn_id":"test-turn","request_kind":"turn","window_id":"test-window"}` |
+| `x-codex-window-id` | `test-window` |
+| `x-client-request-id` | `test-request` |
+| `session-id` | `test-session` |
+| `thread-id` | `test-thread` |
+| `x-codex-beta-features` | `terminal_resize_reflow,remote_compaction_v2` |
+
+这些 `test-*` 值只在客户端未提供对应 header 时出现，属正式版本前的 GAP；`ProxyEndpointServiceTests.ProxyAsync_ResponsesPassthrough_AddsDefaultCodexHeadersWhenMissing` 断言了当前行为。
 
 ---
 
@@ -455,6 +574,8 @@ sequenceDiagram
 | source/target 不同且可转换 | source → Canonical → target |
 | Compat 声明 unsupported 且请求包含字段 | 400，不调用上游 |
 | 工具 schema 含上游不支持结构 | 清理后再发往上游 |
+| 工具 schema 含 `$ref`/`$defs` 且目标为 Chat/Messages | 内联展开；环或预算超限时降级为宽松对象 |
+| 目标为 Messages 且转换后缺少 `max_tokens` | 补 4096 |
 | 原生 MCP 目标不支持 | 显式 400/转换异常 |
 
 ### 5.2 流式分派决策
@@ -512,8 +633,8 @@ sequenceDiagram
 2. 不可无损转换的语义参数返回本地 400，不参与渠道故障转移。
 3. 同协议路径也会清理工具 schema，不能假设字节级透传。
 4. Native MCP 到 Chat 不支持时显式失败。
-5. Messages thinking 到 Responses/Chat 顶层配置目前被视为不可无损转换。
-6. Responses reasoning 配置到 Messages 目前显式失败，但 reasoning 历史内容可能降级保留。
+5. Messages → Responses 的 `thinking` 触发本地 400；Messages → Chat 的 `thinking` 作为兼容扩展字段保留。
+6. Responses → Messages 的 `reasoning`、`parallel_tool_calls` 当前被静默移除，不报错；与 Responses → Chat 把 `reasoning.effort` 映射为 `reasoning_effort` 不一致（见 TBD-PRT-002）。
 7. JSON Schema 包装不能替代完整 schema 校验。
 8. Refusal、annotation、thinking signature 等高级信息可能在目标协议中降级。
 9. Server-executed 工具不能错误变成客户端需要执行的工具调用。
@@ -522,6 +643,9 @@ sequenceDiagram
 12. 客户端取消时停止读取和转换，不补正常完成事件。
 13. Images API 首版不支持 `stream=true`，且不属于本文 3×3。
 14. 模型目录可能声明音频/视频能力，但当前协议转换对这些模态没有与文本/图片同等级的完整契约。
+15. Chat 入口的终止判定只看 `data: [DONE]`；缺少该行时即使已有 finish_reason 也会记为 `UnexpectedEnd`。
+16. 下游流出现 `response.completed` 但没有 `data: [DONE]` 时，代理会追加一行 `data: [DONE]`。
+17. 流捕获受 1 MiB、256 项、单事件 256 KiB/1024 行预算限制；超限只影响日志重建结果，不改变已转发的流字节。
 
 ---
 
@@ -806,6 +930,49 @@ sequenceDiagram
 2. 六个跨协议 SSE 转换器均有独立结构测试。
 3. Native MCP、apply_patch、Web Search、JSON Schema 各有正向和负向用例。
 
+### REQ-PRT-028 Schema `$ref` 展开安全（MUST）
+
+**要求：** 发往 Chat/Messages 上游的工具 JSON Schema 必须先内联 `$defs`/`$ref`，并且对引用环与规模膨胀有确定行为。
+
+**验收标准：**
+
+1. 自引用 Schema 不无限展开，输出仍是可解析的 Schema（`ToolSchemaExpansionTests.ConvertRequest_SelfReferentialToolSchema_ExpandsWithoutExploding`）。
+2. 普通非递归 `$ref` 仍会完整内联，语义不变（`ToolSchemaExpansionTests.ConvertRequest_NonRecursiveToolSchema_StillInlinesRefs`）。
+3. 深度超过 32 或节点超过 20 000 时降级为宽松 object Schema，不抛未捕获异常、不触发栈溢出或 OOM。
+4. `type=object` 缺 `required` 时补空数组；空字符串 `enum` 被清理；`anyOf`/`oneOf`/`allOf` 去重后保持原语义。
+5. GAP：相互引用、深度上限与节点预算的降级分支当前没有直接测试覆盖，需要补用例。
+
+### REQ-PRT-029 流捕获预算与截断标记（MUST）
+
+**要求：** SSE 捕获必须在上限内完成；截断与畸形事件必须可观测，且不得改变已转发给客户端的流字节。
+
+**验收标准：**
+
+1. 1 MiB 字节预算、256 个集合项、单事件 256 KiB/1024 行 data 的预算在实现中生效。
+2. 超限时捕获结果带 `_opencodex_capture.truncated=true` 与 `malformed_events` 计数。
+3. `StreamResponseCaptureTests` 覆盖超限丢弃、UTF-8 边界、多行 data、畸形流与取消。
+4. 日志重建被截断时，入口响应仍按入口协议正常终止或按错误路径终止。
+
+### REQ-PRT-030 Messages 默认 max_tokens（MUST）
+
+**要求：** 跨协议转换到 Messages 的请求必须携带 `max_tokens`；源请求未提供时补 4096。
+
+**验收标准：**
+
+1. Responses/Chat → Messages 且无 `max_tokens`/`max_output_tokens` 时，上游请求含 `max_tokens=4096`。
+2. 源请求显式提供最大输出时不得被默认值覆盖。
+3. Messages → Messages 同协议透传不注入默认值。
+
+### REQ-PRT-031 TTFT 口径（SHOULD）
+
+**要求：** TTFT 必须按“首个有意义输出”统计，并在跨协议与同协议路径上口径明确。
+
+**验收标准：**
+
+1. 跨协议路径只认 output text/reasoning/工具参数增量与 `response.output_item.done` 这几类行（`SseStreamConverter.CountsForTtft`）。
+2. 同协议路径以首个非空行为准，该差异需在指标说明中标注。
+3. 平均 TTFT 只累计 `TtftMs > 0` 的样本，与 `ObservabilityService` 现有聚合一致。
+
 ---
 
 ## 9. 数据、安全与可观测性影响
@@ -856,6 +1023,9 @@ sequenceDiagram
 12. 某些目标协议无法区分 server-executed tool 与普通工具，只能依靠类型白名单和专门分支。
 13. Canonical 是内部静态字典结构，编译期类型约束较弱。
 14. 大量转换逻辑集中在多个 partial class 文件，新增字段时容易只覆盖部分方向。
+15. Usage 归一只有 `input_tokens`/`output_tokens`/`total_tokens`/`cached_tokens` 四个字段，Messages 的缓存写与缓存读、Responses/Chat 的 token 明细在跨协议后无法还原。
+16. Responses → Messages 的 `reasoning`/`parallel_tool_calls` 属于静默移除，没有转换诊断，客户端无法感知参数被丢弃。
+17. Messages 目标的 `message_start.usage.input_tokens` 恒为 0，usage 只在 `message_delta` 中出现，依赖 `message_start` 读取输入 token 的客户端会看到 0。
 
 ---
 
@@ -864,7 +1034,7 @@ sequenceDiagram
 | 编号 | 问题 | 建议默认值 |
 |---|---|---|
 | TBD-PRT-001 | 未知跨协议字段是忽略还是失败 | 高语义风险失败，低风险忽略并记录 |
-| TBD-PRT-002 | Responses reasoning → Messages 是否继续显式失败 | 保持失败，除非提供正式降级开关 |
+| TBD-PRT-002 | Responses `reasoning`/`parallel_tool_calls` → Messages 当前静默移除，是否改为显式 400 或记录降级 | 显式失败或写入转换诊断，不静默丢弃 |
 | TBD-PRT-003 | JSON Schema 包装失败时返回错误还是原文本 | 默认返回转换错误，不伪造结构 |
 | TBD-PRT-004 | 无签名 thinking 是否应作为 thinking block 发送 | 默认转文本标签，避免伪造原生 thinking |
 | TBD-PRT-005 | 是否对 Chat 增加 MCP 命名空间降级模式 | 默认不对 native MCP 自动降级 |
@@ -875,6 +1045,8 @@ sequenceDiagram
 | TBD-PRT-010 | SSE 日志保留完整原文还是白名单事件 | 保持白名单并允许短期调试开关 |
 | TBD-PRT-011 | 工具命名空间统一使用 `__` 还是支持 `.` 长期兼容 | 对外两者兼容，内部统一 `__` |
 | TBD-PRT-012 | 不完整上游流是否允许合成 incomplete | 允许，但必须标记来源和终止原因 |
+| TBD-PRT-013 | 跨协议 usage 明细（`reasoning_tokens`、`cache_creation_input_tokens`）是否需要在 Canonical 保留 | 需要计费区分时扩展 Canonical 字段 |
+| TBD-PRT-014 | Responses 入口流末尾的 `data: [DONE]` 追加是否长期保留 | 保留以兼容现有客户端，单独评审 |
 
 ---
 
@@ -885,9 +1057,10 @@ sequenceDiagram
 | 协议常量/总分派 | `opencodex_proxy/src/Libraries/OpenCodex.Core/Protocols/ProtocolConverter.cs` | `ProtocolConversionMatrixTests.cs` |
 | 请求转换 | `ProtocolConverter.Requests.cs`、`ProtocolConverter.ResponsesInput.cs` | `ProtocolStructuralCompatibilityTests.cs`、`InboundStreamingCompatibilityTests.cs` |
 | 响应转换 | `ProtocolConverter.Responses.cs` | `ProtocolConversionMatrixTests.NonStream_AllProtocolPairs_ConvertRequestAndResponse` |
-| 语义参数保护 | `ProtocolConverter.RequestValidation.cs` | 建议为每个参数补 Theory；现有结构测试间接覆盖 |
+| 语义参数保护 | `ProtocolConverter.RequestValidation.cs` | `ProtocolStructuralCompatibilityTests.RequestParametersThatChangeStateOrModelBehavior_AreRejectedWhenNoEquivalentExists`、ResponsesToChat 状态字段系列、`ResponsesToMessages_DropsReasoningAndParallelToolCalls` |
 | 内容转换 | `ProtocolConverter.Content.cs` | `ProtocolStructuralCompatibilityTests.cs` |
-| 工具定义与选择 | `ProtocolConverter.Tools.cs`、`ProtocolConverter.ToolSchemaSanitizer.cs` | `ProxyCompatibilityTests.cs`、`NativeMcpConfigurationTests.cs` |
+| 工具定义与选择 | `ProtocolConverter.Tools.cs`、`ProtocolConverter.ToolSchemaSanitizer.cs` | `ProxyCompatibilityTests.cs`、`NativeMcpConfigurationTests.cs`、`ToolSchemaExpansionTests.cs` |
+| 参数白名单 | `ProtocolConverter.Requests.cs`（`FilterRequestParameters`、三个 `*RequestParameterNames`） | `ProtocolStructuralCompatibilityTests.ResponsesToChat_ConvertsSupportedParametersWithoutLeakingResponsesOnlyFields` |
 | 工具历史 | `ProtocolConverter.ToolHistory.cs` | `NativeMcpHistoryTests.cs`、reasoning 历史相关测试 |
 | 工具名映射 | `ProtocolConverter.ToolNames.cs`、`ProtocolConverter.ToolContracts.cs` | `SseStreamConverterTests.ToolUse_NamespaceTool_RestoresNamespaceInOutput` 及深层/多工具测试 |
 | apply_patch | `ProtocolConverter.ApplyPatchTools.cs`、`ApplyPatchJsonDeltaDecoder.cs` | `SseStreamConverterTests` 中 ApplyPatch 系列、`ResponsesOutboundStreamingCompatibilityTests` |
@@ -901,6 +1074,9 @@ sequenceDiagram
 | Responses 入站 | `SseStreamConverter.Chat.cs`、`SseStreamConverter.Messages.cs` | `InboundStreamingCompatibilityTests.cs` |
 | Responses 出站 | `SseStreamConverter.ResponsesToChat.cs`、`SseStreamConverter.ResponsesToMessages.cs` | `ResponsesOutboundStreamingCompatibilityTests.cs` |
 | 同协议捕获 | `StreamResponseCapture.cs`、`ProxyStreamService.CapturePassThroughResponse` | `StreamResponseCaptureTests.cs`、`ProxyStreamServiceTests.cs` |
+| 流式解析 | `SseStreamConverter.Parsing.cs` | `StreamResponseCaptureTests.MultilineData_IsParsedWithoutChangingProtocolPayload`、`SseStreamConverterTests.cs` |
+| 流式累积器 | `ResponsesStreamResponseAccumulator.cs`、`ChatStreamResponseAccumulator.cs`、`MessagesStreamResponseAccumulator.cs` | `StreamResponseCaptureTests.cs`、`ChatStreamResponseAccumulatorTests.cs`、`MessagesStreamResponseAccumulatorTests.cs` |
+| SSE 延迟准备 | `UpstreamStreamPrimer.cs`、`TrackingProxyStreamWriter.cs`、`ProxyStreamResponseWriter.cs` | `UpstreamStreamPrimerTests.cs`、`ProxyStreamResponseWriterTests.cs` |
 | Compat | `ChannelCompatRequestRewriter.cs` | `ProxyCompatibilityTests.ResponsesProxy_DropToolTypes_StripsImageGenerationToolsOnly` |
 | Codex headers | `ProxyEndpointService.ApplyResponsesPassthroughHeaders` | `ProxyEndpointServiceTests` 的 ResponsesPassthrough 系列 |
 | 上游端点/鉴权 | `HttpUpstreamClient.Requests.cs` | `ProxyCompatibilityTests.PostJsonAsync_*`、`NativeMcpHeaderTests.cs` |
@@ -916,4 +1092,6 @@ sequenceDiagram
 5. 对所有显式不兼容字段验证本地 400、无上游调用、无熔断计数。
 6. 验证流式错误不会追加正常 Done/Stop/Completed。
 7. 对超大工具 schema、深层 JSON、长 patch、Data URL 图片执行资源上限测试。
-8. 执行 `dotnet test opencodex_proxy/OpenCodex.sln`，并将所有 `REQ-PRT-*` MUST 项关联到自动化测试或发布检查项。
+8. 覆盖 `$ref`/`$defs` 自引用、深度与节点预算降级，以及流捕获 1 MiB/256 项/单事件 256 KiB/1024 行上限。
+9. 验证 TTFT 在跨协议与同协议路径的口径，并确认平均 TTFT 只统计 `TtftMs > 0` 样本。
+10. 执行 `dotnet test opencodex_proxy/OpenCodex.sln`，并将所有 `REQ-PRT-*` MUST 项关联到自动化测试或发布检查项。

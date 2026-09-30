@@ -1,8 +1,8 @@
 # OpenCodex 产品需求文档（PRD）
 
 > 文档类型：基于当前代码反向整理的现状型 PRD  
-> 代码基线：`main@3827590eb33acb67dd063054c4a36d2b87b09002`  
-> 基线日期：2026-08-17  
+> 代码基线：`main@235da3f4`  
+> 基线日期：2026-08-17（最后核对：2026-09-30）  
 > 产品版本：OpenCodex `0.1.0`（以 `src-tauri/tauri.conf.json` 为准）  
 > 文档状态：已完成（现状基线版；标记为 TBD 的产品决策仍需负责人确认）  
 > 主要读者：产品、设计、前端、后端、测试、运维、安全、项目负责人
@@ -78,6 +78,7 @@
 | `REQ-REL` | 部署与发布 |
 | `REQ-TST` | 测试与验收 |
 | `REQ-RSK` | 已知限制与风险 |
+| `REQ-MA` | 多代理模拟（v2，见 `19-multi-agent-simulation.md`） |
 
 ## 3. 产品一句话定义
 
@@ -105,6 +106,7 @@ OpenCodex 是一个支持多用户隔离、多上游渠道路由和多 AI 协议
 | 16 | [测试与验收](16-testing-and-acceptance.md) | 测试矩阵、需求验收、发布门禁和回归范围 |
 | 17 | [已知限制与风险](17-known-limitations-and-risks.md) | 安全、数据、功能、部署、文档漂移和开放决策 |
 | 18 | [追踪索引](18-traceability-index.md) | 需求到页面、接口、实体、源码和测试的追踪矩阵 |
+| 19 | [多代理模拟](19-multi-agent-simulation.md) | 服务端多代理运行器、协作函数、WebSocket 注入、快照与预算 |
 
 ## 5. 推荐阅读路径
 
@@ -218,14 +220,16 @@ flowchart LR
 
 1. README 声称访问 API Key 明文只显示一次且数据库只存哈希，但当前实体和服务保留 `KeyPlaintext`；
 2. 管理台允许渠道、访问 Key、Web Search 配置导出明文凭证；
-3. README 和部署文档仍出现已不再作为主配置来源的数据库或日志变量；
+3. README 和部署文档仍描述不存在的 `BASIC`/`DEBUG`/`TRACE` 日志等级；数据库与 Redis 变量已更新；
 4. Images 控制器依赖的 `IProxyImagesEndpointService` 生产实现和 DI 注册已确认缺失，真实请求当前不可用；
 5. LAN 模式监听 `0.0.0.0`，但默认仍是明文 HTTP；
 6. `/health` 仅证明进程响应，不证明数据库、Redis、迁移或上游健康；
-7. 普通 push 和 PR 没有完整 CI 质量门禁；
+7. 已有 `deploy-dev.yml` 与 `desktop-release.yml` 两条工作流，但均不运行前端 `node --test`，浏览器 E2E 仍缺失；
 8. 当前缺少日志保留期、容量上限、备份恢复、RTO/RPO 和正式 SLA；
 9. 管理台无 URL 路由深链、全局会话失效处理和统一未保存变更保护；
-10. 当前文档目录中存在基于其他提交生成的未跟踪技术文档，不能直接作为本 PRD 的当前事实。
+10. 旧的 `doc/`、`docs/` 技术文档已删除，历史细节只在 git 历史中可查；PRD 以当前代码为准；
+11. 多代理 v2 为单实例实现，JSON 快照落盘但没有加密、保留期与容量上限（TBD-MA-002/004）；
+12. 峰谷计费批 5 未完成：日志详情不展示 `pricing_phase`、没有只读试算端点（TBD-RSK-14 / REQ-OBS-022/023）。
 
 ## 9. 文档维护规则
 

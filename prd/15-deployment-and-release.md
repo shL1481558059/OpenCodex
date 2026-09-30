@@ -1,7 +1,8 @@
 # 15. 部署与发布
 
 > 需求前缀：`REQ-REL`  
-> 代码基线：`main@3827590`  
+> 代码基线：`main@235da3f4`  
+> 最后核对日期：2026-09-30  
 > 覆盖：本地开发、Docker SQLite、Docker PostgreSQL + Redis、Tauri 桌面构建、CI 发布、升级和回滚
 
 ## 1. 发布目标
@@ -37,7 +38,7 @@
 
 | 产物 | 当前生成方式 | 目标用途 |
 |---|---|---|
-| Docker 镜像 | 本地发布脚本调用 Docker buildx 构建并直接推送，当前仅 `linux/amd64` | 服务端运行 |
+| Docker 镜像 | dev：`deploy-dev.yml` 用 `docker/build-push-action` 构建并推送 GHCR，tag `dev-<commit>`；生产：`update_remote_image*.sh` 用本地 Docker buildx 构建并推送 `shl148155/opencodexp:ocxp`；均只有 `linux/amd64` | 服务端运行 |
 | 管理台静态资源 | Vite build，复制到 `wwwroot/admin` | 浏览器管理 |
 | .NET API | `dotnet publish` | Docker 或 sidecar |
 | macOS DMG | GitHub Actions / Tauri | macOS arm64 |
@@ -45,7 +46,7 @@
 | Linux DEB | GitHub Actions / Tauri | x86_64 Linux/Deepin |
 | GitHub Release | tag 触发，草稿 Release | 桌面分发 |
 
-准备脚本还声明部分其他目标，但未进入当前 CI 发布矩阵，不能宣称正式支持。当前桌面发布 workflow 不构建或发布服务端 Docker 镜像，服务端镜像没有由 CI 产生的统一产物、哈希、来源证明和发布记录。
+准备脚本还声明部分其他目标，但未进入当前 CI 发布矩阵，不能宣称正式支持。dev 服务端镜像已由 CI 产出（GHCR，不可变 tag `dev-<commit>`）；生产服务端镜像仍由本地 `update_remote_image.sh` 构建推送，使用可变标签，缺少统一产物哈希、来源证明和发布记录。`desktop-release.yml` 仍不构建服务端镜像。
 
 ## 3. 本地开发
 
@@ -65,7 +66,7 @@
 - `/setup/status` 可响应；
 - 管理台静态资源或 Vite 代理可加载；
 - 数据库迁移成功；
-- 默认模型目录和价格播种成功。
+- 管理台可读取内置模型目录 `wwwroot/ocxp_codex_official_models.json` 与管理端维护的模型/价格数据；当前 `OpenCodexDatabaseInitializer` 只执行迁移，没有默认数据播种步骤。
 
 ### 3.2 管理台
 
@@ -109,7 +110,8 @@
 - 未执行镜像漏洞扫描；
 - Docker Node 22 与 CI Node 24 不一致；
 - 只正式构建 `linux/amd64`；
-- 服务端镜像构建和推送依赖运行 `update_remote_image.sh` 的本地工作站，缺少独立 CI 发布链。
+- dev 环境已有独立 CI 发布链（`deploy-dev.yml` → GHCR → `scripts/deploy-ocxp-dev.sh`）；生产/主环境镜像仍依赖本地工作站运行 `update_remote_image.sh` 或 `update_remote_image_dev.sh`。
+- 最终镜像未声明 `EXPOSE`；Compose 健康检查与端口映射（`wget --spider http://localhost:8080/health`、`127.0.0.1:8002:8080`）按容器监听 8080 配置。
 
 ## 5. Docker SQLite 部署
 
@@ -153,13 +155,12 @@
 
 ### 6.2 当前 Compose 组件
 
-- PostgreSQL 17 Alpine；
-- Redis 7 Alpine；
-- OpenCodex 镜像；
-- 持久化 `postgres-data`、`redis-data`、`logs`；
-- 容器健康检查；
-- `ocxp-network` 网络；
-- JSON 日志轮转，默认约 `50m × 5`。
+- `postgres:17-alpine` 服务（`admin`/`123456` 示例凭据、`pg_isready` 健康检查、`./postgres-data` 卷）；
+- `redis:7-alpine` 服务（`redis-server --save 60 1`、`redis-cli ping` 健康检查、`./redis-data` 卷、无认证）；
+- OpenCodex 服务（`mem_limit` 默认 `${APP_MEMORY_LIMIT:-1g}`、端口映射 `${APP_PORT_MAPPING:-127.0.0.1:8002:8080}`、`./logs` 卷、依赖 postgres/redis 健康后启动）；
+- 容器健康检查统一 `wget --spider http://localhost:8080/health`；
+- `ocxp-network` 网络（`${NETWORK_NAME:-ocxp-network}`）；
+- JSON 日志轮转，默认约 `50m × 5`（`DOCKER_LOG_MAX_SIZE`/`DOCKER_LOG_MAX_FILE`）。
 
 ### 6.3 生产要求
 
@@ -176,19 +177,21 @@
 
 ## 7. 远程更新流程
 
-当前 `update_remote_image*.sh` 由本地工作站同时承担镜像构建者、镜像发布者和远程部署执行者，大致执行：
+### 7.1 本地脚本（生产/主环境）
 
-1. 构建并推送镜像；
-2. 选择 SQLite 或 PostgreSQL Compose；
-3. SCP Compose 到远端；
-4. SSH 拉取镜像；
-5. 删除旧容器；
-6. `docker compose up -d --force-recreate`；
-7. 打印日志轮转和容器状态。
+`update_remote_image.sh`（`DB_TYPE=postgres` 或 `sqlite`）与 `update_remote_image_dev.sh`（仅 postgres）由本地工作站同时承担镜像构建者、镜像发布者和远程部署执行者：
 
-当前风险：
+1. `docker buildx build --platform linux/amd64 -t "$IMAGE_NAME" --push .`（`IMAGE_NAME` 默认 `shl148155/opencodexp:ocxp`）；
+2. 选择 `docker-compose-sqlite.yml` 或 `docker-compose-pgsql.yml`，SCP 为远端 `docker-compose.yml`；
+3. 远程脚本检查远端 `.env` 是否存在，`mkdir -p logs`，并删除 `OLD_SERVICE_NAMES` 中的历史容器；
+4. `docker compose up -d --no-build --force-recreate --remove-orphans`；
+5. 打印日志轮转 `docker inspect` 结果与容器状态。
 
-- 第一次 SCP 前远端目录可能尚未创建；
+`update_remote_image_dev.sh` 默认部署到 `ocxp-dev`（部署目录 `/www/wwwroot/ocxp-dev`、端口 `127.0.0.1:8003`、独立网络与 postgres/redis 容器名），优先使用 `docker-compose` v1，其余逻辑与主脚本一致。
+
+当前风险（本地脚本）：
+
+- 第一次 SCP 前远端目录可能尚未创建（`mkdir` 在远程脚本内、SCP 之后执行）；
 - 没有部署前数据库备份；
 - 没有等待业务 readiness；
 - 没有代理 API 冒烟；
@@ -197,11 +200,22 @@
 - 强制重建导致服务中断；
 - 输出 `docker ps` 不足以证明发布成功。
 
+### 7.2 CI dev 自动部署
+
+`deploy-dev.yml` 在 `push` 到 `main` 或手动触发时自动部署 dev 环境：
+
+1. validate：`npm --prefix frontend ci` + `npm --prefix frontend run build` + `dotnet test opencodex_proxy/OpenCodex.sln --configuration Release`；
+2. build：`docker/build-push-action` 构建 `linux/amd64` 镜像并推送 `ghcr.io/<owner>/<repo>:dev-<commit>`，写入 `org.opencontainers.image.revision` 标签；
+3. deploy：SSH 先 `mkdir -p` 部署目录，上传 `docker-compose-pgsql.yml` 与 `scripts/deploy-ocxp-dev.sh`；
+4. `deploy-ocxp-dev.sh` 校验依赖容器运行、`docker pull` 固定 tag、把上一镜像写入 `.previous-image`、`docker compose up -d --no-build --no-deps --force-recreate`、轮询容器健康状态（默认 180 秒超时、5 秒间隔），失败时输出最近日志。
+
+CI dev 链路已具备镜像不可变 tag、部署变量校验与健康门禁；仍没有部署前数据库备份、业务 API 冒烟和自动回滚。
+
 `REQ-REL-005`（MUST）：远程发布脚本必须在切换流量前完成目录准备、配置校验、备份、镜像固定、迁移验证和健康冒烟；任何一步失败应停止并保留旧实例。
 
 ## 8. 流量切换
 
-`switch_backend.sh` 可将 Nginx 上游切换到生产、开发或两者轮询。产品化规则：
+仓库内不存在 `switch_backend.sh`，Nginx 上游在“生产/开发/轮询”之间的切换由仓库外的部署环境完成；若采用该切换方式，产品化规则为：
 
 - 切换前两个后端必须通过相同版本和业务冒烟；
 - `both` 只允许在共享数据库、Redis 和关键配置时使用；
@@ -218,7 +232,8 @@
 
 - 应用启动自动执行 EF 迁移；
 - SQLite 和 PostgreSQL 各有独立迁移目录；
-- 启动后播种模型目录和价格；
+- 启动不播种模型目录或价格：模型目录来自内置资源文件与管理端 CRUD，价格来自模型信息记录；
+- 提供 `--cleanup-legacy-stream-lines [--dry-run]` 维护入口（`Program.cs`、`StreamLineLogCleanupService`），用于清理历史流日志槽位残留；
 - 迁移失败通常阻止应用正常启动。
 
 当前 `ContentAddressedLogs` 迁移存在已确认的破坏性行为：
@@ -268,7 +283,12 @@
 
 ## 11. CI/CD 门禁
 
-当前唯一工作流只在手工触发或 `v*` tag 时运行，validate 仅执行后端测试。正式门禁应至少包括：
+当前有两个工作流：
+
+- `deploy-dev.yml`：`push` 到 `main` 或手动触发；validate 执行前端 `ci`+`build` 与 `dotnet test opencodex_proxy/OpenCodex.sln --configuration Release`，build 产出并推送 GHCR 镜像（`linux/amd64`，tag `dev-<commit>`，带 `org.opencontainers.image.source`/`revision` 标签），deploy 上传 Compose 与 `scripts/deploy-ocxp-dev.sh` 并在远端重建容器、轮询容器健康状态；
+- `desktop-release.yml`：手动触发或 `v*` tag；validate 执行根目录 `npm ci`、前端 `ci` 与后端测试，build 矩阵产出 macOS DMG、Windows NSIS、Linux DEB 并创建草稿 Release；tag 构建会把 `tauri.conf.json` 版本同步为 tag 去掉 `v` 后的值。
+
+正式门禁应至少包括：
 
 1. 后端 restore/build/test；
 2. 前端 Node 单测；
@@ -283,7 +303,7 @@
 11. 普通 PR 和 push 触发质量验证；
 12. tag 仅在主分支已通过门禁后创建；
 13. tag SemVer 校验以及 Tauri/Cargo/后端版本一致性校验；
-14. 服务端 Docker 镜像由 CI 构建、扫描、固定 digest 并发布，而不是依赖本地工作站直接推送。
+14. 服务端 Docker 镜像由 CI 构建、扫描、固定 digest 并发布：dev 环境已由 CI 构建并发布不可变 tag，但缺少镜像扫描与 digest 固定；生产镜像仍依赖本地工作站直接推送。
 
 ## 12. 回滚
 
@@ -293,6 +313,7 @@
 - 保留上一 Compose 和配置快照；
 - 新版本 readiness 或冒烟失败时恢复旧实例；
 - 避免清理仍需回滚的旧镜像；
+- 当前 `deploy-ocxp-dev.sh` 会把上一镜像写入 `.previous-image`，但没有自动回滚，回滚仍需人工执行；
 - SSE 连接按已定义策略排空或中断。
 
 ### 12.2 数据回滚
@@ -343,6 +364,9 @@
 | `REQ-REL-018` | MUST | 失败发布不会删除唯一可用的旧版本和数据恢复点 |
 | `REQ-REL-019` | MUST | `ContentAddressedLogs` 升级必须迁移并校验旧日志正文，或在明确审批后执行可恢复的数据丢弃方案 |
 | `REQ-REL-020` | MUST | 服务端 Docker 镜像由可审计 CI 产出并以不可变 digest 发布，禁止把本地工作站作为唯一发布链 |
+| `REQ-REL-021` | MUST | 容器日志必须使用 json-file 驱动，并通过 `DOCKER_LOG_MAX_SIZE`/`DOCKER_LOG_MAX_FILE` 控制轮转 |
+| `REQ-REL-022` | MUST | dev 环境自动部署必须使用 CI 产出的不可变镜像 tag，并在切换后通过容器健康检查 |
+| `REQ-REL-023` | MUST | 桌面构建必须提交 `src-tauri/Cargo.lock` 并使用固定 Rust 工具链，保证 tag 可复现 |
 
 ## 15. 源码和配置追溯
 
@@ -354,7 +378,8 @@
 | 部署说明 | `DEPLOYMENT.md` |
 | 生产更新 | `update_remote_image.sh` |
 | 开发更新 | `update_remote_image_dev.sh` |
-| 流量切换 | `switch_backend.sh` |
+| 流量切换 | 仓库内没有脚本，由部署环境在仓库外执行 |
 | 桌面准备 | `scripts/prepare_tauri_sidecar.mjs` |
 | Tauri 配置 | `src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` |
-| CI | `.github/workflows/desktop-release.yml` |
+| 桌面发布 CI | `.github/workflows/desktop-release.yml` |
+| dev 自动部署 CI | `.github/workflows/deploy-dev.yml`、`scripts/deploy-ocxp-dev.sh` |

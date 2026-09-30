@@ -1,7 +1,8 @@
 # 09. 工具、多模态与特殊流程
 
 > 需求前缀：`REQ-SPC`  
-> 代码基线：`main@3827590`  
+> 代码基线：`main@235da3f4`  
+> 最后核对日期：2026-09-30  
 > 适用入口：Responses、Chat Completions、Messages、Images 及管理台特殊配置
 
 ## 1. 目标与范围
@@ -19,6 +20,8 @@
 - 这些能力的日志、重试、错误和安全边界。
 
 这些能力依赖协议转换专题的规范化中间结构，不能只按某一个上游的字段实现。
+
+本文不展开多代理 v2（multi-agent v2）的模型级模拟、动态上下文与实时流，该主题由新增的 `prd/19` 承载；也不重复搜索 Key 计费与峰谷定价，计费口径见 [11-observability-and-billing.md](./11-observability-and-billing.md)。
 
 ## 2. 工具统一模型
 
@@ -58,6 +61,14 @@ OpenCodex 将不同入口的工具声明统一为至少以下语义：
 - 保留描述、属性、required、additionalProperties 等可表达语义；
 - 对无法转换的 Schema 返回明确错误或按渠道 compat 规则处理；
 - 防止极大 Schema 造成内存或日志写放大。
+
+当前实现事实（`ProtocolConverter.ToolSchemaSanitizer.cs`）：
+
+- Chat 目标清洗 `tools[].function.parameters` 或 `tools[].parameters`；Messages 目标清洗 `tools[].input_schema`；目标为 Responses 时不执行这组清洗。
+- 根级 `$defs` 与 `#/$defs/...` 形式的 `$ref` 就地内联为自包含 Schema，展开后移除 `$defs`；带环检测（`ActiveRefs`）。
+- 展开受深度上限 32（`MaxSchemaDefDepth`）与节点预算 20 000（`MaxSchemaExpansionNodes`）约束，超限或引用成环时降级为 `{"type":"object","properties":{}}` 宽松对象。
+- `type=object` 且缺 `required` 时补空数组；`enum` 中的空字符串被移除；`anyOf`/`oneOf`/`allOf` 递归清洗、去重，单分支时展开合并。
+- 深度/节点预算的降级分支当前没有直接测试覆盖（GAP）；自引用与非递归 `$ref` 由 `ToolSchemaExpansionTests` 覆盖。
 
 ## 3. 工具调用生命周期
 
@@ -99,10 +110,10 @@ sequenceDiagram
 
 当前代码识别以下相关语义：
 
-- `apply_patch` 普通工具名或带命名空间的变体；
-- Responses `apply_patch_call` / `apply_patch_call_output`；
+- `apply_patch` 普通工具名或带命名空间的 `<namespace>/apply_patch`（比较前把 `-` 归一化为 `_`，`IsApplyPatchName`）；
+- Responses `custom` 工具声明中的 apply_patch，以及 `apply_patch_call` / `apply_patch_call_output` 项；
 - Chat function 工具；
-- Messages `custom`、`freeform`、`grammar` 等可表达方言；
+- Messages 入站只有 `mcp_toolset` 有专门分支，其他工具按 `{name, description, input_schema}` 归为普通 function；Responses `custom`/`freeform` 出站到 Messages 时同样输出 `{name, description, input_schema}`，grammar 定义只写入参数描述（最多 4000 字符）；
 - 增量参数流和最终工具结果。
 
 ### 4.2 转换规则
@@ -111,7 +122,7 @@ sequenceDiagram
 |---|---|
 | function 形式 | 以 function name + arguments 表达 |
 | custom/freeform | 保留补丁文本或自由格式参数 |
-| grammar | 仅在目标渠道明确支持时保留 |
+| grammar | 语法定义写入 `input` 参数描述，最多 4000 字符后截断，不作为机器可校验约束传递 |
 | 原生 Responses patch 事件 | 映射为目标协议工具调用和结果 |
 | 目标不支持 patch 工具类型 | 按 compat 删除、重写或返回不支持错误 |
 | 参数增量 | 逐段累积，并在完成事件后闭合 |
@@ -158,32 +169,47 @@ sequenceDiagram
 - 在日志中保存原始和有效请求差异；
 - 对无法确定调用归属的历史返回结构错误。
 
+### 5.4 当前实现限制（源码事实）
+
+- Canonical 用 `native_type=mcp` + `mcp_kind=remote` 标记 native remote MCP，并区分 `mcp_dialect=responses` 与 `mcp_dialect=anthropic`（`ProtocolConverter.Mcp.cs`）；`mcp__` 前缀的命名空间工具仍走旧式模拟路径，不参与 native MCP 转换。
+- Responses native MCP 工具必须带 `server_label`，缺失时抛 `BadRequestException`。
+- native remote MCP 转 Chat 一律失败：Chat Completions 没有原生 remote MCP 工具定义，也没有等价 `allowed_tools` 结构。
+- Anthropic `mcp_toolset` → Responses 需要 `server_label`/`mcp_server_name` 与 `server_url`/`connector_id`/`tunnel_id` 之一；`mcp_server_enabled=false` 无法在 Responses 表达为“禁用服务器”，转换失败以避免扩大访问。
+- Anthropic 默认启用 + 单项禁用的 `default_config`/`configs` 无法表示为 Responses `allowed_tools`，转换失败。
+- 反向转换（Responses 方言 → Messages）必须有 `server_url`；只有 `connector_id`/`tunnel_id` 的 OpenAI connector 无法表示成 Anthropic `mcp_servers`，转换失败。
+- Messages 上游出现 `mcp_servers` 时，`HttpUpstreamClient.Requests.cs` 会自动补 `anthropic-beta: mcp-client-2025-11-20`，并与已有 beta 值合并。
+- Chat 历史中的 native MCP 工具消息（`native_type=mcp`）在转 Chat 时会被拒绝（`CanonicalToChatRequest` 抛错），不会降级为普通 function。
+
 `REQ-SPC-004`（MUST）：MCP 调用、结果和历史必须在三种入口协议之间保持可追踪的调用 ID 和错误状态。
 
 ## 6. Web Search
 
 ### 6.1 模式
 
-当前 Web Search 支持 Tavily 与 Keenable 两类搜索 provider，`simulate` 模式按配置的 provider 选择对应 Key 执行。
+模式存于 `WebSearchSettings` 表，由 `WebSearchToolExecutor.CurrentMode()` 读取；缺失或非法值回退 `convert`。搜索 provider 由 Key 的 `provider` 字段路由（`WebSearchClientRouter`）：`tavily` → `TavilyWebSearchClient`，`keenable` → `KeenableWebSearchClient`，未知 provider 返回 `unsupported_provider` 错误结果。
 
 | 模式 | 行为 | 是否调用搜索 provider |
 |---|---|---:|
-| `convert` | 保留/转换 `web_search` 工具，交给上游模型或上游工具链 | 否（OpenCodex 不主动搜索） |
-| `simulate` | 原生声明替换为代理函数；普通管线收到实际调用后执行 Tavily/Keenable 并回填 | 仅实际调用时 |
-| `disabled` | 删除 Web Search 工具及关联 `tool_choice`/`include` | 否 |
+| `convert` | 不做本地执行；`web_search`/`web_search_preview` 声明按协议转换规则进入上游请求（Responses→Responses 保持原生，跨协议时转为目标协议的 function/tool 声明） | 否 |
+| `simulate` | 原生声明替换为代理内置函数 `opencodex_web_search`（名称冲突时追加 `_2`、`_3`…）；上游实际调用该函数时由代理执行 Tavily/Keenable 并续轮 | 仅实际调用时 |
+| `disabled` | 删除 Web Search 工具、`tool_choice` 中的引用与相关 `include` 项 | 否 |
 
-当前注册范围不是所有请求：只有 **Responses 入口 + Chat/Messages 渠道 + 访问 Key 所属用户角色为 `superadmin` + 声明原生 `web_search`/`web_search_preview` + 全局模式为 `simulate`** 时才登记代理执行权。登记不会触发搜索，未调用搜索时仍走普通响应路径。普通用户不能触发搜索 provider 执行，同名普通函数不被接管。
+当前注册范围不是所有请求：只有 **Responses 入口 + Chat/Messages 渠道 + 访问 Key 所属用户角色为 `superadmin` + 恰好声明一个原生 `web_search`/`web_search_preview` + 全局模式为 `simulate`** 时才登记代理执行权（`WebSearchRequestPolicy.RegisterBuiltin`）。登记不会触发搜索，未调用搜索时仍走普通响应路径。普通用户不能触发搜索 provider 执行，同名普通函数不被接管。
+
+原生搜索声明除 `type`、`description`、null 值外，只允许 `external_web_access=true`、`search_context_size="medium"`、`return_token_budget="default"`、`search_content_types=["text"]`；其余选项抛 400。`include` 中出现 `web_search_call.*` 且不是 `web_search_call.action.sources` 时同样抛 400。
 
 ### 6.2 请求策略
 
-当前 `web_search` 调用参数原则上只接受 `query`：
+当前 `web_search` 调用参数与执行限制（`WebSearchRequestPolicy.ParseQuery`、`WebSearchToolExecutor`、`BuiltinToolSession`）：
 
-- arguments 必须是对象或可解析 JSON 对象；
-- `query` 必须为非空字符串，最多 2048 字符，参数 JSON 最多 16 KiB；
-- 拒绝重复键和未知参数；不支持的原生选项明确报错；
-- 搜索结果应包含答案摘要、来源链接和可供模型继续处理的文本；
-- Key 在实际调用前通过数据库条件更新原子预留，`UsageCount` 加 1；搜索 provider 随后失败不自动回退计数；
-- 达到单 Key 上限的 Key 不得继续使用。
+- arguments 必须是可解析为对象的 JSON；重复键直接拒绝。
+- 只接受 `query`，未知参数报错；`query` 必须为非空字符串并 trim，最大 2048 字符；arguments 的 UTF-8 字节上限为 16 384。
+- 调用次数由 `max_tool_calls` 控制：缺省 15，允许 0–64 的 int/long，越界或非整数返回 400；`max_tool_calls=0` 与强制搜索的 `tool_choice` 冲突时返回 400。此外最多允许 `max_tool_calls + 3` 轮，连续 2 次非法或失败调用后停止搜索。
+- 同一响应内相同 `call_id` 只执行一次：参数一致时复用结果，参数不一致时按上游错误（502）处理。
+- Key 预留使用条件更新（compare-and-swap）：按 `Position`、`Id` 顺序选择 `Enabled && UsageCount < UsageLimit` 的 Key，并在同值条件下 `UsageCount+1`，最多重试 8 次；预留后 provider 失败不回退计数；达到上限的 Key 不再使用。
+- 结果裁剪：答案摘要最多 4096 字符；来源最多 5 条；单条 `title` 512、`url` 2048、`content` 4096 字符。
+- 搜索与续轮共享请求级 deadline（以渠道 `DefaultTimeout` 为总预算）和输出预算：入口请求带 `max_output_tokens` 时，累计 usage 超出预算会把响应标记为 `status=incomplete`、`incomplete_details.reason=max_output_tokens`，续轮请求写入剩余 `max_tokens`/`max_completion_tokens`。
+- 搜索调用通过校验、准备进入执行阶段时即置 `HasExecuted=true`（在调用 provider 之前），此后请求不再允许换渠道失败重放（`ProxyEndpointService` 用 `HasExecuted != true` 控制非流式与流式 failover），避免重复调用 provider。
 
 ### 6.3 simulate 流程
 
@@ -225,6 +251,12 @@ stateDiagram-v2
 `REQ-SPC-005`（MUST）：只有超级管理员配置并允许的场景才能启用 `simulate`；普通用户不得通过请求字段绕过全局模式或触发未授权搜索 provider 调用。
 
 当前 `simulate` 对参数非法、无可用 Key、搜索 provider 失败或调用次数超限的处理，不是直接返回独立 HTTP 4xx/5xx；它先生成 `status=failed` 的 Web Search 工具结果，再要求模型给出最终回答。只有后续上游调用本身失败时，代理才按上游异常结束请求。
+
+补充实现事实：
+
+- 工具结果由 `WebSearchToolResult.Failed` 生成并带 `disable_search` 标记；达到上限后的后续调用返回 "Further web search calls are disabled for this response."。
+- 搜索结果与续轮映射写入 `WebSearchContinuationStore`，无独立 TTL 与后台清理；超级管理员清空日志时在同一事务内删除全部续传记录（`ObservabilityService.ClearLogs`）。
+- 搜索执行后的重放保护由 `ProxyEndpointServiceTests.ProxyAsync_WebSearch_PreparesOnlyAndDoesNotReplayExecutedTools` 覆盖。
 
 ### 6.4 convert/disabled 边界
 
@@ -303,6 +335,17 @@ flowchart TD
 - OCR 子请求在视觉上游或结果解析失败时先转兜底路由，两者都失败才返回 502；没有可用视觉路由时返回 400，主请求不会忽略图片后继续；
 - 视觉转移配置按 owner 各存一行（主必填、兜底可留空），保存时强制要求渠道属于该 owner、渠道已启用、模型映射存在且 `supports_image=true`，因此上线前必须先把视觉模型的图片能力标注补齐。
 
+### 7.4 触发条件、缓存与失败记忆（当前事实）
+
+- OCR 触发需要同时满足三个条件（`ProxyEndpointService.ProxyAsync`）：`ProxyImageRequestDetector.ContainsImageInput` 命中图片；已选候选命中显式模型映射（`MatchedModelMapping=true`）；该映射 `SupportsImage=false`。
+- 视觉路由只来自该 owner 的显式配置（`VisionTransferSettings` 一行/owner，主必填、兜底可选）；`ProxyRouteService.ListVisionTransferRoutesAsync` 只解析该 owner 已启用渠道的配置，主路由失败时按顺序尝试兜底。
+- OCR 缓存键 = SHA256(图片内容字节或远程 URL 字节 + `|channelId|upstreamModel`)；换渠道或换上游模型不会命中旧结果。缓存 Key 不包含 owner/访问 Key，仍存在跨用户复用识别结果的租户隔离风险（GAP）。
+- 失败记忆是请求级共享的 `HashSet<string>`（`ProxyEndpointService` 创建一次，并在主请求换渠道重试之间传递）；路由键格式为 `<channelId>/<upstreamModel>`，同一请求内已失败的视觉路由不再重试。
+- 无可用路由时返回 400：未配置为 `vision transfer model is not configured for owner '<owner>'`；配置存在但主/兜底都失效为 `configured vision transfer route is unavailable: <reason>`。
+- 视觉上游或结果解析失败：先尝试下一个候选；全部失败后 OCR 层包装为 502 `OCR failed: ...`。缓存命中不写 OCR 日志；真实识别与失败路径写 `request_type=ocr` 的独立日志行（复用主请求 `request_id`，`parent_request_log_id` 为 null，`ocr_details` 带 `attempt`、`route_kind`、`cache_hit` 等字段）。
+- 只有 `role=user` 的图片进入 OCR；非用户消息与工具结果中的图片在降级重写时被替换为占位文本（`ProxyImagePayloadRewriter`）。
+- Responses 检测器覆盖 `message.input_image` 与 `function_call_output.output` 中的图片；custom/native 工具输出中的图片不会触发降级（`ProxyImageRequestDetector`）。
+
 `REQ-SPC-006`（MUST）：图片检测、视觉路由和 OCR 降级必须在普通请求、工具结果续轮和三种入口协议中保持一致的能力判断。
 
 ## 8. Images 生成与编辑接口
@@ -312,24 +355,30 @@ flowchart TD
 - 接口：`POST /images/generations`、`POST /v1/images/generations`；
 - 只接受 `application/json`；
 - 请求体必须是 JSON 对象；
-- 首版不支持 `stream=true`；
-- 根据 Images 渠道方言（OpenAI/xAI）构造上游请求；
-- 使用 Bearer 访问 Key确定用户和渠道；
+- 首版不支持 `stream=true`（`ImagesProxyService` 在读取 JSON 后显式返回 400）；
+- 根据 Images 渠道方言（`compat.images_api_dialect`）：`openai` 直接把 JSON 转发到 `/images/generations`；`xai` 先按 xAI 方言校验参数（拒绝 `size`、`quality`、`background`、`output_format`、`output_compression`、`moderation`、`style`）再转发；
+- 使用 Bearer 访问 Key 确定用户和渠道；
 - 记录主请求日志；
 - 返回上游状态码和转换后的结果或统一错误。
 
 ### 8.2 图片编辑
 
 - 接口：`POST /images/edits`、`POST /v1/images/edits`；
-- 使用 multipart 请求；
-- 支持受限数量和大小的图片文件；
-- 首版不支持 `stream=true`；
-- 非允许字段和文件字段返回 4xx；
-- 请求体、文件、上游响应和错误应受日志脱敏/容量策略限制。
+- `image`/`image[]` 与可选 `mask` 使用 multipart；单文件上限 20 MiB、总上传上限 100 MiB、图片数量上限 16，仅接受 `image/png`、`image/jpeg`、`image/webp` 且校验文件头与 MIME 一致；
+- `stream=true` 返回 400；非允许字段、重复 mask、缺少 `model`/`prompt` 等返回 4xx；
+- `openai` 方言重建 multipart 转发到 `/images/edits`；`xai` 方言改为 JSON + data URI，要求 1–3 张图片、不允许 mask、同样拒绝 `size`/`quality`/`background`/`output_format`/`output_compression`/`moderation`/`style`；
+- 上游非 2xx 的响应体读取上限为 64 KiB（`MaxImagesErrorBytes`），只透传 `x-request-id`/`request-id`/`openai-request-id`/`retry-after` 等安全响应头；
+- 上游调用失败不重试，取消按传入取消令牌向上传播（`ImagesUpstreamClientTests.Failure_IsBoundedAndNeverRetried`、`Cancellation_IsPropagatedWithoutRetry`）。
 
 当前实现线索包括单文件约 20 MiB、总量约 100 MiB、最多 16 张的限制；正式产品数值须由非功能需求和测试固定。
 
-当前生产可用性事实：控制器、multipart 读取器、`IProxyImagesEndpointService` 契约和 `HttpUpstreamClient` 的 Images 辅助代码已经存在，但代码库中没有 `IProxyImagesEndpointService` 的生产实现或 DI 注册，也没有把 `IImagesUpstreamClient` 注册为可注入服务。真实应用解析 `ImagesController` 时会因依赖缺失而失败；现有控制器 fake 测试只证明输入校验契约，不证明端点可运行。
+当前生产可用性事实（GAP）：控制器、multipart 读取器、`ImagesProxyService` 编排层、`IProxyImagesEndpointService` 契约和 `HttpUpstreamClient` 的 Images 辅助代码已经存在，但：
+
+1. `IProxyImagesEndpointService` 没有生产实现，只有 `ImagesControllerTests.StubImagesService` 测试替身；
+2. `ImagesProxyService`（实现 `IImagesProxyService`）没有注册到 DI；
+3. `HttpUpstreamClient` 虽实现 `IImagesUpstreamClient`，但 DI 只按 `IUpstreamClient`、`IUpstreamModelClient` 注册。
+
+因此真实应用解析 `ImagesController` 会因依赖缺失失败；现有控制器 fake 测试只证明输入校验契约，不证明端点可运行。`/images/*` 当前状态为 GAP，不得按可用能力对外承诺。
 
 `REQ-SPC-007`（MUST）：Images 接口不得把不支持的流式请求当作普通非流式请求静默执行，必须返回明确的客户端错误。
 
@@ -339,7 +388,9 @@ flowchart TD
 
 ### 9.1 识别规则
 
-当系统级 `intercept_probe_requests=true` 时，如果请求中的以下任一字段为不大于 1 的值，视为 Probe：
+`intercept_probe_requests` 已从桌面 `settings.json` 迁移到数据库 `ProxySettings` 表：`ProxyService` 通过 `IProxySettingsService.GetBool("intercept_probe_requests", false)` 读取，管理台通过 `GET/PUT /system-settings/proxy-settings` 读写（`SystemSettingsController`）；`DesktopSystemSettingsStoreTests` 断言该键不再写入 desktop-settings.json。
+
+开关为 true 时，如果请求中的以下任一字段为不大于 1 的值，视为 Probe：
 
 - `max_tokens`；
 - `max_output_tokens`；
@@ -347,13 +398,15 @@ flowchart TD
 
 当前只接受运行时类型为 `int` 的值；字符串 `"1"` 不会命中。判断条件是 `<= 1`，所以 1、0 和负整数都会被拦截。
 
+匹配顺序为 `max_tokens`、`max_output_tokens`、`max_completion_tokens`；命中即返回，不再检查后续字段。
+
 ### 9.2 行为
 
 - 仍必须验证访问 Key；
 - 仍写入请求日志；
 - 不选择渠道；
 - 不调用上游；
-- 根据入口协议生成最小成功响应；
+- 根据入口协议生成最小成功响应：Responses 返回 `object=response`、`status=completed`、空 `output`；Chat 返回 `choices[0].finish_reason=stop`；Messages 返回 `stop_reason=end_turn`。缺少 `model` 时使用占位默认值（Chat/Responses `gpt-5.5`、Messages `claude-opus-5`）；
 - 当前即使请求携带 `stream=true`，也返回普通 JSON、以 `IsStream=false` 记日志，不生成 SSE；流式等价是产品化缺口；
 - 客户端应能用它探测模型/代理是否可用而不消耗上游配额。
 
@@ -365,7 +418,7 @@ flowchart TD
 - 渠道级遗留 `compat.intercept_probe_requests` 不得与系统级开关形成双重生效层级；
 - Probe 响应不能伪造真实模型能力或工具结果。
 
-当前 Probe 日志只可通过“200、无 Channel/UpstreamModel、无 UpstreamRequest/Response”间接识别，没有独立的 `probe_intercepted` 原因字段。
+当前 Probe 日志只写 `Payload`、`ResponsePayload`、`RequestModel` 与 `IsStream=false`，`ChannelId`/`ChannelType`/`UpstreamModel`/`UpstreamRequest`/`UpstreamResponse` 均为 null；日志只能通过“200、无 Channel/UpstreamModel、无 UpstreamRequest/Response”间接识别，没有独立的 `probe_intercepted` 原因字段。
 
 `REQ-SPC-009`（MUST）：Probe 拦截只能由系统级配置控制，并在日志中标记“未调用上游”的原因。
 
@@ -417,6 +470,9 @@ flowchart TD
 | 无可用 Web Search Key | 当前通常仍为 200 | 工具结果为“搜索不可用”并强制最终回答 |
 | 搜索轮数超限 | 当前通常仍为 200 | 工具结果标记达到上限并强制最终回答 |
 | Web Search 续传结果已清除或缺失 | 当前通常仍为 200 | 生成明确不可用的工具结果，不重新搜索；会话可继续 |
+| Web Search 搜索超时 | 504 | 搜索与续轮共享的 deadline 到期，按网关超时结束 |
+| 上游调用已禁用的 Web Search 函数 | 502 | 上游行为与代理绑定不一致，按上游错误终止 |
+| 图片编辑参数/文件不合法 | 400/413/415 | 单文件 20 MiB、总量 100 MiB、最多 16 张；仅 png/jpeg/webp，且校验文件头 |
 | 未配置视觉转移 | 400 | `vision transfer model is not configured for owner '<owner>'` |
 | 配置已失效 | 400 | `configured vision transfer route is unavailable: <reason>` |
 | OCR 上游/解析失败 | 502 | 主请求失败，并保留 OCR 子日志 |
@@ -451,17 +507,21 @@ flowchart TD
 | `REQ-SPC-020` | MUST | 特殊流程不得泄露客户端 Bearer Key | 上游 Header 断言 |
 | `REQ-SPC-021` | SHOULD | 大型 Schema、SSE、图片和搜索结果有容量保护 | 压力与超限测试 |
 | `REQ-SPC-022` | SHOULD | 产品界面说明实验性/降级语义 | 管理台帮助文案和错误文案验收 |
+| `REQ-SPC-023` | MUST | Web Search 调用参数与上限固定：`query` ≤2048 字符、arguments ≤16 KiB、`max_tool_calls` 默认 15 且限 0–64、来源 ≤5、同 `call_id` 去重 | 边界值、重复 `call_id`、Key CAS 预留测试 |
+| `REQ-SPC-024` | MUST | Web Search 搜索与续轮共享请求级时限和输出预算；搜索执行后禁止重放请求 | 超时、`max_output_tokens` 截断、failover 抑制测试 |
+| `REQ-SPC-025` | MUST | OCR 触发需同时满足图片命中、显式模型映射、映射不支持图片；缓存键含 `channelId` 与 `upstreamModel`；失败视觉路由按请求级记忆跳过 | 触发矩阵、换模型缓存、主/兜底失败测试 |
+| `REQ-SPC-026` | MUST | Probe 开关只来自 `ProxySettings`，日志需提供独立拦截原因 | 配置读写、desktop-settings 隔离、日志原因字段验收（原因字段当前为 GAP） |
 
 ## 14. 追溯索引
 
 | 能力 | 主要源码 | 主要测试 |
 |---|---|---|
-| 工具契约/名称 | `Protocols/ProtocolConverter.Tool*.cs` | `ProtocolStructuralCompatibilityTests.cs`、`ProtocolConversionMatrixTests.cs` |
+| 工具契约/名称 | `Protocols/ProtocolConverter.Tool*.cs`、`ProtocolConverter.ToolSchemaSanitizer.cs` | `ProtocolStructuralCompatibilityTests.cs`、`ProtocolConversionMatrixTests.cs`、`ToolSchemaExpansionTests.cs` |
 | Apply Patch | `ProtocolConverter.ApplyPatchTools.cs` | `ProxyCompatibilityTests.cs`、流式兼容测试 |
 | MCP | `ProtocolConverter.Mcp.cs`、`ProtocolConverter.ResponsesInput.cs` | `NativeMcp*Tests.cs` |
-| Web Search | `Services/WebSearch/`、`WebSearchService.cs` | `ProxyStreamServiceTests.cs`、Web Search 相关测试 |
+| Web Search | `Services/WebSearch/WebSearchRequestPolicy.cs`、`WebSearchToolExecutor.cs`、`WebSearchClientRouter.cs`、`Services/Proxy/BuiltinToolSession.cs`、`WebSearchContinuationStore.cs` | `WebSearchRequestPolicyTests.cs`、`WebSearchToolExecutorTests.cs`、`WebSearchClientRouterTests.cs`、`WebSearchContinuationStoreTests.cs`、`ProxyEndpointServiceTests.cs` |
 | 图片检测 | `ProxyImageRequestDetector.cs` | `ProxyVisionRoutingTests.cs` |
-| OCR | `ProxyOcrService.cs` | `ProxyImageFallbackTests.cs` |
-| Images API | `ImagesController.cs`、`ImageEditRequestReader.cs` | `ImagesControllerTests.cs`、`ImagesCoreContractTests.cs` |
-| Probe | `ProbeRequestInterceptor.cs`、`ProxyController.cs` | `ProbeRequestInterceptorTests.cs`、`ProxyControllerTests.cs` |
+| OCR | `ProxyOcrService.cs`、`ProxyImageFallbackService.cs`、`ProxyImagePayloadRewriter.cs` | `ProxyImageFallbackTests.cs`、`ProxyVisionTransferFallbackTests.cs`、`VisionTransferSettingsServiceTests.cs` |
+| Images API | `ImagesController.cs`、`ImagesProxyService.cs`、`ImageEditRequestService.cs`、`HttpUpstreamClient.Images.cs` | `ImagesControllerTests.cs`、`ImagesUpstreamClientTests.cs`、`ImagesCoreContractTests.cs` |
+| Probe | `ProbeRequestInterceptor.cs`、`ProxyService.cs`、`ProxySettingsService.cs` | `ProbeRequestInterceptorTests.cs`、`ProxyControllerTests.cs`、`ProxySettingsServiceTests.cs` |
 | SSE | `SseStreamConverter*.cs`、`ProxyStreamService.cs` | `SseStreamConverterTests.cs`、`ProtocolConversionMatrixTests.cs` |

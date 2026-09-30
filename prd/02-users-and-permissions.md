@@ -8,8 +8,9 @@
 | 需求编号前缀 | `REQ-USR` |
 | 文档状态 | Draft，基于现状反推并补齐产品化要求 |
 | 版本 | 1.0 |
-| 基线 | `main@3827590` |
+| 代码基线 | `main@235da3f4` |
 | 编写日期 | 2026-08-17 |
+| 最后核对日期 | 2026-09-30 |
 | 适用端 | OpenCodex Web 管理台、Tauri 桌面管理台、`/v1/*` 代理接口 |
 | 主要读者 | 产品、交互/UI、前端、后端、安全、测试、运维 |
 | 关联文档 | [05 初始化与认证](./05-initialization-and-auth.md)、[10 管理台体验](./10-admin-console.md) |
@@ -98,11 +99,13 @@ OpenCodex 同时承担两类完全不同的身份认证：
 
 ### 3.2 当前实现事实
 
-- 管理接口调用 `RequireUser()` 或 `RequireSuperadmin()`，依据 Cookie 会话。
-- `/v1/*` 代理入口调用 Bearer 鉴权，缺少有效 Bearer 时返回 401，错误为 `valid bearer api key required`。
-- Bearer Key 查询采用哈希；Key 和用户鉴权快照缓存 TTL 为 60 秒。
-- 禁用或删除 Key 时会主动失效 Key 缓存。
-- 禁用或删除用户时会失效用户鉴权缓存，因此其 Bearer Key下一次鉴权应失败。
+- 管理接口通过 `AuthenticatedApiControllerBase` 调用 `IWorkContext.RequireUser()` 或 `IWorkContext.RequireSuperadmin()`，身份来自管理台 Cookie。
+- `ProxyController` 与 `ImagesController` 使用 `[Authorize(AuthenticationSchemes = ProxyBearerAuthenticationDefaults.Scheme)]`；缺少或无效 Bearer 时返回 401，错误为 `valid bearer api key required`。
+- `ProxyBearerAuthenticationHandler` 仅要求 `Authorization` 以 `Bearer ` 开头且 token 去空格后非空；Bearer 前缀大小写不敏感，不校验 token 是否以 `ocx_` 开头，任何非空 token 都进入哈希查询。
+- `ProxyAccessService.AuthenticateRawKeyAsync` 依次读取 `auth:apikey:<SHA256>`、`auth:user:<用户ID>`，再回源数据库；两层缓存 TTL 均为 60 秒。缓存为进程内 L1 加可选 Redis L2，Redis 未配置或不可用时降级为纯 L1。
+- Key 启停、删除和导入更新会精准失效 Key 缓存；用户启停、删除会失效用户缓存。Redis 可用时失效会通过广播清理其他实例的 L1，Redis 不可用时其他实例只能依赖 60 秒 TTL。
+- 缓存不保存空结果：Key 不存在、停用，或 owner 不存在、停用时均返回未认证且不回写缓存。
+- `LastUsedAt` 只在 Key 缓存回源数据库时更新；命中缓存期间不会写数据库。回源时会先写 `LastUsedAt` 再校验 owner，因此 owner 停用导致的失败鉴权也会在回源路径写入该时间。
 - 客户端 Bearer 值不会作为渠道上游凭证透传；渠道认证使用渠道自身配置。
 
 ### 3.3 产品化要求
@@ -121,8 +124,8 @@ OpenCodex 同时承担两类完全不同的身份认证：
 | 字段 | 类型 | 当前事实 | 产品语义 |
 |---|---|---|---|
 | `id` | UUID | 后端主键，管理台列表未展示 | 稳定用户标识，不因用户名变化而改变 |
-| `username` | string | 去除首尾空格；数据库按当前比较规则判重 | 登录名和资源展示名 |
-| `password_hash` | string | 使用安全哈希保存 | 不得返回前端或日志 |
+| `username` | string | 去除首尾空格后要求非空；`Users.Username` 建唯一索引，数据库比较规则决定大小写判重 | 登录名和资源展示名 |
+| `password_hash` | string | PBKDF2-SHA256，随机盐，200,000 次迭代 | 不得返回前端或日志 |
 | `role` | enum | `superadmin`、`user` | 超级管理员、普通用户 |
 | `enabled` | boolean | 停用用户无法登录，受保护接口会使其会话失效 | 用户整体启停开关 |
 | `created_at` | Unix 秒 | 列表展示本地化时间 | 创建时间 |
@@ -156,6 +159,7 @@ OpenCodex 同时承担两类完全不同的身份认证：
 #### 当前实现事实
 
 - 当运行配置存在 `OPENCODEX_ADMIN_PASSWORD` 时，系统判定已配置环境变量超级管理员。
+- 管理员用户名默认 `admin`；配置为空白时也会回退为 `admin`。
 - 每次登录前，系统会确保该用户名对应用户存在，并强制：
   - 角色为 `superadmin`；
   - 状态为启用；
@@ -216,6 +220,8 @@ OpenCodex 同时承担两类完全不同的身份认证：
 | Web Search 配置 | 不可管理 | 可管理 | 仅超级管理员页面可见且接口必须校验 |
 | 模型目录/系统设置 | 不可管理 | 可管理 | 仅超级管理员 |
 
+Bearer API Key 调用方不进入本表的管理台页面权限体系；它只能按 Key 所属用户调用代理入口。代理请求的渠道选择、日志归属和视觉转移配置均使用该 owner，不能用管理台 Cookie 或请求中的 owner 字段替代。
+
 ---
 
 ## 6. 关键任务流
@@ -242,7 +248,7 @@ flowchart TD
 - 前端没有行内规则，直接提交服务端。
 - 用户名和密码会去除首尾空格。
 - 用户名空、密码空、用户名重复均由后端返回 400。
-- 创建成功后关闭弹窗并重新加载列表，但没有明确成功 Toast。
+- 创建成功后关闭弹窗、重新加载列表，并显示“用户创建成功”Toast。
 
 #### 产品化要求
 
@@ -291,10 +297,12 @@ sequenceDiagram
 
 #### 当前实现事实
 
-- 删除用户会显式删除该用户的访问 API Key和渠道，再删除用户。
+- `UserService.DeleteUserAsync` 按固定顺序批量删除该用户的访问 API Key、渠道、视觉转移配置，再删除用户本身。
+- `WebSearchContinuationEntries.OwnerUserId` 配置了指向 `Users.Id` 的外键级联删除。
+- `RequestLogs.OwnerUserId` 只建立索引，没有指向 `Users` 的外键；删除用户不会删除请求日志或日志内容。
 - 当前用户不能删除自己。
 - 前端删除确认仅显示“删除用户 X？”，没有列出资源影响。
-- 请求日志等历史审计数据的保留/匿名化策略没有在当前用户服务中明确体现。
+- 普通超级管理员可以删除环境变量超级管理员；后续登录会重新创建该环境管理员，这是已知保护缺口。
 
 #### TBD-USR-001：用户删除后的历史日志
 
@@ -320,38 +328,40 @@ flowchart TD
     F --> G[POST /api-keys]
     G --> H{成功?}
     H -- 否 --> I[保留弹窗和草稿，展示错误]
-    H -- 是 --> J[展示一次性完整 Key]
-    J --> K[复制/下载后确认已保存]
-    K --> L[关闭弹窗，列表仅显示掩码]
+    H -- 是 --> J[展示完整 Key 和复制按钮]
+    J --> K[列表接口仍返回完整 key，可继续复制或导出]
+    K --> L[关闭弹窗并刷新列表]
 ```
 
 #### 当前实现事实
 
-- 后端当前生成 Key、保存哈希，同时也保存 `KeyPlaintext`。
-- 列表 DTO 当前返回完整 `key`，因此页面可在列表复制并导出完整 Key。
-- UI 文案为“可在列表复制完整 Key”，导出提示“含明文”。
-- 仓库 README 仍描述“只在创建成功时显示一次明文、数据库只保存哈希”，与代码冲突。
-- 创建接口 DTO 接收 `owner_user_id`，但当前前端提交 `owner_username`；超级管理员在 UI 选择的归属用户可能被后端忽略并回落到当前超级管理员。
+- `OpenCodexSecurity.GenerateAccessApiKey` 生成 `ocx_` 加 32 字节随机数的 Base64URL 值；数据库同时保存 SHA-256 哈希、完整 `KeyPlaintext`、前 12 位和后 6 位。
+- 创建 Key 时后端未校验名称非空；导入路径会拒绝空名称。
+- 列表 DTO 当前返回完整 `key`，因此列表和新建弹窗均可复制，导出文件也包含完整 Key。
+- 页面说明写“完整 Key 仅创建时显示一次，列表展示脱敏 Key”，与列表返回 `key` 且复制按钮依赖该字段的当前行为冲突。
+- 创建接口同时接受 `owner_username` 与 `owner_user_id`：超管提供 `owner_username` 时优先按用户名解析，否则按 `owner_user_id` 解析；两者都为空时归当前用户。
+- 前端提交 `owner_username`，普通用户提交或指定其他 owner 时由服务端强制归当前用户。
 
-#### 已知限制：超级管理员归属字段不一致
+#### 当前字段兼容规则
 
 | 层 | 当前字段 |
 |---|---|
 | 前端创建请求 | `owner_username` |
-| 后端创建 DTO | `owner_user_id` |
+| 后端创建 DTO | `owner_username`、`owner_user_id` |
 | 后端导入请求 | `owner_username` |
 
-该不一致必须在产品化要求中修复并加入端到端测试。
+创建与导入归属字段已可互通；`owner_username` 与 `owner_user_id` 的业务优先级仍需在新增客户端时保持一致。
 
 ### 6.5 使用访问 API Key调用代理
 
 1. 客户端发送 `Authorization: Bearer <key>`。
-2. 服务端提取 Bearer，计算 Key 哈希。
-3. 校验 Key存在且启用。
-4. 校验 Key所属用户存在且启用。
-5. 以所属用户作为调用身份选择该用户渠道、写入日志和统计。
-6. 更新 Key最后使用时间。
-7. 无有效渠道时返回明确错误，不得回退使用其他用户渠道。
+2. `ProxyBearerAuthenticationHandler` 提取 token；前缀大小写不敏感，token 去空格后为空视为未提供。
+3. `ProxyAccessService` 计算 SHA-256，先查 `auth:apikey:<hash>`，再查 `auth:user:<ownerUserId>`；缓存未命中时回源数据库。
+4. 校验 Key 存在且启用，再校验 owner 存在且启用。
+5. 把 Key ID、owner 用户 ID、owner 用户名和角色写入代理 Claims，后续服务通过 `IProxyIdentityContext.RequireIdentity()` 读取。
+6. 以所属用户作为调用身份选择该用户渠道、视觉转移配置、日志归属和统计。
+7. Key 缓存回源时更新数据库 `LastUsedAt`；缓存命中期间不重复写库。
+8. 无有效渠道时返回明确错误，不得回退使用其他用户渠道。
 
 ### 6.6 导入访问 API Key
 
@@ -361,6 +371,8 @@ flowchart TD
 - 超级管理员按 `owner_username` 分配；缺省归当前用户。
 - 当前合并键为 `(ownerUserId, name)`：同名项更新明文、哈希和状态，否则新增。
 - 当前为整体失败语义；任一项无名称、无 Key或 owner 不存在都会返回错误。
+- 导出由前端本地完成，没有单独的服务端导出接口；导出内容使用当前 `/api-keys` 列表作用域：普通用户仅自己的 Key，超级管理员为全部 Key，并包含完整明文。
+- 导入接口调用 `RequireUser()` 而非 `RequireSuperadmin()`；普通用户只能导入到自己名下，超级管理员可按 `owner_username` 分配。
 
 产品化后必须提供导入前预览，显示新增、覆盖、跳过和错误数量，并要求用户确认覆盖。
 
@@ -404,7 +416,7 @@ flowchart TD
 #### 页面结构
 
 - 标题：“API Key 管理”。
-- 说明必须改为能明确区分代理访问 Key与渠道上游 Key的文案。
+- 当前说明为“用于调用 /v1/* 代理接口；完整 Key 仅创建时显示一次，列表展示脱敏 Key”，后半句与列表返回完整 `key` 的实现冲突。
 - 统计：Key 总数、启用 Key、最近使用。
 - 操作：刷新、导出、导入、新增。
 - 列表：用户（仅超级管理员）、名称、掩码 Key、最近使用、状态、操作。
@@ -414,17 +426,18 @@ flowchart TD
 | 字段 | 控件 | 权限 | 校验 |
 |---|---|---|---|
 | 归属用户 | 可搜索 Select | 仅超级管理员 | 必须是存在且启用的用户；若不选，需明确默认归属当前用户 |
-| 名称 | 文本输入 | 全部已登录用户 | MUST 非空；同一 owner 下是否允许重名见 TBD-USR-003 |
+| 名称 | 文本输入 | 全部已登录用户 | 当前前端和创建接口未设非空规则；导入路径要求非空；同一 owner 下是否允许重名见 TBD-USR-003 |
 
 #### 操作状态
 
 - 列表加载：遮罩；首次加载不得误显示空态。
 - 空态：“暂无 API Key”，提供新增入口。
 - 创建中：按钮 loading，阻止重复提交。
-- 创建成功：展示完整 Key、复制按钮和“仅此一次”提示（若采用推荐策略）。
+- 创建成功：展示完整 Key和复制按钮；列表仍返回完整 Key，因此当前没有“仅此一次”限制。
 - 启停、删除成功：刷新列表并显示成功反馈。
 - 导入中：文件选择后显示解析/上传状态；禁止重复导入。
-- 导出：执行敏感操作确认和重新认证策略取决于明文策略决策。
+- 导出：当前直接下载包含完整 Key的 JSON，没有二次确认或重新认证。
+- 请求日志的 Key 名称列在 `request_type=diagnostic` 时固定显示“连接测试”，不依赖 `api_key_name`。
 
 ---
 
@@ -653,10 +666,10 @@ flowchart TD
 
 #### REQ-USR-017（MUST）创建 Key归属字段统一
 
-**要求**：前端与后端必须统一使用一种稳定字段，推荐 `owner_user_id`；显示层继续返回 `owner_username`。
+**要求**：当前兼容 `owner_username` 与 `owner_user_id` 两种归属字段；超级管理员请求同时提供两者且值冲突时，必须以文档锁定的优先级处理。长期应收敛到一种稳定字段，推荐 `owner_user_id`；显示层继续返回 `owner_username`。
 
 **验收标准**：
-1. 超级管理员选择用户 B后创建的 Key数据库 owner为 B。
+1. 超级管理员选择用户 B 后创建的 Key 数据库 owner 为 B；同时传两种字段时按已锁定优先级解析。
 2. 返回对象 owner_username为 B。
 3. 用户 B可查看和使用，用户 A不可查看。
 4. 有覆盖该场景的端到端测试。
@@ -687,7 +700,7 @@ flowchart TD
 
 **验收标准**：
 1. 日志记录 Key ID、Key名称和 owner，不记录完整值。
-2. 最近使用时间在成功鉴权后更新。
+2. 最近使用时间按锁定策略持久化；若为每次成功鉴权更新，必须验证缓存命中路径，不得只更新鉴权 DTO 的当前时间。
 3. Key owner停用时 Key不可用。
 
 #### REQ-USR-022（MUST）解决明文策略冲突
@@ -784,6 +797,38 @@ flowchart TD
 3. 状态和错误有文本及可访问名称。
 4. 创建 Key成功和复制结果可被读屏感知。
 
+
+### 11.8 补充需求
+
+#### REQ-USR-031（MUST）渠道诊断日志的 Key 名称显示
+
+**要求**：渠道连接测试（`request_type=diagnostic`）在请求日志中必须使用稳定的“连接测试”名称，不得显示空值、其他 Key 名称或内部 ID。
+
+**验收标准**：
+1. 诊断日志的 Key 名称列显示“连接测试”。
+2. 显示逻辑不依赖 `api_key_name`，且不影响普通代理日志按 Key 名称展示。
+3. 新建和导出 Key 的名称仍按真实 `name` 字段处理。
+
+#### REQ-USR-032（MUST）用户删除的关联数据清理边界
+
+**要求**：删除用户时必须按明确资源类型执行清理，并永久区分“显式删除”“数据库级联删除”和“保留日志”。
+
+**验收标准**：
+1. 该用户的访问 API Key、渠道、视觉转移配置被删除。
+2. Web Search 续传记录由 `Users.Id` 外键级联删除。
+3. 请求日志与日志内容保留，不得因删除用户隐式级联删除。
+4. 除按策略保留的历史日志外，不存在悬空 owner 业务行；历史日志的 UI 展示策略按 TBD-USR-001 决策。
+
+#### REQ-USR-033（MUST）API Key 导入导出的作用域与明文提示
+
+**要求**：导入导出必须沿用当前调用者的可见作用域，并明确告知完整明文生命周期。
+
+**验收标准**：
+1. 普通用户只能导入和导出自己名下的 Key；超级管理员导出当前全部 Key，如提供 owner 筛选则不得扩大列表作用域。
+2. 导入请求由服务端强制收敛 owner，不信任普通用户提交的 `owner_username`。
+3. 导出包含完整 Key 时必须有明确明文提示；若最终采用一次性明文策略，则改为只导出元数据或重新生成。
+4. 导出不得扩大当前列表接口的角色作用域。
+
 ---
 
 ## 12. 接口与数据依赖
@@ -802,18 +847,21 @@ flowchart TD
 | 方法 | 路径 | 身份 | 主要请求/响应 | 当前状态 |
 |---|---|---|---|---|
 | GET | `/api-keys` | Cookie | keys[]，按角色作用域 | 已实现，当前返回完整 key |
-| POST | `/api-keys` | Cookie | `owner_user_id`、name | 已实现；与前端 owner_username 不一致 |
+| POST | `/api-keys` | Cookie | `owner_username` 或 `owner_user_id`、name | 已实现；超管按用户名优先解析归属 |
 | PATCH | `/api-keys/{uuid}` | Cookie | enabled | 已实现 |
 | DELETE | `/api-keys/{uuid}` | Cookie | deleted | 已实现 |
-| POST | `/api-keys/import` | Cookie | owner_username/name/key/enabled | 已实现 |
+| POST | `/api-keys/import` | Cookie | owner_username/name/key/enabled | 已实现；普通用户强制归自己，超管可指定 owner |
 | POST | `/v1/*` | Bearer | 代理请求 | 已实现，独立身份域 |
 
 ### 12.3 缓存依赖
 
-- `AuthApiKey(hash)`：Key鉴权快照，TTL 60秒。
-- `AuthUser(userId)`：用户鉴权快照，TTL 60秒。
-- Key启停、删除、导入更新必须失效 Key缓存。
+- `CacheKeys.AuthApiKey(hash)`：`auth:apikey:<SHA256>` Key 鉴权快照，TTL 60 秒。
+- `CacheKeys.AuthUser(userId)`：`auth:user:<用户ID>` 用户鉴权快照，TTL 60 秒。
+- 缓存实现为进程内 L1 加可选 Redis L2；Redis 不可用时降级为纯 L1。
+- 空结果不缓存；Key 或 owner 不可用会在每次缓存未命中时重新回源。
+- Key 启停、删除、导入更新必须失效新旧 Key hash 缓存。
 - 用户启停、删除必须失效用户缓存。
+- Redis 可用时删除 L1/L2 并广播其他实例清 L1；Redis 不可用时其他实例只能等待 TTL。
 
 ---
 
@@ -824,20 +872,25 @@ flowchart TD
 - 用户角色仅有 `superadmin` 和 `user`。
 - 管理台使用持久化 Cookie；代理使用 Bearer Key。
 - 普通用户资源按 owner隔离。
-- 删除用户显式删除其渠道和访问 Key。
-- 当前访问 Key明文保存到 `KeyPlaintext` 并由列表接口返回。
+- 删除用户显式删除其访问 Key、渠道和视觉转移配置；Web Search 续传记录由数据库外键级联删除，请求日志不随删。
+- 当前访问 Key明文保存到 `KeyPlaintext` 并由列表接口返回；导出文件同样包含明文。
+- `LastUsedAt` 仅在 Key 缓存回源数据库时更新，命中 60 秒缓存期间的调用不会重复写库。
+- 请求日志在 `request_type=diagnostic` 时把 Key 名称列固定显示为“连接测试”。
 - 移动端用户和 Key列表采用卡片布局。
 
 ### 13.2 已知限制
 
-1. API Key创建 owner字段前后端不一致。
-2. Key明文策略与 README冲突。
-3. 用户/密码缺少产品级前端校验和密码策略。
-4. 环境变量超级管理员删除保护不完整。
-5. 未统一保证“至少一个启用超级管理员”。
-6. 当前会话过期主要表现为单次请求 Toast，前端没有全局401跳转。
-7. 删除用户对历史日志的影响没有明确产品契约。
-8. 用户敏感操作缺少完整审计和重新认证。
+1. Key 明文长期入库、列表回传和导出，与 README“仅创建时显示一次、数据库只保存哈希”冲突。
+2. 创建 Key 未校验名称非空，列表复制和导出也未要求二次确认或重新认证。
+3. `LastUsedAt` 只按缓存回源节奏更新，不能表达每次成功调用的真实时间。
+4. 用户/密码缺少产品级前端校验和密码策略。
+5. 环境变量超级管理员删除保护不完整。
+6. 未统一保证“至少一个启用超级管理员”。
+7. 当前会话过期主要表现为单次请求 Toast，前端没有全局 401 跳转。
+8. 删除用户不删除历史日志；日志保留、匿名化与内容块的正式策略仍缺产品契约。
+9. 用户敏感操作缺少完整审计和重新认证。
+10. 管理台 Cookie 没有会话版本或安全戳；若用户停用期间没有任何请求，重新启用后旧 Cookie 仍可再次通过 `SessionService.RequireUser`，与 REQ-USR-014 冲突。
+11. Redis 未配置时，Key/用户缓存的失效广播不可用；多实例部署下其他实例可能继续使用最长 60 秒的旧鉴权快照。
 
 ### 13.3 TBD
 
@@ -850,6 +903,8 @@ flowchart TD
 | TBD-USR-005 | API Key明文策略 A/B | 推荐一次性明文 A | 安全+产品 |
 | TBD-USR-006 | 删除用户使用软删除还是硬删除 | 推荐软删除+保留期 | 数据+合规 |
 | TBD-USR-007 | 超级管理员敏感操作近期认证窗口 | 建议 10分钟 | 安全 |
+| TBD-USR-008 | `LastUsedAt` 是否每次成功鉴权落库 | 保留当前“缓存回源更新”并修正文案，或异步采样更新 | 产品+后端 |
+| TBD-USR-009 | 普通用户是否允许导入/导出完整明文 Key | 当前按 owner 作用域允许；若限制为超管，需在控制器和服务双重收紧 | 产品+安全 |
 
 ---
 
@@ -865,16 +920,22 @@ flowchart TD
 
 ### 14.2 后端源码
 
-- `opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/AuthController.cs`
+- `opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/SetupController.cs`
+- `opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/SessionController.cs`
 - `opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/UsersController.cs`
 - `opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/ApiKeysController.cs`
-- `opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/SessionState.cs`
+- `opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/AuthenticatedApiControllerBase.cs`
+- `opencodex_proxy/src/Presentation/OpenCodex.Api/Authentication/ProxyBearerAuthenticationHandler.cs`
+- `opencodex_proxy/src/Presentation/OpenCodex.Api/Infrastructure/WebProxyIdentityContext.cs`
 - `opencodex_proxy/src/Presentation/OpenCodex.Api/Infrastructure/WebWorkContext.cs`
 - `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/AuthService.cs`
 - `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/UserService.cs`
 - `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/ApiKeyService.cs`
 - `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/SessionService.cs`
 - `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/ProxyAccessService.cs`
+- `opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Caching/TwoLevelCacheService.cs`
+- `opencodex_proxy/src/Libraries/OpenCodex.CoreBase/Caching/CacheKeys.cs`
+- `opencodex_proxy/src/Libraries/OpenCodex.Core/Security/OpenCodexSecurity.cs`
 - `opencodex_proxy/src/Libraries/OpenCodex.Domain/Domain/User.cs`
 - `opencodex_proxy/src/Libraries/OpenCodex.Domain/Domain/AccessApiKey.cs`
 
@@ -882,7 +943,13 @@ flowchart TD
 
 - `opencodex_proxy/tests/OpenCodex.Api.Tests/SetupRoutesTests.cs`
   - 无用户且无环境超级管理员时需要初始化。
-  - 初始化创建超级管理员并拒绝重复初始化。
+  - 初始化创建超级管理员、同步模型目录并拒绝重复初始化。
+- `opencodex_proxy/tests/OpenCodex.Api.Tests/ProxyAuthenticationPipelineTests.cs`
+  - malformed/empty/unknown/disabled Bearer 返回 401；管理台 Cookie 不能认证代理入口。
+- `opencodex_proxy/tests/OpenCodex.Api.Tests/ServiceQueryGovernanceTests.cs`
+  - 删除用户批量清理关联行；超管按用户名或用户 ID 创建 Key 的归属。
+- `opencodex_proxy/tests/OpenCodex.Api.Tests/ObservabilityServiceTests.cs`
+  - 请求日志返回 Key 名称。
 - `opencodex_proxy/tests/OpenCodex.Api.Tests/RouteTests.cs`
   - 管理接口真实路径、普通用户访问超级管理员接口、持久化 Cookie、重启后 Cookie有效。
 - `opencodex_proxy/tests/OpenCodex.Api.Tests/ProxyCompatibilityTests.cs`
@@ -892,7 +959,7 @@ flowchart TD
 
 ### 14.4 必补测试
 
-1. 超级管理员为指定普通用户创建 Key，验证 owner字段端到端一致。
+1. 超级管理员分别用 `owner_username` 和 `owner_user_id` 创建 Key，验证归属端到端一致。
 2. 普通用户不能跨 owner操作渠道、Key、日志。
 3. 停用用户后 Cookie与Bearer即时失效。
 4. 重新启用用户后旧 Cookie不恢复。
@@ -901,15 +968,16 @@ flowchart TD
 7. Key列表是否返回明文，按最终策略锁定契约。
 8. 用户删除时渠道、Key、日志按选定策略处理。
 9. 401/403前端全局行为。
-10. 移动端键盘、读屏和危险操作确认。
+10. 渠道连接测试日志固定显示“连接测试”。
+11. 移动端键盘、读屏和危险操作确认。
 
 ---
 
 ## 15. 文档自检
 
-- `REQ-USR-001` 至 `REQ-USR-030`：编号连续、无重复。
+- `REQ-USR-001` 至 `REQ-USR-033`：编号连续、无重复。
 - 所有 MUST/SHOULD 均包含可执行验收标准。
 - 已明确区分 Cookie 管理台身份、Bearer代理身份、渠道上游凭证。
 - 已覆盖普通用户作用域、超级管理员保护、用户生命周期和 Key生命周期。
-- 已记录 API Key明文策略冲突及 owner字段不一致。
+- 已记录 API Key 明文存储、列表回传、导出冲突，以及 `LastUsedAt` 的缓存更新边界。
 - 已链接 [05 初始化与认证](./05-initialization-and-auth.md) 和 [10 管理台体验](./10-admin-console.md)。

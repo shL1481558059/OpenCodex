@@ -7,9 +7,9 @@
 | 文档编号 | PRD-NFR-013 |
 | 需求编号前缀 | `REQ-NFR` |
 | 产品 | OpenCodex Proxy |
-| 基线提交 | `3827590eb33acb67dd063054c4a36d2b87b09002` |
+| 基线提交 | `235da3f4a0ec60ce31891a80938105767872685e` |
 | 文档状态 | 当前实现基线审计 + 目标要求；SLA/SLO 数值待基准测试 |
-| 最后核对日期 | 2026-08-17 |
+| 最后核对日期 | 2026-09-30 |
 | 事实来源 | 服务端、前端、Tauri、Docker、CI、测试源码与部署文件 |
 | 目标读者 | 产品、架构、研发、测试、运维、安全与发布负责人 |
 
@@ -97,6 +97,9 @@ flowchart LR
 | 容量租约 TTL | 600 秒 | Redis 槽位异常未释放时自动回收 |
 | 分布式容量锁 | TTL 5 秒，重试 3 次，间隔 10ms | 锁失败后存在无锁占位退化路径 |
 | 通用缓存 TTL | 300 秒 | 特定鉴权、路由、定价缓存另有 60 秒 TTL |
+| 多代理子代理并发 | `multi_agent.max_concurrent_subagents` 默认 3 | 请求可覆盖；`<1` 返回 400 |
+| 多代理模型回合预算 | `MultiAgent:MaxModelTurns` 默认 128 | 整次运行共享；`<1` 抛 `InvalidOperationException` |
+| 多代理上下文压缩阈值 | `MultiAgent:CompactThresholdTokens` 默认 64000 | 请求 `context_management.compact_threshold` 可覆盖；`<1` 返回 400 |
 | 流捕获总预算 | 1 MiB | 用于重建完整响应与日志摘要，不限制真实下游响应大小 |
 | 流集合上限 | 256 项 | 超限标记截断 |
 | 单 pending SSE 数据 | 256 KiB、最多 1024 行 | 超限丢弃到下一个事件边界并计 malformed |
@@ -151,6 +154,15 @@ flowchart LR
 - `ChannelCapacityService` 即使使用 Redis，也只在本地维护展示/最少连接排序所用的活跃数，因此多实例展示为近似值。
 - Redis 分布式锁失败时执行无锁判满和占位，极端竞态可能轻微超限。
 - 当前 Docker Compose 未设置 CPU、内存、PID 或文件描述符限制。
+
+### 4.4 已实现的内存与查询治理（CURRENT）
+
+- 写路径批量下推：`EfRepository.ExecuteDeleteAll`/`DeleteWhere` 把删除下推数据库，不再先加载实体（API Key、渠道、视觉转移设置、日志内容等）；
+- 读路径投影与记忆化：列表与统计查询使用投影列，避免读取 `PricingSnapshotJson` 等大字段；`WebProxyIdentityContext` 为请求作用域，owner 解析在请求内复用；
+- 统计聚合下推：`ObservabilityService` 的时间序列、模型分布与错误分布以 `GroupBy`/`Sum`/`Count` 下推数据库；
+- 定价读取：定价快照缓存使用 60 秒 TTL + Redis 版本号失效，前缀失效与无过期持久化未实施；
+- 日志写入：`LogContentStore` 先查重再压缩，降低写内存峰值；`StreamLineLogCleanupService` 逐行清理流式日志；
+- SQL 级验收：`ServiceQueryGovernanceTests`、`ObservabilityAggregationSqlTests` 通过 `Infrastructure/SqlCapture.cs` 断言下推后的 SQL 语义与语句条数。
 
 ---
 
@@ -209,6 +221,14 @@ flowchart TD
 3. **Degraded status**：Redis或可选服务不可用但仍能服务时，不应错误标为完全健康；
 4. **详细诊断**：只向超级管理员或运维面暴露，不在公共健康端点泄露连接信息。
 
+### 5.5 熔断与容量语义（CURRENT）
+
+- 熔断状态机为 closed/open/half-open，连续失败阈值默认 3，开路时长服务默认 60 秒，半开探测并发 1；
+- 失败计数当前包含上游 400/403/429/5xx（`ChannelCircuitBreakerService.ShouldCountFailure`），400 误计风险见 [17-known-limitations-and-risks.md](./17-known-limitations-and-risks.md)；
+- 渠道显式 `circuit_break_duration_seconds=0` 表示该渠道在主链路禁用熔断；
+- 容量租约 TTL 600 秒；分布式锁 TTL 5 秒、最多 3 次重试、间隔 10ms，锁失败时退化为无锁判满与占位；
+- Redis 不可用时熔断、容量、亲和全部降级为本进程语义，不阻塞请求。
+
 ---
 
 ## 6. 安全与隐私
@@ -219,8 +239,10 @@ flowchart TD
 |---|---|
 | 管理台 Cookie | HttpOnly、SameSite=Lax、Secure=SameAsRequest、默认 30 天、滑动续期 |
 | Data Protection | key 持久化到配置目录，ApplicationName 由 secret 的 SHA-256 摘要前 16 个十六进制字符隔离 |
-| OpenCodex 访问 API Key | README 宣称明文仅创建时展示、数据库保存哈希；当前实体和服务仍写入可空 `KeyPlaintext`，与文档冲突 |
-| 日志脱敏 | **高风险缺口**：请求头会原样进入日志元数据，嵌套 MCP Authorization、图片/base64 等内容也会被正文存储测试明确保留；当前没有通用秘密扫描或默认安全视图 |
+| OpenCodex 访问 API Key | `AccessApiKey.KeyPlaintext` 仍写入明文（`ApiKeyService` 创建/导入/导出路径），管理台导出文件含明文；仓库记录为已接受边界 |
+| 渠道与搜索 Key | `Channel.ApiKey` 与 `TavilyKey.ApiKey` 按明文持久化；仓库记录为已接受边界，只做权限与审计增强 |
+| 日志脱敏 | **CURRENT：请求日志管线无应用层脱敏**：`ProxyRequestMetadataFactory` 原样复制请求头；日志正文保留嵌套 MCP Authorization、图片/base64 等；仅渠道诊断事件把敏感键替换为 `...`（`ChannelDiagnosticsService.SensitiveLogKeys`）；README 的“日志展示会脱敏”描述与代码不一致 |
+| 日志/导出访问控制 | 应用层不提供日志与导出文件的访问控制开关或静态加密，由部署方负责（仓库记录为已接受边界） |
 | TLS | 本地开发 HTTPS；Docker 依赖外部反向代理；Tauri LAN 当前为 HTTP |
 | PostgreSQL | Compose 固定 `admin/123456` |
 | Redis | Compose 无密码与 TLS，位于内部 Docker network |
@@ -327,6 +349,12 @@ flowchart TD
 - 图片、OCR 与独立 Images API；
 - 错误事件和客户端取消。
 
+### 8.5 数据与价格列的 provider 差异
+
+- SQLite 的价格列是 `TEXT`（`decimal` 以字符串存储与比较），PostgreSQL 是 `numeric(18,8)`；
+- 因此价格比较与排序不能下推到数据库，必须在内存中完成，否则 SQLite 会退化为字符串比较；
+- 双 provider 迁移目录分别为 `OpenCodex.Data/Migrations/SqliteMigrations/` 与 `PostgresMigrations/`，两边必须同步维护。
+
 ---
 
 ## 9. 可观测性与运维性
@@ -355,22 +383,24 @@ flowchart TD
 
 ### 10.1 测试基线
 
-静态统计显示当前测试项目约包含：
+当前唯一后端测试项目是 `opencodex_proxy/tests/OpenCodex.Api.Tests/OpenCodex.Api.Tests.csproj`，静态统计包含：
 
-- 43 个 `*Tests.cs` 测试类；
-- 416 个 `[Fact]`；
-- 25 个 `[Theory]`；
-- 70 个 `[InlineData]`；
-- 未发现显式 `Skip`。
+- 90 个 `*Tests.cs` 测试类；
+- 809 个 `[Fact]`；
+- 65 个 `[Theory]`；
+- 182 个 `[InlineData]`；
+- 6 个 `[MemberData]`；
+- 未发现显式 `Skip`；
+- 基线提交 `main@235da3f4` 的仓库记录为 1029 个测试全绿（`doc/implemented-logic.md`；本次核对未重跑 `dotnet test`）。
 
-前端存在两个 `node:test` 文件，但根目录和 frontend 的 `package.json` 均未定义 `test` 脚本。当前唯一 GitHub Actions workflow 仅在手动触发或 `v*` tag push 时运行后端测试，不覆盖普通 PR/push。
+前端有 9 个 `node:test` 测试文件（`frontend/src` 与 `frontend/src/api`），在 `frontend/` 下执行 `node --test` 可发现并通过 68 个用例；但 `frontend/package.json` 没有 `test` 脚本，CI 也不运行它们。当前有 2 个 GitHub Actions workflow：`deploy-dev.yml`（push `main` 或手动）执行前端 `ci`+`build` 与后端测试并构建推送 dev 镜像；`desktop-release.yml`（手动或 `v*` tag）执行后端测试与三平台桌面构建；普通 PR 仍无门禁。
 
 ### 10.2 质量门禁缺口
 
 | 门禁 | 当前状态 |
 |---|---|
 | PR 后端测试 | 无 |
-| 前端单元测试 | 文件存在，未接入脚本/CI |
+| 前端单元测试 | 9 个文件存在，未接入脚本/CI |
 | 前端 lint/typecheck | 无 |
 | Rust test/clippy/fmt | 无 |
 | 代码覆盖率 | 无采集与阈值 |
@@ -426,11 +456,11 @@ flowchart TD
 | REQ-NFR-015 | MUST | 管理登录、访问 API Key 和高成本代理接口必须具备速率限制与防爆破策略。 | 缺口 | 针对 IP、账号和 Key 的限流测试通过；阈值由安全评审确定并记录，不泄露账号存在性。 |
 | REQ-NFR-016 | MUST | 生产秘密不得硬编码在 Compose、镜像、日志或前端资源。 | 缺口 | secret scan 通过；固定 `admin/123456` 被移除；镜像层和构建日志不含秘密。 |
 | REQ-NFR-017 | MUST | 管理 Cookie 必须保持 HttpOnly，并在 HTTPS 部署中为 Secure；Cookie key 必须持久化。 | 部分实现 | HTTPS 集成测试校验属性；容器重建后会话仍有效；secret/key 轮换流程有测试。 |
-| REQ-NFR-018 | MUST | 日志脱敏不得修改真实业务 payload，且必须覆盖已知认证、图片和嵌套秘密。 | **高风险缺口** | 原始业务 payload 保持不变；持久化前生成受控日志副本；Authorization、Cookie、嵌套 MCP token、自定义 secret、图片/base64 和 raw SSE 的脱敏测试通过；只有明确授权的受保护原始槽位可保留敏感正文。 |
+| REQ-NFR-018 | MUST | 日志脱敏不得修改真实业务 payload，且必须覆盖已知认证、图片和嵌套秘密。 | 未实施（仓库记录为已接受边界：应用层不提供脱敏层，访问控制与磁盘加密由部署方负责） | 原始业务 payload 保持不变；持久化前生成受控日志副本；Authorization、Cookie、嵌套 MCP token、自定义 secret、图片/base64 和 raw SSE 的脱敏测试通过；只有明确授权的受保护原始槽位可保留敏感正文。 |
 | REQ-NFR-019 | MUST | 日志正文损坏必须被检测，不得静默返回错误内容。 | 已实现一部分 | 修改块数据、长度、顺序、manifest hash，读取均返回明确数据损坏错误且不返回伪完整正文。 |
 | REQ-NFR-020 | MUST | 数据库请求日志必须具有保留、配额、清理和归档策略。 | 缺口/TBD | 确定保留期和容量阈值；超限告警、批量清理、共享块回收、备份恢复测试通过。 |
 | REQ-NFR-021 | MUST | SQLite 与 PostgreSQL 必须对相同业务契约保持迁移和查询兼容。 | 双迁移存在 | CI 双 provider matrix 执行迁移、核心 CRUD、日志写读与清理；snapshot 漂移使构建失败。 |
-| REQ-NFR-022 | MUST | 普通 PR 和主分支 push 必须执行后端测试、前端单测与生产构建。 | 缺口 | 新 CI workflow 在 PR/push 触发；失败阻断合并；前端两个 Node 测试通过标准 npm script 运行。 |
+| REQ-NFR-022 | MUST | 普通 PR 和主分支 push 必须执行后端测试、前端单测与生产构建。 | 部分实现 | `deploy-dev.yml` 在 push `main` 运行后端测试与前端 build，但不运行前端 Node 测试；PR 无门禁；前端 9 个 Node 测试通过标准 npm script 运行。 |
 | REQ-NFR-023 | SHOULD | CI 应执行 Rust fmt/clippy/test 与桌面端最小冒烟。 | 缺口 | 三平台或批准的代表平台运行对应检查；sidecar 启动、管理台打开、退出清理测试通过。 |
 | REQ-NFR-024 | MUST | 发布产物必须可复现并锁定依赖。 | 缺口 | 提交 `Cargo.lock`；Node 使用 lockfile；工具链版本固定；同一提交两次构建的差异在批准范围内。 |
 | REQ-NFR-025 | MUST | 桌面正式产物必须具备平台适用的签名和完整性验证。 | 缺口 | macOS 签名并 notarize、Windows签名、Linux校验和/仓库策略通过；安装系统不显示未知发布者（平台允许范围内）。 |
@@ -441,6 +471,11 @@ flowchart TD
 | REQ-NFR-030 | SHOULD | 管理台核心流程应满足批准的无障碍目标。 | TBD | 确定 WCAG 目标等级；自动检查、键盘操作和人工读屏测试纳入发布报告。 |
 | REQ-NFR-031 | MUST | 移动端必须覆盖初始化、登录、渠道、Key 和日志关键流程，不只验证视觉断点。 | 部分实现 | 代表性手机和平板 viewport 的 E2E 完成创建/修改/删除/查看操作，无横向不可达控件。 |
 | REQ-NFR-032 | MUST | 任何 SLA/SLO 变更必须版本化并关联监控、报警和容量测试。 | 缺口 | PRD、仪表盘、告警规则和压测基准中的指标编号一致；变更有评审记录。 |
+| REQ-NFR-033 | MUST | 大列表与统计读取必须投影列并下推聚合，禁止为统计整表加载大字段（如 `PricingSnapshotJson`）。 | 已实现（核心路径有 SQL 级测试） | `ServiceQueryGovernanceTests`、`ObservabilityAggregationSqlTests` 通过 `SqlCapture` 断言 SQL 语义与语句条数；新增列表接口不得回归为全量加载。 |
+| REQ-NFR-034 | MUST | 缓存必须按 L1 进程内 + Redis L2 两级工作，Redis 不可用时降级为纯 L1 且不阻塞主请求，写路径通过广播失效其他实例 L1。 | 已实现（缺 Redis 集成测试） | `TwoLevelCacheService` 实现读回写与广播失效；`RedisConnectionProviderTests` 验证不可达时快速降级；失效广播与多实例一致性仍无直接用例（见 [16-testing-and-acceptance.md](./16-testing-and-acceptance.md)）。 |
+| REQ-NFR-035 | MUST | 多代理 v2 运行必须受子代理并发（默认 3）、整运行模型回合预算（默认 128）与上下文压缩阈值（默认 64000）约束，非法值必须显式拒绝。 | 已实现 | `multi_agent.max_concurrent_subagents<1` 返回 400；`MultiAgent:MaxModelTurns<1` 抛 `InvalidOperationException`；超预算返回明确错误；`context_management.compact_threshold` 覆盖生效。 |
+| REQ-NFR-036 | MUST | 价格比较与排序不得下推到数据库，因为 SQLite 价格列为 `TEXT`、PostgreSQL 为 `numeric(18,8)`。 | 已记录并遵守 | SQL 捕获用例证明定价解析与比较留在内存；双 provider 迁移同步新增价格列。 |
+| REQ-NFR-037 | MUST | 日志与导出文件的访问控制、磁盘加密属于部署方责任边界，必须在发布文档中显式声明，不得宣称应用层已脱敏。 | 缺口（文档不一致） | README/DEPLOYMENT 不再声称日志已脱敏；发布文档列出部署方必须提供的访问控制与加密措施；`REQ-NFR-018` 边界变更时同步更新。 |
 
 ---
 
@@ -470,6 +505,7 @@ flowchart TD
 | TBD-NFR-008 | 浏览器、桌面 OS 与 Linux 发行版最低版本 | 目标用户分布 |
 | TBD-NFR-009 | WCAG 目标等级 | 产品市场与合规要求 |
 | TBD-NFR-010 | Redis 自动恢复时限 | 多实例一致性容忍度 |
+| TBD-NFR-011 | 多代理运行的多实例协调与快照容量治理 | 多实例拓扑、快照目录共享方案与保留策略 |
 
 ---
 
@@ -490,6 +526,10 @@ flowchart TD
 | 缺 Cargo.lock、工具链浮动 | 中 | 构建不可复现 |
 | Node 22/24 不一致 | 中 | 本地、Docker、CI 构建差异 |
 | 浏览器/OS兼容矩阵缺失 | 中 | 无法判断用户环境是否正式支持 |
+| 多代理运行状态仅存本实例 JSON 快照 | 中 | 多实例不共享运行；重启后模型回合可能重做 |
+| 上游 400/403 计入熔断 | 中 | 客户端请求问题被当作渠道故障，可能长时间开路 |
+| 同协议短路外泄 `_ocxp_*` 内部标记 | 低 | 严格上游可能拒绝请求 |
+| PostgreSQL 端到端零覆盖 | 中 | 统计与聚合的 provider 差异在生产首次暴露 |
 
 ---
 
@@ -510,6 +550,10 @@ flowchart TD
 | 图片大小限制 | [ImageEditRequestReader.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Infrastructure/ImageEditRequestReader.cs) |
 | 健康检查 | [SystemController.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/SystemController.cs) |
 | 内容寻址日志 | [LogContentCodec.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/LogContentCodec.cs)、[LogContentStore.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/LogContentStore.cs) |
+| 多代理运行时 | [MultiAgentRuntime.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/MultiAgent/MultiAgentRuntime.cs)、[MultiAgentRunStore.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/MultiAgent/MultiAgentRunStore.cs)、[MultiAgentResponseService.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Services/MultiAgentResponseService.cs) |
+| 峰谷定价 | [ModelCatalogService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/ModelCatalogService.cs)、[ModelPricingCalculation.cs](../opencodex_proxy/src/Libraries/OpenCodex.CoreBase/Domain/Models/ModelPricingCalculation.cs) |
+| 模型目录同步 | [ModelCatalogSyncService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/ModelCatalogSyncService.cs)、[ModelCatalogSyncClient.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/ModelCatalogSyncClient.cs) |
+| 渠道诊断与脱敏边界 | [ChannelDiagnosticsService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/ChannelDiagnosticsService.cs)、[ChannelDiagnosticsController.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/ChannelDiagnosticsController.cs) |
 
 ### 16.2 构建与部署
 
@@ -533,3 +577,8 @@ flowchart TD
 - [ProxyLogServiceTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ProxyLogServiceTests.cs)
 - [LogContentCodecTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/LogContentCodecTests.cs)
 - [LogContentStoreTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/LogContentStoreTests.cs)
+- [MultiAgentResponseServiceTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/MultiAgentResponseServiceTests.cs)、[MultiAgentRunStoreTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/MultiAgentRunStoreTests.cs)
+- [ProtocolConversionMatrixTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ProtocolConversionMatrixTests.cs)
+- [ObservabilityAggregationSqlTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ObservabilityAggregationSqlTests.cs)、[ServiceQueryGovernanceTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ServiceQueryGovernanceTests.cs)
+- [ChannelDiagnosticsGuardTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ChannelDiagnosticsGuardTests.cs)、[ChannelDiagnosticsLogTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ChannelDiagnosticsLogTests.cs)
+- [ToolSchemaExpansionTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ToolSchemaExpansionTests.cs)、[ModelCatalogSyncServiceTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ModelCatalogSyncServiceTests.cs)

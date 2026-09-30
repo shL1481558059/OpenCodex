@@ -18,7 +18,7 @@ OpenCodex 是多协议 LLM 代理与配套管理台：接收客户端 Responses�
 | External | `src/Libraries/OpenCodex.Core/ExternalIntegrations` | 上游 HTTP 调用、重试、SSE 读取、Tavily/Keenable 搜索客户端 |
 | Domain/Data | `src/Libraries/OpenCodex.Domain`、`OpenCodex.Data` | 渠道、用户、密钥、模型目录、日志实体与 SQLite/PostgreSQL 双 provider 持久化 |
 
-管理台在 `frontend/`（Vue 3 + Element Plus），桌面端在 `src-tauri/`（Tauri）。独立图片生成/编辑链路（`/images/generations`、`/images/edits`）已实现完整代理，但不属于三协议转换矩阵。
+管理台在 `frontend/`（Vue 3 + Element Plus），桌面端在 `src-tauri/`（Tauri）。独立图片生成/编辑路由（`/images/generations`、`/images/edits`）已注册，但 `IProxyImagesEndpointService` 没有实现类、相关服务未注册到 DI，当前运行时不可用（GAP），详见 [unimplemented-plans.md](unimplemented-plans.md)；它不属于三协议转换矩阵。
 
 ## 2. 端到端流程
 
@@ -134,7 +134,7 @@ OpenCodex 是多协议 LLM 代理与配套管理台：接收客户端 Responses�
 - 图片检测覆盖三种入口：Responses 的 `input_image`（message 与 function_call_output）、Chat 的 `image_url`、Messages 的 `image`。
 - 重写时用户图片被移除并排队 OCR；assistant/developer/system 消息与工具结果中的图片替换为占位文本。图片来源支持 data URL 与 http(s) URL，Messages 支持 base64/url source。
 - 视觉路由按 owner 显式配置：主 + 兜底，无配置不做自动发现；OCR 缓存键包含 channelId 与 upstreamModel；主失败时按请求级记忆切兜底。未配置或路由失效时返回明确 400 文案。
-- 独立 Images API 是另一条链路：`/images/generations` 仅 JSON、拒绝 `stream=true`；`/images/edits` 为 multipart；支持 `openai` 与 `xai` 两种 dialect，失败不重试、无 attempt 子日志语义。
+- 独立 Images API（GAP）：`/images/generations` 仅 JSON、拒绝 `stream=true`，`/images/edits` 为 multipart，代码中存在 `openai` 与 `xai` 两种 dialect 与失败不重试语义；但 `IProxyImagesEndpointService` 无生产实现、`IImagesProxyService`/`ImagesProxyService`/`IImagesUpstreamClient` 未注册，当前请求会因依赖解析失败而不可用。
 
 ### 6.2 Web Search 内置工具
 

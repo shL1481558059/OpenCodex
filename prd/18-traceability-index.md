@@ -1,9 +1,9 @@
 # 18. 需求追踪索引
 
 > 文档类型：PRD 需求—页面—接口—数据—源码—测试追踪矩阵  
-> 代码基线：`main@3827590eb33acb67dd063054c4a36d2b87b09002`  
-> 生成日期：2026-08-17  
-> 适用范围：`prd/README.md` 与 `prd/01`～`17`  
+> 代码基线：`main@235da3f4`  
+> 生成日期：2026-08-17（最后核对：2026-09-30）  
+> 适用范围：`prd/README.md` 与 `prd/01`～`19`  
 > 状态说明：本索引证明需求已被文档化和定位；标记为 GAP/TBD 的需求仍需实现或决策，不代表当前代码已经满足
 
 ## 1. 追踪规则
@@ -23,25 +23,26 @@
 
 | 需求族 | 文档 | 数量 | 主要可观察面 | 主要实现/测试证据 |
 |---|---|---:|---|---|
-| `REQ-OV` | [产品总览](01-product-overview.md) | 7 | 全局产品边界与高层验收 | Program.cs；README.md；全部专题测试 |
-| `REQ-USR` | [用户与权限](02-users-and-permissions.md) | 30 | /users、/api-keys、/channels、/logs；App/Users/AccessKeys | UsersController；UserService；ApiKeyService；权限与路由测试 |
-| `REQ-SYS` | [系统边界](03-system-boundary.md) | 15 | /、/health、管理 API、代理 API；Web/Docker/Tauri | Program/Hosting；SystemController；src-tauri；Compose；启动测试 |
-| `REQ-DAT` | [领域模型](04-domain-model.md) | 5 | User、Channel、Model、Pricing、RequestLog、LogContent | Domain；OpenCodexDbContextBase；Migrations；数据/日志测试 |
-| `REQ-AUTH` | [初始化与认证](05-initialization-and-auth.md) | 36 | /setup/status、/setup、/session、/login、/logout、/api-keys | AuthController；Auth/Session/ApiKey/ProxyAccess Service；Setup/Auth 测试 |
-| `REQ-CH` | [渠道管理](06-channel-management.md) | 20 | /channels、discover-models、test-channel；Channels 页面 | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
-| `REQ-RTE` | [路由与可靠性](07-routing-and-reliability.md) | 25 | /models 与三协议代理入口 | ProxyRoute/Capacity/CircuitBreaker/Affinity/Failover；相关单元与集成测试 |
-| `REQ-PRT` | [协议转换](08-protocol-conversion.md) | 27 | Responses、Chat、Messages 的 3×3 请求/响应/SSE | ProtocolConverter；SseStreamConverter；ProtocolConversionMatrixTests |
-| `REQ-SPC` | [特殊流程](09-tools-multimodal-and-special-flows.md) | 22 | /web-search、/images/*、三协议代理、system-settings | Tool/MCP/WebSearch/Image/OCR/Probe 源码；专项测试 |
-| `REQ-UI` | [管理台](10-admin-console.md) | 46 | /admin/ 全部页面与管理 API | frontend/src；管理控制器；前端状态测试与 E2E 缺口 |
-| `REQ-OBS` | [可观测性与计费](11-observability-and-billing.md) | 20 | /logs、/stats、实时 SSE；Dashboard/Logs/Pricing | Observability/ProxyLog/LogContent/ModelPricing；日志与统计测试 |
-| `REQ-CFG` | [配置](12-configuration.md) | 26 | 环境变量、system-settings、渠道配置、Compose/Tauri | RuntimeSettingsProvider；DesktopSystemSettingsStore；配置/设置测试 |
-| `REQ-NFR` | [非功能要求](13-non-functional-requirements.md) | 32 | 性能、可靠性、安全、兼容性、可维护性 | 跨模块源码；压测/故障注入/安全测试与当前缺口 |
-| `REQ-MIG` | [数据与迁移](14-data-and-migrations.md) | 34 | SQLite/PostgreSQL、启动迁移、备份恢复 | DbContext；Migrations；DatabaseInitializer；双库迁移测试 |
-| `REQ-REL` | [部署与发布](15-deployment-and-release.md) | 20 | Docker、远程部署、Tauri、GitHub Actions | Dockerfile；Compose；scripts；workflow；发布冒烟 |
-| `REQ-TST` | [测试与验收](16-testing-and-acceptance.md) | 18 | 单元、集成、E2E、性能、发布门禁 | OpenCodex.Api.Tests；前端测试；CI；测试缺口 |
-| `REQ-RSK` | [风险与决策](17-known-limitations-and-risks.md) | 17 | 安全、数据、功能、运维、文档漂移 | 风险证据文件；修复验证或书面接受记录 |
+| `REQ-OV` | [产品总览](01-product-overview.md) | 9 | 全局产品边界与高层验收 | Program.cs；README.md；全部专题测试 |
+| `REQ-USR` | [用户与权限](02-users-and-permissions.md) | 33 | /users、/api-keys、/channels、/logs；App/Users/AccessKeys | UsersController；UserService；ApiKeyService；权限与路由测试 |
+| `REQ-SYS` | [系统边界](03-system-boundary.md) | 16 | /、/health、管理 API、代理 API；Web/Docker/Tauri | Program/Hosting；SystemController；src-tauri；Compose；启动测试 |
+| `REQ-DAT` | [领域模型](04-domain-model.md) | 10 | User、Channel、Model、Pricing、RequestLog、LogContent | Domain；OpenCodexDbContextBase；Migrations；数据/日志测试 |
+| `REQ-AUTH` | [初始化与认证](05-initialization-and-auth.md) | 39 | /setup/status、/setup、/session、/login、/logout、/api-keys | Setup/SessionController；Auth/Session/ApiKey/ProxyAccess Service；Setup/Auth 测试 |
+| `REQ-CH` | [渠道管理](06-channel-management.md) | 25 | /channels、discover-models、test-channel；Channels 页面 | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-RTE` | [路由与可靠性](07-routing-and-reliability.md) | 28 | /models 与三协议代理入口 | ProxyRoute/Capacity/CircuitBreaker/Affinity/Failover；相关单元与集成测试 |
+| `REQ-PRT` | [协议转换](08-protocol-conversion.md) | 31 | Responses、Chat、Messages 的 3×3 请求/响应/SSE | ProtocolConverter；SseStreamConverter；ProtocolConversionMatrixTests |
+| `REQ-SPC` | [特殊流程](09-tools-multimodal-and-special-flows.md) | 26 | /web-search、/images/*（GAP）、三协议代理、system-settings | Tool/MCP/WebSearch/Image/OCR/Probe 源码；专项测试 |
+| `REQ-UI` | [管理台](10-admin-console.md) | 53 | /admin/ 全部页面与管理 API | frontend/src；管理控制器；前端状态测试与 E2E 缺口 |
+| `REQ-OBS` | [可观测性与计费](11-observability-and-billing.md) | 24 | /logs、/stats、实时 SSE；Dashboard/Logs/ModelCatalog | Observability/ProxyLog/LogContent/ModelCatalog；日志与统计测试 |
+| `REQ-CFG` | [配置](12-configuration.md) | 29 | 环境变量、system-settings、渠道配置、Compose/Tauri | RuntimeSettingsProvider；DesktopSystemSettingsStore；配置/设置测试 |
+| `REQ-NFR` | [非功能要求](13-non-functional-requirements.md) | 37 | 性能、可靠性、安全、兼容性、可维护性 | 跨模块源码；压测/故障注入/安全测试与当前缺口 |
+| `REQ-MIG` | [数据与迁移](14-data-and-migrations.md) | 37 | SQLite/PostgreSQL、启动迁移、备份恢复 | DbContext；Migrations；DatabaseInitializer；双库迁移测试 |
+| `REQ-REL` | [部署与发布](15-deployment-and-release.md) | 23 | Docker、远程部署、Tauri、GitHub Actions | Dockerfile；Compose；scripts；workflow；发布冒烟 |
+| `REQ-TST` | [测试与验收](16-testing-and-acceptance.md) | 22 | 单元、集成、E2E、性能、发布门禁 | OpenCodex.Api.Tests；前端测试；CI；测试缺口 |
+| `REQ-RSK` | [风险与决策](17-known-limitations-and-risks.md) | 20 | 安全、数据、功能、运维、文档漂移 | 风险证据文件；修复验证或书面接受记录 |
+| `REQ-MA` | [多代理模拟](19-multi-agent-simulation.md) | 37 | /v1/responses 多代理运行器、WebSocket 注入、协作函数 | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
 
-当前索引共收录 **400** 条专题需求。数量用于完整性检查，不等同“已实现需求数”。
+当前索引共收录 **499** 条专题需求。数量用于完整性检查，不等同“已实现需求数”。
 
 ## 3. 身份、角色与资源追踪
 
@@ -51,9 +52,9 @@
 | 未登录访客 | 无 | 根路径、浅 health、登录、会话查询 | 无/会话 | SystemController、AuthController | 公开接口与拒绝矩阵 |
 | 普通用户 | 管理 Cookie | 自己的渠道、Key、日志、统计 | User、Channel、AccessApiKey、RequestLog | WorkContext、各管理 Service | 跨用户 ID 越权测试 |
 | 超级管理员 | 管理 Cookie | 全部用户资源和全局配置 | 全部管理实体 | RequireSuperadmin、管理 Service | 管理权限和保护规则测试 |
-| API 调用方 | Bearer `ocx_...` | models、Responses、Chat、Messages、Images | AccessApiKey、Channel、RequestLog | ProxyAccessService、ProxyController | 有效/无效/停用 Key测试 |
+| API 调用方 | Bearer `ocx_...` | models、Responses、Chat、Messages；Images 当前为 GAP | AccessApiKey、Channel、RequestLog | ProxyAccessService、ProxyController | 有效/无效/停用 Key测试 |
 | AI 上游 | 渠道认证 | 接收转换后请求并返回响应 | Channel、ChannelModelMapping | HttpUpstreamClient、ProtocolConverter | 上游集成/协议矩阵 |
-| Tavily | Tavily Key | simulate Web Search | WebSearchSettings、TavilyKey | TavilyWebSearchClient、WebSearchToolExecutor、BuiltinToolSession | 搜索模式与故障测试 |
+| Tavily / Keenable | 各自 Web Search Key | simulate Web Search | WebSearchSettings、TavilyKey | TavilyWebSearchClient、KeenableWebSearchClient、WebSearchClientRouter、WebSearchToolExecutor、BuiltinToolSession | 搜索模式、provider 路由与故障测试 |
 
 ## 4. HTTP 接口追踪矩阵
 
@@ -78,9 +79,10 @@
 | `GET/POST /model-providers*` | 读用户/写超管 | 模型、权限、UI | ModelCatalogController/Service | Provider 校验与权限 |
 | `GET/POST/PATCH/DELETE /model-infos*` | 读用户/写超管 | 模型、价格 | ModelCatalogController/Service | 匹配、Catalog、停用、播种 |
 | `GET/PUT/DELETE /channels/{id}/model-infos*` | 渠道 Owner/超管 | 渠道模型覆盖 | ModelCatalogController/Service | Owner、覆盖、恢复全局 |
-| `GET/POST/PATCH/DELETE /pricing*` | 超级管理员 | 计费 | PricingController、ModelPricingService | 规则公式、播种、历史快照 |
+| ~~`GET/POST/PATCH/DELETE /pricing*`~~ | — | 已删除 | 批 0 整链移除，价格改由 `/model-infos`、`/model-providers` 与 `/model-catalog/*` 维护 | 历史快照在 `ModelPricingPlan`/`ModelPricingRule` |
 | `GET /model-catalog/export` | 超级管理员 | 模型目录、备份迁移 | ModelCatalogController/Service | 全量导出、不含渠道覆盖 |
 | `POST /model-catalog/import` | 超级管理员 | 模型目录、备份迁移 | ModelCatalogController/Service | dryRun 预检、事务导入、重复键拒绝 |
+| `POST /model-catalog/sync` | 超级管理员 | 模型目录、远端同步 | ModelCatalogController/Service、ModelCatalogSync | 增量/覆盖模式、60 秒超时、5 MB 上限 |
 | `GET/POST /web-search*` | 超级管理员 | 特殊流程、UI | WebSearchController/Service | 三模式、Key 用量、导入测试 |
 | `POST /web-search/test-key` | 超级管理员 | 特殊流程 | WebSearchService、TavilyClient | 成功、超时、无效 Key |
 | `GET /logs` | 管理 Cookie | 可观测性 | ObservabilityController/Service | Owner、过滤、分页、大范围 |
@@ -88,9 +90,12 @@
 | `GET /logs/{id}` | 管理 Cookie | 可观测性 | ObservabilityController/Service、LogContentStore | 跨用户 ID、内容损坏、父子导航 |
 | `DELETE /logs` | 超级管理员 | 可观测性、风险 | ObservabilityController/Service | 清理事务、共享块、二次确认 |
 | `GET /stats` | 管理 Cookie | 仪表盘、计费 | ObservabilityService | 当前默认排除 attempt 但包含 OCR；时间桶、Token/成本口径测试 |
-| `GET /stats/active-channels*` | 管理 Cookie | 仪表盘、可靠性 | ObservabilityController/Service | SSE 断开、Owner、数据新鲜度 |
-| `GET /stats/recent-errors/stream` | 管理 Cookie | 仪表盘 | ObservabilityController/Service | SSE 重连、详情权限 |
-| `GET/PUT /system-settings` | 超级管理员 | 配置、桌面、Probe | SystemSettingsController、DesktopSystemSettingsStore | 端口、LAN、重启、字段往返 |
+| `GET /monitor/active-channels*` | 管理 Cookie | 仪表盘、可靠性 | ObservabilityController、RealtimeStreamController | SSE 断开、Owner、数据新鲜度 |
+| `GET /monitor/recent-errors/stream` | 管理 Cookie | 仪表盘 | RealtimeStreamController | SSE 重连、详情权限 |
+| `GET /channels/runtime/stream`、`GET /logs/stream` | 管理 Cookie | 渠道、日志实时刷新 | RealtimeStreamController | 初始快照、去抖、心跳与断线退避 |
+| `GET/PUT /system-settings` | 超级管理员 | 配置、桌面 | SystemSettingsController、DesktopSystemSettingsStore | 端口、LAN、重启 |
+| `GET/PUT /system-settings/proxy-settings` | 超级管理员 | 配置、Probe | SystemSettingsController、ProxySettingsService、`ProxySetting` 表 | 代理策略读写、数据库事实源 |
+| `GET/PUT/DELETE /system-settings/vision-transfer`、`GET .../candidates` | 管理 Cookie，owner 收敛 | 视觉转移、系统设置 | SystemSettingsController、VisionTransferSettingsService | owner 隔离、主/兜底不变式、候选能力 |
 | `GET /models`、`GET /v1/models` | Bearer Key | 路由、动态模型目录 | ProxyController、ProxyRouteService、ModelCatalogService | 普通/Codex 请求同响应、渠道 Catalog/定价优先级 |
 | `POST /responses`、`/v1/responses` | Bearer Key | 协议、工具、路由 | ProxyController、ProxyEndpointService | 3×3 非流式/流式矩阵 |
 | `POST /chat/completions`、`/v1/chat/completions` | Bearer Key | 协议、工具、路由 | ProxyController、ProxyEndpointService | 3×3 非流式/流式矩阵 |
@@ -101,6 +106,8 @@
 ### 4.1 控制器精确路由目录
 
 以下逐项保留当前 Controller Attribute 中的 HTTP 方法、路径参数、兼容别名、认证面和动作名。任何新增、删除或改名都必须同步接口测试和本索引。
+
+> 说明：下表为 2026-08-17 基线快照；2026-09-30 的新增、改名与删除见 4.1.1，冲突时以 4.1.1 与当前控制器为准。
 
 | 方法 | 精确路径 | 身份/权限 | 控制器动作 |
 |---|---|---|---|
@@ -172,6 +179,37 @@
 | `POST` | `/web-search` | 超级管理员 Cookie | `WebSearchController.SaveWebSearch` |
 | `POST` | `/web-search/test-key` | 超级管理员 Cookie | `WebSearchController.TestWebSearchKey` |
 | `GET` | `/web-search` | 超级管理员 Cookie | `WebSearchController.WebSearch` |
+
+### 4.1.1 2026-09-30 路由增量与更正
+
+新增路由（当前控制器实际注册）：
+
+| 方法 | 精确路径 | 控制器动作 |
+|---|---|---|
+| `GET` | `/api-keys/select-list`、`/api-keys/{keyId:guid}` | `ApiKeysController.GetSelectList`、`ApiKeysController.ApiKey` |
+| `GET` | `/channels/select-list`、`/channels/{channelId:guid}`、`/channels/runtime` | `ChannelController.GetSelectList`、`Channel`、`ChannelRuntime` |
+| `PATCH` | `/channels` | `ChannelController.BatchUpdateChannels` |
+| `POST` | `/channels/{channelId:guid}/health-reset` | `ChannelController.ResetChannelHealth` |
+| `GET` | `/channels/runtime/stream` | `RealtimeStreamController.ChannelRuntimeStream` |
+| `GET` | `/model-infos/select-list`、`/model-infos/{id:guid}` | `ModelCatalogController.GetSelectList`、`ModelInfo` |
+| `POST` | `/model-infos/batch` | `ModelCatalogController.BatchModels` |
+| `PATCH`、`DELETE` | `/model-providers/{id:guid}` | `ModelCatalogController.UpdateProvider`、`DeleteProvider` |
+| `POST` | `/model-catalog/sync` | `ModelCatalogController.SyncCatalog` |
+| `GET` | `/stats/summary`、`/stats/timeseries`、`/stats/model-distribution`、`/stats/error-distribution` | `ObservabilityController.StatsSummary`、`StatsTimeseries`、`StatsModelDistribution`、`StatsErrorDistribution` |
+| `GET` | `/monitor/active-channels`、`/monitor/recent-errors` | `ObservabilityController.MonitorActiveChannels`、`MonitorRecentErrors` |
+| `GET` | `/monitor/active-channels/stream`、`/monitor/recent-errors/stream`、`/logs/stream` | `RealtimeStreamController.ActiveChannelsStream`、`RecentErrorsStream`、`LogsStream` |
+| `GET`、`PUT` | `/system-settings/proxy-settings` | `SystemSettingsController.GetProxySettings`、`UpdateProxySettings` |
+| `GET`、`PUT`、`DELETE` | `/system-settings/vision-transfer` | `SystemSettingsController.GetVisionTransfer`、`SaveVisionTransfer`、`DeleteVisionTransfer` |
+| `GET` | `/system-settings/vision-transfer/candidates` | `SystemSettingsController.ListVisionTransferCandidates` |
+| `GET` | `/users/options` | `UsersController.UserOptions` |
+| `GET` | `/responses`、`/v1/responses`（WebSocket 升级） | `ProxyController.ResponsesWebSocket` |
+
+改名或语义更正：
+
+- `/stats/active-channels*` → `/monitor/active-channels*`；`/stats/recent-errors/stream` → `/monitor/recent-errors/stream`。仓库中不存在 `/stats/*/stream` 路由。
+- `/channels/{id}/reset-health` 保留为 `/channels/{id}/health-reset` 的兼容别名；`/channels/batch` 保留为 `PATCH /channels` 的兼容别名。
+- `/pricing*` 整链已删除（批 0），本索引 4.1 旧表中的 `/pricing` 行仅作为历史基线保留。
+- `/images/*` 控制器与路由存在，但 `IProxyImagesEndpointService` 无实现、`IImagesProxyService`/`ImagesProxyService`/`IImagesUpstreamClient` 未注册 DI，属于当前 GAP。
 
 ## 5. 管理台页面追踪
 
@@ -274,6 +312,8 @@
 | `REQ-OV-005` | MUST | 管理台、API、日志和导出功能必须遵循统一的敏感信息展示策略。 | [产品总览](01-product-overview.md) | Program.cs；README.md；全部专题测试 |
 | `REQ-OV-006` | MUST | PRD、管理台文案和发布说明必须区分已实现能力、实验性能力、已知限制和未来计划。 | [产品总览](01-product-overview.md) | Program.cs；README.md；全部专题测试 |
 | `REQ-OV-007` | MUST | 正式发布前必须为所选部署形态确认适用的可用性、容量、日志保留和恢复目标；未确认指标不得被宣传为产品保证。 | [产品总览](01-product-overview.md) | Program.cs；README.md；全部专题测试 |
+| `REQ-OV-008` | MUST | 多代理 v2 只能由模型能力 `capabilities.v2_agent_simulation` 触发，默认关闭；HTTP 可用 `multi_agent.enabled=false` 回退普通管线。 | [产品总览](01-product-overview.md)；[多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentV2PolicyTests |
+| `REQ-OV-009` | MUST | `IProxyImagesEndpointService` 生产实现与 DI 注册补齐前，独立 Images API 只能作为 GAP 描述，不得对外宣称可用。 | [产品总览](01-product-overview.md)；[系统边界](03-system-boundary.md) | ImagesController；OpenCodexServiceCollectionExtensions；ProxyAuthenticationPipelineTests |
 | `REQ-USR-001` | MUST | 管理台身份与代理身份隔离 | [用户与权限](02-users-and-permissions.md) | UsersController；UserService；ApiKeyService；权限与路由测试 |
 | `REQ-USR-002` | MUST | 上游凭证隔离 | [用户与权限](02-users-and-permissions.md) | UsersController；UserService；ApiKeyService；权限与路由测试 |
 | `REQ-USR-003` | MUST | 服务端权限为最终裁决 | [用户与权限](02-users-and-permissions.md) | UsersController；UserService；ApiKeyService；权限与路由测试 |
@@ -304,6 +344,9 @@
 | `REQ-USR-028` | SHOULD | 并发冲突提示 | [用户与权限](02-users-and-permissions.md) | UsersController；UserService；ApiKeyService；权限与路由测试 |
 | `REQ-USR-029` | MUST | 移动端功能等价 | [用户与权限](02-users-and-permissions.md) | UsersController；UserService；ApiKeyService；权限与路由测试 |
 | `REQ-USR-030` | MUST | 键盘与读屏支持 | [用户与权限](02-users-and-permissions.md) | UsersController；UserService；ApiKeyService；权限与路由测试 |
+| `REQ-USR-031` | MUST | 渠道诊断日志的 Key 名称显示 | [用户与权限](02-users-and-permissions.md) | UsersController；UserService；ApiKeyService；权限与路由测试 |
+| `REQ-USR-032` | MUST | 用户删除的关联数据清理边界 | [用户与权限](02-users-and-permissions.md) | UsersController；UserService；ApiKeyService；权限与路由测试 |
+| `REQ-USR-033` | MUST | API Key 导入导出的作用域与明文提示 | [用户与权限](02-users-and-permissions.md) | UsersController；UserService；ApiKeyService；权限与路由测试 |
 | `REQ-SYS-001` | MUST | 同一路径别名必须具有一致的鉴权、路由、转换和错误语义。 | [系统边界](03-system-boundary.md) | Program/Hosting；SystemController；src-tauri；Compose；启动测试 |
 | `REQ-SYS-002` | MUST | 生产部署必须在 OpenCodex 前提供 TLS 终止，或仅允许受信任本机网络访问；LAN 模式不得被默认宣传为安全公网入口。 | [系统边界](03-system-boundary.md) | Program/Hosting；SystemController；src-tauri；Compose；启动测试 |
 | `REQ-SYS-003` | MUST | 所有外部输入、上游输出和持久化内容必须有明确大小、超时或资源边界；未定义的边界必须在非功能需求中标为 TBD 并进入压力测试。 | [系统边界](03-system-boundary.md) | Program/Hosting；SystemController；src-tauri；Compose；启动测试 |
@@ -319,11 +362,17 @@
 | `REQ-SYS-013` | SHOULD | 所有运行形态应公开版本、构建提交和就绪状态 | [系统边界](03-system-boundary.md) | Program/Hosting；SystemController；src-tauri；Compose；启动测试 |
 | `REQ-SYS-014` | MUST | 系统配置、数据迁移和文档必须使用同一组有效环境变量 | [系统边界](03-system-boundary.md) | Program/Hosting；SystemController；src-tauri；Compose；启动测试 |
 | `REQ-SYS-015` | MUST | 正文内容存储损坏或哈希不一致时不得返回伪造内容 | [系统边界](03-system-boundary.md) | Program/Hosting；SystemController；src-tauri；Compose；启动测试 |
+| `REQ-SYS-016` | MUST | Images 端点必须在补齐实现与 DI 注册前显式声明不可用或返回明确错误语义，不得以依赖解析失败的 500 暴露。 | [系统边界](03-system-boundary.md) | Program/Hosting；SystemController；src-tauri；Compose；启动测试 |
 | `REQ-DAT-001` | MUST | 访问 Key 的持久化、展示、导出和轮换策略必须在产品和安全评审中统一；不得同时宣称“仅创建时可见”和“数据库保留可恢复明文”而没有标注差异。 | [领域模型](04-domain-model.md) | Domain；OpenCodexDbContextBase；Migrations；数据/日志测试 |
 | `REQ-DAT-002` | MUST | 所有租户资源查询必须在数据库查询或服务层使用 Owner/User 约束，不能只在前端隐藏记录。 | [领域模型](04-domain-model.md) | Domain；OpenCodexDbContextBase；Migrations；数据/日志测试 |
 | `REQ-DAT-003` | MUST | 历史请求成本必须使用完成请求时的价格快照，不得因后续修改模型价格而改变历史账单。 | [领域模型](04-domain-model.md) | Domain；OpenCodexDbContextBase；Migrations；数据/日志测试 |
 | `REQ-DAT-004` | MUST | 删除或停用操作必须明确区分软删除、硬删除和恢复语义；模型“删除”若实际是停用，产品文案和验收必须统一使用“停用”。 | [领域模型](04-domain-model.md) | Domain；OpenCodexDbContextBase；Migrations；数据/日志测试 |
 | `REQ-DAT-005` | SHOULD | 凭证和日志正文应支持加密存储或外部密钥管理；当前明文字段和导出能力必须进入安全风险评审。 | [领域模型](04-domain-model.md) | Domain；OpenCodexDbContextBase；Migrations；数据/日志测试 |
+| `REQ-DAT-006` | MUST | 渠道模型映射只承载 `RequestModel → UpstreamModel`；能力、目录与价格由 `ChannelModelInfo`/`ModelInfo` 承担。 | [领域模型](04-domain-model.md) | Domain；OpenCodexDbContextBase；Migrations；数据/日志测试 |
+| `REQ-DAT-007` | MUST | 渠道覆盖定价解析失败必须回退全局模型计划，禁止静默零成本。 | [领域模型](04-domain-model.md) | Domain；OpenCodexDbContextBase；Migrations；数据/日志测试 |
+| `REQ-DAT-008` | MUST | 峰谷计费字段契约、每请求现算与快照相位必须可复算。 | [领域模型](04-domain-model.md) | Domain；OpenCodexDbContextBase；Migrations；数据/日志测试 |
+| `REQ-DAT-009` | MUST | Web Search 续传以数据库为唯一真源，外键级联并随清空日志原子清理。 | [领域模型](04-domain-model.md) | Domain；OpenCodexDbContextBase；Migrations；数据/日志测试 |
+| `REQ-DAT-010` | MUST | `VisionTransferSettings` 唯一行与主/兜底同空同非空不变式、`ProxySetting` Key 唯一。 | [领域模型](04-domain-model.md) | Domain；OpenCodexDbContextBase；Migrations；数据/日志测试 |
 | `REQ-AUTH-001` | MUST | 启动时先判定初始化状态 | [初始化与认证](05-initialization-and-auth.md) | AuthController；Auth/Session/ApiKey/ProxyAccess Service；Setup/Auth 测试 |
 | `REQ-AUTH-002` | MUST | 初始化资格公式唯一且由服务端裁决 | [初始化与认证](05-initialization-and-auth.md) | AuthController；Auth/Session/ApiKey/ProxyAccess Service；Setup/Auth 测试 |
 | `REQ-AUTH-003` | MUST | 首次初始化只能成功一次 | [初始化与认证](05-initialization-and-auth.md) | AuthController；Auth/Session/ApiKey/ProxyAccess Service；Setup/Auth 测试 |
@@ -360,6 +409,9 @@
 | `REQ-AUTH-034` | MUST | 认证页面可访问性 | [初始化与认证](05-initialization-and-auth.md) | AuthController；Auth/Session/ApiKey/ProxyAccess Service；Setup/Auth 测试 |
 | `REQ-AUTH-035` | MUST | 认证安全审计 | [初始化与认证](05-initialization-and-auth.md) | AuthController；Auth/Session/ApiKey/ProxyAccess Service；Setup/Auth 测试 |
 | `REQ-AUTH-036` | MUST | 管理台与 Bearer 身份隔离 | [初始化与认证](05-initialization-and-auth.md) | AuthController；Auth/Session/ApiKey/ProxyAccess Service；Setup/Auth 测试 |
+| `REQ-AUTH-037` | MUST | Bearer API Key 解析与校验顺序 | [初始化与认证](05-initialization-and-auth.md) | Setup/SessionController；Auth/Session/ApiKey/ProxyAccess Service；Setup/Auth 测试 |
+| `REQ-AUTH-038` | MUST | 鉴权缓存一致性与失效传播 | [初始化与认证](05-initialization-and-auth.md) | Setup/SessionController；Auth/Session/ApiKey/ProxyAccess Service；Setup/Auth 测试 |
+| `REQ-AUTH-039` | MUST | 桌面设置注入与重启边界 | [初始化与认证](05-initialization-and-auth.md) | Setup/SessionController；Auth/Session/ApiKey/ProxyAccess Service；Setup/Auth 测试 |
 | `REQ-CH-001` | MUST | 租户隔离 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
 | `REQ-CH-002` | MUST | 渠道列表 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
 | `REQ-CH-003` | MUST | 创建校验 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
@@ -380,6 +432,11 @@
 | `REQ-CH-018` | MUST | 缓存一致性 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
 | `REQ-CH-019` | MUST | 审计记录 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
 | `REQ-CH-020` | SHOULD | 并发修改保护 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-021` | MUST | 渠道运行时快照 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-022` | MUST | 渠道模型信息覆盖与匹配键 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-023` | MUST | 诊断端点命名一致性 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-024` | MUST | 连接测试错误可诊断性 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
+| `REQ-CH-025` | MUST | 诊断日志秘密保护 | [渠道管理](06-channel-management.md) | ChannelController；ChannelService；ChannelDiagnosticsService；渠道/路由测试 |
 | `REQ-RTE-001` | MUST | 租户路由隔离 | [路由与可靠性](07-routing-and-reliability.md) | ProxyRoute/Capacity/CircuitBreaker/Affinity/Failover；相关单元与集成测试 |
 | `REQ-RTE-002` | MUST | 映射模式判定 | [路由与可靠性](07-routing-and-reliability.md) | ProxyRoute/Capacity/CircuitBreaker/Affinity/Failover；相关单元与集成测试 |
 | `REQ-RTE-003` | MUST | 无映射兜底 | [路由与可靠性](07-routing-and-reliability.md) | ProxyRoute/Capacity/CircuitBreaker/Affinity/Failover；相关单元与集成测试 |
@@ -405,6 +462,9 @@
 | `REQ-RTE-023` | SHOULD | 图片能力路由 | [路由与可靠性](07-routing-and-reliability.md) | ProxyRoute/Capacity/CircuitBreaker/Affinity/Failover；相关单元与集成测试 |
 | `REQ-RTE-024` | MUST | 尝试级日志 | [路由与可靠性](07-routing-and-reliability.md) | ProxyRoute/Capacity/CircuitBreaker/Affinity/Failover；相关单元与集成测试 |
 | `REQ-RTE-025` | MUST | 可靠性指标 | [路由与可靠性](07-routing-and-reliability.md) | ProxyRoute/Capacity/CircuitBreaker/Affinity/Failover；相关单元与集成测试 |
+| `REQ-RTE-026` | MUST | 内置工具副作用门禁 | [路由与可靠性](07-routing-and-reliability.md) | ProxyRoute/Capacity/CircuitBreaker/Affinity/Failover；相关单元与集成测试 |
+| `REQ-RTE-027` | MUST | 渠道超时边界 | [路由与可靠性](07-routing-and-reliability.md) | ProxyRoute/Capacity/CircuitBreaker/Affinity/Failover；相关单元与集成测试 |
+| `REQ-RTE-028` | MUST | 空骨架流处理 | [路由与可靠性](07-routing-and-reliability.md) | ProxyRoute/Capacity/CircuitBreaker/Affinity/Failover；相关单元与集成测试 |
 | `REQ-PRT-001` | MUST | 完整协议矩阵 | [协议转换](08-protocol-conversion.md) | ProtocolConverter；SseStreamConverter；ProtocolConversionMatrixTests |
 | `REQ-PRT-002` | MUST | 原始请求不可变 | [协议转换](08-protocol-conversion.md) | ProtocolConverter；SseStreamConverter；ProtocolConversionMatrixTests |
 | `REQ-PRT-003` | MUST | 模型名隔离 | [协议转换](08-protocol-conversion.md) | ProtocolConverter；SseStreamConverter；ProtocolConversionMatrixTests |
@@ -432,6 +492,10 @@
 | `REQ-PRT-025` | MUST | 未知新字段策略 | [协议转换](08-protocol-conversion.md) | ProtocolConverter；SseStreamConverter；ProtocolConversionMatrixTests |
 | `REQ-PRT-026` | MUST | 可观测转换记录 | [协议转换](08-protocol-conversion.md) | ProtocolConverter；SseStreamConverter；ProtocolConversionMatrixTests |
 | `REQ-PRT-027` | MUST | 协议回归矩阵 | [协议转换](08-protocol-conversion.md) | ProtocolConverter；SseStreamConverter；ProtocolConversionMatrixTests |
+| `REQ-PRT-028` | MUST | Schema `$ref` 展开安全 | [协议转换](08-protocol-conversion.md) | ProtocolConverter；SseStreamConverter；ProtocolConversionMatrixTests |
+| `REQ-PRT-029` | MUST | 流捕获预算与截断标记 | [协议转换](08-protocol-conversion.md) | ProtocolConverter；SseStreamConverter；ProtocolConversionMatrixTests |
+| `REQ-PRT-030` | MUST | Messages 默认 max_tokens | [协议转换](08-protocol-conversion.md) | ProtocolConverter；SseStreamConverter；ProtocolConversionMatrixTests |
+| `REQ-PRT-031` | SHOULD | TTFT 口径 | [协议转换](08-protocol-conversion.md) | ProtocolConverter；SseStreamConverter；ProtocolConversionMatrixTests |
 | `REQ-SPC-001` | MUST | 跨协议发送工具 Schema 前必须执行结构清洗，确保目标协议接受的类型、必填字段和嵌套结构合法。 | [特殊流程](09-tools-multimodal-and-special-flows.md) | Tool/MCP/WebSearch/Image/OCR/Probe 源码；专项测试 |
 | `REQ-SPC-002` | MUST | 工具调用结果必须与正确的调用 ID、工具名称和历史位置配对；缺失或冲突时不得静默拼接到其他调用。 | [特殊流程](09-tools-multimodal-and-special-flows.md) | Tool/MCP/WebSearch/Image/OCR/Probe 源码；专项测试 |
 | `REQ-SPC-003` | MUST | 当目标协议无法无损表达 `apply_patch` 时，系统必须执行已记录的兼容策略；如果兼容策略会改变调用语义，必须拒绝请求并说明受影响参数。 | [特殊流程](09-tools-multimodal-and-special-flows.md) | Tool/MCP/WebSearch/Image/OCR/Probe 源码；专项测试 |
@@ -454,6 +518,10 @@
 | `REQ-SPC-020` | MUST | 特殊流程不得泄露客户端 Bearer Key | [特殊流程](09-tools-multimodal-and-special-flows.md) | Tool/MCP/WebSearch/Image/OCR/Probe 源码；专项测试 |
 | `REQ-SPC-021` | SHOULD | 大型 Schema、SSE、图片和搜索结果有容量保护 | [特殊流程](09-tools-multimodal-and-special-flows.md) | Tool/MCP/WebSearch/Image/OCR/Probe 源码；专项测试 |
 | `REQ-SPC-022` | SHOULD | 产品界面说明实验性/降级语义 | [特殊流程](09-tools-multimodal-and-special-flows.md) | Tool/MCP/WebSearch/Image/OCR/Probe 源码；专项测试 |
+| `REQ-SPC-023` | MUST | Web Search 调用参数与上限固定 | [特殊流程](09-tools-multimodal-and-special-flows.md) | Tool/MCP/WebSearch/Image/OCR/Probe 源码；专项测试 |
+| `REQ-SPC-024` | MUST | 搜索时限、输出预算与重放保护 | [特殊流程](09-tools-multimodal-and-special-flows.md) | Tool/MCP/WebSearch/Image/OCR/Probe 源码；专项测试 |
+| `REQ-SPC-025` | MUST | OCR 触发条件与缓存、失败记忆 | [特殊流程](09-tools-multimodal-and-special-flows.md) | Tool/MCP/WebSearch/Image/OCR/Probe 源码；专项测试 |
+| `REQ-SPC-026` | MUST | Probe 配置来源与日志原因字段 | [特殊流程](09-tools-multimodal-and-special-flows.md) | Tool/MCP/WebSearch/Image/OCR/Probe 源码；专项测试 |
 | `REQ-UI-001` | MUST | 管理台入口稳定 | [管理台](10-admin-console.md) | frontend/src；管理控制器；前端状态测试与 E2E 缺口 |
 | `REQ-UI-002` | MUST | 启动状态互斥且无闪屏 | [管理台](10-admin-console.md) | frontend/src；管理控制器；前端状态测试与 E2E 缺口 |
 | `REQ-UI-003` | MUST | 每个业务页面拥有稳定路由 | [管理台](10-admin-console.md) | frontend/src；管理控制器；前端状态测试与 E2E 缺口 |
@@ -500,6 +568,13 @@
 | `REQ-UI-044` | MUST | 页面性能预算 | [管理台](10-admin-console.md) | frontend/src；管理控制器；前端状态测试与 E2E 缺口 |
 | `REQ-UI-045` | MUST | 前端自动化测试门禁 | [管理台](10-admin-console.md) | frontend/src；管理控制器；前端状态测试与 E2E 缺口 |
 | `REQ-UI-046` | SHOULD | 前端可观测性 | [管理台](10-admin-console.md) | frontend/src；管理控制器；前端状态测试与 E2E 缺口 |
+| `REQ-UI-047` | MUST | 渠道实时状态与诊断接口契约一致 | [管理台](10-admin-console.md) | frontend/src；管理控制器；前端状态测试与 E2E 缺口 |
+| `REQ-UI-048` | MUST | 渠道级模型覆盖能力边界明确 | [管理台](10-admin-console.md) | frontend/src；管理控制器；前端状态测试与 E2E 缺口 |
+| `REQ-UI-049` | MUST | 模型生命周期与批量删除两段式一致 | [管理台](10-admin-console.md) | frontend/src；管理控制器；前端状态测试与 E2E 缺口 |
+| `REQ-UI-050` | MUST | 峰谷计费配置与价格展示一致 | [管理台](10-admin-console.md) | frontend/src；管理控制器；前端状态测试与 E2E 缺口 |
+| `REQ-UI-051` | MUST | 系统设置按角色和生效范围隔离 | [管理台](10-admin-console.md) | frontend/src；管理控制器；前端状态测试与 E2E 缺口 |
+| `REQ-UI-052` | MUST | 日志实时刷新与详情内容完整 | [管理台](10-admin-console.md) | frontend/src；管理控制器；前端状态测试与 E2E 缺口 |
+| `REQ-UI-053` | MUST | 管理 API 分层完成迁移 | [管理台](10-admin-console.md) | frontend/src；管理控制器；前端状态测试与 E2E 缺口 |
 | `REQ-OBS-001` | MUST | 当上游提供可解析 Usage 时，系统必须在主请求日志中保存统一字段；无法解析时必须标明缺失原因，不得用 0 冒充真实零用量。 | [可观测性与计费](11-observability-and-billing.md) | Observability/ProxyLog/LogContent/ModelPricing；日志与统计测试 |
 | `REQ-OBS-002` | MUST | 成本计算必须基于请求完成时的定价快照，且能追溯到计费项、模式、单位价格和输入用量。 | [可观测性与计费](11-observability-and-billing.md) | Observability/ProxyLog/LogContent/ModelPricing；日志与统计测试 |
 | `REQ-OBS-003` | MUST | 详细正文的保存、读取、删除和重组必须保持引用完整性，任何损坏不得静默返回错误正文。 | [可观测性与计费](11-observability-and-billing.md) | Observability/ProxyLog/LogContent/ModelPricing；日志与统计测试 |
@@ -520,6 +595,10 @@
 | `REQ-OBS-018` | MUST | 清空日志有权限和二次确认 | [可观测性与计费](11-observability-and-billing.md) | Observability/ProxyLog/LogContent/ModelPricing；日志与统计测试 |
 | `REQ-OBS-019` | SHOULD | 支持结构化导出和受控正文导出 | [可观测性与计费](11-observability-and-billing.md) | Observability/ProxyLog/LogContent/ModelPricing；日志与统计测试 |
 | `REQ-OBS-020` | SHOULD | readiness 与观测指标可区分 | [可观测性与计费](11-observability-and-billing.md) | Observability/ProxyLog/LogContent/ModelPricing；日志与统计测试 |
+| `REQ-OBS-021` | MUST | 峰谷分时定价：进入时刻判定、绝对单价、快照可复算 | [可观测性与计费](11-observability-and-billing.md) | Observability/ProxyLog/LogContent/ModelCatalog；日志与统计测试 |
+| `REQ-OBS-022` | SHOULD | 日志详情展示 `pricing_phase` 与价格快照（TBD） | [可观测性与计费](11-observability-and-billing.md) | Observability/ProxyLog/LogContent/ModelCatalog；日志与统计测试 |
+| `REQ-OBS-023` | SHOULD | 只读价格试算端点（TBD） | [可观测性与计费](11-observability-and-billing.md) | Observability/ProxyLog/LogContent/ModelCatalog；日志与统计测试 |
+| `REQ-OBS-024` | MUST | 峰谷计费需求登记到本索引 | [可观测性与计费](11-observability-and-billing.md) | 本索引第 10 节 |
 | `REQ-CFG-001` | MUST | 系统必须维护唯一、可机器检查的配置目录，列出名称、类型、默认值、敏感性、作用域、是否需重启和适用模式。 | [配置](12-configuration.md) | RuntimeSettingsProvider；DesktopSystemSettingsStore；配置/设置测试 |
 | `REQ-CFG-002` | MUST | 配置优先级必须遵循“显式 `OpenCodex:*` > 对应 `OPENCODEX_*` > `.env` 默认 > 代码默认”。 | [配置](12-configuration.md) | RuntimeSettingsProvider；DesktopSystemSettingsStore；配置/设置测试 |
 | `REQ-CFG-003` | MUST | `.env` 不得覆盖已有非空 ASP.NET Core 配置。 | [配置](12-configuration.md) | RuntimeSettingsProvider；DesktopSystemSettingsStore；配置/设置测试 |
@@ -546,6 +625,9 @@
 | `REQ-CFG-024` | MUST | 配置变更必须产生不含秘密的审计记录。 | [配置](12-configuration.md) | RuntimeSettingsProvider；DesktopSystemSettingsStore；配置/设置测试 |
 | `REQ-CFG-025` | SHOULD | 桌面设置文件损坏时应保留损坏副本并以可见方式恢复默认，而非静默覆盖。 | [配置](12-configuration.md) | RuntimeSettingsProvider；DesktopSystemSettingsStore；配置/设置测试 |
 | `REQ-CFG-026` | MUST | README、DEPLOYMENT、`.env.example` 与配置目录必须在发布门禁中保持一致。 | [配置](12-configuration.md) | RuntimeSettingsProvider；DesktopSystemSettingsStore；配置/设置测试 |
+| `REQ-CFG-027` | MUST | 多代理运行参数必须纳入配置目录并定义默认值与非法值行为。 | [配置](12-configuration.md) | RuntimeSettingsProvider；DesktopSystemSettingsStore；配置/设置测试 |
+| `REQ-CFG-028` | MUST | Web Search provider 必须限定为受支持集合并随密钥记录持久化。 | [配置](12-configuration.md) | RuntimeSettingsProvider；DesktopSystemSettingsStore；配置/设置测试 |
+| `REQ-CFG-029` | MUST | 视觉转移配置必须按 owner 隔离，普通用户不能读写他人配置。 | [配置](12-configuration.md) | RuntimeSettingsProvider；DesktopSystemSettingsStore；配置/设置测试 |
 | `REQ-NFR-001` | MUST | 发布前必须建立正式指标字典，统一 TTFT、总时长、成功率、错误率、吞吐和并发的计算口径。 | [非功能要求](13-non-functional-requirements.md) | 跨模块源码；压测/故障注入/安全测试与当前缺口 |
 | `REQ-NFR-002` | MUST | 生产 SLO 数值必须来自可复现基准测试，不得直接引用内存单测阈值。 | [非功能要求](13-non-functional-requirements.md) | 跨模块源码；压测/故障注入/安全测试与当前缺口 |
 | `REQ-NFR-003` | MUST | 流式路径必须逐增量写出并 flush，不得等待完整上游响应。 | [非功能要求](13-non-functional-requirements.md) | 跨模块源码；压测/故障注入/安全测试与当前缺口 |
@@ -578,6 +660,11 @@
 | `REQ-NFR-030` | SHOULD | 管理台核心流程应满足批准的无障碍目标。 | [非功能要求](13-non-functional-requirements.md) | 跨模块源码；压测/故障注入/安全测试与当前缺口 |
 | `REQ-NFR-031` | MUST | 移动端必须覆盖初始化、登录、渠道、Key 和日志关键流程，不只验证视觉断点。 | [非功能要求](13-non-functional-requirements.md) | 跨模块源码；压测/故障注入/安全测试与当前缺口 |
 | `REQ-NFR-032` | MUST | 任何 SLA/SLO 变更必须版本化并关联监控、报警和容量测试。 | [非功能要求](13-non-functional-requirements.md) | 跨模块源码；压测/故障注入/安全测试与当前缺口 |
+| `REQ-NFR-033` | MUST | 大列表与统计读取必须投影列并下推聚合，禁止为统计整表加载大字段。 | [非功能要求](13-non-functional-requirements.md) | 跨模块源码；压测/故障注入/安全测试与当前缺口 |
+| `REQ-NFR-034` | MUST | 缓存必须按 L1 进程内 + Redis L2 两级工作，Redis 不可用时降级为纯 L1 且不阻塞主请求。 | [非功能要求](13-non-functional-requirements.md) | 跨模块源码；压测/故障注入/安全测试与当前缺口 |
+| `REQ-NFR-035` | MUST | 多代理 v2 必须受子代理并发、模型回合预算与上下文压缩阈值约束，非法值显式失败。 | [非功能要求](13-non-functional-requirements.md)；[多代理模拟](19-multi-agent-simulation.md) | MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-NFR-036` | MUST | 价格比较与排序不得下推到数据库（SQLite `TEXT` 与 PostgreSQL `numeric` 差异）。 | [非功能要求](13-non-functional-requirements.md) | 跨模块源码；压测/故障注入/安全测试与当前缺口 |
+| `REQ-NFR-037` | MUST | 日志与导出文件的访问控制、磁盘加密属于部署方责任边界，不得宣称应用层已脱敏。 | [非功能要求](13-non-functional-requirements.md) | 跨模块源码；压测/故障注入/安全测试与当前缺口 |
 | `REQ-MIG-001` | MUST | SQLite/PostgreSQL 必须是用户、渠道、Key、模型、价格和请求日志的唯一业务主数据源。 | [数据与迁移](14-data-and-migrations.md) | DbContext；Migrations；DatabaseInitializer；双库迁移测试 |
 | `REQ-MIG-002` | MUST | provider 只允许 `sqlite` 与规范化后的 `postgres`。 | [数据与迁移](14-data-and-migrations.md) | DbContext；Migrations；DatabaseInitializer；双库迁移测试 |
 | `REQ-MIG-003` | MUST | SQLite 与 PostgreSQL 必须维护逻辑等价的 schema、索引和业务约束。 | [数据与迁移](14-data-and-migrations.md) | DbContext；Migrations；DatabaseInitializer；双库迁移测试 |
@@ -612,6 +699,9 @@
 | `REQ-MIG-032` | SHOULD | 生产应支持只运行 migration/preflight 而不启动 API。 | [数据与迁移](14-data-and-migrations.md) | DbContext；Migrations；DatabaseInitializer；双库迁移测试 |
 | `REQ-MIG-033` | MUST | 渠道和 Tavily 明文秘密的数据库保护策略必须在生产发布前确定。 | [数据与迁移](14-data-and-migrations.md) | DbContext；Migrations；DatabaseInitializer；双库迁移测试 |
 | `REQ-MIG-034` | MUST | 数据恢复必须在隔离环境通过完整性和业务冒烟后才切换流量。 | [数据与迁移](14-data-and-migrations.md) | DbContext；Migrations；DatabaseInitializer；双库迁移测试 |
+| `REQ-MIG-035` | MUST | PostgreSQL 端到端验收必须在可连接实例上执行迁移、仓储读写与内容寻址日志读写。 | [数据与迁移](14-data-and-migrations.md) | DbContext；Migrations；DatabaseInitializer；双库迁移测试 |
+| `REQ-MIG-036` | MUST | 应用启动初始化只执行 `Database.Migrate()`，不得隐式 seed。 | [数据与迁移](14-data-and-migrations.md) | DbContext；Migrations；DatabaseInitializer；双库迁移测试 |
+| `REQ-MIG-037` | MUST | `DropChannelModelMappingDeadColumns` 的不可逆删除必须标注发布与回滚影响。 | [数据与迁移](14-data-and-migrations.md) | DbContext；Migrations；DatabaseInitializer；双库迁移测试 |
 | `REQ-REL-001` | MUST | 一次正式发布必须有唯一语义版本，并同步到桌面配置、后端版本接口、镜像标签、安装包和发布说明。 | [部署与发布](15-deployment-and-release.md) | Dockerfile；Compose；scripts；workflow；发布冒烟 |
 | `REQ-REL-002` | MUST | Docker 构建必须从干净工作区使用锁文件恢复依赖，并记录 Git commit、构建时间、版本和基础镜像摘要。 | [部署与发布](15-deployment-and-release.md) | Dockerfile；Compose；scripts；workflow；发布冒烟 |
 | `REQ-REL-003` | SHOULD | 生产镜像应使用非 root 用户、只读根文件系统兼容路径、最小 Linux capabilities 和显式资源限制。 | [部署与发布](15-deployment-and-release.md) | Dockerfile；Compose；scripts；workflow；发布冒烟 |
@@ -632,6 +722,9 @@
 | `REQ-REL-018` | MUST | 失败发布不会删除唯一可用的旧版本和数据恢复点 | [部署与发布](15-deployment-and-release.md) | Dockerfile；Compose；scripts；workflow；发布冒烟 |
 | `REQ-REL-019` | MUST | `ContentAddressedLogs` 升级必须迁移并校验旧日志正文，或在明确审批后执行可恢复的数据丢弃方案 | [部署与发布](15-deployment-and-release.md) | Dockerfile；Compose；scripts；workflow；发布冒烟 |
 | `REQ-REL-020` | MUST | 服务端 Docker 镜像由可审计 CI 产出并以不可变 digest 发布，禁止把本地工作站作为唯一发布链 | [部署与发布](15-deployment-and-release.md) | Dockerfile；Compose；scripts；workflow；发布冒烟 |
+| `REQ-REL-021` | MUST | 容器日志必须使用 json-file 驱动并通过 `DOCKER_LOG_MAX_SIZE`/`DOCKER_LOG_MAX_FILE` 控制轮转。 | [部署与发布](15-deployment-and-release.md) | Dockerfile；Compose；scripts；workflow；发布冒烟 |
+| `REQ-REL-022` | MUST | dev 环境自动部署必须使用 CI 产出的不可变镜像 tag，并在切换后通过容器健康检查。 | [部署与发布](15-deployment-and-release.md) | Dockerfile；Compose；scripts；workflow；发布冒烟 |
+| `REQ-REL-023` | MUST | 桌面构建必须提交 `src-tauri/Cargo.lock` 并使用固定 Rust 工具链，保证 tag 可复现。 | [部署与发布](15-deployment-and-release.md) | Dockerfile；Compose；scripts；workflow；发布冒烟 |
 | `REQ-TST-001` | MUST | 每个管理接口必须至少有未登录、普通用户和超级管理员三类授权测试；每个租户资源接口必须有跨用户 ID 越权测试。 | [测试与验收](16-testing-and-acceptance.md) | OpenCodex.Api.Tests；前端测试；CI；测试缺口 |
 | `REQ-TST-002` | MUST | 协议矩阵测试必须明确区分同协议透传和六个跨协议方向，不能用单一 happy path 代表全部兼容性。 | [测试与验收](16-testing-and-acceptance.md) | OpenCodex.Api.Tests；前端测试；CI；测试缺口 |
 | `REQ-TST-003` | MUST | 每个数据库迁移必须在 SQLite 和 PostgreSQL 中从上一正式版本真实升级，并验证应用启动、读写和回滚/恢复路径。 | [测试与验收](16-testing-and-acceptance.md) | OpenCodex.Api.Tests；前端测试；CI；测试缺口 |
@@ -650,6 +743,10 @@
 | `REQ-TST-016` | MUST | 每个 MUST 需求在追踪索引中有测试证据或缺口状态 | [测试与验收](16-testing-and-acceptance.md) | OpenCodex.Api.Tests；前端测试；CI；测试缺口 |
 | `REQ-TST-017` | MUST | `ContentAddressedLogs` 必须以非空旧库验证 Up/Down 数据影响，任何预期数据丢弃都需显式验收 | [测试与验收](16-testing-and-acceptance.md) | OpenCodex.Api.Tests；前端测试；CI；测试缺口 |
 | `REQ-TST-018` | MUST | 手工测试和数据采集脚本必须与当前认证、数据库 Schema、部署形态和依赖声明同步，否则从验收证据中排除 | [测试与验收](16-testing-and-acceptance.md) | OpenCodex.Api.Tests；前端测试；CI；测试缺口 |
+| `REQ-TST-019` | MUST | PostgreSQL 端到端测试（真实实例或 Testcontainers）覆盖迁移、约束、日志与仓储。 | [测试与验收](16-testing-and-acceptance.md) | OpenCodex.Api.Tests；前端测试；CI；测试缺口 |
+| `REQ-TST-020` | MUST | 超大 SSE 日志详情具备性能/内存验收用例，覆盖分段读取与整体渲染边界。 | [测试与验收](16-testing-and-acceptance.md) | OpenCodex.Api.Tests；前端测试；CI；测试缺口 |
+| `REQ-TST-021` | MUST | 工具 schema `$ref` 展开的节点预算与深度降级分支具备直接用例。 | [测试与验收](16-testing-and-acceptance.md) | OpenCodex.Api.Tests；前端测试；CI；测试缺口 |
+| `REQ-TST-022` | MUST | 管理台浏览器 E2E 基线（初始化、登录、渠道、Key、日志）纳入 CI。 | [测试与验收](16-testing-and-acceptance.md) | OpenCodex.Api.Tests；前端测试；CI；测试缺口 |
 | `REQ-RSK-001` | MUST | 生产配置必须从 Secret 注入随机数据库凭据； | [风险与决策](17-known-limitations-and-risks.md) | 风险证据文件；修复验证或书面接受记录 |
 | `REQ-RSK-002` | MUST | Redis 必须启用认证或置于不可被非受信主体访问的隔离网络； | [风险与决策](17-known-limitations-and-risks.md) | 风险证据文件；修复验证或书面接受记录 |
 | `REQ-RSK-003` | MUST | LAN 模式必须展示明确风险和生效地址；正式公网场景必须使用 TLS。 | [风险与决策](17-known-limitations-and-risks.md) | 风险证据文件；修复验证或书面接受记录 |
@@ -667,6 +764,46 @@
 | `REQ-RSK-015` | MUST | 服务端镜像必须由受控 CI 从干净提交构建、扫描、记录 digest/provenance 后发布； | [风险与决策](17-known-limitations-and-risks.md) | 风险证据文件；修复验证或书面接受记录 |
 | `REQ-RSK-016` | MUST | 正式发布必须通过真实 PostgreSQL、Redis、多实例和迁移备份恢复集成测试。 | [风险与决策](17-known-limitations-and-risks.md) | 风险证据文件；修复验证或书面接受记录 |
 | `REQ-RSK-017` | MUST | 手工测试、数据采集和运维脚本必须声明依赖、使用当前认证/API/Schema，并移除个人路径和示例凭据默认值；否则必须标记停用且不得作为验收证据。 | [风险与决策](17-known-limitations-and-risks.md) | 风险证据文件；修复验证或书面接受记录 |
+| `REQ-RSK-018` | MUST | 同协议短路必须清理 `_ocxp_` 前缀内部标记。 | [风险与决策](17-known-limitations-and-risks.md) | 风险证据文件；修复验证或书面接受记录 |
+| `REQ-RSK-019` | SHOULD | Chat 出站不得携带 OpenCodex 自有编码 `anthropic_thinking_encrypted`。 | [风险与决策](17-known-limitations-and-risks.md) | 风险证据文件；修复验证或书面接受记录 |
+| `REQ-RSK-020` | MUST | 候选耗尽错误必须区分熔断（附剩余时间与重置入口）、容量已满与无匹配渠道。 | [风险与决策](17-known-limitations-and-risks.md) | 风险证据文件；修复验证或书面接受记录 |
+| `REQ-MA-001` | MUST | 能力开关与默认关闭 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-002` | MUST | Responses 入口分流 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-003` | MUST | HTTP 显式回退 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-004` | MUST | HTTP JSON 与 SSE | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-005` | MUST | WebSocket 入口与单活动响应 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-006` | MUST | WebSocket 创建与注入契约 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-007` | MUST | WebSocket 注入错误码 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-008` | MUST | WebSocket 断连与并发安全 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-009` | MUST | 服务端协作函数集 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-010` | MUST | 客户端工具调用与结果归属 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-011` | MUST | 代理路径与子代理并发上限 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-012` | MUST | send_message 与 followup_task | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-013` | MUST | wait_agent 与 interrupt_agent | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-014` | MUST | list_agents | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-015` | MUST | fork_turns 与已完成回合 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-016` | MUST | 子代理失败隔离与根代理终态 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-017` | MUST | 流式增量即时转发 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-018` | MUST | 事件身份、归属与顺序 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-019` | MUST | 终结与输出完整性 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-020` | MUST | 未完成工具调用不可执行 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-021` | MUST | 会话标识解析与响应头 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-022` | MUST | 会话隔离与 previous_response_id | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-023` | MUST | 单会话固定模型 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-024` | MUST | `store:false` 内存模式 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-025` | MUST | 快照持久化与恢复 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-026` | MUST | 旧快照兼容与不猜测 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-027` | MUST | 客户端回传历史边界 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-028` | MUST | 模型回合预算 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-029` | MUST | 上下文压缩与摘要语义 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-030` | MUST | 普通管线 v2 策略选择 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-031` | MUST | downgrade 改写保真 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-032` | SHOULD | 重复轮次软性护栏 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-033` | SHOULD | 多代理专用可观测性与计费归属 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-034` | MUST | 快照安全、保留与容量治理 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-035` | SHOULD | 多实例与共享状态协调 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-036` | SHOULD | WebSocket 跨连接恢复与会话发现 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+| `REQ-MA-037` | SHOULD | 原生代理树 UI 契约 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
 
 ## 11. 维护与完成判定
 

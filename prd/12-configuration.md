@@ -7,9 +7,9 @@
 | 文档编号 | PRD-CFG-012 |
 | 需求编号前缀 | `REQ-CFG` |
 | 产品 | OpenCodex Proxy |
-| 基线提交 | `3827590eb33acb67dd063054c4a36d2b87b09002` |
+| 基线提交 | `main@235da3f4` |
 | 文档状态 | 当前实现基线审计 + 目标要求 |
-| 最后核对日期 | 2026-08-17 |
+| 最后核对日期 | 2026-09-30 |
 | 事实来源 | 当前源码、`.env.example`、Docker Compose、Tauri 启动代码、配置与路由测试 |
 | 目标读者 | 产品、后端、桌面端、运维、测试、安全负责人 |
 
@@ -31,10 +31,11 @@
 1. ASP.NET Core 配置源、优先级与 `.env` 加载规则；
 2. 数据库、Redis、管理员、Cookie、Data Protection、超时、OCR 目录等运行时配置；
 3. 本地开发、Docker SQLite、Docker PostgreSQL + Redis、Tauri 桌面端四类运行模式；
-4. 桌面系统设置：访问模式、绑定地址、端口、探测请求拦截；
+4. 桌面系统设置：访问模式、绑定地址、端口，以及已迁移到数据库代理设置的探测请求拦截；
 5. 渠道配置的结构、默认值、验证、环境变量展开与特殊约束；
 6. 配置失败、依赖不可用时的降级语义；
 7. 配置安全、变更审计、文档一致性和可维护性要求。
+8. Web Search provider（`tavily`/`keenable`）、视觉转移（per-owner）与多代理运行参数（`MultiAgent:*`）。
 
 ### 2.2 本文不展开
 
@@ -122,6 +123,7 @@ flowchart TD
 | `OPENCODEX_DESKTOP_SETTINGS_PATH` | 非桌面为空 | 桌面设置 JSON 路径，并标识 `managed_by_desktop` | README 未说明 |
 | `OPENCODEX_DESKTOP_BIND_HOST` | `127.0.0.1` | 推断桌面访问模式 | README 未说明 |
 | `OPENCODEX_DESKTOP_PORT` | `18080` | 推断桌面端口 | README 未说明 |
+| `OPENCODEX_INTERCEPT_PROBE_REQUESTS` | 桌面注入 `DesktopSettings.intercept_probe_requests` | **当前没有 .NET 读取方**；探测拦截实际由数据库代理设置 `intercept_probe_requests` 控制 | 未列出，属于残留注入 |
 | `OPENCODEX_DESKTOP_TARGET` | 构建脚本按当前平台推断 | 选择 sidecar RID/三元组 | README 仅描述构建命令，未列完整值 |
 | `ASPNETCORE_URLS` | 模式相关 | Kestrel 监听 URL | 由启动配置或 Tauri 注入 |
 | `ASPNETCORE_ENVIRONMENT` | 本地 Development；容器/桌面 Production | Swagger、静态文件和环境行为 | 分散在 launch profile、Dockerfile、Tauri |
@@ -129,15 +131,20 @@ flowchart TD
 | `Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command` | Compose 为 `Warning` | 降低 EF SQL 命令日志噪声 | 仅 Compose 中存在 |
 | `DOCKER_LOG_MAX_SIZE` | `50m` | Docker json-file 单文件轮转上限 | 部署脚本/Compose |
 | `DOCKER_LOG_MAX_FILE` | `5` | Docker json-file 保留文件数 | 部署脚本/Compose |
+| `MultiAgent:StateDirectory` | 未设置时为 `logs/multi-agent-runs` | 多代理 v2 运行快照目录；请求 `store:false` 时仅内存保存 | 未列出 |
+| `MultiAgent:MaxModelTurns` | `128` | 多代理整次运行共享的模型回合预算；`<1` 时抛 `InvalidOperationException` | 未列出 |
+| `MultiAgent:CompactThresholdTokens` | `64000` | 多代理上下文压缩阈值默认值，可被请求 `context_management.compact_threshold` 覆盖 | 未列出 |
+
+`MultiAgent:*` 由 `IConfiguration` 直接读取，不经过 `OpenCodexRuntimeSettingsProvider`；环境变量形式为 `MultiAgent__*`（例如 `MultiAgent__MaxModelTurns`），`.env.example` 与 Compose 均未列出。
 
 ### 4.3 README 配置漂移
 
 | 文档内容 | 当前实现事实 | 判定 |
 |---|---|---|
-| README 与 DEPLOYMENT 手动示例使用 `OPENCODEX_DB_PATH` | 当前源码不读取该变量；应使用 `OPENCODEX_DB_PROVIDER` + `OPENCODEX_DB_CONNECTION_STRING` | **风险：陈旧配置会被静默忽略** |
+| README/DEPLOYMENT 曾使用 `OPENCODEX_DB_PATH` | 当前 README/DEPLOYMENT 已改为 `OPENCODEX_DB_PROVIDER` + `OPENCODEX_DB_CONNECTION_STRING`；源码也不读取旧变量 | **已修复**（仍需 CI 防回归） |
 | README/DEPLOYMENT 描述 `BASIC`、`DEBUG`、`TRACE` 日志展示等级 | 当前基线未发现 `OPENCODEX_LOG_VIEW_LEVEL`、`OPENCODEX_LOG_LEVEL` 或对应运行时设置 | **风险：文档宣称能力与实现不一致** |
-| README 未列 Redis、数据库 provider/connection string | `.env.example` 和生产 Compose 已使用这些配置 | **缺失** |
-| README 未列桌面内部变量 | Tauri sidecar 依赖这些变量启动 | **缺失，但其中多数应标为内部变量而非普通用户选项** |
+| README 曾未列 Redis、数据库 provider/connection string | 当前 README 已列出 | **已修复** |
+| README/.env.example 未列桌面内部变量与 `MultiAgent:*` | Tauri sidecar 依赖这些变量启动；`MultiAgent:*` 由 `IConfiguration` 直接读取 | **缺失，但其中多数应标为内部变量而非普通用户选项** |
 
 ---
 
@@ -150,15 +157,18 @@ flowchart TD
 | 访问模式 | `access_mode` | `localhost` | `localhost`、`local`、`lan`、`network`；保存时规范为 `localhost`/`lan` | `desktop-settings.json` | 改变时返回 `restart_required=true` |
 | 绑定地址 | `bind_host` | `127.0.0.1` | 仅接受 `127.0.0.1`/`localhost` 或 `0.0.0.0`，并由访问模式重新计算 | 同上 | 改变时需重启 sidecar |
 | 端口 | `port` | `18080` | `1024..65535` | 同上 | 改变时需重启 sidecar |
-| 探测请求拦截 | `intercept_probe_requests` | `false` | boolean | 同上 | 当前控制器每次请求读取，理论上无需重启 |
+
+探测请求拦截已不是桌面设置字段：它保存在数据库 `ProxySetting` 表的 `intercept_probe_requests` 键中，通过 `GET/PUT /system-settings/proxy-settings` 维护；`ProxyService` 在请求体非空时调用 `IProxySettingsService.GetBool("intercept_probe_requests", false)` 读取，保存后立即生效。
 
 ### 5.2 权限与 API
 
 - `GET /system-settings` 与 `PUT /system-settings` 仅超级管理员可用；
+- `GET/PUT /system-settings/proxy-settings` 仅超级管理员可用，当前键为 `intercept_probe_requests` 与 `usd_cny_rate`（默认 `7.25`），保存或读取后立即生效；
+- `GET/PUT/DELETE /system-settings/vision-transfer` 与 `GET /system-settings/vision-transfer/candidates` 使用 `RequireUser`：超级管理员可通过 `owner_username` 代其他 owner 操作，普通用户传入他人 owner 会被强制改写为自己；
 - 非法访问模式或端口返回 HTTP 400 业务错误；
 - `admin_url` 始终返回 `http://127.0.0.1:{port}/admin/`，即使服务以 LAN 模式监听；
 - `managed_by_desktop` 仅依据是否配置 `OPENCODEX_DESKTOP_SETTINGS_PATH`；
-- `restart_required` 只比较访问模式、绑定地址和端口，不因探测请求拦截变化而置为 true。
+- `restart_required` 只比较访问模式、绑定地址和端口；代理设置与视觉转移配置不参与该判断。
 
 ### 5.3 桌面运行模式
 
@@ -171,7 +181,7 @@ sequenceDiagram
 
     Rust->>File: 读取或创建 access_mode/bind_host/port
     Rust->>Rust: 规范化模式与端口
-    Rust->>API: 注入 HTTP URL、SQLite 路径、key 路径、禁用 dotenv
+    Rust->>API: 注入 HTTP URL、SQLite 路径、key 路径、禁用 dotenv、OPENCODEX_INTERCEPT_PROBE_REQUESTS
     Rust->>API: 启动 self-contained sidecar
     Rust->>API: 最长 15 秒轮询 127.0.0.1:port TCP
     Rust->>UI: 打开 http://127.0.0.1:port/admin/
@@ -180,9 +190,11 @@ sequenceDiagram
     UI->>Rust: 必要时调用 restart_backend
 ```
 
+桌面 sidecar 注入的完整环境变量：`ASPNETCORE_ENVIRONMENT=Production`、`ASPNETCORE_URLS`、`OPENCODEX_CONTENT_ROOT`、`OPENCODEX_DISABLE_DOTENV=true`、`OPENCODEX_DESKTOP_SETTINGS_PATH`、`OPENCODEX_DESKTOP_BIND_HOST`、`OPENCODEX_DESKTOP_PORT`、`OPENCODEX_DB_PROVIDER=sqlite`、`OPENCODEX_DB_CONNECTION_STRING`（app data `logs/opencodex.db`）、`OPENCODEX_DATA_PROTECTION_KEYS_PATH`（app data `keys`）、`OPENCODEX_OCR_CACHE_DIR`（app data `ocr-cache`）与 `OPENCODEX_INTERCEPT_PROBE_REQUESTS`（当前无读取方）。
+
 ### 5.4 当前桌面设置风险
 
-1. Rust `DesktopSettings` 结构当前只包含 `access_mode`、`bind_host`、`port`，不包含 `.NET` 新增的 `intercept_probe_requests`；Rust 读取后会忽略该字段并重新写文件，因此桌面启动或重启可能丢失该设置。
+1. Rust `DesktopSettings` 仍包含 `intercept_probe_requests` 并注入 `OPENCODEX_INTERCEPT_PROBE_REQUESTS`，但 .NET 没有任何读取方；.NET 的 `DesktopSystemSettingsStore` 只写 `access_mode`/`bind_host`/`port`（`DesktopSystemSettingsStoreTests.Save_DoesNotWriteProbeInterceptionField` 固定该行为），探测拦截的唯一有效入口是数据库代理设置。
 2. LAN 模式使用 `http://0.0.0.0:{port}`，没有内建 TLS；Cookie 的 `SecurePolicy=SameAsRequest` 意味着 HTTP 下 Cookie 不带 Secure。
 3. sidecar 只通过 TCP 端口判断启动成功，不验证 `/health`、数据库迁移、静态资源或管理台可用性。
 4. 桌面设置文件损坏时，Rust 端会回退默认值并覆盖文件；`.NET` 端直接反序列化，若独立调用时文件 JSON 损坏可能抛异常。两端容错语义不一致。
@@ -235,7 +247,6 @@ sequenceDiagram
 |---|---|---|---|
 | `enable_apply_patch_prompt_compat` | boolean | false | Apply Patch 提示兼容 |
 | `preserve_thinking_history` | boolean | false | 保留 thinking 历史 |
-| `intercept_probe_requests` | 当前验证未单独约束类型 | 无 | 渠道级兼容字段；与桌面全局同名设置必须在产品文档中区分 |
 | `rename_params` | object | `{}` | 参数重命名 |
 | `drop_params` | list | `[]` | 删除参数 |
 | `drop_tool_types` | list | `[]` | 删除指定工具类型 |
@@ -243,6 +254,7 @@ sequenceDiagram
 | `default_params` | object | `{}` | 缺省参数 |
 | `unsupported_params` | list | `[]` | 命中时显式拒绝的参数 |
 | `images_api_dialect` | string | 无 | 仅 images 渠道允许，值为 `openai` 或 `xai` |
+| `multi_agent_v2_mode` | string | 无（未设置） | 仅允许 `passthrough`、`downgrade`、`reject`；未设置时按入口/上游类型自动判定（官方 Responses 渠道透传，chat/messages 降级，其余拒绝） |
 
 ### 7.3 Images 渠道特殊规则
 
@@ -258,6 +270,22 @@ sequenceDiagram
 - 展开后的值仍需经过渠道验证；
 - 当前没有占位符 allow-list，也没有“未解析占位符”统一启动/保存错误；
 - 配置导出、日志和诊断必须避免把展开后的秘密明文暴露给无权用户。
+
+### 7.5 Web Search 配置
+
+- 配置保存在数据库：模式在 `WebSearchSettings.Mode`，密钥在 `TavilyKey` 实体（列名保留 Tavily，但每条密钥带 `Provider` 字段）；
+- `provider` 白名单为 `tavily`、`keenable`；缺省或空值归一为 `tavily`，其他值在保存时返回 400（`WebSearchService.NormalizeWebSearchProvider`）；
+- 模式白名单为 `simulate`、`convert`、`disabled`，默认 `convert`（`WebSearchModes`）；
+- 密钥按 `position` 排序，带 `enabled`、`usage_count`、`usage_limit`；未指定上限时使用默认 1000（`DefaultWebSearchKeyUsageLimit`）；
+- 运行时由 `WebSearchClientRouter` 按 provider 路由到 `TavilyWebSearchClient`（`https://api.tavily.com/search`）或 `KeenableWebSearchClient`（`https://api.keenable.ai/v1/search`）；
+- 管理接口为 `/web-search`、`/web-search/import`、`/web-search/test-key`，仅超级管理员可用。
+
+### 7.6 视觉转移配置（per-owner）
+
+- 配置保存在 `VisionTransferSettings` 表：每 owner 最多一行，`PrimaryChannelId`+`PrimaryModel` 必填，`FallbackChannelId`/`FallbackModel` 必须同时为空或同时非空；
+- 候选来自该 owner 的启用渠道模型映射，并要求 `IModelCatalogService.SupportsImage` 判定为可用；
+- 运行期由 `IProxyImageFallbackService`/`IProxyRouteService.ListVisionTransferRoutesAsync` 读取 owner 快照执行图片识别转移；
+- 普通用户只能读写自己的配置；超级管理员可通过 `owner_username` 代其他 owner 操作；接口见 5.2。
 
 ---
 
@@ -323,7 +351,7 @@ PRD 将 Redis 定义为**可选的共享状态与缓存组件，而非主数据�
 
 | 质量维度 | 当前实现基线 | 目标要求 |
 |---|---|---|
-| 性能 | `OpenCodexRuntimeSettingsProvider` 是 singleton，但 `GetSettings()` 每次重新读取 `IConfiguration`；`DesktopSystemSettingsStore.Get()` 每次读取并反序列化设置文件，代理控制器为判断 probe 拦截会在每个代理请求上调用它 | 配置读取开销必须进入基准；桌面设置应采用可靠缓存并在写入后失效，不能让高并发代理请求重复文件 I/O |
+| 性能 | `OpenCodexRuntimeSettingsProvider` 是 singleton，但 `GetSettings()` 每次重新读取 `IConfiguration`；`DesktopSystemSettingsStore.Get()` 每次读取并反序列化设置文件；探测拦截改为 `ProxySettingsService.GetBool` 后，每个代理请求都会查询一次 `ProxySetting` 表（无缓存） | 配置读取开销必须进入基准；桌面设置与数据库代理设置应采用可靠缓存并在写入后失效，不能让高并发代理请求重复文件 I/O 或数据库查询 |
 | 容量 | 未定义最大 `.env` 大小、最大配置 JSON、最大渠道数、最大模型映射数或 header/compat 深度 | 上限均为 TBD；超过上限必须在保存/导入阶段拒绝，而不是在路由热路径耗尽内存 |
 | 可靠性 | 桌面设置使用 `File.WriteAllText` 直接覆盖，没有临时文件 + fsync + 原子替换；文件损坏时 Rust 与 .NET 容错不同 | 设置写入必须原子，保留最近可用副本；读取失败必须可诊断并采用统一恢复策略 |
 | 兼容性 | 当前没有配置 schema version；README 中已有失效变量，Rust/.NET 的 desktop settings 字段也发生漂移 | 所有可持久化配置必须带 schema version 或拥有明确向前/向后兼容规则；弃用项必须有迁移期和告警 |
@@ -360,16 +388,16 @@ PRD 将 Redis 定义为**可选的共享状态与缓存组件，而非主数据�
 | REQ-CFG-001 | MUST | 系统必须维护唯一、可机器检查的配置目录，列出名称、类型、默认值、敏感性、作用域、是否需重启和适用模式。 | 缺口 | 自动或测试读取目录，验证 `.env.example`、Compose、Tauri 注入和 runtime provider 中的公开配置均有记录；未知公开项使检查失败。 |
 | REQ-CFG-002 | MUST | 配置优先级必须遵循“显式 `OpenCodex:*` > 对应 `OPENCODEX_*` > `.env` 默认 > 代码默认”。 | 基本实现 | 分别构造四层不同值的配置测试，断言最终值；桌面禁用 dotenv 用例单独通过。 |
 | REQ-CFG-003 | MUST | `.env` 不得覆盖已有非空 ASP.NET Core 配置。 | 已实现 | `DotEnvDefaults` 测试覆盖环境已有值、空值、引号、`export`、注释和非法行。 |
-| REQ-CFG-004 | MUST | 数据库配置必须只使用 `OPENCODEX_DB_PROVIDER` 与 `OPENCODEX_DB_CONNECTION_STRING`；陈旧 `OPENCODEX_DB_PATH` 必须从正式文档移除或启动时明确告警。 | 文档漂移 | README、DEPLOYMENT、样例与代码搜索不再把 `OPENCODEX_DB_PATH` 写成有效配置；若保留兼容，则有迁移测试和弃用告警。 |
+| REQ-CFG-004 | MUST | 数据库配置必须只使用 `OPENCODEX_DB_PROVIDER` 与 `OPENCODEX_DB_CONNECTION_STRING`；陈旧 `OPENCODEX_DB_PATH` 必须从正式文档移除或启动时明确告警。 | 已实现 | README、DEPLOYMENT、样例与代码搜索不再把 `OPENCODEX_DB_PATH` 写成有效配置；若保留兼容，则有迁移测试和弃用告警。 |
 | REQ-CFG-005 | MUST | 数据库 provider 在服务监听前必须验证为 `sqlite` 或 `postgres`（接受规范化别名时需文档化）。 | 部分实现 | 非法 provider 的启动测试返回明确错误并且 `/health` 不可用；错误不包含连接串秘密。 |
 | REQ-CFG-006 | MUST | 生产配置不得使用示例 Cookie secret、示例数据库密码或空管理员密码。 | 缺口 | Production 环境启动前校验；使用示例/空值时阻断启动或依据批准策略产生发布阻断检查，具体策略由安全评审确认。 |
 | REQ-CFG-007 | MUST | Data Protection key 目录必须可写且在持久化部署中可跨重启保留。 | 部分实现 | 容器重建后旧 Cookie 仍可解密的集成测试通过；不可写目录启动失败并给出脱敏错误。 |
 | REQ-CFG-008 | MUST | 正整数配置的非法值处理必须统一，不得无提示地在部分组件失败、部分组件回退。 | 缺口 | 对超时、Cookie 天数、缓存 TTL 的空值、0、负数、非数字、溢出分别断言同一策略；策略写入配置目录。 |
-| REQ-CFG-009 | MUST | 桌面端必须固定支持 `localhost` 与 `lan` 两种模式，并把绑定地址规范为 `127.0.0.1` 与 `0.0.0.0`。 | 已实现 | `DesktopSystemSettingsStoreTests` 和 Rust 单测覆盖别名、非法值与双向规范化。 |
-| REQ-CFG-010 | MUST | 桌面端口必须限制为 1024–65535，非法端口不得启动 sidecar。 | 已实现 | API 更新与 Rust 设置加载测试覆盖边界 1023、1024、65535、65536。 |
-| REQ-CFG-011 | MUST | `intercept_probe_requests` 必须在 .NET 与 Rust 设置模型间无损保留。 | **缺口/风险** | 设置为 true 后完成桌面重启和应用重启，GET `/system-settings` 仍返回 true；设置文件字段未丢失。 |
+| REQ-CFG-009 | MUST | 桌面端必须固定支持 `localhost` 与 `lan` 两种模式，并把绑定地址规范为 `127.0.0.1` 与 `0.0.0.0`。 | 已实现 | `DesktopSystemSettingsStore.NormalizeAccessMode` 与 Rust `normalize_settings` 均支持 `localhost`/`lan` 及绑定地址推断；`DesktopSystemSettingsStoreTests` 目前只覆盖往返，别名与非法值用例待补，Rust 侧没有单测。 |
+| REQ-CFG-010 | MUST | 桌面端口必须限制为 1024–65535，非法端口不得启动 sidecar。 | 已实现 | .NET `DesktopSystemSettingsStore.NormalizePort` 与 Rust `normalize_settings` 都按 1024–65535 校验，非法值回退 18080；当前没有 1023/65536 边界测试，需要补。 |
+| REQ-CFG-011 | MUST | 探测请求拦截必须只有单一有效配置入口，不得在桌面设置文件、桌面注入环境变量与数据库设置之间出现同名歧义。 | **缺口/风险** | 保留数据库入口（`/system-settings/proxy-settings`）；Rust `DesktopSettings.intercept_probe_requests` 与 `OPENCODEX_INTERCEPT_PROBE_REQUESTS` 注入当前没有 .NET 读取方，必须移除或改为显式兼容并文档化。 |
 | REQ-CFG-012 | MUST | 只有超级管理员可以读取或修改系统设置。 | 已实现 | 未登录、普通用户、超级管理员三组 API 测试分别得到 401/403/成功。 |
-| REQ-CFG-013 | MUST | 影响监听地址或端口的变更必须返回 `restart_required=true`；仅动态字段变化不得错误要求重启。 | 已实现 | 参数化测试覆盖模式、host、port、probe 四类单独变化。 |
+| REQ-CFG-013 | MUST | 影响监听地址或端口的变更必须返回 `restart_required=true`；仅动态字段变化不得错误要求重启。 | 已实现 | `DesktopSystemSettingsStore.Save` 只比较模式、绑定地址与端口；代理设置（探测拦截、汇率）不参与重启判定，参数化边界测试待补。 |
 | REQ-CFG-014 | MUST | LAN 模式必须明确标记当前为明文 HTTP，并在启用前展示安全影响。 | 缺口 | 管理台启用 LAN 前显示确认信息；API 响应暴露 `transport_security` 或等价状态；安全测试验证没有误标为 HTTPS。 |
 | REQ-CFG-015 | SHOULD | 系统应提供脱敏的“有效配置诊断”，显示值来源而非秘密值。 | 缺口 | 超级管理员可查看 provider、模式、来源、是否使用默认值；连接串、密码、Key 只显示已配置状态和安全摘要。 |
 | REQ-CFG-016 | MUST | 渠道配置必须按白名单拒绝未知顶层字段和未知 compat 字段。 | 已实现 | `RouteTests` 覆盖未知字段返回 400；新增字段时测试与本文目录同步更新。 |
@@ -383,6 +411,9 @@ PRD 将 Redis 定义为**可选的共享状态与缓存组件，而非主数据�
 | REQ-CFG-024 | MUST | 配置变更必须产生不含秘密的审计记录。 | TBD/缺口 | 修改系统、渠道、Web Search 和用户安全配置后，可按操作者与对象检索审计事件；明文秘密不存在。 |
 | REQ-CFG-025 | SHOULD | 桌面设置文件损坏时应保留损坏副本并以可见方式恢复默认，而非静默覆盖。 | 缺口 | 注入非法 JSON，桌面生成带时间戳备份、恢复默认并显示提示；服务可继续启动。 |
 | REQ-CFG-026 | MUST | README、DEPLOYMENT、`.env.example` 与配置目录必须在发布门禁中保持一致。 | 缺口 | CI 对变量名、默认值和废弃项做静态核对；本文列出的 README 漂移被修复。 |
+| REQ-CFG-027 | MUST | 多代理运行参数必须纳入配置目录并定义默认值与非法值行为。 | 部分实现 | `MultiAgent:StateDirectory`（默认 `logs/multi-agent-runs`）、`MultiAgent:MaxModelTurns`（默认 128，`<1` 抛异常）、`MultiAgent:CompactThresholdTokens`（默认 64000）写入配置目录，并在 `.env.example` 或文档说明 `MultiAgent__*` 环境变量形式。 |
+| REQ-CFG-028 | MUST | Web Search 的 provider 必须限定为受支持集合，并随密钥记录持久化。 | 已实现 | `WebSearchService` 只接受 `tavily`/`keenable`，缺省归一为 `tavily`，非法值返回 400；测试覆盖 provider 路由与非法值。 |
+| REQ-CFG-029 | MUST | 视觉转移配置必须按 owner 隔离，普通用户不能读写他人配置。 | 已实现 | `VisionTransferSettingsService.CurrentScope` 强制 owner 收敛；`VisionTransferSettingsServiceTests` 覆盖 owner 隔离、候选过滤与快照读取。 |
 
 ---
 
@@ -395,8 +426,9 @@ PRD 将 Redis 定义为**可选的共享状态与缓存组件，而非主数据�
 | TBD-CFG-003 | LAN 模式是否必须内建 TLS，还是只允许由受信反向代理提供 TLS？ | 安全 + 桌面端 | 影响网络暴露范围 |
 | TBD-CFG-004 | Redis 自动恢复目标时间和重试退避策略。 | 运维 + 后端 | 影响多实例一致性 |
 | TBD-CFG-005 | 配置审计日志保存多久、是否可导出。 | 合规 + 产品 | 影响数据库容量 |
-| TBD-CFG-006 | 渠道级与全局 `intercept_probe_requests` 的命名、优先级及作用范围。 | 产品 + 后端 | 防止同名配置歧义 |
+| TBD-CFG-006 | 桌面残留的 `DesktopSettings.intercept_probe_requests` 与 `OPENCODEX_INTERCEPT_PROBE_REQUESTS` 注入是删除还是转为显式兼容。 | 产品 + 后端 | 影响桌面设置契约与文档一致性 |
 | TBD-CFG-007 | 是否支持外部 secret manager，以及首批支持的实现。 | 运维 + 安全 | 影响生产秘密治理 |
+| TBD-CFG-008 | `MultiAgent:*` 运行参数是否进入对外 `.env.example`/Compose，还是保持内部配置。 | 产品 + 运维 | 影响多代理预算与快照目录的可见性 |
 
 ---
 
@@ -404,9 +436,9 @@ PRD 将 Redis 定义为**可选的共享状态与缓存组件，而非主数据�
 
 | 风险 | 等级 | 当前事实 | 缓解要求 |
 |---|---|---|---|
-| README 使用已失效的 `OPENCODEX_DB_PATH` | 高 | 变量不被当前源码读取 | 实施 REQ-CFG-004、REQ-CFG-026 |
+| `OPENCODEX_DB_PATH` 历史漂移回归 | 低 | 当前 README/DEPLOYMENT 已改用 `OPENCODEX_DB_PROVIDER`/`OPENCODEX_DB_CONNECTION_STRING`，源码不读取旧变量 | 维持 REQ-CFG-004、REQ-CFG-026 的 CI 静态核对 |
 | 示例 Cookie secret 与 PostgreSQL 密码进入生产 | 高 | 代码/Compose 有固定示例值 | 实施 REQ-CFG-006、REQ-CFG-023 |
-| 桌面重启丢失 probe 设置 | 高 | Rust 设置结构缺字段 | 实施 REQ-CFG-011 |
+| 桌面注入的环境变量没有读取方 | 中 | Rust 注入 `OPENCODEX_INTERCEPT_PROBE_REQUESTS` 与 `intercept_probe_requests` 字段，.NET 侧无读取方 | 实施 REQ-CFG-011，清理残留字段与注入 |
 | LAN HTTP 暴露 Cookie/API Key | 高 | sidecar 监听明文 HTTP | 实施 REQ-CFG-014，完成 TBD-CFG-003 |
 | Redis 首次失败后不再尝试创建连接 | 中 | `_connectionFailed` 持续到进程重启 | 实施 REQ-CFG-022 |
 | 多实例 Redis 降级后容量只按实例限制 | 中 | 进程内 counter 各自独立 | 管理台告警，明确单实例降级契约 |
@@ -427,6 +459,10 @@ PRD 将 Redis 定义为**可选的共享状态与缓存组件，而非主数据�
 | content root 与静态资源 | [Program.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Program.cs) |
 | 桌面系统设置 | [DesktopSystemSettingsStore.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Configuration/DesktopSystemSettingsStore.cs)、[SystemSettingsDtos.cs](../opencodex_proxy/src/Libraries/OpenCodex.CoreBase/DTOs/SystemSettings/SystemSettingsDtos.cs) |
 | Tauri sidecar 注入 | [src-tauri/src/lib.rs](../src-tauri/src/lib.rs) |
+| 代理设置（数据库键值） | [ProxySettingsService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/ProxySettingsService.cs)、[SystemSettingsController.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/SystemSettingsController.cs) |
+| Web Search provider 与路由 | [WebSearchService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/WebSearchService.cs)、[WebSearchClientRouter.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/ExternalIntegrations/WebSearchClientRouter.cs)、[KeenableWebSearchClient.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/ExternalIntegrations/KeenableWebSearchClient.cs) |
+| 视觉转移配置 | [VisionTransferSettingsService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/VisionTransferSettingsService.cs)、[VisionTransferDtos.cs](../opencodex_proxy/src/Libraries/OpenCodex.CoreBase/DTOs/SystemSettings/VisionTransferDtos.cs) |
+| 多代理运行参数 | [MultiAgentResponseService.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Services/MultiAgentResponseService.cs)、[MultiAgentRunStore.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/MultiAgent/MultiAgentRunStore.cs) |
 | 渠道字段与验证 | [OpenCodexConfig.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Config/OpenCodexConfig.cs)、[ConfigValidator.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Config/ConfigValidator.cs) |
 | 渠道环境变量展开 | [ConfigEnvironmentExpander.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Config/ConfigEnvironmentExpander.cs) |
 | Redis 建连与降级 | [RedisConnectionProvider.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Caching/RedisConnectionProvider.cs)、[TwoLevelCacheService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Caching/TwoLevelCacheService.cs) |
@@ -445,6 +481,10 @@ PRD 将 Redis 定义为**可选的共享状态与缓存组件，而非主数据�
 
 - [DesktopSystemSettingsStoreTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/DesktopSystemSettingsStoreTests.cs)
 - [SetupRoutesTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/SetupRoutesTests.cs)
+- [ProxySettingsServiceTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ProxySettingsServiceTests.cs)
+- [VisionTransferSettingsServiceTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/VisionTransferSettingsServiceTests.cs)
+- [WebSearchClientRouterTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/WebSearchClientRouterTests.cs)
+- [KeenableWebSearchClientTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/KeenableWebSearchClientTests.cs)
 - [RouteTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/RouteTests.cs)
 - [ProbeRequestInterceptorTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ProbeRequestInterceptorTests.cs)
 - [ChannelAffinityServiceTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ChannelAffinityServiceTests.cs)

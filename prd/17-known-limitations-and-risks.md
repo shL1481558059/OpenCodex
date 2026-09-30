@@ -1,7 +1,8 @@
 # 17. 已知限制、风险与开放决策
 
 > 需求前缀：`REQ-RSK`  
-> 代码基线：`main@3827590`  
+> 代码基线：`main@235da3f4`  
+> 最后核对日期：2026-09-30  
 > 说明：本文件记录当前可由源码、测试、配置或文档冲突证明的问题，不代表所有问题均已决定修复方式
 
 ## 1. 风险等级
@@ -20,11 +21,11 @@
 | RSK-001 | P0 | 生产 Compose 使用示例弱数据库密码 | `docker-compose-pgsql.yml` | 数据泄露/篡改 |
 | RSK-002 | P0 | Redis 无认证 | Compose 配置 | 多实例状态被读取或操纵 |
 | RSK-003 | P1 | LAN 模式为明文 HTTP | Tauri 和系统设置 | Cookie、Key、管理操作被窃听 |
-| RSK-004 | P1 | 访问 Key 明文策略与 README 冲突 | `KeyPlaintext` 与文档 | 凭证泄露和错误安全预期 |
-| RSK-005 | P1 | 渠道/Tavily Key明文持久化与导出 | 实体和前端导出 | 上游凭证泄露 |
+| RSK-004 | P1 | 访问 Key 明文策略与 README 冲突 | `AccessApiKey.KeyPlaintext`、`ApiKeyService`、`AccessKeys.vue` 导出；仓库记录为已接受边界 | 凭证泄露和错误安全预期 |
+| RSK-005 | P1 | 渠道/Tavily Key明文持久化与导出 | `Channel.ApiKey`、`TavilyKey.ApiKey`、前端导出；仓库记录为已接受边界 | 上游凭证泄露 |
 | RSK-006 | P1 | 登录无统一限流/锁定 | 依赖注册与认证服务 | 密码暴力破解 |
 | RSK-007 | P1 | 管理写接口无独立 CSRF Token | Cookie 配置 | 跨站请求风险 |
-| RSK-008 | P1 | Images 生产服务实现和 DI 注册缺失 | 控制器依赖/服务注册 | 控制器解析失败、运行时 500 或能力误宣传 |
+| RSK-008 | P1 | Images 假入口：接口无实现、服务未注册 | `IProxyImagesEndpointService` 无实现类；`IImagesProxyService`/`ImagesProxyService`/`IImagesUpstreamClient` 未注册 DI | 控制器解析失败、运行时 500 或能力误宣传 |
 | RSK-009 | P1 | `/health` 仅浅层存活 | `SystemController` | 故障实例仍被认为健康 |
 | RSK-010 | P1 | 自动迁移无备份和回滚契约 | 启动初始化 | 发布导致数据不可恢复 |
 | RSK-011 | P1 | 日志正文无保留/配额/归档 | 内容寻址存储 | 磁盘耗尽、合规风险 |
@@ -36,7 +37,7 @@
 | RSK-017 | P2 | 模型映射是全局模式切换语义 | Route Service | 配置一个映射后其他模型突然不可用 |
 | RSK-018 | P2 | OCR 降级只覆盖部分映射路径 | ImageFallback | 相似图片请求行为不一致 |
 | RSK-019 | P2 | capacity DTO 与校验语义冲突 | DTO/Validator | 配置可用性和文档不一致 |
-| RSK-020 | P2 | 部分 400/403 可触发故障转移/熔断 | Failover Policy | 客户端错误被误判为渠道故障 |
+| RSK-020 | P2 | 上游 400/403 计入熔断并按策略参与故障转移 | `ChannelCircuitBreakerService.ShouldCountFailure` 显式包含 `BadRequest`/`Forbidden`；`ProxyFailoverPolicy` | 客户端请求问题被误判为渠道故障，连续 3 次即可开路 |
 | RSK-021 | P2 | 管理台无全局会话过期处理 | App API helper | 操作失败但用户不知需重登 |
 | RSK-022 | P2 | 无 Router/深链/页面状态持久化 | `App.vue` | 刷新和导航体验差 |
 | RSK-023 | P2 | 导入缺少逐条预检和冲突预览 | 前端导入逻辑 | 部分失败和覆盖不可预测 |
@@ -51,10 +52,16 @@
 | RSK-029 | P2 | 缺少性能、SLA、RPO/RTO 基线 | 当前文档与代码 | 无法判断生产适用性 |
 | RSK-030 | P3 | 模型“删除”实际为停用 | 前端/服务语义 | 用户理解错误 |
 | RSK-031 | P1 | `ContentAddressedLogs` 的 Up/Down 都会丢失已有日志正文 | SQLite/PostgreSQL migration | 升级或回退造成不可恢复的数据损失 |
-| RSK-032 | P2 | 服务端 Docker 镜像依赖本地工作站直接构建推送 | `update_remote_image.sh`/workflow | 产物来源不可审计、发布不可复现 |
-| RSK-033 | P1 | 缺少真实 PostgreSQL、Redis 和迁移恢复测试 | 测试集/CI | 数据或多实例缺陷在生产首次暴露 |
-| RSK-034 | P2 | 手工流式与数据提取脚本已偏离当前认证和数据库结构 | `scripts/` | 错误验收结论、采集失败或误操作 |
-| RSK-035 | P1 | 请求头、嵌套认证信息和图片/base64 正文会原样进入日志持久化 | `ProxyRequestMetadataFactory`、`ProxyLogServiceTests` | 凭证与业务敏感数据泄露、备份合规风险 |
+| RSK-032 | P2 | 生产服务端镜像仍由本地工作站构建推送（dev 已由 CI 构建） | `update_remote_image.sh`/`update_remote_image_dev.sh`；`deploy-dev.yml` + `scripts/deploy-ocxp-dev.sh` | 生产产物来源不可审计、发布不可复现 |
+| RSK-033 | P1 | 缺少真实 PostgreSQL、Redis 和迁移恢复测试 | 仅 `ObservabilityAggregationSqlTests` 用 `ToQueryString()`；无 Testcontainers/服务容器；`doc/unimplemented-plans.md` §5 决策 4 | 数据或多实例缺陷在生产首次暴露 |
+| RSK-034 | P3 | 手工流式与数据提取脚本漂移（已消除，留档） | `capture_real_sse.sh`、`extract_sse_test_data.sh`、`test_streaming.py` 已在提交 `64fe92b3` 删除；`scripts/` 仅剩部署与 sidecar 脚本 | 旧文档若继续引用这些脚本会产生失效操作说明 |
+| RSK-035 | P1 | 请求日志管线无应用层脱敏；日志与导出访问控制归部署方 | `ProxyRequestMetadataFactory` 原样复制请求头；`ProxyLogServiceTests` 保留嵌套 MCP token；仅诊断事件脱敏（`ChannelDiagnosticsService.SensitiveLogKeys`）；README/DEPLOYMENT 仍宣称日志已脱敏 | 凭证与业务敏感数据泄露、备份合规风险、文档预期错误 |
+| RSK-036 | P2 | Chat 出站会把 `anthropic_thinking_encrypted` 一并发给 chat 上游 | `ProtocolConverter.Requests.cs` 的 `preserve_thinking_history` 分支；`doc/unimplemented-plans.md` §2.1（原 C.2） | 严格上游可能 400；OpenCodex 内部编码外泄 |
+| RSK-037 | P3 | 同协议短路不清理 `_ocxp_*` 内部标记 | `ProtocolConverter.ConvertRequest` 同协议分支直接返回；跨协议分支显式 `Remove` | 内部标记外泄到上游，未来新增标记会被动暴露 |
+| RSK-038 | P2 | 候选耗尽统一 429 文案不区分跳过原因 | `ProxyEndpointService` 抛出 `all enabled channels ... are at capacity`（原 C.5） | 熔断/容量/无匹配无法区分，排障需另查 Redis |
+| RSK-039 | P2 | 缓存阶段 3（前缀失效与无过期持久化）未实施 | `ModelCatalogService.PricingCacheTtl`（60 秒）、`BumpPricingVersion`（版本号）；`TwoLevelCacheService` 无前缀失效 API | 多实例下最长 60 秒旧价；缓存域未统一 |
+| RSK-040 | P2 | 多代理运行状态仅为本实例 JSON 快照 | `MultiAgentRunStore`（`MultiAgent:StateDirectory`，默认 `logs/multi-agent-runs`）；无 Redis 协调 | 多实例不共享运行；重启后 `running` 恢复为 `ready`，模型回合可能重做 |
+| RSK-041 | P2 | 模型目录同步的既定边界未在界面与文档全面提示 | `ModelCatalogSyncService`：增量模式不下发存量改价、不清理远端已删除模型、不同步渠道级覆盖、无定时同步/私有源鉴权/分布式锁 | 目录漂移与被静默忽略的更新 |
 
 ## 3. 安全风险
 
@@ -99,6 +106,8 @@
 | 应用层加密保存 | 支持恢复/导出 | 需要独立加密主密钥和轮换 |
 | 数据库明文保存 | 实现简单 | 高风险，不建议生产 |
 
+当前实现按“数据库明文保存”运行；仓库已在 `doc/unimplemented-plans.md` §6 记录“明文密钥保留”为已接受边界（`AccessApiKeys` 与 Web Search Key 不做移除，只做权限与审计增强）。因此控制措施落在部署方：数据库、备份与导出文件的访问控制与加密。
+
 `REQ-RSK-004`（MUST）：正式发布前必须选择统一凭证策略，并同步实体、API、管理台、导出和 README。
 
 ### 3.4 登录、CSRF 与会话
@@ -121,7 +130,10 @@
 - 日志正文测试明确验证嵌套 MCP Authorization token 不被修改；
 - 图片/base64、工具参数、原始 SSE 和自定义 Header 也可能进入内容寻址存储；
 - 内容分块、压缩和 SHA-256 去重只解决存储与完整性，不提供加密或脱敏；
-- 数据库、备份、日志导出和详情读取因此都必须按高敏数据保护。
+- 数据库、备份、日志导出和详情读取因此都必须按高敏数据保护；
+- 仅渠道诊断事件对敏感键做 `...` 替换（`ChannelDiagnosticsService.SensitiveLogKeys` 覆盖 authorization、api_key、cookie、password 等），请求日志管线没有对应机制；
+- README/DEPLOYMENT 仍宣称“所有日志展示都会脱敏 Authorization、api_key、cookie 和密码”，与代码不一致；
+- 仓库已把“日志不脱敏、访问控制与磁盘加密由部署方负责”记录为已接受边界（`doc/unimplemented-plans.md` §6）。
 
 该风险由 `REQ-RSK-006` 的日志数据分类、保留、删除、备份和访问策略统一约束。正式多人或网络部署前还必须定义：安全摘要视图、受保护原始槽位、字段级脱敏规则、原始内容访问审计和静态加密方案。
 
@@ -186,7 +198,7 @@
 
 ### 5.1 Images 能力
 
-`ImagesController` 依赖 `IProxyImagesEndpointService`，但生产代码中没有该接口的实现或 DI 注册；`HttpUpstreamClient` 虽实现 `IImagesUpstreamClient`，生产 DI 也只按 `IUpstreamClient` 和 `IUpstreamModelClient` 注册。当前 Images 端点因此只有控制器契约和 fake 测试证据，真实应用解析控制器时会因依赖缺失而失败。
+`ImagesController` 依赖 `IImagesProxyService`，`ImagesProxyService` 依赖 `IProxyImagesEndpointService`；生产代码中没有 `IProxyImagesEndpointService` 的实现类，`IImagesProxyService`/`ImagesProxyService` 与 `IImagesUpstreamClient` 也未注册 DI（`HttpUpstreamClient` 虽实现 `IImagesUpstreamClient`，注册只覆盖 `IUpstreamClient` 与 `IUpstreamModelClient`）。当前 Images 端点因此只有控制器契约和 fake 测试证据，真实应用解析控制器时会因依赖缺失而失败。
 
 `REQ-RSK-008`（MUST）：在将 Images 标为正式能力前，必须补齐 `IProxyImagesEndpointService` 生产实现与 DI 注册，并通过真实容器启动、依赖解析、OpenAI/xAI 上游集成和错误路径测试。
 
@@ -232,6 +244,14 @@
 - 图片和识别结果如何保留；
 - 缓存是否跨用户共享。
 
+### 5.6 协议内部标记与候选耗尽错误
+
+上述 C.2/C.3/C.5 的整改要求：
+
+- `REQ-RSK-018`（MUST）：同协议短路必须清理 `_ocxp_` 前缀的内部标记；验收为 chat→chat、responses→responses、messages→messages 三个方向的上游请求体不含 `_ocxp_` 键；
+- `REQ-RSK-019`（SHOULD）：Chat 出站不得携带 OpenCodex 自有编码 `anthropic_thinking_encrypted`，实施前先确认没有级联部署依赖该字段做思考往返；验收为 messages→chat 上游消息不含该键且 chat 响应方向既有用例保持通过；
+- `REQ-RSK-020`（MUST）：候选耗尽错误必须区分熔断（附剩余开路时间）、容量已满与无匹配渠道，并在熔断文案中提示重置入口 `POST /channels/{channelId}/health-reset`；验收为三种跳过原因各自的路由异常用例。
+
 ## 6. 运维与发布风险
 
 ### 6.1 健康检查
@@ -274,9 +294,9 @@
 
 ### 6.4 服务端镜像发布链和集成证据
 
-当前唯一 GitHub workflow 只发布桌面产物，不构建或推送服务端 Docker 镜像。`update_remote_image.sh` 在操作者本地工作站执行 buildx、直接推送可变镜像标签并立即远程部署，导致构建环境、源码状态、缓存、凭据使用和产物摘要缺少统一审计链。
+dev 链路已由 CI 接管：`deploy-dev.yml` 在 push `main` 时构建并推送不可变 `dev-<commit>` 镜像（GHCR），再由 `scripts/deploy-ocxp-dev.sh` 远端重建容器并轮询健康状态；生产/主环境仍由 `update_remote_image.sh`/`update_remote_image_dev.sh` 在操作者本地工作站执行 buildx、推送可变标签并立即远程部署，缺少统一产物哈希、来源证明和发布记录。
 
-与此同时，CI 仅执行后端测试；未发现真实 PostgreSQL 迁移矩阵、真实 Redis/多实例共享状态、数据库备份恢复或迁移失败恢复测试。当前发布成功不能证明生产依赖和数据恢复路径可用。
+与此同时，CI 只执行后端测试与前端 build；未发现真实 PostgreSQL 迁移矩阵、真实 Redis/多实例共享状态、数据库备份恢复或迁移失败恢复测试。当前发布成功不能证明生产依赖和数据恢复路径可用。
 
 - `REQ-RSK-015`（MUST）：服务端镜像必须由受控 CI 从干净提交构建、扫描、记录 digest/provenance 后发布；
 - `REQ-RSK-016`（MUST）：正式发布必须通过真实 PostgreSQL、Redis、多实例和迁移备份恢复集成测试。
@@ -313,26 +333,25 @@ API helper 对 401 只抛错误，未统一清除会话并跳登录。用户可�
 
 ## 8. 文档漂移
 
-已知不一致：
+已知不一致与已修复项：
 
-- README 仍出现 `OPENCODEX_DB_PATH`；
-- README/部署文档描述已清理的日志等级变量；
+- `OPENCODEX_DB_PATH` 已修复：README/DEPLOYMENT 改用 `OPENCODEX_DB_PROVIDER` + `OPENCODEX_DB_CONNECTION_STRING`，源码不读取旧变量，需要 CI 防回归；
+- README/DEPLOYMENT 仍描述 `BASIC`/`DEBUG`/`TRACE` 日志展示等级，并宣称“所有日志展示都会脱敏”；当前代码没有对应日志等级实现，也没有请求日志脱敏层；
 - 部分内部/桌面环境变量未文档化；
-- `capture_real_sse.sh` 使用旧认证路径；
-- 数据提取脚本假设 SQLite 和个人 SSH Key 路径；
-- `test_streaming.py` 依赖未声明的 `requests`，流式脚本仍默认使用 `change-me`；
-- 历史 `stream_fix_plan.md` 引用已不存在结构。
+- 旧手工脚本（`capture_real_sse.sh`、`extract_sse_test_data.sh`、`test_streaming.py`）已在基线删除，旧文档若继续引用即为失效引用；
+- 仓库基线把 `doc/` 合并为 `implemented-logic.md` 与 `unimplemented-plans.md`，其它历史方案文档已删除，不得再作为当前事实引用；
+- 峰谷分时计费已写入 prd/11（`REQ-OBS-021`）与 prd/19 等多份文档，但 prd/18 追溯索引尚未收录峰谷条目。
 
 `REQ-RSK-012`（MUST）：正式发布文档必须由当前配置源和测试验证，历史方案不得混入现行操作说明。
 
-`REQ-RSK-017`（MUST）：手工测试、数据采集和运维脚本必须声明依赖、使用当前认证/API/Schema，并移除个人路径和示例凭据默认值；否则必须标记停用且不得作为验收证据。
+`REQ-RSK-017`（MUST）：手工测试、数据采集和运维脚本必须声明依赖、使用当前认证/API/Schema，并移除个人路径和示例凭据默认值；否则必须标记停用且不得作为验收证据。当前状态：三个漂移脚本已随死码清理删除（提交 `64fe92b3`），后续新增脚本适用本要求。
 
 ## 9. 开放决策清单
 
 | ID | 决策 | 推荐方向 | 截止点 |
 |---|---|---|---|
-| TBD-RSK-01 | 访问 Key 是否只存哈希 | 推荐只存哈希，创建时一次展示 | 安全正式版前 |
-| TBD-RSK-02 | 渠道/Tavily Key如何加密 | 应用层加密 + 独立主密钥 | 多人生产前 |
+| TBD-RSK-01 | 访问 Key 是否只存哈希 | 已决策（已接受边界）：明文保留，只做权限与审计增强 | 已决策 |
+| TBD-RSK-02 | 渠道/Tavily Key如何加密 | 已决策（已接受边界）：明文保留，只做权限与审计增强 | 已决策 |
 | TBD-RSK-03 | LAN 是否正式支持 | 保留但明确受信网络，后续 TLS | 桌面正式版前 |
 | TBD-RSK-04 | Images 是否正式能力 | 通过 DI/集成测试后决定 | PRD 发布前 |
 | TBD-RSK-05 | capacity 是否允许不限 | 推荐明确 `0/空=不限` 或强制正数二选一 | 配置稳定版前 |
@@ -344,6 +363,8 @@ API helper 对 401 只抛错误，未统一清除会话并跳登录。用户可�
 | TBD-RSK-10 | 自动迁移执行方式 | 生产推荐独立迁移 Job | 多实例前 |
 | TBD-RSK-11 | 正式 SLA/RPO/RTO | 按 SQLite/Postgres 分层 | 对外发布前 |
 | TBD-RSK-12 | 桌面自动更新 | 签名成熟后启用 | 正式分发前 |
+| TBD-RSK-14 | 峰谷计费批 5 剩余项：日志详情展示 `pricing_phase`、只读试算端点、prd/18 追溯条目 | 与 `REQ-OBS-021` 同步补齐；展示类改动随管理台迭代 | 下一次计费迭代前 |
+| TBD-RSK-15 | 多代理运行的多实例协调与快照保留/容量治理 | 需要多实例拓扑与共享目录方案（多代理单实例边界见 [19-multi-agent-simulation.md](./19-multi-agent-simulation.md)） | 多实例部署前 |
 
 ## 10. 风险接受流程
 
@@ -392,7 +413,12 @@ API helper 对 401 只抛错误，未统一清除会话并跳登录。用户可�
 | 自动迁移 | `OpenCodexDatabaseInitializer.cs` |
 | 破坏性日志迁移 | SQLite/PostgreSQL `ContentAddressedLogs` migrations |
 | 日志存储 | `LogContentCodec.cs`、`LogContentStore.cs` |
-| CI/发布 | `.github/workflows/desktop-release.yml`、`update_remote_image.sh` |
+| CI/发布 | `.github/workflows/deploy-dev.yml`、`.github/workflows/desktop-release.yml`、`scripts/deploy-ocxp-dev.sh`、`update_remote_image.sh`、`update_remote_image_dev.sh` |
 | 集成测试缺口 | 测试项目、`frontend/package.json`、发布 workflow |
 | Tauri 安全 | `src-tauri/tauri.conf.json`、`Cargo.toml` |
-| 文档/脚本漂移 | `README.md`、`DEPLOYMENT.md`、`scripts/capture_real_sse.sh`、`scripts/extract_sse_test_data.sh`、`scripts/test_streaming.py` |
+| 协议内部标记 | `ProtocolConverter.cs`、`ProtocolConverter.Requests.cs`、`ProtocolConverter.ToolSchemaSanitizer.cs` |
+| 熔断与容量 | `ChannelCircuitBreakerService.cs`、`ChannelCapacityService.cs` |
+| 定价缓存阶段 3 | `ModelCatalogService.cs`（`PricingCacheTtl`/`BumpPricingVersion`）、`TwoLevelCacheService.cs` |
+| 多代理单实例边界 | `MultiAgentRunStore.cs`、`MultiAgentRuntime.cs`、`prd/19-multi-agent-simulation.md` |
+| 模型目录同步边界 | `ModelCatalogSyncService.cs`、`ModelCatalogSyncClient.cs`、`ModelCatalogService.ImportModelCatalog` |
+| 文档/脚本漂移 | `README.md`、`DEPLOYMENT.md`、`doc/unimplemented-plans.md`、`scripts/`（旧脚本已删除） |

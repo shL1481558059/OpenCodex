@@ -1,8 +1,9 @@
 # 01. 产品总览
 
 > 需求前缀：`REQ-OV`  
-> 代码基线：`main@3827590`  
-> 文档性质：当前实现反向产品化整理
+> 代码基线：`main@235da3f4`  
+> 最后核对日期：2026-09-30  
+> 文档性质：当前实现反向产品化整理（现状型 PRD）
 
 ## 1. 背景
 
@@ -27,12 +28,13 @@ OpenCodex 通过在客户端与上游 AI 服务之间增加统一代理和管理
 
 ## 3. 产品定位
 
-OpenCodex 当前同时承担四类产品职责：
+OpenCodex 当前同时承担五类产品职责：
 
 1. **统一协议网关**：正式支持 Responses、Chat、Messages 入口；代码中还暴露 Images 控制器契约，但生产实现和 DI 注册当前缺失；
 2. **多渠道路由器**：按用户、模型、优先级、负载、亲和、容量和健康状态选择上游；
 3. **AI 协议适配层**：转换请求、响应、SSE、工具、Reasoning、Usage 和多模态内容；
-4. **管理与观测平台**：管理用户、访问 Key、渠道、模型、价格、搜索配置和请求日志。
+4. **管理与观测平台**：管理用户、访问 Key、渠道、模型、价格、搜索配置和请求日志；
+5. **多代理模拟运行时**（CURRENT）：模型能力 `capabilities.v2_agent_simulation` 为 true 时，Responses 请求进入服务端多代理运行器；完整边界见 [19-multi-agent-simulation.md](./19-multi-agent-simulation.md)（需求前缀 `REQ-MA`）。
 
 ## 4. 目标用户
 
@@ -210,6 +212,26 @@ OpenCodex 当前同时承担四类产品职责：
 - 未确定的 SLA、RTO、RPO 使用 `TBD`；
 - 历史方案文档不作为当前功能证据。
 
+### 8.7 多代理 v2 开关边界
+
+`REQ-OV-008`（MUST）：多代理 v2 只能由模型能力 `capabilities.v2_agent_simulation` 触发，默认关闭；`GET /responses`（WebSocket）固定进入 `MultiAgentResponseService`，Chat/Messages 入口不受该开关影响。
+
+验收标准：
+
+- 能力为 true 的模型，`POST /responses` 进入服务端多代理运行器；能力为 false 时走普通管线；
+- 请求可传 `multi_agent.enabled=false` 显式退回普通管线；
+- 多代理专项测试通过：`dotnet test opencodex_proxy/OpenCodex.sln --filter 'FullyQualifiedName~MultiAgent'`；
+- 行为细节以 [19-multi-agent-simulation.md](./19-multi-agent-simulation.md) 为准。
+
+### 8.8 Images 独立 API 的能力声明边界
+
+`REQ-OV-009`（MUST）：`IProxyImagesEndpointService` 生产实现与 DI 注册补齐前，独立 Images API 只能作为 GAP 描述，不得对外宣称可用。
+
+验收标准：
+
+- 发布说明与管理台不把 `/images/*` 列为正式能力；
+- 补齐实现后通过依赖解析、容器启动与真实上游集成测试，再更新本需求状态。
+
 ## 9. 版本范围
 
 ### 9.1 当前基线包含
@@ -220,9 +242,15 @@ OpenCodex 当前同时承担四类产品职责：
 - 可选 Redis 两级缓存与共享运行时状态；
 - Tauri 2 桌面外壳和 .NET sidecar；
 - 管理员/普通用户、访问 Key、渠道、模型目录、价格、Web Search、日志和统计；
-- Responses、Chat、Messages 正式代理入口；Images 仅存在控制器/契约入口，当前生产实现与 DI 注册缺失；
+- Responses、Chat、Messages 正式代理入口；Images 当前为 GAP：`ImagesController` 依赖的 `IProxyImagesEndpointService` 没有生产实现，`IImagesProxyService`/`ImagesProxyService` 与 `IImagesUpstreamClient` 也未注册到 DI；
 - 协议转换、工具、流式、Reasoning、Usage、OCR 和 Web Search 特殊流程；
-- xUnit 后端测试、少量 Node 前端状态测试；
+- 多代理 v2 模拟（CURRENT）：`capabilities.v2_agent_simulation` 能力开关、按 owner+session 隔离的运行状态 JSON 快照、HTTP 与 WebSocket 入口；详见 [19-multi-agent-simulation.md](./19-multi-agent-simulation.md)；
+- 峰谷分时计费（CURRENT）：`ModelPricingPlan.TimeZoneId`/`OffPeakWindowsJson` 与 `ModelPricingRule.OffPeakEnabled`/`OffPeakUnitPrice`/`OffPeakTiersJson`，按请求计费时刻判定时段并写入价格快照；
+- 模型目录远端同步（CURRENT）：`ModelCatalogSyncService.SyncAsync` 支持 `incremental`/`overwrite` 两种模式，入口为超管 `/model-catalog/sync`；渠道级覆盖由 `ChannelModelInfo` 与带 `ChannelId`/`ChannelModelInfoId` 的定价计划承载；
+- 两级缓存（CURRENT）：`TwoLevelCacheService` 为 L1 进程内 + Redis L2，并通过 Pub/Sub 广播失效；Redis 不可用时自动降级为纯 L1；
+- 内容寻址日志（CURRENT）：`LogContentCodec`/`LogContentStore` 按内容定义分块、SHA-256 标识、manifest 顺序引用，日志删除后回收无引用数据；
+- 渠道诊断与连接测试（CURRENT）：`ChannelDiagnosticsService` 以 SSE 返回 `channel_test.*` 事件，诊断载荷中的敏感键替换为 `...`；
+- xUnit 后端测试（90 个 `*Tests.cs` 测试类）、9 个 Node 前端状态测试文件；
 - Docker 构建/部署制品和桌面发布工作流。
 
 ### 9.2 当前基线明确缺少或未完成
@@ -305,6 +333,12 @@ OpenCodex 当前同时承担四类产品职责：
 | 协议转换 | `OpenCodex.Core/Protocols/` |
 | 管理业务 | `OpenCodex.Core/Services/` |
 | 数据模型 | `OpenCodex.Domain/Domain/`、`OpenCodex.Data/` |
+| 多代理 v2 | `OpenCodex.Core/Services/MultiAgent/`、`MultiAgentResponseService`、`MultiAgentRunStore` |
+| 两级缓存与 Redis 降级 | `OpenCodex.Core/Services/Caching/TwoLevelCacheService.cs`、`RedisConnectionProvider.cs` |
+| 内容寻址日志 | `OpenCodex.Core/Services/Proxy/LogContentCodec.cs`、`LogContentStore.cs` |
+| 峰谷定价 | `ModelCatalogService`、`ModelPricingPlan`、`ModelPricingRule` |
+| 模型目录同步 | `ModelCatalogSyncService.cs`、`ModelCatalogSyncClient.cs`、`ChannelModelInfo` |
+| 渠道诊断 | `ChannelDiagnosticsController`、`ChannelDiagnosticsService` |
 | 管理台 | `frontend/src/` |
 | 桌面端 | `src-tauri/src/lib.rs` |
 | 测试 | `opencodex_proxy/tests/OpenCodex.Api.Tests/` |
