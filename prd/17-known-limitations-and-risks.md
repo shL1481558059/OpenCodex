@@ -321,8 +321,7 @@ API helper 对 401 只抛错误，未统一清除会话并跳登录。用户可�
 - `capture_real_sse.sh` 使用旧认证路径；
 - 数据提取脚本假设 SQLite 和个人 SSH Key 路径；
 - `test_streaming.py` 依赖未声明的 `requests`，流式脚本仍默认使用 `change-me`；
-- 历史 `stream_fix_plan.md` 引用已不存在结构；
-- 未跟踪 `doc/proxy-conversion/` 基于其他提交，需要重新校验。
+- 历史 `stream_fix_plan.md` 引用已不存在结构。
 
 `REQ-RSK-012`（MUST）：正式发布文档必须由当前配置源和测试验证，历史方案不得混入现行操作说明。
 
