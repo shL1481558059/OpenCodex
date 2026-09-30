@@ -119,6 +119,16 @@ public sealed class ProxyService : IProxyService
     {
         var started = Stopwatch.GetTimestamp();
         var payload = await _bodyReader.ReadJsonObjectAsync(request, request.HttpContext.RequestAborted);
+        if (entryProtocol == ProtocolConverter.Responses && payload is not null)
+        {
+            var services = request.HttpContext.RequestServices;
+            if (services?.GetService<MultiAgentResponseService>() is { } clientAgents)
+            {
+                // Bound child threads keep their server context even when their selected model is not simulated.
+                var boundResponse = await clientAgents.TryClientResponsesAsync(payload, allowCreate: false);
+                if (boundResponse is not null) return boundResponse;
+            }
+        }
         if (entryProtocol == ProtocolConverter.Responses && payload is not null
             && _catalog.SimulatesMultiAgent(JsonDictionaryValue.String(payload, "model"))
             && !await IsNativeResponsesPassthroughAsync(payload))

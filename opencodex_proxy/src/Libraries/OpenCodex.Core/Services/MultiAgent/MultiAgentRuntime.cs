@@ -15,33 +15,38 @@ public sealed partial class MultiAgentRuntime
     private readonly Func<Dictionary<string, object?>, Task> _emit;
     private readonly Func<Task> _save;
     private readonly TimeProvider _time;
+    private readonly MultiAgentClientRuntimeHooks? _client;
     private readonly Dictionary<string, (Task<Dictionary<string, object?>> Task, CancellationTokenSource Stop, int Generation, string Round)> _active = [];
     private readonly List<object?> _output = [];
     private int _sequence;
 
     public MultiAgentRuntime(MultiAgentRun run,
         Func<Dictionary<string, object?>, CancellationToken, Task<Dictionary<string, object?>>> model,
-        Func<Dictionary<string, object?>, Task> emit, Func<Task> save, TimeProvider? timeProvider = null)
-        : this(run, (payload, _, token) => model(payload, token), emit, save, timeProvider) { }
+        Func<Dictionary<string, object?>, Task> emit, Func<Task> save, TimeProvider? timeProvider = null,
+        MultiAgentClientRuntimeHooks? client = null)
+        : this(run, (payload, _, token) => model(payload, token), emit, save, timeProvider, client) { }
 
     public MultiAgentRuntime(MultiAgentRun run, MultiAgentModelCall model,
-        Func<Dictionary<string, object?>, Task> emit, Func<Task> save, TimeProvider? timeProvider = null)
+        Func<Dictionary<string, object?>, Task> emit, Func<Task> save, TimeProvider? timeProvider = null,
+        MultiAgentClientRuntimeHooks? client = null)
     {
         _run = run;
         _model = model;
         _emit = emit;
         _save = save;
         _time = timeProvider ?? TimeProvider.System;
+        _client = client;
     }
 
     public async Task<Dictionary<string, object?>> ExecuteAsync(Dictionary<string, object?> request, CancellationToken ct,
         ChannelReader<MultiAgentInjection>? injections = null)
     {
         _run.Template = MultiAgentProtocol.ApplyUpdates(_run.Template, request);
+        if (_client is not null) _run.Template = _client.Tools.ApplyToTemplate(_run.Template);
         var instructions = JsonDictionaryValue.List(request, "input").OfType<Dictionary<string, object?>>()
             .Where(i => Text(i, "role") is "system" or "developer" && Text(i, "type") is "" or "message").ToList();
         if (instructions.Count > 0) _run.InstructionMessages = instructions.Select(WebSearchPayload.DeepCopy).ToList();
-        AcceptInput(request);
+        await AcceptInput(request, ct);
         _run.LastResponseId = Id("resp");
         await _save();
         await Event("response.created", ("response", Response("in_progress")));
@@ -64,7 +69,7 @@ public sealed partial class MultiAgentRuntime
                 while (_modelEvents.Reader.TryRead(out var modelEvent)) await ProcessModelEvent(modelEvent);
                 if (injections is not null)
                 {
-                    while (injections.TryRead(out var injection)) await Inject(injection);
+                    while (injections.TryRead(out var injection)) await Inject(injection, ct);
                 }
                 foreach (var agent in _run.Agents.Values.ToList())
                 {
@@ -86,10 +91,10 @@ public sealed partial class MultiAgentRuntime
                     if (_run.InstructionMessages is not null)
                         history = _run.InstructionMessages.Select(WebSearchPayload.DeepCopy).Concat(history.Where(i =>
                             i is not Dictionary<string, object?> d || Text(d, "role") is not ("system" or "developer"))).ToList();
-                    history.Add(Message("developer", $"{MultiAgentProtocol.RootInstructions}\nYour identity is {agent.Name}. Parent: {agent.Parent}. Use only ocxp_ma_* actions for agent coordination. Your final answer completes your current task and is delivered to your parent. All agents share the client workspace.\n{(agent.Parent.Length > 0 ? $"Inherited conversation is background context. Execute your latest assigned task below; the ancestor's request to delegate has already been fulfilled by creating you.\nCurrent assignment: {agent.LastTaskMessage}" : "Synthesize completed subagent reports before giving your final answer.")}"));
+                    history.Add(Message("developer", AgentInstructions(agent)));
                     payload["input"] = history;
                     payload["stream"] = false;
-                    payload["prompt_cache_key"] = $"{_run.Id}:{agent.Name}";
+                    payload["prompt_cache_key"] = $"{_run.Id}:{_client?.AgentName ?? agent.Name}";
                     agent.Status = "running";
                     _run.ModelTurns += calls;
                     var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -152,7 +157,7 @@ public sealed partial class MultiAgentRuntime
                     var result = await operation.Task;
                     if (!operation.Stop.IsCancellationRequested)
                     {
-                        await ProcessTurn(current, result, operation.Round);
+                        await ProcessTurn(current, result, operation.Round, ct);
                     }
                     else await CloseModelItems(operation.Round);
                 }
@@ -220,7 +225,7 @@ public sealed partial class MultiAgentRuntime
         }
     }
 
-    private async Task Inject(MultiAgentInjection injection)
+    private async Task Inject(MultiAgentInjection injection, CancellationToken ct)
     {
         var error = injection.ResponseId == _run.LastResponseId ? null : "response_not_found";
         if (error is null && injection.Input.OfType<Dictionary<string, object?>>()
@@ -232,22 +237,33 @@ public sealed partial class MultiAgentRuntime
                 ("error", new { code = error, message = "The injection does not reference an active response and pending tool call." }));
             return;
         }
-        AcceptInput(new Dictionary<string, object?> { ["input"] = injection.Input });
+        await AcceptInput(new Dictionary<string, object?> { ["input"] = injection.Input }, ct);
         await _save();
         await Event("response.inject.created", ("response_id", injection.ResponseId));
     }
 
-    private void AcceptInput(Dictionary<string, object?> request)
+    private async Task AcceptInput(Dictionary<string, object?> request, CancellationToken ct)
     {
         var input = JsonDictionaryValue.Get(request, "input") is string text
             ? new List<object?> { Message("user", text) } : JsonDictionaryValue.List(request, "input");
+        if (_client is not null && _run.ModelTurns == 0 && _run.PendingCalls.Count == 0)
+        {
+            // The server has already seeded the fork. Client-inherited results are historical,
+            // not results of new calls owned by this actor; remember them for full-history retries.
+            foreach (var inherited in input.OfType<Dictionary<string, object?>>()
+                         .Where(item => Text(item, "type") is "function_call_output" or "custom_tool_call_output"))
+            {
+                var inheritedId = Text(inherited, "call_id");
+                if (inheritedId.Length > 0) _run.ReceivedCalls.Add(inheritedId);
+            }
+        }
         foreach (var item in input.OfType<Dictionary<string, object?>>())
         {
             var type = Text(item, "type");
             if (type is not ("function_call_output" or "custom_tool_call_output")) continue;
             var callId = Text(item, "call_id");
             if (_run.ReceivedCalls.Contains(callId)) continue;
-            if (!_run.PendingCalls.Remove(callId, out var agentName))
+            if (!_run.PendingCalls.TryGetValue(callId, out var agentName))
             {
                 if (callId.StartsWith("call_ma_", StringComparison.Ordinal))
                     throw new BadRequestException($"Unknown pending multi-agent tool call: {callId}");
@@ -256,6 +272,14 @@ public sealed partial class MultiAgentRuntime
             var agent = _run.Agents[agentName];
             var clean = WebSearchPayload.DeepCopyObject(item);
             clean.Remove("agent");
+            if (_client?.ToolResult is { } receive)
+            {
+                var call = agent.History.OfType<Dictionary<string, object?>>()
+                    .FirstOrDefault(i => Text(i, "call_id") == callId && Text(i, "type") is "function_call" or "custom_tool_call")
+                    ?? throw new UpstreamException("Pending client tool call is missing from agent history.");
+                await receive(WebSearchPayload.DeepCopyObject(call), WebSearchPayload.DeepCopyObject(clean), ct);
+            }
+            _run.PendingCalls.Remove(callId);
             var completedTurn = agent.CompletedTurns.FirstOrDefault(t => t.Items.OfType<Dictionary<string, object?>>()
                 .Any(i => Text(i, "call_id") == callId && Text(i, "type") is "function_call" or "custom_tool_call"));
             if (completedTurn is null) agent.History.Add(clean);
@@ -290,10 +314,33 @@ public sealed partial class MultiAgentRuntime
                 _run.Finished = false;
             }
         }
+        if (_client is not null)
+        {
+            var reports = new List<object?>();
+            foreach (var message in input.OfType<Dictionary<string, object?>>().Where(item => Text(item, "type") == "agent_message"))
+            {
+                var converted = (Dictionary<string, object?>)MultiAgentProtocol.InitialHistory(new()
+                    { ["input"] = new List<object?> { message } }).Single()!;
+                var id = Text(message, "id");
+                if (id.Length > 0) converted["id"] = message["id"];
+                var key = id.Length > 0 ? "client-agent-message:id:" + id
+                    : "client-agent-message:content:" + Convert.ToHexString(SHA256.HashData(
+                        Encoding.UTF8.GetBytes(JsonSerializer.Serialize(converted))));
+                if (_run.SeenUserMessages.Add(key)) reports.Add(converted);
+            }
+            if (reports.Count > 0 && _run.ModelTurns > 0)
+            {
+                var root = _run.Agents["/root"];
+                // Reports belong to the currently running task; a completed actor resumes once for the batch.
+                if (root.TaskStarted) root.Mailbox.AddRange(reports);
+                else QueueTask(root, reports, JsonSerializer.Serialize(reports));
+                _run.Finished = false;
+            }
+        }
         _run.ClientInputCount = input.Count;
     }
 
-    private async Task ProcessTurn(MultiAgentState agent, Dictionary<string, object?> response, string round)
+    private async Task ProcessTurn(MultiAgentState agent, Dictionary<string, object?> response, string round, CancellationToken ct)
     {
         var usage = JsonDictionaryValue.Object(response, "usage", WebSearchPayload.DeepCopyObject);
         agent.LastInputTokens = WebSearchPayload.ToInt(JsonDictionaryValue.Get(usage, "input_tokens"), 0);
@@ -314,22 +361,51 @@ public sealed partial class MultiAgentRuntime
         agent.Status = hasCalls ? "ready"
             : agent.Mailbox.Count > 0 ? "ready"
             : HasUnfinishedDescendants(agent) ? "finalizing" : "completed";
-        for (var sourceIndex = 0; sourceIndex < items.Count; sourceIndex++)
+        var preparedCalls = new List<Dictionary<string, object?>>();
+        try
         {
-            var raw = items[sourceIndex];
-            var item = WebSearchPayload.DeepCopyObject(raw);
-            item.Remove("agent");
-            var type = Text(item, "type");
-            if (type is "function_call" or "custom_tool_call")
-                item["call_id"] = FindLiveItem(round, sourceIndex)?.CallId ?? Id("call_ma");
-            agent.History.Add(item);
+            if (_client is not null)
+            {
+                // Validate the complete batch before creating any external reservations.
+                foreach (var item in items.Where(item => Text(item, "type") is "function_call" or "custom_tool_call"))
+                {
+                    if (MultiAgentProtocol.ActionName(Text(item, "name")) is not null)
+                        throw new UpstreamException("The model returned a server-only collaboration action in native client mode.");
+                    if (_client.Tools.Action(item) is not null) _client.Tools.Arguments(item);
+                }
+            }
+            for (var sourceIndex = 0; sourceIndex < items.Count; sourceIndex++)
+            {
+                var raw = items[sourceIndex];
+                var item = WebSearchPayload.DeepCopyObject(raw);
+                item.Remove("agent");
+                var type = Text(item, "type");
+                if (type is "function_call" or "custom_tool_call")
+                {
+                    item["call_id"] = FindLiveItem(round, sourceIndex)?.CallId ?? Id("call_ma");
+                    if (_client?.BeforeToolCall is { } prepare)
+                    {
+                        await prepare(agent, item, forkHistory.Select(WebSearchPayload.DeepCopy).ToList(), ct);
+                        preparedCalls.Add(WebSearchPayload.DeepCopyObject(item));
+                    }
+                }
+                agent.History.Add(item);
+            }
+        }
+        catch
+        {
+            agent.History.RemoveRange(forkHistory.Count, agent.History.Count - forkHistory.Count);
+            // Cleanup must finish even when cancellation caused preparation to fail.
+            if (preparedCalls.Count > 0 && _client?.RollbackToolCalls is { } rollback)
+                await rollback(preparedCalls, CancellationToken.None);
+            throw;
         }
         var terminalItems = agent.History.Skip(forkHistory.Count).OfType<Dictionary<string, object?>>().ToList();
         for (var sourceIndex = 0; sourceIndex < terminalItems.Count; sourceIndex++)
         {
             var item = terminalItems[sourceIndex];
             var type = Text(item, "type");
-            if (type == "function_call" && MultiAgentProtocol.ActionName(Text(item, "name")) is { } action)
+            if (_client is null && type == "function_call" && MultiAgentProtocol.ActionName(Text(item, "name")) is { } action)
                 await ExecuteAction(agent, item, action, forkHistory);
             else if (type is "function_call" or "custom_tool_call")
             {
@@ -347,7 +423,7 @@ public sealed partial class MultiAgentRuntime
                 await FinishModelItem(agent.Name, round, sourceIndex, item);
         }
         if (!hasCalls && agent.Status == "completed") FinishTask(agent, "completed");
-        if (!hasCalls && agent.Status == "completed" && agent.Parent.Length > 0)
+        if (_client is null && !hasCalls && agent.Status == "completed" && agent.Parent.Length > 0)
         {
             var text = string.Join("\n", items.Where(i => Text(i, "type") == "message")
                 .SelectMany(i => JsonDictionaryValue.List(i, "content")).OfType<Dictionary<string, object?>>()
@@ -363,11 +439,21 @@ public sealed partial class MultiAgentRuntime
         agent.Mailbox.Clear();
     }
 
+    private string AgentInstructions(MultiAgentState agent)
+    {
+        if (_client is not null)
+            return $"Your identity is {_client.AgentName}. Parent: {_client.ParentName}. Use the provided collaboration tools for agent coordination. The client manages native agent threads, tools and lifecycle; the OpenCodex server manages each agent's model context and token-based compaction. All agents share the client workspace. Your final answer completes your current task."
+                + (_client.ParentName.Length > 0
+                    ? " Inherited conversation is background context. Execute your latest assigned task; the ancestor's request to delegate has already been fulfilled by creating you."
+                    : " Synthesize completed subagent reports before giving your final answer.");
+        return $"{MultiAgentProtocol.RootInstructions}\nYour identity is {agent.Name}. Parent: {agent.Parent}. Use only ocxp_ma_* actions for agent coordination. Your final answer completes your current task and is delivered to your parent. All agents share the client workspace.\n{(agent.Parent.Length > 0 ? $"Inherited conversation is background context. Execute your latest assigned task below; the ancestor's request to delegate has already been fulfilled by creating you.\nCurrent assignment: {agent.LastTaskMessage}" : "Synthesize completed subagent reports before giving your final answer.")}";
+    }
+
     private async Task Item(string agent, Dictionary<string, object?> source)
     {
         var item = WebSearchPayload.DeepCopyObject(source);
         item["id"] = Id(Text(item, "type") == "message" ? "msg" : "item");
-        item["agent"] = new Dictionary<string, object?> { ["agent_name"] = agent };
+        item["agent"] = new Dictionary<string, object?> { ["agent_name"] = _client?.AgentName ?? agent };
         var index = _output.Count;
         _output.Add(item);
         _run.OutputHistory.Add(item);

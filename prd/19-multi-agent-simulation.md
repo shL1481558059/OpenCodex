@@ -7,7 +7,7 @@
 | 文档编号 | PRD-19 |
 | 需求前缀 | `REQ-MA` |
 | 文档状态 | 基于现状反向建模，待产品评审 |
-| 基线版本 | `main@235da3f4` |
+| 基线版本 | 当前源码，含客户端协同模式与 legacy 模式 |
 | 最后核对日期 | 2026-09-30 |
 | 适用对象 | 产品、后端、测试、SDK/客户端、SRE |
 | 相关文档 | [协议转换](./08-protocol-conversion.md)、[路由与可靠性](./07-routing-and-reliability.md)、[配置](./12-configuration.md)、[测试与验收](./16-testing-and-acceptance.md)、[已知限制与风险](./17-known-limitations-and-risks.md) |
@@ -15,7 +15,7 @@
 
 > 本文将 **当前实现事实（CURRENT）**、**产品化要求**、**已知限制** 与 **待确认 TBD** 分开描述。本文只以当前源码、快照模型与自动化测试为依据，不把对外兼容目标写成已实现能力。
 >
-> 本文中的“多代理模拟（v2）”指 OpenCodex 服务端托管的多代理运行器及其普通管线兼容策略，不等价于 OpenAI 官方 hosted multi-agent v2 的全部协议语义。官方密文互通、外部 hosted 运行导入、多实例状态协调和 Codex 客户端原生代理树 UI 均不属于当前已实现范围。
+> 本文中的“多代理模拟（v2）”包含客户端协同模式（client-coordinated）与旧服务端模式（legacy），不等价于 OpenAI 官方 hosted multi-agent v2 的全部协议语义。客户端协同模式已复用未修改的 Codex 原生能力创建可见子 thread；官方密文互通、外部 hosted 运行导入和多实例状态协调不在当前实现范围。
 
 ---
 
@@ -25,14 +25,14 @@
 
 多代理模拟让 Responses 客户端在不改变自身多代理工具调用外观的前提下，由 OpenCodex 服务端承担以下职责：
 
-1. 根据全局模型能力开关决定哪些 Responses 请求进入服务端多代理运行器。
+1. 根据全局模型能力开关决定新根 Responses 请求是否进入服务端多代理运行器；已有客户端协同组的子请求优先恢复所属代理，不受子模型能力标志限制。
 2. 维护根代理、子代理、任务代次、邮箱、等待状态与客户端工具调用归属。
 3. 将模型返回的文本、reasoning、工具参数和工具调用转换为带代理归属的 Responses 事件。
 4. 将客户端工具调用交给客户端执行，并通过 `call_id` 与服务器状态重新挂接结果。
 5. 在进程内或本地 JSON 快照中保存运行状态，支持同一 API key 与同一会话范围内的 `previous_response_id` 续接。
 6. 按调度累计整次运行的模型调用计数，保留子代理并发上限和按 token 阈值触发的上下文压缩；不因调用计数终止或触发压缩。
 7. 对未进入服务端运行器的普通管线请求，按渠道配置处理上游 v2 语义。
-8. 明确失败、恢复、跨实例、安全和可观测性边界，避免把“工具可执行”误写成“官方 v2 全等价”或“客户端原生代理树已实现”。
+8. 明确失败、恢复、跨实例、安全和可观测性边界；客户端协同模式复用原生子聊天，legacy 的服务端事件本身不创建原生代理树，不声称官方 v2 全等价。
 
 ### 1.2 本文范围
 
@@ -40,6 +40,7 @@
 - `POST /responses`、`POST /v1/responses` 的 JSON 与 SSE 行为。
 - `GET /responses`、`GET /v1/responses` 的 WebSocket 升级、`response.create` 与 `response.inject`。
 - `ocxp_ma_spawn_agent`、`send_message`、`followup_task`、`wait_agent`、`interrupt_agent`、`list_agents` 六个服务端协作函数。
+- 原生 `collaboration` 工具保留、thread 预登记与绑定、客户端协同控制、显式子模型与 root 组持久化策略。
 - 代理树、任务代次、邮箱、等待、中断、子代理失败隔离与根代理终态。
 - 文本、reasoning、函数调用参数、自定义工具输入等增量事件的服务端分发与身份分配。
 - API key 加会话标识的状态隔离、会话标识来源顺序、`previous_response_id` 查询与固定模型。
@@ -56,7 +57,7 @@
 - 模型定价、账单科目和成本计算，见 [可观测性与计费](./11-observability-and-billing.md)。
 - 与 OpenAI 官方 hosted multi-agent v2 的完整协议等价、官方密文互通、外部 hosted 运行导入或官方代理树可视化协议。
 - 多实例协调、Redis 共享运行状态、跨进程锁和负载均衡下的会话粘滞策略。
-- Codex 客户端或其它客户端的原生代理树 UI 实现。
+- 修改 Codex 或第三方客户端、实现新的客户端 UI、安装本地桥接器；客户端协同模式只复用客户端已有协作与子聊天能力。
 
 ---
 
@@ -77,8 +78,8 @@
 
 1. 请求已通过代理 API key 鉴权，且运行器可取得稳定的 API key 标识。
 2. 请求体是 JSON 对象，`model` 在进入运行器前可解析。
-3. `POST /responses` 要进入服务端运行器，命中的全局启用模型必须显式声明 `capabilities.v2_agent_simulation=true`。
-4. `GET /responses` WebSocket 升级固定由 `MultiAgentResponseService` 处理；`response.create` 仍需在模型目录中通过能力检查。
+3. 新根 `POST /responses` 要创建服务端运行，命中的全局启用模型必须显式声明 `capabilities.v2_agent_simulation=true`，且没有走原生 Responses 直通；已有客户端协同组子请求通过组内绑定进入对应代理。
+4. `GET /responses` WebSocket 升级固定由 `MultiAgentResponseService` 处理；`response.create` 先解析已有客户端绑定，未绑定的新运行仍需通过模型能力检查。
 5. 客户端若希望续接同一运行，需要继续提供相同的 API key、会话标识或可解析的 `previous_response_id`。
 6. 客户端工具调用必须由客户端执行；服务端只分配调用 ID、记录归属并等待结果。
 
@@ -89,13 +90,16 @@
 | 术语 | 定义 |
 |---|---|
 | 服务端多代理模拟 | OpenCodex 在服务端调用模型、维护代理树并产生 Responses 事件的运行模式 |
+| 客户端协同模式（client-coordinated） | 客户端创建原生子聊天、执行工具与协作控制；OpenCodex 管理各代理独立上下文、模型、压缩和组内子模型并发，每个代理只有一条模型执行链 |
+| 旧服务端模式（legacy） | OpenCodex 在一个运行器内自行调度根/子代理，以 `ocxp_ma_*` 维护内部代理树，不创建客户端原生子聊天 |
+| 客户端代理组 | `MultiAgentClientStore` 按 API key owner 与 root thread 保存的一组绑定；每个客户端 thread 对应一个独立 `MultiAgentRun` |
 | 运行（Run） | 一个 `MultiAgentRun`，包含模板、代理表、待处理调用、输出历史、调用计数与 usage |
 | 代理（Agent） | `MultiAgentState`，路径以 `/root` 开始，可为根代理或子代理 |
 | 根代理 | 路径为 `/root` 的代理；最终回答由根代理汇总 |
 | 子代理 | 路径为 `/root/...` 的代理；用于执行委派任务 |
 | 任务代次 | `Generation` 与 `CurrentTaskGeneration`，用于区分同一代理的多次 follow-up 任务 |
 | 已完成回合 | `MultiAgentTaskTurn`，记录已完成、失败、不完整或已中断任务的条目 |
-| 协作函数 | 以 `ocxp_ma_` 为前缀的六个服务端动作 |
+| 协作函数 | legacy 使用 `ocxp_ma_*`；客户端协同模式使用客户端实际声明的原生 `collaboration` 工具 |
 | 客户端工具 | 非 `ocxp_ma_` 的 function/custom 工具；由客户端执行并回传输出 |
 | 内部动作 | 服务端在运行器内执行的 `ocxp_ma_*` 调用，不向客户端暴露为可执行函数 |
 | 普通管线 | `ProxyEndpointService` 的常规路由、Compat、协议转换与上游调用链路 |
@@ -110,17 +114,41 @@
 
 ## 4. 当前实现事实（CURRENT）
 
+### 4.0 两种执行模式与原生子聊天
+
+模拟入口同时取得原生 `collaboration` 工具和可验证 native thread 元数据时，自动启用客户端协同模式，无需客户端补丁、app-server 包装器、桥接进程或 `CODEX_CLI_PATH`。不具备原生协作能力的模拟请求继续使用 legacy；普通未绑定请求继续按原有能力与路由规则处理。
+
+| 职责 | 客户端协同模式 | legacy |
+|---|---|---|
+| 子代理创建与显示 | 保留原生 spawn，客户端创建真实子 thread 并使用已有界面显示 | 服务端创建内部代理状态，不创建客户端原生子聊天 |
+| 模型上下文与压缩 | 服务端每个 actor 一个独立 `MultiAgentRun`，独立模型与 token 阈值压缩 | 一个 `MultiAgentRun` 内维护多代理历史与压缩状态 |
+| 模型调度 | 客户端对应 thread 请求驱动所属 actor，服务端限制整组子模型并发；根请求不会另启子循环 | 服务端协调器在根请求中调度根与子代理模型 |
+| 工具与协作控制 | 原生客户端执行，服务端在发布调用前预登记并在回传后同步状态 | 普通工具由客户端执行，`ocxp_ma_*` 由运行器执行 |
+| 持久化 | actor 快照加 `client-bindings/` 组清单，根请求固定整组策略 | 原有单运行快照策略 |
+
+客户端协同模式的绑定与续轮契约：
+
+1. 原生工具定义及其 namespace/名称/schema 保持完整；顶层 required、未知字段、类型和 enum 按实际 schema 校验，不猜测或静默忽略 `model`、`reasoning_effort` 等参数。
+2. spawn 发布完成项之前预登记子代理，子请求根据同一 API key、root thread、parent thread、canonical agent path 绑定；子请求先于父 spawn 工具结果到达也能正确关联。整批调用先预校验，后续准备失败回滚前项预登记，避免留下不可执行的调用历史。
+3. native 身份来自 `thread-id`、`session-id`、`x-codex-parent-thread-id` 和 `x-codex-turn-metadata`；header 与 metadata 不一致、必要子身份缺失时不猜测绑定。root 使用自身实际 thread ID；子代理还需明确 root session、parent thread 和 `/root/...` 路径。
+4. `spawn.model` 省略时继承父模型，显式值在 schema 支持时写入子代理配置并用于实际上游请求；每个 actor 后续请求须匹配自己的模型。子代理可以使用与根不同的模型，仍属于同一服务端组。
+5. 原生子完成消息按稳定 ID 去重，无 ID 时按内容去重；同次续轮的多条消息批量进入当前任务邮箱。已完成 actor 收到一批消息最多启动一个新任务，避免每条报告单独触发最终回复。
+6. 原生客户端控制 thread 生命周期。服务端不再生成另一份父完成通知；打开真实子聊天读取的是原生 thread 历史，也不会再启动一条重复的服务端子模型链。
+
+本地端到端验证使用未修改的 Codex `0.159`：创建 2 个真实子 thread，5 次 HTTP 请求对应 5 次模型调用，父代理获得两个子报告后只生成一次合并最终回复。这是原生协议链路验证，不表示已经线上部署或完成桌面截图验收。
+
 ### 4.1 能力开关与入口分流
 
 `IModelCatalogService.SimulatesMultiAgent` 的默认实现返回 `false`；`ModelCatalogService.SimulatesMultiAgent` 只在命中启用中的全局模型且 `CapabilitiesJson` 中 `v2_agent_simulation` 显式为 `true` 时返回 `true`。前端模型编辑器在新建模型时把该能力初始化为 `false`。
 
 | 入口 | 当前分流条件 | 当前行为 |
 |---|---|---|
-| `POST /responses`、`POST /v1/responses` | `SimulatesMultiAgent(model)` 为 `true` 且首个路由候选渠道类型不是 responses | 进入 `MultiAgentResponseService.Responses` |
-| `POST /responses`、`POST /v1/responses` | 模型能力开启且首个路由候选渠道类型为 responses | 跳过运行器，保持 `responses -> responses` 透传，不注入 `ocxp_ma_*` 协作工具 |
-| `POST /responses`、`POST /v1/responses` | 能力未开启或模型不匹配 | 继续普通管线 |
+| `POST /responses`、`POST /v1/responses` | 已有客户端协同组/子预登记，未显式关闭 | 优先进入对应 actor，早于模型能力、原生直通和探针判断；不创建另一根运行 |
+| `POST /responses`、`POST /v1/responses` | 未绑定，`SimulatesMultiAgent(model)` 为 `true` 且首个路由候选渠道类型不是 responses | 进入模拟运行器，按 native 能力选择客户端协同模式或 legacy |
+| `POST /responses`、`POST /v1/responses` | 未绑定，模型能力开启且首个路由候选渠道类型为 responses | 保持 `responses -> responses` 直通，不新建服务端代理组 |
+| `POST /responses`、`POST /v1/responses` | 未绑定且能力未开启或模型不匹配 | 继续普通管线，包括普通 native 子请求 |
 | `POST /responses` 且 `multi_agent.enabled=false` | 即使模型能力开启 | 顶层 `multi_agent` 被移除，直接调用普通管线 |
-| `GET /responses`、`GET /v1/responses` WebSocket 升级 | 始终 | 固定由 `MultiAgentResponseService.ResponsesWebSocket` 处理；在 `response.create` 内检查模型能力 |
+| `GET /responses`、`GET /v1/responses` WebSocket 升级 | 始终 | 固定由 `MultiAgentResponseService.ResponsesWebSocket` 处理；`response.create` 优先恢复已有客户端绑定，新建运行再检查模型能力 |
 | `POST /chat/completions`、`POST /v1/chat/completions` | 不进入服务端多代理运行器 | 继续普通管线；上游 v2 语义由普通管线的渠道策略处理 |
 | `POST /messages`、`POST /v1/messages` | 不进入服务端多代理运行器 | 继续普通管线；上游 v2 语义由普通管线的渠道策略处理 |
 
@@ -128,13 +156,16 @@
 flowchart TD
     A[HTTP 请求进入 ProxyService] --> B{入口是 Responses?}
     B -- 否 --> P[普通管线]
-    B -- 是 --> C{模型能力 v2_agent_simulation?}
+    B -- 是 --> G{存在有效客户端组绑定?}
+    G -- 是且未关闭 --> H[对应客户端 actor]
+    G -- 否 --> C{模型能力 v2_agent_simulation?}
+    G -- 显式关闭 --> P
     C -- 否 --> P
     C -- 是 --> N{首个路由候选渠道类型为 responses?}
     N -- 是 --> P
     N -- 否 --> D{multi_agent.enabled=false?}
     D -- 是 --> P
-    D -- 否 --> M[MultiAgentResponseService]
+    D -- 否 --> M[按 native 能力选择客户端协同或 legacy]
     W[GET /responses WebSocket] --> M
 ```
 
@@ -154,7 +185,7 @@ flowchart TD
 3. 每个连接同时只允许一个活动响应；活动响应未完成时再次发送 `response.create` 返回 `response_in_progress`，现有模型调用继续运行。
 4. 连接内首次 `response.create` 解析并固定会话标识；后续 `response.create` 继续使用同一连接的会话标识。
 5. `response.create` 在 `multi_agent.enabled=false` 时返回错误并关闭连接，提示改用 HTTP。
-6. `response.create` 的模型必须通过 `SimulatesMultiAgent` 检查；否则返回错误并关闭连接。
+6. `response.create` 优先绑定已有客户端代理；未绑定的新运行模型必须通过 `SimulatesMultiAgent` 检查，否则返回错误并关闭连接。
 7. `response.inject` 只接受 `response_id` 与非空的 `function_call_output` 或 `custom_tool_call_output` 列表；每条输入必须包含非空 `call_id` 与 `output`。
 8. 注入成功时发送 `response.inject.created`；注入失败时发送 `response.inject.failed`，错误码包括 `response_already_completed`、`response_not_found` 与 `invalid_tool_call`。
 9. 服务器发送事件使用 JSON 文本帧；`sequence_number` 在发送时归一为严格递增。
@@ -162,7 +193,7 @@ flowchart TD
 
 ### 4.4 协作函数与代理路径
 
-`MultiAgentProtocol.Actions` 固定六个动作：
+legacy 的 `MultiAgentProtocol.Actions` 固定六个动作；以下服务端工具名与内部调度语义仅适用于 legacy。客户端协同模式保留原生 `collaboration` 工具并使用客户端生命周期，见 4.0。
 
 | 动作 | 服务端工具名 | 当前语义 |
 |---|---|---|
@@ -179,7 +210,7 @@ flowchart TD
 2. `spawn_agent.task_name` 必须是非空路径段，不能包含 `/`，不能是 `.` 或 `..`。
 3. 相对路径按调用者路径解析；绝对路径以 `/` 开头。
 4. `followup_task` 不允许目标为 `/root`。
-5. 客户端传入的 `collaboration`、`collaboration.*` 或 `collaboration_*` 协作工具会在规范化时被替换为服务端动作。
+5. legacy 规范化把客户端协作工具替换为服务端动作；客户端协同模式恢复并使用原始 `collaboration` namespace 或已声明的 flat 名称，不向模型提供 `ocxp_ma_*`。
 6. `ocxp_ma_` 前缀为服务端保留；客户端定义同名或未知 `ocxp_ma_*` 工具会被拒绝。
 
 `fork_turns` 当前语义：
@@ -190,16 +221,20 @@ flowchart TD
 
 ### 4.5 调度、并发与任务队列
 
-1. 根代理与子代理都进入同一个 `MultiAgentRun`。
+1. legacy 的根与子代理进入同一个 `MultiAgentRun`；客户端协同模式每个 actor 一个独立运行及请求锁，整组共享子模型并发信号量，根请求不持有子请求的运行锁。
 2. `multi_agent.max_concurrent_subagents` 控制同时处于模型调用中的非根代理数量；省略时为 `3`，小于 `1` 返回 400。
 3. 根代理不计入子代理并发上限。
 4. 处于 `waiting`、`tool_wait` 或已有活动调用的代理不会被重复调度。
-5. `PendingTasks` 按先进先出执行；`StartNextTask` 取队列首项并立即占用任务代次。
+5. 显式后续用户任务使用 `PendingTasks` 顺序执行；客户端协同模式收到的子报告批量进入当前任务邮箱，不逐条生成排队任务。
 6. 同一运行的 `MultiAgentRun.ModelTurns` 按调度预先累计：普通回合加 1，需要摘要的回合加 2；不设置次数上限。
-7. `wait_agent` 超时或收到邮箱消息后会生成成对的工具调用结果。
-8. `interrupt_agent` 会取消活动模型令牌，结束当前任务回合；后续 follow-up 作为新任务代次执行。
+7. legacy 的 `wait_agent` 由服务端等待；客户端协同模式使用原生 wait 的结果回传与去重，不在根请求中另启子模型调用。
+8. legacy 的 `interrupt_agent` 取消内部模型调用；客户端协同模式由客户端停止指定子 thread，成功控制结果回传后同步服务端活动状态。客户端正在执行本地工具且没有 HTTP 请求时，服务端不一定立即得知 UI 停止操作。
 
 ### 4.6 会话、隔离与续接
+
+以下自动会话名与单运行模型规则适用于 legacy。客户端协同模式按 4.0 的 native 身份进行组内绑定，每个 actor 保留自己的模型及响应归属；不会用 `prompt_cache_key` 或任务正文补猜缺失 thread。其持久化使用下述 actor 快照，并额外保存 `MultiAgent:StateDirectory/client-bindings/` 组清单。
+
+客户端协同组按 API key owner 与 root thread 隔离，组内根请求固定 `store` 策略：root 持久化而 child 使用 `store:false` 会被拒绝；root `store:false` 时整组不写磁盘，重启后状态丢失，需要新建根任务。缺失状态不能靠客户端历史重建。对于完全未识别为托管组的普通 native 请求，仍保留普通转发路径，不声称能判定所有失联会话。
 
 1. 运行器使用 API key 标识与会话标识组成会话键，隔离不同 key、不同会话的运行。
 2. 会话标识来源顺序固定为：
@@ -239,7 +274,7 @@ flowchart TD
 5. 摘要保留 system/developer 约束，将原历史摘要为参考数据，并保留当前任务所需的历史尾部。
 6. 摘要成功且主模型回合进入 `ProcessTurn` 后，摘要调用的 input/output usage 与主模型调用一并计入运行的 input/output tokens；摘要成功后主调用直接抛错的失败终态不包含该摘要 usage。
 7. 摘要状态为 `failed`、`incomplete` 或摘要文本为空时，历史不被摘要替换，运行按失败路径处理。
-8. `ModelTurns` 按根代理和子代理的调度累计，包含需要摘要时预先计入的两次调用，也用于续接输入判定，不设次数上限；旧 `MultiAgent:MaxModelTurns` 配置不再读取。
+8. `ModelTurns` 按运行预先累计，客户端协同模式每个 actor 独立计数；包含需要摘要时预先计入的两次调用，也用于续接输入判定，不设次数上限；旧 `MultiAgent:MaxModelTurns` 配置不再读取。
 9. 压缩只根据 token 阈值触发，与累计调用次数无关；摘要与后续主调用不受剩余调用次数限制。
 10. 请求 `context_management.compact_threshold` 在本地解析和校验；`context_management` 随后由多代理规范化层移除，不透传给上游。
 
@@ -276,12 +311,12 @@ flowchart TD
 
 ### 4.11 客户端历史、官方互通与 UI 边界
 
-1. 服务端以自身运行状态为准。客户端回传的 Responses 历史只用于消费用户新任务和客户端工具结果；服务端不会从客户端历史重建代理树。
+1. 服务端以自身运行状态为准。客户端回传的 Responses 历史用于消费新用户任务、工具结果及原生代理消息；服务端不会从客户端历史重建代理树。
 2. 客户端工具结果中的 `agent` 字段会被移除，调用归属仍由服务端 `PendingCalls` 与 `ReceivedCalls` 映射决定。
 3. 新建服务端运行时，若输入包含外部 `multi_agent_call` 或 `multi_agent_call_output`，会返回 400，提示启动新的服务端多代理对话。
 4. 新建服务端运行时，`agent_message` 中带 `enc_` 前缀的外部密文会返回 400；普通管线 `downgrade` 不返回 400，而是把 `enc_` 内容转为占位说明。纯文本或非 `enc_` 文本按当前规则转入普通消息。
-5. 服务端事件包含 `agent.agent_name` 与 `multi_agent_call` 项，但当前仓库前端没有消费这些字段来渲染原生代理树。
-6. 工具调用可以在客户端执行，不代表客户端 UI 已原生显示代理层级、邮箱或任务树。
+5. legacy 服务端事件包含 `agent.agent_name` 与 `multi_agent_call`，这些字段本身不创建原生代理树；管理台也没有新增代理树页面。
+6. 客户端协同模式通过原生 spawn 创建真实子 thread，并由客户端展示已有的子聊天与生命周期；不承诺把服务器全部邮箱和内部状态都映射成新 UI。
 
 ---
 
@@ -292,14 +327,15 @@ flowchart TD
 | 条件 | 结果 |
 |---|---|
 | 非 Responses 入口 | 不进入服务端多代理运行器 |
-| Responses 模型能力未开启 | 普通管线 |
-| Responses 模型能力开启且首个路由候选渠道类型为 responses | 跳过服务端多代理运行器，保持 `responses -> responses` 透传 |
+| Responses 已有客户端组绑定或匹配子预登记且未显式关闭 | 优先恢复该 actor；子模型不需要模拟标志，也不因原生 Responses 渠道另建运行 |
+| Responses 未绑定且模型能力未开启 | 普通管线 |
+| Responses 未绑定且模型能力开启，首个路由候选渠道类型为 responses | 跳过服务端运行器，不创建代理组，保持 `responses -> responses` 直通 |
 | Responses 模型能力开启且 `multi_agent.enabled=false` | 移除顶层 `multi_agent` 后进入普通管线 |
 | Responses 模型能力开启且未显式关闭 | 服务端多代理运行器 |
 | WebSocket 升级请求 | 固定进入 `MultiAgentResponseService` |
-| WebSocket `response.create` 模型能力未开启 | 返回错误并关闭连接 |
+| WebSocket `response.create` 未绑定且模型能力未开启 | 返回错误并关闭连接 |
 
-### 5.2 会话标识解析顺序
+### 5.2 legacy 会话标识解析顺序
 
 | 顺序 | 来源 | 缺失时行为 |
 |---:|---|---|
@@ -321,7 +357,7 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 | 注入当前连接未知的响应 | `response_not_found` | 返回 `response.inject.failed` |
 | 注入未处于 pending 的调用 | `invalid_tool_call` | 返回 `response.inject.failed` |
 | 非法 JSON、非法事件类型或非法注入结构 | `error` | 发送错误并关闭连接 |
-| 模型能力未开启或显式关闭 | `error` | 发送错误并关闭连接 |
+| 未绑定新运行的模型能力未开启，或显式关闭 | `error` | 发送错误并关闭连接 |
 | 客户端断开 | 无正常完成 | 取消活动模型，结束连接 |
 
 ### 5.4 存储与恢复决策
@@ -332,6 +368,8 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 | 未设置 `store=false` | 保留 | 写入状态目录 | 是，需相同 API key 与会话 |
 | 旧快照缺少新增字段 | 使用模型默认值 | 不自动回填 | 不猜测缺失回合 |
 | 快照中的代理状态为 `running` | 恢复为 `ready` | 保留其它字段 | 模型回合可能重做 |
+
+上表中客户端协同模式的 `store` 取根组固定值；root 持久化而 child `store:false` 会被拒绝，组内不会独立切换存储政策。内存组重启后需新建根任务；完全未识别为托管组的普通 native 请求仍可走普通代理。
 
 ---
 
@@ -376,20 +414,20 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 ## 7. 异常与边界
 
 1. `multi_agent.enabled=false` 只删除顶层 `multi_agent`，不会自动移除输入中的 `agent_message`、`multi_agent_call`、`multi_agent_call_output` 或 `assign_agent_task` 工具；这些标记仍可能触发普通管线的上游 v2 策略。
-2. `GET /responses` WebSocket 入口固定进入运行器，即使模型能力未开启，也在 `response.create` 内失败。
+2. `GET /responses` WebSocket 入口固定进入运行器；已有客户端 actor 优先续接，未绑定且模型能力未开启的新运行在 `response.create` 内失败。
 3. 模型流缺少终结事件、终结事件对象缺失、成功终结无输出时，当前实现按上游错误处理。
 4. 停止或中断的模型调用可以留下不完整输出项，但不会把未完成工具调用发布为可执行调用。
 5. 子代理失败不会取消兄弟代理；父代理收到失败消息后可以继续汇总。
 6. 根代理失败或不完整不会发布正常完成事件。
 7. 客户端工具调用没有独立超时；HTTP 运行会返回当前结果并把调用保留为 pending，WebSocket 会等待注入或断开。
-8. `store=false` 的更新不会跨进程或跨重启恢复；重启只会加载之前已持久化的旧快照。
+8. `store=false` 的更新不会跨进程或跨重启恢复。客户端协同组由根固定存储策略，内存组重启后丢失；legacy 仍可能加载此前已经存在的旧持久化快照。
 9. 旧快照缺少回合记录时，代码使用空集合，不从历史内容猜测代理任务边界。
-10. 当前快照没有 schema 版本字段、迁移器或自动回填逻辑。
+10. actor 运行快照没有迁移器或自动回填逻辑；客户端协同组清单有版本字段并校验兼容性，不从文本猜测缺失绑定。
 11. 当前实现仅使用进程内字典、进程内信号量和本地文件快照，没有 Redis 或跨实例协调。
 12. WebSocket 的注入集合与已完成 ID 集合按连接建立；重连后不会把旧连接上的注入状态带入新连接。
 13. 会话标识自动生成时，HTTP 客户端可通过响应头获知；WebSocket 客户端当前只能依赖自己提供标识或继续使用 `previous_response_id`。
 14. `v2_agent_simulation` 只由全局模型目录解析，渠道级模型覆盖编辑器没有该能力开关。
-15. 服务端事件的 `agent` 归属是协议数据，不代表客户端已渲染原生代理树。
+15. legacy 事件的 `agent` 归属只是协议数据，不创建原生子聊天；客户端协同模式的可见子 thread 由原生客户端协作工具创建。
 16. 官方 hosted 多代理密文和外部 hosted 历史的互通不在当前实现范围。
 
 ---
@@ -400,7 +438,7 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 
 **状态：** CURRENT（已实现）
 
-**要求：** 只有启用中的全局模型显式声明 `capabilities.v2_agent_simulation=true` 时，Responses 请求才允许进入服务端多代理运行器；缺省、`false`、模型未启用、无匹配或空模型名都必须返回未开启。
+**要求：** 新根运行通过启用中的全局模型 `capabilities.v2_agent_simulation=true` 开启；缺省、`false`、模型未启用、无匹配或空模型名都返回未开启。已在客户端协同组中预登记的子 actor 按绑定续接，允许显式选择未开启该标志的模型。
 
 **验收标准：**
 
@@ -413,15 +451,16 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 
 **状态：** CURRENT（已实现）
 
-**要求：** 服务端多代理模拟只拦截启用能力的 Responses 入口；Chat 与 Messages 入口不得被该运行器接管。
+**要求：** Responses 优先恢复已有客户端组绑定，新根运行再按能力与原生渠道规则分流；Chat 与 Messages 不解析 native 多代理身份，也不得被该运行器接管。
 
 **验收标准：**
 
-1. `ProxyService.ProxyAsync` 只在入口协议为 Responses 且模型能力命中时解析 `MultiAgentResponseService`。
-2. `ProxyControllerTests.Responses_ModelWithoutSimulationUsesOriginalProxyWithoutRuntimeServices` 验证普通模型不会解析运行器服务。
+1. `ProxyService.ProxyAsync` 仅在 Responses 尝试已有客户端绑定，`allowCreate:false` 不创建根运行；服务未注册时可继续普通路径。
+2. `ProxyControllerTests.Responses_ModelWithoutSimulationUsesOriginalProxyWithoutRuntimeServices` 验证普通模型不依赖运行器服务注册。
 3. Chat 与 Messages 路由仍进入普通代理、Compat 与协议转换管线。
 4. WebSocket 升级路径由 `ProxyController.ResponsesWebSocket` 固定转发到运行器。
-5. `MultiAgentV2PolicyTests.IsNativeResponsesPassthrough_ResolvesByProtocolsOnly`、`ProxyControllerTests.Responses_ModelWithSimulationOnThirdPartyResponsesChannel_SkipsRuntimeAndForwardsToProxy` 与 `ProxyControllerTests.Responses_ModelWithSimulationOnChatChannel_UsesRuntimeInsteadOfPassthrough` 验证 responses -> responses 直通时命中 v2 模拟的模型也不进入运行器、不注入协作工具，同时非 responses 上游仍进入运行器。
+5. 原生直通测试适用于未绑定根请求：命中模拟能力但路由为 Responses 时仍不创建服务端组；非 Responses 渠道的新根可进入运行器。
+6. `ProxyControllerTests.Responses_ReservedClientChildUsesParentGroupBeforeCatalogOrNativePassthrough` 验证子模型无模拟标志或走原生 Responses 渠道时仍恢复原 actor；未绑定 native 子请求保留普通代理与探针路径。
 
 ### REQ-MA-003 HTTP 显式回退（MUST）
 
@@ -459,7 +498,7 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 1. `ProxyController.ResponsesWebSocket` 处理 `GET /responses` 与 `GET /v1/responses`。
 2. `MultiAgentWebSocketTests.ConcurrentCreateIsRejectedWithoutCancellingTheExistingModel` 验证并发 create 返回 `response_in_progress`，原有模型不被取消。
 3. 非 WebSocket 升级请求返回 `404`。
-4. 模型能力未开启时 `response.create` 在调用上游前失败。
+4. 未绑定新运行的模型能力未开启时，`response.create` 在调用上游前失败；已有客户端子 actor 可继续使用自己预登记的模型。
 
 ### REQ-MA-006 WebSocket 创建与注入契约（MUST）
 
@@ -503,7 +542,7 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 
 **状态：** CURRENT（已实现）
 
-**要求：** 运行器必须只把六个 `ocxp_ma_*` 动作作为服务端协作函数，并拒绝客户端冒用保留前缀。
+**要求：** legacy 只把六个 `ocxp_ma_*` 动作作为内部协作函数，并拒绝客户端冒用保留前缀。客户端协同模式只使用客户端声明的原生工具，返回服务端专用动作时明确失败，不创建隐藏子代理。
 
 **验收标准：**
 
@@ -684,13 +723,14 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 
 **状态：** CURRENT（已实现）
 
-**要求：** 一个多代理会话必须保持首次进入运行器时的模型；后续请求模型不一致时返回 400。
+**要求：** legacy 单运行保持初始模型；客户端协同模式每个 actor 保持自己的模型。原生 spawn 可在 schema 支持时显式指定子模型和推理强度，省略则继承父配置；子请求模型必须匹配预登记配置，同组代理不要求使用相同模型。
 
 **验收标准：**
 
 1. HTTP 路径在取得运行后比较 `run.Model` 与请求模型。
 2. WebSocket 路径在 `response.create` 中比较运行模型与请求模型。
 3. 错误信息明确要求开始新会话或新连接。
+4. 客户端协同模式验证显式子模型进入实际请求，不因模型不同新建另一根运行，也不静默忽略未知参数。
 
 ### REQ-MA-024 store:false 内存模式（MUST）
 
@@ -703,6 +743,7 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 1. `MultiAgentRunStoreTests.MemoryOnlySaveResumesWithinProcessButNotAfterRestart` 验证进程内可续接、重启后找不到。
 2. 内存模式不创建状态目录。
 3. 同一进程内同一运行的 Gate 保持一致。
+4. 客户端协同模式根 `store:false` 固定整组内存策略；根持久化而子请求 `store:false` 被拒绝。内存组丢失后不根据客户端文本重建；未识别为托管会话的普通 native 请求仍保留原转发路径。
 
 ### REQ-MA-025 快照持久化与恢复（MUST）
 
@@ -717,6 +758,7 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 3. `MultiAgentRunStoreTests.JsonRoundTripRestoresWeakTypesRoutingAndRunningState` 验证弱类型、路由字段、pending/received 调用和 `running` 到 `ready`。
 4. `MultiAgentRunStoreTests.CancelledSaveDoesNotReplaceLastDurableSnapshot` 验证取消保存不覆盖最后快照。
 5. 恢复过程不调用 `MultiAgentModelCall`。
+6. 客户端协同模式同时恢复 `client-bindings/` 组清单和各 actor 快照，按 owner/root 隔离；清单包含版本、父子 thread、spawn 和控制状态，不借助客户端数据库写入。
 
 ### REQ-MA-026 旧快照兼容与不猜测（MUST）
 
@@ -867,16 +909,17 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 
 ### REQ-MA-037 原生代理树 UI 契约（SHOULD）
 
-**状态：** 产品化要求（未实现，需产品确认）
+**状态：** CURRENT（原生 Codex 客户端协同模式已验证；第三方客户端取决于自身原生能力）
 
-**要求：** 若产品要求 Codex 或其它客户端原生展示代理树，应定义 `agent.agent_name`、`multi_agent_call`、`multi_agent_call_output`、状态和任务代次的稳定 UI 契约。
+**要求：** 保留客户端原生协作工具，由客户端创建真实子 thread；服务端把子 thread 请求绑定到预登记 actor，管理其上下文与模型。客户端接入 OpenCodex 后即可使用，不修改客户端、不安装桥接器、不设置 `CODEX_CLI_PATH`，也不写客户端内部数据库。
 
 **验收标准：**
 
-1. 客户端能按代理路径渲染根代理与子代理层级。
-2. 客户端能展示代理状态、当前任务、邮箱与终态。
-3. 服务端协议字段有版本化或兼容策略。
-4. 当前仓库前端只配置模型能力与渠道 compat，没有消费代理树字段。
+1. 未修改的 Codex `0.159` 本地端到端创建 2 个真实子 thread，可从原生线程协议读取父子关系与子历史。
+2. 本次用例 5 次 HTTP 请求对应 5 次模型调用，每个代理只有一条执行链，没有服务器重复子循环。
+3. 两条子完成报告在父续轮中一起进入当前任务，只产生一次合并最终回复。
+4. 显式子模型生效，普通与流式结果使用同一调用归属；批量 spawn 准备失败会回滚未发布的预登记。
+5. legacy 或缺少原生协作工具的第三方客户端不创建原生子聊天；本地协议验证不声称已线上部署或完成桌面截图验收。
 
 ---
 
@@ -885,7 +928,7 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 ### 9.1 数据
 
 1. 持久化快照包含模型模板、代理历史、待处理调用、已接收调用、输出历史、任务队列、阻塞状态、调用计数与 usage。
-2. 默认快照目录为 `logs/multi-agent-runs`；`store=false` 时不写磁盘，但进程内仍保留状态。
+2. 默认快照目录为 `logs/multi-agent-runs`，客户端协同组清单位于 `client-bindings/`；root 固定整组存储策略，内存组不写磁盘。
 3. 快照键按 API key 与会话隔离；文件名使用哈希，不对目录暴露原始 API key 或会话标识。
 4. 运行状态可能包含用户请求、工作区任务、客户端工具结果和代理间消息，应按敏感业务数据管理。
 5. 外部 hosted 历史与 `enc_` 密文不会导入服务端运行；普通管线降级只保留可读占位说明。
@@ -911,11 +954,11 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 ## 10. 已知限制
 
 1. 当前实现是单实例模型：运行状态在进程内，本地 JSON 快照没有跨进程锁；没有 Redis 或其它共享协调。
-2. `store=false` 的更新不会写入磁盘；重启后最多只能恢复到之前已持久化的旧快照，不能恢复到未持久化的最新状态。
+2. 客户端协同组 root `store:false` 时整组不写磁盘，重启后需新建根任务；完全未识别的普通 native 请求仍可转发，不承诺识别所有失联内存组。legacy 可能加载之前持久化的旧快照，不能恢复未保存的最新状态。
 3. 客户端回传历史不参与代理树重建；必须保留服务器状态、会话键与调用映射。
 4. 外部 hosted 多代理运行、官方 `enc_` 密文互通与外部密文代理历史不在范围内。
-5. 当前仓库前端没有原生代理树 UI；服务端 `agent.agent_name` 与 `multi_agent_call` 只是协议数据。
-6. 快照没有 schema 版本、迁移器或自动回填；旧快照缺失字段按默认空集合处理，不猜测任务边界。
+5. 当前仓库管理前端没有新增代理树页面；原生 Codex 子聊天由客户端协同模式复用。legacy 的 `agent.agent_name` 与 `multi_agent_call` 本身不创建原生 UI，缺少 native 协作能力的第三方客户端也无法显示原生子聊天。
+6. actor 快照没有自动迁移或回填，旧快照缺失字段不用于猜测任务边界；客户端组清单具有版本兼容校验，缺失必要 thread/header 不猜测绑定。
 7. WebSocket 自动生成的会话标识没有响应头暴露；已完成 ID 与注入通道按连接建立，重连不继承旧连接状态。
 8. 客户端工具调用没有独立超时；客户端不返回结果时，HTTP 运行保持 pending，WebSocket 等待注入或断开。
 9. `multi_agent.enabled=false` 是顶层字段回退，不是完整的 v2 标记清理；其它 v2 标记仍可能触发普通管线策略。
@@ -926,6 +969,8 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 14. 普通管线降级会把 hosted 输入转为文本，可能丢失 hosted 调用结构；这是当前明确的功能边界，不是服务端模拟能力。
 15. 摘要成功后主模型调用直接抛错时，失败终态不会累计摘要调用的 usage。
 16. 当前实现不声称与 OpenAI 官方 hosted multi-agent v2 的全部语义等价。
+17. 原生客户端停止正在执行的本地工具且没有在途 HTTP 请求时，服务器不一定立即得知停止；不能把未收到通知当作已同步取消。
+18. 客户端协同组存储策略由 root 固定，root 持久化与 child `store:false` 的混合请求会被拒绝。
 
 ---
 
@@ -940,7 +985,7 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 | TBD-MA-005 | 多代理专用日志、指标与计费归属字段 | 影响排障、成本分摊和运营可见性 | 增加运行 ID、代理路径、回合类型与摘要调用标记 |
 | TBD-MA-006 | 客户端工具调用的超时、取消和重试策略 | 影响挂起运行、资源占用和用户体验 | 定义默认超时与显式取消；超时后保留可恢复状态 |
 | TBD-MA-007 | `multi_agent.enabled=false` 是否应同时清理所有 v2 标记 | 影响回退语义是否真正等价于普通请求 | 保留当前“只移除顶层字段”行为并在客户端文档中说明，或增加显式彻底清理模式 |
-| TBD-MA-008 | 原生代理树 UI 的字段、版本与交互契约 | 影响客户端实现和服务端事件稳定性 | 另立 UI 契约 PRD，当前不把协议字段等同于 UI 能力 |
+| TBD-MA-008 | 原生协作工具及 thread 元数据的跨客户端版本兼容 | 影响已验证 Codex 之外的客户端支持范围 | 保留客户端真实 schema，补充各版本端到端验证；不为缺少 native 能力的客户端宣称原生显示 |
 | TBD-MA-009 | 代理数量、路径深度、单代理历史和工具输出是否有硬上限 | 影响内存、快照大小和拒绝服务风险 | 定义运行级与代理级上限，超限显式失败 |
 | TBD-MA-010 | 普通管线 downgrade 对非 `enc_` 的 `encrypted_content` 内容保留到什么程度 | 影响明文/密文语义和兼容性 | 只保留可读明文语义；无法解释的内容使用占位说明 |
 | TBD-MA-011 | 摘要成功但主模型调用失败时，摘要 usage 是否应计入失败终态与计费 | 影响失败请求的成本归属和用量统计 | 在失败终态保留已发生的摘要 usage，并标记为摘要调用 |
@@ -963,6 +1008,10 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 | 流式事件映射 | `MultiAgentRuntime.Streaming` | `MultiAgentStreamingTests` |
 | 模型流解析 | `MultiAgentModelStreamWriter` | `MultiAgentModelStreamWriterTests` |
 | 会话与快照 | `MultiAgentRunStore`、`MultiAgentRun` | `MultiAgentRunStoreTests` |
+| native 身份与工具契约 | `MultiAgentClientIdentity`、`MultiAgentClientTools` | `MultiAgentClientProtocolTests` |
+| 客户端组预登记、隔离与恢复 | `MultiAgentClientStore`、`MultiAgentClientBinding` | `MultiAgentClientStoreTests` |
+| 客户端协同入口与控制 | `MultiAgentResponseService.Client`、`MultiAgentClientRuntimeHooks` | `MultiAgentClientResponseTests`、`ProxyControllerTests` |
+| 报告批量消费与调用回滚 | `MultiAgentRuntime.AcceptInput`、`ProcessTurn` | `MultiAgentClientRuntimeTests` |
 | 普通管线 v2 策略 | `MultiAgentV2Policy`、`MultiAgentV2RequestRewriter` | `MultiAgentV2PolicyTests`、`MultiAgentV2RequestRewriterTests`、`ProxyEndpointServiceTests` |
 | 重复轮次护栏 | `MultiAgentRepeatGuard`、`MultiAgentTurnContext` | `MultiAgentRepeatGuardTests` |
 | 模型调用计数与无次数上限 | `MultiAgentRun.ModelTurns`、`MultiAgentRuntime` | `MultiAgentContextTests` |
@@ -985,4 +1034,5 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 6. 覆盖 API key 与会话隔离、`previous_response_id` 同域查询、自动会话标识、固定模型、`store=false` 和重启恢复。
 7. 覆盖超过旧调用上限后的正常完成与取消、调用次数不触发压缩、token 阈值与请求覆盖、摘要调用计费、摘要失败不丢历史，以及达到阈值后摘要和主调用不受旧次数上限影响。
 8. 覆盖普通管线 `passthrough`、`downgrade`、`reject`、配置覆盖与 `multi_agent.enabled=false` 的边界。
-9. 在发布说明中明确单实例边界、快照目录、明文状态、无原生代理树 UI、无官方密文互通和无多实例 Redis 协调。
+9. 使用未修改原生 Codex 验证客户端协同模式的可见子 thread、显式模型、结果归属、无重复模型链、消息批量汇总及取消；另验证 legacy 不创建原生子聊天、普通 native 请求保持直通。
+10. 发布说明区分两种模式，明确单实例、快照目录、root 组存储政策、缺失身份不猜测、原生本地工具停止通知边界、无官方密文互通和无多实例 Redis 协调，不把本地验证写成线上部署。

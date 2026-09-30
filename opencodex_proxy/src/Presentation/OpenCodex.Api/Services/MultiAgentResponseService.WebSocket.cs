@@ -26,6 +26,7 @@ public sealed partial class MultiAgentResponseService
         Task active = Task.CompletedTask;
         Channel<MultiAgentInjection>? injections = null;
         MultiAgentRun? connectionRun = null;
+        MultiAgentClientBinding? connectionBinding = null;
         string? connectionSession = null;
         var completedIds = new System.Collections.Concurrent.ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
         var sequence = 0;
@@ -59,14 +60,20 @@ public sealed partial class MultiAgentResponseService
 
         async Task Execute(Dictionary<string, object?> request, MultiAgentRun run, Channel<MultiAgentInjection> channel)
         {
-            var gate = store.Gate(run);
-            await gate.WaitAsync(ct);
+            var binding = connectionBinding;
+            var gate = binding is null ? store.Gate(run) : null;
+            if (gate is not null) await gate.WaitAsync(ct);
             try
             {
-                var persist = JsonDictionaryValue.Get(request, "store") is not false;
-                var runtime = new MultiAgentRuntime(run, (payload, onEvent, token) => CallModelAsync(payload, metadata, onEvent, token), Send,
-                    () => store.SaveAsync(run, CancellationToken.None, persist));
-                await runtime.ExecuteAsync(request, ct, channel.Reader);
+                if (binding is not null)
+                    await ExecuteClient(request, binding, metadata, Send, ct, channel.Reader);
+                else
+                {
+                    var persist = JsonDictionaryValue.Get(request, "store") is not false;
+                    var runtime = new MultiAgentRuntime(run, (payload, onEvent, token) => CallModelAsync(payload, metadata, onEvent, token), Send,
+                        () => store.SaveAsync(run, CancellationToken.None, persist));
+                    await runtime.ExecuteAsync(request, ct, channel.Reader);
+                }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
             catch (Exception exception)
@@ -91,7 +98,7 @@ public sealed partial class MultiAgentResponseService
             {
                 completedIds.TryAdd(run.LastResponseId, 0);
                 channel.Writer.TryComplete();
-                gate.Release();
+                gate?.Release();
                 while (!ct.IsCancellationRequested && channel.Reader.TryRead(out var pending))
                     await InjectionFailed(pending.ResponseId, pending.Input);
             }
@@ -171,11 +178,6 @@ public sealed partial class MultiAgentResponseService
                         await ErrorAndClose("model is required.");
                         return new EmptyResult();
                     }
-                    if (!catalog.SimulatesMultiAgent(model))
-                    {
-                        await ErrorAndClose("v2 Agent simulation is not enabled for this model in the model catalog.");
-                        return new EmptyResult();
-                    }
                     var options = JsonDictionaryValue.Object(item, "multi_agent", WebSearchPayload.DeepCopyObject);
                     if (JsonDictionaryValue.Get(options, "enabled") is false)
                     {
@@ -185,7 +187,19 @@ public sealed partial class MultiAgentResponseService
                     connectionSession ??= SessionId(item);
                     try
                     {
-                        connectionRun = await store.GetAsync($"{identity.ApiKeyId:N}:{connectionSession}",
+                        var clientIdentity = MultiAgentClientIdentity.Parse(metadata.Headers);
+                        connectionBinding = clientIdentity is null ? null
+                            : await ResolveClientBinding(item, clientIdentity, catalog.SimulatesMultiAgent(model), ct);
+                        if (connectionBinding is not null)
+                            connectionRun = connectionBinding.Run;
+                        else
+                        {
+                            if (!catalog.SimulatesMultiAgent(model))
+                            {
+                                await ErrorAndClose("v2 Agent simulation is not enabled for this model in the model catalog.");
+                                return new EmptyResult();
+                            }
+                            connectionRun = await store.GetAsync($"{identity.ApiKeyId:N}:{connectionSession}",
                             JsonDictionaryValue.String(item, "previous_response_id"), () => new MultiAgentRun
                             {
                                 Model = model, Template = MultiAgentProtocol.NormalizeRequest(item),
@@ -196,6 +210,7 @@ public sealed partial class MultiAgentResponseService
                                     ["/root"] = new() { Name = "/root", History = MultiAgentProtocol.InitialHistory(item) }
                                 }
                             }, ct);
+                        }
                         if (connectionRun.Model != model)
                             throw new BadRequestException("Start a new session to change models.");
                     }

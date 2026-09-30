@@ -6,6 +6,7 @@ using OpenCodex.Api.Controllers;
 using OpenCodex.Api.Infrastructure;
 using OpenCodex.Api.Services;
 using OpenCodex.Core.Protocols;
+using OpenCodex.Core.Services.MultiAgent;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Models;
 using OpenCodex.CoreBase.Domain.Proxy;
@@ -22,6 +23,120 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class ProxyControllerTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Responses_ReservedClientChildUsesParentGroupBeforeCatalogOrNativePassthrough(bool simulationEnabled)
+    {
+        using var client = ClientRoutingContext();
+        SetChildHeaders(client);
+        var root = await client.ClientStore.OpenRootAsync(client.Key, "routing-root", MultiAgentTestHarness.Run, false, client.Lifetime.Token);
+        var child = MultiAgentTestHarness.Run();
+        child.Model = "explicit-child-model";
+        child.Template["model"] = child.Model;
+        var reservation = await client.ClientStore.ReserveAsync(root, "spawn-call", "child", child, false, client.Lifetime.Token);
+        var proxy = new StubProxyEndpointService();
+        var request = MultiAgentApiTestContext.Request();
+        request["model"] = child.Model;
+        request["max_output_tokens"] = 1;
+        var controller = CreateController(new StubRequestBodyReader(request), proxy, interceptProbeRequests: true,
+            simulatesMultiAgent: simulationEnabled, routeCandidates: NativeRoute(child.Model));
+        controller.ControllerContext.HttpContext = client.Http;
+        using var services = new ServiceCollection().AddSingleton(client.Service).BuildServiceProvider();
+        client.Http.RequestServices = services;
+
+        var result = Assert.IsType<ObjectResult>(await controller.Responses());
+
+        Assert.False(proxy.Called);
+        Assert.Equal("completed", Assert.IsType<Dictionary<string, object?>>(result.Value)["status"]);
+        var modelCall = Assert.Single(client.FakeEndpoint.Calls);
+        Assert.Equal(child.Model, modelCall.Payload!["model"]);
+        Assert.EndsWith(":/root/child", JsonDictionaryValue.String(modelCall.Payload, "prompt_cache_key"));
+        Assert.Same(reservation, await client.ClientStore.TryGetAsync(client.Key, "routing-root", "routing-child", client.Lifetime.Token));
+        Assert.Single(root.Run.Agents);
+        Assert.Equal(0, root.Run.ModelTurns);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Responses_UnboundNativeChildRetainsOriginalProxyAndProbePaths(bool probe)
+    {
+        using var client = ClientRoutingContext();
+        SetChildHeaders(client);
+        var proxy = new StubProxyEndpointService();
+        var logs = new StubProxyLogService();
+        var request = MultiAgentApiTestContext.Request();
+        if (probe) request["max_output_tokens"] = 1;
+        var controller = CreateController(new StubRequestBodyReader(request), proxy, interceptProbeRequests: true, logs: logs);
+        controller.ControllerContext.HttpContext = client.Http;
+        using var services = new ServiceCollection().AddSingleton(client.Service).BuildServiceProvider();
+        client.Http.RequestServices = services;
+
+        var result = Assert.IsType<ObjectResult>(await controller.Responses());
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.Equal(!probe, proxy.Called);
+        Assert.Equal(probe, logs.LastContext is not null);
+        Assert.Empty(client.FakeEndpoint.Calls);
+        Assert.Null(await client.ClientStore.TryGetAsync(client.Key, "routing-root", "routing-root", client.Lifetime.Token));
+    }
+
+    [Fact]
+    public async Task Responses_UnboundRootOnNativeChannelDoesNotCreateClientGroup()
+    {
+        using var client = ClientRoutingContext();
+        client.Http.Request.Headers["thread-id"] = "native-root";
+        var proxy = new StubProxyEndpointService();
+        var request = MultiAgentApiTestContext.Request();
+        request["tools"] = JsonDictionaryValue.List(MultiAgentApiTestContext.Parse("""
+            {"tools":[{"type":"namespace","name":"collaboration","tools":[
+              {"type":"function","name":"spawn_agent","parameters":{"type":"object","properties":{}}}]}]}
+            """), "tools");
+        var controller = CreateController(new StubRequestBodyReader(request), proxy,
+            interceptProbeRequests: false, simulatesMultiAgent: true, routeCandidates: NativeRoute("fake"));
+        controller.ControllerContext.HttpContext = client.Http;
+        using var services = new ServiceCollection().AddSingleton(client.Service).BuildServiceProvider();
+        client.Http.RequestServices = services;
+
+        await controller.Responses();
+
+        Assert.True(proxy.Called);
+        Assert.Empty(client.FakeEndpoint.Calls);
+        Assert.Null(await client.ClientStore.TryGetAsync(client.Key, "native-root", "native-root", client.Lifetime.Token));
+    }
+
+    [Fact]
+    public async Task Messages_NeverParsesResponsesClientIdentity()
+    {
+        using var client = ClientRoutingContext();
+        client.Http.Request.Headers["x-codex-turn-metadata"] = "invalid-json";
+        var proxy = new StubProxyEndpointService();
+        var controller = CreateController(new StubRequestBodyReader(CreateMessagesPayload(4096)), proxy, interceptProbeRequests: false);
+        controller.ControllerContext.HttpContext = client.Http;
+        using var services = new ServiceCollection().AddSingleton(client.Service).BuildServiceProvider();
+        client.Http.RequestServices = services;
+
+        await controller.Messages();
+
+        Assert.True(proxy.Called);
+        Assert.Empty(client.FakeEndpoint.Calls);
+    }
+
+    private static MultiAgentApiTestContext ClientRoutingContext() => new(context => MultiAgentApiTestContext.Stream(context,
+        MultiAgentApiTestContext.Events(MultiAgentApiTestContext.Terminal(MultiAgentApiTestContext.Message("client actor done")))));
+
+    private static void SetChildHeaders(MultiAgentApiTestContext client)
+    {
+        client.Http.Request.Headers["thread-id"] = "routing-child";
+        client.Http.Request.Headers["session-id"] = "routing-root";
+        client.Http.Request.Headers["x-codex-parent-thread-id"] = "routing-root";
+        client.Http.Request.Headers["x-codex-turn-metadata"] = """{"thread_id":"routing-child","session_id":"routing-root","parent_thread_id":"routing-root","agent_name":"/root/child","subagent_kind":"thread_spawn"}""";
+    }
+
+    private static IReadOnlyList<ProxyRouteDto> NativeRoute(string model) =>
+        [new(new Dictionary<string, object?> { ["id"] = "native", ["type"] = ProtocolConverter.Responses }, model, model, false, true)];
+
     [Theory]
     [InlineData("ordinary-model")]
     [InlineData("deepseek-v4.1-flash")]

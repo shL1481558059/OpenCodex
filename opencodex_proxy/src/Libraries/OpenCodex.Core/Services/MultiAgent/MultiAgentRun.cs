@@ -13,6 +13,8 @@ public sealed class MultiAgentRun
     public string SessionKey { get; set; } = string.Empty;
     public string Model { get; set; } = string.Empty;
     public Dictionary<string, object?> Template { get; set; } = new(StringComparer.Ordinal);
+    public List<object?> ClientTools { get; set; } = [];
+    public Dictionary<string, Dictionary<string, object?>> ClientControlCalls { get; set; } = new(StringComparer.Ordinal);
     public List<object?>? InstructionMessages { get; set; }
     public Dictionary<string, MultiAgentState> Agents { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, string> PendingCalls { get; set; } = new(StringComparer.Ordinal);

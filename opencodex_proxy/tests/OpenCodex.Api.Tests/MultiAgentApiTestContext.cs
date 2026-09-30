@@ -26,14 +26,18 @@ internal sealed class MultiAgentApiTestContext : IDisposable
     public MultiAgentResponseService Service { get; }
     public Endpoint FakeEndpoint { get; }
     public MultiAgentRunStore Store { get; }
+    public MultiAgentClientStore ClientStore { get; }
     public Guid Key { get; }
     public bool CatalogEnabled { get; set; } = true;
     public CancellationTokenSource Lifetime { get; } = new(TimeSpan.FromSeconds(10));
 
     public MultiAgentApiTestContext(Func<ProxyEndpointContext, Task<ProxyEndpointResult>> handler,
-        MultiAgentRunStore? store = null, Guid? key = null, string session = "test-session")
+        MultiAgentRunStore? store = null, Guid? key = null, string session = "test-session",
+        MultiAgentClientStore? clientStore = null)
     {
         Store = store ?? new MultiAgentRunStore(Path.Combine(Path.GetTempPath(), "ocxp-api-tests-" + Guid.NewGuid().ToString("N")));
+        ClientStore = clientStore ?? new MultiAgentClientStore(Store,
+            Path.Combine(Path.GetTempPath(), "ocxp-api-client-tests-" + Guid.NewGuid().ToString("N")));
         Key = key ?? Guid.NewGuid();
         Http.Request.Path = "/v1/responses";
         Http.Request.Method = "POST";
@@ -44,10 +48,10 @@ internal sealed class MultiAgentApiTestContext : IDisposable
         _services = new ServiceCollection().AddScoped<IProxyEndpointService>(_ => FakeEndpoint).BuildServiceProvider();
         var catalog = DispatchProxy.Create<IModelCatalogService, CatalogProxy>();
         ((CatalogProxy)(object)catalog).Enabled = () => CatalogEnabled;
-        Service = new MultiAgentResponseService(new HttpContextAccessor { HttpContext = Http }, catalog,
+        Service = new MultiAgentResponseService(new FixedContextAccessor { HttpContext = Http }, catalog,
             new Identity(Key), FakeEndpoint, Store, _services.GetRequiredService<IServiceScopeFactory>(),
             new ConfigurationBuilder().Build(),
-            NullLogger<MultiAgentResponseService>.Instance);
+            NullLogger<MultiAgentResponseService>.Instance, ClientStore);
     }
 
     public TestSocket Socket()
@@ -105,6 +109,10 @@ internal sealed class MultiAgentApiTestContext : IDisposable
             lock (Calls) Calls.Add(context);
             return handler(context);
         }
+    }
+    private sealed class FixedContextAccessor : IHttpContextAccessor
+    {
+        public HttpContext? HttpContext { get; set; }
     }
     private sealed class Identity(Guid key) : IProxyIdentityContext
     {

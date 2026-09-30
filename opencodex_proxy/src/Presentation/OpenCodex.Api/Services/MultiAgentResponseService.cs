@@ -21,7 +21,8 @@ public sealed partial class MultiAgentResponseService(
     MultiAgentRunStore store,
     IServiceScopeFactory scopes,
     IConfiguration configuration,
-    ILogger<MultiAgentResponseService> logger)
+    ILogger<MultiAgentResponseService> logger,
+    MultiAgentClientStore clientStore)
 {
     private HttpContext HttpContext => accessor.HttpContext!;
     private HttpRequest Request => HttpContext.Request;
@@ -44,6 +45,8 @@ public sealed partial class MultiAgentResponseService(
 
         var model = JsonDictionaryValue.String(request, "model");
         if (model.Length == 0) throw new BadRequestException("model is required.");
+        var clientResponse = await TryClientResponsesAsync(request, allowCreate: true);
+        if (clientResponse is not null) return clientResponse;
         var session = SessionId(request);
         Response.Headers["X-OpenCodex-Multi-Agent-Session"] = session;
         var owner = identityContext.RequireIdentity().ApiKeyId;

@@ -131,12 +131,25 @@ flowchart TD
 | `Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command` | Compose 为 `Warning` | 降低 EF SQL 命令日志噪声 | 仅 Compose 中存在 |
 | `DOCKER_LOG_MAX_SIZE` | `50m` | Docker json-file 单文件轮转上限 | 部署脚本/Compose |
 | `DOCKER_LOG_MAX_FILE` | `5` | Docker json-file 保留文件数 | 部署脚本/Compose |
-| `MultiAgent:StateDirectory` | 未设置时为 `logs/multi-agent-runs` | 多代理 v2 运行快照目录；请求 `store:false` 时仅内存保存 | 未列出 |
+| `MultiAgent:StateDirectory` | 未设置时为 `logs/multi-agent-runs` | 多代理运行快照目录；客户端协同组清单位于其 `client-bindings/` 子目录。客户端协同模式按根请求固定整组 `store` 策略 | 未列出 |
 | `MultiAgent:CompactThresholdTokens` | `64000` | 多代理上下文压缩阈值默认值，可被请求 `context_management.compact_threshold` 覆盖 | 未列出 |
 
 `MultiAgent:*` 由 `IConfiguration` 直接读取，不经过 `OpenCodexRuntimeSettingsProvider`；环境变量形式为 `MultiAgent__*`（例如 `MultiAgent__CompactThresholdTokens`），`.env.example` 与 Compose 均未列出。
 
 多代理运行没有模型调用次数上限，旧配置 `MultiAgent:MaxModelTurns` 及其环境变量形式不再读取。按 token 阈值触发的自动上下文压缩继续有效；请求 `context_management.compact_threshold` 在本地解析和校验，随后 `context_management` 由多代理规范化层移除，不透传给上游。调用次数不会触发压缩。
+
+多代理支持两种自动选择的执行方式，不增加客户端安装步骤或桥接器配置：
+
+| 条件 | 执行方式与配置边界 |
+|---|---|
+| 新根 Responses 请求命中模拟能力、未走原生 Responses 直通，同时提供原生 `collaboration` 工具及有效 native thread 元数据 | 自动使用客户端协同模式（client-coordinated）。原客户端创建/展示子聊天并执行工具与协作控制；服务端维护各代理上下文、模型、token 压缩及子模型并发 |
+| 已属于客户端协同组的子请求 | 在模型能力和直通判定前绑定既有预登记代理；显式子模型即使没有模拟标志或使用原生 Responses 渠道，也使用该代理的服务端上下文 |
+| 未绑定根请求的首路由为原生 Responses | 保持原有直通，不创建服务端代理组 |
+| 模拟请求不具备原生协作能力 | 使用 legacy 服务端代理树；可运行服务端协作，但不会创建客户端原生子聊天 |
+
+客户端协同模式按 API key owner、root thread、parent thread、agent path 关联请求，不从任务文本猜测缺失身份。`spawn.model` 和推理强度仅在客户端工具 schema 声明时接受，显式值进入子代理实际模型配置；省略时继承父配置。`multi_agent.max_concurrent_subagents` 默认 `3`，限制整组同时进行的子模型调用，根模型不占此额度；每个代理的上下文独立按 token 阈值压缩。
+
+客户端协同组的持久化策略在根请求建立时固定：根 `store:false` 时所有子代理仅保留在内存，服务端重启后需要新建根任务；根启用持久化而子请求 `store:false` 时明确拒绝混合策略。组清单和各代理快照共同恢复状态，不使用客户端回放的文本推测原代理树。对于无法识别为已有托管组的普通 native 请求，继续保留普通转发行为，不承诺检测所有内存会话丢失。无需设置 `CODEX_CLI_PATH`，也不修改客户端或本地数据库。
 
 ### 4.3 README 配置漂移
 
@@ -463,7 +476,7 @@ PRD 将 Redis 定义为**可选的共享状态与缓存组件，而非主数据�
 | 代理设置（数据库键值） | [ProxySettingsService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/ProxySettingsService.cs)、[SystemSettingsController.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/SystemSettingsController.cs) |
 | Web Search provider 与路由 | [WebSearchService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/WebSearchService.cs)、[WebSearchClientRouter.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/ExternalIntegrations/WebSearchClientRouter.cs)、[KeenableWebSearchClient.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/ExternalIntegrations/KeenableWebSearchClient.cs) |
 | 视觉转移配置 | [VisionTransferSettingsService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/VisionTransferSettingsService.cs)、[VisionTransferDtos.cs](../opencodex_proxy/src/Libraries/OpenCodex.CoreBase/DTOs/SystemSettings/VisionTransferDtos.cs) |
-| 多代理运行参数 | [MultiAgentResponseService.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Services/MultiAgentResponseService.cs)、[MultiAgentRunStore.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/MultiAgent/MultiAgentRunStore.cs) |
+| 多代理运行参数与组存储 | [MultiAgentResponseService.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Services/MultiAgentResponseService.cs)、[客户端协同入口](../opencodex_proxy/src/Presentation/OpenCodex.Api/Services/MultiAgentResponseService.Client.cs)、[MultiAgentRunStore.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/MultiAgent/MultiAgentRunStore.cs)、[MultiAgentClientStore.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/MultiAgent/MultiAgentClientStore.cs) |
 | 渠道字段与验证 | [OpenCodexConfig.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Config/OpenCodexConfig.cs)、[ConfigValidator.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Config/ConfigValidator.cs) |
 | 渠道环境变量展开 | [ConfigEnvironmentExpander.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Config/ConfigEnvironmentExpander.cs) |
 | Redis 建连与降级 | [RedisConnectionProvider.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Caching/RedisConnectionProvider.cs)、[TwoLevelCacheService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Caching/TwoLevelCacheService.cs) |
