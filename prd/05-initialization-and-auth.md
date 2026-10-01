@@ -851,6 +851,8 @@ sequenceDiagram
 4. 成功、失败、限流事件进入安全审计但不记录密码。
 5. 阈值与锁定策略由 TBD-AUTH-004 确认。
 
+**当前状态（GAP，未实现）**：代码中没有速率限制、锁定或登录安全审计（`opencodex_proxy/src` 无 `RateLimiter` 等实现），五条验收标准当前均不满足；见 §17.2 第 4 条。
+
 #### REQ-AUTH-017（SHOULD）风险登录通知与近期认证
 
 **验收标准**：
@@ -915,6 +917,8 @@ sequenceDiagram
 2. SameSite 仅作为纵深防御，不是唯一措施。
 3. 跨站表单、跨站 fetch、同站不同 origin 场景均有测试。
 4. 认证失败与 CSRF 失败使用可区分且不泄密的错误码。
+
+**当前状态（GAP，未实现）**：代码无显式 CSRF 防护（`opencodex_proxy/src` 无 Antiforgery/CSRF 实现），仅有 `SameSite=Lax`（`OpenCodexServiceCollectionExtensions.cs:246`）作为纵深防御，四条验收标准当前均不满足；见 §17.2 第 11 条。
 
 ### 15.6 会话恢复与撤销
 

@@ -423,7 +423,7 @@ queued -> processing -> success
 
 1. 任一启用渠道存在对象型映射时，全局进入映射模式。
 2. 映射模式只返回 `model` 精确命中的候选；未命中返回 HTTP 400。
-3. 当前匹配区分大小写，并通过自动化测试固定。
+3. 当前匹配区分大小写（`ProxyRouteService.cs:243`、`:279` 为 Trim 后的序数比较）；尚无覆盖大小写差异的自动化测试，此项为 GAP。
 
 ### REQ-RTE-003 无映射兜底（MUST）
 
@@ -659,7 +659,7 @@ queued -> processing -> success
 2. 多次故障转移的子日志顺序可还原。
 3. 子日志不得重复计入用户主请求统计。
 
-### REQ-RTE-025 可靠性指标（MUST）
+### REQ-RTE-025 可靠性指标（MUST，未实现）
 
 **要求：** 系统必须输出足以区分内部重试、跨渠道切换、熔断和容量拒绝的指标。
 
@@ -668,6 +668,8 @@ queued -> processing -> success
 1. 至少包含 route_attempts、upstream_retries、failovers、capacity_rejections、circuit_opens、half_open_probes。
 2. 指标可按 owner、channel、model、protocol 聚合，但不得把访问 Key 明文作为标签。
 3. 可计算最终成功率、首选渠道成功率和故障转移挽救率。
+
+**当前状态（GAP，未实现）**：代码中没有 `System.Diagnostics.Metrics`/OpenTelemetry/Prometheus 指标实现（`opencodex_proxy/src` 中不存在 route_attempts 等指标名，仅有与 TTFT 相关的 `StreamWriteMetrics`），三条验收标准当前均不满足；本条属规划中能力。
 
 ### REQ-RTE-026 内置工具副作用门禁（MUST）
 

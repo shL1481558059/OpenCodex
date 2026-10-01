@@ -469,7 +469,7 @@ status, errorCode, message, requestId, retryAfter, details, isNetworkError, isAb
 - 导出JSON写入 `k.key` 并提示“含明文”。
 - 创建成功Dialog显示完整Key。
 - README声称只在创建时显示一次、数据库只保存哈希；当前后端事实与该说明冲突。
-- 超级管理员创建表单提交 `owner_username`，后端 DTO当前接收 `owner_user_id`，归属选择可能不生效。
+- 超级管理员归属解析已按 `ApiKeyCreateRequest` 与 `ApiKeyService.CreateKey` 的实际规则生效：`owner_username` 非空时优先按用户名查找，找不到返回 400 `owner user '...' not found`；否则回退 `owner_user_id`（空 Guid 归当前超管），查找失败抛 `user not found`。
 
 ### 11.4 产品交互原则
 

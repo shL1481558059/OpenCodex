@@ -382,7 +382,7 @@ flowchart TD
 
 `REQ-SPC-007`（MUST）：Images 接口不得把不支持的流式请求当作普通非流式请求静默执行，必须返回明确的客户端错误。
 
-`REQ-SPC-008`（MUST）：Images 接口的生产 DI、渠道校验、真实上游调用和错误路径必须有启动态与集成测试证据；仅控制器 fake 测试不足以证明正式可用。
+`REQ-SPC-008`（MUST，未实现/GAP）：Images 接口的生产 DI、渠道校验、真实上游调用和错误路径必须有启动态与集成测试证据；仅控制器 fake 测试不足以证明正式可用。
 
 ## 9. Probe 请求拦截
 
@@ -500,7 +500,7 @@ flowchart TD
 | `REQ-SPC-013` | MUST | MCP 原生调用和结果不得误转普通工具 | MCP ID、错误、历史测试 |
 | `REQ-SPC-014` | MUST | Web Search 三种模式行为互斥且可观测 | convert/disabled 不调用 Tavily，simulate 产生续轮 |
 | `REQ-SPC-015` | MUST | Web Search 模拟有轮数和 Key 用量上限 | 无限循环和 Key 达上限测试 |
-| `REQ-SPC-016` | MUST | 图片检测覆盖三种入口和工具结果 | 多协议图片检测测试 |
+| `REQ-SPC-016` | MUST | 图片检测覆盖三种入口和工具结果 | 多协议图片检测测试（现有直接用例仅消息级：三种协议的用户消息图片；工具结果中的图片检测无直接用例） |
 | `REQ-SPC-017` | MUST | OCR 降级生成子日志并可回到主请求 | 缓存命中/未命中/失败测试 |
 | `REQ-SPC-018` | MUST | Images 接口拒绝不支持的流式请求 | JSON/multipart/stream 测试 |
 | `REQ-SPC-019` | MUST | Probe 不调用上游但仍鉴权和记日志 | 各协议最小响应测试 |

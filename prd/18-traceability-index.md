@@ -101,7 +101,7 @@
 | `POST /chat/completions`、`/v1/chat/completions` | Bearer Key | 协议、工具、路由 | ProxyController、ProxyEndpointService | 3×3 非流式/流式矩阵 |
 | `POST /messages`、`/v1/messages` | Bearer Key | 协议、工具、路由 | ProxyController、ProxyEndpointService | 3×3 非流式/流式矩阵 |
 | `POST /images/generations*` | Bearer Key | 特殊流程 | ImagesController、Images Service 接口 | JSON、stream 拒绝、生产 DI GAP |
-| `POST /images/edits*` | Bearer Key | 特殊流程 | ImagesController、ImageEditRequestReader | multipart、大小/数量、生产 DI GAP |
+| `POST /images/edits*` | Bearer Key | 特殊流程 | ImagesController、ImageEditRequestService | multipart、大小/数量、生产 DI GAP |
 
 ### 4.1 控制器精确路由目录
 
@@ -209,7 +209,7 @@
 - `/stats/active-channels*` → `/monitor/active-channels*`；`/stats/recent-errors/stream` → `/monitor/recent-errors/stream`。仓库中不存在 `/stats/*/stream` 路由。
 - `/channels/{id}/reset-health` 保留为 `/channels/{id}/health-reset` 的兼容别名；`/channels/batch` 保留为 `PATCH /channels` 的兼容别名。
 - `/pricing*` 整链已删除（批 0），本索引 4.1 旧表中的 `/pricing` 行仅作为历史基线保留。
-- `/images/*` 控制器与路由存在，但 `IProxyImagesEndpointService` 无实现、`IImagesProxyService`/`ImagesProxyService`/`IImagesUpstreamClient` 未注册 DI，属于当前 GAP。
+- `/images/*` 控制器与路由存在；`IProxyImagesEndpointService` 无生产实现（仅测试替身 `ImagesControllerTests.StubImagesService`）；`IImagesProxyService`/`ImagesProxyService` 已存在但未注册 DI；`IImagesUpstreamClient` 虽由 `HttpUpstreamClient` 实现，DI 仅按 `IUpstreamClient`/`IUpstreamModelClient` 注册。属当前 GAP，不得按可用能力承诺。
 
 ## 5. 管理台页面追踪
 
@@ -224,7 +224,7 @@
 | API Key | 普通/超管 | `/api-keys*`、`/users` | AccessKeys.vue | 创建、复制、启停、导入导出和秘密冲突 |
 | 用户管理 | 超管 | `/users*` | Users.vue | 创建、停用、重置、删除和保护规则 |
 | Web Search | 超管 | `/web-search*` | WebSearch.vue | 模式、Key、用量、测试和失败回滚 |
-| 模型信息 | 超管 | `/model-providers*`、`/model-infos*`、`/model-catalog/export`、`/model-catalog/import` | Pricing.vue | 筛选、供应商、模型、定价、停用、导入导出 |
+| 模型信息 | 超管 | `/model-providers*`、`/model-infos*`、`/model-catalog/export`、`/model-catalog/import` | ModelCatalog.vue | 筛选、供应商、模型、定价、停用、导入导出 |
 | 系统设置 | 超管 | `/system-settings` | SystemSettings.vue、tauriBackend.js | LAN、端口、Probe、重启 |
 | 请求日志 | 普通/超管 | `/logs*`、`/stats` | Logs.vue | 快捷/高级筛选、分页、详情、SSE、清空 |
 
@@ -313,7 +313,7 @@
 | `REQ-OV-006` | MUST | PRD、管理台文案和发布说明必须区分已实现能力、实验性能力、已知限制和未来计划。 | [产品总览](01-product-overview.md) | Program.cs；README.md；全部专题测试 |
 | `REQ-OV-007` | MUST | 正式发布前必须为所选部署形态确认适用的可用性、容量、日志保留和恢复目标；未确认指标不得被宣传为产品保证。 | [产品总览](01-product-overview.md) | Program.cs；README.md；全部专题测试 |
 | `REQ-OV-008` | MUST | 多代理 v2 只能由模型能力 `capabilities.v2_agent_simulation` 触发，默认关闭；HTTP 可用 `multi_agent.enabled=false` 回退普通管线。 | [产品总览](01-product-overview.md)；[多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentV2PolicyTests |
-| `REQ-OV-009` | MUST | `IProxyImagesEndpointService` 生产实现与 DI 注册补齐前，独立 Images API 只能作为 GAP 描述，不得对外宣称可用。 | [产品总览](01-product-overview.md)；[系统边界](03-system-boundary.md) | ImagesController；OpenCodexServiceCollectionExtensions；ProxyAuthenticationPipelineTests |
+| `REQ-OV-009` | MUST | `IProxyImagesEndpointService` 生产实现与 DI 注册补齐前，独立 Images API 只能作为 GAP 描述，不得对外宣称可用。 | [产品总览](01-product-overview.md)；[系统边界](03-system-boundary.md) | ImagesController；ImagesProxyService；HttpUpstreamClient；OpenCodexServiceCollectionExtensions；ImagesControllerTests |
 | `REQ-USR-001` | MUST | 管理台身份与代理身份隔离 | [用户与权限](02-users-and-permissions.md) | UsersController；UserService；ApiKeyService；权限与路由测试 |
 | `REQ-USR-002` | MUST | 上游凭证隔离 | [用户与权限](02-users-and-permissions.md) | UsersController；UserService；ApiKeyService；权限与路由测试 |
 | `REQ-USR-003` | MUST | 服务端权限为最终裁决 | [用户与权限](02-users-and-permissions.md) | UsersController；UserService；ApiKeyService；权限与路由测试 |
@@ -804,6 +804,8 @@
 | `REQ-MA-035` | SHOULD | 多实例与共享状态协调 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
 | `REQ-MA-036` | SHOULD | WebSocket 跨连接恢复与会话发现 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
 | `REQ-MA-037` | SHOULD | 原生代理树 UI 契约 | [多代理模拟](19-multi-agent-simulation.md) | MultiAgentResponseService；MultiAgentRuntime；MultiAgent 测试 |
+
+上表 REQ-MA 系列的证据列统一概括为 `MultiAgentResponseService`、`MultiAgentRuntime`、`MultiAgent 测试`。`db0fd60` 引入客户端协同模式后，实际证据族还包含 `MultiAgentClientIdentity`、`MultiAgentClientStore`、`MultiAgentClientBinding`、`MultiAgentClientRuntimeHooks`、`MultiAgentClientTools`、`MultiAgentProtocol`、`MultiAgentResponseService.Client` 与 `MultiAgentClient*Tests`（如 `MultiAgentClientStoreTests`、`MultiAgentClientProtocolTests`、`MultiAgentClientRuntimeTests`、`MultiAgentClientResponseTests`、`MultiAgentClientWebSocketTests`）；本条说明代行逐行锚点补齐，不逐行改写 37 条 REQ-MA 行。
 
 ## 11. 维护与完成判定
 

@@ -532,9 +532,9 @@ SQL 级验收设施：`Infrastructure/SqlCapture.cs`（`DbCommandInterceptor`）
 | MCP | `NativeMcpConfigurationTests.cs`、`NativeMcpProtocolTests.cs`、`NativeMcpHistoryTests.cs`、`NativeMcpResponseTests.cs` |
 | 图片 | `ImagesControllerTests.cs`、`ProxyImageFallbackTests.cs`、`ProxyVisionRoutingTests.cs` |
 | 日志 | `ProxyLogServiceTests.cs`、`ObservabilityServiceTests.cs`、`LogContentCodecTests.cs`、`LogContentStoreTests.cs`、`ObservabilityAggregationSqlTests.cs`、`ServiceQueryGovernanceTests.cs` |
-| 模型和价格 | `ModelCatalogServiceTests.cs`、`ModelPricingServiceTests.cs`、`ProxyControllerTests.cs`（统一 `/models` 返回） |
+| 模型和价格 | `ModelCatalogServiceTests.cs`（含 `CalculateCost*` 定价用例）、`ProxyControllerTests.cs`（统一 `/models` 返回） |
 | Probe | `ProbeRequestInterceptorTests.cs`、`ProxyControllerTests.cs` |
-| 多代理 | `MultiAgentResponseServiceTests.cs`、`MultiAgentWebSocketTests.cs`、`MultiAgentRunStoreTests.cs`、`MultiAgentV2PolicyTests.cs` |
+| 多代理 | `MultiAgentResponseServiceTests.cs`、`MultiAgentWebSocketTests.cs`、`MultiAgentRunStoreTests.cs`、`MultiAgentV2PolicyTests.cs`、`MultiAgentClientProtocolTests.cs`、`MultiAgentClientWebSocketTests.cs`、`MultiAgentClientStoreTests.cs` |
 | 渠道诊断与目录同步 | `ChannelDiagnosticsGuardTests.cs`、`ChannelDiagnosticsLogTests.cs`、`ModelCatalogSyncServiceTests.cs`、`CodexOfficialModelCatalogServiceTests.cs` |
 | 工具 schema | `ToolSchemaExpansionTests.cs` |
 | 前端状态 | `channelImagesState.test.js`、`channelOrdering.test.js`、`channelTestState.test.js`、`channelTestStream.test.js`、`logTps.test.js`、`modelCatalogImportState.test.js`、`pricingOffPeak.test.js`、`visionTransferState.test.js`、`api/sseClient.test.js` |

@@ -473,7 +473,7 @@ flowchart TD
 | REQ-NFR-032 | MUST | 任何 SLA/SLO 变更必须版本化并关联监控、报警和容量测试。 | 缺口 | PRD、仪表盘、告警规则和压测基准中的指标编号一致；变更有评审记录。 |
 | REQ-NFR-033 | MUST | 大列表与统计读取必须投影列并下推聚合，禁止为统计整表加载大字段（如 `PricingSnapshotJson`）。 | 已实现（核心路径有 SQL 级测试） | `ServiceQueryGovernanceTests`、`ObservabilityAggregationSqlTests` 通过 `SqlCapture` 断言 SQL 语义与语句条数；新增列表接口不得回归为全量加载。 |
 | REQ-NFR-034 | MUST | 缓存必须按 L1 进程内 + Redis L2 两级工作，Redis 不可用时降级为纯 L1 且不阻塞主请求，写路径通过广播失效其他实例 L1。 | 已实现（缺 Redis 集成测试） | `TwoLevelCacheService` 实现读回写与广播失效；`RedisConnectionProviderTests` 验证不可达时快速降级；失效广播与多实例一致性仍无直接用例（见 [16-testing-and-acceptance.md](./16-testing-and-acceptance.md)）。 |
-| REQ-NFR-035 | MUST | 多代理 v2 保留子代理并发上限（默认 3）与上下文压缩阈值（默认 64000），模型调用次数不设上限且不触发压缩；取消与失败隔离必须继续有效。 | 已实现 | `multi_agent.max_concurrent_subagents<1` 与 `context_management.compact_threshold<1` 返回 400；请求阈值覆盖生效；超过旧调用上限仍可完成或取消；普通回合预先计 1，需要摘要的回合预先计 2。 |
+| REQ-NFR-035 | MUST | 多代理 v2 保留子代理并发上限（默认 3）与上下文压缩阈值（默认 64000），模型调用次数不设上限且不触发压缩；取消与失败隔离必须继续有效。 | 已实现 | `multi_agent.max_concurrent_subagents<1` 与 `context_management.compact_threshold<1` 返回 400；请求阈值覆盖生效；超过旧调用上限仍可完成或取消；普通回合预先计 1，需要摘要的回合预先计 2；`db0fd60` 客户端协同模式复用同一运行时与阈值（`MultiAgentClientRuntimeHooks`、`MultiAgentResponseService.Client`），绑定、取消与失败隔离回归见 `MultiAgentClientStoreTests`、`MultiAgentClientRuntimeTests`、`MultiAgentClientResponseTests`。 |
 | REQ-NFR-036 | MUST | 价格比较与排序不得下推到数据库，因为 SQLite 价格列为 `TEXT`、PostgreSQL 为 `numeric(18,8)`。 | 已记录并遵守 | SQL 捕获用例证明定价解析与比较留在内存；双 provider 迁移同步新增价格列。 |
 | REQ-NFR-037 | MUST | 日志与导出文件的访问控制、磁盘加密属于部署方责任边界，必须在发布文档中显式声明，不得宣称应用层已脱敏。 | 缺口（文档不一致） | README/DEPLOYMENT 不再声称日志已脱敏；发布文档列出部署方必须提供的访问控制与加密措施；`REQ-NFR-018` 边界变更时同步更新。 |
 
@@ -505,7 +505,7 @@ flowchart TD
 | TBD-NFR-008 | 浏览器、桌面 OS 与 Linux 发行版最低版本 | 目标用户分布 |
 | TBD-NFR-009 | WCAG 目标等级 | 产品市场与合规要求 |
 | TBD-NFR-010 | Redis 自动恢复时限 | 多实例一致性容忍度 |
-| TBD-NFR-011 | 多代理运行的多实例协调与快照容量治理 | 多实例拓扑、快照目录共享方案与保留策略 |
+| TBD-NFR-011 | 多代理运行与客户端绑定的多实例协调与快照容量治理 | 多实例拓扑、`MultiAgent:StateDirectory`（当前运行快照与 `client-bindings` 仅存本实例本地文件系统）共享方案与保留策略 |
 
 ---
 
@@ -526,7 +526,7 @@ flowchart TD
 | 缺 Cargo.lock、工具链浮动 | 中 | 构建不可复现 |
 | Node 22/24 不一致 | 中 | 本地、Docker、CI 构建差异 |
 | 浏览器/OS兼容矩阵缺失 | 中 | 无法判断用户环境是否正式支持 |
-| 多代理运行状态仅存本实例 JSON 快照 | 中 | 多实例不共享运行；重启后模型回合可能重做 |
+| 多代理运行状态与客户端绑定仅存本实例 JSON 快照 | 中 | 多实例不共享运行与 `client-bindings` 绑定；重启后模型回合可能重做 |
 | 上游 400/403 计入熔断 | 中 | 客户端请求问题被当作渠道故障，可能长时间开路 |
 | 同协议短路外泄 `_ocxp_*` 内部标记 | 低 | 严格上游可能拒绝请求 |
 | PostgreSQL 端到端零覆盖 | 中 | 统计与聚合的 provider 差异在生产首次暴露 |
@@ -547,10 +547,10 @@ flowchart TD
 | 亲和 | [ChannelAffinityService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/ChannelAffinityService.cs) |
 | 容量 | [ChannelCapacityService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/ChannelCapacityService.cs) |
 | Redis 与两级缓存 | [RedisConnectionProvider.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Caching/RedisConnectionProvider.cs)、[TwoLevelCacheService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Caching/TwoLevelCacheService.cs) |
-| 图片大小限制 | [ImageEditRequestReader.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Infrastructure/ImageEditRequestReader.cs) |
+| 图片大小限制 | [ImageEditRequestService.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Services/ImageEditRequestService.cs)（单文件 20 MB、总量 100 MB、最多 16 张） |
 | 健康检查 | [SystemController.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/SystemController.cs) |
 | 内容寻址日志 | [LogContentCodec.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/LogContentCodec.cs)、[LogContentStore.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/LogContentStore.cs) |
-| 多代理运行时 | [MultiAgentRuntime.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/MultiAgent/MultiAgentRuntime.cs)、[MultiAgentRunStore.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/MultiAgent/MultiAgentRunStore.cs)、[MultiAgentResponseService.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Services/MultiAgentResponseService.cs) |
+| 多代理运行时 | [MultiAgentRuntime.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/MultiAgent/MultiAgentRuntime.cs)、[MultiAgentRunStore.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/MultiAgent/MultiAgentRunStore.cs)、[MultiAgentResponseService.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Services/MultiAgentResponseService.cs)、[MultiAgentClientStore.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/MultiAgent/MultiAgentClientStore.cs)、[MultiAgentClientIdentity.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/MultiAgent/MultiAgentClientIdentity.cs)、[MultiAgentClientBinding.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/MultiAgent/MultiAgentClientBinding.cs)、[MultiAgentClientRuntimeHooks.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/MultiAgent/MultiAgentClientRuntimeHooks.cs)、[MultiAgentClientTools.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/MultiAgent/MultiAgentClientTools.cs)、[MultiAgentProtocol.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/MultiAgent/MultiAgentProtocol.cs)、[MultiAgentResponseService.Client.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Services/MultiAgentResponseService.Client.cs) |
 | 峰谷定价 | [ModelCatalogService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/ModelCatalogService.cs)、[ModelPricingCalculation.cs](../opencodex_proxy/src/Libraries/OpenCodex.CoreBase/Domain/Models/ModelPricingCalculation.cs) |
 | 模型目录同步 | [ModelCatalogSyncService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/ModelCatalogSyncService.cs)、[ModelCatalogSyncClient.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/ModelCatalogSyncClient.cs) |
 | 渠道诊断与脱敏边界 | [ChannelDiagnosticsService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/ChannelDiagnosticsService.cs)、[ChannelDiagnosticsController.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/ChannelDiagnosticsController.cs) |
@@ -577,7 +577,7 @@ flowchart TD
 - [ProxyLogServiceTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ProxyLogServiceTests.cs)
 - [LogContentCodecTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/LogContentCodecTests.cs)
 - [LogContentStoreTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/LogContentStoreTests.cs)
-- [MultiAgentResponseServiceTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/MultiAgentResponseServiceTests.cs)、[MultiAgentRunStoreTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/MultiAgentRunStoreTests.cs)
+- [MultiAgentResponseServiceTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/MultiAgentResponseServiceTests.cs)、[MultiAgentRunStoreTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/MultiAgentRunStoreTests.cs)、[MultiAgentClientStoreTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/MultiAgentClientStoreTests.cs)、[MultiAgentClientProtocolTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/MultiAgentClientProtocolTests.cs)、[MultiAgentClientRuntimeTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/MultiAgentClientRuntimeTests.cs)、[MultiAgentClientResponseTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/MultiAgentClientResponseTests.cs)、[MultiAgentClientWebSocketTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/MultiAgentClientWebSocketTests.cs)
 - [ProtocolConversionMatrixTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ProtocolConversionMatrixTests.cs)
 - [ObservabilityAggregationSqlTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ObservabilityAggregationSqlTests.cs)、[ServiceQueryGovernanceTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ServiceQueryGovernanceTests.cs)
 - [ChannelDiagnosticsGuardTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ChannelDiagnosticsGuardTests.cs)、[ChannelDiagnosticsLogTests.cs](../opencodex_proxy/tests/OpenCodex.Api.Tests/ChannelDiagnosticsLogTests.cs)

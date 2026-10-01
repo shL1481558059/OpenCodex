@@ -302,6 +302,8 @@ flowchart TD
 - Chat/Messages 中转换为可表达的函数或 tool_use 结构。
 - 流式支持 patch 输入增量和完成事件；对转义 JSON delta 使用专门解码器 `ApplyPatchJsonDeltaDecoder` 恢复原始 patch 文本。
 - 进入 Chat/Messages 时 `custom_tool_call` 的 `input` 不逐字流出，而是在 `output_item.done` 时一次性序列化为 `arguments`/`input_json_delta`（见 `SseStreamConverter.ResponsesToChat.cs`、`SseStreamConverter.ResponsesToMessages.cs` 顶部说明）。
+- 非 apply_patch 的通用 `custom`/`custom_tool` 工具走自由输入信封：仅当映射原生类型为 `custom`/`custom_tool` 且形状为 NativeTool 时 `UsesCustomInputEnvelope` 才生效（`ProtocolConverter.CustomTools.cs:8`）；参数必须是只含单个字符串 `input` 键的 JSON 对象，否则抛 `UpstreamException`（`DecodeCustomToolArguments`，`ProtocolConverter.CustomTools.cs:21`）。
+- 声明为 custom 的工具忽略配置的 JSON Schema，统一改写为自由输入契约（`CustomToolDefinition_AlwaysUsesTheFreeformInputContract`，`ProtocolStructuralCompatibilityTests.cs:186`）。
 
 #### 4.8.4 Tool Search 与 Web Search
 
@@ -727,7 +729,7 @@ sequenceDiagram
 
 **验收标准：**
 
-1. 单字符串、多个文本块、空文本分别有测试。
+1. GAP：矩阵测试只覆盖单字符串（Chat/Chat 入参）与单个 `input_text` 块（Responses，`ProtocolConversionMatrixTests.RequestPayload`）；多个文本块与空文本缺直接用例，空文本目前仅由 `ResponsesToMessages_WithPreserveThinkingHistory_DoesNotEmitEmptyContentMessages`（`ProtocolStructuralCompatibilityTests.cs:408`）间接覆盖。
 2. 输入块顺序和助手输出段落顺序保持。
 3. 空 content 不产生无意义连续 assistant 消息。
 
@@ -769,7 +771,7 @@ sequenceDiagram
 
 **验收标准：**
 
-1. `namespace__tool` 和历史 `namespace.tool` 均有兼容测试。
+1. `namespace__tool` 有兼容测试（`SseStreamConverterTests.cs:660`、`ProxyCompatibilityTests.cs:1397`）；历史 `namespace.tool` 分隔符（`LegacyNamespaceSeparator`，`ProtocolConverter.cs:38`）无测试覆盖，为 GAP。
 2. 深层命名空间在流式和非流式中完整恢复。
 3. 多工具链顺序稳定。
 
@@ -811,7 +813,7 @@ sequenceDiagram
 
 **验收标准：**
 
-1. 自动化测试验证 default、rename、drop、force、drop tools、unsupported 的先后关系。
+1. GAP：实现顺序固定为 default→rename→drop→force→drop tools→unsupported（`ChannelCompatRequestRewriter.Apply`，`ChannelCompatRequestRewriter.cs:14`），但没有覆盖完整顺序的自动化测试，现有用例只分别验证 drop tool types（`ProxyCompatibilityTests.cs:128`）与 preserve_thinking_history（`ProtocolStructuralCompatibilityTests.cs:460`）。
 2. force 可以覆盖前序结果。
 3. unsupported 检查发生在所有改写之后。
 
@@ -834,7 +836,7 @@ sequenceDiagram
 
 1. 3×3 非流式矩阵 usage 数值一致。
 2. 3×3 流式矩阵最终 usage 一致。
-3. Chat `include_usage=false` 时不输出 usage chunk。
+3. 现状：仅 Messages 上游路径遵守 `include_usage`（`ProxyStreamService.Conversion.cs:125` 读取入口 `stream_options.include_usage`，`SseStreamConverter.MessagesToChat.cs:382` 按 `IncludeUsage` 门控）；GAP：Chat 入口 + Responses 上游只要 token 非零就无条件输出 usage chunk（`SseStreamConverter.ResponsesToChat.cs:619-637`，未检查 `include_usage`），且仓库内没有 `include_usage=false` 的用例。
 4. 日志计费使用上游实际 usage，而非估算文本长度。
 
 ### REQ-PRT-019 结束原因映射（MUST）
@@ -888,7 +890,7 @@ sequenceDiagram
 1. 客户端有效 header 被复制。
 2. 渠道同名 header 不被覆盖。
 3. Responses → Chat/Messages 不复制 Codex 专用 headers。
-4. 产品化默认值不得继续使用 `test-*`，需由真实客户端值或正式生成策略替代。
+4. 未完成（SHOULD）：`test-*` 兜底值仍在产品代码中（`ProxyEndpointService.cs:795-820`、`ChannelDiagnosticsService.ChannelDraft.cs:184`），需由真实客户端值或正式生成策略替代。
 
 ### REQ-PRT-024 Tool Schema 清理（MUST）
 
@@ -907,7 +909,7 @@ sequenceDiagram
 **验收标准：**
 
 1. 同协议未知字段默认保留，除非安全清理规则明确删除。
-2. 跨协议忽略字段时记录转换诊断。
+2. GAP：跨协议忽略字段没有任何转换诊断记录；未知字段经 `CopyCommonRequestParams`（`ProtocolConverter.Requests.cs:589`）原样透传或静默丢弃。
 3. 可能改变请求语义的字段进入显式不兼容表。
 
 ### REQ-PRT-026 可观测转换记录（MUST）
@@ -916,9 +918,9 @@ sequenceDiagram
 
 **验收标准：**
 
-1. 记录 source/target、原模型/上游模型、Compat detail。
-2. 流式记录 TTFT、首 SSE、首文本、首 reasoning 和完成时间。
-3. 敏感请求头和密钥被脱敏。
+1. 半满足：原模型/上游模型已记录（`RequestLog.Model`/`UpstreamModel`，`RequestLog.cs:19-21`）；GAP：无 source/target 协议字段，Compat 改写明细（`ChannelCompatRewriteResult.Details`）也未落库。
+2. GAP：流式只记录 TTFT（`RequestLog.TtftMs`，`ProxyStreamResponseWriter.cs:53-55`）与完成时间（`CompletedAt`/`DurationMs`）；首 SSE、首文本、首 reasoning 未记录。
+3. 现状：请求头与请求体整体写入日志内容（`ProxyLogService.cs:77`，`SerializeForLog` 序列化于 `:826`），未做脱敏，`Authorization` 等敏感头会原文落盘；仅渠道诊断日志有 `SensitiveLogKeys`/`IsSensitiveLogKey`（`ChannelDiagnosticsService.cs:477`、`:634`）。补齐项：把该脱敏复用到协议日志后再视为满足。
 
 ### REQ-PRT-027 协议回归矩阵（MUST）
 

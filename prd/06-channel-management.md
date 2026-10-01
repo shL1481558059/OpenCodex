@@ -566,7 +566,7 @@ sequenceDiagram
 1. 同名项更新而不新增重复渠道。
 2. 新名称新增渠道。
 3. 请求未包含的渠道保持不变。
-4. 未知 `owner_username` 返回 400，不得静默回落到其他用户。
+4. 未知 `owner_username` 返回 400，不得静默回落到其他用户：单条创建满足（`owner user not found: <name>`，`ChannelService.cs:420`）；导入合并路径未校验、不返回 400，静默回落到管理员（`ChannelService.cs:751`，`MergeChannelsIntoStore`），此项为 GAP，见 §11 第 6 条。
 
 ### REQ-CH-009 模型映射标准化（MUST）
 
@@ -602,16 +602,18 @@ sequenceDiagram
 3. `preserve_thinking_history` 对 chat/messages 的类型与布尔值校验通过。
 4. `multi_agent_v2_mode` 只接受 `passthrough/downgrade/reject` 或空值。
 
-### REQ-CH-012 上游凭证保护（MUST）
+### REQ-CH-012 上游凭证保护（MUST，未实现/GAP）
 
-**要求：** `apikey` 和敏感 headers 必须加密存储，普通读取接口不得返回明文。
+**要求：** `apikey` 和敏感 headers 必须加密存储，普通读取接口不得返回明文；连接测试日志内容存储同样适用（已并入原 `REQ-CH-025`）。
 
 **验收标准：**
 
 1. 数据库备份中不出现可直接使用的上游 Key 明文。
 2. 列表响应显示掩码或“已配置”。
 3. 更新未传新 Key 时保留旧 Key。
-4. 日志和错误响应不出现 Key 明文。
+4. 日志和错误响应不出现 Key 明文（含诊断日志内容存储）。
+
+**当前状态（GAP，未实现）**：上游 `apikey` 与含秘密的自定义 headers 当前明文存储并在配置响应中返回（§11 第 1 条）；更新路径 `ChannelService.cs:383` 用请求值直接覆盖 `existing.ApiKey`，`JsonDictionaryValue.String`（`JsonDictionaryValue.cs:25-28`）对缺失键返回空串，未传新 Key 会清空旧 Key，与验收 3 相反；诊断日志内容存储保留上游 Key 与敏感 header 原文（`ChannelDiagnosticsLogTests.TestChannelStreamWritesCompleteRequestLogContent` 断言写入 `SecretApiKey`），仅 SSE 流出经 `SensitiveLogKeys`/`IsSensitiveLogKey`（`ChannelDiagnosticsService.cs:477/634`）递归脱敏，四条验收标准当前均不满足。
 
 ### REQ-CH-013 环境变量引用（SHOULD）
 
@@ -677,7 +679,7 @@ sequenceDiagram
 2. 删除渠道后不存在 60 秒继续命中的窗口。
 3. 多实例使用 Redis 时所有实例观察到同一版本。
 
-### REQ-CH-019 审计记录（MUST）
+### REQ-CH-019 审计记录（MUST，未实现）
 
 **要求：** 渠道敏感变更必须形成审计事件，但不得记录秘密明文。
 
@@ -686,6 +688,8 @@ sequenceDiagram
 1. 记录操作者、所有者、渠道 ID、动作、时间和变更字段名。
 2. `apikey` 与敏感 header 只记录“新增/替换/清除”。
 3. 审计事件可按渠道和操作者检索。
+
+**当前状态（GAP，未实现）**：代码中没有审计事件的写入、存储或检索实现（`opencodex_proxy/src` 对 audit 零命中），三条验收标准当前均不满足；本条属规划中能力。
 
 ### REQ-CH-020 并发修改保护（SHOULD）
 
@@ -726,9 +730,9 @@ sequenceDiagram
 
 **验收标准：**
 
-1. 管理台使用 `/discover-models` 与 `/test-channel/stream`，或迁移到后端实际注册的新端点。
-2. `probe-models/probe-stream` 在无后端 Action 前不得作为已实现能力展示。
-3. 新增端点别名必须同时更新 `frontend/src/api/channels.js` 的调用方与路由测试。
+1. 管理台调用 `/discover-models` 与 `/test-channel/stream`（`frontend/src/api/channels.js`、`frontend/src/channelTestStream.js`）；后端 `ChannelDiagnosticsController` 同时注册这两条路径与等价别名 `/channels/discover-models`、`/channels/test/stream`。
+2. `probe-models/probe-stream` 在 `frontend/src/api/channels.js` 只有函数定义、无调用方，后端也没有对应 Action，不得作为已实现能力展示。
+3. 新增端点或别名必须同时更新前端调用方与路由测试。
 
 ### REQ-CH-024 连接测试错误可诊断性（MUST）
 
@@ -740,15 +744,13 @@ sequenceDiagram
 2. 前端优先显示深层上游错误 message，不用客户端 502 脱敏文案覆盖。
 3. 日志列表在 `request_type=diagnostic` 时把 Key 名称列显示为“连接测试”。
 
-### REQ-CH-025 诊断日志秘密保护（MUST）
+### REQ-CH-025 诊断日志秘密保护（MUST，未实现/GAP，已并入 REQ-CH-012）
 
-**要求：** 连接测试日志不得以可直接使用的形式保存上游秘密。
+**要求：** 连接测试日志不得以可直接使用的形式保存上游秘密。本条与 `REQ-CH-012` 合并为同一条未实现 MUST 跟踪，验收标准见 `REQ-CH-012`。
 
-**验收标准：**
+**验收标准：** 见 `REQ-CH-012`。
 
-1. `apikey`、Authorization、`x-api-key`、Cookie 与密码不得明文进入日志内容存储。
-2. SSE 响应仍可展示上游错误原文，但必须按敏感键递归脱敏。
-3. 数据库备份与日志导出中无法恢复上游可用凭证。
+**当前状态（GAP，未实现）**：诊断日志内容存储保留上游 API Key 与敏感 header 原文（`ChannelDiagnosticsLogTests.TestChannelStreamWritesCompleteRequestLogContent` 断言写入 `SecretApiKey`、`SecretHeaderValue`），不满足第 1、3 条；仅 SSE 流出经 `SensitiveLogKeys`/`IsSensitiveLogKey` 递归脱敏，满足第 2 条。
 
 
 ---
@@ -793,7 +795,7 @@ sequenceDiagram
 3. 新建渠道 `Position` 固定为 15，不能反映真实插入顺序。
 4. 未提供显式渠道排序 API。
 5. 超级管理员修改他人渠道时，`ChannelService.InvalidateRouteCache` 只失效当前登录用户名；他人路由缓存仍可能等待 60 秒 TTL。
-6. 超级管理员导入未知所有者时存在回落到默认管理员的实现路径。
+6. 超级管理员导入未知所有者时存在回落到默认管理员的实现路径（`ChannelService.cs:751`，`MergeChannelsIntoStore` 不返回 400）。
 7. `intercept_probe_requests` 已从渠道 Compat 白名单移除，改由系统级 `ProxySettings` 控制；其执行发生在 `ProxyService`，不再由渠道字段控制。
 8. 导入返回空 `updated_ids` 且 `count=0`，调用方无法从响应获知实际写入结果。
 9. 导入不是显式事务业务操作，逐项仓储保存可能造成大量数据库往返。

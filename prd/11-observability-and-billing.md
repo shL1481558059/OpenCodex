@@ -120,7 +120,7 @@ stateDiagram-v2
 | parent_request_log_id | 父子导航 | 按权限校验 |
 | lifecycle_status | 成功/失败/处理中 | 与 HTTP 状态并列 |
 | status_code | HTTP 结果 | 整数筛选 |
-| error | 错误摘要 | 原文入库，不做脱敏；流式失败拼接终止原因与最后一行 SSE，整体截断到 2000 字符 |
+| error | 错误摘要 | 原文入库，不做脱敏；流式失败时由错误原文或默认失败文案 + 终止原因 + 失败前最后一行 SSE data 拼接（`StreamLogCapture.ComposeErrorText`），拼接结果截断到 2000 字符并以 `…` 结尾；非流式错误按原文写入 |
 
 `error` 的截断常量是 `StreamLogCapture.MaxErrorTextLength`（2000）。列表与详情只返回访问 Key 的名称，不返回 Key 秘密；请求正文中的凭证原文见 §8。
 
@@ -346,12 +346,11 @@ flowchart LR
 
 ### 7.1 价格继承
 
-当前有效价格解析以请求模型为主、上游模型仅做旧数据兼容回退：
+当前有效价格解析为「渠道级覆盖 → 全局目录」两级结构，每级都优先按请求模型匹配、未命中时兼容回退到上游模型：
 
-1. 若渠道模型覆盖按 `ChannelId + RequestModel` 命中启用的 `ChannelModelInfo`，使用该渠道模型自己的启用计划；显式配置的 `MatchType/MatchPatternsJson` 继续作为请求模型别名匹配；
-2. 请求模型未命中时，兼容回退到 `channel_id + upstream_model` 精确匹配旧 `ChannelModelInfo`；
-3. 没有渠道模型覆盖时，全局 `ModelInfo` 优先按请求模型匹配（`exact → prefix → suffix → contains`，模式长度/供应商排序）；
-4. 请求模型未命中全局目录时，兼容回退到上游模型的全局匹配。
+1. 渠道级：`channelId` 存在时，按 `ChannelId + RequestModel` 命中启用的 `ChannelModelInfo` 且该模型有启用计划，则使用该计划，原因记为 `channel_model_override`；请求模型未命中时，兼容回退到 `channel_id + upstream_model` 精确匹配旧 `ChannelModelInfo`，记为 `channel_model_override_upstream_fallback`。显式配置的 `MatchType/MatchPatternsJson` 继续作为请求模型别名匹配；
+2. 全局级：没有可用的渠道级命中时，全局 `ModelInfo` 优先按请求模型匹配（`exact → prefix → suffix → contains`，模式长度/供应商排序），记为 `global_model_match`；请求模型未命中全局目录时，兼容回退到上游模型的全局匹配，记为 `global_model_match_upstream_fallback`；
+3. 两级都未命中时，`ModelPricingSnapshot.resolution` 记为 `model_not_matched`。
 
 回退命中时计费快照的 `resolution` 分别记录 `channel_model_override_upstream_fallback` 和 `global_model_match_upstream_fallback`，避免与请求模型命中混淆。
 
@@ -473,7 +472,7 @@ flowchart LR
 
 `REQ-OBS-023`（SHOULD，TBD）：应提供只读价格试算端点（按模型 + 用量 + 时刻返回命中计划、峰谷判定与分项金额）。当前 `ModelCatalogController` 只有模型目录、导入导出与同步路由，没有试算接口，也没有对应页面；只能通过真实请求后查看落账快照或直接调用 `ModelCatalogService.CalculateCostAsync`。
 
-`REQ-OBS-024`（MUST，TBD）：峰谷计费需求必须登记到 `prd/18` 追溯索引。本轮只更新 `prd/11`；`prd/18` 的 `REQ-OBS` 仍为 20 条，尚未收录 021–024。
+`REQ-OBS-024`（MUST，CURRENT）：峰谷计费需求必须登记到 `prd/18` 追溯索引。`prd/18` 已收录 `REQ-OBS-021`–`REQ-OBS-024`（第 10 节，:598-601）。
 
 ## 11. 源码追溯
 

@@ -610,6 +610,8 @@ flowchart TD
 2. 并发执行两个删除请求时最多成功一个。
 3. 返回明确错误“必须保留至少一个启用的超级管理员”。
 
+**当前状态（GAP，未实现）**：代码只有环境变量超级管理员停用保护（`UserService.cs:233` “cannot disable the environment superadmin”）和当前用户删除保护（`UserService.cs:281` “cannot delete current user”），没有“最后一个可登录超级管理员”计数、并发保护或上述错误文案，三条验收标准当前均不满足。
+
 #### REQ-USR-011（SHOULD）超级管理员敏感操作重新认证
 
 **要求**：删除用户、导出明文 Key、修改系统级权限等操作应要求近期重新输入密码或具备等效的近期认证证明。
@@ -666,13 +668,13 @@ flowchart TD
 
 #### REQ-USR-017（MUST）创建 Key归属字段统一
 
-**要求**：当前兼容 `owner_username` 与 `owner_user_id` 两种归属字段；超级管理员请求同时提供两者且值冲突时，必须以文档锁定的优先级处理。长期应收敛到一种稳定字段，推荐 `owner_user_id`；显示层继续返回 `owner_username`。
+**要求**：当前兼容 `owner_username` 与 `owner_user_id` 两种归属字段，实际优先级由 `ApiKeyCreateRequest.ToCommand` 与 `ApiKeyService.CreateKey` 固定：非超管忽略两者并归属当前用户；超管在 `owner_username` 非空时优先按用户名解析（找不到返回 400 `owner user '<name>' not found`），否则回退按 `owner_user_id` 解析（`Guid.Empty` 归当前超管，找不到抛 `user not found`）。长期应收敛到一种稳定字段，推荐 `owner_user_id`；显示层继续返回 `owner_username`。
 
 **验收标准**：
-1. 超级管理员选择用户 B 后创建的 Key 数据库 owner 为 B；同时传两种字段时按已锁定优先级解析。
+1. 超级管理员选择用户 B 后创建的 Key 数据库 owner 为 B；同时传两种字段且冲突时以 `owner_username` 为准。
 2. 返回对象 owner_username为 B。
 3. 用户 B可查看和使用，用户 A不可查看。
-4. 有覆盖该场景的端到端测试。
+4. 由 `ServiceQueryGovernanceTests.CreateKey_SuperadminByUsername_ResolvesOwnerOnceAndProjectsFields`、`CreateKey_SuperadminByOwnerUserId_ResolvesOwnerOnce`、`CreateKey_NonSuperadmin_UsesWorkContextOwnerWithoutUserQuery` 覆盖用户名优先、`owner_user_id` 回退和非超管强制归属三条路径。
 
 #### REQ-USR-018（MUST）Key名称非空
 

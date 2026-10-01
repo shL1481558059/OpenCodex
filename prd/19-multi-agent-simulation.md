@@ -300,9 +300,9 @@ legacy 的 `MultiAgentProtocol.Actions` 固定六个动作；以下服务端工�
    只有命中这些条件时才继续读取渠道配置或应用自动策略；非 v2 请求返回 `None`。
 2. 渠道 `compat.multi_agent_v2_mode` 只接受 `passthrough`、`downgrade`、`reject` 或空值。
 3. 未配置时自动策略为：
-   - Responses 入口、Responses 上游（不区分渠道域名）：`passthrough`；
-   - Chat 或 Messages 上游：`downgrade`；
-   - 其它 Responses 渠道：`reject`。
+   - 入口与上游同为 Responses（不区分渠道域名）：`passthrough`；
+   - 上游为 Chat 或 Messages：`downgrade`；
+   - 其余组合（如 Chat 或 Messages 入口 + Responses 上游）：`reject`。
 4. `passthrough` 不重写载荷。
 5. `downgrade` 删除顶层 `multi_agent`，把 `agent_message`、`multi_agent_call`、`multi_agent_call_output` 转为普通用户文本消息，并删除 hosted 工具类型。
 6. `downgrade` 对 `enc_` 前缀密文只保留可读占位说明，不回传密文原文；非 `enc_` 的明文内容按当前重写规则保留。
@@ -821,9 +821,9 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 **验收标准：**
 
 1. `MultiAgentV2PolicyTests.Resolve_NonV2Request_ReturnsNone` 验证非 v2 请求不触发策略。
-2. `Resolve_OfficialResponsesV2_ReturnsPassthrough`、`Resolve_ThirdPartyResponsesV2_ReturnsReject`、`Resolve_ChatV2_ReturnsDowngrade` 与 `Resolve_MessagesV2_ReturnsDowngrade` 验证自动策略。
-3. `Resolve_ConfiguredRejectOnChat_OverridesDefaultDowngrade` 与 `Resolve_ConfiguredDowngrade_OverridesDefaultReject` 验证显式配置优先。
-4. `ProxyEndpointServiceTests.ProxyAsync_MultiAgentV2OnThirdPartyResponses_RejectsBeforeUpstream` 验证拒绝发生在调用上游前。
+2. `Resolve_ResponsesV2_ReturnsPassthrough`、`Resolve_ThirdPartyResponsesV2_ReturnsPassthrough`、`Resolve_ChatV2_ReturnsDowngrade` 与 `Resolve_MessagesV2_ReturnsDowngrade` 验证自动策略按入口与上游协议判定，不区分渠道域名。
+3. `Resolve_ConfiguredRejectOnChat_OverridesDefaultDowngrade`、`Resolve_ConfiguredReject_OnResponses_OverridesDefaultPassthrough` 与 `Resolve_ConfiguredDowngrade_OnResponses_OverridesDefaultPassthrough` 验证显式配置优先。
+4. `ProxyEndpointServiceTests.ProxyAsync_MultiAgentV2OnThirdPartyResponses_PassesThroughToUpstream` 验证第三方 Responses 上游按协议透传到上游。
 5. `ConfigValidatorCompatTests.ValidateChannel_MultiAgentV2Mode_IsAccepted` 与 `ValidateChannel_UnknownMultiAgentV2Mode_IsRejected` 验证渠道值域。
 
 ### REQ-MA-031 downgrade 改写保真（MUST）
