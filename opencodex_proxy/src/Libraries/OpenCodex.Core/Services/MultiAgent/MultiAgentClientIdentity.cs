@@ -17,7 +17,6 @@ public sealed class MultiAgentClientIdentity
         var metadata = ReadMetadata(Header(headers, "x-codex-turn-metadata"));
         var thread = Agree(Header(headers, "thread-id"), Field(metadata, "thread_id"), "thread_id");
         var parent = Agree(Header(headers, "x-codex-parent-thread-id"), Field(metadata, "parent_thread_id"), "parent_thread_id");
-        var session = Agree(Header(headers, "session-id"), Field(metadata, "session_id"), "session_id");
         var agent = Field(metadata, "agent_name");
         var subagentKind = Field(metadata, "subagent_kind");
         var turn = Field(metadata, "turn_id");
@@ -36,6 +35,8 @@ public sealed class MultiAgentClientIdentity
             return new() { ThreadId = thread, RootThreadId = thread, AgentName = "/root", TurnId = turn };
         }
 
+        // Root identity belongs to its thread; only a child needs the root session to attach.
+        var session = Agree(Header(headers, "session-id"), Field(metadata, "session_id"), "session_id");
         if (session.Length == 0 || !IsChildPath(agent))
             throw new BadRequestException("Client child identity requires root session_id and canonical agent_name.");
         if (thread == parent || thread == session)

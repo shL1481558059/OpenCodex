@@ -8,6 +8,40 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class MultiAgentClientProtocolTests
 {
+    [Theory]
+    [InlineData("")]
+    [InlineData("/root")]
+    public void Identity_RootIgnoresSessionDifferencesBecauseThreadOwnsItsIdentity(string agent)
+    {
+        var identity = MultiAgentClientIdentity.Parse(new Dictionary<string, string>
+        {
+            ["thread-id"] = "sidebar-thread",
+            ["session-id"] = "main-session",
+            ["x-codex-turn-metadata"] = JsonSerializer.Serialize(new
+            {
+                thread_id = "sidebar-thread", session_id = "sidebar-session",
+                agent_name = agent, turn_id = "sidebar-turn"
+            })
+        });
+
+        Assert.NotNull(identity);
+        Assert.Equal("sidebar-thread", identity.ThreadId);
+        Assert.Equal("sidebar-thread", identity.RootThreadId);
+        Assert.Equal("/root", identity.AgentName);
+        Assert.Equal("", identity.ParentThreadId);
+        Assert.Equal("sidebar-turn", identity.TurnId);
+    }
+
+    [Fact]
+    public void Identity_UnboundRequestIgnoresSessionDifferences()
+    {
+        Assert.Null(MultiAgentClientIdentity.Parse(new Dictionary<string, string>
+        {
+            ["session-id"] = "main-session",
+            ["x-codex-turn-metadata"] = """{"session_id":"sidebar-session"}"""
+        }));
+    }
+
     [Fact]
     public void Identity_OrdinaryRequestsWithoutThreadIdentityRemainUnbound()
     {

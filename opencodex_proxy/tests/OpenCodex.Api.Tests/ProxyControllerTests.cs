@@ -26,6 +26,57 @@ public sealed class ProxyControllerTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public async Task Responses_UnboundSidebarSessionDifferencesKeepOriginalRoute(bool simulationEnabled)
+    {
+        using var client = ClientRoutingContext();
+        client.Http.Request.Headers["thread-id"] = "sidebar-thread";
+        client.Http.Request.Headers["session-id"] = "main-session";
+        client.Http.Request.Headers["x-codex-turn-metadata"] =
+            """{"thread_id":"sidebar-thread","session_id":"sidebar-session","turn_id":"sidebar-turn"}""";
+        var proxy = new StubProxyEndpointService();
+        var controller = CreateController(new StubRequestBodyReader(MultiAgentApiTestContext.Request()), proxy,
+            interceptProbeRequests: false, simulatesMultiAgent: simulationEnabled, routeCandidates: NativeRoute("fake"));
+        controller.ControllerContext.HttpContext = client.Http;
+        using var services = new ServiceCollection().AddSingleton(client.Service).BuildServiceProvider();
+        client.Http.RequestServices = services;
+
+        var response = Assert.IsType<ObjectResult>(await controller.Responses());
+
+        Assert.Equal(200, response.StatusCode);
+        Assert.Equal("forwarded", Assert.IsType<Dictionary<string, object?>>(response.Value)["routed"]);
+        Assert.True(proxy.Called);
+        Assert.Empty(client.FakeEndpoint.Calls);
+        Assert.Null(await client.ClientStore.TryGetAsync(client.Key, "sidebar-thread", "sidebar-thread", client.Lifetime.Token));
+    }
+
+    [Fact]
+    public async Task Responses_SimulatedSidebarSessionDifferencesBindItsOwnThread()
+    {
+        using var client = ClientRoutingContext();
+        client.Http.Request.Headers["thread-id"] = "sidebar-thread";
+        client.Http.Request.Headers["session-id"] = "main-session";
+        client.Http.Request.Headers["x-codex-turn-metadata"] =
+            """{"thread_id":"sidebar-thread","session_id":"sidebar-session","agent_name":"/root"}""";
+        var proxy = new StubProxyEndpointService();
+        var routes = new[] { new ProxyRouteDto(new Dictionary<string, object?> { ["id"] = "chat", ["type"] = ProtocolConverter.Chat }, "fake", "fake", false, true) };
+        var controller = CreateController(new StubRequestBodyReader(MultiAgentClientResponseTests.ClientRequest()), proxy,
+            interceptProbeRequests: false, simulatesMultiAgent: true, routeCandidates: routes);
+        controller.ControllerContext.HttpContext = client.Http;
+        using var services = new ServiceCollection().AddSingleton(client.Service).BuildServiceProvider();
+        client.Http.RequestServices = services;
+
+        var response = Assert.IsType<ObjectResult>(await controller.Responses());
+
+        Assert.Equal(200, response.StatusCode);
+        Assert.False(proxy.Called);
+        Assert.Single(client.FakeEndpoint.Calls);
+        Assert.NotNull(await client.ClientStore.TryGetAsync(client.Key, "sidebar-thread", "sidebar-thread", client.Lifetime.Token));
+        Assert.Null(await client.ClientStore.TryGetAsync(client.Key, "main-session", "sidebar-thread", client.Lifetime.Token));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public async Task Responses_ReservedClientChildUsesParentGroupBeforeCatalogOrNativePassthrough(bool simulationEnabled)
     {
         using var client = ClientRoutingContext();
