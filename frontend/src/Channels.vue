@@ -562,7 +562,7 @@
           <el-col v-if="!isImagesChannel(channelDraft)" :span="12">
             <el-form-item label="Multi-Agent v2">
               <el-select v-model="compatTexts.multi_agent_v2_mode" class="full-width">
-                <el-option label="自动" value="" />
+                <el-option label="自动" value="auto" />
                 <el-option label="透传" value="passthrough" />
                 <el-option label="降级" value="downgrade" />
                 <el-option label="拒绝" value="reject" />
@@ -1714,6 +1714,9 @@ const channelDrawerVisible = ref(false);
 const editingIndex = ref(-1);
 const channelDraft = reactive(defaultChannel());
 const headersText = ref("{}");
+// Element Plus 的 el-select 把空字符串当作「未选择」并显示占位符，
+// 因此 UI 内部用非空哨兵 "auto" 表示自动策略，提交时省略该键（后端缺省或空值即自动）。
+const MULTI_AGENT_V2_AUTO = "auto";
 const compatTexts = reactive({
   enable_apply_patch_prompt_compat: false,
   preserve_thinking_history: false,
@@ -1724,7 +1727,7 @@ const compatTexts = reactive({
   default_params: "",
   unsupported_params: "",
   images_api_dialect: "openai",
-  multi_agent_v2_mode: ""
+  multi_agent_v2_mode: MULTI_AGENT_V2_AUTO
 });
 
 const testResult = ref(null);
@@ -3254,7 +3257,7 @@ function assignCompat(compat) {
     default_params: formatAssignmentMap(compat.default_params || {}),
     unsupported_params: formatStringList(compat.unsupported_params || []),
     images_api_dialect: compat.images_api_dialect || "openai",
-    multi_agent_v2_mode: compat.multi_agent_v2_mode || ""
+    multi_agent_v2_mode: compat.multi_agent_v2_mode || MULTI_AGENT_V2_AUTO
   });
 }
 
@@ -3343,8 +3346,9 @@ function buildCompat() {
     default_params: parseAssignmentMap(compatTexts.default_params, true),
     unsupported_params: parseStringList(compatTexts.unsupported_params)
   };
-  if (!isImagesChannel(channelDraft) && compatTexts.multi_agent_v2_mode) {
-    compat.multi_agent_v2_mode = compatTexts.multi_agent_v2_mode;
+  const multiAgentV2Mode = compatTexts.multi_agent_v2_mode;
+  if (!isImagesChannel(channelDraft) && multiAgentV2Mode && multiAgentV2Mode !== MULTI_AGENT_V2_AUTO) {
+    compat.multi_agent_v2_mode = multiAgentV2Mode;
   }
   if (isImagesChannel(channelDraft)) {
     return buildImagesCompat({
