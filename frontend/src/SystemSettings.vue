@@ -246,17 +246,20 @@
                   controls-position="right"
                   class="full-width"
                 />
-                <el-button
-                  type="primary"
-                  :icon="Check"
-                  :loading="proxySaving"
-                  @click="saveUsdCnyRate"
-                >
-                  保存
-                </el-button>
               </div>
               <div class="text-muted">用于把美元成本折算成人民币展示，默认 7.25</div>
             </el-form-item>
+
+            <div class="settings-actions">
+              <el-button
+                type="primary"
+                :icon="Check"
+                :loading="proxySaving"
+                @click="saveUsdCnyRate"
+              >
+                保存
+              </el-button>
+            </div>
           </el-form>
         </div>
       </el-tab-pane>
@@ -281,17 +284,20 @@
                   active-text="开启"
                   inactive-text="关闭"
                 />
-                <el-button
-                  type="primary"
-                  :icon="Check"
-                  :loading="proxySaving"
-                  @click="saveProxySettings"
-                >
-                  保存
-                </el-button>
               </div>
               <div class="text-muted">开启后，代理会对符合探测特征的请求进行拦截处理</div>
             </el-form-item>
+
+            <div class="settings-actions">
+              <el-button
+                type="primary"
+                :icon="Check"
+                :loading="proxySaving"
+                @click="saveProxySettings"
+              >
+                保存
+              </el-button>
+            </div>
           </el-form>
         </div>
       </el-tab-pane>
