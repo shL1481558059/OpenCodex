@@ -2,8 +2,9 @@
   <div class="login-wrap">
     <el-card class="login-card setup-card" shadow="never">
       <template #header>
-        <div>
-          <strong>OpenCodex 初始化</strong>
+        <div style="text-align: center; padding: 6px 0;">
+          <div class="header-brand-logo" style="margin: 0 auto 12px; width: 36px; height: 36px; font-size: 18px; border-radius: 9px;">O</div>
+          <div style="font-size: 18px; font-weight: 700; color: var(--el-text-color-primary);">OpenCodex 初始化</div>
           <div class="text-muted">创建超级管理员并设置本机服务</div>
         </div>
       </template>

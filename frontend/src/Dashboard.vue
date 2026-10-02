@@ -324,6 +324,7 @@
 
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick, shallowRef } from "vue";
+import { isDark } from "./theme";
 import { LineChart, PieChart, BarChart } from "echarts/charts";
 import { GridComponent, LegendComponent, TitleComponent, TooltipComponent } from "echarts/components";
 import { init, use } from "echarts/core";
@@ -908,24 +909,34 @@ function baseLineSeries(data, opts = {}) {
 }
 
 function baseLineOpts() {
+  const textColor = isDark.value ? "#94a3b8" : "#64748b";
+  const splitLineColor = isDark.value ? "rgba(255, 255, 255, 0.08)" : "rgba(0, 0, 0, 0.06)";
+  const tooltipBg = isDark.value ? "#1e232d" : "#ffffff";
+  const tooltipBorder = isDark.value ? "rgba(255, 255, 255, 0.12)" : "#e2e8f0";
+  const tooltipText = isDark.value ? "#f8fafc" : "#0f172a";
+
   return {
     animation: false,
     grid: { top: 32, right: 16, bottom: 28, left: 56 },
     tooltip: {
       trigger: "axis",
-      axisPointer: { type: "line" }
+      axisPointer: { type: "line" },
+      backgroundColor: tooltipBg,
+      borderColor: tooltipBorder,
+      textStyle: { color: tooltipText }
     },
     xAxis: {
       type: "category",
       data: timeLabels.value,
-      axisLabel: { fontSize: 11, rotate: 0 },
+      axisLabel: { fontSize: 11, rotate: 0, color: textColor },
       axisTick: { show: false },
+      axisLine: { lineStyle: { color: splitLineColor } },
       boundaryGap: false
     },
     yAxis: {
       type: "value",
-      axisLabel: { fontSize: 11 },
-      splitLine: { lineStyle: { type: "dashed", opacity: 0.4 } }
+      axisLabel: { fontSize: 11, color: textColor },
+      splitLine: { lineStyle: { color: splitLineColor, type: "dashed" } }
     }
   };
 }
@@ -1037,13 +1048,37 @@ function renderRpmChart() {
 
 function renderModelChart() {
   if (!modelChart.value) return;
+  const textColor = isDark.value ? "#94a3b8" : "#64748b";
+  const borderColor = isDark.value ? "#14171f" : "#ffffff";
+  const tooltipBg = isDark.value ? "#1e232d" : "#ffffff";
+  const tooltipBorder = isDark.value ? "rgba(255, 255, 255, 0.12)" : "#e2e8f0";
+  const tooltipText = isDark.value ? "#f8fafc" : "#0f172a";
+
   const dist = statsData.model_distribution || [];
+  if (dist.length === 0) {
+    modelChart.value.setOption({
+      animation: false,
+      title: {
+        text: "暂无模型请求",
+        left: "center",
+        top: "center",
+        textStyle: { fontSize: 13, color: textColor, fontWeight: "normal" }
+      },
+      series: []
+    }, true);
+    return;
+  }
+
   const data = dist.map(d => ({ name: d.model, value: d.count }));
   modelChart.value.setOption({
     animation: false,
+    title: { show: false },
     tooltip: {
       trigger: "item",
-      formatter: p => `${p.name}<br/>${p.value} 次 (${p.percent}%)`
+      formatter: p => `${p.name}<br/>${p.value} 次 (${p.percent}%)`,
+      backgroundColor: tooltipBg,
+      borderColor: tooltipBorder,
+      textStyle: { color: tooltipText }
     },
     legend: {
       type: "scroll",
@@ -1051,14 +1086,14 @@ function renderModelChart() {
       right: 0,
       top: 16,
       bottom: 16,
-      textStyle: { fontSize: 11 }
+      textStyle: { fontSize: 11, color: textColor }
     },
     series: [{
       type: "pie",
       radius: ["40%", "70%"],
-      center: ["32%", "50%"],
+      center: ["40%", "50%"],
       avoidLabelOverlap: true,
-      itemStyle: { borderRadius: 6, borderColor: "#fff", borderWidth: 2 },
+      itemStyle: { borderRadius: 6, borderColor: borderColor, borderWidth: 2 },
       label: { show: false },
       emphasis: { label: { show: true, fontSize: 13, fontWeight: "bold" } },
       data
@@ -1068,6 +1103,12 @@ function renderModelChart() {
 
 function renderErrorDistChart() {
   if (!errorDistChart.value) return;
+  const textColor = isDark.value ? "#94a3b8" : "#64748b";
+  const splitLineColor = isDark.value ? "rgba(255, 255, 255, 0.08)" : "rgba(0, 0, 0, 0.06)";
+  const tooltipBg = isDark.value ? "#1e232d" : "#ffffff";
+  const tooltipBorder = isDark.value ? "rgba(255, 255, 255, 0.12)" : "#e2e8f0";
+  const tooltipText = isDark.value ? "#f8fafc" : "#0f172a";
+
   const dist = statsData.error_distribution || [];
   if (dist.length === 0) {
     errorDistChart.value.setOption({
@@ -1076,7 +1117,7 @@ function renderErrorDistChart() {
         text: "暂无错误数据",
         left: "center",
         top: "center",
-        textStyle: { fontSize: 13, color: "#909399", fontWeight: "normal" }
+        textStyle: { fontSize: 13, color: textColor, fontWeight: "normal" }
       }
     }, true);
     return;
@@ -1101,24 +1142,28 @@ function renderErrorDistChart() {
     animation: false,
     tooltip: {
       trigger: "axis",
-      axisPointer: { type: "shadow" }
+      axisPointer: { type: "shadow" },
+      backgroundColor: tooltipBg,
+      borderColor: tooltipBorder,
+      textStyle: { color: tooltipText }
     },
     legend: {
       top: 0,
       right: 0,
-      textStyle: { fontSize: 11 }
+      textStyle: { fontSize: 11, color: textColor }
     },
     grid: { top: 36, right: 16, bottom: 28, left: 56 },
     xAxis: {
       type: "category",
       data: channelNames,
-      axisLabel: { fontSize: 10, rotate: channelNames.length > 3 ? 20 : 0 },
-      axisTick: { show: false }
+      axisLabel: { fontSize: 10, rotate: channelNames.length > 3 ? 20 : 0, color: textColor },
+      axisTick: { show: false },
+      axisLine: { lineStyle: { color: splitLineColor } }
     },
     yAxis: {
       type: "value",
-      axisLabel: { fontSize: 11 },
-      splitLine: { lineStyle: { type: "dashed", opacity: 0.4 } }
+      axisLabel: { fontSize: 11, color: textColor },
+      splitLine: { lineStyle: { type: "dashed", color: splitLineColor } }
     },
     series
   }, true);
@@ -1137,6 +1182,9 @@ function renderAllCharts() {
 // --- Watch currency / unit switches ---
 watch(costCurrency, () => renderCostChart());
 watch(tokenUnit, () => renderTokenChart());
+watch(isDark, () => {
+  renderAllCharts();
+});
 
 // --- Visibility handling ---
 watch(() => props.active, (now) => {
@@ -1219,10 +1267,10 @@ onBeforeUnmount(() => {
   min-height: 124px;
   box-sizing: border-box;
   padding: 20px 18px 16px;
-  border: 1px solid #d8dee8;
+  border: 1px solid var(--el-border-color-light);
   border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 2px 8px rgb(31 45 61 / 10%);
+  background: var(--el-bg-color);
+  box-shadow: var(--ocx-card-shadow);
   overflow: hidden;
 }
 
@@ -1247,7 +1295,7 @@ onBeforeUnmount(() => {
 
 .dashboard-summary-card__value {
   margin-top: 28px;
-  color: #121826;
+  color: var(--el-text-color-primary);
   font-size: 18px;
   font-weight: 700;
   line-height: 1.1;
@@ -1268,9 +1316,19 @@ onBeforeUnmount(() => {
   color: #356fc7;
 }
 
+html.dark .dashboard-summary-card--blue .dashboard-summary-card__icon {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+}
+
 .dashboard-summary-card--cyan .dashboard-summary-card__icon {
   background: #eef7fb;
   color: #337ea3;
+}
+
+html.dark .dashboard-summary-card--cyan .dashboard-summary-card__icon {
+  background: rgba(6, 182, 212, 0.15);
+  color: #22d3ee;
 }
 
 .dashboard-summary-card--green .dashboard-summary-card__icon {
@@ -1278,17 +1336,27 @@ onBeforeUnmount(() => {
   color: #32865c;
 }
 
+html.dark .dashboard-summary-card--green .dashboard-summary-card__icon {
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+}
+
 .dashboard-summary-card--red .dashboard-summary-card__icon {
   background: #fff0f0;
   color: #d9504f;
 }
 
+html.dark .dashboard-summary-card--red .dashboard-summary-card__icon {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+}
+
 .dashboard-summary-card--green .dashboard-summary-card__value {
-  color: #32865c;
+  color: var(--el-color-success);
 }
 
 .dashboard-summary-card--red .dashboard-summary-card__value {
-  color: #121826;
+  color: var(--el-text-color-primary);
 }
 
 .dashboard-grid {
@@ -1384,7 +1452,7 @@ onBeforeUnmount(() => {
   padding: 10px 12px;
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 8px;
-  background: #fbfcfe;
+  background: var(--el-fill-color-lighter);
 }
 
 .dashboard-queue__item--popover + .dashboard-queue__item--popover {
@@ -1465,7 +1533,7 @@ onBeforeUnmount(() => {
   padding: 6px 8px;
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 6px;
-  background: #fbfcfe;
+  background: var(--el-fill-color-lighter);
 }
 
 .dashboard-queue__count {
@@ -1483,9 +1551,9 @@ onBeforeUnmount(() => {
   min-height: 180px;
   color: var(--el-text-color-secondary);
   font-size: 13px;
-  border: 1px dashed var(--el-border-color);
+  border: 1px dashed var(--el-border-color-light);
   border-radius: 8px;
-  background: #fbfcfe;
+  background: var(--el-fill-color-lighter);
 }
 
 .dashboard-queue__more {
@@ -1520,14 +1588,14 @@ onBeforeUnmount(() => {
   padding: 8px 12px;
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 8px;
-  background: #fbfcfe;
+  background: var(--el-fill-color-lighter);
   cursor: pointer;
   transition: border-color 0.15s;
 }
 
 .dashboard-errors__item:hover {
   border-color: var(--el-color-danger-light-5);
-  background: #fff5f5;
+  background: var(--el-fill-color);
 }
 
 .dashboard-errors__main {
@@ -1600,7 +1668,8 @@ onBeforeUnmount(() => {
   padding: 12px;
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 8px;
-  background: #f8f9fb;
+  background: var(--el-fill-color-lighter);
+  color: var(--el-text-color-primary);
   font-size: 12px;
   line-height: 1.5;
   white-space: pre-wrap;

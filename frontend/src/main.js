@@ -36,6 +36,7 @@ import { ElTabPane, ElTabs } from "element-plus/es/components/tabs/index.mjs";
 import { ElTag } from "element-plus/es/components/tag/index.mjs";
 import { ElTooltip } from "element-plus/es/components/tooltip/index.mjs";
 import zhCn from "element-plus/es/locale/lang/zh-cn";
+import "element-plus/theme-chalk/dark/css-vars.css";
 import "element-plus/es/components/alert/style/css.mjs";
 import "element-plus/es/components/aside/style/css.mjs";
 import "element-plus/es/components/autocomplete/style/css.mjs";
@@ -90,7 +91,9 @@ import "element-plus/es/components/tooltip/style/css.mjs";
 import "element-plus/es/components/upload/style/css.mjs";
 import App from "./App.vue";
 import "./style.css";
+import { initTheme } from "./theme";
 
+initTheme();
 const app = createApp(App);
 
 const elementComponents = [

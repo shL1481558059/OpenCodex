@@ -7,6 +7,22 @@
       </div>
       <div class="toolbar-actions">
         <el-button :icon="Refresh" @click="loadChannels">刷新</el-button>
+        <el-popover placement="bottom-end" :width="220" trigger="click">
+          <template #reference>
+            <el-button :icon="Setting">列设置</el-button>
+          </template>
+          <div class="log-column-settings">
+            <div class="log-column-settings__header">
+              <span>显示列</span>
+              <el-button link type="primary" @click="resetChannelColumns">恢复默认</el-button>
+            </div>
+            <el-checkbox-group v-model="visibleChannelColumnKeys" class="log-column-settings__list">
+              <div v-for="column in availableChannelColumns" :key="column.key" class="log-column-settings__item">
+                <el-checkbox :label="column.key" :value="column.key">{{ column.label }}</el-checkbox>
+              </div>
+            </el-checkbox-group>
+          </div>
+        </el-popover>
         <el-tooltip :content="bulkChannelTestDisabledReason" :disabled="!bulkChannelTestDisabledReason">
           <span>
             <el-button :icon="Connection" :disabled="Boolean(bulkChannelTestDisabledReason)" @click="openBulkChannelTest">
@@ -54,13 +70,13 @@
           >
             <el-table-column type="selection" width="48" />
             <el-table-column
-              v-if="props.isSuperadmin"
+              v-if="props.isSuperadmin && isColumnVisible('owner_username')"
               prop="owner_username"
               label="所属用户"
               min-width="130"
               show-overflow-tooltip
             />
-            <el-table-column prop="group_name" label="分组" width="120" show-overflow-tooltip>
+            <el-table-column v-if="isColumnVisible('group_name')" prop="group_name" label="分组" width="105" show-overflow-tooltip>
               <template #default="{ row }">
                 <el-tag v-if="normalizeGroupNameText(row.group_name)" effect="plain" type="info">
                   {{ normalizeGroupNameText(row.group_name) }}
@@ -68,29 +84,29 @@
                 <span v-else class="text-muted">未分组</span>
               </template>
             </el-table-column>
-            <el-table-column prop="name" label="名称" min-width="140" show-overflow-tooltip />
-            <el-table-column prop="type" label="服务类型" width="110">
+            <el-table-column v-if="isColumnVisible('name')" prop="name" label="名称" min-width="140" show-overflow-tooltip />
+            <el-table-column v-if="isColumnVisible('type')" prop="type" label="服务类型" width="100">
               <template #default="{ row }">
                 <el-tag>{{ row.type }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="baseurl" label="Base URL" min-width="220" show-overflow-tooltip />
-            <el-table-column prop="priority" label="优先级" width="90" />
-            <el-table-column label="容量状态" width="140">
+            <el-table-column v-if="isColumnVisible('baseurl')" prop="baseurl" label="Base URL" min-width="180" show-overflow-tooltip />
+            <el-table-column v-if="isColumnVisible('priority')" prop="priority" label="优先级" width="75" />
+            <el-table-column v-if="isColumnVisible('capacity')" label="容量状态" width="105">
               <template #default="{ row }">{{ formatCapacityStatus(row) }}</template>
             </el-table-column>
-            <el-table-column label="健康状态" width="120">
+            <el-table-column v-if="isColumnVisible('health_status')" label="健康状态" width="105">
               <template #default="{ row }">
                 <el-tag :type="healthStatusTagType(row.health_status)">{{ formatHealthStatus(row.health_status) }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="状态" width="100">
+            <el-table-column v-if="isColumnVisible('enabled')" label="状态" width="80" fixed="right">
               <template #default="{ row, $index }">
                 <el-switch
                   :model-value="row.enabled !== false"
                   :loading="isChannelToggleSaving(row, $index)"
                   :disabled="configLoading"
-                  :width="56"
+                  :width="46"
                   inline-prompt
                   active-text="启用"
                   inactive-text="停用"
@@ -98,19 +114,12 @@
                 />
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="240" min-width="240" align="center">
+            <el-table-column label="操作" width="150" min-width="150" align="center" fixed="right">
               <template #default="{ row, $index }">
                 <div class="channel-action-buttons">
                   <el-button size="small" :icon="Edit" class="action-btn" @click="openChannelDrawer(row, $index)">
                     编辑
                   </el-button>
-                  <el-popconfirm title="删除这个渠道？" @confirm="deleteChannel($index)">
-                    <template #reference>
-                      <el-button size="small" type="danger" :icon="Delete" class="action-btn">
-                        删除
-                      </el-button>
-                    </template>
-                  </el-popconfirm>
                   <el-dropdown trigger="click">
                     <el-button size="small" :icon="MoreFilled" class="action-btn">
                       更多
@@ -132,6 +141,9 @@
                           @click="confirmResetChannelHealth(row)"
                         >
                           <el-icon><Refresh /></el-icon>重置可用状态
+                        </el-dropdown-item>
+                        <el-dropdown-item divided @click="confirmDeleteChannel(row)">
+                          <el-icon><Delete /></el-icon>删除
                         </el-dropdown-item>
                       </el-dropdown-menu>
                     </template>
@@ -329,13 +341,13 @@
                         </el-tag>
                       </template>
                     </el-table-column>
-                    <el-table-column label="状态" width="100">
+                    <el-table-column label="状态" width="80" fixed="right">
                       <template #default="{ row }">
                         <el-switch
                           :model-value="row.enabled !== false"
                           :loading="isChannelToggleSaving(row, channelIndexById(row.id))"
                           :disabled="configLoading"
-                          :width="56"
+                          :width="46"
                           inline-prompt
                           active-text="启用"
                           inactive-text="停用"
@@ -343,19 +355,12 @@
                         />
                       </template>
                     </el-table-column>
-                    <el-table-column label="操作" width="220" min-width="220" align="center">
+                    <el-table-column label="操作" width="150" min-width="150" align="center" fixed="right">
                       <template #default="{ row }">
                         <div class="channel-action-buttons">
                           <el-button size="small" :icon="Edit" class="action-btn" @click="openChannelDrawer(row, channelIndexById(row.id))">
                             编辑
                           </el-button>
-                          <el-popconfirm title="删除这个渠道？" @confirm="deleteChannelById(row.id)">
-                            <template #reference>
-                              <el-button size="small" type="danger" :icon="Delete" class="action-btn">
-                                删除
-                              </el-button>
-                            </template>
-                          </el-popconfirm>
                           <el-dropdown trigger="click">
                             <el-button size="small" :icon="MoreFilled" class="action-btn">
                               更多
@@ -377,6 +382,9 @@
                                   @click="confirmResetChannelHealth(row)"
                                 >
                                   <el-icon><Refresh /></el-icon>重置可用状态
+                                </el-dropdown-item>
+                                <el-dropdown-item divided @click="confirmDeleteChannel(row)">
+                                  <el-icon><Delete /></el-icon>删除
                                 </el-dropdown-item>
                               </el-dropdown-menu>
                             </template>
@@ -1649,7 +1657,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, nextTick, onMounted, onBeforeUnmount } from "vue";
+import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
 import { ElMessageBox } from "element-plus/es/components/message-box/index.mjs";
 import {
@@ -1692,6 +1700,7 @@ import {
   MoreFilled,
   Plus,
   Refresh,
+  Setting,
   Upload,
   Warning,
 } from "@element-plus/icons-vue";
@@ -1785,8 +1794,65 @@ const resetChannelHealthLoadingId = ref("");
 const bulkTestAbortControllers = new Set();
 
 const isMobile = ref(false);
+const isSmallDesktop = ref(false);
 let mobileMediaQuery;
+let smallDesktopMediaQuery;
 let channelOffPeakTimer = null;
+
+// --- 渠道列表自定义列与响应式设置 ---
+const CHANNEL_COLUMNS_STORAGE_KEY = "opencodex-channel-columns";
+const channelColumnDefinitions = [
+  { key: "owner_username", label: "所属用户", superadminOnly: true },
+  { key: "group_name", label: "分组" },
+  { key: "name", label: "名称" },
+  { key: "type", label: "服务类型" },
+  { key: "baseurl", label: "Base URL" },
+  { key: "priority", label: "优先级" },
+  { key: "capacity", label: "容量状态" },
+  { key: "health_status", label: "健康状态" },
+  { key: "enabled", label: "状态开关" }
+];
+
+const defaultChannelColumnKeys = channelColumnDefinitions.map((c) => c.key);
+const visibleChannelColumnKeys = ref(loadSavedChannelColumns());
+
+function loadSavedChannelColumns() {
+  try {
+    const saved = localStorage.getItem(CHANNEL_COLUMNS_STORAGE_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {
+    // Ignore parse error
+  }
+  return defaultChannelColumnKeys.slice();
+}
+
+watch(visibleChannelColumnKeys, (keys) => {
+  try {
+    localStorage.setItem(CHANNEL_COLUMNS_STORAGE_KEY, JSON.stringify(keys));
+  } catch {
+    // Ignore storage error
+  }
+}, { deep: true });
+
+const availableChannelColumns = computed(() =>
+  channelColumnDefinitions.filter((c) => !c.superadminOnly || props.isSuperadmin)
+);
+
+function isColumnVisible(key) {
+  if (!visibleChannelColumnKeys.value.includes(key)) return false;
+  // 方案3：当视口宽度 < 1200px 时，自动折叠/隐藏“所属用户”这一列
+  if (key === "owner_username" && isSmallDesktop.value) {
+    return false;
+  }
+  return true;
+}
+
+function resetChannelColumns() {
+  visibleChannelColumnKeys.value = defaultChannelColumnKeys.slice();
+}
 
 function updateMobileViewport(event) {
   const nextMobile = Boolean(event?.matches ?? mobileMediaQuery?.matches);
@@ -1796,6 +1862,10 @@ function updateMobileViewport(event) {
   if (changed && !nextMobile) {
     restoreDesktopSelections();
   }
+}
+
+function updateSmallDesktopViewport(event) {
+  isSmallDesktop.value = Boolean(event?.matches ?? smallDesktopMediaQuery?.matches);
 }
 
 const channels = computed(() => config.channels || []);
@@ -3659,6 +3729,10 @@ onMounted(async () => {
   mobileMediaQuery = window.matchMedia("(max-width: 767px)");
   updateMobileViewport(mobileMediaQuery);
   mobileMediaQuery.addEventListener("change", updateMobileViewport);
+
+  smallDesktopMediaQuery = window.matchMedia("(max-width: 1200px)");
+  updateSmallDesktopViewport(smallDesktopMediaQuery);
+  smallDesktopMediaQuery.addEventListener("change", updateSmallDesktopViewport);
   await loadChannels();
   runtimeStream.start();
   channelOffPeakTimer = window.setInterval(() => {
@@ -3668,6 +3742,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   mobileMediaQuery?.removeEventListener("change", updateMobileViewport);
+  smallDesktopMediaQuery?.removeEventListener("change", updateSmallDesktopViewport);
   runtimeStream.stop();
   if (channelOffPeakTimer) {
     window.clearInterval(channelOffPeakTimer);

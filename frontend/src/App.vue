@@ -30,7 +30,8 @@
           <button class="mobile-menu-button" type="button" aria-label="打开菜单" title="打开菜单" @click="mobileMenuVisible = true">
             <el-icon><Expand /></el-icon>
           </button>
-          <strong>OpenCodex Proxy</strong>
+          <div class="header-brand-logo">O</div>
+          <span class="header-brand-title">OpenCodex Proxy</span>
         </div>
         <div class="header-actions">
           <div v-if="currentUser" class="current-user">
@@ -39,7 +40,51 @@
               {{ isSuperadmin ? "超级管理员" : "普通用户" }}
             </el-tag>
           </div>
-          <el-button :icon="SwitchButton" @click="logout">退出</el-button>
+          <el-dropdown trigger="click" @command="handleThemeCommand">
+            <el-button class="theme-toggle-btn" size="default">
+              <el-icon>
+                <Sunny v-if="themeSetting === 'light'" />
+                <Moon v-else-if="themeSetting === 'dark'" />
+                <Monitor v-else />
+              </el-icon>
+              <span class="theme-label-text">{{ themeLabel }}</span>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="light">
+                  <span style="display: flex; align-items: center; justify-content: space-between; width: 100px;">
+                    <span>浅色模式</span>
+                    <el-icon v-if="themeSetting === 'light'"><Check /></el-icon>
+                  </span>
+                </el-dropdown-item>
+                <el-dropdown-item command="dark">
+                  <span style="display: flex; align-items: center; justify-content: space-between; width: 100px;">
+                    <span>深色模式</span>
+                    <el-icon v-if="themeSetting === 'dark'"><Check /></el-icon>
+                  </span>
+                </el-dropdown-item>
+                <el-dropdown-item command="system">
+                  <span style="display: flex; align-items: center; justify-content: space-between; width: 100px;">
+                    <span>跟随系统</span>
+                    <el-icon v-if="themeSetting === 'system'"><Check /></el-icon>
+                  </span>
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+          <el-popconfirm
+            title="确认退出当前账号登录？"
+            confirm-button-text="退出登录"
+            cancel-button-text="取消"
+            confirm-button-type="danger"
+            @confirm="logout"
+          >
+            <template #reference>
+              <el-button class="logout-btn" :icon="SwitchButton" size="default">
+                <span class="logout-text">退出</span>
+              </el-button>
+            </template>
+          </el-popconfirm>
         </div>
       </el-header>
 
@@ -105,6 +150,12 @@
         direction="ltr"
        size="280px"
      >
+        <div v-if="currentUser" class="current-user" style="margin: 0 12px 12px; display: flex;">
+          <span>{{ currentUser.username }}</span>
+          <el-tag size="small" :type="isSuperadmin ? 'success' : 'info'">
+            {{ isSuperadmin ? "超级管理员" : "普通用户" }}
+          </el-tag>
+        </div>
         <el-menu class="mobile-drawer-menu" :default-active="activeTab" @select="handleMobileMenuSelect">
           <el-menu-item v-for="item in visibleMenuItems" :key="item.index" :index="item.index">
             <el-icon><component :is="item.icon" /></el-icon>
@@ -119,6 +170,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, defineAsyncComponent } from "vue";
 import {
+  Check,
   Connection,
   DArrowLeft,
   DArrowRight,
@@ -126,13 +178,18 @@ import {
   Expand,
   Key,
   Money,
+  Monitor,
+  Moon,
   Search,
   Setting,
+  Sunny,
   SwitchButton,
   Tickets,
   User
 } from "@element-plus/icons-vue";
 import zhCn from "element-plus/es/locale/lang/zh-cn";
+import { themeSetting, setTheme } from "./theme";
+
 const Dashboard = defineAsyncComponent(() => import("./Dashboard.vue"));
 const Setup = defineAsyncComponent(() => import("./Setup.vue"));
 const Login = defineAsyncComponent(() => import("./Login.vue"));
@@ -158,6 +215,15 @@ const isSuperadmin = computed(() => currentUser.value?.role === "superadmin");
 const visibleMenuItems = computed(() =>
   menuItems.filter((item) => !item.superadminOnly || isSuperadmin.value)
 );
+const themeLabel = computed(() => {
+  if (themeSetting.value === "light") return "浅色";
+  if (themeSetting.value === "dark") return "深色";
+  return "系统";
+});
+
+function handleThemeCommand(command) {
+  setTheme(command);
+}
 
 const menuItems = [
   { index: "dashboard", label: "仪表盘", icon: DataLine },
