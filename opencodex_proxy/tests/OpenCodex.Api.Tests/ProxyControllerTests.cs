@@ -422,6 +422,106 @@ public sealed class ProxyControllerTests
         Assert.True(regularPayload.ContainsKey("models"));
     }
 
+    [Fact]
+    public async Task Models_CodexClient_PrefersCatalogLengthsOverTemplateLengths()
+    {
+        var catalogModels = new List<Dictionary<string, object?>>
+        {
+            new()
+            {
+                ["slug"] = "gpt-6-luna",
+                ["display_name"] = "GPT-6 Luna (catalog)",
+                ["context_window"] = 272000L,
+                ["max_context_window"] = 872000L,
+                ["effective_context_window_percent"] = 95L,
+                ["truncation_policy"] = new Dictionary<string, object?>
+                {
+                    ["mode"] = "tokens",
+                    ["limit"] = 10000L
+                }
+            }
+        };
+        var gptTemplateModels = new List<Dictionary<string, object?>>
+        {
+            new()
+            {
+                ["slug"] = "gpt-6-luna",
+                ["display_name"] = "GPT-6 Luna (template)",
+                ["context_window"] = 1000000L,
+                ["max_context_window"] = 1000000L,
+                ["truncation_policy"] = new Dictionary<string, object?>
+                {
+                    ["mode"] = "tokens",
+                    ["limit"] = 1000000L
+                }
+            }
+        };
+
+        var controller = CreateController(
+            new StubRequestBodyReader(CreateMessagesPayload(maxTokens: 4096)),
+            new StubProxyEndpointService(),
+            interceptProbeRequests: false,
+            modelCatalog: catalogModels,
+            codexModels: new StubCodexOfficialModelCatalogService(gptTemplateModels));
+        controller.HttpContext.Request.QueryString = QueryString.Create("client_version", "0.147.0");
+
+        var action = await controller.Models();
+        var result = Assert.IsType<ObjectResult>(action);
+        Assert.Equal(200, result.StatusCode);
+        var payload = Assert.IsType<Dictionary<string, object?>>(result.Value);
+        var models = Assert.IsType<List<Dictionary<string, object?>>>(payload["models"]);
+
+        var luna = Assert.Single(models, model => "gpt-6-luna".Equals(model["slug"]));
+        // 模板继续提供 Codex 契约与展示元数据。
+        Assert.Equal("GPT-6 Luna (template)", luna["display_name"]);
+        // 上下文长度以数据库目录为准。
+        Assert.Equal(272000L, luna["context_window"]);
+        Assert.Equal(872000L, luna["max_context_window"]);
+        Assert.Equal(95L, luna["effective_context_window_percent"]);
+        var truncation = Assert.IsType<Dictionary<string, object?>>(luna["truncation_policy"]);
+        Assert.Equal(10000L, truncation["limit"]);
+    }
+
+    [Fact]
+    public async Task Models_CodexClient_KeepsTemplateLengthsWhenCatalogOmitsThem()
+    {
+        var catalogModels = new List<Dictionary<string, object?>>
+        {
+            new()
+            {
+                ["slug"] = "gpt-5.5",
+                ["display_name"] = "GPT-5.5 (catalog)"
+            }
+        };
+        var gptTemplateModels = new List<Dictionary<string, object?>>
+        {
+            new()
+            {
+                ["slug"] = "gpt-5.5",
+                ["display_name"] = "GPT-5.5 (template)",
+                ["context_window"] = 1000000L,
+                ["max_context_window"] = 1000000L
+            }
+        };
+
+        var controller = CreateController(
+            new StubRequestBodyReader(CreateMessagesPayload(maxTokens: 4096)),
+            new StubProxyEndpointService(),
+            interceptProbeRequests: false,
+            modelCatalog: catalogModels,
+            codexModels: new StubCodexOfficialModelCatalogService(gptTemplateModels));
+        controller.HttpContext.Request.QueryString = QueryString.Create("client_version", "0.147.0");
+
+        var action = await controller.Models();
+        var result = Assert.IsType<ObjectResult>(action);
+        var payload = Assert.IsType<Dictionary<string, object?>>(result.Value);
+        var models = Assert.IsType<List<Dictionary<string, object?>>>(payload["models"]);
+
+        var gpt55 = Assert.Single(models, model => "gpt-5.5".Equals(model["slug"]));
+        Assert.Equal(1000000L, gpt55["context_window"]);
+        Assert.Equal(1000000L, gpt55["max_context_window"]);
+    }
+
     private static ProxyController CreateController(
         IRequestBodyReader bodyReader,
         StubProxyEndpointService proxy,

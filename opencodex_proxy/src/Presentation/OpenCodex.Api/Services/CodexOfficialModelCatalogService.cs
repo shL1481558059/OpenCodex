@@ -9,8 +9,6 @@ namespace OpenCodex.Api.Services;
 public sealed class CodexOfficialModelCatalogService : ICodexOfficialModelCatalogService
 {
     private const string ResourceFileName = "ocxp_codex_official_models.json";
-    private const int OneMillion = 1_000_000;
-    private const int SolContextWindow = 353_000;
 
     private readonly string _resourcePath;
     private readonly Lazy<IReadOnlyList<Dictionary<string, object?>>> _baseModels;
@@ -41,7 +39,6 @@ public sealed class CodexOfficialModelCatalogService : ICodexOfficialModelCatalo
             }
 
             var clone = Clone(model);
-            ApplyBaseModelLengthRules(clone, slug);
             if (!TryApplyCodexContract(clone, slug))
             {
                 continue;
@@ -117,51 +114,6 @@ public sealed class CodexOfficialModelCatalogService : ICodexOfficialModelCatalo
         return candidates.FirstOrDefault(File.Exists)
             ?? candidates[0]
             ?? throw new InvalidOperationException("Unable to resolve Codex model catalog resource path.");
-    }
-
-    private static void ApplyBaseModelLengthRules(Dictionary<string, object?> model, string slug)
-    {
-        if (!slug.StartsWith("gpt-5.6-", StringComparison.OrdinalIgnoreCase))
-        {
-            ApplyOneMillionContext(model);
-            return;
-        }
-
-        model["effective_context_window_percent"] = 95;
-        if (slug.Equals("gpt-5.6-sol", StringComparison.OrdinalIgnoreCase))
-        {
-            ApplyContextWindow(model, SolContextWindow, 95);
-        }
-    }
-
-    private static void ApplyOneMillionContext(Dictionary<string, object?> model)
-    {
-        ApplyContextWindow(model, OneMillion, 100);
-    }
-
-    private static void ApplyContextWindow(
-        Dictionary<string, object?> model,
-        int contextWindow,
-        int effectivePercent)
-    {
-        model["context_window"] = contextWindow;
-        model["max_context_window"] = contextWindow;
-
-        if (model.TryGetValue("truncation_policy", out var value)
-            && value is Dictionary<string, object?> truncation)
-        {
-            truncation["limit"] = contextWindow;
-        }
-        else
-        {
-            model["truncation_policy"] = new Dictionary<string, object?>
-            {
-                ["mode"] = "tokens",
-                ["limit"] = contextWindow
-            };
-        }
-
-        model["effective_context_window_percent"] = effectivePercent;
     }
 
     private static string? ReadString(Dictionary<string, object?> source, string key)

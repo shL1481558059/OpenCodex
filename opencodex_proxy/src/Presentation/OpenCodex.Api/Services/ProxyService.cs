@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using OpenCodex.Api.Infrastructure;
 using OpenCodex.Core.Errors;
@@ -6,6 +7,7 @@ using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.Proxy;
 using OpenCodex.CoreBase.Services;
 using OpenCodex.CoreBase.Services.Proxy;
@@ -89,27 +91,142 @@ public sealed class ProxyService : IProxyService
         IReadOnlyList<Dictionary<string, object?>> catalogModels)
     {
         var gptModels = _codexModels.BuildCodexGptModels();
-        var gptSlugs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var gpt in gptModels)
+
+        // 数据库目录是长度字段的唯一来源：同 slug 时用目录值覆盖模板值，
+        // 目录缺失或非正数时保留模板值。
+        var catalogBySlug = new Dictionary<string, Dictionary<string, object?>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var catalog in catalogModels)
         {
-            if (gpt.TryGetValue("slug", out var value) && value is string slug)
+            if (catalog.TryGetValue("slug", out var value)
+                && value is string catalogSlug
+                && catalogSlug.Length > 0)
             {
-                gptSlugs.Add(slug);
+                catalogBySlug.TryAdd(catalogSlug, catalog);
             }
         }
 
-        var merged = new List<Dictionary<string, object?>>(gptModels);
+        var mergedSlugs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var merged = new List<Dictionary<string, object?>>(gptModels.Count);
+        foreach (var gpt in gptModels)
+        {
+            if (gpt.TryGetValue("slug", out var value)
+                && value is string slug
+                && slug.Length > 0)
+            {
+                mergedSlugs.Add(slug);
+                if (catalogBySlug.TryGetValue(slug, out var catalog))
+                {
+                    ApplyCatalogLengthOverrides(gpt, catalog);
+                }
+            }
+
+            merged.Add(gpt);
+        }
+
         foreach (var catalog in catalogModels)
         {
             if (catalog.TryGetValue("slug", out var value)
                 && value is string slug
-                && !gptSlugs.Contains(slug))
+                && slug.Length > 0
+                && mergedSlugs.Add(slug))
             {
                 merged.Add(catalog);
             }
         }
 
         return merged;
+    }
+
+    private static void ApplyCatalogLengthOverrides(
+        Dictionary<string, object?> target,
+        IReadOnlyDictionary<string, object?> catalog)
+    {
+        if (ReadPositiveLong(catalog, "context_window") is { } contextWindow)
+        {
+            target["context_window"] = contextWindow;
+        }
+
+        if (ReadPositiveLong(catalog, "max_context_window") is { } maxContextWindow)
+        {
+            target["max_context_window"] = maxContextWindow;
+        }
+
+        if (ReadPositiveLong(catalog, "effective_context_window_percent") is { } effectivePercent
+            && effectivePercent is >= 1 and <= 100)
+        {
+            target["effective_context_window_percent"] = effectivePercent;
+        }
+
+        if (AsObjectDictionary(catalog, "truncation_policy") is not { } policy)
+        {
+            return;
+        }
+
+        var mergedPolicy = AsObjectDictionary(target, "truncation_policy") is { } existing
+            ? new Dictionary<string, object?>(existing, StringComparer.Ordinal)
+            : new Dictionary<string, object?>(StringComparer.Ordinal);
+
+        if (policy.TryGetValue("mode", out var modeValue)
+            && modeValue is string mode
+            && mode.Length > 0)
+        {
+            mergedPolicy["mode"] = mode;
+        }
+
+        if (ReadPositiveLong(policy, "limit") is { } limit)
+        {
+            mergedPolicy["limit"] = limit;
+        }
+
+        target["truncation_policy"] = mergedPolicy;
+    }
+
+    private static Dictionary<string, object?>? AsObjectDictionary(
+        IReadOnlyDictionary<string, object?> source,
+        string key)
+    {
+        if (!source.TryGetValue(key, out var value))
+        {
+            return null;
+        }
+
+        return value switch
+        {
+            Dictionary<string, object?> dictionary => dictionary,
+            IReadOnlyDictionary<string, object?> readOnly => readOnly.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value,
+                StringComparer.Ordinal),
+            JsonElement { ValueKind: JsonValueKind.Object } element => element
+                .EnumerateObject()
+                .ToDictionary(
+                    property => property.Name,
+                    property => JsonRequestValue.Value(property.Value),
+                    StringComparer.Ordinal),
+            _ => null
+        };
+    }
+
+    private static long? ReadPositiveLong(
+        IReadOnlyDictionary<string, object?> source,
+        string key)
+    {
+        if (!source.TryGetValue(key, out var value))
+        {
+            return null;
+        }
+
+        var number = value switch
+        {
+            int integer => integer,
+            long longValue => longValue,
+            double fraction => (long)fraction,
+            decimal decimalValue => (long)decimalValue,
+            string text when long.TryParse(text, out var parsed) => parsed,
+            JsonElement { ValueKind: JsonValueKind.Number } element when element.TryGetInt64(out var parsed) => parsed,
+            _ => 0L
+        };
+        return number > 0 ? number : null;
     }
 
     public async Task<IActionResult> ProxyAsync(

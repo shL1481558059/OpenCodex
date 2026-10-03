@@ -66,6 +66,67 @@ public sealed class CodexOfficialModelCatalogServiceTests
     }
 
     [Fact]
+    public void BuildCodexGptModelsKeepsTemplateLengthsWithoutHardcodedOverrides()
+    {
+        // 模板长度是唯一来源：官方目录服务不得再对 slug 施加硬编码的上下文长度规则。
+        var resourceDirectory = Directory.CreateTempSubdirectory("opencodex-model-catalog-").FullName;
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(resourceDirectory, "ocxp_codex_official_models.json"),
+                """
+                {
+                  "models": [
+                    {
+                      "slug": "gpt-5.5",
+                      "display_name": "GPT-5.5",
+                      "context_window": 111000,
+                      "max_context_window": 222000,
+                      "effective_context_window_percent": 95,
+                      "truncation_policy": { "mode": "tokens", "limit": 10000 }
+                    },
+                    {
+                      "slug": "gpt-5.6-sol",
+                      "display_name": "GPT-5.6 Sol",
+                      "context_window": 333000,
+                      "max_context_window": 444000,
+                      "effective_context_window_percent": 95,
+                      "truncation_policy": { "mode": "tokens", "limit": 10000 }
+                    }
+                  ]
+                }
+                """);
+
+            var service = new CodexOfficialModelCatalogService(
+                new TestWebHostEnvironment
+                {
+                    WebRootPath = resourceDirectory,
+                    ContentRootPath = resourceDirectory
+                },
+                NullLogger<CodexOfficialModelCatalogService>.Instance);
+
+            var models = service.BuildCodexGptModels();
+
+            var gpt55 = Assert.Single(models, model => "gpt-5.5".Equals(model["slug"]));
+            Assert.Equal(111000L, gpt55["context_window"]);
+            Assert.Equal(222000L, gpt55["max_context_window"]);
+            Assert.Equal(95L, gpt55["effective_context_window_percent"]);
+            var gpt55Truncation = Assert.IsType<Dictionary<string, object?>>(gpt55["truncation_policy"]);
+            Assert.Equal(10000L, gpt55Truncation["limit"]);
+
+            var sol = Assert.Single(models, model => "gpt-5.6-sol".Equals(model["slug"]));
+            Assert.Equal(333000L, sol["context_window"]);
+            Assert.Equal(444000L, sol["max_context_window"]);
+            var solTruncation = Assert.IsType<Dictionary<string, object?>>(sol["truncation_policy"]);
+            Assert.Equal(10000L, solTruncation["limit"]);
+        }
+        finally
+        {
+            Directory.Delete(resourceDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public void BuildCodexGptModelsReturnsLatestOfficialCatalog()
     {
         var resourceDirectory = Path.Combine(
@@ -101,13 +162,13 @@ public sealed class CodexOfficialModelCatalogServiceTests
         });
 
         var gpt55 = Assert.Single(models, model => "gpt-5.5".Equals(model["slug"]));
-        Assert.Equal(1_000_000, gpt55["context_window"]);
-        Assert.Equal(1_000_000, gpt55["max_context_window"]);
+        Assert.Equal(272_000L, gpt55["context_window"]);
+        Assert.Equal(272_000L, gpt55["max_context_window"]);
         var sol = Assert.Single(models, model => "gpt-5.6-sol".Equals(model["slug"]));
-        Assert.Equal(353_000, sol["context_window"]);
-        Assert.Equal(353_000, sol["max_context_window"]);
+        Assert.Equal(272_000L, sol["context_window"]);
+        Assert.Equal(872_000L, sol["max_context_window"]);
         var solTruncation = Assert.IsType<Dictionary<string, object?>>(sol["truncation_policy"]);
-        Assert.Equal(353_000, solTruncation["limit"]);
+        Assert.Equal(10_000L, solTruncation["limit"]);
     }
 
     [Fact]

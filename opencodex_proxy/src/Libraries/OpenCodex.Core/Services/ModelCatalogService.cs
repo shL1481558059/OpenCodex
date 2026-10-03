@@ -460,20 +460,6 @@ public sealed class ModelCatalogService : IModelCatalogService
             ? speedTiers
             : new List<object?> { "fast" };
         catalog["context_window"] = contextWindow;
-        catalog["max_context_window"] = contextWindow;
-        if (catalog.TryGetValue("truncation_policy", out var policyValue)
-            && policyValue is Dictionary<string, object?> policy)
-        {
-            policy["limit"] = contextWindow;
-        }
-        else
-        {
-            catalog["truncation_policy"] = new Dictionary<string, object?>
-            {
-                ["mode"] = "tokens",
-                ["limit"] = contextWindow
-            };
-        }
 
         CodexModelCatalogContract.Apply(catalog, supportsImage);
     }

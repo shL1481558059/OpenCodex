@@ -1226,6 +1226,46 @@ public sealed class ModelCatalogServiceTests
     }
 
     [Fact]
+    public void BuildProxyModelCatalogPreservesConfiguredMaxContextWindowAndTruncationLimit()
+    {
+        var dbPath = CreateDbPath();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            var model = AddModel(
+                context,
+                provider.Id,
+                "gpt-6-luna",
+                ModelMatchTypes.Exact,
+                "gpt-6-luna",
+                1m);
+            model.DisplayName = "GPT-6 Luna";
+            model.CatalogJson = """
+                {
+                  "display_name": "GPT-6 Luna",
+                  "context_window": 272000,
+                  "max_context_window": 872000,
+                  "effective_context_window_percent": 95,
+                  "truncation_policy": { "mode": "tokens", "limit": 10000 }
+                }
+                """;
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+        var result = service.BuildProxyModelCatalog(
+            [new ProxyModelCapabilityDto("gpt-6-luna", false, null, "", "gpt-6-luna")]);
+
+        var entry = Assert.Single(result);
+        Assert.Equal(272000L, entry["context_window"]);
+        Assert.Equal(872000L, entry["max_context_window"]);
+        Assert.Equal(95L, entry["effective_context_window_percent"]);
+        var truncation = Assert.IsType<Dictionary<string, object?>>(entry["truncation_policy"]);
+        Assert.Equal(10000L, truncation["limit"]);
+    }
+
+    [Fact]
     public void BuildProxyModelCatalogPrefersRequestModelInfoOverUpstreamModelInfo()
     {
         var dbPath = CreateDbPath();
