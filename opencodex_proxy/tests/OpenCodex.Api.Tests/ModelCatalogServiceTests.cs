@@ -1266,6 +1266,127 @@ public sealed class ModelCatalogServiceTests
     }
 
     [Fact]
+    public void UpdateModelSyncsEditedCapabilitiesContextWindowIntoCatalog()
+    {
+        var dbPath = CreateDbPath();
+        var modelId = SeedGlobalModel(
+            dbPath,
+            "gpt-6-luna",
+            """{"display_name":"GPT-6 Luna","context_window":272000,"effective_context_window_percent":95}""",
+            """{"context_window":272000}""");
+
+        var service = CreateService(dbPath);
+        Assert.True(service.CreateProvider(
+            new ModelProviderUpsertRequest { Code = "cache-test", Name = "Test", Enabled = true }).Succeeded);
+        var request = ModelRequest("gpt-6-luna", 1m);
+        request.Catalog = new Dictionary<string, object?>
+        {
+            ["display_name"] = "GPT-6 Luna",
+            ["context_window"] = 272000L,
+            ["effective_context_window_percent"] = 95L
+        };
+        request.Capabilities = new Dictionary<string, object?> { ["context_window"] = 650000L };
+
+        Assert.True(service.UpdateModel(modelId, request).Succeeded);
+
+        var entry = Assert.Single(service.BuildProxyModelCatalog(
+            [new ProxyModelCapabilityDto("gpt-6-luna", false, null, "", "gpt-6-luna")]));
+        Assert.Equal(650000L, entry["context_window"]);
+    }
+
+    [Fact]
+    public void UpdateModelKeepsCatalogContextWindowWhenCapabilitiesUnchanged()
+    {
+        var dbPath = CreateDbPath();
+        var modelId = SeedGlobalModel(
+            dbPath,
+            "gpt-5.5",
+            """{"display_name":"gpt-5.5","context_window":1050000}""",
+            """{"context_window":272000}""");
+
+        var service = CreateService(dbPath);
+        Assert.True(service.CreateProvider(
+            new ModelProviderUpsertRequest { Code = "cache-test", Name = "Test", Enabled = true }).Succeeded);
+        var request = ModelRequest("gpt-5.5", 1m);
+        request.Catalog = new Dictionary<string, object?> { ["context_window"] = 1050000L };
+        request.Capabilities = new Dictionary<string, object?> { ["context_window"] = 272000L };
+
+        Assert.True(service.UpdateModel(modelId, request).Succeeded);
+
+        var entry = Assert.Single(service.BuildProxyModelCatalog(
+            [new ProxyModelCapabilityDto("gpt-5.5", false, null, "", "gpt-5.5")]));
+        Assert.Equal(1050000L, entry["context_window"]);
+    }
+
+    [Fact]
+    public void UpsertChannelModelInfoSyncsEditedCapabilitiesContextWindowIntoCatalog()
+    {
+        var dbPath = CreateDbPath();
+        var channelId = Guid.NewGuid();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            var provider = AddProvider(context);
+            AddChannel(context, channelId, "test-channel", "upstream-model");
+            context.ChannelModelInfos.Add(new ChannelModelInfo
+            {
+                Id = Guid.NewGuid(),
+                ChannelId = channelId,
+                RequestModel = "request-model",
+                UpstreamModel = "upstream-model",
+                ProviderId = provider.Id,
+                ModelKey = "channel-model",
+                DisplayName = "Channel Model",
+                MatchType = ModelMatchTypes.Exact,
+                MatchPattern = "request-model",
+                CatalogJson = """{"context_window":272000}""",
+                CapabilitiesJson = """{"context_window":272000}""",
+                Enabled = true,
+                Source = "test",
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+        var saved = service.UpsertChannelModelInfo(channelId, new ChannelModelInfoUpsertRequest
+        {
+            RequestModel = "request-model",
+            UpstreamModel = "upstream-model",
+            ProviderCode = "test",
+            ModelKey = "channel-model",
+            DisplayName = "Channel Model",
+            MatchType = ModelMatchTypes.Exact,
+            MatchPattern = "request-model",
+            Catalog = new Dictionary<string, object?> { ["context_window"] = 272000L },
+            Capabilities = new Dictionary<string, object?> { ["context_window"] = 650000L }
+        });
+
+        Assert.True(saved.Succeeded);
+        using var verify = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var stored = verify.ChannelModelInfos.Single(item => item.ChannelId == channelId);
+        using var catalog = JsonDocument.Parse(stored.CatalogJson);
+        Assert.Equal(650000L, catalog.RootElement.GetProperty("context_window").GetInt64());
+    }
+
+    private static Guid SeedGlobalModel(
+        string dbPath,
+        string modelKey,
+        string catalogJson,
+        string capabilitiesJson)
+    {
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        context.Database.Migrate();
+        var provider = AddProvider(context);
+        var model = AddModel(context, provider.Id, modelKey, ModelMatchTypes.Exact, modelKey, 1m);
+        model.CatalogJson = catalogJson;
+        model.CapabilitiesJson = capabilitiesJson;
+        context.SaveChanges();
+        return model.Id;
+    }
+
+    [Fact]
     public void BuildProxyModelCatalogPrefersRequestModelInfoOverUpstreamModelInfo()
     {
         var dbPath = CreateDbPath();

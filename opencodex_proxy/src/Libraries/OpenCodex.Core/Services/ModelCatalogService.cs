@@ -613,7 +613,9 @@ public sealed class ModelCatalogService : IModelCatalogService
                 MatchType = matchType,
                 MatchPattern = matchPatterns[0],
                 MatchPatternsJson = SerializeMatchPatterns(matchPatterns),
-                CatalogJson = SerializeObject(SyncCatalogIdentity(request.Catalog, modelKey, request.DisplayName)),
+                CatalogJson = SerializeObject(SyncCatalogContextWindow(
+                    SyncCatalogIdentity(request.Catalog, modelKey, request.DisplayName),
+                    request.Capabilities)),
                 CapabilitiesJson = SerializeObject(request.Capabilities),
                 Enabled = request.Enabled,
                 Source = ModelCatalogSources.Manual,
@@ -672,7 +674,10 @@ public sealed class ModelCatalogService : IModelCatalogService
             model.MatchType = matchType;
             model.MatchPattern = matchPatterns[0];
             model.MatchPatternsJson = SerializeMatchPatterns(matchPatterns);
-            model.CatalogJson = SerializeObject(SyncCatalogIdentity(request.Catalog, modelKey, request.DisplayName));
+            model.CatalogJson = SerializeObject(SyncCatalogContextWindow(
+                SyncCatalogIdentity(request.Catalog, modelKey, request.DisplayName),
+                request.Capabilities,
+                DeserializeObject(model.CapabilitiesJson)));
             model.CapabilitiesJson = SerializeObject(request.Capabilities);
             model.Enabled = request.Enabled;
             model.Source = ModelCatalogSources.Manual;
@@ -2511,7 +2516,10 @@ public sealed class ModelCatalogService : IModelCatalogService
         model.MatchType = matchType;
         model.MatchPattern = matchPatterns[0];
         model.MatchPatternsJson = SerializeMatchPatterns(matchPatterns);
-        model.CatalogJson = SerializeObject(SyncCatalogIdentity(request.Catalog, modelKey, request.DisplayName));
+        model.CatalogJson = SerializeObject(SyncCatalogContextWindow(
+            SyncCatalogIdentity(request.Catalog, modelKey, request.DisplayName),
+            request.Capabilities,
+            DeserializeObject(model.CapabilitiesJson)));
         model.CapabilitiesJson = SerializeObject(request.Capabilities);
         model.Enabled = request.Enabled;
         model.Source = ModelCatalogSources.Manual;
@@ -3178,6 +3186,40 @@ public sealed class ModelCatalogService : IModelCatalogService
             merged["slug"] = modelKey;
         }
 
+        return merged;
+    }
+
+    /// <summary>
+    /// 管理台只编辑 capabilities.context_window，而目录解析时 CatalogJson 优先，
+    /// 会出现「输入框改了却不生效」。这里仅在输入框确实被改动时把值同步进 CatalogJson；
+    /// 未改动时保留 CatalogJson 原值，避免用陈旧的 capabilities 覆盖同步得到的目录值
+    /// （例如 gpt-5.5 的 1050000 被降回 272000）。
+    /// </summary>
+    private static Dictionary<string, object?> SyncCatalogContextWindow(
+        IReadOnlyDictionary<string, object?> catalog,
+        IReadOnlyDictionary<string, object?> capabilities,
+        IReadOnlyDictionary<string, object?>? previousCapabilities = null)
+    {
+        var merged = CloneDictionary(catalog);
+        if (ReadPositiveLong(capabilities, "context_window") is not { } contextWindow)
+        {
+            return merged;
+        }
+
+        if (previousCapabilities is null)
+        {
+            // 新建模型：Catalog 未显式给出上下文窗口时用输入框的值补齐。
+            if (ReadPositiveLong(merged, "context_window") is not null)
+            {
+                return merged;
+            }
+        }
+        else if (ReadPositiveLong(previousCapabilities, "context_window") == contextWindow)
+        {
+            return merged;
+        }
+
+        merged["context_window"] = contextWindow;
         return merged;
     }
 
