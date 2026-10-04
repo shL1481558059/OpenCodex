@@ -29,6 +29,33 @@ public sealed class SseStreamConverterTests
         await Task.CompletedTask;
     }
 
+    private static async IAsyncEnumerable<string> SseLinesGated(
+        IReadOnlyList<string> prefixBlocks,
+        IReadOnlyList<string> suffixBlocks,
+        TaskCompletionSource prefixConsumed,
+        TaskCompletionSource release,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        foreach (var block in prefixBlocks)
+        {
+            foreach (var line in block.Split('\n'))
+            {
+                yield return line;
+            }
+        }
+
+        prefixConsumed.TrySetResult();
+        await release.Task.WaitAsync(cancellationToken);
+
+        foreach (var block in suffixBlocks)
+        {
+            foreach (var line in block.Split('\n'))
+            {
+                yield return line;
+            }
+        }
+    }
+
     private static async Task<List<string>> CollectAsync(IAsyncEnumerable<string> enumerable)
     {
         var list = new List<string>();
@@ -963,13 +990,59 @@ public sealed class SseStreamConverterTests
         Assert.DoesNotContain(parsed, entry => (string?)entry["type"] == "response.function_call_arguments.done");
     }
 
+    [Fact]
+    public async Task Chat_MappedCustomTool_StreamsInputDeltaBeforeUpstreamCompletion()
+    {
+        const string input = "text(1+1);";
+        var envelope = JsonSerializer.Serialize(new { input });
+        var partialEnvelope = envelope[..^2];
+        var prefixConsumed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var upstream = SseLinesGated(
+            new[]
+            {
+                SseBlock(ChatChunk(toolCalls: new[] { ChatToolCall(0, "call_exec", "exec", partialEnvelope) }))
+            },
+            new[]
+            {
+                SseBlock(ChatChunk(toolCalls: new[] { ChatToolCall(0, arguments: envelope[partialEnvelope.Length..]) })),
+                SseBlock(ChatChunk(finishReason: "tool_calls")),
+                SseBlock("[DONE]")
+            },
+            prefixConsumed,
+            release);
+
+        var emitted = new List<string>();
+        var conversion = Task.Run(async () =>
+        {
+            await foreach (var entry in SseStreamConverter.ChatToResponsesEvents(
+                upstream, "gpt-6-luna", CustomToolStreamResult(), CancellationToken.None))
+            {
+                emitted.Add(entry);
+            }
+        });
+
+        await prefixConsumed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var beforeCompletion = ParseEvents(emitted.ToList());
+        release.TrySetResult();
+        await conversion;
+
+        var delta = Assert.Single(AllByType(beforeCompletion, "response.custom_tool_call_input.delta"));
+        Assert.Equal(input, delta["delta"]);
+        Assert.DoesNotContain(beforeCompletion, entry => (string?)entry["type"] is
+            "response.custom_tool_call_input.done" or "response.output_item.done" or "response.completed");
+
+        var completed = ParseEvents(emitted);
+        Assert.Equal(input, ByType(completed, "response.custom_tool_call_input.done")!["input"]);
+    }
+
     [Theory]
     [InlineData("text(1+1);")]
     [InlineData("{\"input\":\"literal\"}")]
     [InlineData("text(\"雪😀\\path\");\r\ntext('next');")]
     [InlineData("{}")]
     [InlineData("")]
-    public async Task Chat_MappedCustomTool_DecodesFragmentedEnvelopeExactlyOnce(string input)
+    public async Task Chat_MappedCustomTool_DecodesFragmentedEnvelopeIncrementally(string input)
     {
         var blocks = new List<string>
         {
@@ -985,8 +1058,10 @@ public sealed class SseStreamConverterTests
         var events = await CollectAsync(SseStreamConverter.ChatToResponsesEvents(
             SseLines(blocks.ToArray()), "gpt-5", CustomToolStreamResult(), CancellationToken.None));
         var parsed = ParseEvents(events);
-        var delta = Assert.Single(AllByType(parsed, "response.custom_tool_call_input.delta"));
-        Assert.Equal(input, delta["delta"]);
+        var deltas = AllByType(parsed, "response.custom_tool_call_input.delta").ToList();
+        var streamedInput = string.Concat(deltas.Select(delta => Assert.IsType<string>(delta["delta"])));
+        Assert.Equal(input, streamedInput);
+        if (input.Length > 0) Assert.NotEmpty(deltas);
         Assert.Equal(input, ByType(parsed, "response.custom_tool_call_input.done")!["input"]);
         var item = Assert.IsType<Dictionary<string, object?>>(ByType(parsed, "response.output_item.done")!["item"]);
         Assert.Equal(input, item["input"]);
@@ -1018,7 +1093,14 @@ public sealed class SseStreamConverterTests
         Assert.Equal("text('first');", items["first"]["input"]);
         Assert.Equal("{\"input\":\"second\"}", items["second"]["input"]);
         Assert.Equal("{\"q\":1}", items["search"]["arguments"]);
-        Assert.Equal(2, AllByType(parsed, "response.custom_tool_call_input.delta").Count());
+        var deltasByItem = AllByType(parsed, "response.custom_tool_call_input.delta")
+            .GroupBy(entry => Assert.IsType<string>(entry["item_id"]))
+            .ToDictionary(
+                group => group.Key,
+                group => string.Concat(group.Select(entry => Assert.IsType<string>(entry["delta"]))));
+        Assert.Equal(2, deltasByItem.Count);
+        Assert.Equal(items["first"]["input"], deltasByItem[Assert.IsType<string>(items["first"]["id"])]);
+        Assert.Equal(items["second"]["input"], deltasByItem[Assert.IsType<string>(items["second"]["id"])]);
         Assert.Single(AllByType(parsed, "response.function_call_arguments.delta"));
     }
 
@@ -1047,7 +1129,7 @@ public sealed class SseStreamConverterTests
         });
 
         Assert.DoesNotContain(ParseEvents(emitted), e => (string?)e["type"] is
-            "response.custom_tool_call_input.delta" or "response.custom_tool_call_input.done"
+            "response.custom_tool_call_input.done"
             or "response.output_item.done" or "response.completed");
     }
 
@@ -1073,7 +1155,7 @@ public sealed class SseStreamConverterTests
             }
         });
         Assert.DoesNotContain(ParseEvents(emitted), e => (string?)e["type"] is
-            "response.custom_tool_call_input.delta" or "response.custom_tool_call_input.done"
+            "response.custom_tool_call_input.done"
             or "response.output_item.done" or "response.completed");
     }
 

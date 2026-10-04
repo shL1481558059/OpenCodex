@@ -401,10 +401,14 @@ public static partial class SseStreamConverter
                     var shape = ProtocolConverter.ResolveResponsesToolCallShape(aggregate.Name, toolCallMappings);
                     state.CallKind = aggregate.Type == "custom" ? ResponsesToolCallKind.CustomTool : shape.Kind;
                     state.ArgumentField = aggregate.Type == "custom" ? "input" : shape.ArgumentField;
-                    state.ApplyPatchDecoder ??= state.CallKind == ResponsesToolCallKind.CustomTool
+                    var usesCustomInputEnvelope = aggregate.Type == "function"
+                        && ProtocolConverter.UsesCustomInputEnvelope(aggregate.Name, toolCallMappings);
+                    var requiresCustomInputDecoding = state.CallKind == ResponsesToolCallKind.CustomTool
+                        || usesCustomInputEnvelope;
+                    state.ApplyPatchDecoder ??= requiresCustomInputDecoding
                         ? new ApplyPatchJsonDeltaDecoder()
                         : null;
-                    state.DecodedInputBuilder ??= state.CallKind == ResponsesToolCallKind.CustomTool
+                    state.DecodedInputBuilder ??= requiresCustomInputDecoding
                         ? new StringBuilder()
                         : null;
                     if (!state.ItemAdded)
@@ -454,14 +458,9 @@ public static partial class SseStreamConverter
                         continue;
                     }
 
-                    if (aggregate.Type == "function"
-                        && ProtocolConverter.UsesCustomInputEnvelope(aggregate.Name, toolCallMappings))
-                    {
-                        // Validate the complete JSON envelope before exposing executable custom input.
-                        continue;
-                    }
-
-                    if (state.CallKind == ResponsesToolCallKind.CustomTool)
+                    // Decode incrementally; the complete envelope is validated before the terminal events.
+                    if (state.CallKind == ResponsesToolCallKind.CustomTool
+                        || usesCustomInputEnvelope)
                     {
                         var decodedDelta = state.ApplyPatchDecoder?.Append(
                             aggregate.Arguments[state.StreamedArgumentsLength..]) ?? string.Empty;
@@ -732,18 +731,6 @@ public static partial class SseStreamConverter
             }
             else if (functionItemType == "custom_tool_call")
             {
-                if (hasCustomEnvelope)
-                {
-                    yield return Emit(
-                        "response.custom_tool_call_input.delta",
-                        new Dictionary<string, object?>
-                        {
-                            ["item_id"] = itemId,
-                            ["output_index"] = outputIndex,
-                            ["delta"] = customInput
-                        });
-                }
-
                 yield return Emit(
                     "response.custom_tool_call_input.done",
                     new Dictionary<string, object?>
