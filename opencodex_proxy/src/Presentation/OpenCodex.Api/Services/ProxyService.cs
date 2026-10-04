@@ -134,7 +134,76 @@ public sealed class ProxyService : IProxyService
             }
         }
 
+        NormalizeCodexInstructions(merged);
+
         return merged;
+    }
+
+    /// <summary>
+    /// Codex 客户端对模型目录响应体有 1 MiB 硬上限，超限会整份丢弃并回退内置元数据
+    /// (272000 × 95% = 258400)，表现为上下文只用到约 246k 就触发压缩。
+    /// 同一模型的 base_instructions 与 model_messages.instructions_template 内容等价，
+    /// 两者同时下发会让目录膨胀到约 1.07 MB，因此这里统一只保留 base_instructions。
+    /// 同时清理未被客户端渲染、会原样进入提示词的 {{ personality }} 占位符。
+    /// </summary>
+    private static void NormalizeCodexInstructions(
+        IReadOnlyList<Dictionary<string, object?>> models)
+    {
+        foreach (var model in models)
+        {
+            NormalizeCodexInstructions(model);
+        }
+    }
+
+    private static void NormalizeCodexInstructions(Dictionary<string, object?> model)
+    {
+        const string templateKey = "instructions_template";
+        const string personalityPlaceholder = "{{ personality }}";
+
+        var instructions = ReadRawString(model, "base_instructions");
+        if (instructions.Length == 0
+            && AsObjectDictionary(model, "model_messages") is { } messages)
+        {
+            instructions = ReadRawString(messages, templateKey);
+        }
+
+        instructions = instructions.Replace(
+            personalityPlaceholder,
+            string.Empty,
+            StringComparison.Ordinal);
+        if (instructions.Length > 0)
+        {
+            model["base_instructions"] = instructions;
+        }
+
+        if (AsObjectDictionary(model, "model_messages") is not { } modelMessages
+            || !modelMessages.ContainsKey(templateKey))
+        {
+            return;
+        }
+
+        // model_messages 可能是 CodexModelInstructions 的共享单例，必须复制后再删键。
+        var normalizedMessages = new Dictionary<string, object?>(modelMessages, StringComparer.Ordinal);
+        normalizedMessages.Remove(templateKey);
+        model["model_messages"] = normalizedMessages;
+    }
+
+    private static string ReadRawString(
+        IReadOnlyDictionary<string, object?> source,
+        string key)
+    {
+        if (!source.TryGetValue(key, out var value))
+        {
+            return string.Empty;
+        }
+
+        return value switch
+        {
+            string text => text,
+            JsonElement { ValueKind: JsonValueKind.String } element => element.GetString() ?? string.Empty,
+            null => string.Empty,
+            _ => value.ToString() ?? string.Empty
+        };
     }
 
     private static void ApplyCatalogLengthOverrides(

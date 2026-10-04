@@ -1,11 +1,16 @@
+using System.Text.Json;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Logging.Abstractions;
 using OpenCodex.Api.Configuration;
 using OpenCodex.Api.Controllers;
 using OpenCodex.Api.Infrastructure;
 using OpenCodex.Api.Services;
 using OpenCodex.Core.Protocols;
+using OpenCodex.Core.Services;
 using OpenCodex.Core.Services.MultiAgent;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Models;
@@ -520,6 +525,120 @@ public sealed class ProxyControllerTests
         var gpt55 = Assert.Single(models, model => "gpt-5.5".Equals(model["slug"]));
         Assert.Equal(1000000L, gpt55["context_window"]);
         Assert.Equal(1000000L, gpt55["max_context_window"]);
+    }
+
+    [Fact]
+    public async Task Models_CodexClient_DropsInstructionsTemplateAndStaysUnderClientLimit()
+    {
+        // 复现线上目录构成：11 个数据库模型（契约注入指令）+ 11 个官方 gpt 模板模型。
+        // 同一模型的 base_instructions 与 model_messages.instructions_template 同时下发时，
+        // 响应约 1.07 MB，超过 Codex 客户端 1 MiB 上限；客户端会整份丢弃目录并回退内置元数据
+        // (272000 × 95% = 258400)，表现为上下文只用到约 246k 就触发压缩。
+        var catalogModels = new List<Dictionary<string, object?>>();
+        for (var index = 0; index < 11; index++)
+        {
+            catalogModels.Add(BuildContractModel($"catalog-model-{index}", 650000L));
+        }
+
+        var officialCatalog = CreateOfficialCatalogService();
+        Assert.Equal(22, officialCatalog.BuildCodexGptModels().Count + catalogModels.Count);
+
+        var controller = CreateController(
+            new StubRequestBodyReader(CreateMessagesPayload(maxTokens: 4096)),
+            new StubProxyEndpointService(),
+            interceptProbeRequests: false,
+            modelCatalog: catalogModels,
+            codexModels: officialCatalog);
+        controller.HttpContext.Request.QueryString = QueryString.Create("client_version", "0.160.0");
+
+        var action = await controller.Models();
+        var result = Assert.IsType<ObjectResult>(action);
+        Assert.Equal(200, result.StatusCode);
+        var payload = Assert.IsType<Dictionary<string, object?>>(result.Value);
+        var models = Assert.IsType<List<Dictionary<string, object?>>>(payload["models"]);
+
+        foreach (var model in models)
+        {
+            var instructions = Assert.IsType<string>(model["base_instructions"]);
+            Assert.NotEmpty(instructions);
+            Assert.DoesNotContain("{{ personality }}", instructions);
+
+            var modelMessages = Assert.IsType<Dictionary<string, object?>>(model["model_messages"]);
+            Assert.False(modelMessages.ContainsKey("instructions_template"));
+        }
+
+        // model_messages 可能直接引用共享单例，归一化必须复制而非原地删键。
+        Assert.True(CodexModelInstructions.ModelMessages.ContainsKey("instructions_template"));
+
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(payload);
+        Assert.True(
+            bytes.Length < 1024 * 1024,
+            $"Codex 客户端模型目录上限 1 MiB，当前为 {bytes.Length} 字节。");
+    }
+
+    private static Dictionary<string, object?> BuildContractModel(string slug, long contextWindow)
+    {
+        var model = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["slug"] = slug,
+            ["display_name"] = slug,
+            ["context_window"] = contextWindow
+        };
+        CodexModelCatalogContract.Apply(model, supportsImage: false);
+        return model;
+    }
+
+    private static CodexOfficialModelCatalogService CreateOfficialCatalogService()
+    {
+        var webRoot = Path.Combine(
+            FindRepositoryRoot(),
+            "opencodex_proxy",
+            "src",
+            "Presentation",
+            "OpenCodex.Api",
+            "wwwroot");
+        return new CodexOfficialModelCatalogService(
+            new TestWebHostEnvironment { WebRootPath = webRoot, ContentRootPath = webRoot },
+            NullLogger<CodexOfficialModelCatalogService>.Instance);
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            var marker = Path.Combine(
+                directory.FullName,
+                "opencodex_proxy",
+                "src",
+                "Presentation",
+                "OpenCodex.Api",
+                "wwwroot",
+                "ocxp_codex_official_models.json");
+            if (File.Exists(marker))
+            {
+                return directory.FullName;
+            }
+
+            directory = directory.Parent;
+        }
+
+        throw new InvalidOperationException("Unable to locate the OpenCodex repository root.");
+    }
+
+    private sealed class TestWebHostEnvironment : IWebHostEnvironment
+    {
+        public string ApplicationName { get; set; } = "OpenCodex.Api.Tests";
+
+        public IFileProvider WebRootFileProvider { get; set; } = new NullFileProvider();
+
+        public string WebRootPath { get; set; } = string.Empty;
+
+        public string EnvironmentName { get; set; } = "Development";
+
+        public string ContentRootPath { get; set; } = string.Empty;
+
+        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
     }
 
     private static ProxyController CreateController(
