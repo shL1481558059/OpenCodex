@@ -9,6 +9,30 @@ namespace OpenCodex.Api.Tests;
 public sealed class MultiAgentLifecycleTests
 {
     [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" \n\t")]
+    public async Task EmptyFinalMessageCannotFinishTaskAndRetryStillCallsModel(string? text)
+    {
+        var run = Run();
+        var calls = 0;
+        Task<Dictionary<string, object?>> Model(Dictionary<string, object?> _, CancellationToken ct)
+        {
+            var item = Message(++calls == 1 ? text ?? "" : "FINAL");
+            if (calls == 1 && text is null) item["content"] = new List<object?>();
+            return Task.FromResult(Response(item));
+        }
+        var first = await Execute(run, Model);
+        Assert.Contains(first, e => JsonDictionaryValue.String(e, "type") == "response.failed");
+        Assert.False(run.Finished);
+        Assert.Empty(run.Agents["/root"].CompletedTurns);
+        var second = await Execute(run, Model);
+        Assert.Equal(2, calls);
+        Assert.True(run.Finished);
+        Assert.Contains("FINAL", System.Text.Json.JsonSerializer.Serialize(second));
+    }
+
+    [Theory]
     [InlineData("{\"query\":\"keep literal JSON\"}", false)]
     [InlineData("{\"query\":\"keep literal JSON\"}", true)]
     [InlineData("{\"input\":\"literal\"}", false)]
@@ -96,7 +120,7 @@ public sealed class MultiAgentLifecycleTests
     [Theory]
     [InlineData("failed")]
     [InlineData("incomplete")]
-    public async Task RootTerminalError_ClosesItsTaskAndPersistsTheTerminalAgentStatus(string status)
+    public async Task RootModelAttemptError_PreservesItsTaskForRetry(string status)
     {
         var run = Run();
         var events = await Execute(run, (payload, ct) => Task.FromResult(new Dictionary<string, object?>
@@ -107,9 +131,40 @@ public sealed class MultiAgentLifecycleTests
             ["incomplete_details"] = new Dictionary<string, object?> { ["reason"] = "max_output_tokens" }
         }));
         Assert.Contains(events, e => JsonDictionaryValue.String(e, "type") == "response." + status);
-        Assert.Equal(status, run.Agents["/root"].Status);
-        Assert.False(run.Agents["/root"].TaskStarted);
-        Assert.Equal(status, Assert.Single(run.Agents["/root"].CompletedTurns).Status);
+        Assert.Equal("retryable", run.Agents["/root"].Status);
+        Assert.True(run.Agents["/root"].TaskStarted);
+        Assert.Empty(run.Agents["/root"].CompletedTurns);
+        Assert.False(run.Finished);
+    }
+
+    [Fact]
+    public async Task RetryOfCommittedFinalReplaysAnswerWithoutCallingModelOrTools()
+    {
+        var run = Run();
+        var calls = 0;
+        Task<Dictionary<string, object?>> Model(Dictionary<string, object?> _, CancellationToken ct)
+        {
+            calls++;
+            return Task.FromResult(Response(Message("COMMITTED_FINAL")));
+        }
+        await Execute(run, Model);
+        var events = await Execute(run, Model);
+        Assert.Equal(1, calls);
+        Assert.Contains("COMMITTED_FINAL", System.Text.Json.JsonSerializer.Serialize(events));
+        Assert.Single(run.Agents["/root"].CompletedTurns);
+    }
+
+    [Theory]
+    [InlineData("failed")]
+    [InlineData("incomplete")]
+    [InlineData("interrupted")]
+    public async Task TerminalTaskWithoutRunnableWorkCannotBecomeEmptySuccess(string status)
+    {
+        var run = Run();
+        run.Agents["/root"].Status = status;
+        var events = await Execute(run, (_, _) => throw new InvalidOperationException("Must not call the model"));
+        Assert.Contains(events, e => JsonDictionaryValue.String(e, "type") == "response.failed");
+        Assert.DoesNotContain(events, e => JsonDictionaryValue.String(e, "type") == "response.completed");
         Assert.False(run.Finished);
     }
 

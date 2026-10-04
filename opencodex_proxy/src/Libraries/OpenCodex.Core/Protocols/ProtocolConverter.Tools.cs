@@ -31,11 +31,6 @@ public static partial class ProtocolConverter
 
             var nativeType = (GetString(tool, "native_type") ?? "function")
                 .Replace("-", "_", StringComparison.Ordinal);
-            if (nativeType == "function")
-            {
-                continue;
-            }
-
             var responsesName = Convert.ToString(GetValue(tool, "name")) ?? string.Empty;
             if (responsesName.Length == 0)
             {
@@ -43,12 +38,22 @@ public static partial class ProtocolConverter
             }
 
             var chatName = NamespaceNameToChat(responsesName);
+            var responseNamespace = GetString(tool, "namespace");
+            if (nativeType == "function" && TryAsObject(GetValue(tool, "raw"), out var declaration))
+            {
+                // The declaration is authoritative: separators in a flat function name
+                // are not proof of a namespace. Nested namespaces retain the leaf name.
+                var declaredName = GetString(declaration, "name") ?? responsesName;
+                if (!string.IsNullOrEmpty(responseNamespace))
+                    responseNamespace = responsesName[..^(NamespaceSeparator.Length + declaredName.Length)];
+                responsesName = declaredName;
+            }
             result[chatName] = new ResponsesToolCallMapping
             {
                 ChatName = chatName,
                 NativeType = nativeType,
                 ResponsesName = responsesName,
-                Namespace = GetString(tool, "namespace")
+                Namespace = responseNamespace
             };
         }
 

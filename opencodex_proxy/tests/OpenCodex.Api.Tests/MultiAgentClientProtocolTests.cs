@@ -1,5 +1,6 @@
 using System.Text.Json;
 using OpenCodex.Core.Errors;
+using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.MultiAgent;
 using OpenCodex.CoreBase.Abstractions;
 using Xunit;
@@ -136,6 +137,51 @@ public sealed class MultiAgentClientProtocolTests
         Assert.True(tools.CanSpawn);
         Assert.Equal("spawn_agent", tools.Action(Payload($$"""{"type":"function_call","name":"{{name}}","arguments":"{}"}""")));
         Assert.Null(tools.Action(Call("{}")));
+    }
+
+    [Theory]
+    [InlineData("collaboration.spawn_agent")]
+    [InlineData("collaboration__spawn_agent")]
+    [InlineData("collaboration_spawn_agent")]
+    public void FlatCollaborationCallRetainsDeclaredIdentityAfterChatConversion(string name)
+    {
+        var request = Payload("""{"model":"test","tools":[{"type":"function","name":"placeholder","parameters":{"type":"object","properties":{}}}]}""");
+        ((Dictionary<string, object?>)JsonDictionaryValue.List(request, "tools")[0]!)["name"] = name;
+        var tools = MultiAgentClientTools.FromRequest(request);
+        var chat = ProtocolConverter.ConvertRequest(request, ProtocolConverter.Responses, ProtocolConverter.Chat, "test");
+        var chatTool = (Dictionary<string, object?>)JsonDictionaryValue.List(chat, "tools").Single()!;
+        var upstreamName = ((Dictionary<string, object?>)chatTool["function"]!)["name"];
+        var mappings = ProtocolConverter.BuildResponsesToolCallMappings(request);
+        var started = ProtocolConverter.ResponsesToolCallStartedItem("call", upstreamName, "item", mappings);
+        var completed = ProtocolConverter.ResponsesToolCallItemFromToolCall("call", upstreamName, new Dictionary<string, object?>(), mappings: mappings);
+        foreach (var call in new[] { started, completed })
+        {
+            Assert.Equal(name, call["name"]);
+            Assert.False(call.ContainsKey("namespace"));
+            Assert.Equal("spawn_agent", tools.Action(call));
+        }
+    }
+
+    [Fact]
+    public void DeclaredNamespaceCallRetainsNativeIdentityAfterChatConversion()
+    {
+        var request = Request();
+        var tools = MultiAgentClientTools.FromRequest(request);
+        var mappings = ProtocolConverter.BuildResponsesToolCallMappings(request);
+        var call = ProtocolConverter.ResponsesToolCallItemFromToolCall("call", "collaboration__spawn_agent", new Dictionary<string, object?>(), mappings: mappings);
+        Assert.Equal("spawn_agent", call["name"]);
+        Assert.Equal("collaboration", call["namespace"]);
+        Assert.Equal("spawn_agent", tools.Action(call));
+    }
+
+    [Fact]
+    public void NestedNamespaceMappingPreservesLeafNameContainingSeparators()
+    {
+        var request = Payload("""{"tools":[{"type":"namespace","name":"outer","tools":[{"type":"namespace","name":"inner","tools":[{"type":"function","name":"read__file","parameters":{"type":"object","properties":{}}}]}]}]}""");
+        var mappings = ProtocolConverter.BuildResponsesToolCallMappings(request);
+        var call = ProtocolConverter.ResponsesToolCallItemFromToolCall("call", "outer__inner__read__file", new Dictionary<string, object?>(), mappings: mappings);
+        Assert.Equal("read__file", call["name"]);
+        Assert.Equal("outer__inner", call["namespace"]);
     }
 
     [Fact]

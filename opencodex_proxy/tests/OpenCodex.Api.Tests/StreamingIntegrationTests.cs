@@ -542,40 +542,54 @@ public sealed class StreamingIntegrationTests
     [Fact]
     public async Task StreamingPerformance_NoBuffering_EventsYieldedImmediately()
     {
-        // Arrange - 创建带延迟的异步流，模拟网络延迟
+        var releaseRemaining = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         async IAsyncEnumerable<string> DelayedLines()
         {
-            yield return SseBlock(ChatChunk(content: "First"));
-            await Task.Delay(10); // 模拟网络延迟
-            yield return SseBlock(ChatChunk(content: " Second"));
-            await Task.Delay(10);
-            yield return SseBlock(ChatChunk(content: " Third"));
-            await Task.Delay(10);
-            yield return SseBlock(ChatChunk(finishReason: "stop"));
-            yield return SseBlock("[DONE]");
+            foreach (var line in SseBlock(ChatChunk(content: "First")).Split('\n'))
+            {
+                yield return line;
+            }
+            await releaseRemaining.Task;
+            foreach (var block in new[]
+            {
+                SseBlock(ChatChunk(content: " Second")),
+                SseBlock(ChatChunk(finishReason: "stop")),
+                SseBlock("[DONE]")
+            })
+            {
+                foreach (var line in block.Split('\n'))
+                {
+                    yield return line;
+                }
+            }
         }
 
         var result = new ConvertedStreamResult();
-
-        // Act
-        var receivedTimes = new List<long>();
-        var startTime = Stopwatch.GetTimestamp();
-
-        await foreach (var line in SseStreamConverter.ChatToResponsesEvents(
-                           DelayedLines(), "gpt-5", result, CancellationToken.None))
+        await using var events = SseStreamConverter.ChatToResponsesEvents(
+            DelayedLines(), "gpt-5", result, CancellationToken.None).GetAsyncEnumerator();
+        try
         {
-            receivedTimes.Add(Stopwatch.GetTimestamp());
+            while (await events.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)))
+            {
+                if (events.Current.Contains("response.output_text.delta", StringComparison.Ordinal))
+                {
+                    Assert.Contains("First", events.Current, StringComparison.Ordinal);
+                    Assert.False(releaseRemaining.Task.IsCompleted);
+                    break;
+                }
+            }
         }
-
-        // Assert - 事件应该逐个到达，不是批量
-        // 第一个内容事件应该在30ms内到达（不等待全部完成）
-        var firstContentIndex = receivedTimes.Take(10)
-            .Select((t, i) => (t, i))
-            .FirstOrDefault(x => Stopwatch.GetElapsedTime(startTime, x.t).TotalMilliseconds > 0).i;
-
-        var firstContentTime = Stopwatch.GetElapsedTime(startTime, receivedTimes[firstContentIndex]);
-        Assert.True(firstContentTime < TimeSpan.FromMilliseconds(30),
-            $"First content event took {firstContentTime.TotalMilliseconds}ms, expected < 30ms");
+        finally
+        {
+            releaseRemaining.TrySetResult();
+        }
+        var remaining = new List<string>();
+        while (await events.MoveNextAsync())
+        {
+            remaining.Add(events.Current);
+        }
+        Assert.Contains(remaining, line => line.Contains(" Second", StringComparison.Ordinal));
+        Assert.Contains(remaining, line => line.Contains("response.completed", StringComparison.Ordinal));
     }
 
     #endregion

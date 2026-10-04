@@ -10,6 +10,108 @@ namespace OpenCodex.Api.Tests;
 public sealed class MultiAgentClientRuntimeTests
 {
     [Fact]
+    public async Task NewInputDuringRetryKeepsCurrentGenerationAndQueuesFollowupOnlyOnce()
+    {
+        var run = MultiAgentTestHarness.Run();
+        var actor = run.Agents["/root"];
+        actor.Generation = actor.CurrentTaskGeneration = 7;
+        var calls = 0;
+        Task<D> Model(D payload, CancellationToken ct)
+        {
+            calls++;
+            if (calls <= 2) throw new UpstreamException("temporary model failure");
+            if (calls == 3) Assert.DoesNotContain("FOLLOWUP", WebSearchPayload.JsonDumps(payload["input"]));
+            else Assert.Contains("FOLLOWUP", WebSearchPayload.JsonDumps(payload["input"]));
+            return Task.FromResult(MultiAgentTestHarness.Response(MultiAgentTestHarness.Message("FINAL_" + calls)));
+        }
+        MultiAgentRuntime Runtime() => new(run, Model, _ => Task.CompletedTask, () => Task.CompletedTask,
+            client: new() { Tools = NativeTools() });
+        await Runtime().ExecuteAsync(new(), default);
+        var followup = MultiAgentTestHarness.Message("FOLLOWUP", "user");
+        followup["id"] = "user-followup";
+        var request = new D { ["input"] = new List<object?> { followup } };
+        await Runtime().ExecuteAsync(request, default);
+        Assert.Equal(7, actor.CurrentTaskGeneration);
+        Assert.Equal(8, Assert.Single(actor.PendingTasks).Generation);
+        await Runtime().ExecuteAsync(request, default);
+        Assert.Equal(4, calls);
+        Assert.Equal(new[] { 7, 8 }, actor.CompletedTurns.Select(t => t.Generation));
+        Assert.Empty(actor.PendingTasks);
+        Assert.Single(actor.History.OfType<D>(), i => JsonDictionaryValue.String(i, "id") == "user-followup");
+        Assert.True(run.Finished);
+    }
+
+    [Fact]
+    public async Task DisconnectAfterFirstToolDoneKeepsEntireBatchPendingAndOnlyReplaysUnconsumedCalls()
+    {
+        var run = MultiAgentTestHarness.Run();
+        var calls = 0;
+        D? delivered = null;
+        using var stop = new CancellationTokenSource();
+        Task<D> Model(D _, CancellationToken ct)
+        {
+            calls++;
+            return Task.FromResult(calls == 1
+                ? MultiAgentTestHarness.Response(MultiAgentTestHarness.Call("first_tool", new { }), MultiAgentTestHarness.Call("second_tool", new { }))
+                : MultiAgentTestHarness.Response(MultiAgentTestHarness.Message("FINAL")));
+        }
+        var first = new MultiAgentRuntime(run, Model, e =>
+        {
+            if (JsonDictionaryValue.String(e, "type") == "response.output_item.done")
+            {
+                delivered = WebSearchPayload.DeepCopyObject((D)e["item"]!);
+                stop.Cancel();
+                stop.Token.ThrowIfCancellationRequested();
+            }
+            return Task.CompletedTask;
+        }, () => Task.CompletedTask, client: new() { Tools = NativeTools() });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first.ExecuteAsync(new(), stop.Token));
+        Assert.NotNull(delivered);
+        Assert.Equal(2, run.PendingCalls.Count);
+        var resumed = new MultiAgentRuntime(run, Model, _ => Task.CompletedTask, () => Task.CompletedTask,
+            client: new() { Tools = NativeTools() });
+        var response = await resumed.ExecuteAsync(new() { ["input"] = new List<object?> { delivered, Output(delivered) } }, default);
+        Assert.Equal(1, calls);
+        var remaining = Assert.IsType<D>(Assert.Single(JsonDictionaryValue.List(response, "output")));
+        Assert.Equal("second_tool", remaining["name"]);
+        Assert.Equal(Assert.Single(run.PendingCalls).Key, remaining["call_id"]);
+        await new MultiAgentRuntime(run, Model, _ => Task.CompletedTask, () => Task.CompletedTask,
+            client: new() { Tools = NativeTools() }).ExecuteAsync(new() { ["input"] = new List<object?> { Output(delivered), Output(remaining) } }, default);
+        Assert.Equal(2, calls);
+        Assert.Equal(2, run.ReceivedCalls.Count);
+        Assert.True(run.Finished);
+    }
+
+    [Fact]
+    public async Task DisconnectDuringFinalDeliveryReplaysCommittedFinalWithoutAnotherModelAttempt()
+    {
+        var run = MultiAgentTestHarness.Run();
+        var calls = 0;
+        using var stop = new CancellationTokenSource();
+        Task<D> Model(D _, CancellationToken ct)
+        {
+            calls++;
+            return Task.FromResult(MultiAgentTestHarness.Response(MultiAgentTestHarness.Message("FINAL")));
+        }
+        var runtime = new MultiAgentRuntime(run, Model, e =>
+        {
+            if (JsonDictionaryValue.String(e, "type") == "response.output_item.done")
+            {
+                stop.Cancel();
+                stop.Token.ThrowIfCancellationRequested();
+            }
+            return Task.CompletedTask;
+        }, () => Task.CompletedTask, client: new() { Tools = NativeTools() });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => runtime.ExecuteAsync(new(), stop.Token));
+        var response = await new MultiAgentRuntime(run, Model, _ => Task.CompletedTask, () => Task.CompletedTask,
+            client: new() { Tools = NativeTools() }).ExecuteAsync(new(), default);
+        Assert.Equal("completed", response["status"]);
+        Assert.Contains("FINAL", WebSearchPayload.JsonDumps(response["output"]));
+        Assert.Equal(1, calls);
+        Assert.Single(run.Agents["/root"].CompletedTurns);
+    }
+
+    [Fact]
     public async Task InitialClientForkToolResultsAreNotMistakenForThisActorsPendingCalls()
     {
         var run = MultiAgentTestHarness.Run();

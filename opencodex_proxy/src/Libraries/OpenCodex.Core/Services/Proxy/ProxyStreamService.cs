@@ -105,6 +105,16 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                 upstreamResponse = convertedState.UpstreamResponse;
                 responsePayload = convertedState.ResponsePayload;
             }
+
+            if (HasStreamFailure(upstreamResponse) || HasStreamFailure(responsePayload))
+            {
+                throw new UpstreamException("upstream stream failed", body: upstreamResponse);
+            }
+            if (streamTermination != StreamCaptureTermination.Completed
+                || passThroughResponseCapture is not null && !passThroughResponseCapture.IsComplete)
+            {
+                throw new UpstreamException("upstream stream ended before its terminal event", body: upstreamResponse);
+            }
         }
         catch (Exception exception)
         {
@@ -189,6 +199,13 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                 },
                 context.RequestMetadata);
         }
+    }
+
+    private static bool HasStreamFailure(Dictionary<string, object?>? response)
+    {
+        return response is not null
+            && (response.TryGetValue("error", out var error) && error is not null
+                || response.TryGetValue("status", out var status) && status is "failed");
     }
 
     private static string? VisibleModel(ProxyStreamContext context)

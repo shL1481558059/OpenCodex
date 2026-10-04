@@ -17,7 +17,6 @@ public sealed partial class MultiAgentResponseService
             return null;
         var metadata = ProxyRequestMetadataFactory.FromHttpRequest(Request, HttpContext.Connection.RemoteIpAddress?.ToString());
         var identity = MultiAgentClientIdentity.Parse(metadata.Headers);
-        if (identity is null) return null;
         var binding = await ResolveClientBinding(request, identity, allowCreate, HttpContext.RequestAborted);
         if (binding is null) return null;
 
@@ -36,8 +35,14 @@ public sealed partial class MultiAgentResponseService
     }
 
     private async Task<MultiAgentClientBinding?> ResolveClientBinding(Dictionary<string, object?> request,
-        MultiAgentClientIdentity identity, bool allowCreate, CancellationToken ct)
+        MultiAgentClientIdentity? identity, bool allowCreate, CancellationToken ct)
     {
+        if (identity is null)
+        {
+            if (allowCreate && MultiAgentClientTools.FromRequest(request).Definitions.Count > 0)
+                throw new BadRequestException("Native collaboration requires a client thread identity. Supply thread-id or x-codex-turn-metadata.thread_id; server-only legacy agents cannot create native child chats.");
+            return null;
+        }
         var owner = identityContext.RequireIdentity().ApiKeyId;
         var model = JsonDictionaryValue.String(request, "model");
         if (model.Length == 0) throw new BadRequestException("model is required.");
@@ -58,7 +63,13 @@ public sealed partial class MultiAgentResponseService
             }
             else if (binding is null)
             {
-                if (!allowCreate || !tools.CanSpawn) return null;
+                if (!allowCreate) return null;
+                if (!tools.CanSpawn)
+                {
+                    if (tools.Definitions.Count > 0)
+                        throw new BadRequestException("Starting a native collaboration session requires the client's spawn_agent declaration. Server-only legacy agents cannot replace native collaboration tools.");
+                    return null;
+                }
                 if (JsonDictionaryValue.String(request, "previous_response_id").Length > 0)
                     throw new BadRequestException("The previous client-agent session is unavailable. Start a new root task.");
                 binding = await clientStore.OpenRootAsync(owner, identity.ThreadId,

@@ -53,7 +53,9 @@ public sealed partial class MultiAgentRuntime
                 var hidden = itemType == "function_call" && MultiAgentProtocol.ActionName(Text(source, "name")) is not null;
                 source["id"] = Id(itemType == "message" ? "msg" : "item");
                 source["agent"] = new Dictionary<string, object?> { ["agent_name"] = _client?.AgentName ?? incoming.Agent };
-                if (itemType == "message") source.Remove("phase");
+                // Commentary is authoritative. A final phase is committed only after
+                // accepting the whole model response and checking unfinished descendants.
+                if (itemType == "message" && Text(source, "phase") != "commentary") source.Remove("phase");
                 if (itemType is "function_call" or "custom_tool_call") source["call_id"] = Id("call_ma");
                 var live = new LiveItem { Agent = incoming.Agent, Round = incoming.Round, Item = source, Index = _output.Count, Hidden = hidden };
                 _liveItems.Add((incoming.Round, sourceIndex), live);

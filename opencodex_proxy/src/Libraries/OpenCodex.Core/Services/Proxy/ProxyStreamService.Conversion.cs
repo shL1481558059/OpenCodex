@@ -30,29 +30,36 @@ public sealed partial class ProxyStreamService
             var upstreamLines = _upstream.StreamJsonAsync(context.Route.Channel, state.UpstreamRequest, context.DefaultTimeout, token);
             var confirmed = await UpstreamStreamPrimer.PrimeAsync(
                 upstreamLines, token);
-            var lines = ConvertRound(context, confirmed, converted, streamState, skipped, token);
+            var capture = new StreamResponseCapture(context.ChannelType);
+            var validated = ValidateUpstreamCompletion(confirmed, capture, token);
+            var lines = ConvertRound(context, validated, converted, streamState, skipped, token);
             string? terminal = null;
-            await foreach (var line in lines.WithCancellation(token))
+            try
             {
-                if (streamState is null)
+                await foreach (var line in lines.WithCancellation(token))
                 {
-                    yield return line;
+                    if (streamState is null)
+                    {
+                        yield return line;
+                    }
+                    else if (WebSearchStreamEventState.IsTerminal(line))
+                    {
+                        terminal = line;
+                    }
+                    else
+                    {
+                        yield return streamState.Observe(line, tools!.Results);
+                    }
                 }
-                else if (WebSearchStreamEventState.IsTerminal(line))
-                {
-                    terminal = line;
-                }
-                else
-                {
-                    yield return streamState.Observe(line, tools!.Results);
-                }
+            }
+            finally
+            {
+                state.UpstreamResponse = converted.UpstreamResponse
+                    ?? capture.Complete(capture.IsComplete
+                        ? StreamCaptureTermination.Completed
+                        : StreamCaptureTermination.UnexpectedEnd).Response;
             }
 
-            state.UpstreamResponse = converted.UpstreamResponse;
-            if (tools is not null && !converted.UpstreamCompleted)
-            {
-                throw new UpstreamException("upstream stream ended before its terminal event", ProxyHttpStatus.BadGateway);
-            }
             if (converted.UpstreamResponse is null)
             {
                 yield break;
@@ -61,6 +68,14 @@ public sealed partial class ProxyStreamService
                 converted.UpstreamResponse, context.EntryProtocol, context.ChannelType,
                 context.Route.OriginalModel, textFormat, mappings);
             state.ResponsePayload = response;
+            if (HasStreamFailure(converted.UpstreamResponse))
+            {
+                if (terminal is not null)
+                {
+                    yield return terminal;
+                }
+                yield break;
+            }
             if (tools is null)
             {
                 yield break;
@@ -108,6 +123,23 @@ public sealed partial class ProxyStreamService
                 yield return final;
             }
             yield break;
+        }
+    }
+
+    private static async IAsyncEnumerable<string> ValidateUpstreamCompletion(
+        IAsyncEnumerable<string> lines,
+        StreamResponseCapture capture,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await foreach (var line in lines.WithCancellation(cancellationToken))
+        {
+            capture.Accept(line);
+            yield return line;
+        }
+
+        if (!capture.Complete(StreamCaptureTermination.Completed).Completed)
+        {
+            throw new UpstreamException("upstream stream ended before its terminal event");
         }
     }
 

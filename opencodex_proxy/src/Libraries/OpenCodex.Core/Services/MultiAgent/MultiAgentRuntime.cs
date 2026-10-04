@@ -47,6 +47,15 @@ public sealed partial class MultiAgentRuntime
             .Where(i => Text(i, "role") is "system" or "developer" && Text(i, "type") is "" or "message").ToList();
         if (instructions.Count > 0) _run.InstructionMessages = instructions.Select(WebSearchPayload.DeepCopy).ToList();
         await AcceptInput(request, ct);
+        // A failed model attempt does not close its task. The next client request resumes
+        // the same generation with already accepted tool results still in history.
+        var rootActor = _run.Agents["/root"];
+        if (rootActor.Status == "retryable")
+        {
+            rootActor.Status = "ready";
+            rootActor.LastError = null;
+        }
+        if (rootActor.Status == "completed") StartNextTask(rootActor);
         _run.LastResponseId = Id("resp");
         await _save();
         await Event("response.created", ("response", Response("in_progress")));
@@ -99,7 +108,7 @@ public sealed partial class MultiAgentRuntime
                     _run.ModelTurns += calls;
                     var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     var round = Id("round");
-                    _active.Add(agent.Name, (RunModel(payload, compact,
+                    _active.Add(agent.Name, (RunModel(payload, compact, compact ? ContinuationAnchors(agent) : [],
                         (e, _) => EnqueueModelEvent(agent.Name, round, e, stop.Token), stop.Token), stop, agent.CurrentTaskGeneration, round));
                 }
 
@@ -137,6 +146,21 @@ public sealed partial class MultiAgentRuntime
                     _run.Finished = _run.Agents["/root"].Status == "completed"
                         && !HasUnfinishedDescendants(_run.Agents["/root"])
                         && _run.Agents["/root"].Mailbox.Count == 0;
+                    if (!_run.Finished)
+                        throw new BadRequestException(_run.Agents["/root"].LastError
+                            ?? "The agent task has not completed and has no runnable work. Resume it with a new task.");
+                    if (_output.Count == 0)
+                    {
+                        // A retry after losing the final response must replay the committed
+                        // answer, never execute old tools or manufacture an empty completion.
+                        var finalItems = rootActor.CompletedTurns.LastOrDefault()?.Items
+                            .OfType<Dictionary<string, object?>>()
+                            .Where(i => Text(i, "type") == "message" && Text(i, "phase") == "final_answer")
+                            .ToList() ?? [];
+                        if (finalItems.Count == 0)
+                            throw new BadRequestException("The completed agent task has no final answer available to replay.");
+                        foreach (var item in finalItems) await Item(rootActor.Name, item);
+                    }
                     break;
                 }
 
@@ -187,9 +211,9 @@ public sealed partial class MultiAgentRuntime
         catch (IncompleteModelResponse exception)
         {
             var root = _run.Agents["/root"];
-            root.Status = "incomplete";
+            root.Status = "retryable";
             root.LastError = JsonSerializer.Serialize(exception.Details);
-            FinishTask(root, "incomplete");
+            _run.Finished = false;
             await CloseModelItems();
             var response = Response("incomplete");
             response["incomplete_details"] = exception.Details;
@@ -200,12 +224,15 @@ public sealed partial class MultiAgentRuntime
         catch (ProxyException exception)
         {
             var root = _run.Agents["/root"];
-            root.Status = "failed";
+            var retryable = exception is UpstreamException;
+            root.Status = retryable ? "retryable" : "failed";
             root.LastError = exception.Message;
-            FinishTask(root, "failed");
+            _run.Finished = false;
+            if (!retryable) FinishTask(root, "failed");
             await CloseModelItems();
             var response = Response("failed");
-            response["error"] = new Dictionary<string, object?> { ["code"] = exception.ErrorType, ["message"] = exception.Message };
+            response["error"] = new Dictionary<string, object?>
+                { ["code"] = exception.ErrorType, ["message"] = exception.Message, ["retryable"] = retryable };
             response["usage"] = Usage(_run.InputTokens - startInput, _run.OutputTokens - startOutput);
             await Event("response.failed", ("response", response));
             return response;
@@ -343,8 +370,7 @@ public sealed partial class MultiAgentRuntime
     private async Task ProcessTurn(MultiAgentState agent, Dictionary<string, object?> response, string round, CancellationToken ct)
     {
         var usage = JsonDictionaryValue.Object(response, "usage", WebSearchPayload.DeepCopyObject);
-        agent.LastInputTokens = WebSearchPayload.ToInt(JsonDictionaryValue.Get(usage, "input_tokens"), 0);
-        if (response.Remove("_ocxp_compacted_history", out var compacted)) ApplyCompactedHistory(agent, (List<object?>)compacted!);
+        response.Remove("_ocxp_compacted_history", out var compacted);
         _run.InputTokens += WebSearchPayload.ToInt(JsonDictionaryValue.Get(response, "_ocxp_summary_input_tokens"), 0);
         _run.OutputTokens += WebSearchPayload.ToInt(JsonDictionaryValue.Get(response, "_ocxp_summary_output_tokens"), 0);
         _run.InputTokens += WebSearchPayload.ToInt(JsonDictionaryValue.Get(usage, "input_tokens"), 0);
@@ -352,16 +378,23 @@ public sealed partial class MultiAgentRuntime
         if (Text(response, "status") == "incomplete")
             throw new IncompleteModelResponse(JsonDictionaryValue.Get(response, "incomplete_details"));
         if (Text(response, "status") == "failed")
-            throw new BadRequestException("A model response failed; the multi-agent task has not completed.");
+            throw new UpstreamException("A model response failed; the multi-agent task has not completed.",
+                body: JsonDictionaryValue.Get(response, "error"));
+        if (Text(response, "status") != "completed")
+            throw new UpstreamException("The model response did not reach a successful terminal status.");
         var items = JsonDictionaryValue.List(response, "output").OfType<Dictionary<string, object?>>().ToList();
-        var forkHistory = agent.History.Select(WebSearchPayload.DeepCopy).ToList();
+        var forkHistory = (compacted as List<object?> ?? agent.History).Select(WebSearchPayload.DeepCopy).ToList();
         var hasCalls = items.Any(i => Text(i, "type") is "function_call" or "custom_tool_call");
-        if (!hasCalls && !items.Any(i => Text(i, "type") == "message"))
-            throw new UpstreamException("The model returned neither a message nor a supported tool call.");
-        agent.Status = hasCalls ? "ready"
-            : agent.Mailbox.Count > 0 ? "ready"
-            : HasUnfinishedDescendants(agent) ? "finalizing" : "completed";
+        var messages = items.Where(i => Text(i, "type") == "message" && JsonDictionaryValue.List(i, "content")
+            .OfType<Dictionary<string, object?>>()
+            .Any(part => Text(part, "type") == "output_text" && !string.IsNullOrWhiteSpace(Text(part, "text"))
+                || Text(part, "type") == "refusal" && !string.IsNullOrWhiteSpace(Text(part, "refusal"))))
+            .ToList();
+        var hasFinalMessage = messages.Any(i => Text(i, "phase") != "commentary");
+        if (!hasCalls && messages.Count == 0)
+            throw new UpstreamException("The model returned neither a nonempty message nor a supported tool call.");
         var preparedCalls = new List<Dictionary<string, object?>>();
+        var terminalItems = new List<Dictionary<string, object?>>();
         try
         {
             if (_client is not null)
@@ -389,18 +422,37 @@ public sealed partial class MultiAgentRuntime
                         preparedCalls.Add(WebSearchPayload.DeepCopyObject(item));
                     }
                 }
-                agent.History.Add(item);
+                terminalItems.Add(item);
             }
         }
         catch
         {
-            agent.History.RemoveRange(forkHistory.Count, agent.History.Count - forkHistory.Count);
             // Cleanup must finish even when cancellation caused preparation to fail.
             if (preparedCalls.Count > 0 && _client?.RollbackToolCalls is { } rollback)
                 await rollback(preparedCalls, CancellationToken.None);
             throw;
         }
-        var terminalItems = agent.History.Skip(forkHistory.Count).OfType<Dictionary<string, object?>>().ToList();
+        // Commit context only after the model response and the complete tool batch are accepted.
+        if (compacted is List<object?> compactedHistory) ApplyCompactedHistory(agent, compactedHistory);
+        agent.History.AddRange(terminalItems);
+        agent.LastInputTokens = WebSearchPayload.ToInt(JsonDictionaryValue.Get(usage, "input_tokens"), 0);
+        agent.Status = hasCalls || !hasFinalMessage ? "ready"
+            : agent.Mailbox.Count > 0 ? "ready"
+            : HasUnfinishedDescendants(agent) ? "finalizing" : "completed";
+        // Register the whole client batch before exposing any executable item. A
+        // disconnect after the first done event must not orphan the remaining calls.
+        foreach (var item in terminalItems.Where(i => Text(i, "type") is "function_call" or "custom_tool_call"))
+        {
+            if (_client is null && Text(item, "type") == "function_call"
+                && MultiAgentProtocol.ActionName(Text(item, "name")) is not null) continue;
+            _run.PendingCalls.Add(Text(item, "call_id"), agent.Name);
+            agent.Status = "tool_wait";
+        }
+        foreach (var item in terminalItems.Where(i => Text(i, "type") == "message"))
+            item["phase"] = agent.Status == "completed" && Text(item, "phase") != "commentary"
+                ? "final_answer" : "commentary";
+        if (!hasCalls && agent.Status == "completed") FinishTask(agent, "completed");
+        await _save();
         for (var sourceIndex = 0; sourceIndex < terminalItems.Count; sourceIndex++)
         {
             var item = terminalItems[sourceIndex];
@@ -409,20 +461,15 @@ public sealed partial class MultiAgentRuntime
                 await ExecuteAction(agent, item, action, forkHistory);
             else if (type is "function_call" or "custom_tool_call")
             {
-                _run.PendingCalls.Add(Text(item, "call_id"), agent.Name);
-                agent.Status = "tool_wait";
-                await _save();
                 await FinishModelItem(agent.Name, round, sourceIndex, item);
             }
             else if (type == "message")
             {
-                item["phase"] = agent.Status == "completed" ? "final_answer" : "commentary";
                 await FinishModelItem(agent.Name, round, sourceIndex, item);
             }
             else if (FindLiveItem(round, sourceIndex) is not null)
                 await FinishModelItem(agent.Name, round, sourceIndex, item);
         }
-        if (!hasCalls && agent.Status == "completed") FinishTask(agent, "completed");
         if (_client is null && !hasCalls && agent.Status == "completed" && agent.Parent.Length > 0)
         {
             var text = string.Join("\n", items.Where(i => Text(i, "type") == "message")

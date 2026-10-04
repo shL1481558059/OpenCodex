@@ -16,6 +16,55 @@ namespace OpenCodex.Api.Tests;
 public sealed class ProxyStreamServiceTests
 {
     [Theory]
+    [InlineData("chat")]
+    [InlineData("messages")]
+    [InlineData("responses")]
+    public async Task StreamAsync_FailedTerminal_ThrowsAndLogsFailure(string protocol)
+    {
+        var blocks = protocol switch
+        {
+            "chat" => new[]
+            {
+                """data: {"id":"partial","choices":[{"index":0,"delta":{"content":"partial"}}]}""",
+                """data: {"error":{"type":"server_error","message":"summary failed"}}"""
+            },
+            "messages" => new[]
+            {
+                """data: {"type":"message_start","message":{"id":"partial","role":"assistant","content":[]}}""",
+                """data: {"type":"error","error":{"type":"server_error","message":"summary failed"}}"""
+            },
+            _ => new[]
+            {
+                """data: {"type":"response.created","response":{"id":"partial","status":"in_progress"}}""",
+                """data: {"type":"response.failed","response":{"id":"partial","status":"failed","error":{"type":"server_error","message":"summary failed"}}}"""
+            }
+        };
+        var lines = blocks.SelectMany(block => new[] { (block, 0), ("", 0) }).ToList();
+        var logs = new StubProxyLogService();
+        var writer = new CapturingProxyStreamWriter();
+        var channel = new Dictionary<string, object?> { ["id"] = "test", ["type"] = protocol };
+        var payload = new Dictionary<string, object?>();
+        var context = new ProxyStreamContext(
+            Stopwatch.GetTimestamp(), Guid.NewGuid(), "failed-stream", "admin", null, payload, payload,
+            new Dictionary<string, object?>(), "responses", new ProxyRouteDto(channel, "public", "model", false, true),
+            protocol, "test", "superadmin", "model", "public", 120,
+            new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()), writer, CancellationToken.None);
+
+        await Assert.ThrowsAsync<UpstreamException>(() => new ProxyStreamService(
+            new SequencedUpstreamClient(lines), logs, new StubWebSearchToolExecutor(),
+            WebSearchTestStore.Create()).StreamAsync(context));
+
+        Assert.Equal(502, logs.LastContext!.StatusCode);
+        Assert.NotNull(logs.LastContext.Error);
+        Assert.Contains(writer.Lines, line => line.Contains("response.failed", StringComparison.Ordinal));
+        Assert.DoesNotContain(writer.Lines, line => line.Contains("response.completed", StringComparison.Ordinal));
+        if (protocol != "responses")
+        {
+            Assert.Equal("failed", logs.LastContext.ResponsePayload!["status"]);
+        }
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task BuiltinStream_UnfinishedCall_DoesNotSearchOrComplete(bool hasDoneMarker)
@@ -523,7 +572,8 @@ public sealed class ProxyStreamServiceTests
         [
             ("data: {\"type\":\"response.created\"}", 0),
             ("", 0),
-            ("data: [DONE]", 0)
+            ("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}", 0),
+            ("", 0)
         ]);
         var logs = new StubProxyLogService();
         var service = new ProxyStreamService(
@@ -567,7 +617,7 @@ public sealed class ProxyStreamServiceTests
         await service.StreamAsync(context);
 
         Assert.True(writer.Prepared);
-        Assert.Equal(3, writer.Lines.Count);
+        Assert.Equal(5, writer.Lines.Count);
     }
 
     [Fact]
@@ -578,7 +628,8 @@ public sealed class ProxyStreamServiceTests
             ("event: response.output_text.delta", 0),
             ("data: {\"delta\":\"hello\"}", 0),
             ("", 0),
-            ("data: [DONE]", 0)
+            ("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}", 0),
+            ("", 0)
         ]);
         var logs = new StubProxyLogService();
         var service = new ProxyStreamService(
@@ -745,7 +796,8 @@ public sealed class ProxyStreamServiceTests
             ("data: {\"id\":\"chat-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}", 0),
             ("", 0),
             ("data: {\"id\":\"chat-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1,\"total_tokens\":6}}", 0),
-            ("", 0)
+            ("", 0),
+            ("data: [DONE]", 0)
         ]);
         var logs = new StubProxyLogService();
         var service = new ProxyStreamService(
@@ -868,12 +920,12 @@ public sealed class ProxyStreamServiceTests
             streamWriter: new CapturingProxyStreamWriter(),
             cancellationToken: CancellationToken.None);
 
-        await service.StreamAsync(context);
+        await Assert.ThrowsAsync<UpstreamException>(() => service.StreamAsync(context));
 
         Assert.NotNull(logs.LastContext);
-        Assert.Equal(200, logs.LastContext!.StatusCode);
+        Assert.Equal(502, logs.LastContext!.StatusCode);
         Assert.Equal(
-            "upstream stream ended before its terminal event｜终止:UnexpectedEnd｜最后SSE:data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}",
+            "upstream stream ended before its terminal event｜终止:UpstreamError｜最后SSE:data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}",
             logs.LastContext.Error);
     }
 

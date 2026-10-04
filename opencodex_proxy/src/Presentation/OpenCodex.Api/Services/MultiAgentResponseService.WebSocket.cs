@@ -188,8 +188,7 @@ public sealed partial class MultiAgentResponseService
                     try
                     {
                         var clientIdentity = MultiAgentClientIdentity.Parse(metadata.Headers);
-                        connectionBinding = clientIdentity is null ? null
-                            : await ResolveClientBinding(item, clientIdentity, catalog.SimulatesMultiAgent(model), ct);
+                        connectionBinding = await ResolveClientBinding(item, clientIdentity, catalog.SimulatesMultiAgent(model), ct);
                         if (connectionBinding is not null)
                             connectionRun = connectionBinding.Run;
                         else

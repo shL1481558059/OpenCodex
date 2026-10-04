@@ -63,7 +63,7 @@ public static partial class ProtocolConverter
             ("status", "completed"),
             ("call_id", callId),
             ("arguments", serializedArguments));
-        MergeInto(functionCall, ResponsesFunctionCallNameFields(responseName, responseNamespace));
+        MergeInto(functionCall, DeclaredFunctionCallNameFields(toolName, responseName, responseNamespace, mappings));
         return functionCall;
     }
 
@@ -87,9 +87,22 @@ public static partial class ProtocolConverter
             ("status", "in_progress"),
             ("call_id", callId),
             (shape.ArgumentField, string.Empty));
-        MergeInto(item, ResponsesFunctionCallNameFields(responseName, shape.Namespace));
+        MergeInto(item, shape.Kind == ResponsesToolCallKind.Function
+            ? DeclaredFunctionCallNameFields(toolName, responseName, shape.Namespace, mappings)
+            : ResponsesFunctionCallNameFields(responseName, shape.Namespace));
         MergeNativeToolExecution(item);
         return item;
+    }
+
+    private static Dictionary<string, object?> DeclaredFunctionCallNameFields(string upstreamName,
+        string responseName, string? responseNamespace,
+        IReadOnlyDictionary<string, ResponsesToolCallMapping>? mappings)
+    {
+        if (!TryGetResponsesToolCallMapping(upstreamName, mappings, out var mapping))
+            return ResponsesFunctionCallNameFields(responseName, responseNamespace);
+        var fields = Obj(("name", mapping.ResponsesName));
+        if (!string.IsNullOrEmpty(mapping.Namespace)) fields["namespace"] = mapping.Namespace;
+        return fields;
     }
 
     private static void MergeNativeToolExecution(Dictionary<string, object?> item)

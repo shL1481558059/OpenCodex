@@ -10,17 +10,44 @@ public static partial class ProtocolConverter
         string? originalModel,
         IReadOnlyDictionary<string, ResponsesToolCallMapping>? toolCallMappings)
     {
-        return protocol switch
+        var canonical = protocol switch
         {
             Responses => ResponsesResponseToCanonical(payload, originalModel),
             Chat => ChatResponseToCanonical(payload, originalModel, toolCallMappings),
             Messages => MessagesResponseToCanonical(payload, originalModel, toolCallMappings),
             _ => throw new BadRequestException($"unsupported upstream protocol: {protocol}")
         };
+        if (HasNonNullValue(payload, "error") || GetString(payload, "status") == "failed")
+        {
+            canonical["status"] = "failed";
+            canonical["error"] = DeepCopy(GetValue(payload, "error")) ?? Obj(
+                ("type", "upstream_error"), ("message", "The upstream response failed."));
+        }
+        return canonical;
     }
 
     private static Dictionary<string, object?> FromCanonicalResponse(Dictionary<string, object?> canonical, string protocol)
     {
+        if (GetString(canonical, "status") == "failed")
+        {
+            var error = DeepCopy(GetValue(canonical, "error"));
+            if (protocol == Responses)
+            {
+                var failed = CanonicalToResponsesResponse(canonical);
+                failed["status"] = "failed";
+                failed["error"] = error;
+                return failed;
+            }
+            if (protocol == Chat)
+            {
+                return Obj(("error", error));
+            }
+            if (protocol == Messages)
+            {
+                return Obj(("type", "error"), ("error", error));
+            }
+        }
+
         return protocol switch
         {
             Responses => CanonicalToResponsesResponse(canonical),

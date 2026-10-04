@@ -7,6 +7,138 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class MultiAgentContextTests
 {
+    [Fact]
+    public async Task RepeatedCompactionRetainsOriginalTaskAndLatestCompleteToolExchangeDespiteMisleadingSummary()
+    {
+        var run = Run();
+        var actor = run.Agents["/root"];
+        var task = Message("Append ONCE only; verify the result and finish with RECOVERY_OK 1.", "user");
+        task["id"] = "original-task";
+        var executed = Call("append_once", new { }); executed["call_id"] = "append-call";
+        actor.History = [task, executed, new Dictionary<string, object?>
+            { ["type"] = "function_call_output", ["call_id"] = "append-call", ["output"] = "APPEND_EXECUTED_ONCE" }];
+        actor.TaskStarted = true;
+        actor.LastInputTokens = run.CompactThresholdTokens = 10;
+        run.ModelTurns = 1;
+        var normalCalls = 0;
+        Task<Dictionary<string, object?>> Model(Dictionary<string, object?> payload, CancellationToken ct)
+        {
+            if (JsonDictionaryValue.List(payload, "tools").Count == 0)
+                return Task.FromResult(Response(Message("Current meta-task: write this summary only. The original task must not be executed now.")));
+            var input = JsonDictionaryValue.List(payload, "input").OfType<Dictionary<string, object?>>().ToList();
+            var original = Assert.Single(input, i => JsonDictionaryValue.String(i, "id") == "original-task");
+            Assert.Equal(System.Text.Json.JsonSerializer.Serialize(task), System.Text.Json.JsonSerializer.Serialize(original));
+            var results = input.Where(i => JsonDictionaryValue.String(i, "type") == "function_call_output").ToList();
+            var result = Assert.Single(results);
+            Assert.Single(input, i => JsonDictionaryValue.String(i, "type") == "function_call"
+                && JsonDictionaryValue.String(i, "call_id") == JsonDictionaryValue.String(result, "call_id"));
+            normalCalls++;
+            Assert.Equal(normalCalls == 1 ? "APPEND_EXECUTED_ONCE" : "VERIFIED_ONE_LINE", result["output"]);
+            return Task.FromResult(normalCalls == 1 ? Response(Call("read_only_verify", new { })) : Response(Message("RECOVERY_OK 1")));
+        }
+        await Execute(run, Model);
+        var pending = Assert.Single(run.PendingCalls).Key;
+        await Execute(run, Model, new() { ["input"] = new List<object?> { new Dictionary<string, object?>
+            { ["type"] = "function_call_output", ["call_id"] = pending, ["output"] = "VERIFIED_ONE_LINE" } } });
+        Assert.Equal(2, normalCalls);
+        Assert.True(run.Finished);
+        Assert.Single(actor.CompletedTurns);
+    }
+
+    [Theory]
+    [InlineData("failed")]
+    [InlineData("incomplete")]
+    public async Task FailedSummaryRetriesSameTaskWithoutReapplyingConsumedToolResult(string status)
+    {
+        var run = Run();
+        var actor = run.Agents["/root"];
+        actor.Generation = actor.CurrentTaskGeneration = 7;
+        actor.TaskStarted = true;
+        actor.Status = "tool_wait";
+        actor.LastInputTokens = run.CompactThresholdTokens;
+        run.ModelTurns = 1;
+        var call = Call("read_file", new { });
+        call["call_id"] = "call_ma_read";
+        actor.History.Add(call);
+        run.PendingCalls.Add("call_ma_read", "/root");
+        var request = new Dictionary<string, object?> { ["input"] = new List<object?>
+        {
+            new Dictionary<string, object?> { ["type"] = "function_call_output", ["call_id"] = "call_ma_read", ["output"] = "READ_ONCE" }
+        } };
+        var calls = 0;
+        Task<Dictionary<string, object?>> Model(Dictionary<string, object?> payload, CancellationToken ct)
+        {
+            calls++;
+            if (calls == 1)
+            {
+                var failed = Response(Message("PARTIAL_SUMMARY"));
+                failed["status"] = status;
+                return Task.FromResult(failed);
+            }
+            if (calls == 2)
+            {
+                Assert.Contains("READ_ONCE", History(payload));
+                return Task.FromResult(Response(Message("SUMMARY")));
+            }
+            return Task.FromResult(Response(Message("FINAL")));
+        }
+
+        var first = await Execute(run, Model, request);
+        Assert.Contains(first, e => JsonDictionaryValue.String(e, "type") == "response.failed");
+        var taskWasStillStarted = actor.TaskStarted;
+        var completedAfterFailure = actor.CompletedTurns.Count;
+        Assert.Equal(7, actor.CurrentTaskGeneration);
+        Assert.Single(actor.History.OfType<Dictionary<string, object?>>(),
+            i => JsonDictionaryValue.String(i, "type") == "function_call_output");
+        var second = await Execute(run, Model, request);
+        Assert.Equal(3, calls);
+        Assert.True(taskWasStillStarted);
+        Assert.Equal(0, completedAfterFailure);
+        Assert.True(run.Finished);
+        Assert.Single(run.ReceivedCalls);
+        Assert.Equal(7, Assert.Single(actor.CompletedTurns).Generation);
+        Assert.Single(actor.CompletedTurns.Single().Items.OfType<Dictionary<string, object?>>(),
+            i => JsonDictionaryValue.String(i, "type") == "function_call_output");
+        Assert.Contains("FINAL", System.Text.Json.JsonSerializer.Serialize(second));
+    }
+
+    [Theory]
+    [InlineData("failed")]
+    [InlineData("incomplete")]
+    public async Task FailedMainAttemptAfterSummaryDoesNotCommitCompactionAndResumesAfterReload(string status)
+    {
+        var run = Run();
+        run.SessionKey = "retry-after-restart";
+        run.Agents["/root"].LastInputTokens = run.CompactThresholdTokens;
+        var originalHistory = System.Text.Json.JsonSerializer.Serialize(run.Agents["/root"].History);
+        var calls = 0;
+        var first = await Execute(run, (_, _) =>
+        {
+            calls++;
+            var result = Response(Message(calls == 1 ? "SUMMARY" : "PARTIAL"));
+            if (calls == 2) result["status"] = status;
+            return Task.FromResult(result);
+        });
+        Assert.Contains(first, e => JsonDictionaryValue.String(e, "type") == "response." + status);
+        Assert.Equal(originalHistory, System.Text.Json.JsonSerializer.Serialize(run.Agents["/root"].History));
+        Assert.Equal(run.CompactThresholdTokens, run.Agents["/root"].LastInputTokens);
+        Assert.True(run.Agents["/root"].TaskStarted);
+        var directory = Path.Combine(Path.GetTempPath(), "ocxp-retry-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            await new MultiAgentRunStore(directory).SaveAsync(run, CancellationToken.None);
+            run = await new MultiAgentRunStore(directory).GetAsync(run.SessionKey, run.LastResponseId,
+                () => throw new InvalidOperationException("Must restore the existing actor"), CancellationToken.None);
+            var resumedCalls = 0;
+            var resumed = await Execute(run, (_, _) => Task.FromResult(Response(Message(++resumedCalls == 1 ? "SUMMARY" : "FINAL"))));
+            Assert.Equal(2, resumedCalls);
+            Assert.True(run.Finished);
+            Assert.Single(run.Agents["/root"].CompletedTurns);
+            Assert.Contains("FINAL", System.Text.Json.JsonSerializer.Serialize(resumed));
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
+    }
+
     [Theory]
     [InlineData(99, 0, 1)]
     [InlineData(100, 0, 2)]

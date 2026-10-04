@@ -13,6 +13,28 @@ namespace OpenCodex.Api.Tests;
 public sealed class MultiAgentClientResponseTests
 {
     [Fact]
+    public async Task NativeToolsWithoutThreadIdentityCannotSilentlyBecomeLegacyAgents()
+    {
+        using var context = new MultiAgentApiTestContext(ctx => Stream(ctx, Events(Terminal(Message("unexpected legacy")))));
+        var error = await Assert.ThrowsAsync<BadRequestException>(() => context.Service.Responses(ClientRequest()));
+        Assert.Contains("thread", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(context.FakeEndpoint.Calls);
+    }
+
+    [Fact]
+    public async Task NewNativeRootWithoutSpawnDeclarationCannotSilentlyBecomeLegacyAgents()
+    {
+        using var root = Root(ctx => Stream(ctx, Events(Terminal(Message("unexpected legacy")))));
+        var request = ClientRequest();
+        var definitions = (D)JsonDictionaryValue.List(request, "tools").Single()!;
+        definitions["tools"] = JsonDictionaryValue.List(definitions, "tools").OfType<D>()
+            .Where(tool => !Equals(tool["name"], "spawn_agent")).Cast<object?>().ToList();
+        var error = await Assert.ThrowsAsync<BadRequestException>(() => root.Service.Responses(request));
+        Assert.Contains("spawn_agent", error.Message);
+        Assert.Empty(root.FakeEndpoint.Calls);
+    }
+
+    [Fact]
     public async Task LateInterruptResultDoesNotCancelANewerChildRequest()
     {
         var calls = 0;

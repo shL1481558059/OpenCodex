@@ -18,6 +18,64 @@ public sealed class ProxyEndpointServiceTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public async Task ProxyAsync_PublishedToolThenStreamFailure_LogsFailureAndNeverReplays(bool hasFailedTerminal)
+    {
+        var logs = new StubProxyLogService();
+        var upstream = new FailedTerminalUpstreamClient(hasFailedTerminal);
+        var webSearch = new StubWebSearchToolExecutor();
+        var streams = new ProxyStreamService(upstream, logs, webSearch, WebSearchTestStore.Create());
+        var breaker = new ChannelCircuitBreakerService(1, TimeSpan.FromSeconds(30), 1, null, () => DateTimeOffset.UtcNow);
+        var primary = CreateChannel("primary", 0, type: ProtocolConverter.Responses);
+        var secondary = CreateChannel("secondary", 1, type: ProtocolConverter.Responses);
+        primary["circuit_break_duration_seconds"] = 30;
+        var service = CreateService(new ChannelCapacityService(), new StubProxyRouteService(
+            [CreateRoute(primary, "model", "upstream"), CreateRoute(secondary, "model", "upstream")]),
+            breaker: breaker, streams: streams, logs: logs, webSearch: webSearch);
+        var writer = new RecordingProxyStreamWriter();
+        var context = new ProxyEndpointContext(
+            ProtocolConverter.Responses,
+            new Dictionary<string, object?> { ["model"] = "model", ["input"] = "run the tool", ["stream"] = true },
+            new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
+            writer, CancellationToken.None);
+
+        await Assert.ThrowsAsync<UpstreamException>(() => service.ProxyAsync(context));
+
+        Assert.Equal(1, upstream.Calls);
+        Assert.Contains(writer.WrittenLines, line => line.Contains("external_tool", StringComparison.Ordinal));
+        Assert.DoesNotContain(writer.WrittenLines, line => line.Contains("response.completed", StringComparison.Ordinal));
+        Assert.Equal(ChannelHealthStatus.Open, await breaker.GetHealthStatusAsync("admin", "primary", true));
+        var attempt = Assert.Single(logs.WrittenLogs);
+        Assert.Equal(502, attempt.StatusCode);
+        Assert.NotNull(attempt.Error);
+    }
+
+    private sealed class FailedTerminalUpstreamClient(bool hasFailedTerminal) : IUpstreamClient
+    {
+        public int Calls { get; private set; }
+
+        public Task<Dictionary<string, object?>> PostJsonAsync(IReadOnlyDictionary<string, object?> channel,
+            IReadOnlyDictionary<string, object?> payload, int defaultTimeout, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public async IAsyncEnumerable<string> StreamJsonAsync(IReadOnlyDictionary<string, object?> channel,
+            IReadOnlyDictionary<string, object?> payload, int defaultTimeout,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            Calls++;
+            yield return """data: {"type":"response.output_item.done","item":{"type":"function_call","name":"external_tool","call_id":"call_external","arguments":"{}"}}""";
+            yield return "";
+            if (hasFailedTerminal)
+            {
+                yield return """data: {"type":"response.failed","response":{"id":"failed","status":"failed","error":{"type":"server_error","message":"upstream failed after the tool"}}}""";
+                yield return "";
+            }
+            await Task.CompletedTask;
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public async Task ProxyAsync_WebSearch_PreparesOnlyAndDoesNotReplayExecutedTools(bool executed)
     {
         var executor = new StubWebSearchToolExecutor(WebSearchModes.Simulate);

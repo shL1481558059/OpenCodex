@@ -15,6 +15,36 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class ProtocolConversionMatrixTests
 {
+    [Theory]
+    [InlineData("chat", "responses")]
+    [InlineData("messages", "responses")]
+    [InlineData("responses", "chat")]
+    [InlineData("responses", "messages")]
+    public void ConvertResponse_UpstreamFailure_PreservesError(string upstreamProtocol, string clientProtocol)
+    {
+        var error = new D { ["type"] = "server_error", ["message"] = "summary failed" };
+        var payload = new D
+        {
+            ["id"] = "failed_response",
+            ["status"] = "failed",
+            ["error"] = error
+        };
+
+        var result = ProtocolConverter.ConvertResponse(payload, clientProtocol, upstreamProtocol, "test");
+
+        var convertedError = Assert.IsType<D>(result["error"]);
+        Assert.Equal("summary failed", convertedError["message"]);
+        if (clientProtocol == "responses")
+        {
+            Assert.Equal("failed", result["status"]);
+        }
+        else
+        {
+            Assert.False(result.ContainsKey("choices"));
+            Assert.False(result.ContainsKey("stop_reason"));
+        }
+    }
+
     public static IEnumerable<object[]> ProtocolMatrix()
     {
         foreach (var entryProtocol in Protocols())

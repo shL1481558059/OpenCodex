@@ -539,6 +539,10 @@ public static partial class SseStreamConverter
         }
 
         result.UpstreamCompleted = upstreamResponseAccumulator.IsComplete;
+        if (!result.UpstreamCompleted)
+        {
+            throw new UpstreamException("upstream stream ended before its terminal event");
+        }
 
         var decodedCustomInputs = new Dictionary<int, string>();
         foreach (var (index, block) in contentBlocks)

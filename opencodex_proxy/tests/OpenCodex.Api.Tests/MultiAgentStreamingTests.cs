@@ -11,6 +11,51 @@ namespace OpenCodex.Api.Tests;
 public sealed class MultiAgentStreamingTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CommentaryOnlyResponseContinuesSameTaskAndPreservesPhase(bool stream)
+    {
+        var run = Run();
+        var events = new ConcurrentQueue<D>();
+        var calls = 0;
+        MultiAgentModelCall model = async (payload, emit, ct) =>
+        {
+            var first = ++calls == 1;
+            if (!first) Assert.Contains("PROGRESS", JsonSerializer.Serialize(payload["input"]));
+            var item = Message(first ? "PROGRESS" : "FINAL");
+            item["phase"] = first ? "commentary" : "final_answer";
+            if (stream)
+            {
+                await emit(new() { ["type"] = "response.output_item.added", ["output_index"] = 0, ["item"] = item }, ct);
+                await emit(new() { ["type"] = "response.output_item.done", ["output_index"] = 0, ["item"] = item }, ct);
+            }
+            return Response(item);
+        };
+        using var timeout = Deadline();
+        await Runtime(run, model, events).ExecuteAsync(Request(), timeout.Token);
+        Assert.Equal(2, calls);
+        var done = events.Where(e => Type(e) == "response.output_item.done").Select(e => (D)e["item"]!).ToArray();
+        Assert.Equal(new[] { "commentary", "final_answer" }, done.Select(i => (string)i["phase"]!));
+        Assert.Equal("commentary", ((D)events.First(e => Type(e) == "response.output_item.added")["item"]!)["phase"]);
+        Assert.Single(run.Agents["/root"].CompletedTurns);
+        Assert.True(run.Finished);
+    }
+
+    [Fact]
+    public async Task CommentaryAndFinalInOneResponseKeepTheirDistinctPhases()
+    {
+        var run = Run();
+        var events = new ConcurrentQueue<D>();
+        var commentary = Message("PROGRESS"); commentary["phase"] = "commentary";
+        var final = Message("FINAL"); final["phase"] = "final_answer";
+        using var timeout = Deadline();
+        await Runtime(run, (_, _, _) => Task.FromResult(Response(commentary, final)), events)
+            .ExecuteAsync(Request(), timeout.Token);
+        var done = events.Where(e => Type(e) == "response.output_item.done").Select(e => (D)e["item"]!).ToArray();
+        Assert.Equal(new[] { "commentary", "final_answer" }, done.Select(i => (string)i["phase"]!));
+    }
+
+    [Theory]
     [InlineData("text(1+1);")]
     [InlineData("{\"input\":\"literal\"}")]
     [InlineData(" \ntext(\"中文 😀 \\\"quoted\\\"\");\n ")]

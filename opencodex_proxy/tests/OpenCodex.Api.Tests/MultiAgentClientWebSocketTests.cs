@@ -10,6 +10,29 @@ namespace OpenCodex.Api.Tests;
 public sealed class MultiAgentClientWebSocketTests
 {
     [Fact]
+    public async Task WebSocketNativeToolsWithoutIdentityCannotSilentlyBecomeLegacyAgents()
+    {
+        using var context = new MultiAgentApiTestContext(ctx => Stream(ctx, Events(Terminal(Message("unexpected legacy")))));
+        var socket = context.Socket();
+        var operation = context.Service.ResponsesWebSocket();
+        var create = ClientRequest();
+        create["type"] = "response.create";
+        socket.ClientSend(create);
+        try
+        {
+            var first = await socket.Outgoing.Reader.ReadAsync(context.Lifetime.Token);
+            Assert.Equal("error", Type(first));
+            Assert.Contains("thread", JsonSerializer.Serialize(first), StringComparison.OrdinalIgnoreCase);
+            Assert.Empty(context.FakeEndpoint.Calls);
+        }
+        finally
+        {
+            socket.ClientClose();
+            await operation;
+        }
+    }
+
+    [Fact]
     public async Task WebSocketSpawnAllowsHttpChildBeforeNativeResultInjection()
     {
         var calls = 0;

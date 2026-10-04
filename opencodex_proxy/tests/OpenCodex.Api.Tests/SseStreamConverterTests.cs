@@ -9,6 +9,35 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class SseStreamConverterTests
 {
+    [Theory]
+    [InlineData("chat")]
+    [InlineData("messages")]
+    public async Task ToResponses_UnexpectedEnd_DoesNotEmitSuccessfulTerminal(string protocol)
+    {
+        var source = protocol == "chat"
+            ? SseLines(SseBlock("""{"id":"chat_partial","choices":[{"index":0,"delta":{"content":"partial"}}]}"""))
+            : SseLines(
+                SseBlock("""{"type":"message_start","message":{"id":"msg_partial","model":"test","role":"assistant","content":[]}}""", "message_start"),
+                SseBlock("""{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"partial"}}""", "content_block_start"));
+        var result = new ConvertedStreamResult();
+        var emitted = new List<string>();
+        var converted = protocol == "chat"
+            ? SseStreamConverter.ChatToResponsesEvents(source, "test", result, CancellationToken.None)
+            : SseStreamConverter.MessagesToResponsesEvents(source, "test", result, CancellationToken.None);
+
+        await Assert.ThrowsAsync<UpstreamException>(async () =>
+        {
+            await foreach (var line in converted)
+            {
+                emitted.Add(line);
+            }
+        });
+
+        Assert.False(result.UpstreamCompleted);
+        Assert.DoesNotContain(emitted, line => line.Contains("response.completed", StringComparison.Ordinal));
+        Assert.DoesNotContain(emitted, line => line.Contains("response.output_item.done", StringComparison.Ordinal));
+    }
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
