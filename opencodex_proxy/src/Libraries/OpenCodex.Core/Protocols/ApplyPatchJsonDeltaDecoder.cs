@@ -13,6 +13,7 @@ internal sealed class ApplyPatchJsonDeltaDecoder
     private bool _escapePending;
     private int _unicodeDigitsRemaining;
     private int _unicodeValue;
+    private char? _pendingHighSurrogate;
 
     public string Append(string jsonFragment)
     {
@@ -49,7 +50,7 @@ internal sealed class ApplyPatchJsonDeltaDecoder
                 _consumeIndex++;
                 if (_unicodeDigitsRemaining == 0)
                 {
-                    delta.Append((char)_unicodeValue);
+                    AppendDecodedChar((char)_unicodeValue, delta);
                     _unicodeValue = 0;
                 }
 
@@ -82,11 +83,37 @@ internal sealed class ApplyPatchJsonDeltaDecoder
                 break;
             }
 
-            delta.Append(current);
+            AppendDecodedChar(current, delta);
             _consumeIndex++;
         }
 
         return delta.ToString();
+    }
+
+    private void AppendDecodedChar(char value, StringBuilder delta)
+    {
+        if (_pendingHighSurrogate is char highSurrogate)
+        {
+            if (char.IsLowSurrogate(value))
+            {
+                delta.Append(highSurrogate);
+                delta.Append(value);
+                _pendingHighSurrogate = null;
+                return;
+            }
+
+            delta.Append(highSurrogate);
+            _pendingHighSurrogate = null;
+        }
+
+        if (char.IsHighSurrogate(value))
+        {
+            _pendingHighSurrogate = value;
+        }
+        else
+        {
+            delta.Append(value);
+        }
     }
 
     private static int FindValueStart(StringBuilder buffer)
