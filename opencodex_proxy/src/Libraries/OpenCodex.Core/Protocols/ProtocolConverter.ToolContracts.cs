@@ -1,3 +1,5 @@
+using OpenCodex.Core.Errors;
+
 namespace OpenCodex.Core.Protocols;
 
 internal enum ResponsesToolCallKind
@@ -60,6 +62,11 @@ public static partial class ProtocolConverter
                 Namespace = mapping.Namespace
             };
         }
+
+        // A supplied request contract is authoritative, including an empty tool set.
+        // Guessing a leaf name here can change both the namespace and executable type.
+        if (mappings is not null)
+            throw new UpstreamException("Upstream tool call does not match any declared tool name. Retry with an exactly declared tool name.");
 
         var normalized = toolName.Replace("-", "_", StringComparison.Ordinal);
         return IsApplyPatchName(normalized)

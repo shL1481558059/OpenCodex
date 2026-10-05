@@ -3420,7 +3420,23 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                 },
                 new Dictionary<string, object?>
                 {
-                    ["tools"] = new List<object?> { new Dictionary<string, object?> { ["type"] = "web_search" } },
+                    ["tools"] = new List<object?>(
+                    [
+                        new Dictionary<string, object?> { ["type"] = "web_search" },
+                        .. testCase.FinalToolCalls.Select(tool =>
+                        {
+                            var definition = new Dictionary<string, object?>
+                            {
+                                ["type"] = "function", ["name"] = tool.ExpectedName,
+                                ["parameters"] = BuildMessagesToolDefinition(tool.UpstreamName, "Client tool.")["input_schema"]
+                            };
+                            return (object?)(tool.ExpectedNamespace is null ? definition : new Dictionary<string, object?>
+                            {
+                                ["type"] = "namespace", ["name"] = tool.ExpectedNamespace,
+                                ["tools"] = new List<object?> { definition }
+                            });
+                        })
+                    ]),
                     ["max_tool_calls"] = testCase.WebQueries.Count + testCase.FinalToolCalls.Count
                 },
                 "public-model",

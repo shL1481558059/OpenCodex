@@ -57,6 +57,8 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddSingleton(serviceProvider => new OpenCodex.Core.Services.MultiAgent.MultiAgentClientStore(
             serviceProvider.GetRequiredService<OpenCodex.Core.Services.MultiAgent.MultiAgentRunStore>(),
             serviceProvider.GetRequiredService<IConfiguration>()["MultiAgent:StateDirectory"] ?? "logs/multi-agent-runs"));
+        services.AddSingleton(serviceProvider => new OpenCodex.Core.Services.MultiAgent.NativeClientSessionStore(
+            serviceProvider.GetRequiredService<IConfiguration>()["MultiAgent:StateDirectory"] ?? "logs/multi-agent-runs"));
         services.AddOpenCodexAuthentication(configuration);
 
         return services;

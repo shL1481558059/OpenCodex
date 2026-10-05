@@ -26,33 +26,26 @@ public sealed class WebSearchProgressTests
         var executor = new BlockedSearchExecutor(fail);
         var writer = new RecordingWriter();
         var history = WebSearchTestStore.Create();
-        var payload = new Dictionary<string, object?> { ["input"] = "search" };
+        var original = new Dictionary<string, object?>
+        {
+            ["input"] = "search", ["max_tool_calls"] = 1,
+            ["tools"] = new List<object?> { new Dictionary<string, object?> { ["type"] = "web_search" } }
+        };
+        var payload = DeepCopyObject(original);
+        var binding = WebSearchRequestPolicy.RegisterBuiltin(payload, WebSearchModes.Simulate,
+            ProtocolConverter.Responses, ProtocolConverter.Chat, "superadmin", WebSearchTestStore.OwnerUserId);
+        Assert.NotNull(binding);
+        var upstreamRequest = ProtocolConverter.ConvertRequest(payload,
+            ProtocolConverter.Responses, ProtocolConverter.Chat, "upstream");
         var channel = new Dictionary<string, object?> { ["type"] = "chat", ["id"] = "test" };
         var context = new ProxyStreamContext(
-            Stopwatch.GetTimestamp(), Guid.NewGuid(), "progress", "admin", null, payload, payload,
-            new Dictionary<string, object?>
-            {
-                ["model"] = "upstream", ["messages"] = new List<object?>(),
-                ["tools"] = new List<object?>
-                {
-                    new Dictionary<string, object?>
-                    {
-                        ["type"] = "function",
-                        ["function"] = new Dictionary<string, object?> { ["name"] = WebSearchRequestPolicy.InternalToolName }
-                    }
-                }
-            },
+            Stopwatch.GetTimestamp(), Guid.NewGuid(), "progress", "admin", null, original, payload, upstreamRequest,
             "responses", new ProxyRouteDto(channel, "public", "upstream", false, true),
             "chat", "test", "superadmin", "upstream", "public", 30,
             new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
             writer, CancellationToken.None)
         {
-            BuiltinTools = new BuiltinToolRequestContext
-            {
-                OwnerUserId = WebSearchTestStore.OwnerUserId,
-                WebSearchToolName = WebSearchRequestPolicy.InternalToolName,
-                MaxWebSearchCalls = 1
-            }
+            BuiltinTools = binding
         };
         var service = new ProxyStreamService(new ChatStream(), new Logs(), executor, history);
         var task = service.StreamAsync(context);

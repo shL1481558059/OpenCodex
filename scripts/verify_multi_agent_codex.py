@@ -9,25 +9,32 @@ import sqlite3
 import subprocess
 import time
 from urllib.parse import urlparse
+from verify_native_codex_lifecycle import preflight_model_catalog, verify_cached_model
 
 
 MODEL = "deepseek-v4.1-flash"
 
 COLLABORATION = """This is an authorized local integration test. You MUST use the native
-collaboration tools, not simulate delegation in text. All agents must use the current
-deepseek-v4.1-flash model. Do not use web search or modify project source.
+collaboration tools, not simulate delegation in text. All agents inherit the current
+deepseek-v4.1-flash model: omit model overrides. Do not use web search or modify project source.
 1. Spawn alpha and beta with fork_turns=none. Alpha must read alpha.txt with a shell
-tool, calculate 7*9, and report ALPHA_OK_63. Beta must read beta.txt with a shell tool,
-calculate 20+22, and report BETA_OK_42.
-2. Send beta a message asking it to acknowledge MESSAGE_OK. Use list_agents and
-wait_agent to collect actual reports. Do not invent results.
+   tool, calculate 7*9, and report ALPHA_OK_63. Beta must read beta.txt and calculate
+   20+22, then sleep 8 seconds in its shell command before reporting BETA_OK_42.
+2. Immediately after spawning beta, send_message to beta asking it to acknowledge
+   MESSAGE_OK in its final. Send this before any waits so beta is still running.
+   Use list_agents and wait_agent to collect actual reports. You MUST invoke
+   wait_agent at least once. Do not invent results.
 3. After alpha is finished, use followup_task on alpha: calculate 64+1 and return
-FOLLOWUP_OK_65. Wait for its real result.
-4. Spawn sleeper with fork_turns=none and ask it to run a shell sleep for 20 seconds.
-Interrupt sleeper using interrupt_agent. Use list_agents to verify its state.
+   FOLLOWUP_OK_65. Wait for its real result.
+4. Spawn sleeper with fork_turns=none and ask it to run exactly this shell command:
+   touch sleeper.ready; sleep 20
+   Before interrupting, use your own shell tool to wait until sleeper.ready exists
+   (for example a short loop bounded to 15 seconds). Then immediately interrupt
+   sleeper using interrupt_agent. Use list_agents to verify its state. Do not wait
+   for the full sleep to finish.
 5. Your final answer must include COLLABORATION_OK, ALPHA_OK_63, BETA_OK_42,
-FOLLOWUP_OK_65 and the observed interruption result. Only declare success after
-the actual native operations succeed. Never wait indefinitely; report any failure.
+   FOLLOWUP_OK_65 and the observed interruption result. Only declare success after
+   the actual native operations succeed. Never wait indefinitely; report any failure.
 """
 
 RECOVERY = """This is an authorized local failure-recovery integration test.
@@ -240,6 +247,7 @@ def main():
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--scenario", choices=("collaboration", "recovery"), required=True)
     parser.add_argument("--timeout", type=int, default=900)
+    parser.add_argument("--native-trace-log", type=Path, help="Local API Debug log proving each native thread entered the new executor")
     parser.add_argument("--fault-events", type=Path)
     parser.add_argument("--database", type=Path, help="Local SQLite request-log database")
     args = parser.parse_args()
@@ -247,6 +255,8 @@ def main():
         parser.error("--base-url must point to the local instance under test")
     if not os.environ.get(args.api_key_env):
         parser.error(f"missing API key environment variable {args.api_key_env}")
+    if args.scenario == "collaboration" and not args.native_trace_log:
+        parser.error("collaboration requires --native-trace-log to prove the native executor route")
     if args.scenario == "recovery" and (not args.fault_events or not args.database):
         parser.error("recovery requires --fault-events and --database to prove failure and retry")
     output = args.output_dir.resolve()
@@ -279,6 +289,7 @@ api_key_model_discovery = true
     prompt = COLLABORATION if args.scenario == "collaboration" else RECOVERY
     (output / "prompt.txt").write_text(prompt)
     version = subprocess.check_output([args.codex_bin, "--version"], text=True).strip()
+    preflight_model_catalog(args.codex_bin, home, output)
     command = [args.codex_bin, "exec", "--json", "--skip-git-repo-check",
                "--sandbox", "workspace-write", "-C", str(work), "-m", MODEL,
                "-o", str(output / "final.txt"), prompt]
@@ -305,18 +316,30 @@ api_key_model_discovery = true
     items = [event.get("item", {}) for event in events if event.get("type") == "item.completed"]
     collaboration = [item for item in items if "collab" in item.get("type", "")]
     failures = []
+    try:
+        verify_cached_model(home, MODEL, output)
+    except (AssertionError, OSError, ValueError) as error:
+        failures.append(str(error))
     native = None
     recovery = None
+    route_audit = None
     if code != 0 or timed_out or not completed or not final.strip():
         failures.append("Codex did not complete with a nonempty final answer")
     if args.scenario == "collaboration":
         for marker in ("COLLABORATION_OK", "ALPHA_OK_63", "BETA_OK_42", "FOLLOWUP_OK_65"):
             if marker not in final:
                 failures.append(f"missing verified result marker: {marker}")
-        if not collaboration:
-            failures.append("no native collaboration events; text claims are insufficient")
+        # Codex 0.160 v2 persists collaboration calls in native rollout instead of
+        # emitting the older CLI collab_tool_call item. Verify those real calls,
+        # results and child identities below; text markers alone never pass.
         native, native_failures = audit_native_sessions(home, threads)
         failures.extend(native_failures)
+        expected_threads = threads + [child["thread_id"] for child in native["children"]]
+        trace = args.native_trace_log.read_text() if args.native_trace_log.exists() else ""
+        missing = [thread for thread in expected_threads if "Native client response: thread=" + thread + " " not in trace]
+        route_audit = {"expected_threads": expected_threads, "missing_threads": missing, "passed": not missing}
+        if missing:
+            failures.append("native executor route was not observed for: " + ", ".join(missing))
     else:
         marker = work / "marker.txt"
         if not marker.exists() or marker.read_text().splitlines() != ["RECOVERY_SIDE_EFFECT"]:
@@ -351,7 +374,7 @@ api_key_model_discovery = true
                "started_at": started_at, "ended_at": ended_at,
                "root_threads": threads, "native_collaboration_events": collaboration,
                "native_session_audit": native,
-               "recovery_audit": recovery,
+               "recovery_audit": recovery, "native_route_audit": route_audit,
                "completed": completed, "failures": failures,
                "passed": not failures}
     (output / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2))

@@ -16,6 +16,108 @@ namespace OpenCodex.Api.Tests;
 public sealed class ProxyStreamServiceTests
 {
     [Theory]
+    [InlineData(false, 200)]
+    [InlineData(true, 499)]
+    public async Task StreamAsync_PhysicalWriter_LogsWhetherSuccessfulTerminalWasFlushed(bool failFlush, int expectedStatus)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var http = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+        http.Response.Body = new TerminalDisconnectStream(cancellation, failFlush);
+        var logs = new StubProxyLogService();
+        var payload = new Dictionary<string, object?>();
+        var channel = new Dictionary<string, object?> { ["id"] = "test", ["type"] = "responses" };
+        var context = new ProxyStreamContext(
+            Stopwatch.GetTimestamp(), Guid.NewGuid(), "terminal-disconnect", "admin", null, payload, payload,
+            new Dictionary<string, object?>(), "responses", new ProxyRouteDto(channel, "public", "model", false, true),
+            "responses", "test", "superadmin", "model", "public", 120,
+            new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
+            new OpenCodex.Api.Infrastructure.ProxyStreamResponseWriter(http.Response), cancellation.Token);
+        var operation = new ProxyStreamService(new SequencedUpstreamClient(
+        [
+            ("data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\",\"status\":\"in_progress\"}}", 0), ("", 0),
+            ("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"completed\",\"output\":[]}}", 0), ("", 0),
+            ("data: [DONE]", 0), ("", 0)
+        ]), logs, new StubWebSearchToolExecutor(), WebSearchTestStore.Create()).StreamAsync(context);
+        if (failFlush) await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation);
+        else await operation;
+        Assert.Equal(expectedStatus, logs.LastContext!.StatusCode);
+    }
+
+    private sealed class TerminalDisconnectStream(CancellationTokenSource cancellation, bool failFlush) : MemoryStream
+    {
+        public override Task FlushAsync(CancellationToken cancellationToken)
+        {
+            var text = System.Text.Encoding.UTF8.GetString(ToArray());
+            if (text.Contains("response.completed", StringComparison.Ordinal) && text.EndsWith("\n\n", StringComparison.Ordinal))
+            {
+                cancellation.Cancel();
+                if (failFlush) return Task.FromCanceled(cancellation.Token);
+            }
+            return Task.CompletedTask;
+        }
+    }
+
+    [Theory]
+    [InlineData("responses", "rate_limit_exceeded", "requests", 429)]
+    [InlineData("chat", "rate_limit_exceeded", "requests", 429)]
+    [InlineData("messages", "rate_limit_exceeded", "requests", 429)]
+    [InlineData("messages", null, "rate_limit_error", 429)]
+    [InlineData("responses", "server_error", "server_error", 502)]
+    [InlineData("chat", "server_error", "server_error", 502)]
+    [InlineData("messages", "server_error", "server_error", 502)]
+    public async Task StreamAsync_UpstreamFailure_PreservesErrorAndClassifiesRateLimit(
+        string protocol, string? code, string type, int statusCode)
+    {
+        const string message = "upstream diagnostic contains rate_limit_exceeded as context";
+        var errorJson = System.Text.Json.JsonSerializer.Serialize(new { code, type, message });
+        var blocks = protocol switch
+        {
+            "chat" => new[]
+            {
+                """data: {"id":"partial","choices":[{"index":0,"delta":{"content":"partial"}}]}""",
+                "data: {\"error\":" + errorJson + "}"
+            },
+            "messages" => new[]
+            {
+                """data: {"type":"message_start","message":{"id":"partial","role":"assistant","content":[]}}""",
+                "data: {\"type\":\"error\",\"error\":" + errorJson + "}"
+            },
+            _ => new[]
+            {
+                """data: {"type":"response.created","response":{"id":"partial","status":"in_progress"}}""",
+                "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"partial\",\"status\":\"failed\",\"error\":" + errorJson + "}}"
+            }
+        };
+        var lines = blocks.SelectMany(block => new[] { (block, 0), ("", 0) }).ToList();
+        var logs = new StubProxyLogService();
+        var writer = new CapturingProxyStreamWriter();
+        var channel = new Dictionary<string, object?> { ["id"] = "test", ["type"] = protocol };
+        var payload = new Dictionary<string, object?>();
+        var context = new ProxyStreamContext(
+            Stopwatch.GetTimestamp(), Guid.NewGuid(), "classified-stream", "admin", null, payload, payload,
+            new Dictionary<string, object?>(), "responses", new ProxyRouteDto(channel, "public", "model", false, true),
+            protocol, "test", "superadmin", "model", "public", 120,
+            new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()), writer, CancellationToken.None);
+
+        var failure = await Assert.ThrowsAsync<UpstreamException>(() => new ProxyStreamService(
+            new SequencedUpstreamClient(lines), logs, new StubWebSearchToolExecutor(),
+            WebSearchTestStore.Create()).StreamAsync(context));
+
+        Assert.Equal(statusCode, failure.StatusCode);
+        Assert.Equal(statusCode, logs.LastContext!.StatusCode);
+        Assert.Contains(message, failure.Message, StringComparison.Ordinal);
+        Assert.Contains(code ?? type, logs.LastContext.Error!, StringComparison.Ordinal);
+        var captured = Assert.IsType<Dictionary<string, object?>>(logs.LastContext.UpstreamResponse);
+        var capturedError = Assert.IsType<Dictionary<string, object?>>(captured["error"]);
+        Assert.Equal(code, capturedError["code"]);
+        Assert.Equal(type, capturedError["type"]);
+        Assert.Equal(message, capturedError["message"]);
+        var failureBody = Assert.IsType<Dictionary<string, object?>>(failure.Body);
+        Assert.IsType<Dictionary<string, object?>>(failureBody["error"]);
+        Assert.DoesNotContain(writer.Lines, line => line.Contains("response.completed", StringComparison.Ordinal));
+    }
+
+    [Theory]
     [InlineData("chat")]
     [InlineData("messages")]
     [InlineData("responses")]
@@ -231,7 +333,13 @@ public sealed class ProxyStreamServiceTests
             ownerUsername: "admin",
             apiKeyId: Guid.NewGuid(),
             originalPayload: new Dictionary<string, object?>(),
-            payload: new Dictionary<string, object?>(),
+            payload: new Dictionary<string, object?>
+            {
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?> { ["type"] = "function", ["name"] = "exec_command" }
+                }
+            },
             upstreamRequest: new Dictionary<string, object?>(),
             entryProtocol: ProtocolConverter.Responses,
             route: route,

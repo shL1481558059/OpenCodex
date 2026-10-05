@@ -310,7 +310,8 @@ public sealed class ProxyService : IProxyService
             var services = request.HttpContext.RequestServices;
             if (services?.GetService<MultiAgentResponseService>() is { } clientAgents)
             {
-                // Bound child threads keep their server context even when their selected model is not simulated.
+                // Continue native identities without re-entering the legacy task scheduler.
+                // A known native parent also permits a child using a different routed model.
                 var boundResponse = await clientAgents.TryClientResponsesAsync(payload, allowCreate: false);
                 if (boundResponse is not null) return boundResponse;
             }

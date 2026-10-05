@@ -55,6 +55,11 @@ public sealed class ChatMessagesStreamingCompatibilityTests
     [Fact]
     public async Task MessagesToResponses_MappedCustomTools_InterleavedCallsKeepSeparateInputs()
     {
+        var streamResult = CustomToolStreamResult();
+        streamResult.ToolCallMappings = new Dictionary<string, ResponsesToolCallMapping>(streamResult.ToolCallMappings!)
+        {
+            ["search"] = new() { ChatName = "search", ResponsesName = "search", NativeType = "function" }
+        };
         var first = JsonSerializer.Serialize(new { input = "text('first');" });
         var second = JsonSerializer.Serialize(new { input = "{\"input\":\"second\"}" });
         var lines = SseLines(
@@ -64,7 +69,7 @@ public sealed class ChatMessagesStreamingCompatibilityTests
             MessagesInputDelta(1, second[8..]), MessagesInputDelta(0, first[8..]),
             MessagesFinish("tool_use"), SseData(new { type = "message_stop" }));
         var parsed = ParseEvents(await CollectAsync(SseStreamConverter.MessagesToResponsesEvents(
-            lines, "claude", CustomToolStreamResult(), CancellationToken.None)));
+            lines, "claude", streamResult, CancellationToken.None)));
         var items = parsed.Where(e => e.EventName == "response.output_item.done")
             .Select(e => Assert.IsType<Dictionary<string, object?>>(e.Payload["item"]))
             .ToDictionary(i => i["call_id"]!.ToString()!);

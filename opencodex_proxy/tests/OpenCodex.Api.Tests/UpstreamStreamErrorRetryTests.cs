@@ -269,38 +269,85 @@ public sealed class UpstreamStreamErrorRetryTests
         Assert.Contains(lines, l => l.Contains("chatcmpl-2"));
     }
 
-    [Fact]
-    public async Task StreamJsonAsync_AnyStreamError_RetriesAndSucceedsOnSecondAttempt()
+    [Theory]
+    [InlineData("invalid_request_error", null, 400)]
+    [InlineData("authentication_error", null, 401)]
+    [InlineData("permission_error", null, 403)]
+    [InlineData("upstream_error", "invalid_api_key", 401)]
+    public async Task StreamJsonAsync_PermanentError_DoesNotRetry(string type, string? code, int expectedStatus)
     {
-        // 流首出现的任意 {"type":"error",...} 都应在未输出正文前静默重试，
-        // 不再依赖内层 error.type 白名单。
         var handler = new SseHandler(
-            [
-                """data: {"type":"error","error":{"type":"invalid_request_error","message":"bad request"}}""",
-                ""
-            ],
-            [
-                """data: {"id":"chatcmpl-3","object":"chat.completion.chunk","choices":[{"delta":{"content":"ok"}}]}""",
-                "",
-                "data: [DONE]",
-                ""
-            ]
-        );
-        var upstream = new HttpUpstreamClient(new HttpClient(handler));
+            ["data: " + System.Text.Json.JsonSerializer.Serialize(new { type = "error", error = new { type, code, message = "diagnostic" } }), ""]);
+        var delays = 0;
+        var upstream = new HttpUpstreamClient(new HttpClient(handler), (_, _) => { delays++; return Task.CompletedTask; });
+        var published = new List<string>();
 
-        var lines = new List<string>();
-        await foreach (var line in upstream.StreamJsonAsync(
-            ChatChannel(retryCount: 2),
-            new Dictionary<string, object?> { ["model"] = "test" },
-            30,
-            CancellationToken.None))
+        var error = await Assert.ThrowsAsync<UpstreamException>(async () =>
         {
-            lines.Add(line.TrimEnd('\n'));
-        }
+            await foreach (var line in upstream.StreamJsonAsync(ChatChannel(3), new Dictionary<string, object?>(), 30, CancellationToken.None))
+                published.Add(line);
+        });
 
+        Assert.Equal(expectedStatus, error.StatusCode);
+        Assert.Equal(1, handler.CallCount);
+        Assert.Equal(0, delays);
+        Assert.Empty(published);
+        Assert.Contains("diagnostic", error.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("server_error", null, null, 502)]
+    [InlineData("upstream_error", null, null, 502)]
+    [InlineData("overloaded_error", null, null, 502)]
+    [InlineData("requests", "rate_limit_exceeded", null, 429)]
+    [InlineData("rate_limit_error", null, null, 429)]
+    [InlineData("too_many_requests", null, null, 429)]
+    [InlineData("server_error", null, 503, 503)]
+    public async Task StreamJsonAsync_TransientError_UsesActualClassificationAndBoundedRetry(
+        string type, string? code, int? status, int expectedStatus)
+    {
+        var body = System.Text.Json.JsonSerializer.Serialize(new { type = "error", error = new { type, code, status, message = "diagnostic" } });
+        string[] lines = [": heartbeat", "event: error", "data: " + body, ""];
+        var handler = new SseHandler(lines, lines);
+        var delays = 0;
+        var upstream = new HttpUpstreamClient(new HttpClient(handler), (_, _) => { delays++; return Task.CompletedTask; });
+        var published = new List<string>();
+
+        var error = await Assert.ThrowsAsync<UpstreamException>(async () =>
+        {
+            await foreach (var line in upstream.StreamJsonAsync(ChatChannel(1), new Dictionary<string, object?>(), 30, CancellationToken.None))
+                published.Add(line);
+        });
+
+        Assert.Equal(expectedStatus, error.StatusCode);
         Assert.Equal(2, handler.CallCount);
-        Assert.DoesNotContain(lines, l => l.Contains("invalid_request_error"));
-        Assert.Contains(lines, l => l.Contains("chatcmpl-3"));
+        Assert.Equal(1, delays);
+        Assert.Empty(published);
+        var original = Assert.IsType<Dictionary<string, object?>>(error.Body);
+        var detail = Assert.IsType<Dictionary<string, object?>>(original["error"]);
+        Assert.Equal(code, detail["code"]);
+        Assert.Equal(type, detail["type"]);
+        Assert.Equal("diagnostic", detail["message"]);
+    }
+
+    [Theory]
+    [InlineData(400)]
+    [InlineData(401)]
+    [InlineData(403)]
+    [InlineData(422)]
+    public async Task StreamJsonAsync_ExplicitClientErrorStatus_IsPreservedWithoutRetry(int status)
+    {
+        var body = System.Text.Json.JsonSerializer.Serialize(new { type = "error", status_code = status, error = new { type = "upstream_error", message = "diagnostic" } });
+        var handler = new SseHandler(["event: error", "data: " + body, ""]);
+        var upstream = new HttpUpstreamClient(new HttpClient(handler), (_, _) => Task.CompletedTask);
+
+        var error = await Assert.ThrowsAsync<UpstreamException>(async () =>
+        {
+            await foreach (var _ in upstream.StreamJsonAsync(ChatChannel(3), new Dictionary<string, object?>(), 30, CancellationToken.None)) { }
+        });
+
+        Assert.Equal(status, error.StatusCode);
+        Assert.Equal(1, handler.CallCount);
     }
 
     [Fact]
@@ -368,7 +415,7 @@ public sealed class UpstreamStreamErrorRetryTests
     }
 
     [Fact]
-    public async Task StreamJsonAsync_AnyStreamError_RetriesExhausted_ThrowsUpstreamException()
+    public async Task StreamJsonAsync_ServerError_RetriesExhausted_ThrowsBadGateway()
     {
         var handler = new SseHandler(
             [
@@ -394,7 +441,7 @@ public sealed class UpstreamStreamErrorRetryTests
         });
 
         Assert.Equal(2, handler.CallCount);
-        Assert.Equal(ProxyHttpStatus.TooManyRequests, ex.StatusCode);
+        Assert.Equal(ProxyHttpStatus.BadGateway, ex.StatusCode);
         Assert.Contains("server boom", ex.Message);
     }
 

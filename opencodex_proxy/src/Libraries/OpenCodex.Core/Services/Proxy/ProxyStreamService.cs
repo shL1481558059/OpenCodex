@@ -108,7 +108,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
 
             if (HasStreamFailure(upstreamResponse) || HasStreamFailure(responsePayload))
             {
-                throw new UpstreamException("upstream stream failed", body: upstreamResponse);
+                throw StreamFailure(HasStreamFailure(upstreamResponse) ? upstreamResponse! : responsePayload!);
             }
             if (streamTermination != StreamCaptureTermination.Completed
                 || passThroughResponseCapture is not null && !passThroughResponseCapture.IsComplete)
@@ -130,7 +130,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                 statusCode = proxyException.StatusCode;
                 errorResponse = proxyException.ToResponse();
                 upstreamResponse = UpstreamErrorPayload.Combine(
-                    capturedUpstreamResponse,
+                    capturedUpstreamResponse ?? upstreamResponse ?? convertedState?.UpstreamResponse,
                     UpstreamErrorPayload.FromException(proxyException))
                     ?? upstreamResponse;
             }
@@ -206,6 +206,35 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         return response is not null
             && (response.TryGetValue("error", out var error) && error is not null
                 || response.TryGetValue("status", out var status) && status is "failed");
+    }
+
+    private static UpstreamException StreamFailure(Dictionary<string, object?> response)
+    {
+        var statusCode = ProxyHttpStatus.BadGateway;
+        var message = "upstream stream failed";
+        if (JsonDictionaryValue.Get(response, "error") is IReadOnlyDictionary<string, object?> upstreamError)
+        {
+            var code = JsonDictionaryValue.String(upstreamError, "code");
+            var type = JsonDictionaryValue.String(upstreamError, "type");
+            if (code is "rate_limit_exceeded" or "rate_limit_error"
+                || type is "rate_limit_exceeded" or "rate_limit_error")
+            {
+                statusCode = ProxyHttpStatus.TooManyRequests;
+            }
+
+            var upstreamMessage = JsonDictionaryValue.String(upstreamError, "message");
+            if (upstreamMessage.Length > 0)
+            {
+                message = upstreamMessage;
+            }
+            var identifier = code.Length > 0 ? code : type;
+            if (identifier.Length > 0)
+            {
+                message = $"{message} ({identifier})";
+            }
+        }
+
+        return new UpstreamException(message, statusCode, body: response);
     }
 
     private static string? VisibleModel(ProxyStreamContext context)

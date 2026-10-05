@@ -20,6 +20,7 @@ namespace OpenCodex.Api.Tests;
 
 internal sealed class MultiAgentApiTestContext : IDisposable
 {
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<MultiAgentRunStore, NativeClientSessionStore> NativeStores = new();
     private readonly ServiceProvider _services;
     public DefaultHttpContext Http { get; } = new();
     public RecordingStream Body { get; } = new();
@@ -27,6 +28,7 @@ internal sealed class MultiAgentApiTestContext : IDisposable
     public Endpoint FakeEndpoint { get; }
     public MultiAgentRunStore Store { get; }
     public MultiAgentClientStore ClientStore { get; }
+    public NativeClientSessionStore NativeStore { get; }
     public Guid Key { get; }
     public bool CatalogEnabled { get; set; } = true;
     public CancellationTokenSource Lifetime { get; } = new(TimeSpan.FromSeconds(10));
@@ -38,6 +40,8 @@ internal sealed class MultiAgentApiTestContext : IDisposable
         Store = store ?? new MultiAgentRunStore(Path.Combine(Path.GetTempPath(), "ocxp-api-tests-" + Guid.NewGuid().ToString("N")));
         ClientStore = clientStore ?? new MultiAgentClientStore(Store,
             Path.Combine(Path.GetTempPath(), "ocxp-api-client-tests-" + Guid.NewGuid().ToString("N")));
+        NativeStore = NativeStores.GetValue(Store, _ => new NativeClientSessionStore(
+            Path.Combine(Path.GetTempPath(), "ocxp-api-native-tests-" + Guid.NewGuid().ToString("N"))));
         Key = key ?? Guid.NewGuid();
         Http.Request.Path = "/v1/responses";
         Http.Request.Method = "POST";
@@ -45,13 +49,14 @@ internal sealed class MultiAgentApiTestContext : IDisposable
         Http.Response.Body = Body;
         Http.RequestAborted = Lifetime.Token;
         FakeEndpoint = new Endpoint(handler);
-        _services = new ServiceCollection().AddScoped<IProxyEndpointService>(_ => FakeEndpoint).BuildServiceProvider();
+        _services = new ServiceCollection().AddSingleton(NativeStore).AddScoped<IProxyEndpointService>(_ => FakeEndpoint).BuildServiceProvider();
+        Http.RequestServices = _services;
         var catalog = DispatchProxy.Create<IModelCatalogService, CatalogProxy>();
         ((CatalogProxy)(object)catalog).Enabled = () => CatalogEnabled;
         Service = new MultiAgentResponseService(new FixedContextAccessor { HttpContext = Http }, catalog,
             new Identity(Key), FakeEndpoint, Store, _services.GetRequiredService<IServiceScopeFactory>(),
             new ConfigurationBuilder().Build(),
-            NullLogger<MultiAgentResponseService>.Instance, ClientStore);
+            NullLogger<MultiAgentResponseService>.Instance, NativeStore);
     }
 
     public TestSocket Socket()
@@ -75,7 +80,7 @@ internal sealed class MultiAgentApiTestContext : IDisposable
     {
         ["type"] = "response.completed", ["response"] = new D
         {
-            ["id"] = "up_response", ["status"] = "completed", ["output"] = items.Cast<object?>().ToList(),
+            ["id"] = "resp_" + Guid.NewGuid().ToString("N"), ["status"] = "completed", ["output"] = items.Cast<object?>().ToList(),
             ["usage"] = new D { ["input_tokens"] = 1, ["output_tokens"] = 1 }
         }
     };

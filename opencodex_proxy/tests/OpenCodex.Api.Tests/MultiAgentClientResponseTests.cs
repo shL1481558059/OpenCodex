@@ -22,16 +22,16 @@ public sealed class MultiAgentClientResponseTests
     }
 
     [Fact]
-    public async Task NewNativeRootWithoutSpawnDeclarationCannotSilentlyBecomeLegacyAgents()
+    public async Task NativeIdentityWithoutSpawnDeclarationKeepsClientOwnership()
     {
-        using var root = Root(ctx => Stream(ctx, Events(Terminal(Message("unexpected legacy")))));
+        using var root = Root(ctx => Stream(ctx, Events(Terminal(Message("NATIVE")))));
         var request = ClientRequest();
-        var definitions = (D)JsonDictionaryValue.List(request, "tools").Single()!;
-        definitions["tools"] = JsonDictionaryValue.List(definitions, "tools").OfType<D>()
-            .Where(tool => !Equals(tool["name"], "spawn_agent")).Cast<object?>().ToList();
-        var error = await Assert.ThrowsAsync<BadRequestException>(() => root.Service.Responses(request));
-        Assert.Contains("spawn_agent", error.Message);
-        Assert.Empty(root.FakeEndpoint.Calls);
+        request["tools"] = new List<object?>();
+        var response = await Complete(root, request);
+        Assert.Contains("NATIVE", JsonSerializer.Serialize(response));
+        Assert.Empty(JsonDictionaryValue.List(root.FakeEndpoint.Calls.Single().Payload!, "tools"));
+        Assert.NotNull(await root.NativeStore.TryGetAsync(root.Key, "root-thread", default));
+        Assert.Null(await root.ClientStore.TryGetAsync(root.Key, "root-thread", "root-thread", default));
     }
 
     [Fact]
@@ -45,12 +45,14 @@ public sealed class MultiAgentClientResponseTests
             _ => Message("DONE")
         }))));
         var first = await Complete(root, ClientRequest());
-        var parent = (await root.ClientStore.TryGetAsync(root.Key, "root-thread", "root-thread", default))!;
-        var child = (await root.ClientStore.TryGetAgentAsync(parent, "audit", default))!;
-        var oldActivity = root.ClientStore.BeginActivity(child, default);
-        var interrupt = await Complete(root, Continue(first, SpawnResult(Output(first).Single(), child.AgentName)));
-        oldActivity.Dispose();
-        using var newer = root.ClientStore.BeginActivity(child, default);
+        using var child = Child(root, "audit", "child-thread", ctx => Stream(ctx, Events(Terminal(Message("CHILD")))));
+        await Complete(child, ClientRequest());
+        var session = (await root.NativeStore.TryGetAsync(root.Key, "child-thread", default))!;
+        await using var oldActivity = await root.NativeStore.AcquireRequestAsync(session, default);
+        var interrupt = await Complete(root, Continue(first, SpawnResult(Output(first).Single(), "/root/audit")));
+        await oldActivity.CancelAsync();
+        await oldActivity.DisposeAsync();
+        await using var newer = await root.NativeStore.AcquireRequestAsync(session, default);
         await Complete(root, Continue(interrupt, new D
         {
             ["type"] = "function_call_output", ["call_id"] = Output(interrupt).Single()["call_id"],
@@ -60,14 +62,12 @@ public sealed class MultiAgentClientResponseTests
     }
 
     [Fact]
-    public async Task ReplacingToolsStillConsumesAnEarlierSpawnFailure()
+    public async Task ReplacingToolsPreservesEarlierSpawnFailureInClientHistory()
     {
         var calls = 0;
         using var root = Root(ctx => Stream(ctx, Events(Terminal(++calls == 1
             ? Spawn("spawn", "audit", "fake", "audit") : Message("DONE")))));
         var first = await Complete(root, ClientRequest());
-        var parent = (await root.ClientStore.TryGetAsync(root.Key, "root-thread", "root-thread", default))!;
-        var child = (await root.ClientStore.TryGetAgentAsync(parent, "audit", default))!;
         var next = Continue(first, new D
         {
             ["type"] = "function_call_output", ["call_id"] = Output(first).Single()["call_id"],
@@ -75,48 +75,54 @@ public sealed class MultiAgentClientResponseTests
         });
         next["tools"] = new List<object?>();
         await Complete(root, next);
-        Assert.True(child.SpawnFailed);
+        var payload = root.FakeEndpoint.Calls.Last().Payload!;
+        Assert.Empty(JsonDictionaryValue.List(payload, "tools"));
+        Assert.Contains("native spawn rejected", JsonSerializer.Serialize(payload["input"]));
+        Assert.Contains(JsonDictionaryValue.List(payload, "input").OfType<D>(), item =>
+            Type(item) == "function_call" && Equals(item["call_id"], "spawn"));
+        Assert.Null(await root.ClientStore.TryGetAsync(root.Key, "root-thread", "root-thread", default));
     }
 
     [Fact]
-    public async Task RejectedBatchReleasesEarlierSpawnReservations()
+    public async Task NativeSpawnBatchRemainsClientOwnedWithoutServerReservations()
     {
         using var root = Root(ctx => Stream(ctx, Events(Terminal(
             Spawn("one", "audit", "fake", "one"), Spawn("two", "audit", "fake", "two")))));
         var response = await Complete(root, ClientRequest());
-        Assert.Equal("failed", response["status"]);
-        var parent = (await root.ClientStore.TryGetAsync(root.Key, "root-thread", "root-thread", default))!;
-        Assert.Null(await root.ClientStore.TryGetAgentAsync(parent, "audit", default));
-        Assert.Empty(parent.Run.PendingCalls);
-        Assert.DoesNotContain(parent.Run.Agents["/root"].History.OfType<D>(), item => Type(item) == "function_call");
+        Assert.Equal("completed", response["status"]);
+        Assert.Equal(new[] { "one", "two" }, Output(response).Select(item => (string)item["call_id"]!));
+        Assert.All(Output(response), call => Assert.Equal("spawn_agent", call["name"]));
+        Assert.Null(await root.ClientStore.TryGetAsync(root.Key, "root-thread", "root-thread", default));
+        Assert.Null(await root.NativeStore.TryGetAsync(root.Key, "child-thread", default));
+        Assert.Single(root.FakeEndpoint.Calls);
     }
 
     [Fact]
-    public async Task NativeSpawnReservesChildBeforeClientResultAndChildUsesRequestedModel()
+    public async Task NativeSpawnForwardsUnchangedAndChildUsesActualClientModelAndHistory()
     {
         using var root = Root(ctx => Stream(ctx, Events(Terminal(Spawn("spawn_a", "audit", "gpt-6-luna", "audit source")))));
         var response = await Complete(root, ClientRequest());
         var spawn = Assert.Single(Output(response));
+        Assert.Equal("spawn_a", spawn["call_id"]);
         Assert.Equal("function_call", Type(spawn));
         Assert.Equal("collaboration", spawn["namespace"]);
         Assert.Equal("spawn_agent", spawn["name"]);
-        Assert.DoesNotContain("ocxp_ma_", JsonSerializer.Serialize(response));
-        var binding = Assert.IsType<MultiAgentClientBinding>(await root.ClientStore.TryGetAsync(root.Key, "root-thread", "root-thread", root.Lifetime.Token));
-        var reserved = Assert.IsType<MultiAgentClientBinding>(await root.ClientStore.TryGetAgentAsync(binding, "audit", root.Lifetime.Token));
-        Assert.False(reserved.SpawnCompleted);
-        Assert.Equal("gpt-6-luna", reserved.Run.Model);
-        Assert.Empty(reserved.ThreadId);
-
+        Assert.Contains("gpt-6-luna", (string)spawn["arguments"]!);
+        Assert.Null(await root.ClientStore.TryGetAsync(root.Key, "root-thread", "root-thread", default));
+        Assert.Null(await root.NativeStore.TryGetAsync(root.Key, "child-thread", default));
         using var child = Child(root, "audit", "child-thread", ctx => Stream(ctx, Events(Terminal(Message("CHILD DONE")))));
         child.CatalogEnabled = false;
-        var childResponse = await Complete(child, ClientRequest("gpt-6-luna", "audit source"));
+        var childResponse = await Complete(child, ClientRequest("client-selected-model", "CLIENT AUTHORITATIVE HISTORY"));
         Assert.Contains("CHILD DONE", JsonSerializer.Serialize(childResponse));
-        Assert.Equal("child-thread", reserved.ThreadId);
-        Assert.False(reserved.SpawnCompleted);
-        Assert.Equal("gpt-6-luna", child.FakeEndpoint.Calls.Single().Payload!["model"]);
+        var payload = child.FakeEndpoint.Calls.Single().Payload!;
+        Assert.Equal("client-selected-model", payload["model"]);
+        Assert.Contains("CLIENT AUTHORITATIVE HISTORY", JsonSerializer.Serialize(payload["input"]));
+        Assert.DoesNotContain("audit source", JsonSerializer.Serialize(payload["input"]));
+        Assert.DoesNotContain("ocxp_ma_", JsonSerializer.Serialize(payload["tools"]));
+        var session = Assert.IsType<NativeClientSession>(await root.NativeStore.TryGetAsync(root.Key, "child-thread", default));
+        Assert.Equal("/root/audit", session.AgentName);
+        Assert.Equal("root-thread", session.ParentThreadId);
         Assert.Single(root.FakeEndpoint.Calls);
-        Assert.Single(reserved.Run.Agents);
-        Assert.DoesNotContain("ocxp_ma_", JsonSerializer.Serialize(child.FakeEndpoint.Calls.Single().Payload!["tools"]));
     }
 
     [Fact]
@@ -183,9 +189,7 @@ public sealed class MultiAgentClientResponseTests
         var tool = Output(first).Single();
         var second = await Complete(root, Continue(first, SpawnResult(tool, "/root/audit")));
         Assert.Contains("CONTINUED", JsonSerializer.Serialize(second));
-        var binding = Assert.IsType<MultiAgentClientBinding>(await root.ClientStore.TryGetAsync(root.Key, "root-thread", "root-thread", root.Lifetime.Token));
-        var reserved = Assert.IsType<MultiAgentClientBinding>(await root.ClientStore.TryGetAgentAsync(binding, "audit", root.Lifetime.Token));
-        Assert.True(reserved.SpawnCompleted);
+        Assert.Null(await root.ClientStore.TryGetAsync(root.Key, "root-thread", "root-thread", default));
         var history = JsonDictionaryValue.List(root.FakeEndpoint.Calls.Last().Payload!, "input").OfType<D>().ToList();
         Assert.Contains(history, item => Type(item) == "function_call" && JsonDictionaryValue.String(item, "namespace") == "collaboration");
         Assert.Contains(history, item => Type(item) == "function_call_output" && JsonDictionaryValue.String(item, "call_id") == (string)tool["call_id"]!);
@@ -194,23 +198,34 @@ public sealed class MultiAgentClientResponseTests
     [Theory]
     [InlineData("wrong-owner")]
     [InlineData("wrong-parent")]
-    [InlineData("wrong-model")]
     [InlineData("second-thread")]
-    public async Task ChildCannotClaimAnotherReservation(string mismatch)
+    public async Task ClientThreadRejectsCrossOwnerContinuationAndConflictingIdentity(string mismatch)
     {
-        using var root = Root(ctx => Stream(ctx, Events(Terminal(Spawn("spawn_a", "audit", "child-model", "audit")))));
+        using var root = Root(ctx => Stream(ctx, Events(Terminal(Message("ROOT")))));
         await Complete(root, ClientRequest());
-        if (mismatch == "second-thread")
-        {
-            using var legitimate = Child(root, "audit", "first-child", ctx => Stream(ctx, Events(Terminal(Message("DONE")))));
-            await Complete(legitimate, ClientRequest("child-model", "audit"));
-        }
-        using var child = new MultiAgentApiTestContext(_ => throw new Exception("Unbound child must not call upstream"),
+        using var legitimate = Child(root, "audit", "first-child", ctx => Stream(ctx, Events(Terminal(Message("DONE")))));
+        var previous = await Complete(legitimate, ClientRequest("child-model", "audit"));
+        using var child = new MultiAgentApiTestContext(_ => throw new Exception("Invalid continuation must not call upstream"),
             root.Store, mismatch == "wrong-owner" ? Guid.NewGuid() : root.Key, "root-thread", root.ClientStore);
-        Identify(child, "second-child", mismatch == "wrong-parent" ? "another-parent" : "root-thread", "/root/audit");
-        await Assert.ThrowsAsync<BadRequestException>(() => child.Service.Responses(ClientRequest(
-            mismatch == "wrong-model" ? "another-model" : "child-model", "audit")));
+        Identify(child, mismatch == "second-thread" ? "second-child" : "first-child",
+            mismatch == "wrong-parent" ? "another-parent" : "root-thread", "/root/audit");
+        var next = ClientRequest("child-model", "audit");
+        next["previous_response_id"] = previous["id"];
+        await Assert.ThrowsAsync<BadRequestException>(() => child.Service.Responses(next));
         Assert.Empty(child.FakeEndpoint.Calls);
+    }
+
+    [Fact]
+    public async Task ClientChildCanChangeModelOnItsNextRequest()
+    {
+        using var root = Root(ctx => Stream(ctx, Events(Terminal(Message("ROOT")))));
+        await Complete(root, ClientRequest());
+        using var child = Child(root, "audit", "child-thread", ctx => Stream(ctx, Events(Terminal(Message("DONE")))));
+        var previous = await Complete(child, ClientRequest("first-model", "audit"));
+        var next = ClientRequest("next-model", "followup");
+        next["previous_response_id"] = previous["id"];
+        await Complete(child, next);
+        Assert.Equal("next-model", child.FakeEndpoint.Calls.Last().Payload!["model"]);
     }
 
     [Fact]
@@ -255,12 +270,13 @@ public sealed class MultiAgentClientResponseTests
         var response = await Complete(child, next);
         Assert.Contains("FOLLOWUP", JsonSerializer.Serialize(response));
         Assert.Contains("audit second area", JsonSerializer.Serialize(child.FakeEndpoint.Calls.Last().Payload!["input"]));
-        var binding = Assert.IsType<MultiAgentClientBinding>(await root.ClientStore.TryGetAsync(root.Key, "root-thread", "child-thread", root.Lifetime.Token));
-        Assert.Single(binding.Run.Agents);
+        var session = Assert.IsType<NativeClientSession>(await root.NativeStore.TryGetAsync(root.Key, "child-thread", default));
+        Assert.Equal("/root/audit", session.AgentName);
+        Assert.Null(await root.ClientStore.TryGetAsync(root.Key, "root-thread", "child-thread", default));
     }
 
     [Fact]
-    public async Task NativeInterruptResultCancelsOnlyTargetActivityAndAllowsLaterFollowup()
+    public async Task ClientCancellationStopsOnlyTargetHttpRequestAndAllowsLaterFollowup()
     {
         var rootCount = 0;
         using var root = Root(ctx => Stream(ctx, Events(++rootCount switch
@@ -300,6 +316,9 @@ public sealed class MultiAgentClientResponseTests
                 ["output"] = "{\"task_name\":\"/root/alpha\",\"status\":\"interrupted\"}"
             };
             await Complete(root, Continue(interruptResponse, interruptResult));
+            Assert.False(alphaToken.IsCancellationRequested);
+            Assert.False(betaToken.IsCancellationRequested);
+            alpha.Lifetime.Cancel();
             Assert.True(alphaToken.IsCancellationRequested);
             Assert.False(betaToken.IsCancellationRequested);
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => alphaOperation.WaitAsync(root.Lifetime.Token));
@@ -313,9 +332,9 @@ public sealed class MultiAgentClientResponseTests
     }
 
     [Fact]
-    public async Task RequestWithoutNativeToolsKeepsLegacyServerCoordination()
+    public async Task RequestWithoutNativeIdentityOrToolsKeepsLegacyServerCoordination()
     {
-        using var root = Root(ctx => Stream(ctx, Events(Terminal(Message("LEGACY")))));
+        using var root = new MultiAgentApiTestContext(ctx => Stream(ctx, Events(Terminal(Message("LEGACY")))));
         var response = await Complete(root, Request());
         Assert.Contains("LEGACY", JsonSerializer.Serialize(response));
         Assert.Contains("ocxp_ma_spawn_agent", JsonSerializer.Serialize(root.FakeEndpoint.Calls.Single().Payload!["tools"]));

@@ -10,6 +10,32 @@ namespace OpenCodex.Api.Tests;
 public sealed class MultiAgentClientProtocolTests
 {
     [Theory]
+    [InlineData("function")]
+    [InlineData("custom")]
+    public void ResponseToolsRejectIrreversibleFlatAndNamespaceAliasCollisions(string nestedType)
+    {
+        var request = Payload("""{"tools":[{"type":"function","name":"a__b","parameters":{"type":"object"}},{"type":"namespace","name":"a","tools":[{"type":"NESTED_TYPE","name":"b","parameters":{"type":"object"}}]}]}""".Replace("NESTED_TYPE", nestedType, StringComparison.Ordinal));
+        Assert.Throws<BadRequestException>(() => ProtocolConverter.BuildResponsesToolCallMappings(request));
+        Assert.Throws<BadRequestException>(() => ProtocolConverter.ConvertRequest(request, ProtocolConverter.Responses, ProtocolConverter.Chat, "test"));
+    }
+
+    [Fact]
+    public void ResponseToolsRejectDynamicAliasCollisionButAllowExactRedeclarationAndUniqueSeparators()
+    {
+        var request = Payload("""{"tools":[{"type":"function","name":"a__b","parameters":{"type":"object"}}],"input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"a","tools":[{"type":"function","name":"b","parameters":{"type":"object"}}]}]}]}""");
+        Assert.Throws<BadRequestException>(() => ProtocolConverter.BuildResponsesToolCallMappings(request));
+        request["input"] = new List<object?>();
+        JsonDictionaryValue.List(request, "tools").Add(Payload("""{"type":"function","name":"a__b","parameters":{"type":"object"}}"""));
+        JsonDictionaryValue.List(request, "tools").Add(Payload("""{"type":"namespace","name":"a","tools":[{"type":"custom","name":"c__d"}]}"""));
+        var mappings = ProtocolConverter.BuildResponsesToolCallMappings(request);
+        Assert.Equal(2, mappings.Count);
+        Assert.Equal("a__b", mappings["a__b"].ResponsesName);
+        Assert.Null(mappings["a__b"].Namespace);
+        Assert.Equal("c__d", mappings["a__c__d"].ResponsesName);
+        Assert.Equal("a", mappings["a__c__d"].Namespace);
+    }
+
+    [Theory]
     [InlineData("")]
     [InlineData("/root")]
     public void Identity_RootIgnoresSessionDifferencesBecauseThreadOwnsItsIdentity(string agent)
@@ -182,6 +208,104 @@ public sealed class MultiAgentClientProtocolTests
         var call = ProtocolConverter.ResponsesToolCallItemFromToolCall("call", "outer__inner__read__file", new Dictionary<string, object?>(), mappings: mappings);
         Assert.Equal("read__file", call["name"]);
         Assert.Equal("outer__inner", call["namespace"]);
+    }
+
+    [Theory]
+    [InlineData("exec")]
+    [InlineData("functions.exec")]
+    [InlineData("exec_command_placeholder_note")]
+    [InlineData("missing__exec")]
+    public void ToolCall_RejectsNamesNotExactlyDeclared(string name)
+    {
+        var mappings = ProtocolConverter.BuildResponsesToolCallMappings(NamespacedTools());
+        var error = Assert.Throws<UpstreamException>(() => ProtocolConverter.ResponsesToolCallStartedItem(
+            "call", name, "item", mappings));
+        Assert.Equal(502, error.StatusCode);
+        Assert.Throws<UpstreamException>(() => ProtocolConverter.ResponsesToolCallItemFromToolCall(
+            "call", name, "secret-payload", mappings: mappings));
+        Assert.DoesNotContain("secret-payload", error.Message);
+    }
+
+    [Fact]
+    public void ToolCall_EmptyDeclarationsRejectCallsButAbsentContractKeepsLegacyConversion()
+    {
+        var mappings = ProtocolConverter.BuildResponsesToolCallMappings(Payload("""{"tools":[]}"""));
+        Assert.Throws<UpstreamException>(() => ProtocolConverter.ResponsesToolCallItemFromToolCall(
+            "call", "exec", "{}", mappings: mappings));
+        Assert.Equal("function_call", ProtocolConverter.ResponsesToolCallItemFromToolCall(
+            "call", "legacy", "{}")["type"]);
+    }
+
+    [Fact]
+    public void ToolCall_RejectsExplicitNamespaceConflictingWithDeclaration()
+    {
+        var mappings = ProtocolConverter.BuildResponsesToolCallMappings(NamespacedTools());
+        Assert.Throws<UpstreamException>(() => ProtocolConverter.ResponsesToolCallItemFromToolCall(
+            "call", "functions__exec", "secret-payload", namespaceValue: "other", mappings: mappings));
+    }
+
+    [Fact]
+    public void ToolCall_DeclaredSameLeafInDifferentNamespacesKeepsTypeAndLiteralInput()
+    {
+        const string input = "{\"input\":\"literal\"}\ntext(1);";
+        var mappings = ProtocolConverter.BuildResponsesToolCallMappings(NamespacedTools());
+        var custom = ProtocolConverter.ResponsesToolCallItemFromToolCall(
+            "custom-call", "functions__exec", input, mappings: mappings);
+        var function = ProtocolConverter.ResponsesToolCallItemFromToolCall(
+            "function-call", "other__exec", "{}", mappings: mappings);
+        Assert.Equal("custom_tool_call", custom["type"]);
+        Assert.Equal("exec", custom["name"]);
+        Assert.Equal("functions", custom["namespace"]);
+        Assert.Equal(input, custom["input"]);
+        Assert.Equal("function_call", function["type"]);
+        Assert.Equal("exec", function["name"]);
+        Assert.Equal("other", function["namespace"]);
+    }
+
+    private static Dictionary<string, object?> NamespacedTools() => Payload("""
+        {"tools":[
+          {"type":"namespace","name":"functions","tools":[{"type":"custom","name":"exec","format":{"type":"text"}}]},
+          {"type":"namespace","name":"other","tools":[{"type":"function","name":"exec","parameters":{"type":"object","properties":{}}}]}
+        ]}
+        """);
+
+    [Theory]
+    [InlineData("flat__name", "flat__name", null)]
+    [InlineData("outer__inner__read__file", "read__file", "outer__inner")]
+    public void CustomTool_DeclarationPreservesLeafSeparatorsAndFullNestedNamespace(string upstreamName, string name, string? ns)
+    {
+        var request = Payload("""{"tools":[{"type":"custom","name":"flat__name"},{"type":"namespace","name":"outer","tools":[{"type":"namespace","name":"inner","tools":[{"type":"custom","name":"read__file"}]}]}]}""");
+        var mappings = ProtocolConverter.BuildResponsesToolCallMappings(request);
+        var started = ProtocolConverter.ResponsesToolCallStartedItem("call", upstreamName, "item", mappings);
+        var done = ProtocolConverter.ResponsesToolCallItemFromToolCall("call", upstreamName, "raw\ntext", mappings: mappings);
+        foreach (var item in new[] { started, done })
+        {
+            Assert.Equal(name, item["name"]);
+            Assert.Equal(ns, JsonDictionaryValue.Get(item, "namespace"));
+        }
+        ProtocolConverter.ValidateResponsesToolCalls(request, new() { ["output"] = new List<object?> { done } });
+    }
+
+    [Theory]
+    [InlineData("chat", "flat__name", "flat__name", null)]
+    [InlineData("messages", "flat__name", "flat__name", null)]
+    [InlineData("chat", "outer__inner__read__file", "read__file", "outer__inner")]
+    [InlineData("messages", "outer__inner__read__file", "read__file", "outer__inner")]
+    public void CompleteResponse_PreservesCustomDeclaredIdentity(string protocol, string upstreamName, string name, string? ns)
+    {
+        var request = Payload("""{"tools":[{"type":"custom","name":"flat__name"},{"type":"namespace","name":"outer","tools":[{"type":"namespace","name":"inner","tools":[{"type":"custom","name":"read__file"}]}]}]}""");
+        const string input = "{\"input\":\"literal\"}\ntext(1);";
+        var upstream = protocol == "chat"
+            ? Payload(JsonSerializer.Serialize(new { choices = new[] { new { message = new { tool_calls = new[]
+                { new { id = "call", type = "function", function = new { name = upstreamName, arguments = JsonSerializer.Serialize(new { input }) } } } }, finish_reason = "tool_calls" } } }))
+            : Payload(JsonSerializer.Serialize(new { content = new[] { new { type = "tool_use", id = "call", name = upstreamName, input = new { input } } }, stop_reason = "tool_use" }));
+        var response = ProtocolConverter.ConvertResponse(upstream, ProtocolConverter.Responses, protocol, "test",
+            toolCallMappings: ProtocolConverter.BuildResponsesToolCallMappings(request));
+        var call = Assert.IsType<Dictionary<string, object?>>(Assert.Single(JsonDictionaryValue.List(response, "output")));
+        Assert.Equal(name, call["name"]);
+        Assert.Equal(ns, JsonDictionaryValue.Get(call, "namespace"));
+        Assert.Equal(input, call["input"]);
+        ProtocolConverter.ValidateResponsesToolCalls(request, response);
     }
 
     [Fact]

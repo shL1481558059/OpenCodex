@@ -22,7 +22,7 @@ public sealed partial class MultiAgentResponseService(
     IServiceScopeFactory scopes,
     IConfiguration configuration,
     ILogger<MultiAgentResponseService> logger,
-    MultiAgentClientStore clientStore)
+    NativeClientSessionStore nativeSessions)
 {
     private HttpContext HttpContext => accessor.HttpContext!;
     private HttpRequest Request => HttpContext.Request;

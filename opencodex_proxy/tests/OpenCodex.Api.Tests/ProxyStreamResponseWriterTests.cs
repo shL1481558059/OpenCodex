@@ -8,6 +8,46 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class ProxyStreamResponseWriterTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task WriteLinesAsync_ClientClosesAfterFlushedCompleted_ReturnsSuccess(bool splitFrame)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var context = new DefaultHttpContext();
+        context.Response.Body = new CancelOnFlushStream(cancellation, false);
+        const string completed = "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}";
+        var lines = splitFrame ? new[] { completed + "\n", "\n" } : new[] { completed + "\n\n" };
+        await ProxyStreamResponseWriter.WriteLinesAsync(context.Response, ToAsyncEnumerable(lines), static _ => false, static () => 1, cancellation.Token);
+    }
+
+    [Theory]
+    [InlineData("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n", false)]
+    [InlineData("data: {\"type\":\"response.output_text.delta\",\"delta\":\"response.completed\"}\n\n", false)]
+    [InlineData("data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\"}}\n\n", false)]
+    [InlineData("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n", true)]
+    public async Task WriteLinesAsync_CancelBeforeSuccessfulCompletion_StillThrows(string frame, bool failFlush)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var context = new DefaultHttpContext();
+        context.Response.Body = new CancelOnFlushStream(cancellation, failFlush, cancelAny: true);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ProxyStreamResponseWriter.WriteLinesAsync(
+            context.Response, ToAsyncEnumerable(frame, "data: [DONE]\n\n"), static _ => false, static () => 1, cancellation.Token));
+    }
+
+    private sealed class CancelOnFlushStream(CancellationTokenSource cancellation, bool failFlush, bool cancelAny = false) : MemoryStream
+    {
+        public override Task FlushAsync(CancellationToken cancellationToken)
+        {
+            if (cancelAny || System.Text.Encoding.UTF8.GetString(ToArray()).EndsWith("\n\n", StringComparison.Ordinal))
+            {
+                cancellation.Cancel();
+                if (failFlush) return Task.FromCanceled(cancellation.Token);
+            }
+            return Task.CompletedTask;
+        }
+    }
+
     [Fact]
     public async Task WriteLinesAsync_RecordsTtftOnly()
     {

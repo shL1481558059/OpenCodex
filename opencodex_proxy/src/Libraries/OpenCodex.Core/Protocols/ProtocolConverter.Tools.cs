@@ -1,3 +1,5 @@
+using OpenCodex.Core.Errors;
+
 namespace OpenCodex.Core.Protocols;
 
 public static partial class ProtocolConverter
@@ -38,26 +40,31 @@ public static partial class ProtocolConverter
             }
 
             var chatName = NamespaceNameToChat(responsesName);
-            var responseNamespace = GetString(tool, "namespace");
-            if (nativeType == "function" && TryAsObject(GetValue(tool, "raw"), out var declaration))
-            {
-                // The declaration is authoritative: separators in a flat function name
-                // are not proof of a namespace. Nested namespaces retain the leaf name.
-                var declaredName = GetString(declaration, "name") ?? responsesName;
-                if (!string.IsNullOrEmpty(responseNamespace))
-                    responseNamespace = responsesName[..^(NamespaceSeparator.Length + declaredName.Length)];
-                responsesName = declaredName;
-            }
+            var identity = CanonicalResponsesToolIdentity(tool);
             result[chatName] = new ResponsesToolCallMapping
             {
                 ChatName = chatName,
                 NativeType = nativeType,
-                ResponsesName = responsesName,
-                Namespace = responseNamespace
+                ResponsesName = identity.Name,
+                Namespace = identity.Namespace
             };
         }
 
         return result;
+    }
+
+    private static (string Name, string? Namespace) CanonicalResponsesToolIdentity(Dictionary<string, object?> tool)
+    {
+        var name = GetString(tool, "name") ?? string.Empty;
+        var ns = GetString(tool, "namespace");
+        if (TryAsObject(GetValue(tool, "raw"), out var declaration))
+        {
+            // A declared leaf may itself contain separators; never split it heuristically.
+            var leaf = GetString(declaration, "name") ?? name;
+            if (!string.IsNullOrEmpty(ns)) ns = name[..^(NamespaceSeparator.Length + leaf.Length)];
+            name = leaf;
+        }
+        return (name, ns);
     }
 
     private static List<object?> ResponsesToolsToCanonical(object? tools, IReadOnlyDictionary<string, object?>? compat = null)
@@ -618,6 +625,7 @@ public static partial class ProtocolConverter
     {
         var result = new List<object?>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        var aliases = new Dictionary<string, (string Name, string? Namespace, string Type)>(StringComparer.Ordinal);
         foreach (var item in tools)
         {
             if (!TryAsObject(item, out var tool))
@@ -630,6 +638,16 @@ public static partial class ProtocolConverter
             if (string.IsNullOrEmpty(name))
             {
                 continue;
+            }
+
+            if (!IsNativeRemoteMcpCanonicalTool(tool))
+            {
+                var identity = CanonicalResponsesToolIdentity(tool);
+                var contract = (identity.Name, identity.Namespace, nativeType);
+                var alias = NamespaceNameToChat(name);
+                if (aliases.TryGetValue(alias, out var existing) && existing != contract)
+                    throw new BadRequestException("Distinct tool declarations map to the same upstream tool name. Rename one tool or namespace to preserve an unambiguous contract.");
+                aliases[alias] = contract;
             }
 
             var scope = nativeType == "function" ? "function" : nativeType;

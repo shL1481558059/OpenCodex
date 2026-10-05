@@ -177,10 +177,14 @@ public static partial class ProtocolConverter
             var callPayload = callType == "custom" ? ObjectValue(toolCall, "custom") : ObjectValue(toolCall, "function");
             var toolName = GetString(callPayload, "name");
             var shape = ResolveResponsesToolCallShape(toolName, toolCallMappings);
+            if (callType == "custom" && toolCallMappings is not null && shape.ItemType != "custom_tool_call")
+                throw new OpenCodex.Core.Errors.UpstreamException("Upstream custom call conflicts with the declared tool type.");
             var responseName = string.IsNullOrEmpty(shape.Name)
                 ? toolName
                 : shape.Name;
-            var (namespaceName, _) = NamespaceCallParts(responseName, shape.Namespace);
+            var namespaceName = toolCallMappings is not null
+                ? shape.Namespace
+                : NamespaceCallParts(responseName, shape.Namespace).Namespace;
             var arguments = callType == "custom"
                 ? GetValue(callPayload, "input") ?? string.Empty
                 : GetValue(callPayload, "arguments") ?? "{}";
@@ -191,6 +195,8 @@ public static partial class ProtocolConverter
                 ("name", responseName),
                 ("namespace", namespaceName),
                 ("arguments", arguments));
+            if (toolCallMappings is not null)
+                canonicalToolCall["native_type"] = "function";
             if (callType == "custom")
             {
                 canonicalToolCall["native_type"] = "custom";
@@ -285,6 +291,12 @@ public static partial class ProtocolConverter
                 else
                 {
                     var shape = ResolveResponsesToolCallShape(toolName, toolCallMappings);
+                    if (toolCallMappings is not null)
+                    {
+                        call["name"] = shape.Name;
+                        call["namespace"] = shape.Namespace;
+                        call["native_type"] = "function";
+                    }
                     if (shape.Kind != ResponsesToolCallKind.Function)
                     {
                         call["native_type"] = shape.Kind == ResponsesToolCallKind.CustomTool
@@ -528,7 +540,9 @@ public static partial class ProtocolConverter
             return null;
         }
 
-        var chatName = NamespaceNameToChat(responsesName);
+        // This map belongs to the canonical item, whose name is already restored.
+        // Normalizing it again would turn declared separators into inferred namespaces.
+        var chatName = responsesName;
         return new Dictionary<string, ResponsesToolCallMapping>(StringComparer.Ordinal)
         {
             [chatName] = new ResponsesToolCallMapping

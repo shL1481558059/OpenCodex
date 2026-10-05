@@ -16,6 +16,9 @@ public static partial class ProtocolConverter
         var toolName = Convert.ToString(name) ?? string.Empty;
         var serializedArguments = JsonDumps(arguments ?? "{}");
         var shape = ResolveResponsesToolCallShape(toolName, mappings);
+        if (mappings is not null && namespaceValue is not null
+            && !string.Equals(Convert.ToString(namespaceValue), shape.Namespace ?? string.Empty, StringComparison.Ordinal))
+            throw new UpstreamException("Upstream tool call namespace conflicts with its declared tool identity.");
         var responseName = string.IsNullOrEmpty(shape.Name) ? toolName : shape.Name;
         var responseNamespace = shape.Namespace ?? Convert.ToString(namespaceValue);
 
@@ -37,7 +40,7 @@ public static partial class ProtocolConverter
                 ("status", "completed"),
                 ("call_id", callId),
                 ("input", serializedArguments));
-            MergeInto(customToolCall, ResponsesFunctionCallNameFields(responseName, responseNamespace));
+            MergeInto(customToolCall, DeclaredToolCallNameFields(toolName, responseName, responseNamespace, mappings));
             return customToolCall;
         }
 
@@ -52,7 +55,7 @@ public static partial class ProtocolConverter
                 ("status", "completed"),
                 ("call_id", callId),
                 (shape.ArgumentField, nativeArguments));
-            MergeInto(nativeToolCall, ResponsesFunctionCallNameFields(responseName, responseNamespace));
+            MergeInto(nativeToolCall, DeclaredToolCallNameFields(toolName, responseName, responseNamespace, mappings));
             MergeNativeToolExecution(nativeToolCall);
             return nativeToolCall;
         }
@@ -63,7 +66,7 @@ public static partial class ProtocolConverter
             ("status", "completed"),
             ("call_id", callId),
             ("arguments", serializedArguments));
-        MergeInto(functionCall, DeclaredFunctionCallNameFields(toolName, responseName, responseNamespace, mappings));
+        MergeInto(functionCall, DeclaredToolCallNameFields(toolName, responseName, responseNamespace, mappings));
         return functionCall;
     }
 
@@ -87,14 +90,12 @@ public static partial class ProtocolConverter
             ("status", "in_progress"),
             ("call_id", callId),
             (shape.ArgumentField, string.Empty));
-        MergeInto(item, shape.Kind == ResponsesToolCallKind.Function
-            ? DeclaredFunctionCallNameFields(toolName, responseName, shape.Namespace, mappings)
-            : ResponsesFunctionCallNameFields(responseName, shape.Namespace));
+        MergeInto(item, DeclaredToolCallNameFields(toolName, responseName, shape.Namespace, mappings));
         MergeNativeToolExecution(item);
         return item;
     }
 
-    private static Dictionary<string, object?> DeclaredFunctionCallNameFields(string upstreamName,
+    private static Dictionary<string, object?> DeclaredToolCallNameFields(string upstreamName,
         string responseName, string? responseNamespace,
         IReadOnlyDictionary<string, ResponsesToolCallMapping>? mappings)
     {

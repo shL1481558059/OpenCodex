@@ -26,7 +26,7 @@ public sealed partial class MultiAgentResponseService
         Task active = Task.CompletedTask;
         Channel<MultiAgentInjection>? injections = null;
         MultiAgentRun? connectionRun = null;
-        MultiAgentClientBinding? connectionBinding = null;
+        NativeClientSession? connectionBinding = null;
         string? connectionSession = null;
         var completedIds = new System.Collections.Concurrent.ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
         var sequence = 0;
@@ -58,34 +58,40 @@ public sealed partial class MultiAgentResponseService
             stop.Cancel();
         }
 
-        async Task Execute(Dictionary<string, object?> request, MultiAgentRun run, Channel<MultiAgentInjection> channel)
+        async Task Execute(Dictionary<string, object?> request, MultiAgentRun? run, Channel<MultiAgentInjection> channel)
         {
             var binding = connectionBinding;
-            var gate = binding is null ? store.Gate(run) : null;
+            var gate = binding is null ? store.Gate(run!) : null;
+            var responseId = "";
             if (gate is not null) await gate.WaitAsync(ct);
             try
             {
                 if (binding is not null)
-                    await ExecuteClient(request, binding, metadata, Send, ct, channel.Reader);
+                {
+                    // Upgrade headers identify a connection, not each subsequent response.create.
+                    // Without a per-message turn identity, content equality cannot imply a retry.
+                    var result = await ExecuteClient(request, binding, metadata, Send, ct, requestScopedTurn: false);
+                    responseId = JsonDictionaryValue.String(result, "id");
+                }
                 else
                 {
                     var persist = JsonDictionaryValue.Get(request, "store") is not false;
-                    var runtime = new MultiAgentRuntime(run, (payload, onEvent, token) => CallModelAsync(payload, metadata, onEvent, token), Send,
-                        () => store.SaveAsync(run, CancellationToken.None, persist));
+                    var runtime = new MultiAgentRuntime(run!, (payload, onEvent, token) => CallModelAsync(payload, metadata, onEvent, token), Send,
+                        () => store.SaveAsync(run!, CancellationToken.None, persist));
                     await runtime.ExecuteAsync(request, ct, channel.Reader);
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
             catch (Exception exception)
             {
-                logger.LogError(exception, "Multi-agent WebSocket response failed for run {RunId}", run.Id);
+                logger.LogError(exception, "Multi-agent WebSocket response failed for run {RunId}", run?.Id ?? binding?.ThreadId);
                 await Send(new Dictionary<string, object?>
                 {
                     ["type"] = "response.failed", ["sequence_number"] = 0,
                     ["response"] = new Dictionary<string, object?>
                     {
-                        ["id"] = run.LastResponseId, ["object"] = "response", ["status"] = "failed",
-                        ["model"] = run.Model, ["output"] = new List<object?>(),
+                        ["id"] = run?.LastResponseId ?? responseId, ["object"] = "response", ["status"] = "failed",
+                        ["model"] = JsonDictionaryValue.String(request, "model"), ["output"] = new List<object?>(),
                         ["error"] = new Dictionary<string, object?>
                         {
                             ["code"] = exception is ProxyException proxy ? proxy.ErrorType : "server_error",
@@ -96,7 +102,8 @@ public sealed partial class MultiAgentResponseService
             }
             finally
             {
-                completedIds.TryAdd(run.LastResponseId, 0);
+                if (run is not null) responseId = run.LastResponseId;
+                if (responseId.Length > 0) completedIds.TryAdd(responseId, 0);
                 channel.Writer.TryComplete();
                 gate?.Release();
                 while (!ct.IsCancellationRequested && channel.Reader.TryRead(out var pending))
@@ -190,7 +197,7 @@ public sealed partial class MultiAgentResponseService
                         var clientIdentity = MultiAgentClientIdentity.Parse(metadata.Headers);
                         connectionBinding = await ResolveClientBinding(item, clientIdentity, catalog.SimulatesMultiAgent(model), ct);
                         if (connectionBinding is not null)
-                            connectionRun = connectionBinding.Run;
+                            connectionRun = null;
                         else
                         {
                             if (!catalog.SimulatesMultiAgent(model))
@@ -210,7 +217,7 @@ public sealed partial class MultiAgentResponseService
                                 }
                             }, ct);
                         }
-                        if (connectionRun.Model != model)
+                        if (connectionRun is not null && connectionRun.Model != model)
                             throw new BadRequestException("Start a new session to change models.");
                     }
                     catch (Exception exception) when (exception is BadRequestException or KeyNotFoundException)
@@ -226,6 +233,11 @@ public sealed partial class MultiAgentResponseService
                 }
                 else if (type == "response.inject")
                 {
+                    if (connectionBinding is not null)
+                    {
+                        await ErrorAndClose("Native clients return tool results in the next response.create. response.inject is supported only for legacy server agents.");
+                        return new EmptyResult();
+                    }
                     var responseId = JsonDictionaryValue.String(item, "response_id");
                     if (responseId.Length == 0 || JsonDictionaryValue.Get(item, "input") is not List<object?> input
                         || input.Count == 0 || input.Any(value => value is not IReadOnlyDictionary<string, object?> output

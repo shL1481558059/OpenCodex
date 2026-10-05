@@ -362,7 +362,9 @@ public static partial class SseStreamConverter
                         {
                             var combined = (aggregate.Name ?? string.Empty) + name;
                             aggregate.Name = SkipToolNames?.Any(candidate =>
-                                candidate.StartsWith(combined, StringComparison.Ordinal)) is true ? combined : name;
+                                candidate.StartsWith(combined, StringComparison.Ordinal)) is true
+                                || toolCallMappings?.Keys.Any(candidate =>
+                                    candidate.StartsWith(combined, StringComparison.Ordinal)) is true ? combined : name;
                         }
 
                         var arguments = StringValue(function, "arguments", string.Empty);
@@ -377,7 +379,9 @@ public static partial class SseStreamConverter
                         var name = StringValue(custom, "name", string.Empty);
                         if (name.Length > 0)
                         {
-                            aggregate.Name = name;
+                            var combined = (aggregate.Name ?? string.Empty) + name;
+                            aggregate.Name = toolCallMappings?.Keys.Any(candidate =>
+                                candidate.StartsWith(combined, StringComparison.Ordinal)) is true ? combined : name;
                         }
 
                         var input = StringValue(custom, "input", string.Empty);
@@ -397,8 +401,15 @@ public static partial class SseStreamConverter
                         continue;
                     }
 
+                    // A name may arrive in fragments. Never publish an inferred function
+                    // while waiting for an exact declaration; final validation rejects unknowns.
+                    if (toolCallMappings is not null && !toolCallMappings.ContainsKey(aggregate.Name))
+                        continue;
+
                     var state = EnsureToolStreamState(index);
                     var shape = ProtocolConverter.ResolveResponsesToolCallShape(aggregate.Name, toolCallMappings);
+                    if (aggregate.Type == "custom" && toolCallMappings is not null && shape.ItemType != "custom_tool_call")
+                        throw new UpstreamException("Upstream custom call conflicts with the declared tool type.");
                     state.CallKind = aggregate.Type == "custom" ? ResponsesToolCallKind.CustomTool : shape.Kind;
                     state.ArgumentField = aggregate.Type == "custom" ? "input" : shape.ArgumentField;
                     var usesCustomInputEnvelope = aggregate.Type == "function"
@@ -419,7 +430,7 @@ public static partial class SseStreamConverter
                             new Dictionary<string, object?>
                             {
                                 ["output_index"] = state.OutputIndex,
-                                ["item"] = aggregate.Type == "custom"
+                                ["item"] = aggregate.Type == "custom" && toolCallMappings is null
                                     ? new Dictionary<string, object?>
                                     {
                                         ["id"] = state.ItemId ?? $"ct_{Guid.NewGuid():N}",
@@ -547,6 +558,12 @@ public static partial class SseStreamConverter
         var decodedCustomInputs = new Dictionary<int, string>();
         foreach (var (index, aggregate) in toolCalls)
         {
+            if (!string.IsNullOrEmpty(aggregate.Name) && SkipToolNames?.Contains(aggregate.Name) is not true)
+            {
+                var shape = ProtocolConverter.ResolveResponsesToolCallShape(aggregate.Name, toolCallMappings);
+                if (aggregate.Type == "custom" && toolCallMappings is not null && shape.ItemType != "custom_tool_call")
+                    throw new UpstreamException("Upstream custom call conflicts with the declared tool type.");
+            }
             if (aggregate.Type != "function"
                 || string.IsNullOrEmpty(aggregate.Id)
                 || string.IsNullOrEmpty(aggregate.Name)
@@ -675,7 +692,7 @@ public static partial class SseStreamConverter
             var itemId = state.ItemId ?? $"fc_{Guid.NewGuid():N}";
             var outputIndex = state.OutputIndex ?? AllocateOutputIndex();
             var hasCustomEnvelope = decodedCustomInputs.TryGetValue(index, out var customInput);
-            var functionItem = aggregate.Type == "custom"
+            var functionItem = aggregate.Type == "custom" && toolCallMappings is null
                 ? new Dictionary<string, object?>
                 {
                     ["id"] = itemId,
@@ -701,7 +718,7 @@ public static partial class SseStreamConverter
                     new Dictionary<string, object?>
                     {
                         ["output_index"] = outputIndex,
-                        ["item"] = aggregate.Type == "custom"
+                        ["item"] = aggregate.Type == "custom" && toolCallMappings is null
                             ? new Dictionary<string, object?>
                             {
                                 ["id"] = itemId,

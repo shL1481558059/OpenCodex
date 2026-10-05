@@ -22,151 +22,124 @@ public sealed partial class HttpUpstreamClient
 
         var timeout = TimeoutValue(JsonDictionaryValue.Get(channel, "timeout_seconds"), defaultTimeout);
         var retryCount = RetryCountValue(JsonDictionaryValue.Get(channel, "retry_count"));
+        var policy = StreamTimeoutPolicy.Create(channel, timeout, retryCount, RetryAfterCapSeconds);
+        using var totalCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        totalCts.CancelAfter(policy.Total);
         HttpResponseMessage? response = null;
         StreamReader? reader = null;
         var bufferedLines = new List<string>();
-        Exception? lastException = null;
-
-        for (var attempt = 0; attempt <= retryCount; attempt++)
-        {
-            using var request = BuildRequest(channel, payload, endpoint);
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeout));
-            try
-            {
-                response = await _httpClient.SendAsync(
-                    request,
-                    HttpCompletionOption.ResponseHeadersRead,
-                    timeoutCts.Token);
-                if (response.IsSuccessStatusCode)
-                {
-                    // 方案 A：探测流开头，识别可重试 SSE error 或只含响应骨架的空流。
-                    var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-                    reader = new StreamReader(stream, Encoding.UTF8);
-                    bufferedLines.Clear();
-
-                    var probe = await ProbeStreamForRetryableError(
-                        reader,
-                        bufferedLines,
-                        timeoutCts.Token);
-                    if (probe.Retryable is not null)
-                    {
-                        // 先取出 Retry-After 再释放响应，避免退避期间占着上游连接。
-                        var retryAfter = response.Headers.RetryAfter;
-                        reader.Dispose();
-                        reader = null;
-                        response.Dispose();
-                        response = null;
-
-                        if (attempt >= retryCount)
-                        {
-                            throw new UpstreamException(
-                                probe.Retryable.Value.Message,
-                                ProxyHttpStatus.TooManyRequests,
-                                body: probe.Retryable.Value.Body,
-                                channelId: JsonDictionaryValue.String(channel, "id"));
-                        }
-
-                        await DelayBeforeRetry(attempt, retryAfter, cancellationToken);
-                        continue;
-                    }
-
-                    if (probe.EmptySkeleton)
-                    {
-                        // 只包含 created/in_progress/空行的骨架流对客户端没有可用内容，
-                        // 按 retry_count 在当前渠道内部静默重试。
-                        var retryAfter = response.Headers.RetryAfter;
-                        reader.Dispose();
-                        reader = null;
-                        response.Dispose();
-                        response = null;
-
-                        if (attempt >= retryCount)
-                        {
-                            throw new UpstreamException(
-                                "upstream stream produced no content",
-                                ProxyHttpStatus.BadGateway,
-                                channelId: JsonDictionaryValue.String(channel, "id"));
-                        }
-
-                        await DelayBeforeRetry(attempt, retryAfter, cancellationToken);
-                        continue;
-                    }
-
-                    break;
-                }
-
-                if (attempt >= retryCount || !RetryableStatuses.Contains(response.StatusCode))
-                {
-                    try
-                    {
-                        await ThrowHttpError(response, channel, cancellationToken);
-                    }
-                    finally
-                    {
-                        response.Dispose();
-                    }
-                }
-
-                await DelayBeforeRetry(attempt, response, cancellationToken);
-                response.Dispose();
-                response = null;
-            }
-            catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
-            {
-                lastException = exception;
-                if (attempt >= retryCount)
-                {
-                    throw new UpstreamException(
-                        "upstream request timed out",
-                        ProxyHttpStatus.GatewayTimeout,
-                        channelId: JsonDictionaryValue.String(channel, "id"));
-                }
-
-                await DelayBeforeRetry(attempt, retryAfter: null, cancellationToken);
-            }
-            catch (HttpRequestException exception)
-            {
-                lastException = exception;
-                if (attempt >= retryCount)
-                {
-                    throw new UpstreamException(
-                        $"failed to reach upstream: {exception.Message}",
-                        ProxyHttpStatus.BadGateway,
-                        channelId: JsonDictionaryValue.String(channel, "id"));
-                }
-
-                await DelayBeforeRetry(attempt, retryAfter: null, cancellationToken);
-            }
-        }
-
-        if (response is null || reader is null)
-        {
-            if (lastException is not null)
-            {
-                throw new UpstreamException(
-                    $"failed to reach upstream: {lastException.Message}",
-                    ProxyHttpStatus.BadGateway,
-                    channelId: JsonDictionaryValue.String(channel, "id"));
-            }
-
-            throw new UpstreamException(
-                "failed to reach upstream",
-                ProxyHttpStatus.BadGateway,
-                channelId: JsonDictionaryValue.String(channel, "id"));
-        }
-
-        // 回放探测期间读到的行（在 try-catch 外 yield，符合 C# 语法约束）
-        foreach (var line in bufferedLines)
-        {
-            yield return line;
-        }
 
         try
         {
+            for (var attempt = 0; ; attempt++)
+            {
+                ThrowIfStreamBudgetExpired(channel, totalCts.Token, cancellationToken);
+                using var request = BuildRequest(channel, payload, endpoint);
+                using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(totalCts.Token);
+                attemptCts.CancelAfter(policy.FirstContent);
+                var ready = false;
+                System.Net.Http.Headers.RetryConditionHeaderValue? retryAfter = null;
+                try
+                {
+                    response = await _httpClient.SendAsync(
+                        request,
+                        HttpCompletionOption.ResponseHeadersRead,
+                        attemptCts.Token);
+                    retryAfter = response.Headers.RetryAfter;
+                    if (response.IsSuccessStatusCode)
+                    {
+                        var stream = await response.Content.ReadAsStreamAsync(attemptCts.Token);
+                        reader = new StreamReader(stream, Encoding.UTF8);
+                        bufferedLines.Clear();
+                        var probe = await ProbeStreamForRetryableError(reader, bufferedLines, attemptCts.Token);
+                        if (probe.Error is not null)
+                        {
+                            if (!probe.Error.Retryable || attempt >= retryCount)
+                            {
+                                throw new UpstreamException(
+                                    probe.Error.Message,
+                                    probe.Error.StatusCode,
+                                    body: probe.Error.Body,
+                                    channelId: JsonDictionaryValue.String(channel, "id"));
+                            }
+                        }
+                        else if (probe.EmptySkeleton)
+                        {
+                            if (attempt >= retryCount)
+                            {
+                                throw new UpstreamException(
+                                    "upstream stream produced no content",
+                                    ProxyHttpStatus.BadGateway,
+                                    channelId: JsonDictionaryValue.String(channel, "id"));
+                            }
+                        }
+                        else
+                        {
+                            ready = true;
+                        }
+                    }
+                    else if (attempt >= retryCount || !RetryableStatuses.Contains(response.StatusCode))
+                    {
+                        await ThrowHttpError(response, channel, attemptCts.Token);
+                    }
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    ThrowIfStreamBudgetExpired(channel, totalCts.Token, cancellationToken);
+                    if (attempt >= retryCount)
+                    {
+                        throw StreamTimeout(channel, "upstream first content timed out");
+                    }
+                }
+                catch (HttpRequestException exception)
+                {
+                    ThrowIfStreamBudgetExpired(channel, totalCts.Token, cancellationToken);
+                    if (attempt >= retryCount)
+                    {
+                        throw new UpstreamException(
+                            $"failed to reach upstream: {exception.Message}",
+                            ProxyHttpStatus.BadGateway,
+                            channelId: JsonDictionaryValue.String(channel, "id"));
+                    }
+                }
+                finally
+                {
+                    // 所有失败尝试都在退避之前释放连接；成功尝试由外层 finally 接管。
+                    if (!ready)
+                    {
+                        reader?.Dispose();
+                        reader = null;
+                        response?.Dispose();
+                        response = null;
+                    }
+                }
+
+                if (ready)
+                {
+                    break;
+                }
+
+                try
+                {
+                    await DelayBeforeRetry(attempt, retryAfter, totalCts.Token);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    ThrowIfStreamBudgetExpired(channel, totalCts.Token, cancellationToken);
+                    throw;
+                }
+            }
+
+            // 缓冲回放也位于资源作用域内，消费者在首行停止时仍会释放响应。
+            foreach (var line in bufferedLines)
+            {
+                ThrowIfStreamBudgetExpired(channel, totalCts.Token, cancellationToken);
+                yield return line;
+            }
+
             while (true)
             {
-                var line = await reader.ReadLineAsync(cancellationToken);
+                var line = await ReadStreamLineAsync(reader!, policy.Idle, channel, totalCts.Token, cancellationToken);
                 if (line is null)
                 {
                     break;
@@ -177,9 +150,48 @@ public sealed partial class HttpUpstreamClient
         }
         finally
         {
-            reader.Dispose();
-            response.Dispose();
+            reader?.Dispose();
+            response?.Dispose();
         }
+    }
+
+    private static async Task<string?> ReadStreamLineAsync(
+        StreamReader reader,
+        TimeSpan idleTimeout,
+        IReadOnlyDictionary<string, object?> channel,
+        CancellationToken totalToken,
+        CancellationToken cancellationToken)
+    {
+        ThrowIfStreamBudgetExpired(channel, totalToken, cancellationToken);
+        using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(totalToken);
+        idleCts.CancelAfter(idleTimeout);
+        try
+        {
+            return await reader.ReadLineAsync(idleCts.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            ThrowIfStreamBudgetExpired(channel, totalToken, cancellationToken);
+            throw StreamTimeout(channel, "upstream stream idle timed out");
+        }
+    }
+
+    private static void ThrowIfStreamBudgetExpired(
+        IReadOnlyDictionary<string, object?> channel,
+        CancellationToken totalToken,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (totalToken.IsCancellationRequested)
+        {
+            throw StreamTimeout(channel, "upstream stream total budget exceeded");
+        }
+    }
+
+    private static UpstreamException StreamTimeout(IReadOnlyDictionary<string, object?> channel, string message)
+    {
+        return new UpstreamException(message, ProxyHttpStatus.GatewayTimeout,
+            channelId: JsonDictionaryValue.String(channel, "id"));
     }
 
     // 读取流直到遇到有效内容或流结束，检查是否只包含可忽略的响应骨架。
@@ -201,9 +213,12 @@ public sealed partial class HttpUpstreamClient
             if (!line.StartsWith("data:", StringComparison.Ordinal))
             {
                 var trimmed = line.Trim();
+                // SSE 元数据和心跳不是正文；必须读到 data 才能判断首段错误。
                 if (trimmed.Length != 0
-                    && !string.Equals(trimmed, "event: response.created", StringComparison.Ordinal)
-                    && !string.Equals(trimmed, "event: response.in_progress", StringComparison.Ordinal))
+                    && !trimmed.StartsWith(':')
+                    && !trimmed.StartsWith("event:", StringComparison.Ordinal)
+                    && !trimmed.StartsWith("id:", StringComparison.Ordinal)
+                    && !trimmed.StartsWith("retry:", StringComparison.Ordinal))
                 {
                     return new StreamProbeResult { EmptySkeleton = false };
                 }
@@ -230,7 +245,7 @@ public sealed partial class HttpUpstreamClient
                 {
                     return new StreamProbeResult
                     {
-                        Retryable = (streamError.Message, streamError.Body)
+                        Error = streamError
                     };
                 }
 
@@ -254,44 +269,76 @@ public sealed partial class HttpUpstreamClient
         }
     }
 
-    // 流首探测时尚未向客户端输出正文：任何 {"type":"error",...} 都视为可重试错误，
-    // 与内层 error.type 无关。非流式路径仍走 TryGetRetryableErrorFromElement 的白名单。
-    private static (string Message, object? Body)? TryGetStreamErrorFromElement(JsonElement root)
+    // 只在尚未发布正文时重试瞬态错误；错误状态与重试资格分别判定。
+    private static StreamError? TryGetStreamErrorFromElement(JsonElement root)
     {
-        if (root.ValueKind != JsonValueKind.Object)
+        if (root.ValueKind != JsonValueKind.Object
+            || StreamErrorText(root, "type") != "error"
+            || !root.TryGetProperty("error", out var error)
+            || error.ValueKind != JsonValueKind.Object)
         {
             return null;
         }
 
-        if (!root.TryGetProperty("type", out var typeElement)
-            || typeElement.ValueKind != JsonValueKind.String
-            || !string.Equals(typeElement.GetString(), "error", StringComparison.Ordinal))
+        var code = StreamErrorText(error, "code");
+        var type = StreamErrorText(error, "type");
+        var status = StreamErrorStatus(error) ?? StreamErrorStatus(root)
+            ?? StreamErrorStatusFromIdentifier(code) ?? StreamErrorStatusFromIdentifier(type)
+            ?? ProxyHttpStatus.BadGateway;
+        var message = StreamErrorText(error, "message");
+        if (message.Length == 0) message = "upstream stream failed";
+        var identifier = code.Length > 0 ? code : type;
+        if (identifier.Length > 0) message = $"{message} ({identifier})";
+        return new StreamError
         {
-            return null;
-        }
+            Message = message, Body = FromJsonElement(root), StatusCode = status,
+            Retryable = status == ProxyHttpStatus.TooManyRequests || status >= 500
+        };
+    }
 
-        if (!root.TryGetProperty("error", out var errorElement)
-            || errorElement.ValueKind != JsonValueKind.Object)
+    private static string StreamErrorText(JsonElement value, string name)
+    {
+        return value.TryGetProperty(name, out var field) && field.ValueKind == JsonValueKind.String
+            ? field.GetString() ?? "" : "";
+    }
+
+    private static int? StreamErrorStatus(JsonElement value)
+    {
+        foreach (var name in new[] { "status", "status_code", "http_status" })
         {
-            return null;
+            if (!value.TryGetProperty(name, out var field)) continue;
+            if (field.ValueKind == JsonValueKind.Number && field.TryGetInt32(out var number) && number is >= 400 and <= 599)
+                return number;
+            if (field.ValueKind == JsonValueKind.String && int.TryParse(field.GetString(), out number) && number is >= 400 and <= 599)
+                return number;
         }
+        return null;
+    }
 
-        var errorType = errorElement.TryGetProperty("type", out var errorTypeElement)
-            && errorTypeElement.ValueKind == JsonValueKind.String
-            ? errorTypeElement.GetString()
-            : null;
-        var message = errorElement.TryGetProperty("message", out var messageElement)
-            && messageElement.ValueKind == JsonValueKind.String
-            ? messageElement.GetString()
-            : null;
+    private static int? StreamErrorStatusFromIdentifier(string identifier)
+    {
+        return identifier switch
+        {
+            "rate_limit_exceeded" or "rate_limit_error" or "too_many_requests" => ProxyHttpStatus.TooManyRequests,
+            "invalid_request_error" or "invalid_request" or "bad_request" or "invalid_argument"
+                or "validation_error" or "context_length_exceeded" => 400,
+            "authentication_error" or "unauthorized" or "invalid_api_key" or "authentication_failed" => 401,
+            "permission_error" or "permission_denied" or "forbidden" or "access_denied" => 403,
+            _ => null
+        };
+    }
 
-        return (message ?? errorType ?? "error", FromJsonElement(root));
+    private sealed class StreamError
+    {
+        public required string Message { get; init; }
+        public object? Body { get; init; }
+        public int StatusCode { get; init; }
+        public bool Retryable { get; init; }
     }
 
     private sealed class StreamProbeResult
     {
-        public (string Message, object? Body)? Retryable { get; init; }
-
+        public StreamError? Error { get; init; }
         public bool EmptySkeleton { get; init; }
     }
 }

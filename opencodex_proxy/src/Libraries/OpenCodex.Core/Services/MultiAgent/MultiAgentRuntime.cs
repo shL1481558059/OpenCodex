@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Channels;
 using OpenCodex.Core.Errors;
+using OpenCodex.Core.Protocols;
 using OpenCodex.CoreBase.Abstractions;
 
 namespace OpenCodex.Core.Services.MultiAgent;
@@ -16,7 +17,7 @@ public sealed partial class MultiAgentRuntime
     private readonly Func<Task> _save;
     private readonly TimeProvider _time;
     private readonly MultiAgentClientRuntimeHooks? _client;
-    private readonly Dictionary<string, (Task<Dictionary<string, object?>> Task, CancellationTokenSource Stop, int Generation, string Round)> _active = [];
+    private readonly Dictionary<string, (Task<Dictionary<string, object?>> Task, CancellationTokenSource Stop, int Generation, string Round, Dictionary<string, object?> Request)> _active = [];
     private readonly List<object?> _output = [];
     private int _sequence;
 
@@ -109,7 +110,7 @@ public sealed partial class MultiAgentRuntime
                     var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     var round = Id("round");
                     _active.Add(agent.Name, (RunModel(payload, compact, compact ? ContinuationAnchors(agent) : [],
-                        (e, _) => EnqueueModelEvent(agent.Name, round, e, stop.Token), stop.Token), stop, agent.CurrentTaskGeneration, round));
+                        (e, _) => EnqueueModelEvent(agent.Name, round, e, stop.Token), stop.Token), stop, agent.CurrentTaskGeneration, round, payload));
                 }
 
                 if (_active.Count == 0)
@@ -181,6 +182,8 @@ public sealed partial class MultiAgentRuntime
                     var result = await operation.Task;
                     if (!operation.Stop.IsCancellationRequested)
                     {
+                        if (_client is not null && Text(result, "status") == "completed")
+                            ProtocolConverter.ValidateResponsesToolCalls(operation.Request, result);
                         await ProcessTurn(current, result, operation.Round, ct);
                     }
                     else await CloseModelItems(operation.Round);

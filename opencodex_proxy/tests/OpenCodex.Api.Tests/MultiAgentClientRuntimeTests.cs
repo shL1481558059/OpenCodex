@@ -9,10 +9,50 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class MultiAgentClientRuntimeTests
 {
+    [Theory]
+    [InlineData("exec", null, "function_call")]
+    [InlineData("exec", "functions", "function_call")]
+    [InlineData("exec", "other", "custom_tool_call")]
+    public async Task InvalidOrdinaryClientCallRejectsWholeBatchBeforeAnyPreparation(string name, string? ns, string type)
+    {
+        var run = NativeRun();
+        run.Template = NativeTools().ApplyToTemplate(run.Template);
+        var definitions = JsonDictionaryValue.List(run.Template, "tools");
+        definitions.Add(new D { ["type"] = "namespace", ["name"] = "functions", ["tools"] = new List<object?>
+        {
+            new D { ["type"] = "custom", ["name"] = "exec" }
+        } });
+        definitions.Add(new D { ["type"] = "namespace", ["name"] = "other", ["tools"] = new List<object?>
+        {
+            new D { ["type"] = "function", ["name"] = "exec", ["parameters"] = new D { ["type"] = "object" } }
+        } });
+        var invalid = new D
+        {
+            ["type"] = type, ["call_id"] = "bad-call", ["name"] = name,
+            [type == "custom_tool_call" ? "input" : "arguments"] = "{}"
+        };
+        if (ns is not null) invalid["namespace"] = ns;
+        var events = new List<D>();
+        var prepared = 0;
+        var runtime = new MultiAgentRuntime(run, (_, _) => Task.FromResult(MultiAgentTestHarness.Response(NativeCall(), invalid)),
+            e => { events.Add(e); return Task.CompletedTask; }, () => Task.CompletedTask, client: new()
+            {
+                Tools = NativeTools(), BeforeToolCall = (_, _, _, _) => { prepared++; return Task.CompletedTask; }
+            });
+        var response = await runtime.ExecuteAsync(new(), default);
+        Assert.Equal("failed", response["status"]);
+        Assert.Equal(0, prepared);
+        Assert.Empty(run.PendingCalls);
+        Assert.DoesNotContain(run.Agents["/root"].History.OfType<D>(), item =>
+            JsonDictionaryValue.String(item, "type") is "function_call" or "custom_tool_call");
+        Assert.DoesNotContain(events, e => JsonDictionaryValue.String(e, "type") is
+            "response.function_call_arguments.done" or "response.custom_tool_call_input.done" or "response.output_item.done");
+    }
+
     [Fact]
     public async Task NewInputDuringRetryKeepsCurrentGenerationAndQueuesFollowupOnlyOnce()
     {
-        var run = MultiAgentTestHarness.Run();
+        var run = NativeRun();
         var actor = run.Agents["/root"];
         actor.Generation = actor.CurrentTaskGeneration = 7;
         var calls = 0;
@@ -44,7 +84,7 @@ public sealed class MultiAgentClientRuntimeTests
     [Fact]
     public async Task DisconnectAfterFirstToolDoneKeepsEntireBatchPendingAndOnlyReplaysUnconsumedCalls()
     {
-        var run = MultiAgentTestHarness.Run();
+        var run = NativeRun();
         var calls = 0;
         D? delivered = null;
         using var stop = new CancellationTokenSource();
@@ -52,7 +92,7 @@ public sealed class MultiAgentClientRuntimeTests
         {
             calls++;
             return Task.FromResult(calls == 1
-                ? MultiAgentTestHarness.Response(MultiAgentTestHarness.Call("first_tool", new { }), MultiAgentTestHarness.Call("second_tool", new { }))
+                ? MultiAgentTestHarness.Response(ClientCall("first_tool", new { }), ClientCall("second_tool", new { }))
                 : MultiAgentTestHarness.Response(MultiAgentTestHarness.Message("FINAL")));
         }
         var first = new MultiAgentRuntime(run, Model, e =>
@@ -85,7 +125,7 @@ public sealed class MultiAgentClientRuntimeTests
     [Fact]
     public async Task DisconnectDuringFinalDeliveryReplaysCommittedFinalWithoutAnotherModelAttempt()
     {
-        var run = MultiAgentTestHarness.Run();
+        var run = NativeRun();
         var calls = 0;
         using var stop = new CancellationTokenSource();
         Task<D> Model(D _, CancellationToken ct)
@@ -114,7 +154,7 @@ public sealed class MultiAgentClientRuntimeTests
     [Fact]
     public async Task InitialClientForkToolResultsAreNotMistakenForThisActorsPendingCalls()
     {
-        var run = MultiAgentTestHarness.Run();
+        var run = NativeRun();
         var inherited = new D { ["type"] = "function_call_output", ["call_id"] = "call_ma_parent_history", ["output"] = "parent result" };
         var calls = 0;
         var runtime = new MultiAgentRuntime(run, (_, _) => Task.FromResult(MultiAgentTestHarness.Response(
@@ -135,7 +175,7 @@ public sealed class MultiAgentClientRuntimeTests
     [InlineData(false)]
     public async Task ClientActorOutputsUseItsCanonicalIdentity(bool stream)
     {
-        var run = MultiAgentTestHarness.Run();
+        var run = NativeRun();
         var events = new List<D>();
         MultiAgentModelCall model = async (_, emit, ct) =>
         {
@@ -164,7 +204,7 @@ public sealed class MultiAgentClientRuntimeTests
     [InlineData(false)]
     public async Task MultipleNativeReportsEnterOneModelTurnInsteadOfSeparateTasks(bool pendingWait)
     {
-        var run = MultiAgentTestHarness.Run();
+        var run = NativeRun();
         run.ModelTurns = 1;
         var actor = run.Agents["/root"];
         actor.TaskStarted = pendingWait;
@@ -172,7 +212,7 @@ public sealed class MultiAgentClientRuntimeTests
         var input = new List<object?>();
         if (pendingWait)
         {
-            var wait = MultiAgentTestHarness.Call("wait_agent", new { timeout_ms = 1000 });
+            var wait = ClientCall("wait_agent", new { timeout_ms = 1000 });
             wait["namespace"] = "collaboration";
             wait["call_id"] = "call_ma_wait";
             actor.History.Add(wait);
@@ -199,7 +239,7 @@ public sealed class MultiAgentClientRuntimeTests
     [Fact]
     public async Task FailedSecondPreparationLeavesNoPartialToolHistory()
     {
-        var run = MultiAgentTestHarness.Run();
+        var run = NativeRun();
         var count = 0;
         var prepared = new List<string>();
         var rolledBack = new List<string>();
@@ -232,7 +272,7 @@ public sealed class MultiAgentClientRuntimeTests
     [Fact]
     public async Task EntireNativeCallBatchIsValidatedBeforePreparingAnyCall()
     {
-        var run = MultiAgentTestHarness.Run();
+        var run = NativeRun();
         var invalid = NativeCall();
         invalid["arguments"] = "{}";
         var prepared = 0;
@@ -251,7 +291,7 @@ public sealed class MultiAgentClientRuntimeTests
     [Fact]
     public async Task CancellationDuringPreparationStillRollsBackCompletedReservations()
     {
-        var run = MultiAgentTestHarness.Run();
+        var run = NativeRun();
         using var stop = new CancellationTokenSource();
         var prepared = 0;
         var rolledBack = 0;
@@ -282,7 +322,7 @@ public sealed class MultiAgentClientRuntimeTests
     [InlineData(null)]
     public async Task ReplayedNativeReportIsDeduplicatedAcrossDifferentResponseIds(string? id)
     {
-        var run = MultiAgentTestHarness.Run();
+        var run = NativeRun();
         run.ModelTurns = 1;
         run.Agents["/root"].Status = "completed";
         var calls = 0;
@@ -306,7 +346,7 @@ public sealed class MultiAgentClientRuntimeTests
     [Fact]
     public async Task NativeToolsRemainAvailableToModelAfterContinuationUpdates()
     {
-        var run = MultiAgentTestHarness.Run();
+        var run = NativeRun();
         var tools = NativeTools();
         run.Template = tools.ApplyToTemplate(run.Template);
         D? captured = null;
@@ -328,7 +368,7 @@ public sealed class MultiAgentClientRuntimeTests
     [Fact]
     public async Task NativeAgentMessageResumesCompletedAgentAndKeepsMessageIdentity()
     {
-        var run = MultiAgentTestHarness.Run();
+        var run = NativeRun();
         run.ModelTurns = 1;
         run.Finished = true;
         run.Agents["/root"].Status = "completed";
@@ -356,10 +396,11 @@ public sealed class MultiAgentClientRuntimeTests
     [Fact]
     public async Task CallsAreRegisteredBeforeHistoryAndClientCompletionIncludingOrdinaryTools()
     {
-        var run = MultiAgentTestHarness.Run();
+        var run = NativeRun();
+        JsonDictionaryValue.List(run.Template, "tools").Add(new D { ["type"] = "custom", ["name"] = "exec" });
         var registered = new HashSet<string>();
         var native = NativeCall();
-        var custom = new D { ["type"] = "custom_tool_call", ["name"] = "exec", ["input"] = "text(1);" };
+        var custom = new D { ["type"] = "custom_tool_call", ["call_id"] = "custom-call", ["name"] = "exec", ["input"] = "text(1);" };
         var hooks = new MultiAgentClientRuntimeHooks
         {
             Tools = NativeTools(),
@@ -394,7 +435,7 @@ public sealed class MultiAgentClientRuntimeTests
     [Fact]
     public async Task FailedResultHookRetainsPendingCallAndSuccessfulRetryIsDeduplicated()
     {
-        var run = MultiAgentTestHarness.Run();
+        var run = NativeRun();
         var attempts = 0;
         var models = 0;
         var hooks = new MultiAgentClientRuntimeHooks
@@ -434,7 +475,7 @@ public sealed class MultiAgentClientRuntimeTests
     [Fact]
     public async Task WebSocketInjectionPassesCancellationAndRunsNativeResultHook()
     {
-        var run = MultiAgentTestHarness.Run();
+        var run = NativeRun();
         var injections = Channel.CreateUnbounded<MultiAgentInjection>();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var calls = 0;
@@ -466,10 +507,10 @@ public sealed class MultiAgentClientRuntimeTests
     [Fact]
     public async Task NativeModeRejectsServerOnlyActionsWithoutSpawningHiddenAgents()
     {
-        var run = MultiAgentTestHarness.Run();
+        var run = NativeRun();
         var events = new List<D>();
         var runtime = new MultiAgentRuntime(run, (_, _) => Task.FromResult(MultiAgentTestHarness.Response(
-            MultiAgentTestHarness.Call("ocxp_ma_spawn_agent", new { task_name = "hidden", message = "task" }))), e =>
+            ClientCall("ocxp_ma_spawn_agent", new { task_name = "hidden", message = "task" }))), e =>
         {
             events.Add(e);
             return Task.CompletedTask;
@@ -484,7 +525,7 @@ public sealed class MultiAgentClientRuntimeTests
     [Fact]
     public async Task RejectedRegistrationNeverBecomesAnExecutableCompletedCall()
     {
-        var run = MultiAgentTestHarness.Run();
+        var run = NativeRun();
         var events = new List<D>();
         var runtime = new MultiAgentRuntime(run, (_, _) => Task.FromResult(MultiAgentTestHarness.Response(NativeCall())), e =>
         {
@@ -506,7 +547,7 @@ public sealed class MultiAgentClientRuntimeTests
     {
         async Task<int> Resume(MultiAgentClientRuntimeHooks? client)
         {
-            var run = MultiAgentTestHarness.Run();
+            var run = NativeRun();
             run.ModelTurns = 1;
             run.Agents["/root"].Status = "completed";
             var calls = 0;
@@ -530,9 +571,29 @@ public sealed class MultiAgentClientRuntimeTests
         Assert.Equal(0, await Resume(null));
     }
 
+    private static MultiAgentRun NativeRun()
+    {
+        var run = MultiAgentTestHarness.Run();
+        run.Template = NativeTools().ApplyToTemplate(run.Template);
+        foreach (var name in new[] { "first_tool", "second_tool" })
+            JsonDictionaryValue.List(run.Template, "tools").Add(new D
+            {
+                ["type"] = "function", ["name"] = name,
+                ["parameters"] = new D { ["type"] = "object", ["properties"] = new D() }
+            });
+        return run;
+    }
+
+    private static D ClientCall(string name, object arguments)
+    {
+        var call = MultiAgentTestHarness.Call(name, arguments);
+        call["call_id"] = "upstream-" + Guid.NewGuid().ToString("N");
+        return call;
+    }
+
     private static D NativeCall()
     {
-        var call = MultiAgentTestHarness.Call("spawn_agent", new { task_name = "child", message = "task" });
+        var call = ClientCall("spawn_agent", new { task_name = "child", message = "task" });
         call["namespace"] = "collaboration";
         return call;
     }
