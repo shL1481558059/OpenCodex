@@ -40,6 +40,18 @@ python3 scripts/verify_multi_agent_codex.py \
 
 验收不能只看模型自述。脚本检查原生 session 的父子身份、实际协作调用、子任务工具执行、消息投递、后续任务及 interrupted 事件。原始 CLI 事件与子线程 rollout 保留在输出目录，可进一步用同一 CODEX_HOME 的 app-server `thread/read` 读取。桌面截图和真实 UI 点击仍是另外的人工验收维度，脚本不会冒称已经点击了桌面界面。
 
+### 命令退出码的证据边界
+
+命令成功以本地 `CommandExecution` 的结构化 `exit_code` 和 `status` 为准。外层 `functions.exec` 的 `Script completed` 只表示 JavaScript 包装执行结束，内部 shell 可以返回非零。缺失退出码不能当作 `0`，被取消或仍运行的命令不能当作成功；复合 shell 命令整体返回 `0` 也不证明每一步成功。
+
+code mode 的内部命令 ID（`exec-...`）与外层工具调用 ID（`call_...`）不同，验收不能强制它们相等。关联应检查同轮次、时间范围和实际返回输出，并拒绝存在多个候选的关联。结构化命令状态与模型可见文本需要分别核对。
+
+验收结果的 `native_session_audit.command_execution_audit` 按 agent 路径保存真实 `status`、`exit_code`、关联结果与退出码计数，不复制命令正文。`verified_success` 表示命令唯一关联且真实状态为 `completed/0`；完整 fixture 验收还要求外层工具成功及实际文件输出。缺失、空输出、截断或无法唯一关联的结果保留为未验证，不推定成功。
+
+调用 `tools.exec_command` 后，使用 `text(result)` 可以把完整结果（包括可用的退出码，或仍在运行时的 session ID）交还模型。只使用 `text(result.output)` 会省略这些字段。OpenCodex 只接收客户端提交的工具结果，无法从省略后的文本恢复真实退出码；此验收脚本不会改写模型生成的 JavaScript，也不修改官方客户端运行器。要在模型省略字段时仍强制展示退出码，需要客户端运行器提供独立于 `text()` 的结构化状态通道。
+
+建议真实负路径验收至少覆盖：命令输出固定标记后返回 `7`、随后命令返回 `0`、后台命令经轮询才结束，以及中断命令。核对本地结构化事件、模型可见工具结果和最终结论，不能只检查 CLI 自身的退出码。
+
 ## 客户端生命周期与压缩
 
 运行 [真实 app-server 生命周期验收](README-native-codex-lifecycle.md)，验证同文新 turn、fork、真实客户端 compact、steer、interrupt 和 code-mode exec/wait。
@@ -59,6 +71,7 @@ python3 scripts/verify_multi_agent_codex.py \
 ## 回归测试
 
 ```sh
+python3 -m unittest discover -s scripts -p test_verify_multi_agent_codex.py
 dotnet test opencodex_proxy/tests/OpenCodex.Api.Tests/OpenCodex.Api.Tests.csproj --no-restore
 ```
 

@@ -48,6 +48,55 @@ continue from the already received tool result after automatic recovery.
 """
 
 
+def audit_command_executions(actor):
+    """Keep native process results separate from the outer code-mode completion."""
+    def output_texts(value):
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            text = item.get("text") if isinstance(item, dict) else item
+            if isinstance(text, str):
+                yield text
+                try:
+                    item = json.loads(text)
+                except ValueError:
+                    continue
+            if isinstance(item, dict) and isinstance(item.get("output"), str):
+                yield item["output"]
+
+    commands, exit_counts = [], {}
+    for command in actor["commands"]:
+        output = command.get("aggregated_output")
+        candidates = []
+        if command.get("turn") and isinstance(output, str) and output:
+            for call_id, call in actor["calls"].items():
+                if (call.get("namespace") not in (None, "", "functions")
+                        or call.get("name") not in ("exec", "wait", "exec_command", "write_stdin")):
+                    continue
+                if call.get("turn") != command["turn"]:
+                    continue
+                if any(call["time"] <= command["time"] <= result["time"]
+                       and output in output_texts(result.get("output")) for result in call["results"]):
+                    candidates.append(call_id)
+        association = "matched" if len(candidates) == 1 else "ambiguous" if candidates else "unmatched"
+        code = command.get("exit_code")
+        valid_code = type(code) is int  # bool is not a process exit code.
+        if valid_code:
+            exit_counts[str(code)] = exit_counts.get(str(code), 0) + 1
+        commands.append({"id": command.get("id"), "turn": command.get("turn"),
+                         "status": command.get("status"), "exit_code": code,
+                         "association": association,
+                         "matched_call_id": candidates[0] if len(candidates) == 1 else None,
+                         "verified_success": association == "matched" and valid_code
+                             and code == 0 and command.get("status") == "completed"})
+    return {"command_count": len(commands), "commands": commands, "exit_code_counts": exit_counts,
+            "nonzero_exit_count": sum(type(item["exit_code"]) is int and item["exit_code"] != 0 for item in commands),
+            "missing_or_invalid_exit_count": sum(type(item["exit_code"]) is not int for item in commands),
+            "matched_count": sum(item["association"] == "matched" for item in commands),
+            "unmatched_count": sum(item["association"] == "unmatched" for item in commands),
+            "ambiguous_count": sum(item["association"] == "ambiguous" for item in commands),
+            "verified_success_count": sum(item["verified_success"] for item in commands)}
+
+
 def audit_native_sessions(home, root_threads):
     """Verify native calls, their results and the receiving threads' actual history."""
     from datetime import datetime
@@ -117,6 +166,7 @@ def audit_native_sessions(home, root_threads):
             elif kind == "agent_message":
                 actor["messages"].append({"time": at, "turn": turn, "payload": payload})
 
+    command_audits = {name: audit_command_executions(actor) for name, actor in actors.items()}
     root = actors.get("/root", {"calls": {}, "completed": []})
     calls = [dict(call, call_id=call_id) for call_id, call in root["calls"].items()
              if call["namespace"] == "collaboration"]
@@ -177,12 +227,12 @@ def audit_native_sessions(home, root_threads):
             continue
         fixture = home.parent / "work" / (name.rsplit("/", 1)[1] + ".txt")
         fixture_text = fixture.read_text().strip() if fixture.exists() else ""
-        proven = any(command.get("exit_code") == 0 and command.get("status") == "completed"
-                     and command.get("id") in actor["calls"] and successful(actor["calls"][command["id"]])
+        proven = any(evidence["verified_success"]
+                     and successful(actor["calls"][evidence["matched_call_id"]])
                      and fixture_text and fixture_text in command.get("aggregated_output", "")
                      and any(done["turn"] == command["turn"] and done["time"] >= command["time"]
                              and marker in done["text"] for done in actor["completed"])
-                     for command in actor["commands"])
+                     for command, evidence in zip(actor["commands"], command_audits[name]["commands"]))
         if not proven:
             failures.append("missing successful fixture tool execution and result in " + name)
 
@@ -236,6 +286,7 @@ def audit_native_sessions(home, root_threads):
                  "agent_path": name, "tool_calls": len(actor["calls"]), "interrupted": bool(actor["aborted"])}
                 for name, actor in actors.items() if name != "/root"]
     return {"actions": actions, "successful_actions": sorted(succeeded), "children": children,
+            "command_execution_audit": command_audits,
             "models": sorted(models), "message_delivery_verified": message_verified,
             "same_thread_followup_verified": followup_verified, "running_interrupt_verified": interrupt_verified}, failures
 
