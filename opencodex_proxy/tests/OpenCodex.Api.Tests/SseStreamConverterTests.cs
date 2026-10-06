@@ -1218,7 +1218,7 @@ public sealed class SseStreamConverterTests
     };
 
     [Theory]
-    [InlineData("exec")]
+    [InlineData("missing")]
     [InlineData("missing__exec")]
     public async Task Chat_DeclaredToolContractRejectsUnknownNamesBeforeAnyExecutableDone(string name)
     {
@@ -1249,6 +1249,69 @@ public sealed class SseStreamConverterTests
         Assert.Equal("exec", item["name"]);
         Assert.Equal("functions", item["namespace"]);
         Assert.Equal(input, item["input"]);
+    }
+
+    [Theory]
+    [InlineData("exec", "", false)]
+    [InlineData("e", "xec", false)]
+    [InlineData("functions__", "exec", false)]
+    [InlineData("exec", "", true)]
+    [InlineData("e", "xec", true)]
+    [InlineData("functions__", "exec", true)]
+    public async Task Chat_UniqueDeclaredShortNameStreamsBeforeTerminalAndSurvivesResponseReconversion(
+        string firstName, string restName, bool nativeCustom)
+    {
+        const string input = " \nconst value = { input: 'keep spaces' };\ntext(value);\n ";
+        var payload = nativeCustom ? input : JsonSerializer.Serialize(new { input });
+        var emitted = new List<string>();
+        var result = NamespacedCustomStreamResult();
+        object Call(string name, string arguments, string? id = null) => nativeCustom
+            ? new { index = 0, id, type = "custom", custom = new { name, input = arguments } }
+            : ChatToolCall(0, id, name, arguments);
+        async IAsyncEnumerable<string> Source()
+        {
+            await foreach (var line in SseLines(
+                SseBlock(ChatChunk(toolCalls: new[] { Call(firstName, "", "call") })),
+                SseBlock(ChatChunk(toolCalls: new[] { Call(restName, payload) })))) yield return line;
+            var beforeTerminal = ParseEvents(emitted);
+            Assert.Contains(beforeTerminal, e => (string?)e["type"] == "response.output_item.added"
+                && ((Dictionary<string, object?>)e["item"]!)["type"]?.ToString() == "custom_tool_call");
+            Assert.Equal(input, string.Concat(AllByType(beforeTerminal, "response.custom_tool_call_input.delta").Select(e => e["delta"])));
+            Assert.DoesNotContain(beforeTerminal, e => (string?)e["type"] is "response.output_item.done" or "response.completed");
+            await foreach (var line in SseLines(SseBlock(ChatChunk(finishReason: "tool_calls")), SseBlock("[DONE]"))) yield return line;
+        }
+        await foreach (var line in SseStreamConverter.ChatToResponsesEvents(Source(), "test", result, CancellationToken.None)) emitted.Add(line);
+        var streamedCall = (Dictionary<string, object?>)ByType(ParseEvents(emitted), "response.output_item.done")!["item"]!;
+        Assert.Equal("custom_tool_call", streamedCall["type"]);
+        Assert.Equal("functions", streamedCall["namespace"]);
+        Assert.Equal("exec", streamedCall["name"]);
+        Assert.Equal(input, streamedCall["input"]);
+        var reconverted = ProtocolConverter.ConvertResponse(result.UpstreamResponse!, ProtocolConverter.Responses,
+            ProtocolConverter.Chat, "test", toolCallMappings: result.ToolCallMappings);
+        var completedCall = Assert.IsType<Dictionary<string, object?>>(Assert.Single((List<object?>)reconverted["output"]!));
+        Assert.Equal(streamedCall["type"], completedCall["type"]);
+        Assert.Equal(streamedCall["namespace"], completedCall["namespace"]);
+        Assert.Equal(streamedCall["name"], completedCall["name"]);
+        Assert.Equal(input, completedCall["input"]);
+    }
+
+    [Fact]
+    public async Task Chat_AmbiguousDeclaredShortNameCannotPublishExecutableItems()
+    {
+        var result = NamespacedCustomStreamResult();
+        result.ToolCallMappings = new Dictionary<string, ResponsesToolCallMapping>(result.ToolCallMappings!)
+        {
+            ["other__exec"] = new() { ChatName = "other__exec", ResponsesName = "exec", Namespace = "other", NativeType = "custom" }
+        };
+        var emitted = new List<string>();
+        await Assert.ThrowsAsync<UpstreamException>(async () =>
+        {
+            await foreach (var line in SseStreamConverter.ChatToResponsesEvents(SseLines(
+                SseBlock(ChatChunk(toolCalls: new[] { ChatToolCall(0, "call", "exec", "{\"input\":\"text(1);\"}") })),
+                SseBlock(ChatChunk(finishReason: "tool_calls")), SseBlock("[DONE]")), "test", result, CancellationToken.None)) emitted.Add(line);
+        });
+        Assert.DoesNotContain(ParseEvents(emitted), e => (string?)e["type"] is
+            "response.custom_tool_call_input.delta" or "response.custom_tool_call_input.done" or "response.output_item.done" or "response.completed");
     }
 
     [Fact]
@@ -1298,13 +1361,16 @@ public sealed class SseStreamConverterTests
             or "response.output_item.done" or "response.completed");
     }
 
-    private static ConvertedStreamResult NamespacedCustomStreamResult() => new()
+    private static ConvertedStreamResult NamespacedCustomStreamResult()
     {
-        ToolCallMappings = new Dictionary<string, ResponsesToolCallMapping>
+        using var declaration = JsonDocument.Parse("""
+            {"input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"functions","tools":[{"type":"custom","name":"exec","format":{"type":"grammar","syntax":"lark","definition":"start: /[\\s\\S]+/"}}]}]}]}
+            """);
+        return new()
         {
-            ["functions__exec"] = new() { ChatName = "functions__exec", ResponsesName = "exec", Namespace = "functions", NativeType = "custom" }
-        }
-    };
+            ToolCallMappings = ProtocolConverter.BuildResponsesToolCallMappings(ElementToDict(declaration.RootElement))
+        };
+    }
 
     [Fact]
     public async Task Chat_ApplyPatchTool_StreamsCustomToolCallInputDeltasAndDone()

@@ -215,7 +215,9 @@ public sealed class MultiAgentClientProtocolTests
     [InlineData("functions.exec")]
     [InlineData("exec_command_placeholder_note")]
     [InlineData("missing__exec")]
-    public void ToolCall_RejectsNamesNotExactlyDeclared(string name)
+    [InlineData("Exec")]
+    [InlineData(" exec ")]
+    public void ToolCall_RejectsAmbiguousAndUnknownNames(string name)
     {
         var mappings = ProtocolConverter.BuildResponsesToolCallMappings(NamespacedTools());
         var error = Assert.Throws<UpstreamException>(() => ProtocolConverter.ResponsesToolCallStartedItem(
@@ -225,6 +227,71 @@ public sealed class MultiAgentClientProtocolTests
             "call", name, "secret-payload", mappings: mappings));
         Assert.DoesNotContain("secret-payload", error.Message);
     }
+
+    [Theory]
+    [InlineData("chat")]
+    [InlineData("messages")]
+    public void ToolCall_UniqueDeclaredShortNameRestoresDynamicCustomToolAndExactInput(string protocol)
+    {
+        var request = UniqueDynamicCustomTool();
+        const string input = " \nconst value = { input: 'keep spaces' };\ntext(value);\n ";
+        var upstream = protocol == "chat"
+            ? Payload(JsonSerializer.Serialize(new { choices = new[] { new { message = new { tool_calls = new[]
+                { new { id = "call", type = "function", function = new { name = "exec", arguments = JsonSerializer.Serialize(new { input }) } } } }, finish_reason = "tool_calls" } } }))
+            : Payload(JsonSerializer.Serialize(new { content = new[] { new { type = "tool_use", id = "call", name = "exec", input = new { input } } }, stop_reason = "tool_use" }));
+        var mappings = ProtocolConverter.BuildResponsesToolCallMappings(request);
+        Assert.Equal("exec", mappings["functions__exec"].ResponsesName);
+        var response = ProtocolConverter.ConvertResponse(upstream, ProtocolConverter.Responses, protocol, "test", toolCallMappings: mappings);
+        var call = Assert.IsType<Dictionary<string, object?>>(Assert.Single(JsonDictionaryValue.List(response, "output")));
+        Assert.Equal("custom_tool_call", call["type"]);
+        Assert.Equal("exec", call["name"]);
+        Assert.Equal("functions", call["namespace"]);
+        Assert.Equal(input, call["input"]);
+        ProtocolConverter.ValidateResponsesToolCalls(request, response);
+    }
+
+    [Fact]
+    public void ToolCall_ExactAliasWinsOverAnotherDeclaredShortName()
+    {
+        var request = UniqueDynamicCustomTool();
+        request["tools"] = new List<object?> { Payload("""{"type":"function","name":"exec","parameters":{"type":"object"}}""") };
+        var mappings = ProtocolConverter.BuildResponsesToolCallMappings(request);
+        var call = ProtocolConverter.ResponsesToolCallItemFromToolCall("call", "exec", "{}", mappings: mappings);
+        Assert.Equal("function_call", call["type"]);
+        Assert.Equal("exec", call["name"]);
+        Assert.False(call.ContainsKey("namespace"));
+        ProtocolConverter.ValidateResponsesToolCalls(request, new() { ["output"] = new List<object?> { call } });
+    }
+
+    [Fact]
+    public void ToolCall_UniqueShortNameStillRejectsConflictingExplicitNamespace()
+    {
+        var mappings = ProtocolConverter.BuildResponsesToolCallMappings(UniqueDynamicCustomTool());
+        Assert.Throws<UpstreamException>(() => ProtocolConverter.ResponsesToolCallItemFromToolCall(
+            "call", "exec", "secret-payload", namespaceValue: "other", mappings: mappings));
+        var call = ProtocolConverter.ResponsesToolCallItemFromToolCall("call", "exec", "text(1);", namespaceValue: "functions", mappings: mappings);
+        Assert.Equal("functions", call["namespace"]);
+        Assert.Equal("text(1);", call["input"]);
+    }
+
+    [Fact]
+    public void ToolCall_MultipleAliasesOfTheSameIdentityRemainOneShortNameCandidate()
+    {
+        var mappings = new Dictionary<string, ResponsesToolCallMapping>
+        {
+            ["functions__exec"] = new() { ChatName = "functions__exec", ResponsesName = "exec", Namespace = "functions", NativeType = "custom" },
+            ["legacy_exec"] = new() { ChatName = "legacy_exec", ResponsesName = "exec", Namespace = "functions", NativeType = "custom" }
+        };
+        var call = ProtocolConverter.ResponsesToolCallItemFromToolCall("call", "exec", "text(1);", mappings: mappings);
+        Assert.Equal("custom_tool_call", call["type"]);
+        Assert.Equal("functions", call["namespace"]);
+        mappings["other__exec"] = new() { ChatName = "other__exec", ResponsesName = "exec", Namespace = "other", NativeType = "custom" };
+        Assert.Throws<UpstreamException>(() => ProtocolConverter.ResponsesToolCallStartedItem("call", "exec", "item", mappings));
+    }
+
+    private static Dictionary<string, object?> UniqueDynamicCustomTool() => Payload("""
+        {"input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"functions","tools":[{"type":"custom","name":"exec","format":{"type":"grammar","syntax":"lark","definition":"start: /[\\s\\S]+/"}}]}]}]}
+        """);
 
     [Fact]
     public void ToolCall_EmptyDeclarationsRejectCallsButAbsentContractKeepsLegacyConversion()

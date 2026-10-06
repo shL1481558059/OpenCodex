@@ -204,21 +204,7 @@ internal sealed class ChatStreamResponseAccumulator : IStreamResponseAccumulator
         if (toolCall.TryGetValue("function", out var functionValue)
             && StreamCaptureValues.TryObject(functionValue, out var function))
         {
-            var name = StreamCaptureValues.String(function, "name");
-            if (!string.IsNullOrEmpty(name) && _builtinToolNames?.Contains(name) is true)
-            {
-                state.Name.Clear();
-                _budget.Append(state.Name, name);
-            }
-            else if (!string.IsNullOrEmpty(name) && state.Name.Length > 0
-                && _builtinToolNames?.Any(candidate => candidate.StartsWith(state.Name.ToString() + name, StringComparison.Ordinal)) is true)
-            {
-                _budget.Append(state.Name, name);
-            }
-            else
-            {
-                AppendOnce(state.Name, name);
-            }
+            CaptureToolName(state.Name, StreamCaptureValues.String(function, "name"));
             _budget.Append(state.Arguments, StreamCaptureValues.String(function, "arguments"));
         }
 
@@ -226,8 +212,26 @@ internal sealed class ChatStreamResponseAccumulator : IStreamResponseAccumulator
             && StreamCaptureValues.TryObject(customValue, out var custom))
         {
             state.Type ??= "custom";
-            AppendOnce(state.Name, StreamCaptureValues.String(custom, "name"));
+            CaptureToolName(state.Name, StreamCaptureValues.String(custom, "name"));
             _budget.Append(state.Arguments, StreamCaptureValues.String(custom, "input"));
+        }
+    }
+
+    private void CaptureToolName(StringBuilder target, string? name)
+    {
+        if (!string.IsNullOrEmpty(name) && target.Length > 0
+            && _builtinToolNames?.Any(candidate => candidate.StartsWith(target.ToString() + name, StringComparison.Ordinal)) is true)
+        {
+            _budget.Append(target, name);
+        }
+        else if (!string.IsNullOrEmpty(name) && _builtinToolNames?.Contains(name) is true)
+        {
+            target.Clear();
+            _budget.Append(target, name);
+        }
+        else
+        {
+            AppendOnce(target, name);
         }
     }
 

@@ -64,7 +64,7 @@ public static partial class ProtocolConverter
         }
 
         // A supplied request contract is authoritative, including an empty tool set.
-        // Guessing a leaf name here can change both the namespace and executable type.
+        // Only an exact alias or an unambiguous declared leaf may restore an executable identity.
         if (mappings is not null)
             throw new UpstreamException("Upstream tool call does not match any declared tool name. Retry with an exactly declared tool name.");
 
@@ -74,7 +74,7 @@ public static partial class ProtocolConverter
             : FunctionToolShape(toolName, null);
     }
 
-    private static bool TryGetResponsesToolCallMapping(
+    internal static bool TryGetResponsesToolCallMapping(
         string toolName,
         IReadOnlyDictionary<string, ResponsesToolCallMapping>? mappings,
         out ResponsesToolCallMapping mapping)
@@ -83,6 +83,25 @@ public static partial class ProtocolConverter
             && mappings.TryGetValue(toolName, out var exact))
         {
             mapping = exact;
+            return true;
+        }
+
+        ResponsesToolCallMapping? candidate = null;
+        foreach (var declared in mappings?.Values ?? [])
+        {
+            if (!string.Equals(declared.ResponsesName, toolName, StringComparison.Ordinal)) continue;
+            if (candidate is not null
+                && (!string.Equals(candidate.Namespace ?? string.Empty, declared.Namespace ?? string.Empty, StringComparison.Ordinal)
+                    || !string.Equals(candidate.NativeType, declared.NativeType, StringComparison.Ordinal)))
+            {
+                mapping = new ResponsesToolCallMapping();
+                return false;
+            }
+            candidate = declared;
+        }
+        if (candidate is not null)
+        {
+            mapping = candidate;
             return true;
         }
 

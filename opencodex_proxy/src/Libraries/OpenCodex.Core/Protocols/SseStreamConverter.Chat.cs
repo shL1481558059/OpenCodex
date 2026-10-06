@@ -55,8 +55,17 @@ public static partial class SseStreamConverter
         var toolStreamStates = new Dictionary<int, ToolStreamState>();
         var outputByIndex = new SortedDictionary<int, Dictionary<string, object?>>();
         var toolCallMappings = result.ToolCallMappings;
+        var knownToolNames = new HashSet<string>(StringComparer.Ordinal);
+        if (SkipToolNames is not null) knownToolNames.UnionWith(SkipToolNames);
+        if (toolCallMappings is not null)
+        {
+            knownToolNames.UnionWith(toolCallMappings.Keys);
+            foreach (var mapping in toolCallMappings.Values)
+                if (ProtocolConverter.TryGetResponsesToolCallMapping(mapping.ResponsesName, toolCallMappings, out _))
+                    knownToolNames.Add(mapping.ResponsesName);
+        }
         var upstreamResponseAccumulator = new ChatStreamResponseAccumulator(
-            new StreamCaptureBudget(int.MaxValue, int.MaxValue), SkipToolNames);
+            new StreamCaptureBudget(int.MaxValue, int.MaxValue), knownToolNames);
 
         string Emit(string eventName, Dictionary<string, object?> payload)
         {
@@ -361,10 +370,8 @@ public static partial class SseStreamConverter
                         if (name.Length > 0)
                         {
                             var combined = (aggregate.Name ?? string.Empty) + name;
-                            aggregate.Name = SkipToolNames?.Any(candidate =>
-                                candidate.StartsWith(combined, StringComparison.Ordinal)) is true
-                                || toolCallMappings?.Keys.Any(candidate =>
-                                    candidate.StartsWith(combined, StringComparison.Ordinal)) is true ? combined : name;
+                            aggregate.Name = knownToolNames.Any(candidate =>
+                                candidate.StartsWith(combined, StringComparison.Ordinal)) ? combined : name;
                         }
 
                         var arguments = StringValue(function, "arguments", string.Empty);
@@ -380,8 +387,8 @@ public static partial class SseStreamConverter
                         if (name.Length > 0)
                         {
                             var combined = (aggregate.Name ?? string.Empty) + name;
-                            aggregate.Name = toolCallMappings?.Keys.Any(candidate =>
-                                candidate.StartsWith(combined, StringComparison.Ordinal)) is true ? combined : name;
+                            aggregate.Name = knownToolNames.Any(candidate =>
+                                candidate.StartsWith(combined, StringComparison.Ordinal)) ? combined : name;
                         }
 
                         var input = StringValue(custom, "input", string.Empty);
@@ -401,9 +408,9 @@ public static partial class SseStreamConverter
                         continue;
                     }
 
-                    // A name may arrive in fragments. Never publish an inferred function
-                    // while waiting for an exact declaration; final validation rejects unknowns.
-                    if (toolCallMappings is not null && !toolCallMappings.ContainsKey(aggregate.Name))
+                    // A name may arrive in fragments. Wait until it resolves to one declared identity.
+                    if (toolCallMappings is not null
+                        && !ProtocolConverter.TryGetResponsesToolCallMapping(aggregate.Name, toolCallMappings, out _))
                         continue;
 
                     var state = EnsureToolStreamState(index);
