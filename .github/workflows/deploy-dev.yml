@@ -87,7 +87,9 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: docker.io
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          # 必须用 vars 而不是 secrets：用户名不是凭据，一旦作为 secret 出现，
+          # 掩码会把含该字符串的 job output（ghcr.io/shl1481558059/...）整体清空。
+          username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push image
