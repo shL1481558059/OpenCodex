@@ -38,7 +38,7 @@
 
 | 产物 | 当前生成方式 | 目标用途 |
 |---|---|---|
-| Docker 镜像 | dev：`deploy-dev.yml` 用 `docker/build-push-action` 构建并推送 GHCR，tag `dev-<commit>`；生产：`update_remote_image*.sh` 用本地 Docker buildx 构建并推送 `shl148155/opencodexp:ocxp`；均只有 `linux/amd64` | 服务端运行 |
+| Docker 镜像 | dev：`deploy-dev.yml` 用 `docker/build-push-action` 构建并推送 GHCR（tag `dev-<commit>`）与 Docker Hub（tag `shl148155/opencodexp:ocxp`、`shl148155/opencodexp:latest`）；生产：`update_remote_image*.sh` 用本地 Docker buildx 构建并推送 `shl148155/opencodexp:ocxp`；均只有 `linux/amd64` | 服务端运行 |
 | 管理台静态资源 | Vite build，复制到 `wwwroot/admin` | 浏览器管理 |
 | .NET API | `dotnet publish` | Docker 或 sidecar |
 | macOS DMG | GitHub Actions / Tauri | macOS arm64 |
