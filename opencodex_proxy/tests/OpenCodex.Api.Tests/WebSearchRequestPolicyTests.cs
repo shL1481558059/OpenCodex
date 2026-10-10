@@ -165,19 +165,111 @@ public sealed class WebSearchRequestPolicyTests
         Assert.NotNull(WebSearchRequestPolicy.RegisterBuiltin(payload, "simulate", "responses", "chat", "superadmin"));
     }
 
+    [Theory]
+    [InlineData("low")]
+    [InlineData("medium")]
+    [InlineData("high")]
+    public void SearchContextSize_IsStoredOnTheBinding(string size)
+    {
+        var payload = Request();
+        NativeTool(payload)["search_context_size"] = size;
+
+        var binding = WebSearchRequestPolicy.RegisterBuiltin(payload, "simulate", "responses", "chat", "superadmin");
+
+        Assert.Equal(size, binding!.WebSearch.ContextSize);
+        Assert.Empty(binding.WebSearch.AllowedDomains);
+    }
+
+    [Fact]
+    public void OmittedSearchOptions_UseMediumWithoutDomains()
+    {
+        var binding = WebSearchRequestPolicy.RegisterBuiltin(Request(), "simulate", "responses", "chat", "superadmin");
+
+        Assert.Equal(WebSearchExecutionOptions.Medium, binding!.WebSearch.ContextSize);
+        Assert.Empty(binding.WebSearch.AllowedDomains);
+    }
+
+    [Fact]
+    public void AllowedDomains_AreNormalizedAndStored()
+    {
+        using var domain = JsonDocument.Parse("\"Docs.Example.com\"");
+        var payload = Request();
+        NativeTool(payload)["search_context_size"] = "low";
+        NativeTool(payload)["filters"] = new Dictionary<string, object?>
+        {
+            ["allowed_domains"] = new List<object?>
+            {
+                " Example.COM. ",
+                "example.com",
+                domain.RootElement.Clone()
+            }
+        };
+
+        var binding = WebSearchRequestPolicy.RegisterBuiltin(payload, "simulate", "responses", "chat", "superadmin");
+
+        Assert.Equal(WebSearchExecutionOptions.Low, binding!.WebSearch.ContextSize);
+        Assert.Equal(["example.com", "docs.example.com"], binding.WebSearch.AllowedDomains);
+    }
+
+    [Fact]
+    public void SearchContextSize_JsonElementIsAccepted()
+    {
+        using var size = JsonDocument.Parse("\"high\"");
+        var payload = Request();
+        NativeTool(payload)["search_context_size"] = size.RootElement.Clone();
+
+        var binding = WebSearchRequestPolicy.RegisterBuiltin(payload, "simulate", "responses", "chat", "superadmin");
+
+        Assert.Equal(WebSearchExecutionOptions.High, binding!.WebSearch.ContextSize);
+    }
+
+    [Theory]
+    [InlineData("fast")]
+    [InlineData("LOW")]
+    public void UnsupportedContextSize_IsRejected(string size)
+    {
+        var payload = Request();
+        NativeTool(payload)["search_context_size"] = size;
+        Assert.Throws<BadRequestException>(() =>
+            WebSearchRequestPolicy.RegisterBuiltin(payload, "simulate", "responses", "chat", "superadmin"));
+    }
+
+    [Fact]
+    public void AllowedDomains_RejectsEmptyInvalidAndOversizedLists()
+    {
+        AssertRejectedMessage(
+            "filters",
+            new Dictionary<string, object?> { ["allowed_domains"] = new List<object?>() },
+            "proxy web search allowed_domains must not be empty");
+        AssertRejectedMessage(
+            "filters",
+            new Dictionary<string, object?> { ["allowed_domains"] = new List<object?> { "  " } },
+            "proxy web search allowed_domains contains an empty domain");
+        AssertRejectedMessage(
+            "filters",
+            new Dictionary<string, object?> { ["allowed_domains"] = new List<object?> { "https://example.com" } },
+            "proxy web search allowed_domains contains an invalid domain");
+        AssertRejectedMessage(
+            "filters",
+            new Dictionary<string, object?>
+            {
+                ["allowed_domains"] = Enumerable.Range(0, 101).Select(index => (object?)$"d{index}.example").ToList()
+            },
+            "proxy web search allowed_domains exceeds the limit of 100");
+        AssertRejectedMessage(
+            "filters",
+            new Dictionary<string, object?> { ["blocked_domains"] = new List<object?> { "example.com" } },
+            "proxy web search does not support the requested 'filters.blocked_domains' option");
+    }
+
     [Fact]
     public void OptionalCodexSearchConstraints_StayRejected()
     {
-        AssertRejected("filters", new Dictionary<string, object?>
-        {
-            ["allowed_domains"] = new List<object?> { "example.com" }
-        });
         AssertRejected("user_location", new Dictionary<string, object?>
         {
             ["type"] = "approximate",
             ["country"] = "US"
         });
-        AssertRejected("search_context_size", "high");
         AssertRejected("search_content_types", new List<object?> { "text", "image" });
     }
 
@@ -236,6 +328,15 @@ public sealed class WebSearchRequestPolicyTests
         NativeTool(payload)[key] = value;
         Assert.Throws<BadRequestException>(() =>
             WebSearchRequestPolicy.RegisterBuiltin(payload, "simulate", "responses", "chat", "superadmin"));
+    }
+
+    private static void AssertRejectedMessage(string key, object? value, string message)
+    {
+        var payload = Request();
+        NativeTool(payload)[key] = value;
+        var error = Assert.Throws<BadRequestException>(() =>
+            WebSearchRequestPolicy.RegisterBuiltin(payload, "simulate", "responses", "chat", "superadmin"));
+        Assert.Equal(message, error.Message);
     }
 
     private static Dictionary<string, object?> Request(string type = "web_search") => new()

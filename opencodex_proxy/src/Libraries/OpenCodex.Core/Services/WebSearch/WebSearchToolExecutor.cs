@@ -20,9 +20,16 @@ public sealed class WebSearchToolExecutor(
         return WebSearchModes.IsValid(mode) ? mode : WebSearchModes.Convert;
     }
 
+    public Task<WebSearchToolResult> ExecuteAsync(
+        string callId,
+        string arguments,
+        CancellationToken cancellationToken)
+        => ExecuteAsync(callId, arguments, WebSearchExecutionOptions.Default, cancellationToken);
+
     public async Task<WebSearchToolResult> ExecuteAsync(
         string callId,
         string arguments,
+        WebSearchExecutionOptions options,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -38,12 +45,17 @@ public sealed class WebSearchToolExecutor(
             return WebSearchToolResult.Failed(callId, query!, "Web search is unavailable or its quota is exhausted.", true);
         }
 
-        var result = await client.SearchAsync(new WebSearchProviderKey(key.Provider, key.Key), query!, cancellationToken);
+        var result = await client.SearchAsync(
+            new WebSearchProviderKey(key.Provider, key.Key),
+            query!,
+            options,
+            cancellationToken);
+        var resultLimit = WebSearchProviderProfile.For(options.ContextSize).ResultLimit;
         var bounded = new WebSearchProviderResult(
             result.Ok, result.StatusCode, result.DurationMs, result.ErrorType, result.Error,
             new WebSearchSummary(
                 LimitText(result.Summary.Answer, 4096),
-                result.Summary.Results.Take(5).Select(source => new Dictionary<string, object?>
+                result.Summary.Results.Take(resultLimit).Select(source => new Dictionary<string, object?>
                 {
                     ["title"] = LimitText(WebSearchPayload.StringValue(source, "title"), 512),
                     ["url"] = LimitText(WebSearchPayload.StringValue(source, "url"), 2048),

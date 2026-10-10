@@ -1,3 +1,5 @@
+using OpenCodex.CoreBase.Domain.WebSearch;
+
 namespace OpenCodex.CoreBase.Abstractions;
 
 /// <summary>
@@ -16,6 +18,17 @@ public interface IWebSearchClient
         WebSearchProviderKey key,
         string query,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// 使用调用方声明的上下文规模和域名过滤执行搜索。
+    /// 未重写该重载的实现保持 medium、无域名过滤。
+    /// </summary>
+    Task<WebSearchProviderResult> SearchAsync(
+        WebSearchProviderKey key,
+        string query,
+        WebSearchExecutionOptions options,
+        CancellationToken cancellationToken)
+        => SearchAsync(key, query, cancellationToken);
 }
 
 /// <summary>

@@ -196,7 +196,17 @@ sequenceDiagram
 
 当前注册范围不是所有请求：只有 **Responses 入口 + Chat/Messages 渠道 + 访问 Key 所属用户角色为 `superadmin` + 恰好声明一个原生 `web_search`/`web_search_preview` + 全局模式为 `simulate`** 时才登记代理执行权（`WebSearchRequestPolicy.RegisterBuiltin`）。登记不会触发搜索，未调用搜索时仍走普通响应路径。普通用户不能触发搜索 provider 执行，同名普通函数不被接管。
 
-原生搜索声明除 `type`、`description`、null 值外，只允许布尔 `external_web_access`（`true` 或 `false`，含尚未拆箱的 `JsonElement` 布尔）、`search_context_size="medium"`、`return_token_budget="default"`、`search_content_types=["text"]`；其余选项抛 400。代理自行执行搜索，不区分 Codex 的 cached/live 开关。`filters`、`user_location`、非 `medium` 的 `search_context_size`、以及不是 `["text"]` 的 `search_content_types` 仍抛 400。`include` 中出现 `web_search_call.*` 且不是 `web_search_call.action.sources` 时同样抛 400。
+原生搜索声明除 `type`、`description`、null 值外，允许布尔 `external_web_access`（`true` 或 `false`，含尚未拆箱的 `JsonElement` 布尔）、`search_context_size` 为 `low`/`medium`/`high`（缺省 `medium`）、只含 `allowed_domains` 的 `filters`、`return_token_budget="default"`、`search_content_types=["text"]`。代理自行执行搜索，不区分 Codex 的 cached/live 开关。`user_location`、`filters` 的其他键、以及不是 `["text"]` 的 `search_content_types` 仍抛 400。`allowed_domains` 必须是非空主机名列表，忽略大小写去重后最多 100 个；空串、带协议或路径的值、超过 100 个都抛 400。`include` 中出现 `web_search_call.*` 且不是 `web_search_call.action.sources` 时同样抛 400。
+
+这些选项在 `RegisterBuiltin` 时写入 `BuiltinToolRequestContext.WebSearch`，模拟执行时传给搜索客户端。`medium` 的提供方请求体与未声明该字段时相同。
+
+| `search_context_size` | Tavily | Keenable | 返回条数上限 |
+|---|---|---|---:|
+| `low` | `max_results=3`，`search_depth=basic`，`chunks_per_source=1` | `max_results=3`，`snippet_max_length=500` | 3 |
+| `medium` | `max_results=5`，`search_depth=basic`，不传 `chunks_per_source` | `max_results=5`，不传 `snippet_max_length` | 5 |
+| `high` | `max_results=8`，`search_depth=advanced`，`chunks_per_source=3` | `max_results=10`，`snippet_max_length=2000` | 10 |
+
+`allowed_domains` 在 Tavily 上写成 `include_domains`，并显式带 `include_domains_mode=restrict`。Keenable 只有单个 `site`：一个域名发一次请求；多个域名按声明顺序各发一次（最多 4 路并发），按 URL 去重后截断到该档上限。任一域名成功即返回成功结果，全部失败才失败。同一次工具调用仍只扣 1 次 Key 配额。
 
 ### 6.2 请求策略
 
@@ -207,7 +217,7 @@ sequenceDiagram
 - 调用次数由 `max_tool_calls` 控制：缺省 15，允许 0–64 的 int/long，越界或非整数返回 400；`max_tool_calls=0` 与强制搜索的 `tool_choice` 冲突时返回 400。此外最多允许 `max_tool_calls + 3` 轮，连续 2 次非法或失败调用后停止搜索。
 - 同一响应内相同 `call_id` 只执行一次：参数一致时复用结果，参数不一致时按上游错误（502）处理。
 - Key 预留使用条件更新（compare-and-swap）：按 `Position`、`Id` 顺序选择 `Enabled && UsageCount < UsageLimit` 的 Key，并在同值条件下 `UsageCount+1`，最多重试 8 次；预留后 provider 失败不回退计数；达到上限的 Key 不再使用。
-- 结果裁剪：答案摘要最多 4096 字符；来源最多 5 条；单条 `title` 512、`url` 2048、`content` 4096 字符。
+- 结果裁剪：答案摘要最多 4096 字符；来源条数随 `search_context_size` 为 3/5/10（Tavily `high` 实际只请求 8 条）；单条 `title` 512、`url` 2048、`content` 4096 字符。
 - 搜索与续轮共享请求级 deadline（以渠道 `DefaultTimeout` 为总预算）和输出预算：入口请求带 `max_output_tokens` 时，累计 usage 超出预算会把响应标记为 `status=incomplete`、`incomplete_details.reason=max_output_tokens`，续轮请求写入剩余 `max_tokens`/`max_completion_tokens`。
 - 搜索调用通过校验、准备进入执行阶段时即置 `HasExecuted=true`（在调用 provider 之前），此后请求不再允许换渠道失败重放（`ProxyEndpointService` 用 `HasExecuted != true` 控制非流式与流式 failover），避免重复调用 provider。
 

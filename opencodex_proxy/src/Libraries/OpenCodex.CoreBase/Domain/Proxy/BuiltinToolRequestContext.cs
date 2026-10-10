@@ -1,3 +1,5 @@
+using OpenCodex.CoreBase.Domain.WebSearch;
+
 namespace OpenCodex.CoreBase.Domain.Proxy;
 
 public sealed class BuiltinToolRequestContext
@@ -15,4 +17,6 @@ public sealed class BuiltinToolRequestContext
     public IReadOnlySet<string>? AllowedToolNames { get; init; }
 
     public bool HasExecuted { get; set; }
+
+    public WebSearchExecutionOptions WebSearch { get; init; } = WebSearchExecutionOptions.Default;
 }

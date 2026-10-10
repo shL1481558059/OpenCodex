@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Domain.WebSearch;
 
 namespace OpenCodex.Core.ExternalIntegrations;
 
@@ -21,21 +22,39 @@ public sealed class TavilyWebSearchClient : IWebSearchClient
         _httpClient = httpClient;
     }
 
-    public async Task<WebSearchProviderResult> SearchAsync(
+    public Task<WebSearchProviderResult> SearchAsync(
         WebSearchProviderKey key,
         string query,
         CancellationToken cancellationToken)
+        => SearchAsync(key, query, WebSearchExecutionOptions.Default, cancellationToken);
+
+    public async Task<WebSearchProviderResult> SearchAsync(
+        WebSearchProviderKey key,
+        string query,
+        WebSearchExecutionOptions options,
+        CancellationToken cancellationToken)
     {
         var started = Stopwatch.GetTimestamp();
+        var profile = WebSearchProviderProfile.For(options.ContextSize);
         var payload = new Dictionary<string, object?>
         {
             ["query"] = query,
-            ["search_depth"] = "basic",
-            ["max_results"] = 5,
+            ["search_depth"] = profile.TavilySearchDepth,
+            ["max_results"] = profile.TavilyMaxResults,
             ["include_answer"] = "basic",
             ["include_raw_content"] = false,
             ["include_usage"] = true
         };
+        if (profile.TavilyChunksPerSource is int chunks)
+        {
+            payload["chunks_per_source"] = chunks;
+        }
+
+        if (options.AllowedDomains.Count > 0)
+        {
+            payload["include_domains"] = options.AllowedDomains.ToArray();
+            payload["include_domains_mode"] = "restrict";
+        }
         using var request = new HttpRequestMessage(HttpMethod.Post, TavilySearchUrl);
         request.Content = new StringContent(JsonSerializer.Serialize(payload, JsonOptions), Encoding.UTF8, "application/json");
         request.Headers.TryAddWithoutValidation("authorization", $"Bearer {key.Key}");
@@ -61,13 +80,22 @@ public sealed class TavilyWebSearchClient : IWebSearchClient
             }
 
             var rawObject = DecodeJsonObject(body);
+            var summary = SummaryFromRaw(rawObject);
+            if (summary.Results.Count > profile.TavilyMaxResults)
+            {
+                summary = new WebSearchSummary(
+                    summary.Answer,
+                    summary.Results.Take(profile.TavilyMaxResults).ToList(),
+                    summary.Error);
+            }
+
             return new WebSearchProviderResult(
                 true,
                 (int)response.StatusCode,
                 ElapsedMilliseconds(started),
                 null,
                 null,
-                SummaryFromRaw(rawObject),
+                summary,
                 rawObject);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)

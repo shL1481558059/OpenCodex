@@ -126,7 +126,7 @@ internal sealed class BuiltinToolSession(
                     result = _searchDisabled || _providerCalls >= binding.MaxWebSearchCalls
                         || _rounds.Count >= binding.MaxWebSearchCalls + 3
                         ? WebSearchToolResult.Failed(call.Id, query, "Further web search calls are disabled for this response.", true)
-                        : await executor.ExecuteAsync(call.Id, call.Arguments, Token(cancellationToken));
+                        : await executor.ExecuteAsync(call.Id, call.Arguments, binding.WebSearch, Token(cancellationToken));
                 }
                 catch (Exception exception)
                 {

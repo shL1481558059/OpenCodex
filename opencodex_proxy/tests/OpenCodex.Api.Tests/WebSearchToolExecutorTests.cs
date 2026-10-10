@@ -111,6 +111,27 @@ public sealed class WebSearchToolExecutorTests
         Assert.Equal(1, await verification.TavilyKeys.AsNoTracking().Select(item => item.UsageCount).SingleAsync());
     }
 
+    [Theory]
+    [InlineData(WebSearchExecutionOptions.Low, 3)]
+    [InlineData(WebSearchExecutionOptions.Medium, 5)]
+    [InlineData(WebSearchExecutionOptions.High, 10)]
+    public async Task Search_ForwardsOptionsAndCapsResults(string size, int expectedResults)
+    {
+        await using var db = await CreateDatabaseAsync();
+        var client = new RecordingSearchClient();
+        var options = new WebSearchExecutionOptions(size, ["example.com"]);
+
+        var result = await CreateExecutor(db, client).ExecuteAsync(
+            "call_1",
+            "{\"query\":\"test\"}",
+            options,
+            CancellationToken.None);
+
+        Assert.Equal("completed", result.Status);
+        Assert.Same(options, client.LastOptions);
+        Assert.Equal(expectedResults, ((List<object?>)result.OpenCodexResult["results"]!).Count);
+    }
+
     private static WebSearchToolExecutor CreateExecutor(IOpenCodexDbContext db, IWebSearchClient client)
     {
         return new WebSearchToolExecutor(
@@ -136,11 +157,21 @@ public sealed class WebSearchToolExecutorTests
         public int Calls { get; private set; }
         public string? LastProvider { get; private set; }
 
+        public WebSearchExecutionOptions? LastOptions { get; private set; }
+
         public Task<WebSearchProviderResult> SearchAsync(
             WebSearchProviderKey key, string query, CancellationToken cancellationToken)
+            => SearchAsync(key, query, WebSearchExecutionOptions.Default, cancellationToken);
+
+        public Task<WebSearchProviderResult> SearchAsync(
+            WebSearchProviderKey key,
+            string query,
+            WebSearchExecutionOptions options,
+            CancellationToken cancellationToken)
         {
             Calls++;
             LastProvider = key.Provider;
+            LastOptions = options;
             var sources = Enumerable.Range(0, 10).Select(index => new Dictionary<string, object?>
             {
                 ["title"] = $"Source {index}",

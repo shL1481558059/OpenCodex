@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text;
+using System.Text.RegularExpressions;
 using OpenCodex.Core.Errors;
 using OpenCodex.Core.Protocols;
 using OpenCodex.CoreBase.Domain.Proxy;
@@ -65,7 +66,7 @@ public static class WebSearchRequestPolicy
         {
             throw new BadRequestException("proxy web search requires exactly one native search tool declaration");
         }
-        ValidateNativeOptions(nativeTools[0]);
+        var webSearch = ValidateNativeOptions(nativeTools[0]);
 
         var occupied = ToolNames(tools).ToHashSet(StringComparer.Ordinal);
         foreach (var item in ListValue(payload, "input").OfType<Dictionary<string, object?>>())
@@ -155,7 +156,8 @@ public static class WebSearchRequestPolicy
             MaxWebSearchCalls = maxCalls,
             SearchAllowed = canSearch,
             IncludeSources = includeSources,
-            AllowedToolNames = allowedNames
+            AllowedToolNames = allowedNames,
+            WebSearch = webSearch
         };
     }
 
@@ -390,14 +392,31 @@ public static class WebSearchRequestPolicy
         }
     }
 
-    private static void ValidateNativeOptions(Dictionary<string, object?> tool)
+    private static readonly Regex DomainPattern = new(
+        "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$",
+        RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
+
+    private static WebSearchExecutionOptions ValidateNativeOptions(Dictionary<string, object?> tool)
     {
+        string? contextSize = null;
+        IReadOnlyList<string>? domains = null;
         foreach (var (key, value) in tool)
         {
+            if (key == "search_context_size")
+            {
+                contextSize = value is null ? null : RequireContextSize(value);
+                continue;
+            }
+
+            if (key == "filters")
+            {
+                domains = value is null ? [] : ReadAllowedDomains(value);
+                continue;
+            }
+
             var supported = key is "type" or "description"
                 || value is null
                 || (key == "external_web_access" && IsBoolean(value))
-                || (key == "search_context_size" && value is "medium")
                 || (key == "return_token_budget" && value is "default")
                 || (key == "search_content_types" && TryAsList(value, out var types)
                     && types.Count == 1 && types[0] is "text");
@@ -406,7 +425,106 @@ public static class WebSearchRequestPolicy
                 throw new BadRequestException($"proxy web search does not support the requested '{key}' option");
             }
         }
+
+        return new WebSearchExecutionOptions(
+            contextSize ?? WebSearchExecutionOptions.Medium,
+            domains ?? []);
     }
+
+    private static string RequireContextSize(object value)
+    {
+        var text = ReadJsonString(value);
+        if (text is WebSearchExecutionOptions.Low or WebSearchExecutionOptions.Medium or WebSearchExecutionOptions.High)
+        {
+            return text;
+        }
+
+        throw new BadRequestException("proxy web search does not support the requested 'search_context_size' option");
+    }
+
+    private static IReadOnlyList<string> ReadAllowedDomains(object filters)
+    {
+        if (!TryAsObject(filters, out var obj))
+        {
+            throw new BadRequestException("proxy web search filters must be an object");
+        }
+
+        foreach (var key in obj.Keys)
+        {
+            if (!string.Equals(key, "allowed_domains", StringComparison.Ordinal))
+            {
+                throw new BadRequestException($"proxy web search does not support the requested 'filters.{key}' option");
+            }
+        }
+
+        if (!obj.TryGetValue("allowed_domains", out var raw) || raw is null)
+        {
+            return [];
+        }
+
+        if (!TryAsList(raw, out var list))
+        {
+            throw new BadRequestException("proxy web search allowed_domains must be a list of domains");
+        }
+
+        if (list.Count == 0)
+        {
+            throw new BadRequestException("proxy web search allowed_domains must not be empty");
+        }
+
+        if (list.Count > WebSearchExecutionOptions.MaxAllowedDomains)
+        {
+            throw new BadRequestException(
+                $"proxy web search allowed_domains exceeds the limit of {WebSearchExecutionOptions.MaxAllowedDomains}");
+        }
+
+        var domains = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in list)
+        {
+            var text = ReadJsonString(item);
+            if (text is null)
+            {
+                throw new BadRequestException("proxy web search allowed_domains must be a list of domains");
+            }
+
+            var domain = NormalizeDomain(text);
+            if (seen.Add(domain))
+            {
+                domains.Add(domain);
+            }
+        }
+
+        return domains;
+    }
+
+    private static string NormalizeDomain(string value)
+    {
+        if (value.Length > 253)
+        {
+            throw new BadRequestException("proxy web search allowed_domains contains an invalid domain");
+        }
+
+        var domain = value.Trim().TrimEnd('.').ToLowerInvariant();
+        if (domain.Length == 0)
+        {
+            throw new BadRequestException("proxy web search allowed_domains contains an empty domain");
+        }
+
+        if (!DomainPattern.IsMatch(domain))
+        {
+            throw new BadRequestException("proxy web search allowed_domains contains an invalid domain");
+        }
+
+        return domain;
+    }
+
+    private static string? ReadJsonString(object? value) => value switch
+    {
+        string text => text,
+        JsonElement { ValueKind: JsonValueKind.String } element => element.GetString(),
+        _ => null
+    };
 
     // Codex 默认 cached 模式会发送 external_web_access=false。
     // 代理自行执行搜索，不把该字段当作能力开关，因此 true 与 false 都接受。
