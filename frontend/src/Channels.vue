@@ -256,7 +256,7 @@
           </div>
         </el-tab-pane>
 
-        <el-tab-pane label="归并视图" name="grouped">
+        <el-tab-pane label="归并视图" name="grouped" lazy>
           <div v-loading="configLoading" class="channel-grouped-view">
             <div v-if="isMobile && channels.length" class="mobile-selection-bar">
               <el-checkbox
