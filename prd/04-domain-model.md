@@ -327,11 +327,13 @@ stateDiagram-v2
     queued --> processing: 开始路由
     processing --> success: 获得可接受响应
     processing --> failed: 最终失败
+    processing --> cancelled: 客户端取消或 499
     success --> [*]
     failed --> [*]
+    cancelled --> [*]
 ```
 
-当前持久化状态常量只有 `queued`、`processing`、`success`、`failed`。客户端取消没有独立的 `cancelled` 状态；流式取消会留下错误文本，并按现有完成判定落为 `failed`。
+当前持久化状态常量包括 `queued`、`processing`、`success`、`failed`、`cancelled`。客户端取消或状态码为 `499` 时落为 `cancelled`；读取旧日志时，`499` 也会归一为 `cancelled`。
 
 请求类型语义：
 

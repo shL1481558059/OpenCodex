@@ -821,10 +821,7 @@ public sealed class ProxyLogService : IProxyLogService
 
     private static string DetermineLifecycleStatus(int? statusCode, string? error)
     {
-        var status = statusCode ?? 0;
-        return status >= 400 || !string.IsNullOrWhiteSpace(error)
-            ? ProxyRequestLifecycleStatus.Failed
-            : ProxyRequestLifecycleStatus.Success;
+        return ProxyRequestStatusResolver.Resolve(statusCode, error);
     }
 
     private static string SerializeForLog(object? value)

@@ -562,6 +562,12 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             upstreamResponse = UpstreamErrorBody(exception);
             return new ProxyEndpointResult(statusCode, errorResponse, IsEmpty: false);
         }
+        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+        {
+            statusCode = ProxyHttpStatus.ClientClosedRequest;
+            error = ProxyRequestStatusResolver.ClientCancelledError;
+            throw;
+        }
         finally
         {
             if (logInFinally)

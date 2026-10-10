@@ -705,6 +705,54 @@ public sealed class ProxyLogServiceTests
     }
 
     [Theory]
+    [InlineData(200, null, ProxyRequestLifecycleStatus.Success)]
+    [InlineData(499, "client cancelled the request", ProxyRequestLifecycleStatus.Cancelled)]
+    [InlineData(500, "upstream failed", ProxyRequestLifecycleStatus.Failed)]
+    public async Task WriteLog_ResolvesLifecycleStatusFromStatusCode(
+        int statusCode,
+        string? error,
+        string expectedLifecycleStatus)
+    {
+        var dbPath = Path.Combine(
+            Path.GetTempPath(),
+            "opencodex-proxy-log-tests",
+            $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        using (var bootstrap = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            bootstrap.Database.Migrate();
+        }
+
+        EnsureAdminUser(dbPath);
+        var service = CreateService(dbPath);
+        await service.WriteLogAsync(
+            new ProxyLogContext(
+                RequestId: $"req-status-{Guid.NewGuid():N}",
+                OwnerUsername: "admin",
+                ApiKeyId: null,
+                Payload: new Dictionary<string, object?>(),
+                UpstreamRequest: new Dictionary<string, object?>(),
+                UpstreamResponse: new Dictionary<string, object?>(),
+                ResponsePayload: new Dictionary<string, object?>(),
+                ErrorResponse: null,
+                RequestModel: "gpt-test",
+                UpstreamModel: "gpt-test",
+                ChannelId: null,
+                ChannelType: "responses",
+                IsStream: false,
+                TtftMs: null,
+                StatusCode: statusCode,
+                DurationMs: 1,
+                Error: error,
+                WebSearchDetails: null),
+            new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()));
+
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var log = context.RequestLogs.AsNoTracking().Single();
+        Assert.Equal(expectedLifecycleStatus, log.LifecycleStatus);
+    }
+
+    [Theory]
     [InlineData(PricingPhaseSources.WindowHit, PricingPhases.OffPeak)]
     [InlineData(PricingPhaseSources.WindowMiss, PricingPhases.Peak)]
     [InlineData(PricingPhaseSources.TimeZoneUnresolved, PricingPhases.Peak)]

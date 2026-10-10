@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using OpenCodex.Core.Domain;
+using OpenCodex.Core.Errors;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Caching;
 using OpenCodex.CoreBase.Data;
@@ -21,8 +22,9 @@ public sealed class ObservabilityService : IObservabilityService
     {
         ProxyRequestLifecycleStatus.Queued,
         ProxyRequestLifecycleStatus.Processing,
-        "success",
-        "failed"
+        ProxyRequestLifecycleStatus.Success,
+        ProxyRequestLifecycleStatus.Failed,
+        ProxyRequestLifecycleStatus.Cancelled
     };
 
     private static readonly IReadOnlyList<string> RequestTypeValues =
@@ -215,8 +217,12 @@ public sealed class ObservabilityService : IObservabilityService
 
         var errorLogs = query
             .Where(log =>
-                log.LifecycleStatus == ProxyRequestLifecycleStatus.Failed
-                || (log.LifecycleStatus == null && (log.StatusCode >= 400 || !string.IsNullOrEmpty(log.Error))))
+                (log.LifecycleStatus == ProxyRequestLifecycleStatus.Failed
+                    || log.LifecycleStatus == null)
+                && (log.StatusCode == null || log.StatusCode != ProxyHttpStatus.ClientClosedRequest)
+                && (log.LifecycleStatus == ProxyRequestLifecycleStatus.Failed
+                    || log.StatusCode >= 400
+                    || !string.IsNullOrEmpty(log.Error)))
             .OrderByDescending(log => log.CreatedAt)
             .Take(limit)
             .Select(log => new RecentErrorRow
@@ -751,8 +757,15 @@ public sealed class ObservabilityService : IObservabilityService
                 log.LifecycleStatus == ProxyRequestLifecycleStatus.Success
                 || (log.LifecycleStatus == null && log.StatusCode < 400 && string.IsNullOrEmpty(log.Error))),
             ProxyRequestLifecycleStatus.Failed => query.Where(log =>
-                log.LifecycleStatus == ProxyRequestLifecycleStatus.Failed
-                || (log.LifecycleStatus == null && (log.StatusCode >= 400 || !string.IsNullOrEmpty(log.Error)))),
+                (log.LifecycleStatus == ProxyRequestLifecycleStatus.Failed
+                    || log.LifecycleStatus == null)
+                && (log.StatusCode == null || log.StatusCode != ProxyHttpStatus.ClientClosedRequest)
+                && (log.LifecycleStatus == ProxyRequestLifecycleStatus.Failed
+                    || log.StatusCode >= 400
+                    || !string.IsNullOrEmpty(log.Error))),
+            ProxyRequestLifecycleStatus.Cancelled => query.Where(log =>
+                log.LifecycleStatus == ProxyRequestLifecycleStatus.Cancelled
+                || log.StatusCode == ProxyHttpStatus.ClientClosedRequest),
             _ => query
         };
     }
@@ -1358,10 +1371,13 @@ public sealed class ObservabilityService : IObservabilityService
         IQueryable<RequestLog> query)
     {
         var grouped = query
-            .Where(log => !(
-                log.LifecycleStatus == ProxyRequestLifecycleStatus.Success
-                || (log.LifecycleStatus == null && log.StatusCode != null && log.StatusCode < 400
-                    && (log.Error == null || log.Error == ""))))
+            .Where(log =>
+                (log.LifecycleStatus == null || log.LifecycleStatus != ProxyRequestLifecycleStatus.Cancelled)
+                && (log.StatusCode == null || log.StatusCode != ProxyHttpStatus.ClientClosedRequest)
+                && !(
+                    log.LifecycleStatus == ProxyRequestLifecycleStatus.Success
+                    || (log.LifecycleStatus == null && log.StatusCode != null && log.StatusCode < 400
+                        && (log.Error == null || log.Error == ""))))
             .GroupBy(log => new
             {
                 ChannelId = log.ChannelId,
@@ -1531,15 +1547,17 @@ public sealed class ObservabilityService : IObservabilityService
 
     private static string NormalizeRequestStatus(string? lifecycleStatus, int? statusCode, string? error)
     {
+        if (statusCode == ProxyHttpStatus.ClientClosedRequest)
+        {
+            return ProxyRequestLifecycleStatus.Cancelled;
+        }
+
         if (!string.IsNullOrWhiteSpace(lifecycleStatus))
         {
             return lifecycleStatus;
         }
 
-        var status = statusCode ?? 0;
-        return status >= 400 || !string.IsNullOrWhiteSpace(error)
-            ? ProxyRequestLifecycleStatus.Failed
-            : ProxyRequestLifecycleStatus.Success;
+        return ProxyRequestStatusResolver.Resolve(statusCode, error);
     }
 
     private static ResolvedStatsRange ResolveStatsRange(

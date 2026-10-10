@@ -160,6 +160,12 @@ public sealed class ProxyOcrService : IProxyOcrService
             errorResponse = wrapped.ToResponse();
             throw wrapped;
         }
+        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+        {
+            statusCode = ProxyHttpStatus.ClientClosedRequest;
+            error = ProxyRequestStatusResolver.ClientCancelledError;
+            throw;
+        }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             var wrapped = new UpstreamException(

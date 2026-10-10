@@ -257,6 +257,8 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
         catch (OperationCanceledException)
         {
             captureTermination = StreamCaptureTermination.ClientCancelled;
+            statusCode = ProxyHttpStatus.ClientClosedRequest;
+            error = ProxyRequestStatusResolver.ClientCancelledError;
             upstreamResponse ??= responseCapture?
                 .Complete(captureTermination)
                 .Response;

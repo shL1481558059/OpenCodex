@@ -797,6 +797,129 @@ public sealed class ObservabilityServiceTests
     }
 
     [Fact]
+    public void CancelledStatus_NormalizesLegacyLogsAndExcludesThemFromErrors()
+    {
+        var dbPath = Path.Combine(
+            Path.GetTempPath(),
+            "opencodex-api-tests",
+            $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            context.Database.Migrate();
+            context.Users.Add(new User
+            {
+                Id = AdminUserId,
+                Username = "admin",
+                PasswordHash = "hash",
+                Role = "superadmin",
+                Enabled = true,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            context.RequestLogs.AddRange(
+                new RequestLog
+                {
+                    Id = Guid.Parse("33333333-3333-3333-3333-333333333361"),
+                    RequestId = "req-cancelled-new",
+                    CreatedAt = 1_700_000_030,
+                    Method = "POST",
+                    Path = "/v1/responses",
+                    Model = "gpt-test",
+                    LifecycleStatus = ProxyRequestLifecycleStatus.Cancelled,
+                    IsStream = true,
+                    StatusCode = 200,
+                    Error = "client cancelled the request",
+                    OwnerUserId = AdminUserId
+                },
+                new RequestLog
+                {
+                    Id = Guid.Parse("33333333-3333-3333-3333-333333333362"),
+                    RequestId = "req-cancelled-legacy",
+                    CreatedAt = 1_700_000_020,
+                    Method = "POST",
+                    Path = "/v1/responses",
+                    Model = "gpt-test",
+                    LifecycleStatus = ProxyRequestLifecycleStatus.Failed,
+                    IsStream = true,
+                    StatusCode = 499,
+                    Error = "client cancelled the request",
+                    OwnerUserId = AdminUserId
+                },
+                new RequestLog
+                {
+                    Id = Guid.Parse("33333333-3333-3333-3333-333333333363"),
+                    RequestId = "req-failed",
+                    CreatedAt = 1_700_000_010,
+                    Method = "POST",
+                    Path = "/v1/responses",
+                    Model = "gpt-test",
+                    LifecycleStatus = ProxyRequestLifecycleStatus.Failed,
+                    IsStream = true,
+                    StatusCode = 500,
+                    Error = "upstream failed",
+                    OwnerUserId = AdminUserId
+                });
+            context.SaveChanges();
+        }
+
+        var service = CreateService(dbPath);
+
+        var logs = service.ReadLogsPage(1, 20, new Dictionary<string, object?>());
+        Assert.True(logs.Succeeded);
+        Assert.Equal(
+            new[]
+            {
+                ProxyRequestLifecycleStatus.Cancelled,
+                ProxyRequestLifecycleStatus.Cancelled,
+                ProxyRequestLifecycleStatus.Failed
+            },
+            logs.Payload!.Events.Select(item => item.RequestStatus).ToArray());
+
+        var cancelled = service.ReadLogsPage(1, 20, new Dictionary<string, object?>
+        {
+            ["request_status"] = ProxyRequestLifecycleStatus.Cancelled
+        });
+        Assert.True(cancelled.Succeeded);
+        Assert.Equal(
+            new[] { "req-cancelled-new", "req-cancelled-legacy" },
+            cancelled.Payload!.Events.Select(item => item.RequestId).ToArray());
+
+        var failed = service.ReadLogsPage(1, 20, new Dictionary<string, object?>
+        {
+            ["request_status"] = ProxyRequestLifecycleStatus.Failed
+        });
+        Assert.True(failed.Succeeded);
+        Assert.Equal("req-failed", Assert.Single(failed.Payload!.Events).RequestId);
+
+        var recentErrors = service.ReadRecentErrors(10);
+        Assert.True(recentErrors.Succeeded);
+        Assert.Equal(
+            Guid.Parse("33333333-3333-3333-3333-333333333363"),
+            Assert.Single(recentErrors.Payload!).Id);
+
+        var stats = service.ReadStats(
+            "custom",
+            1_700_000_000,
+            1_700_000_100,
+            new Dictionary<string, object?>());
+        Assert.True(stats.Succeeded);
+        var errorDistribution = Assert.Single(stats.Payload!.ErrorDistribution);
+        Assert.Equal(500, errorDistribution.StatusCode);
+        Assert.Equal(1, errorDistribution.Count);
+
+        var statusOptions = service.ReadLogFilterOption(
+            "request_status",
+            null,
+            new Dictionary<string, object?>());
+        Assert.True(statusOptions.Succeeded);
+        Assert.Contains(
+            ProxyRequestLifecycleStatus.Cancelled,
+            Assert.IsType<List<string>>(statusOptions.Payload!["request_statuses"]));
+    }
+
+    [Fact]
     public void StatsAggregations_ArePushedToDatabaseAndPadEmptyBuckets()
     {
         var dbPath = Path.Combine(

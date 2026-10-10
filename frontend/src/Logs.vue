@@ -1546,6 +1546,7 @@ function formatRequestStatus(value) {
     case "processing": return "处理中";
     case "success": return "成功";
     case "failed": return "失败";
+    case "cancelled": return "取消";
     case "success_with_retry": return "成功（重试）";
     default: return value || "-";
   }
@@ -1557,6 +1558,7 @@ function requestStatusTagType(value) {
     case "processing": return "warning";
     case "success": return "success";
     case "failed": return "danger";
+    case "cancelled": return "info";
     case "success_with_retry": return "warning";
     default: return "info";
   }

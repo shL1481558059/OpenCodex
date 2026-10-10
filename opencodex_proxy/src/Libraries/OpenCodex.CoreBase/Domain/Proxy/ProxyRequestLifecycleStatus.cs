@@ -6,4 +6,5 @@ public static class ProxyRequestLifecycleStatus
     public const string Processing = "processing";
     public const string Success = "success";
     public const string Failed = "failed";
+    public const string Cancelled = "cancelled";
 }

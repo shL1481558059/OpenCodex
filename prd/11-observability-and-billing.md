@@ -94,13 +94,15 @@ stateDiagram-v2
     queued --> processing: 开始读取与路由
     processing --> success: 最终响应成功
     processing --> failed: 最终错误
+    processing --> cancelled: 客户端取消或 499
     failed --> [*]
     success --> [*]
+    cancelled --> [*]
 ```
 
 `LifecycleStatus` 是业务状态，不能只根据 HTTP 状态码推断；例如某次 attempt 可能失败，但主请求经过故障转移后成功。
 
-当前状态常量只有 `queued`、`processing`、`success`、`failed`。客户端取消没有单独的 `cancelled` 状态；流式取消会记录错误文本并按现有完成判定落为 `failed`。
+当前状态常量包括 `queued`、`processing`、`success`、`failed`、`cancelled`。客户端取消或状态码为 `499` 时落为 `cancelled`；读取旧日志时，`499` 也会归一为 `cancelled`。
 
 ## 3. 日志字段产品定义
 

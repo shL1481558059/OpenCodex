@@ -95,7 +95,7 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
             if (context.CancellationToken.IsCancellationRequested)
             {
                 statusCode = ProxyHttpStatus.ClientClosedRequest;
-                error = "client cancelled the request";
+                error = ProxyRequestStatusResolver.ClientCancelledError;
                 throw;
             }
             statusCode = ProxyHttpStatus.GatewayTimeout;
