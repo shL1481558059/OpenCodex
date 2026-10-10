@@ -396,7 +396,7 @@ public static class WebSearchRequestPolicy
         {
             var supported = key is "type" or "description"
                 || value is null
-                || (key == "external_web_access" && value is true)
+                || (key == "external_web_access" && IsBoolean(value))
                 || (key == "search_context_size" && value is "medium")
                 || (key == "return_token_budget" && value is "default")
                 || (key == "search_content_types" && TryAsList(value, out var types)
@@ -407,4 +407,14 @@ public static class WebSearchRequestPolicy
             }
         }
     }
+
+    // Codex 默认 cached 模式会发送 external_web_access=false。
+    // 代理自行执行搜索，不把该字段当作能力开关，因此 true 与 false 都接受。
+    // 请求体通常已转成 bool；这里同时接受尚未拆箱的 JsonElement 布尔。
+    private static bool IsBoolean(object? value) => value switch
+    {
+        bool => true,
+        JsonElement { ValueKind: JsonValueKind.True or JsonValueKind.False } => true,
+        _ => false
+    };
 }

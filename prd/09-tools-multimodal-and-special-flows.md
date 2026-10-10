@@ -196,7 +196,7 @@ sequenceDiagram
 
 当前注册范围不是所有请求：只有 **Responses 入口 + Chat/Messages 渠道 + 访问 Key 所属用户角色为 `superadmin` + 恰好声明一个原生 `web_search`/`web_search_preview` + 全局模式为 `simulate`** 时才登记代理执行权（`WebSearchRequestPolicy.RegisterBuiltin`）。登记不会触发搜索，未调用搜索时仍走普通响应路径。普通用户不能触发搜索 provider 执行，同名普通函数不被接管。
 
-原生搜索声明除 `type`、`description`、null 值外，只允许 `external_web_access=true`、`search_context_size="medium"`、`return_token_budget="default"`、`search_content_types=["text"]`；其余选项抛 400。`include` 中出现 `web_search_call.*` 且不是 `web_search_call.action.sources` 时同样抛 400。
+原生搜索声明除 `type`、`description`、null 值外，只允许布尔 `external_web_access`（`true` 或 `false`，含尚未拆箱的 `JsonElement` 布尔）、`search_context_size="medium"`、`return_token_budget="default"`、`search_content_types=["text"]`；其余选项抛 400。代理自行执行搜索，不区分 Codex 的 cached/live 开关。`filters`、`user_location`、非 `medium` 的 `search_context_size`、以及不是 `["text"]` 的 `search_content_types` 仍抛 400。`include` 中出现 `web_search_call.*` 且不是 `web_search_call.action.sources` 时同样抛 400。
 
 ### 6.2 请求策略
 

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using OpenCodex.Core.Errors;
 using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.WebSearch;
@@ -99,13 +100,85 @@ public sealed class WebSearchRequestPolicyTests
         Assert.NotNull(WebSearchRequestPolicy.ParseQuery(arguments).Error);
     }
 
-    [Fact]
-    public void UnsupportedOfflineSearch_IsRejectedBeforeModelRequest()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ExternalWebAccess_BooleanDoesNotBlockProxySearch(bool externalWebAccess)
     {
         var payload = Request();
-        ((Dictionary<string, object?>)WebSearchPayload.ListValue(payload, "tools")[0]!)["external_web_access"] = false;
+        NativeTool(payload)["external_web_access"] = externalWebAccess;
+
+        var binding = WebSearchRequestPolicy.RegisterBuiltin(payload, "simulate", "responses", "chat", "superadmin");
+
+        Assert.NotNull(binding);
+        Assert.True(binding.SearchAllowed);
+        Assert.Equal("opencodex_web_search", NativeTool(payload)["name"]);
+    }
+
+    [Theory]
+    [InlineData("true")]
+    [InlineData("false")]
+    public void ExternalWebAccess_JsonElementBooleanDoesNotBlockProxySearch(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var payload = Request();
+        NativeTool(payload)["external_web_access"] = document.RootElement.Clone();
+
+        var binding = WebSearchRequestPolicy.RegisterBuiltin(payload, "simulate", "responses", "chat", "superadmin");
+
+        Assert.NotNull(binding);
+        Assert.True(binding.SearchAllowed);
+    }
+
+    [Theory]
+    [InlineData("false")]
+    [InlineData("true")]
+    public void ExternalWebAccess_NonBooleanIsRejected(object value)
+    {
+        var payload = Request();
+        NativeTool(payload)["external_web_access"] = value;
         Assert.Throws<BadRequestException>(() =>
             WebSearchRequestPolicy.RegisterBuiltin(payload, "simulate", "responses", "chat", "superadmin"));
+    }
+
+    [Fact]
+    public void ExternalWebAccess_JsonElementStringIsRejected()
+    {
+        using var document = JsonDocument.Parse("\"false\"");
+        var payload = Request();
+        NativeTool(payload)["external_web_access"] = document.RootElement.Clone();
+        Assert.Throws<BadRequestException>(() =>
+            WebSearchRequestPolicy.RegisterBuiltin(payload, "simulate", "responses", "chat", "superadmin"));
+    }
+
+    [Fact]
+    public void SupportedNativeDefaults_StillPass()
+    {
+        var payload = Request();
+        var tool = NativeTool(payload);
+        tool["description"] = "search";
+        tool["external_web_access"] = true;
+        tool["search_context_size"] = "medium";
+        tool["return_token_budget"] = "default";
+        tool["search_content_types"] = new List<object?> { "text" };
+
+        Assert.NotNull(WebSearchRequestPolicy.RegisterBuiltin(payload, "simulate", "responses", "chat", "superadmin"));
+    }
+
+    [Fact]
+    public void OptionalCodexSearchConstraints_StayRejected()
+    {
+        AssertRejected("filters", new Dictionary<string, object?>
+        {
+            ["allowed_domains"] = new List<object?> { "example.com" }
+        });
+        AssertRejected("user_location", new Dictionary<string, object?>
+        {
+            ["type"] = "approximate",
+            ["country"] = "US"
+        });
+        AssertRejected("search_context_size", "high");
+        AssertRejected("search_content_types", new List<object?> { "text", "image" });
     }
 
     [Fact]
@@ -152,6 +225,17 @@ public sealed class WebSearchRequestPolicyTests
         var request = ProtocolConverter.ConvertRequest(payload, "responses", protocol, "model");
 
         Assert.Throws<BadRequestException>(() => WebSearchRequestPolicy.FinalizeUpstreamRequest(request, binding));
+    }
+
+    private static Dictionary<string, object?> NativeTool(Dictionary<string, object?> payload) =>
+        (Dictionary<string, object?>)WebSearchPayload.ListValue(payload, "tools")[0]!;
+
+    private static void AssertRejected(string key, object? value)
+    {
+        var payload = Request();
+        NativeTool(payload)[key] = value;
+        Assert.Throws<BadRequestException>(() =>
+            WebSearchRequestPolicy.RegisterBuiltin(payload, "simulate", "responses", "chat", "superadmin"));
     }
 
     private static Dictionary<string, object?> Request(string type = "web_search") => new()
