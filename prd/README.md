@@ -229,7 +229,7 @@ flowchart LR
 9. 管理台无 URL 路由深链、全局会话失效处理和统一未保存变更保护；
 10. 旧的 `doc/` 技术文档已精简为 `implemented-logic.md` 与 `unimplemented-plans.md` 两篇（前者随 `db0fd60` 更新）；`docs/` 已删除，历史细节只在 git 历史中可查；PRD 以当前代码为准；
 11. 多代理 v2 为单实例实现：`MultiAgentRunStore` 与 `db0fd60` 引入的 `MultiAgentClientStore` 均只做本实例 JSON 快照持久化（客户端协同组清单位于 `MultiAgent:StateDirectory` 的 `client-bindings/` 子目录），快照没有加密、保留期与容量上限，也无多实例共享状态（TBD-MA-002/004）；
-12. 峰谷计费批 5 未完成：日志详情不展示 `pricing_phase`、没有只读试算端点（TBD-RSK-14 / REQ-OBS-022/023）。
+12. 峰谷计费批 5 未完成：日志列表与详情已展示峰/谷（`pricing_phase`），但不展示 `phase_source` 与价格快照，也没有只读试算端点（TBD-RSK-14 / REQ-OBS-022/023）。
 
 ## 9. 文档维护规则
 

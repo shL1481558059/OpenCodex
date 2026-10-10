@@ -363,7 +363,7 @@ API helper 对 401 只抛错误，未统一清除会话并跳登录。用户可�
 | TBD-RSK-10 | 自动迁移执行方式 | 生产推荐独立迁移 Job | 多实例前 |
 | TBD-RSK-11 | 正式 SLA/RPO/RTO | 按 SQLite/Postgres 分层 | 对外发布前 |
 | TBD-RSK-12 | 桌面自动更新 | 签名成熟后启用 | 正式分发前 |
-| TBD-RSK-14 | 峰谷计费批 5 剩余项：日志详情展示 `pricing_phase`、只读试算端点、prd/18 追溯条目 | 与 `REQ-OBS-021` 同步补齐；展示类改动随管理台迭代 | 下一次计费迭代前 |
+| TBD-RSK-14 | 峰谷计费批 5 剩余项：日志详情展示 `phase_source`/时区/命中窗口与价格快照、只读试算端点（`pricing_phase` 峰/谷胶囊已上线，迁移前历史行为 null） | 与 `REQ-OBS-021` 同步补齐；展示类改动随管理台迭代 | 下一次计费迭代前 |
 | TBD-RSK-15 | 多代理运行的多实例协调与快照保留/容量治理 | 需要多实例拓扑与共享目录方案（多代理单实例边界见 [19-multi-agent-simulation.md](./19-multi-agent-simulation.md)） | 多实例部署前 |
 
 ## 10. 风险接受流程

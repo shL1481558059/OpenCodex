@@ -167,7 +167,8 @@ public sealed class LogEventResponse
         string? conversationTurnId,
         string? conversationWindowId,
         string? previousResponseId,
-        string? costCurrency = null)
+        string? costCurrency = null,
+        string? pricingPhase = null)
     {
         Id = id;
         RequestId = requestId;
@@ -204,6 +205,7 @@ public sealed class LogEventResponse
         ConversationTurnId = conversationTurnId;
         ConversationWindowId = conversationWindowId;
         PreviousResponseId = previousResponseId;
+        PricingPhase = pricingPhase;
     }
 
     /// <summary>
@@ -351,6 +353,12 @@ public sealed class LogEventResponse
     public string CostCurrency { get; }
 
     /// <summary>
+    /// 获取计费时段：peak / off_peak；价格计划未启用峰谷时为 null。
+    /// </summary>
+    [JsonPropertyName("pricing_phase")]
+    public string? PricingPhase { get; }
+
+    /// <summary>
     /// 获取所属用户名。
     /// </summary>
     [JsonPropertyName("owner_username")]
@@ -449,7 +457,8 @@ public sealed class LogEventResponse
             log.ConversationTurnId,
             log.ConversationWindowId,
             log.PreviousResponseId,
-            log.CostCurrency);
+            log.CostCurrency,
+            log.PricingPhase);
     }
 
     private static string ResolveDisplayRequestStatus(
@@ -576,7 +585,8 @@ public sealed class LogDetailResponse
         string displayRequestStatus,
         int attemptCount,
         int failedAttemptCount,
-        string? costCurrency = null)
+        string? costCurrency = null,
+        string? pricingPhase = null)
     {
         Id = id;
         RequestId = requestId;
@@ -620,6 +630,7 @@ public sealed class LogDetailResponse
         DisplayRequestStatus = displayRequestStatus;
         AttemptCount = attemptCount;
         FailedAttemptCount = failedAttemptCount;
+        PricingPhase = pricingPhase;
     }
 
     /// <summary>
@@ -776,6 +787,12 @@ public sealed class LogDetailResponse
     public string CostCurrency { get; }
 
     /// <summary>
+    /// 获取计费时段：peak / off_peak；价格计划未启用峰谷时为 null。
+    /// </summary>
+    [JsonPropertyName("pricing_phase")]
+    public string? PricingPhase { get; }
+
+    /// <summary>
     /// 获取所属用户名。
     /// </summary>
     [JsonPropertyName("owner_username")]
@@ -895,7 +912,8 @@ public sealed class LogDetailResponse
             log.PreviousResponseId,
             log.AttemptCount,
             log.FailedAttemptCount,
-            log.CostCurrency), apiKeyNames, channelNames);
+            log.CostCurrency,
+            log.PricingPhase), apiKeyNames, channelNames);
 
         return new LogDetailResponse(
             logEvent.Id,
@@ -939,7 +957,8 @@ public sealed class LogDetailResponse
             logEvent.DisplayRequestStatus,
             logEvent.AttemptCount,
             logEvent.FailedAttemptCount,
-            logEvent.CostCurrency);
+            logEvent.CostCurrency,
+            logEvent.PricingPhase);
     }
 }
 

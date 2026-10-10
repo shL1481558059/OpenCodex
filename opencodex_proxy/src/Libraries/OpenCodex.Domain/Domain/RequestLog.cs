@@ -76,6 +76,11 @@ public sealed class RequestLog : BaseEntity<Guid>
 
     public string? PricingSnapshotJson { get; set; }
 
+    /// <summary>
+    /// 计费时段：peak / off_peak；价格计划未启用峰谷或未匹配价格时为 null。
+    /// </summary>
+    public string? PricingPhase { get; set; }
+
     public Guid OwnerUserId { get; set; }
 
     public Guid? ApiKeyId { get; set; }

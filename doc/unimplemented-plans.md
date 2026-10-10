@@ -81,8 +81,8 @@
 
 ### 4.1 峰谷计费批 5（可选批次，待实施）
 
-- 日志详情页不展示 `pricing_phase`；没有只读试算端点。`prd/11` 的 `REQ-OBS-021`～`024` 与 `prd/18` 追溯条目已随本轮 PRD 更新补齐，展示与试算仍为 TBD。
-- 每请求的 `pricing_phase`/`phase_source`/`billing_instant`/`time_zone`/`matched_window` 已写入快照，展示与文档同步属于剩余工作。
+- 日志列表成本列与详情已按 `RequestLogs.PricingPhase` 展示峰/谷胶囊（迁移前的历史行为 null，不显示）；没有只读试算端点。
+- 每请求的 `phase_source`/`billing_instant`/`time_zone`/`matched_window` 仍只在快照里，展示属于剩余工作。
 - 注意：导出文档版本已升到 2，v1 文档覆盖导入会抹掉本地峰谷配置；跨版本互导需要按新版本说明执行。
 
 ### 4.2 模型目录同步的既定边界（已接受，暂不实施）

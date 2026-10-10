@@ -705,6 +705,10 @@ namespace OpenCodex.Data.Migrations.PostgresMigrations
                     b.Property<Guid?>("PricingModelInfoId")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("PricingPhase")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
                     b.Property<Guid?>("PricingPlanId")
                         .HasColumnType("uuid");
 

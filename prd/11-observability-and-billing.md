@@ -154,6 +154,9 @@ TPS 是前端按日志字段计算的派生值，不落库：端到端输出速�
 | PricingModelInfoId | 使用的模型信息 |
 | PricingPlanId | 使用的价格计划 |
 | PricingSnapshotJson | 完成时价格规则快照 |
+| PricingPhase | 计费时段 `peak`/`off_peak`，可空；价格计划未启用峰谷、未匹配价格或迁移前的历史行为 null |
+
+`PricingPhase` 由完成时的 `phase_source` 推出，不解析快照：`window_hit` 写 `off_peak`，`window_miss` 与 `time_zone_unresolved` 写 `peak`，`disabled`（含未匹配价格的零成本快照）写 null。它只表示请求级窗口判定；谷段里未开启谷价的计费项仍按峰价，逐项结果仍以快照 `rules[].applied_phase` 为准。迁移 `RequestLogPricingPhase` 不回填历史行。
 
 `PricingSnapshotJson` 的 `rules[]` 逐条记录 `billing_item`、`billing_mode`、`quantity`、`unit_price`、`cost` 与 `applied_phase`；顶层另有 `resolution`、`currency`、`cost`、`pricing_phase`、`phase_source`、`billing_instant`、`time_zone`、`matched_window`，可据此复算单次请求。
 
@@ -260,7 +263,7 @@ flowchart LR
 - OCR 元数据与 Web Search 详情（若存在）；
 - 复制和关联日志跳转。
 
-详情与列表当前都不返回 `PricingSnapshotJson` 或计费时段字段，成本只展示 `cost` 与 `cost_currency`（按计费时段展示见 REQ-OBS-022）。
+列表与详情都返回可空的 `pricing_phase`（读 `RequestLogs.PricingPhase` 列），但都不返回 `PricingSnapshotJson` 或 `phase_source`。`Logs.vue` 在成本列（桌面表格与移动端卡片）用与“流/非流”相同的小胶囊标出“谷”（`off_peak`，success）或“峰”（`peak`，warning），null 不显示；详情在“成本”旁展示“计费时段”，null 显示“—”。
 
 详情读取在服务端一次性重组全部槽位（含 Brotli 解压）并在前端一次性渲染，没有分页或懒加载；超大正文会整块解压、整块渲染。
 
@@ -388,9 +391,10 @@ flowchart LR
 - 计费时刻取请求进入网关的时刻（`RequestLog.CreatedAt`，缺失或越界时退回当前时刻并把实际值写入快照 `billing_instant`），每个请求只判定一次时段，所有计费项共用同一个 `pricing_phase`；
 - 峰谷使用绝对单价：默认 `UnitPrice`/`TiersJson` 是峰价，开启峰谷后 `OffPeakUnitPrice`/`OffPeakTiersJson` 是谷价；未开启峰谷开关的计费项即使落在谷段也按峰价，快照里记 `applied_phase=peak`；
 - 快照字段：`pricing_phase`（peak/off_peak）、`phase_source`（disabled/window_hit/window_miss/time_zone_unresolved）、`billing_instant`、`time_zone`、`matched_window`、`rules[].applied_phase`；
-- 时区无法解析时按峰价计费并记录 `time_zone_unresolved`；时段判定不进入定价缓存（`PricingCacheDoesNotFreezePricingPhase`）。
+- 时区无法解析时按峰价计费并记录 `time_zone_unresolved`；时段判定不进入定价缓存（`PricingCacheDoesNotFreezePricingPhase`）；
+- 请求日志另存 `PricingPhase` 列（见 3.3），日志列表与详情据此展示峰/谷胶囊。
 
-尚未实现（TBD）：日志详情页不展示 `pricing_phase` 或价格快照；也没有只读的价格试算端点，只能通过真实请求或既有 `CalculateCostAsync` 观察结果（见 REQ-OBS-022、REQ-OBS-023）。
+尚未实现（TBD）：日志详情不展示 `phase_source`、时区、命中窗口或价格快照；也没有只读的价格试算端点，只能通过真实请求或既有 `CalculateCostAsync` 观察结果（见 REQ-OBS-022、REQ-OBS-023）。
 
 ## 8. 脱敏和访问控制
 
@@ -468,7 +472,7 @@ flowchart LR
 
 `REQ-OBS-021`（MUST，CURRENT）：峰谷分时定价必须按请求进入网关的时刻判定时段，峰价与谷价都使用绝对单价，并把判定依据写入价格快照。价格计划带 IANA 时区与规范化谷段窗口（上限 24 条按输入条数计，跨午夜按起始日拆分，拆分后可能翻倍）；每个请求只判定一次时段，所有计费项共用；未开启峰谷的计费项在谷段仍按峰价；快照写入 `pricing_phase`、`phase_source`、`billing_instant`、`time_zone`、`matched_window` 与 `rules[].applied_phase`。验收：`ModelCatalogServiceTests.PricingSnapshotRecordsPhaseDetails`、`OffPeakWindowSwitchesUnitPrice`、`OffPeakWindowUsesHalfOpenBoundaries`、`CrossMidnightWindowFollowsStartDayWeekdays`、`TimeZoneDecidesPricingPhase`、`TieredOffPeakUsesOffPeakTiers`、`TieredTokensSelectsTierByContextWindow`、`PricingCacheDoesNotFreezePricingPhase`、`UnresolvableTimeZoneFallsBackToPeakPrice`。
 
-`REQ-OBS-022`（SHOULD，TBD）：日志详情页与详情接口应展示计费时段（`pricing_phase`/`phase_source`）与价格快照，便于按账单解释单次请求。当前 `RequestLogDto`/`LogDetailResponse` 不返回价格快照或时段字段，`Logs.vue` 只展示 `cost` 与 `cost_currency`；`ObservabilityServiceTests.LogsPage_ProjectionDoesNotReadPricingSnapshotJson` 固化了列表不读取快照的现状。
+`REQ-OBS-022`（SHOULD，PARTIAL）：日志详情页与详情接口应展示计费时段（`pricing_phase`/`phase_source`）与价格快照，便于按账单解释单次请求。已实现：`RequestLogs.PricingPhase` 列，列表与详情返回 `pricing_phase`，`Logs.vue` 成本列与详情展示峰/谷胶囊；`ObservabilityServiceTests.LogsPage_ProjectionDoesNotReadPricingSnapshotJson` 断言列表/详情查询读取 `PricingPhase` 而不读取 `PricingSnapshotJson`，`ProxyLogServiceTests.CompletedLog_PersistsPricingPhase`、`PricingPhaseForRequestLog_OnlyRecordsPlansWithPeakOffPeak` 覆盖写入映射，`ObservabilityServiceTests.LogResponses_SerializePricingPhaseAsNullableSnakeCase` 覆盖响应字段。仍为 TBD：`phase_source`、时区、命中窗口与完整价格快照的展示。
 
 `REQ-OBS-023`（SHOULD，TBD）：应提供只读价格试算端点（按模型 + 用量 + 时刻返回命中计划、峰谷判定与分项金额）。当前 `ModelCatalogController` 只有模型目录、导入导出与同步路由，没有试算接口，也没有对应页面；只能通过真实请求后查看落账快照或直接调用 `ModelCatalogService.CalculateCostAsync`。
 

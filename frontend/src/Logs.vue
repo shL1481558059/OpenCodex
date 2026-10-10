@@ -472,6 +472,18 @@
               <span>{{ formatTokenSummary(row) }}</span>
             </div>
             <span v-else-if="column.key === 'tps'">{{ formatEndToEndTps(row) }}</span>
+            <div v-else-if="column.key === 'cost'" class="token-cell">
+              <el-tag
+                v-if="pricingPhaseTag(row)"
+                class="token-cell__pill"
+                size="small"
+                round
+                :type="pricingPhaseTag(row).type"
+              >
+                {{ pricingPhaseTag(row).label }}
+              </el-tag>
+              <span>{{ formatCost(row.cost, row.cost_currency) }}</span>
+            </div>
             <span v-else>{{ formatLogCell(row, column) }}</span>
           </template>
         </el-table-column>
@@ -536,7 +548,18 @@
             </div>
             <div class="log-mobile-card__wide">
               <dt>成本</dt>
-              <dd>{{ formatCost(row.cost, row.cost_currency) }}</dd>
+              <dd class="token-cell">
+                <el-tag
+                  v-if="pricingPhaseTag(row)"
+                  class="token-cell__pill"
+                  size="small"
+                  round
+                  :type="pricingPhaseTag(row).type"
+                >
+                  {{ pricingPhaseTag(row).label }}
+                </el-tag>
+                <span>{{ formatCost(row.cost, row.cost_currency) }}</span>
+              </dd>
             </div>
             <div class="log-mobile-card__wide">
               <dt>请求 ID</dt>
@@ -624,6 +647,17 @@
               </span>
             </el-descriptions-item>
             <el-descriptions-item label="成本">{{ formatCost(selectedLog.cost, selectedLog.cost_currency) }}</el-descriptions-item>
+            <el-descriptions-item label="计费时段">
+              <el-tag
+                v-if="pricingPhaseTag(selectedLog)"
+                size="small"
+                round
+                :type="pricingPhaseTag(selectedLog).type"
+              >
+                {{ pricingPhaseTag(selectedLog).label }}
+              </el-tag>
+              <span v-else>—</span>
+            </el-descriptions-item>
             <el-descriptions-item label="创建时间">{{ formatTimeOrDash(selectedLog.created_at) }}</el-descriptions-item>
             <el-descriptions-item label="开始处理">{{ formatTimeOrDash(selectedLog.processing_started_at) }}</el-descriptions-item>
             <el-descriptions-item label="完成时间">{{ formatTimeOrDash(selectedLog.completed_at) }}</el-descriptions-item>
@@ -912,7 +946,7 @@ const logColumnDefinitions = [
   { key: "latency", label: "耗时 / TTFT", width: 150 },
   { key: "tokens", label: "Token", width: 210 },
   { key: "tps", label: "输出速度", width: 130 },
-  { key: "cost", prop: "cost", label: "成本", width: 110 }
+  { key: "cost", prop: "cost", label: "成本", width: 150 }
 ];
 const defaultLogColumnKeys = logColumnDefinitions
   .map((c) => c.key)
@@ -1557,6 +1591,15 @@ function parseStoredJson(value) {
   if (value === null || value === undefined || value === "") return "";
   if (typeof value === "string") { try { return JSON.parse(value); } catch { return value; } }
   return value;
+}
+
+const pricingPhaseTags = {
+  off_peak: { label: "谷", type: "success" },
+  peak: { label: "峰", type: "warning" }
+};
+
+function pricingPhaseTag(row) {
+  return pricingPhaseTags[row?.pricing_phase] || null;
 }
 
 function formatCost(value, currency) {

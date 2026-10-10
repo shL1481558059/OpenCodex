@@ -443,6 +443,7 @@ public sealed class ObservabilityService : IObservabilityService
                 OutputTokens = log.OutputTokens,
                 Cost = log.Cost,
                 CostCurrency = log.CostCurrency,
+                PricingPhase = log.PricingPhase,
                 OwnerUserId = log.OwnerUserId,
                 ApiKeyId = log.ApiKeyId,
                 Error = log.Error,
@@ -512,6 +513,7 @@ public sealed class ObservabilityService : IObservabilityService
                 OutputTokens = item.OutputTokens,
                 Cost = item.Cost,
                 CostCurrency = item.CostCurrency,
+                PricingPhase = item.PricingPhase,
                 OwnerUserId = item.OwnerUserId,
                 ApiKeyId = item.ApiKeyId,
                 Error = item.Error,
@@ -1447,7 +1449,8 @@ public sealed class ObservabilityService : IObservabilityService
             log.PreviousResponseId,
             attemptCount,
             failedAttemptCount,
-            log.CostCurrency);
+            log.CostCurrency,
+            log.PricingPhase);
     }
 
     private Dictionary<Guid, (int AttemptCount, int FailedAttemptCount)> BuildAttemptStats(
@@ -1522,7 +1525,8 @@ public sealed class ObservabilityService : IObservabilityService
             log.PreviousResponseId,
             attemptStats.AttemptCount,
             attemptStats.FailedAttemptCount,
-            log.CostCurrency);
+            log.CostCurrency,
+            log.PricingPhase);
     }
 
     private static string NormalizeRequestStatus(string? lifecycleStatus, int? statusCode, string? error)
@@ -1764,6 +1768,8 @@ public sealed class ObservabilityService : IObservabilityService
         public double Cost { get; set; }
 
         public string CostCurrency { get; set; } = string.Empty;
+
+        public string? PricingPhase { get; set; }
 
         public Guid OwnerUserId { get; set; }
 

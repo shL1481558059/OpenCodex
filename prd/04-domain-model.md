@@ -316,7 +316,7 @@ erDiagram
 | 流式 | `IsStream`、`TtftMs` | 是否流式和首字延迟 |
 | 结果 | `DurationMs`、`StatusCode`、`LifecycleStatus`、`Error` | 状态和错误 |
 | Usage | `InputTokens`、`CachedTokens`、`CacheWriteTokens`、`CacheReadTokens`、`OutputTokens` | Token 统计 |
-| 计费 | `Cost`、`CostCurrency`、`PricingModelInfoId`、`PricingPlanId`、`PricingSnapshotJson` | 成本和计算依据 |
+| 计费 | `Cost`、`CostCurrency`、`PricingModelInfoId`、`PricingPlanId`、`PricingSnapshotJson`、`PricingPhase` | 成本、计算依据与峰谷时段（未启用峰谷为 null） |
 | 归属 | `OwnerUserId`、`ApiKeyId` | 租户和调用凭证 |
 
 主请求生命周期：

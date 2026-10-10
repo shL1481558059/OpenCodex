@@ -596,7 +596,7 @@
 | `REQ-OBS-019` | SHOULD | 支持结构化导出和受控正文导出 | [可观测性与计费](11-observability-and-billing.md) | Observability/ProxyLog/LogContent/ModelPricing；日志与统计测试 |
 | `REQ-OBS-020` | SHOULD | readiness 与观测指标可区分 | [可观测性与计费](11-observability-and-billing.md) | Observability/ProxyLog/LogContent/ModelPricing；日志与统计测试 |
 | `REQ-OBS-021` | MUST | 峰谷分时定价：进入时刻判定、绝对单价、快照可复算 | [可观测性与计费](11-observability-and-billing.md) | Observability/ProxyLog/LogContent/ModelCatalog；日志与统计测试 |
-| `REQ-OBS-022` | SHOULD | 日志详情展示 `pricing_phase` 与价格快照（TBD） | [可观测性与计费](11-observability-and-billing.md) | Observability/ProxyLog/LogContent/ModelCatalog；日志与统计测试 |
+| `REQ-OBS-022` | SHOULD | 日志列表/详情展示 `pricing_phase`（已实现）；`phase_source` 与价格快照展示（TBD） | [可观测性与计费](11-observability-and-billing.md) | Observability/ProxyLog/LogContent/ModelCatalog；日志与统计测试 |
 | `REQ-OBS-023` | SHOULD | 只读价格试算端点（TBD） | [可观测性与计费](11-observability-and-billing.md) | Observability/ProxyLog/LogContent/ModelCatalog；日志与统计测试 |
 | `REQ-OBS-024` | MUST | 峰谷计费需求登记到本索引 | [可观测性与计费](11-observability-and-billing.md) | 本索引第 10 节 |
 | `REQ-CFG-001` | MUST | 系统必须维护唯一、可机器检查的配置目录，列出名称、类型、默认值、敏感性、作用域、是否需重启和适用模式。 | [配置](12-configuration.md) | RuntimeSettingsProvider；DesktopSystemSettingsStore；配置/设置测试 |

@@ -265,6 +265,7 @@ public sealed class ProxyLogService : IProxyLogService
         log.PricingModelInfoId = pricing.ModelInfoId;
         log.PricingPlanId = pricing.PricingPlanId;
         log.PricingSnapshotJson = pricing.SnapshotJson;
+        log.PricingPhase = PricingPhases.ForRequestLog(pricing.PhaseSource);
         log.Error = context.Error;
         log.LifecycleStatus = DetermineLifecycleStatus(context.StatusCode, context.Error);
         log.CompletedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
@@ -294,6 +295,7 @@ public sealed class ProxyLogService : IProxyLogService
             nameof(RequestLog.PricingModelInfoId),
             nameof(RequestLog.PricingPlanId),
             nameof(RequestLog.PricingSnapshotJson),
+            nameof(RequestLog.PricingPhase),
             nameof(RequestLog.Error),
             nameof(RequestLog.LifecycleStatus),
             nameof(RequestLog.CompletedAt),
@@ -403,7 +405,8 @@ public sealed class ProxyLogService : IProxyLogService
                 ownerUserId,
                 context.ApiKeyId,
                 context.Error,
-                context.OcrDetails is null ? null : SerializeForLog(context.OcrDetails)));
+                context.OcrDetails is null ? null : SerializeForLog(context.OcrDetails),
+                PricingPhases.ForRequestLog(pricing.PhaseSource)));
 
         PublishLogWritten(logId, ownerUsername, context.StatusCode, context.Error);
         return logId;
@@ -485,6 +488,7 @@ public sealed class ProxyLogService : IProxyLogService
             PricingModelInfoId = record.PricingModelInfoId,
             PricingPlanId = record.PricingPlanId,
             PricingSnapshotJson = record.PricingSnapshotJson,
+            PricingPhase = record.PricingPhase,
             OwnerUserId = record.OwnerUserId,
             ApiKeyId = record.ApiKeyId,
             Error = record.Error

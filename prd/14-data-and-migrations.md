@@ -183,8 +183,9 @@ SQLite 配置会从连接串中解析 `Data Source`、`DataSource` 或 `Filename
 | 12 | `20260910015400_ModelMatchPatternsArray` | `20260910015415_ModelMatchPatternsArray` | `ModelInfos`/`ChannelModelInfos` 增加 `MatchPatternsJson` |
 | 13 | `20260911073139_ChannelModelRequestKey` | `20260911073153_ChannelModelRequestKey` | `ChannelModelInfos` 增加 `RequestModel` 并按 `UpstreamModel` 回填，唯一键改为 `(ChannelId, RequestModel)` |
 | 14 | `20260913121301_WebSearchContinuationEntries` | `20260913121314_WebSearchContinuationEntries` | Web Search 数据库续传记录（`OwnerUserId` 外键级联） |
+| 15 | `20261010031058_RequestLogPricingPhase` | `20261010031104_RequestLogPricingPhase` | `RequestLogs` 增加可空 `PricingPhase`（最长 16，无索引、不回填，历史行保持 null） |
 
-两套目录当前各有 14 个 migration，且一一对应；`ModelCatalog`、`ChannelModelInfo`、`ContentAddressedLogs`、`DropChannelModelMappingDeadColumns` 等相同逻辑变更在两 provider 的时间戳不同，`InitialCreate`、`ChannelCircuitBreakDuration`、`ChannelGroupName`、`ProxySettings` 使用相同时间戳。
+两套目录当前各有 15 个 migration，且一一对应；`ModelCatalog`、`ChannelModelInfo`、`ContentAddressedLogs`、`DropChannelModelMappingDeadColumns` 等相同逻辑变更在两 provider 的时间戳不同，`InitialCreate`、`ChannelCircuitBreakDuration`、`ChannelGroupName`、`ProxySettings` 使用相同时间戳。
 
 ### 5.4 Pending model changes
 

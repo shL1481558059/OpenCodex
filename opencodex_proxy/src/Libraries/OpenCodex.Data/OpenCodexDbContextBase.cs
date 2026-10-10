@@ -266,6 +266,7 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         logs.ToTable("RequestLogs");
         logs.HasKey(log => log.Id);
         logs.Property(log => log.Id).ValueGeneratedOnAdd();
+        logs.Property(log => log.PricingPhase).HasMaxLength(16);
         logs.HasIndex(log => log.CreatedAt);
         logs.HasIndex(log => log.Model);
         logs.HasIndex(log => log.UpstreamModel);

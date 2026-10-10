@@ -69,7 +69,8 @@ public sealed class RequestLogWriteDto(
     Guid ownerUserId,
     Guid? apiKeyId,
     string? error,
-    string? ocrJson)
+    string? ocrJson,
+    string? pricingPhase = null)
 {
     /// <summary>
     /// 获取唯一请求标识符。
@@ -256,6 +257,11 @@ public sealed class RequestLogWriteDto(
     /// </summary>
     public string? OcrJson { get; } = ocrJson;
 
+    /// <summary>
+    /// 获取计费时段（peak / off_peak），未启用峰谷时为 null。
+    /// </summary>
+    public string? PricingPhase { get; } = pricingPhase;
+
 }
 
 /// <summary>
@@ -330,12 +336,18 @@ public sealed class RequestLogDto(
     string? previousResponseId = null,
     int attemptCount = 0,
     int failedAttemptCount = 0,
-    string? costCurrency = null)
+    string? costCurrency = null,
+    string? pricingPhase = null)
 {
     /// <summary>
     /// 获取请求日志的数据库标识符。
     /// </summary>
     public Guid Id { get; } = id;
+
+    /// <summary>
+    /// 获取计费时段（peak / off_peak），未启用峰谷时为 null。
+    /// </summary>
+    public string? PricingPhase { get; } = pricingPhase;
 
     /// <summary>
     /// 获取唯一请求标识符（如果可用）。
@@ -568,12 +580,18 @@ public sealed class RequestLogEventDto(
     string? previousResponseId = null,
     int attemptCount = 0,
     int failedAttemptCount = 0,
-    string? costCurrency = null)
+    string? costCurrency = null,
+    string? pricingPhase = null)
 {
     /// <summary>
     /// 获取请求日志的数据库标识符。
     /// </summary>
     public Guid Id { get; } = id;
+
+    /// <summary>
+    /// 获取计费时段（peak / off_peak），未启用峰谷时为 null。
+    /// </summary>
+    public string? PricingPhase { get; } = pricingPhase;
 
     /// <summary>
     /// 获取唯一请求标识符（如果可用）。

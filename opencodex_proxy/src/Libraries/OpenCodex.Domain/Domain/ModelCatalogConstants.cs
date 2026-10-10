@@ -49,6 +49,21 @@ public static class PricingPhases
     public const string Peak = "peak";
 
     public const string OffPeak = "off_peak";
+
+    /// <summary>
+    /// 请求日志 PricingPhase 列的取值：只有价格计划启用了峰谷才记录时段，
+    /// 未启用峰谷或未匹配价格返回 null，避免把普通模型标成峰价。
+    /// </summary>
+    public static string? ForRequestLog(string? phaseSource)
+    {
+        return phaseSource switch
+        {
+            PricingPhaseSources.WindowHit => OffPeak,
+            PricingPhaseSources.WindowMiss => Peak,
+            PricingPhaseSources.TimeZoneUnresolved => Peak,
+            _ => null
+        };
+    }
 }
 
 /// <summary>时段判定的来源，用于解释账单。</summary>

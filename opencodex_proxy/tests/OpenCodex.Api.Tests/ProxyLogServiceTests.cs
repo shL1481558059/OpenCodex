@@ -6,6 +6,7 @@ using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain;
+using OpenCodex.CoreBase.Domain.Models;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.Services;
 using OpenCodex.Data;
@@ -701,6 +702,134 @@ public sealed class ProxyLogServiceTests
                 .ToList();
             Assert.DoesNotContain((short)8, storedSlots);
         }
+    }
+
+    [Theory]
+    [InlineData(PricingPhaseSources.WindowHit, PricingPhases.OffPeak)]
+    [InlineData(PricingPhaseSources.WindowMiss, PricingPhases.Peak)]
+    [InlineData(PricingPhaseSources.TimeZoneUnresolved, PricingPhases.Peak)]
+    [InlineData(PricingPhaseSources.Disabled, null)]
+    [InlineData(null, null)]
+    [InlineData("", null)]
+    public void PricingPhaseForRequestLog_OnlyRecordsPlansWithPeakOffPeak(string? phaseSource, string? expected)
+    {
+        Assert.Equal(expected, PricingPhases.ForRequestLog(phaseSource));
+    }
+
+    // UTC 全天谷段必然命中；无法解析的时区必然按峰价；没有价格计划即未启用峰谷。
+    [Theory]
+    [InlineData("UTC", PricingPhases.OffPeak, false)]
+    [InlineData("UTC", PricingPhases.OffPeak, true)]
+    [InlineData("Not/AZone", PricingPhases.Peak, false)]
+    [InlineData("Not/AZone", PricingPhases.Peak, true)]
+    [InlineData(null, null, false)]
+    [InlineData(null, null, true)]
+    public async Task CompletedLog_PersistsPricingPhase(string? timeZoneId, string? expected, bool completeQueued)
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-proxy-log-tests", $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        using (var bootstrap = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            bootstrap.Database.Migrate();
+            if (timeZoneId is not null)
+            {
+                SeedPeakOffPeakModel(bootstrap, "phase-model", timeZoneId);
+            }
+        }
+
+        EnsureAdminUser(dbPath);
+        var service = CreateService(dbPath);
+        var logContext = new ProxyLogContext(
+            "req-phase", "admin", null, new Dictionary<string, object?>(), new Dictionary<string, object?>(),
+            new Dictionary<string, object?>
+            {
+                ["usage"] = new Dictionary<string, object?> { ["input_tokens"] = 1000, ["output_tokens"] = 10 }
+            },
+            new Dictionary<string, object?>(), null, "phase-model", "phase-model",
+            null, "responses", false, null, 200, 10, null, null);
+        var metadata = new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>());
+        if (completeQueued)
+        {
+            var id = service.CreateQueuedLog(new ProxyRequestLogQueuedContext(
+                "req-phase", "admin", null, new Dictionary<string, object?>(), "phase-model", false,
+                "POST", "/v1/responses", null, new Dictionary<string, string>()));
+            await service.CompleteLogAsync(id, logContext, metadata);
+        }
+        else
+        {
+            await service.WriteLogAsync(logContext, metadata);
+        }
+
+        using var db = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var log = db.RequestLogs.AsNoTracking().Single();
+        Assert.Equal(expected, log.PricingPhase);
+        Assert.NotNull(log.PricingSnapshotJson);
+    }
+
+    private static void SeedPeakOffPeakModel(IOpenCodexDbContext context, string modelKey, string timeZoneId)
+    {
+        var provider = new ModelProvider
+        {
+            Code = "phase-test",
+            Name = "Phase Test",
+            Enabled = true,
+            SortOrder = 1,
+            Source = "test",
+            CreatedAt = 1,
+            UpdatedAt = 1
+        };
+        context.ModelProviders.Add(provider);
+        context.SaveChanges();
+
+        var model = new ModelInfo
+        {
+            Scope = ModelInfoScopes.Global,
+            ProviderId = provider.Id,
+            ModelKey = modelKey,
+            DisplayName = modelKey,
+            Description = string.Empty,
+            MatchType = ModelMatchTypes.Exact,
+            MatchPattern = modelKey,
+            CatalogJson = "{}",
+            CapabilitiesJson = "{}",
+            Enabled = true,
+            Source = "test",
+            CreatedAt = 1,
+            UpdatedAt = 1
+        };
+        context.ModelInfos.Add(model);
+        context.SaveChanges();
+
+        var plan = new ModelPricingPlan
+        {
+            ModelInfoId = model.Id,
+            Currency = "USD",
+            TimeZoneId = timeZoneId,
+            OffPeakWindowsJson = PricingWindowCalendar.Serialize(
+            [
+                new PricingOffPeakWindow { Start = "00:00", End = "24:00", Days = [1, 2, 3, 4, 5, 6, 7] }
+            ]),
+            Enabled = true,
+            Source = "test",
+            CreatedAt = 1,
+            UpdatedAt = 1
+        };
+        context.ModelPricingPlans.Add(plan);
+        context.SaveChanges();
+
+        context.ModelPricingRules.Add(new ModelPricingRule
+        {
+            PricingPlanId = plan.Id,
+            BillingItem = ModelBillingItems.Input,
+            BillingMode = ModelBillingModes.PerMillionTokens,
+            UnitPrice = 1m,
+            TiersJson = "[]",
+            OffPeakEnabled = true,
+            OffPeakUnitPrice = 0.5m,
+            OffPeakTiersJson = "[]",
+            Enabled = true
+        });
+        context.SaveChanges();
     }
 
     private static ProxyLogService CreateService(string dbPath)

@@ -8,6 +8,7 @@ using OpenCodex.Core.Services;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain;
 using OpenCodex.CoreBase.Domain.Proxy;
+using OpenCodex.CoreBase.DTOs;
 using OpenCodex.CoreBase.DTOs.Observability;
 using OpenCodex.CoreBase.Services;
 using OpenCodex.CoreBase.Services.Proxy;
@@ -945,7 +946,8 @@ public sealed class ObservabilityServiceTests
                 Model = "gpt-a",
                 StatusCode = 200,
                 OwnerUserId = AdminUserId,
-                PricingSnapshotJson = new string('x', 4096)
+                PricingSnapshotJson = new string('x', 4096),
+                PricingPhase = PricingPhases.OffPeak
             });
             context.SaveChanges();
         }
@@ -956,13 +958,48 @@ public sealed class ObservabilityServiceTests
         interceptor.Reset();
 
         var logs = service.ReadLogsPage(1, 20, new Dictionary<string, object?>());
+        var detail = service.ReadLogById(logId);
 
         Assert.True(logs.Succeeded);
         var log = Assert.Single(logs.Payload!.Events);
         Assert.Equal(logId, log.Id);
+        Assert.Equal(PricingPhases.OffPeak, log.PricingPhase);
+        Assert.True(detail.Succeeded);
+        Assert.Equal(PricingPhases.OffPeak, detail.Payload!.PricingPhase);
+        Assert.Contains(
+            interceptor.Commands,
+            command => command.Contains("\"PricingPhase\"", StringComparison.Ordinal));
         Assert.DoesNotContain(
             interceptor.Commands,
             command => command.Contains("PricingSnapshotJson", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void LogResponses_SerializePricingPhaseAsNullableSnakeCase()
+    {
+        var withPhase = LogEventResponse.From(LogEvent(PricingPhases.Peak));
+        var withoutPhase = LogEventResponse.From(LogEvent(null));
+        var detail = LogDetailResponse.From(new RequestLogDto(
+            Guid.NewGuid(), "req", 1, null, null, "POST", "/v1/responses", null, "m", "m", null,
+            ProxyRequestTypes.Main, null, false, null, null, 200, 0, 0, 0, 0, "admin", null, null,
+            null, null, null, null, null, null, null, ProxyRequestLifecycleStatus.Success,
+            pricingPhase: PricingPhases.OffPeak));
+
+        using var peakJson = JsonDocument.Parse(JsonSerializer.Serialize(withPhase));
+        using var nullJson = JsonDocument.Parse(JsonSerializer.Serialize(withoutPhase));
+        using var detailJson = JsonDocument.Parse(JsonSerializer.Serialize(detail));
+        Assert.Equal("peak", peakJson.RootElement.GetProperty("pricing_phase").GetString());
+        Assert.Equal(JsonValueKind.Null, nullJson.RootElement.GetProperty("pricing_phase").ValueKind);
+        Assert.Equal("off_peak", detailJson.RootElement.GetProperty("pricing_phase").GetString());
+    }
+
+    private static RequestLogEventDto LogEvent(string? pricingPhase)
+    {
+        return new RequestLogEventDto(
+            Guid.NewGuid(), "req", 1, null, null, "POST", "/v1/responses", null, "m", "m", null,
+            ProxyRequestTypes.Main, null, false, null, null, 200, 0, 0, 0, 0, "admin", null, null,
+            ProxyRequestLifecycleStatus.Success,
+            pricingPhase: pricingPhase);
     }
 
     [Fact]
