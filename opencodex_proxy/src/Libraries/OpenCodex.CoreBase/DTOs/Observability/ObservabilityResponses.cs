@@ -168,7 +168,8 @@ public sealed class LogEventResponse
         string? conversationWindowId,
         string? previousResponseId,
         string? costCurrency = null,
-        string? pricingPhase = null)
+        string? pricingPhase = null,
+        string? upstreamResponseModel = null)
     {
         Id = id;
         RequestId = requestId;
@@ -206,6 +207,7 @@ public sealed class LogEventResponse
         ConversationWindowId = conversationWindowId;
         PreviousResponseId = previousResponseId;
         PricingPhase = pricingPhase;
+        UpstreamResponseModel = upstreamResponseModel;
     }
 
     /// <summary>
@@ -267,6 +269,12 @@ public sealed class LogEventResponse
     /// </summary>
     [JsonPropertyName("upstream_model")]
     public string? UpstreamModel { get; }
+
+    /// <summary>
+    /// 获取上游响应体中的模型 id；缺失时为 null。
+    /// </summary>
+    [JsonPropertyName("upstream_response_model")]
+    public string? UpstreamResponseModel { get; }
 
     /// <summary>
     /// 获取通道标识。
@@ -458,7 +466,8 @@ public sealed class LogEventResponse
             log.ConversationWindowId,
             log.PreviousResponseId,
             log.CostCurrency,
-            log.PricingPhase);
+            log.PricingPhase,
+            log.UpstreamResponseModel);
     }
 
     private static string ResolveDisplayRequestStatus(
@@ -586,7 +595,8 @@ public sealed class LogDetailResponse
         int attemptCount,
         int failedAttemptCount,
         string? costCurrency = null,
-        string? pricingPhase = null)
+        string? pricingPhase = null,
+        string? upstreamResponseModel = null)
     {
         Id = id;
         RequestId = requestId;
@@ -631,6 +641,7 @@ public sealed class LogDetailResponse
         AttemptCount = attemptCount;
         FailedAttemptCount = failedAttemptCount;
         PricingPhase = pricingPhase;
+        UpstreamResponseModel = upstreamResponseModel;
     }
 
     /// <summary>
@@ -692,6 +703,12 @@ public sealed class LogDetailResponse
     /// </summary>
     [JsonPropertyName("upstream_model")]
     public string? UpstreamModel { get; }
+
+    /// <summary>
+    /// 获取上游响应体中的模型 id；缺失时为 null。
+    /// </summary>
+    [JsonPropertyName("upstream_response_model")]
+    public string? UpstreamResponseModel { get; }
 
     /// <summary>
     /// 获取通道标识。
@@ -913,7 +930,8 @@ public sealed class LogDetailResponse
             log.AttemptCount,
             log.FailedAttemptCount,
             log.CostCurrency,
-            log.PricingPhase), apiKeyNames, channelNames);
+            log.PricingPhase,
+            log.UpstreamResponseModel), apiKeyNames, channelNames);
 
         return new LogDetailResponse(
             logEvent.Id,
@@ -958,7 +976,8 @@ public sealed class LogDetailResponse
             logEvent.AttemptCount,
             logEvent.FailedAttemptCount,
             logEvent.CostCurrency,
-            logEvent.PricingPhase);
+            logEvent.PricingPhase,
+            logEvent.UpstreamResponseModel);
     }
 }
 

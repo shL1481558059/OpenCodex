@@ -734,6 +734,9 @@ namespace OpenCodex.Data.Migrations.PostgresMigrations
                     b.Property<string>("UpstreamModel")
                         .HasColumnType("text");
 
+                    b.Property<string>("UpstreamResponseModel")
+                        .HasColumnType("text");
+
                     b.HasKey("Id");
 
                     b.HasIndex("ApiKeyId");

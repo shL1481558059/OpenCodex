@@ -449,6 +449,10 @@
                 <span class="log-cell-stack__label">上游:</span>
                 <span class="log-cell-stack__value">{{ row.upstream_model || "-" }}</span>
               </div>
+              <div class="log-cell-stack__line">
+                <span class="log-cell-stack__label">响应:</span>
+                <span class="log-cell-stack__value">{{ row.upstream_response_model || "—" }}</span>
+              </div>
             </div>
             <div v-else-if="column.key === 'latency'" class="log-cell-stack">
               <div class="log-cell-stack__line">
@@ -515,10 +519,16 @@
           </header>
 
           <div class="log-mobile-card__model">
-            <strong>{{ row.model || "-" }}</strong>
-            <span v-if="row.upstream_model && row.upstream_model !== row.model">
-              → {{ row.upstream_model }}
-            </span>
+            <div>
+              <strong>{{ row.model || "-" }}</strong>
+              <span v-if="row.upstream_model && row.upstream_model !== row.model">
+                → {{ row.upstream_model }}
+              </span>
+            </div>
+            <div class="log-cell-stack__line">
+              <span class="log-cell-stack__label">响应:</span>
+              <span class="log-cell-stack__value">{{ row.upstream_response_model || "—" }}</span>
+            </div>
           </div>
 
           <dl class="log-mobile-card__grid">
@@ -638,6 +648,7 @@
             <el-descriptions-item label="上一响应">{{ selectedLog.previous_response_id || "-" }}</el-descriptions-item>
             <el-descriptions-item label="模型">{{ selectedLog.model }}</el-descriptions-item>
             <el-descriptions-item label="上游模型">{{ selectedLog.upstream_model }}</el-descriptions-item>
+            <el-descriptions-item label="上游响应模型">{{ selectedLog.upstream_response_model || "—" }}</el-descriptions-item>
             <el-descriptions-item label="渠道">{{ formatChannelName(selectedLog) || "-" }}</el-descriptions-item>
             <el-descriptions-item label="状态码">{{ selectedLog.status_code }}</el-descriptions-item>
             <el-descriptions-item v-if="selectedLog.request_type === 'main' && (selectedLog.attempt_count || 0) > 0" label="渠道尝试">
@@ -940,7 +951,7 @@ const logColumnDefinitions = [
   { key: "request_status", prop: "request_status", label: "状态", width: 100 },
   { key: "owner_username", prop: "owner_username", label: "用户", width: 120, showOverflowTooltip: true },
   { key: "api_key_id", prop: "api_key_id", label: "Key 名称", width: 140, showOverflowTooltip: true },
-  { key: "model", prop: "model", label: "模型", minWidth: 190 },
+  { key: "model", prop: "model", label: "模型", minWidth: 260 },
   { key: "channel_id", prop: "channel_id", label: "渠道", minWidth: 130, showOverflowTooltip: true },
   { key: "status_code", prop: "status_code", label: "状态码", width: 90 },
   { key: "latency", label: "耗时 / TTFT", width: 150 },
@@ -1815,6 +1826,8 @@ onBeforeUnmount(() => {
 }
 
 .log-mobile-card__model {
+  flex-direction: column;
+  align-items: flex-start;
   justify-content: flex-start;
   margin-top: 12px;
   padding-bottom: 12px;

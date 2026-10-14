@@ -191,6 +191,25 @@ public sealed class ChatStreamResponseAccumulatorTests
     }
 
     [Fact]
+    public void WrappedChunkUsesDataModel()
+    {
+        var accumulator = CreateAccumulator();
+        accumulator.Accept(Event(Object(
+            ("success", true),
+            ("model", "alias-model"),
+            ("data", Object(
+                ("object", "chat.completion.chunk"),
+                ("id", "chatcmpl-wrapped"),
+                ("model", "deepseek/deepseek-v4.1-flash"),
+                ("choices", new List<object?>()))))));
+        accumulator.Accept(new SseEvent("message", "[DONE]"));
+
+        var response = Assert.IsType<Dictionary<string, object?>>(accumulator.BuildResponse());
+
+        Assert.Equal("deepseek/deepseek-v4.1-flash", response["model"]);
+    }
+
+    [Fact]
     public void EnforcesConfiguredCollectionLimitForLogCapture()
     {
         var budget = new StreamCaptureBudget(4096, maxCollectionItems: 1);

@@ -114,7 +114,8 @@ stateDiagram-v2
 | created_at | 时间筛选和排序 | 按用户时区展示 |
 | method/path | 入口定位 | 路径可筛选 |
 | client_ip | 网络排障 | 超级管理员/受控权限；`TBD` 是否默认展示 |
-| model/upstream_model | 模型映射排障 | 用户范围隔离 |
+| model/upstream_model | 模型映射排障 | 用户范围隔离。列表模型列展示「入站」「上游」 |
+| upstream_response_model | 上游实际返回的模型 id | 可空。读 `RequestLogs.UpstreamResponseModel`，不覆盖 `UpstreamModel`，不解析 `upstream_response_body`。空值和迁移前历史行在列表显示「响应 —」，详情显示「上游响应模型 —」 |
 | channel | 渠道排障 | 用户只能看自己的 |
 | owner_username | 全局运营筛选 | 仅超级管理员 |
 | api_key | Key 名称 | 返回 `api_key_name`（名称不是秘密）；`request_type=diagnostic` 固定显示“连接测试” |
@@ -157,6 +158,7 @@ TPS 是前端按日志字段计算的派生值，不落库：端到端输出速�
 | PricingPlanId | 使用的价格计划 |
 | PricingSnapshotJson | 完成时价格规则快照 |
 | PricingPhase | 计费时段 `peak`/`off_peak`，可空；价格计划未启用峰谷、未匹配价格或迁移前的历史行为 null |
+| UpstreamResponseModel | 上游响应体中的模型 id，可空、无索引、不回填。优先取 Cline 外壳的 `data.model`，否则顶层 `model`，再否则 `response.model` / `message.model` |
 
 `PricingPhase` 由完成时的 `phase_source` 推出，不解析快照：`window_hit` 写 `off_peak`，`window_miss` 与 `time_zone_unresolved` 写 `peak`，`disabled`（含未匹配价格的零成本快照）写 null。它只表示请求级窗口判定；谷段里未开启谷价的计费项仍按峰价，逐项结果仍以快照 `rules[].applied_phase` 为准。迁移 `RequestLogPricingPhase` 不回填历史行。
 
@@ -256,7 +258,7 @@ flowchart LR
 详情至少展示：
 
 - 请求状态、类型、父日志和关联子日志；
-- 请求、上游模型和渠道；
+- 请求模型、发给上游的模型、上游响应模型（`upstream_response_model`）和渠道；
 - 状态码、耗时、TTFT、Token、成本；
 - 创建、开始处理、完成时间；
 - 错误摘要；
@@ -266,6 +268,8 @@ flowchart LR
 - 复制和关联日志跳转。
 
 列表与详情都返回可空的 `pricing_phase`（读 `RequestLogs.PricingPhase` 列），但都不返回 `PricingSnapshotJson` 或 `phase_source`。`Logs.vue` 在成本列（桌面表格与移动端卡片）用与“流/非流”相同的小胶囊标出“谷”（`off_peak`，success）或“峰”（`peak`，warning），null 不显示；详情在“成本”旁展示“计费时段”，null 显示“—”。
+
+列表与详情同样返回可空的 `upstream_response_model`。桌面模型列和移动卡片在「入站」「上游」下增加「响应」，与上游模型相同也显示，空值显示「—」；详情字段为「上游响应模型」。投影只读该列，不加载上游响应正文。
 
 详情读取在服务端一次性重组全部槽位（含 Brotli 解压）并在前端一次性渲染，没有分页或懒加载；超大正文会整块解压、整块渲染。
 

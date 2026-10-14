@@ -308,7 +308,7 @@ erDiagram
 | 标识 | `Id`、`RequestId` | 数据库 ID 与调用链 ID |
 | 时间 | `CreatedAt`、`ProcessingStartedAt`、`CompletedAt` | 请求生命周期 |
 | HTTP | `Method`、`Path`、`ClientIp` | 入口信息 |
-| 模型 | `Model`、`UpstreamModel` | 请求/上游模型 |
+| 模型 | `Model`、`UpstreamModel`、`UpstreamResponseModel` | 请求模型、发给上游的模型、上游响应体中的模型 id（后者可空，不覆盖前者） |
 | 渠道 | `ChannelId` | 命中渠道 |
 | 类型 | `RequestType` | `main`、`attempt`、`ocr`、`diagnostic` |
 | 父子 | `ParentRequestLogId` | 主请求与子请求关联 |

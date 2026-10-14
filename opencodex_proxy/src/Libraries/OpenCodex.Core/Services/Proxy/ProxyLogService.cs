@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using OpenCodex.Core.Domain;
+using OpenCodex.Core.Protocols;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.CoreBase.Domain.Models;
@@ -248,6 +249,7 @@ public sealed class ProxyLogService : IProxyLogService
         log.ApiKeyId = context.ApiKeyId;
         log.Model = context.RequestModel ?? log.Model;
         log.UpstreamModel = context.UpstreamModel;
+        log.UpstreamResponseModel = UpstreamResponseModelReader.Read(context.UpstreamResponse);
         log.ChannelId = channelId;
         log.RequestType = context.RequestType;
         log.ParentRequestLogId = context.ParentRequestLogId;
@@ -278,6 +280,7 @@ public sealed class ProxyLogService : IProxyLogService
             nameof(RequestLog.ApiKeyId),
             nameof(RequestLog.Model),
             nameof(RequestLog.UpstreamModel),
+            nameof(RequestLog.UpstreamResponseModel),
             nameof(RequestLog.ChannelId),
             nameof(RequestLog.RequestType),
             nameof(RequestLog.ParentRequestLogId),
@@ -406,7 +409,8 @@ public sealed class ProxyLogService : IProxyLogService
                 context.ApiKeyId,
                 context.Error,
                 context.OcrDetails is null ? null : SerializeForLog(context.OcrDetails),
-                PricingPhases.ForRequestLog(pricing.PhaseSource)));
+                PricingPhases.ForRequestLog(pricing.PhaseSource),
+                UpstreamResponseModelReader.Read(context.UpstreamResponse)));
 
         PublishLogWritten(logId, ownerUsername, context.StatusCode, context.Error);
         return logId;
@@ -489,6 +493,7 @@ public sealed class ProxyLogService : IProxyLogService
             PricingPlanId = record.PricingPlanId,
             PricingSnapshotJson = record.PricingSnapshotJson,
             PricingPhase = record.PricingPhase,
+            UpstreamResponseModel = record.UpstreamResponseModel,
             OwnerUserId = record.OwnerUserId,
             ApiKeyId = record.ApiKeyId,
             Error = record.Error

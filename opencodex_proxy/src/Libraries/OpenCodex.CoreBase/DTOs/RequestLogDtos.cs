@@ -70,7 +70,8 @@ public sealed class RequestLogWriteDto(
     Guid? apiKeyId,
     string? error,
     string? ocrJson,
-    string? pricingPhase = null)
+    string? pricingPhase = null,
+    string? upstreamResponseModel = null)
 {
     /// <summary>
     /// 获取唯一请求标识符。
@@ -262,6 +263,11 @@ public sealed class RequestLogWriteDto(
     /// </summary>
     public string? PricingPhase { get; } = pricingPhase;
 
+    /// <summary>
+    /// 获取上游响应体中的模型 id；缺失时为 null。不覆盖上游请求模型。
+    /// </summary>
+    public string? UpstreamResponseModel { get; } = upstreamResponseModel;
+
 }
 
 /// <summary>
@@ -337,7 +343,8 @@ public sealed class RequestLogDto(
     int attemptCount = 0,
     int failedAttemptCount = 0,
     string? costCurrency = null,
-    string? pricingPhase = null)
+    string? pricingPhase = null,
+    string? upstreamResponseModel = null)
 {
     /// <summary>
     /// 获取请求日志的数据库标识符。
@@ -348,6 +355,11 @@ public sealed class RequestLogDto(
     /// 获取计费时段（peak / off_peak），未启用峰谷时为 null。
     /// </summary>
     public string? PricingPhase { get; } = pricingPhase;
+
+    /// <summary>
+    /// 获取上游响应体中的模型 id；缺失时为 null。
+    /// </summary>
+    public string? UpstreamResponseModel { get; } = upstreamResponseModel;
 
     /// <summary>
     /// 获取唯一请求标识符（如果可用）。
@@ -581,7 +593,8 @@ public sealed class RequestLogEventDto(
     int attemptCount = 0,
     int failedAttemptCount = 0,
     string? costCurrency = null,
-    string? pricingPhase = null)
+    string? pricingPhase = null,
+    string? upstreamResponseModel = null)
 {
     /// <summary>
     /// 获取请求日志的数据库标识符。
@@ -592,6 +605,11 @@ public sealed class RequestLogEventDto(
     /// 获取计费时段（peak / off_peak），未启用峰谷时为 null。
     /// </summary>
     public string? PricingPhase { get; } = pricingPhase;
+
+    /// <summary>
+    /// 获取上游响应体中的模型 id；缺失时为 null。
+    /// </summary>
+    public string? UpstreamResponseModel { get; } = upstreamResponseModel;
 
     /// <summary>
     /// 获取唯一请求标识符（如果可用）。

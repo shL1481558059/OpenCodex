@@ -814,6 +814,61 @@ public sealed class ProxyLogServiceTests
         Assert.NotNull(log.PricingSnapshotJson);
     }
 
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    public async Task CompletedLog_PersistsUpstreamResponseModelWithoutOverwritingUpstreamModel(
+        bool hasResponseModel,
+        bool completeQueued)
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-proxy-log-tests", $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        using (var bootstrap = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            bootstrap.Database.Migrate();
+        }
+
+        EnsureAdminUser(dbPath);
+        var service = CreateService(dbPath);
+        var upstreamResponse = hasResponseModel
+            ? new Dictionary<string, object?>
+            {
+                ["success"] = true,
+                ["data"] = new Dictionary<string, object?>
+                {
+                    ["object"] = "chat.completion",
+                    ["model"] = "deepseek/deepseek-v4.1-flash",
+                    ["choices"] = new List<object?>()
+                }
+            }
+            : new Dictionary<string, object?>();
+        var logContext = new ProxyLogContext(
+            "req-response-model", "admin", null, new Dictionary<string, object?>(), new Dictionary<string, object?>(),
+            upstreamResponse, new Dictionary<string, object?>(), null,
+            "deepseek-v4.1-flash", "cline-pass/deepseek-v4.1-flash",
+            null, "chat", false, null, 200, 10, null, null);
+        var metadata = new ProxyRequestMetadata("POST", "/v1/chat/completions", null, new Dictionary<string, string>());
+        if (completeQueued)
+        {
+            var id = service.CreateQueuedLog(new ProxyRequestLogQueuedContext(
+                "req-response-model", "admin", null, new Dictionary<string, object?>(), "deepseek-v4.1-flash", false,
+                "POST", "/v1/chat/completions", null, new Dictionary<string, string>()));
+            await service.CompleteLogAsync(id, logContext, metadata);
+        }
+        else
+        {
+            await service.WriteLogAsync(logContext, metadata);
+        }
+
+        using var db = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var log = db.RequestLogs.AsNoTracking().Single();
+        Assert.Equal("deepseek-v4.1-flash", log.Model);
+        Assert.Equal("cline-pass/deepseek-v4.1-flash", log.UpstreamModel);
+        Assert.Equal(hasResponseModel ? "deepseek/deepseek-v4.1-flash" : null, log.UpstreamResponseModel);
+    }
+
     private static void SeedPeakOffPeakModel(IOpenCodexDbContext context, string modelKey, string timeZoneId)
     {
         var provider = new ModelProvider

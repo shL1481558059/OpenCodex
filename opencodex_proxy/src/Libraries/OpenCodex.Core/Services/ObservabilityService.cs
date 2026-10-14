@@ -433,6 +433,7 @@ public sealed class ObservabilityService : IObservabilityService
                 ClientIp = log.ClientIp,
                 Model = log.Model,
                 UpstreamModel = log.UpstreamModel,
+                UpstreamResponseModel = log.UpstreamResponseModel,
                 ChannelId = log.ChannelId,
                 RequestType = log.RequestType,
                 ParentRequestLogId = log.ParentRequestLogId,
@@ -503,6 +504,7 @@ public sealed class ObservabilityService : IObservabilityService
                 ClientIp = item.ClientIp,
                 Model = item.Model,
                 UpstreamModel = item.UpstreamModel,
+                UpstreamResponseModel = item.UpstreamResponseModel,
                 ChannelId = item.ChannelId,
                 RequestType = item.RequestType,
                 ParentRequestLogId = item.ParentRequestLogId,
@@ -1466,7 +1468,8 @@ public sealed class ObservabilityService : IObservabilityService
             attemptCount,
             failedAttemptCount,
             log.CostCurrency,
-            log.PricingPhase);
+            log.PricingPhase,
+            log.UpstreamResponseModel);
     }
 
     private Dictionary<Guid, (int AttemptCount, int FailedAttemptCount)> BuildAttemptStats(
@@ -1542,7 +1545,8 @@ public sealed class ObservabilityService : IObservabilityService
             attemptStats.AttemptCount,
             attemptStats.FailedAttemptCount,
             log.CostCurrency,
-            log.PricingPhase);
+            log.PricingPhase,
+            log.UpstreamResponseModel);
     }
 
     private static string NormalizeRequestStatus(string? lifecycleStatus, int? statusCode, string? error)
@@ -1754,6 +1758,8 @@ public sealed class ObservabilityService : IObservabilityService
         public string? Model { get; set; }
 
         public string? UpstreamModel { get; set; }
+
+        public string? UpstreamResponseModel { get; set; }
 
         public Guid? ChannelId { get; set; }
 

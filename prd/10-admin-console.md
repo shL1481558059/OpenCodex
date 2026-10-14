@@ -690,7 +690,7 @@ status, errorCode, message, requestId, retryAfter, details, isNetworkError, isAb
 
 ### 16.5 当前详情
 
-- 基础：request ID、状态、类型、父日志、会话关联字段、模型、上游模型、渠道、状态码、尝试数、成本和时间；
+- 基础：request ID、状态、类型、父日志、会话关联字段、模型、上游模型、上游响应模型、渠道、状态码、尝试数、成本和时间；
 - 关联跳转：OCR子日志、渠道尝试、主请求；
 - 错误信息；
 - SSE：细粒度逐行持久化已移除，详情不再提供逐行 SSE 面板；失败时仅保留最后一行 data 与终止原因（`RequestLog.Error`，上限 2000 字符）；

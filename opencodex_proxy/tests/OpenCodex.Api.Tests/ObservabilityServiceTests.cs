@@ -1070,7 +1070,8 @@ public sealed class ObservabilityServiceTests
                 StatusCode = 200,
                 OwnerUserId = AdminUserId,
                 PricingSnapshotJson = new string('x', 4096),
-                PricingPhase = PricingPhases.OffPeak
+                PricingPhase = PricingPhases.OffPeak,
+                UpstreamResponseModel = "deepseek/deepseek-v4.1-flash"
             });
             context.SaveChanges();
         }
@@ -1087,11 +1088,14 @@ public sealed class ObservabilityServiceTests
         var log = Assert.Single(logs.Payload!.Events);
         Assert.Equal(logId, log.Id);
         Assert.Equal(PricingPhases.OffPeak, log.PricingPhase);
+        Assert.Equal("deepseek/deepseek-v4.1-flash", log.UpstreamResponseModel);
         Assert.True(detail.Succeeded);
         Assert.Equal(PricingPhases.OffPeak, detail.Payload!.PricingPhase);
+        Assert.Equal("deepseek/deepseek-v4.1-flash", detail.Payload.UpstreamResponseModel);
         Assert.Contains(
             interceptor.Commands,
-            command => command.Contains("\"PricingPhase\"", StringComparison.Ordinal));
+            command => command.Contains("\"PricingPhase\"", StringComparison.Ordinal)
+                && command.Contains("\"UpstreamResponseModel\"", StringComparison.Ordinal));
         Assert.DoesNotContain(
             interceptor.Commands,
             command => command.Contains("PricingSnapshotJson", StringComparison.OrdinalIgnoreCase));
@@ -1100,13 +1104,14 @@ public sealed class ObservabilityServiceTests
     [Fact]
     public void LogResponses_SerializePricingPhaseAsNullableSnakeCase()
     {
-        var withPhase = LogEventResponse.From(LogEvent(PricingPhases.Peak));
-        var withoutPhase = LogEventResponse.From(LogEvent(null));
+        var withPhase = LogEventResponse.From(LogEvent(PricingPhases.Peak, "deepseek/deepseek-v4.1-flash"));
+        var withoutPhase = LogEventResponse.From(LogEvent(null, null));
         var detail = LogDetailResponse.From(new RequestLogDto(
             Guid.NewGuid(), "req", 1, null, null, "POST", "/v1/responses", null, "m", "m", null,
             ProxyRequestTypes.Main, null, false, null, null, 200, 0, 0, 0, 0, "admin", null, null,
             null, null, null, null, null, null, null, ProxyRequestLifecycleStatus.Success,
-            pricingPhase: PricingPhases.OffPeak));
+            pricingPhase: PricingPhases.OffPeak,
+            upstreamResponseModel: "resp-model"));
 
         using var peakJson = JsonDocument.Parse(JsonSerializer.Serialize(withPhase));
         using var nullJson = JsonDocument.Parse(JsonSerializer.Serialize(withoutPhase));
@@ -1114,15 +1119,19 @@ public sealed class ObservabilityServiceTests
         Assert.Equal("peak", peakJson.RootElement.GetProperty("pricing_phase").GetString());
         Assert.Equal(JsonValueKind.Null, nullJson.RootElement.GetProperty("pricing_phase").ValueKind);
         Assert.Equal("off_peak", detailJson.RootElement.GetProperty("pricing_phase").GetString());
+        Assert.Equal("deepseek/deepseek-v4.1-flash", peakJson.RootElement.GetProperty("upstream_response_model").GetString());
+        Assert.Equal(JsonValueKind.Null, nullJson.RootElement.GetProperty("upstream_response_model").ValueKind);
+        Assert.Equal("resp-model", detailJson.RootElement.GetProperty("upstream_response_model").GetString());
     }
 
-    private static RequestLogEventDto LogEvent(string? pricingPhase)
+    private static RequestLogEventDto LogEvent(string? pricingPhase, string? upstreamResponseModel = null)
     {
         return new RequestLogEventDto(
             Guid.NewGuid(), "req", 1, null, null, "POST", "/v1/responses", null, "m", "m", null,
             ProxyRequestTypes.Main, null, false, null, null, 200, 0, 0, 0, 0, "admin", null, null,
             ProxyRequestLifecycleStatus.Success,
-            pricingPhase: pricingPhase);
+            pricingPhase: pricingPhase,
+            upstreamResponseModel: upstreamResponseModel);
     }
 
     [Fact]

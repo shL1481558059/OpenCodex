@@ -729,6 +729,9 @@ namespace OpenCodex.Data.Migrations.SqliteMigrations
                     b.Property<string>("UpstreamModel")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("UpstreamResponseModel")
+                        .HasColumnType("TEXT");
+
                     b.HasKey("Id");
 
                     b.HasIndex("ApiKeyId");

@@ -132,7 +132,7 @@ internal sealed class ChatStreamResponseAccumulator : IStreamResponseAccumulator
     private void CaptureEnvelope(IReadOnlyDictionary<string, object?> payload)
     {
         _id ??= CaptureIdentifier(StreamCaptureValues.String(payload, "id"));
-        _model ??= CaptureIdentifier(StreamCaptureValues.String(payload, "model"));
+        _model ??= CaptureIdentifier(UpstreamResponseModelReader.Read(payload));
         _systemFingerprint ??= CaptureIdentifier(StreamCaptureValues.String(payload, "system_fingerprint"));
         _serviceTier ??= CaptureIdentifier(StreamCaptureValues.String(payload, "service_tier"));
         if (_created is null && payload.TryGetValue("created", out var created))

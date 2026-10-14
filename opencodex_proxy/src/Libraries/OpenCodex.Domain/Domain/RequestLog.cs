@@ -20,6 +20,11 @@ public sealed class RequestLog : BaseEntity<Guid>
 
     public string? UpstreamModel { get; set; }
 
+    /// <summary>
+    /// 上游响应体中的模型 id。缺失、无法识别或迁移前的历史行为 null。不覆盖 <see cref="UpstreamModel"/>。
+    /// </summary>
+    public string? UpstreamResponseModel { get; set; }
+
     public Guid? ChannelId { get; set; }
 
     public string RequestType { get; set; } = "main";
