@@ -197,17 +197,18 @@ flowchart TD
 
 ### 4.6 Compat 改写顺序
 
-在协议转换前按固定顺序执行：
+除 `force_params` 外，以下字段在协议转换前按固定顺序执行：
 
 1. `default_params`：仅在参数不存在时补值。
 2. `rename_params`：源字段存在时重命名；目标已存在则保留目标。
 3. `drop_params`：删除字段。
-4. `force_params`：强制覆盖字段。
-5. `drop_tool_types`：同步删除工具、相关 `tool_choice` 和 `include`。
-6. `unsupported_params`：若请求仍含这些字段，抛本地 400。
-7. `preserve_thinking_history`：写入内部标记，供 Messages 生成逻辑使用。
+4. `drop_tool_types`：同步删除工具、相关 `tool_choice` 和 `include`。
+5. `unsupported_params`：若请求仍含这些字段，抛本地 400。
+6. `preserve_thinking_history`：写入内部标记，供 Messages 生成逻辑使用。
 
 `WebSearchRequestPolicy.ApplyMode`（`disabled` 清理等）在 Compat 之前执行；`simulate` 的内置工具登记 `WebSearchRequestPolicy.RegisterBuiltin` 在 Compat 之后、`ProtocolConverter.ConvertRequest` 之前执行，转换完成后再由 `WebSearchRequestPolicy.FinalizeUpstreamRequest` 校验绑定仍在工具列表中。
+
+`force_params` 在 `ProtocolConverter.ConvertRequest` 返回后、`WebSearchRequestPolicy.FinalizeUpstreamRequest` 之前执行一次，直接写入目标协议请求体，随后把 `model` 恢复为渠道的 `upstream_model`。因此它不参与协议字段映射：需要在转换中映射的字段（如 `reasoning` → `reasoning_effort`）应配置在 `default_params`；同时 `unsupported_params` 与 `drop_tool_types` 均不会再拦截 `force_params` 注入的字段。
 
 ### 4.7 请求字段与内容映射
 

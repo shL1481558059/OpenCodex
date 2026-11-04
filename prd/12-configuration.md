@@ -264,8 +264,8 @@ sequenceDiagram
 | `rename_params` | object | `{}` | 参数重命名 |
 | `drop_params` | list | `[]` | 删除参数 |
 | `drop_tool_types` | list | `[]` | 删除指定工具类型 |
-| `force_params` | object | `{}` | 强制覆盖参数 |
-| `default_params` | object | `{}` | 缺省参数 |
+| `force_params` | object | `{}` | 协议转换后原样写入目标请求体 |
+| `default_params` | object | `{}` | 协议转换前补齐缺省参数 |
 | `unsupported_params` | list | `[]` | 命中时显式拒绝的参数 |
 | `images_api_dialect` | string | 无 | 仅 images 渠道允许，值为 `openai` 或 `xai` |
 | `multi_agent_v2_mode` | string | 无（未设置） | 仅允许 `passthrough`、`downgrade`、`reject`；未设置时按入口/上游类型自动判定（入口与上游同为 responses 时透传，chat/messages 降级，其余拒绝） |

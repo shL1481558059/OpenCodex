@@ -309,12 +309,12 @@
 
 | 字段 | 类型 | 当前作用 | 备注 |
 |---|---|---|---|
-| `default_params` | 对象 | 参数不存在时补默认值 | 先执行 |
+| `default_params` | 对象 | 参数不存在时补默认值 | 协议转换前执行，参与字段映射 |
 | `rename_params` | 对象 | 将源参数重命名到目标参数 | 目标已存在时保留目标值 |
 | `drop_params` | 数组 | 删除指定顶层参数 | 在 force 之前执行 |
-| `force_params` | 对象 | 无条件覆盖指定参数 | 高风险，应在 UI 明示 |
+| `force_params` | 对象 | 协议转换后无条件覆盖指定参数 | 原样写入目标协议，高风险，应在 UI 明示 |
 | `drop_tool_types` | 数组 | 删除对应工具、tool_choice、include 项 | 例如删除图片生成工具 |
-| `unsupported_params` | 数组 | 请求出现对应参数时返回本地 400 | 不调用上游 |
+| `unsupported_params` | 数组 | 请求出现对应参数时返回本地 400 | 不调用上游；不覆盖 `force_params` 注入的字段 |
 | `preserve_thinking_history` | 布尔 | 管理台对 chat/messages 开放：chat 回传 `assistant.reasoning_content`；messages 恢复 Anthropic thinking blocks，缺签名时降级为文本块 | 后端校验器接受布尔值；其他渠道类型未在 UI 开放 |
 | `enable_apply_patch_prompt_compat` | 布尔 | 对 `apply_patch` 工具说明进行兼容改写 | 管理台对 chat/messages 开放，协议转换专用 |
 | `multi_agent_v2_mode` | 枚举 | `passthrough/downgrade/reject`；空值表示自动策略 | 非 Images 渠道可选；校验器拒绝其他值 |

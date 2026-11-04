@@ -125,6 +125,226 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
+    public async Task ResponsesProxy_ForceParams_ArePreservedAfterChatConversion()
+    {
+        using var factory = new ProxyCompatibilityApiFactory(ChatTextResponse("done"));
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = false
+        });
+        var cookie = await LoginAndReadSessionCookie(client);
+        var config = await SendJsonWithCookie(
+            client,
+            HttpMethod.Post,
+            "/channels",
+            cookie,
+            new
+            {
+                id = "chat",
+                name = "Chat",
+                type = "chat",
+                baseurl = "https://example.test/v1",
+                apikey = "secret",
+                auth_mode = "config",
+                timeout_seconds = 30,
+                retry_count = 0,
+                capacity = 3,
+                enabled = true,
+                models = new[]
+                {
+                    new { model = "public-model", upstream_model = "upstream-model", supports_image = false }
+                },
+                compat = new
+                {
+                    force_params = new Dictionary<string, object?>
+                    {
+                        ["model"] = "forced-model",
+                        ["custom_upstream_flag"] = true,
+                        ["max_output_tokens"] = 128,
+                        ["reasoning"] = new Dictionary<string, object?> { ["effort"] = "high" },
+                        ["providerOptions"] = new Dictionary<string, object?>
+                        {
+                            ["gateway"] = new Dictionary<string, object?> { ["only"] = new[] { "deepseek" } }
+                        }
+                    }
+                }
+            });
+        Assert.Equal(HttpStatusCode.OK, config.StatusCode);
+
+        var createdKey = await SendJsonWithCookie(
+            client,
+            HttpMethod.Post,
+            "/api-keys",
+            cookie,
+            new { owner_username = "admin", name = "cli-force-params" });
+        Assert.Equal(HttpStatusCode.Created, createdKey.StatusCode);
+        var apiKey = await ReadStringProperty(createdKey, "Data", "key", "key");
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "public-model",
+                input = "hello"
+            })
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var upstreamRequest = Assert.Single(factory.Upstream.Requests);
+        Assert.Equal("upstream-model", upstreamRequest["model"]);
+        Assert.True(Assert.IsType<bool>(upstreamRequest["custom_upstream_flag"]));
+        Assert.Equal(
+            "high",
+            Assert.IsType<Dictionary<string, object?>>(upstreamRequest["reasoning"])["effort"]);
+        // force_params 在协议转换后执行，不再参与 Responses -> Chat 的字段映射
+        Assert.False(upstreamRequest.ContainsKey("reasoning_effort"));
+        Assert.Equal(128L, Convert.ToInt64(upstreamRequest["max_output_tokens"]));
+        Assert.False(upstreamRequest.ContainsKey("max_tokens"));
+        var providerOptions = Assert.IsType<Dictionary<string, object?>>(upstreamRequest["providerOptions"]);
+        var gateway = Assert.IsType<Dictionary<string, object?>>(providerOptions["gateway"]);
+        Assert.Equal(["deepseek"], Assert.IsAssignableFrom<IEnumerable<object?>>(gateway["only"]).Select(item => item?.ToString()).ToArray());
+    }
+
+    [Fact]
+    public async Task ResponsesProxy_DefaultParams_ParticipateInChatConversion()
+    {
+        using var factory = new ProxyCompatibilityApiFactory(ChatTextResponse("done"));
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = false
+        });
+        var cookie = await LoginAndReadSessionCookie(client);
+        var config = await SendJsonWithCookie(
+            client,
+            HttpMethod.Post,
+            "/channels",
+            cookie,
+            new
+            {
+                id = "chat",
+                name = "Chat",
+                type = "chat",
+                baseurl = "https://example.test/v1",
+                apikey = "secret",
+                auth_mode = "config",
+                timeout_seconds = 30,
+                retry_count = 0,
+                capacity = 3,
+                enabled = true,
+                models = new[]
+                {
+                    new { model = "public-model", upstream_model = "upstream-model", supports_image = false }
+                },
+                compat = new
+                {
+                    default_params = new Dictionary<string, object?>
+                    {
+                        ["reasoning"] = new Dictionary<string, object?> { ["effort"] = "high" }
+                    }
+                }
+            });
+        Assert.Equal(HttpStatusCode.OK, config.StatusCode);
+
+        var createdKey = await SendJsonWithCookie(
+            client,
+            HttpMethod.Post,
+            "/api-keys",
+            cookie,
+            new { owner_username = "admin", name = "cli-default-params" });
+        Assert.Equal(HttpStatusCode.Created, createdKey.StatusCode);
+        var apiKey = await ReadStringProperty(createdKey, "Data", "key", "key");
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "public-model",
+                input = "hello"
+            })
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var upstreamRequest = Assert.Single(factory.Upstream.Requests);
+        Assert.Equal("high", upstreamRequest["reasoning_effort"]);
+        Assert.False(upstreamRequest.ContainsKey("reasoning"));
+    }
+
+    [Fact]
+    public async Task ChatProxy_ForceParams_ApplyToSameProtocol()
+    {
+        using var factory = new ProxyCompatibilityApiFactory(ChatTextResponse("done"));
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = false
+        });
+        var cookie = await LoginAndReadSessionCookie(client);
+        var config = await SendJsonWithCookie(
+            client,
+            HttpMethod.Post,
+            "/channels",
+            cookie,
+            new
+            {
+                id = "chat",
+                name = "Chat",
+                type = "chat",
+                baseurl = "https://example.test/v1",
+                apikey = "secret",
+                auth_mode = "config",
+                timeout_seconds = 30,
+                retry_count = 0,
+                capacity = 3,
+                enabled = true,
+                models = new[]
+                {
+                    new { model = "public-model", upstream_model = "upstream-model", supports_image = false }
+                },
+                compat = new
+                {
+                    force_params = new Dictionary<string, object?>
+                    {
+                        ["custom_upstream_flag"] = true
+                    }
+                }
+            });
+        Assert.Equal(HttpStatusCode.OK, config.StatusCode);
+
+        var createdKey = await SendJsonWithCookie(
+            client,
+            HttpMethod.Post,
+            "/api-keys",
+            cookie,
+            new { owner_username = "admin", name = "cli-chat-force-params" });
+        Assert.Equal(HttpStatusCode.Created, createdKey.StatusCode);
+        var apiKey = await ReadStringProperty(createdKey, "Data", "key", "key");
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "public-model",
+                messages = new[] { new { role = "user", content = "hello" } }
+            })
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var upstreamRequest = Assert.Single(factory.Upstream.Requests);
+        Assert.True(Assert.IsType<bool>(upstreamRequest["custom_upstream_flag"]));
+    }
+
+    [Fact]
     public void ChannelCompatRequestRewriter_DropToolTypes_RemovesEmptyToolsIncludeAndStringToolChoice()
     {
         var payload = new Dictionary<string, object?>

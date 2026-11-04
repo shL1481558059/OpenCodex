@@ -344,6 +344,7 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
         var compatibleRequest = ApplyCompat(
             upstreamRequest,
             channelCompat);
+        ChannelCompatRequestRewriter.ApplyForceParams(compatibleRequest, channelCompat);
         compatibleRequest["stream"] = true;
         return new TestChannelPreparedRequest(
             channel,

@@ -50,17 +50,10 @@ public static class ChannelCompatRequestRewriter
             }
         }
 
-        // 4. force_params: 强制设置参数（覆盖已有值）
-        foreach (var (key, value) in JsonDictionaryValue.Object(compat, "force_params", WebSearchPayload.DeepCopyObject))
-        {
-            result[key] = CloneJsonValue(value);
-            details.Add($"force:{key}");
-        }
-
-        // 5. drop_tool_types: 删除特定类型的工具
+        // 4. drop_tool_types: 删除特定类型的工具
         ApplyDropToolTypes(result, compat, details);
 
-        // 6. unsupported_params: 检查不支持的参数并抛出异常
+        // 5. unsupported_params: 检查不支持的参数并抛出异常
         var unsupported = JsonDictionaryValue.List(compat, "unsupported_params")
             .Select(item => item?.ToString() ?? string.Empty)
             .Where(key => key.Length > 0 && result.ContainsKey(key))
@@ -72,7 +65,7 @@ public static class ChannelCompatRequestRewriter
         }
 
 
-        // 7. preserve_thinking_history: inject internal marker for Messages protocol conversion
+        // 6. preserve_thinking_history: inject internal marker for Messages protocol conversion
         var preserveThinkingHistory = JsonDictionaryValue.Get(compat, "preserve_thinking_history") is true;
         if (preserveThinkingHistory)
         {
@@ -80,6 +73,18 @@ public static class ChannelCompatRequestRewriter
             details.Add("preserve_thinking_history:true");
         }
         return new ChannelCompatRewriteResult(result, details);
+    }
+
+    internal static void ApplyForceParams(
+        Dictionary<string, object?> payload,
+        IReadOnlyDictionary<string, object?> compat,
+        List<string>? details = null)
+    {
+        foreach (var (key, value) in JsonDictionaryValue.Object(compat, "force_params", WebSearchPayload.DeepCopyObject))
+        {
+            payload[key] = CloneJsonValue(value);
+            details?.Add($"force:{key}");
+        }
     }
 
     private static object? CloneJsonValue(object? value)

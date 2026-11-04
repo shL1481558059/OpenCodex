@@ -38,8 +38,8 @@ OpenCodex 是多协议 LLM 代理与配套管理台：接收客户端 Responses�
 4. 路由：按 owner 读取启用渠道，先做类型过滤，再做模型精确匹配，形成候选并按 `priority`/`position`/`id` 初始排序。
 5. 运行时排序：亲和渠道 → `priority` 升序 → 本实例活跃请求数升序 → 初始顺序。
 6. 逐候选准入：熔断检查（Open 跳过、HalfOpen 抢探测名额）→ 容量租约（Redis 信号量或进程内计数）。
-7. 有效载荷重写：图片 OCR 降级 → Web Search 模式 → 渠道 compat（`default_params`、`rename_params`、`drop_params`、`force_params`、`drop_tool_types`、`unsupported_params`、`preserve_thinking_history`、`enable_apply_patch_prompt_compat`）。
-8. 协议转换：同协议深拷贝并清洗工具 Schema；跨协议经规范化中间结构（canonical）完成请求转换。
+7. 有效载荷重写：图片 OCR 降级 → Web Search 模式 → 渠道 compat（`default_params`、`rename_params`、`drop_params`、`drop_tool_types`、`unsupported_params`、`preserve_thinking_history`、`enable_apply_patch_prompt_compat`）。
+8. 协议转换：同协议深拷贝并清洗工具 Schema；跨协议经规范化中间结构（canonical）完成请求转换。转换完成后执行 `force_params` 最终覆盖并恢复渠道 `upstream_model`。
 9. 上游调用：非流式 JSON 或流式 SSE；流式场景延迟准备下游 SSE 响应，确认上游可产出首行后才写出响应头。
 10. 响应处理：非流式转换回入口协议；流式同协议走透传并旁路捕获，跨协议走对应状态机。
 11. 收尾：记录 usage、缓存 token、费用快照（含峰谷时段）、TTFT 与耗时；写入 attempt 子日志与主日志终态，并通过 SSE 推送管理台。
