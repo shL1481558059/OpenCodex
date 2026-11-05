@@ -87,7 +87,7 @@ public sealed class ProxyEndpointServiceTests
             attempts.Add(context.ChannelId);
             Assert.NotNull(context.BuiltinTools);
             var tool = Assert.IsType<Dictionary<string, object?>>(Assert.Single(WebSearchPayload.ListValue(context.UpstreamRequest, "tools")));
-            Assert.Equal(WebSearchRequestPolicy.InternalToolName, WebSearchPayload.ObjectValue(tool, "function")["name"]);
+            Assert.Equal(WebSearchRequestPolicy.ToolName, WebSearchPayload.ObjectValue(tool, "function")["name"]);
             Assert.Equal("web_search", Assert.IsType<Dictionary<string, object?>>(
                 Assert.Single(WebSearchPayload.ListValue(context.OriginalPayload, "tools")))["type"]);
             if (context.ChannelId == "first")

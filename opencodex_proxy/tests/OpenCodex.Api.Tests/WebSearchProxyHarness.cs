@@ -104,7 +104,7 @@ internal sealed class WebSearchProxyHarness(
         {
             if (TryAsObject(tools[index], out var tool)
                 && StringValue(tool, "name", StringValue(ObjectValue(tool, "function"), "name"))
-                    is WebSearchRequestPolicy.ToolName or WebSearchRequestPolicy.InternalToolName)
+                    is WebSearchRequestPolicy.ToolName or WebSearchRequestPolicy.ToolName)
             {
                 tools[index] = DeepCopyObject(replacement);
             }

@@ -12,7 +12,6 @@ namespace OpenCodex.Core.Services.WebSearch;
 public static class WebSearchRequestPolicy
 {
     public const string ToolName = "web_search";
-    public const string InternalToolName = "opencodex_web_search";
     public const string PublicItemPrefix = "ws_ocxp_";
     public const int MaxArgumentBytes = 16_384;
     public const int MaxQueryLength = 2048;
@@ -68,19 +67,20 @@ public static class WebSearchRequestPolicy
         }
         var webSearch = ValidateNativeOptions(nativeTools[0]);
 
-        var occupied = ToolNames(tools).ToHashSet(StringComparer.Ordinal);
+        var nativeToolIndex = tools.IndexOf(nativeTools[0]);
+        var occupied = ToolNames(tools.Where((_, index) => index != nativeToolIndex))
+            .ToHashSet(StringComparer.Ordinal);
         foreach (var item in ListValue(payload, "input").OfType<Dictionary<string, object?>>())
         {
             occupied.UnionWith(ToolNames(ListValue(item, "tools")));
         }
-        var name = InternalToolName;
-        for (var suffix = 2; occupied.Contains(name); suffix++)
+        if (occupied.Contains(ToolName))
         {
-            name = $"{InternalToolName}_{suffix}";
+            throw new BadRequestException($"proxy web search reserves the tool name '{ToolName}'");
         }
 
-        var index = tools.IndexOf(nativeTools[0]);
-        tools[index] = new Dictionary<string, object?>
+        var name = ToolName;
+        tools[nativeToolIndex] = new Dictionary<string, object?>
         {
             ["type"] = "function",
             ["name"] = name,
@@ -137,7 +137,7 @@ public static class WebSearchRequestPolicy
             && (allowedNames is null || allowedNames.Contains(name));
         if (maxCalls == 0)
         {
-            tools.RemoveAt(index);
+            tools.RemoveAt(nativeToolIndex);
         }
 
         var include = ListValue(payload, "include");
@@ -347,7 +347,8 @@ public static class WebSearchRequestPolicy
 
     private static Dictionary<string, object?> FunctionChoice(string name) => new()
     {
-        ["type"] = "function", ["name"] = name
+        ["type"] = "function",
+        ["name"] = name
     };
 
     private static bool IsNone(object? choice) => choice is "none"

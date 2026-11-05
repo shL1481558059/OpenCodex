@@ -191,7 +191,7 @@ sequenceDiagram
 | 模式 | 行为 | 是否调用搜索 provider |
 |---|---|---:|
 | `convert` | 不做本地执行；`web_search`/`web_search_preview` 声明按协议转换规则进入上游请求（Responses→Responses 保持原生，跨协议时转为目标协议的 function/tool 声明） | 否 |
-| `simulate` | 原生声明替换为代理内置函数 `opencodex_web_search`（名称冲突时追加 `_2`、`_3`…）；上游实际调用该函数时由代理执行 Tavily/Keenable 并续轮 | 仅实际调用时 |
+| `simulate` | 原生声明在原位置替换为固定名称的代理内置函数 `web_search`；该名称在模拟模式下保留，若客户端另有同名函数则返回 400。上游实际调用该函数时由代理执行 Tavily/Keenable 并续轮 | 仅实际调用时 |
 | `disabled` | 删除 Web Search 工具、`tool_choice` 中的引用与相关 `include` 项 | 否 |
 
 当前注册范围不是所有请求：只有 **Responses 入口 + Chat/Messages 渠道 + 访问 Key 所属用户角色为 `superadmin` + 恰好声明一个原生 `web_search`/`web_search_preview` + 全局模式为 `simulate`** 时才登记代理执行权（`WebSearchRequestPolicy.RegisterBuiltin`）。登记不会触发搜索，未调用搜索时仍走普通响应路径。普通用户不能触发搜索 provider 执行，同名普通函数不被接管。
@@ -261,6 +261,8 @@ stateDiagram-v2
 `REQ-SPC-005`（MUST）：只有超级管理员配置并允许的场景才能启用 `simulate`；普通用户不得通过请求字段绕过全局模式或触发未授权搜索 provider 调用。
 
 当前 `simulate` 对参数非法、无可用 Key、搜索 provider 失败或调用次数超限的处理，不是直接返回独立 HTTP 4xx/5xx；它先生成 `status=failed` 的 Web Search 工具结果，再要求模型给出最终回答。只有后续上游调用本身失败时，代理才按上游异常结束请求。
+
+上游返回未声明的工具名时，模拟 Web Search 会缓冲当前上游回合的转换结果，不向客户端发送半成品 SSE。代理丢弃该回合后追加精确工具名约束并重试一次；只有第二次仍违约时才结束请求。第一次尝试的 usage 和非法工具名写入 Web Search 内部日志并计入聚合 usage，但不会进入客户端响应。
 
 补充实现事实：
 
@@ -529,7 +531,7 @@ flowchart TD
 | 工具契约/名称 | `Protocols/ProtocolConverter.Tool*.cs`、`ProtocolConverter.ToolSchemaSanitizer.cs` | `ProtocolStructuralCompatibilityTests.cs`、`ProtocolConversionMatrixTests.cs`、`ToolSchemaExpansionTests.cs` |
 | Apply Patch | `ProtocolConverter.ApplyPatchTools.cs` | `ProxyCompatibilityTests.cs`、流式兼容测试 |
 | MCP | `ProtocolConverter.Mcp.cs`、`ProtocolConverter.ResponsesInput.cs` | `NativeMcp*Tests.cs` |
-| Web Search | `Services/WebSearch/WebSearchRequestPolicy.cs`、`WebSearchToolExecutor.cs`、`WebSearchClientRouter.cs`、`Services/Proxy/BuiltinToolSession.cs`、`WebSearchContinuationStore.cs` | `WebSearchRequestPolicyTests.cs`、`WebSearchToolExecutorTests.cs`、`WebSearchClientRouterTests.cs`、`WebSearchContinuationStoreTests.cs`、`ProxyEndpointServiceTests.cs` |
+| Web Search | `Services/WebSearch/WebSearchRequestPolicy.cs`、`WebSearchRetryPolicy.cs`、`WebSearchToolExecutor.cs`、`WebSearchClientRouter.cs`、`Services/Proxy/BuiltinToolSession.cs`、`WebSearchContinuationStore.cs` | `WebSearchRequestPolicyTests.cs`、`WebSearchToolExecutorTests.cs`、`WebSearchClientRouterTests.cs`、`WebSearchContinuationStoreTests.cs`、`ProxyEndpointServiceTests.cs` |
 | 图片检测 | `ProxyImageRequestDetector.cs` | `ProxyVisionRoutingTests.cs` |
 | OCR | `ProxyOcrService.cs`、`ProxyImageFallbackService.cs`、`ProxyImagePayloadRewriter.cs` | `ProxyImageFallbackTests.cs`、`ProxyVisionTransferFallbackTests.cs`、`VisionTransferSettingsServiceTests.cs` |
 | Images API | `ImagesController.cs`、`ImagesProxyService.cs`、`ImageEditRequestService.cs`、`HttpUpstreamClient.Images.cs` | `ImagesControllerTests.cs`、`ImagesUpstreamClientTests.cs`、`ImagesCoreContractTests.cs` |

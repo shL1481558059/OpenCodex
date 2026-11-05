@@ -158,7 +158,7 @@ public sealed class WebSearchContinuationStore(
             {
                 ["type"] = "function_call",
                 ["call_id"] = id,
-                ["name"] = internalName ?? WebSearchRequestPolicy.InternalToolName,
+                ["name"] = internalName ?? WebSearchRequestPolicy.ToolName,
                 ["arguments"] = JsonDumps(new Dictionary<string, object?>
                 {
                     ["query"] = GetValue(ObjectValue(item, "action"), "query")

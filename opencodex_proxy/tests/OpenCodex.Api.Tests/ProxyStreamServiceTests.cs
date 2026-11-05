@@ -173,7 +173,7 @@ public sealed class ProxyStreamServiceTests
     {
         var lines = new List<(string Line, int DelayAfterMs)>
         {
-            ("data: {\"id\":\"chat_1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"search_1\",\"type\":\"function\",\"function\":{\"name\":\"opencodex_web_search\",\"arguments\":\"{\\\"query\\\":\"}}]}}]}", 0),
+            ("data: {\"id\":\"chat_1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"search_1\",\"type\":\"function\",\"function\":{\"name\":\"web_search\",\"arguments\":\"{\\\"query\\\":\"}}]}}]}", 0),
             ("", 0)
         };
         if (hasDoneMarker)
@@ -192,7 +192,7 @@ public sealed class ProxyStreamServiceTests
             "chat", "test", "superadmin", "model", "public", 120,
             new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()), writer, CancellationToken.None)
         {
-            BuiltinTools = new BuiltinToolRequestContext { WebSearchToolName = WebSearchRequestPolicy.InternalToolName }
+            BuiltinTools = new BuiltinToolRequestContext { WebSearchToolName = WebSearchRequestPolicy.ToolName }
         };
 
         await Assert.ThrowsAsync<UpstreamException>(() =>
@@ -226,7 +226,7 @@ public sealed class ProxyStreamServiceTests
         var channel = new Dictionary<string, object?> { ["id"] = "test", ["type"] = "chat" };
         var route = new ProxyRouteDto(channel, "public", "model", false, true);
         var metadata = new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>());
-        var binding = new BuiltinToolRequestContext { WebSearchToolName = WebSearchRequestPolicy.InternalToolName };
+        var binding = new BuiltinToolRequestContext { WebSearchToolName = WebSearchRequestPolicy.ToolName };
         if (stream)
         {
             var context = new ProxyStreamContext(
@@ -447,6 +447,343 @@ public sealed class ProxyStreamServiceTests
     }
 
     [Fact]
+    public async Task StreamAsync_UndeclaredWebSearchName_RetriesWithoutExposingFirstAttempt()
+    {
+        var upstream = new RetrySequenceUpstreamClient(
+        [
+            [
+                """data: {"id":"chat-invalid","choices":[{"index":0,"delta":{"reasoning_content":"discarded reasoning"}}]}""",
+                "",
+                """data: {"id":"chat-invalid","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"search_invalid","type":"function","function":{"name":"opensearch_web_search","arguments":"{\"query\":\"xlog\"}"}}]}}]}""",
+                "",
+                """data: {"id":"chat-invalid","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":2}}""",
+                "",
+                "data: [DONE]"
+            ],
+            [
+                """data: {"id":"chat-valid","choices":[{"index":0,"delta":{"content":"recovered answer"}}]}""",
+                "",
+                """data: {"id":"chat-valid","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":3}}""",
+                "",
+                "data: [DONE]"
+            ]
+        ]);
+        var logs = new StubProxyLogService();
+        var payload = new Dictionary<string, object?>
+        {
+            ["input"] = "Search for the xlog decoder.",
+            ["tools"] = new List<object?>
+            {
+                new Dictionary<string, object?> { ["type"] = "web_search" },
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "function",
+                    ["name"] = "lookup",
+                    ["parameters"] = new Dictionary<string, object?>()
+                }
+            }
+        };
+        var binding = WebSearchRequestPolicy.RegisterBuiltin(
+            payload, WebSearchModes.Simulate, ProtocolConverter.Responses, ProtocolConverter.Chat, "superadmin");
+        var upstreamRequest = ProtocolConverter.ConvertRequest(
+            payload, ProtocolConverter.Responses, ProtocolConverter.Chat, "upstream-model");
+        WebSearchRequestPolicy.FinalizeUpstreamRequest(upstreamRequest, binding);
+        var writer = new CapturingProxyStreamWriter();
+        var context = new ProxyStreamContext(
+            startedTimestamp: Stopwatch.GetTimestamp(),
+            requestLogId: Guid.NewGuid(),
+            requestId: "req_undeclared_web_search",
+            ownerUsername: "admin",
+            apiKeyId: Guid.NewGuid(),
+            originalPayload: payload,
+            payload: payload,
+            upstreamRequest: upstreamRequest,
+            entryProtocol: ProtocolConverter.Responses,
+            route: new ProxyRouteDto(
+                new Dictionary<string, object?> { ["id"] = "chat", ["type"] = ProtocolConverter.Chat },
+                "public-model",
+                "upstream-model",
+                supportsImage: false,
+                matchedModelMapping: true),
+            channelType: ProtocolConverter.Chat,
+            channelId: "chat",
+            ownerRole: "superadmin",
+            upstreamModel: "upstream-model",
+            requestModel: "public-model",
+            defaultTimeout: 120,
+            requestMetadata: new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
+            streamWriter: writer,
+            cancellationToken: CancellationToken.None)
+        {
+            BuiltinTools = binding
+        };
+
+        await new ProxyStreamService(
+            upstream,
+            logs,
+            new StubWebSearchToolExecutor(),
+            WebSearchTestStore.Create()).StreamAsync(context);
+
+        Assert.Equal(2, upstream.Calls);
+        Assert.DoesNotContain("discarded reasoning", string.Concat(writer.Lines), StringComparison.Ordinal);
+        Assert.DoesNotContain("opensearch_web_search", string.Concat(writer.Lines), StringComparison.Ordinal);
+        Assert.DoesNotContain("\"type\":\"function_call\"", string.Concat(writer.Lines), StringComparison.Ordinal);
+        Assert.Contains("recovered answer", string.Concat(writer.Lines), StringComparison.Ordinal);
+        Assert.Single(writer.Lines, line => line.StartsWith("event: response.created\n", StringComparison.Ordinal));
+        Assert.Single(writer.Lines, line => line.StartsWith("event: response.completed\n", StringComparison.Ordinal));
+        Assert.Equal("data: [DONE]\n\n", writer.Lines[^1]);
+        var retryMessages = WebSearchPayload.ListValue(upstream.Payloads[1], "messages")
+            .OfType<Dictionary<string, object?>>()
+            .ToList();
+        var system = Assert.Single(retryMessages, message => message["role"]?.ToString() == "system");
+        Assert.Contains("Use each tool name exactly as declared", system["content"]?.ToString(), StringComparison.Ordinal);
+        Assert.Contains("web_search", system["content"]?.ToString(), StringComparison.Ordinal);
+        Assert.Contains("lookup", system["content"]?.ToString(), StringComparison.Ordinal);
+        Assert.NotNull(logs.LastContext);
+        Assert.Equal(30L, logs.LastContext!.AggregatedUsage!["prompt_tokens"]);
+        Assert.Equal(5L, logs.LastContext.AggregatedUsage["completion_tokens"]);
+        var retries = WebSearchPayload.ListValue(logs.LastContext.WebSearchDetails!, "retries")
+            .Cast<Dictionary<string, object?>>()
+            .ToList();
+        var retry = Assert.Single(retries);
+        Assert.Equal("opensearch_web_search", Assert.Single(WebSearchPayload.ListValue(retry, "invalid_tool_names")));
+    }
+
+    [Fact]
+    public async Task StreamAsync_UndeclaredWebSearchNameRetryExhausted_DoesNotExposePartialSse()
+    {
+        var upstream = new RetrySequenceUpstreamClient(
+        [
+            InvalidWebSearchStream("first-invalid", "first discarded reasoning", 10, 2),
+            InvalidWebSearchStream("second-invalid", "second discarded reasoning", 20, 3)
+        ]);
+        var logs = new StubProxyLogService();
+        var (payload, upstreamRequest, binding) = WebSearchRetryRequest();
+        var writer = new CapturingProxyStreamWriter();
+        var context = new ProxyStreamContext(
+            startedTimestamp: Stopwatch.GetTimestamp(),
+            requestLogId: Guid.NewGuid(),
+            requestId: "req_undeclared_web_search_exhausted",
+            ownerUsername: "admin",
+            apiKeyId: Guid.NewGuid(),
+            originalPayload: payload,
+            payload: payload,
+            upstreamRequest: upstreamRequest,
+            entryProtocol: ProtocolConverter.Responses,
+            route: new ProxyRouteDto(
+                new Dictionary<string, object?> { ["id"] = "chat", ["type"] = ProtocolConverter.Chat },
+                "public-model",
+                "upstream-model",
+                supportsImage: false,
+                matchedModelMapping: true),
+            channelType: ProtocolConverter.Chat,
+            channelId: "chat",
+            ownerRole: "superadmin",
+            upstreamModel: "upstream-model",
+            requestModel: "public-model",
+            defaultTimeout: 120,
+            requestMetadata: new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
+            streamWriter: writer,
+            cancellationToken: CancellationToken.None)
+        {
+            BuiltinTools = binding
+        };
+
+        var error = await Assert.ThrowsAsync<UpstreamException>(() => new ProxyStreamService(
+            upstream,
+            logs,
+            new StubWebSearchToolExecutor(),
+            WebSearchTestStore.Create()).StreamAsync(context));
+
+        Assert.Equal(ProtocolConverter.UndeclaredToolCallErrorCode, error.ErrorCode);
+        Assert.Equal(2, upstream.Calls);
+        Assert.False(writer.Prepared);
+        Assert.Empty(writer.Lines);
+        Assert.NotNull(logs.LastContext);
+        var retries = WebSearchPayload.ListValue(logs.LastContext!.WebSearchDetails!, "retries");
+        Assert.Equal(2, retries.Count);
+        Assert.Equal(30L, logs.LastContext.AggregatedUsage!["prompt_tokens"]);
+        Assert.Equal(5L, logs.LastContext.AggregatedUsage["completion_tokens"]);
+    }
+
+    [Fact]
+    public async Task StreamAsync_LateUndeclaredWebSearchName_EndsWithFailedTerminal()
+    {
+        var upstream = new RetrySequenceUpstreamClient(
+        [
+            new[]
+            {
+                SseData(new
+                {
+                    id = "chat-search",
+                    choices = new[]
+                    {
+                        new
+                        {
+                            index = 0,
+                            delta = new
+                            {
+                                tool_calls = new[]
+                                {
+                                    new
+                                    {
+                                        index = 0,
+                                        id = "search-valid",
+                                        type = "function",
+                                        function = new
+                                        {
+                                            name = WebSearchRequestPolicy.ToolName,
+                                            arguments = "{\"query\":\"xlog\"}"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }),
+                "",
+                SseData(new
+                {
+                    id = "chat-search",
+                    choices = new[] { new { index = 0, delta = new { }, finish_reason = "tool_calls" } }
+                }),
+                "",
+                "data: [DONE]"
+            },
+            InvalidWebSearchStream("late-invalid-1", "late discarded reasoning 1", 10, 2),
+            InvalidWebSearchStream("late-invalid-2", "late discarded reasoning 2", 20, 3)
+        ]);
+        var logs = new StubProxyLogService();
+        var executor = new SuccessfulWebSearchToolExecutor();
+        var (payload, upstreamRequest, binding) = WebSearchRetryRequest();
+        var writer = new CapturingProxyStreamWriter();
+        var context = new ProxyStreamContext(
+            startedTimestamp: Stopwatch.GetTimestamp(),
+            requestLogId: Guid.NewGuid(),
+            requestId: "req_late_undeclared_web_search",
+            ownerUsername: "admin",
+            apiKeyId: Guid.NewGuid(),
+            originalPayload: payload,
+            payload: payload,
+            upstreamRequest: upstreamRequest,
+            entryProtocol: ProtocolConverter.Responses,
+            route: new ProxyRouteDto(
+                new Dictionary<string, object?> { ["id"] = "chat", ["type"] = ProtocolConverter.Chat },
+                "public-model",
+                "upstream-model",
+                supportsImage: false,
+                matchedModelMapping: true),
+            channelType: ProtocolConverter.Chat,
+            channelId: "chat",
+            ownerRole: "superadmin",
+            upstreamModel: "upstream-model",
+            requestModel: "public-model",
+            defaultTimeout: 120,
+            requestMetadata: new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
+            streamWriter: writer,
+            cancellationToken: CancellationToken.None)
+        {
+            BuiltinTools = binding
+        };
+
+        await Assert.ThrowsAsync<UpstreamException>(() => new ProxyStreamService(
+            upstream,
+            logs,
+            executor,
+            WebSearchTestStore.Create()).StreamAsync(context));
+
+        Assert.Equal(3, upstream.Calls);
+        Assert.Equal(1, executor.Calls);
+        var output = string.Concat(writer.Lines);
+        Assert.Contains("response.failed", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("late discarded reasoning", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("opensearch_web_search", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("response.completed", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SendAsync_UndeclaredWebSearchName_RetriesAndAggregatesUsage()
+    {
+        var upstream = new RetrySequenceJsonUpstreamClient(
+        [
+            InvalidWebSearchResponse("first-invalid", "first discarded reasoning", 10, 2),
+            new Dictionary<string, object?>
+            {
+                ["id"] = "chat-valid",
+                ["object"] = "chat.completion",
+                ["choices"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["index"] = 0,
+                        ["message"] = new Dictionary<string, object?>
+                        {
+                            ["role"] = "assistant",
+                            ["content"] = "recovered answer"
+                        },
+                        ["finish_reason"] = "stop"
+                    }
+                },
+                ["usage"] = new Dictionary<string, object?>
+                {
+                    ["prompt_tokens"] = 20,
+                    ["completion_tokens"] = 3
+                }
+            }
+        ]);
+        var logs = new StubProxyLogService();
+        var (payload, upstreamRequest, binding) = WebSearchRetryRequest();
+        var context = new ProxyNonStreamContext(
+            Stopwatch.GetTimestamp(),
+            Guid.NewGuid(),
+            "req_undeclared_web_search_nonstream",
+            "admin",
+            Guid.NewGuid(),
+            payload,
+            payload,
+            upstreamRequest,
+            ProtocolConverter.Responses,
+            new ProxyRouteDto(
+                new Dictionary<string, object?> { ["id"] = "chat", ["type"] = ProtocolConverter.Chat },
+                "public-model",
+                "upstream-model",
+                supportsImage: false,
+                matchedModelMapping: true),
+            ProtocolConverter.Chat,
+            "chat",
+            "superadmin",
+            "upstream-model",
+            "public-model",
+            120,
+            new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
+            CancellationToken.None)
+        {
+            BuiltinTools = binding
+        };
+
+        var result = await new ProxyNonStreamService(
+            upstream,
+            logs,
+            new StubWebSearchToolExecutor(),
+            WebSearchTestStore.Create()).SendAsync(context);
+
+        Assert.Null(result.FailureException);
+        Assert.Equal(2, upstream.Calls);
+        Assert.Contains("recovered answer", WebSearchPayload.JsonDumps(result.Payload), StringComparison.Ordinal);
+        Assert.DoesNotContain("first discarded reasoning", WebSearchPayload.JsonDumps(result.Payload), StringComparison.Ordinal);
+        Assert.NotNull(logs.LastContext);
+        Assert.Equal(30L, logs.LastContext!.AggregatedUsage!["prompt_tokens"]);
+        Assert.Equal(5L, logs.LastContext.AggregatedUsage["completion_tokens"]);
+        Assert.Single(WebSearchPayload.ListValue(logs.LastContext.WebSearchDetails!, "retries"));
+        var retryMessages = WebSearchPayload.ListValue(upstream.Payloads[1], "messages")
+            .OfType<Dictionary<string, object?>>()
+            .ToList();
+        Assert.Contains(retryMessages, message =>
+            message["role"]?.ToString() == "system"
+            && message["content"]?.ToString()?.Contains("web_search", StringComparison.Ordinal) == true);
+    }
+
+    [Fact]
     public async Task StreamAsync_UpstreamFailure_LogsRealStatusCodeAndUpstreamBody()
     {
         var upstream = new FailingUpstreamClient(new UpstreamException(
@@ -509,8 +846,8 @@ public sealed class ProxyStreamServiceTests
         Assert.NotNull(logs.LastContext.UpstreamResponse);
         var upstreamError = Assert.IsType<Dictionary<string, object?>>(logs.LastContext.UpstreamResponse!["error"]);
         var upstreamDetail = Assert.IsType<Dictionary<string, object?>>(upstreamError["error"]);
-       Assert.Equal("rate limit exceeded", upstreamDetail["message"]);
-   }
+        Assert.Equal("rate limit exceeded", upstreamDetail["message"]);
+    }
 
     [Fact]
     public async Task StreamAsync_UpstreamFailure_DoesNotPrepareSseBeforeUpstreamReturns()
@@ -661,7 +998,7 @@ public sealed class ProxyStreamServiceTests
         {
             BuiltinTools = new BuiltinToolRequestContext
             {
-                WebSearchToolName = WebSearchRequestPolicy.InternalToolName
+                WebSearchToolName = WebSearchRequestPolicy.ToolName
             }
         };
 
@@ -1257,6 +1594,135 @@ public sealed class ProxyStreamServiceTests
             capture.Complete(StreamCaptureTermination.Completed).Response);
     }
 
+    private static (
+        Dictionary<string, object?> Payload,
+        Dictionary<string, object?> UpstreamRequest,
+        BuiltinToolRequestContext Binding) WebSearchRetryRequest()
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["input"] = "Search for the xlog decoder.",
+            ["tools"] = new List<object?>
+            {
+                new Dictionary<string, object?> { ["type"] = "web_search" },
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "function",
+                    ["name"] = "lookup",
+                    ["parameters"] = new Dictionary<string, object?>()
+                }
+            }
+        };
+        var binding = WebSearchRequestPolicy.RegisterBuiltin(
+            payload, WebSearchModes.Simulate, ProtocolConverter.Responses, ProtocolConverter.Chat, "superadmin")!;
+        var upstreamRequest = ProtocolConverter.ConvertRequest(
+            payload, ProtocolConverter.Responses, ProtocolConverter.Chat, "upstream-model");
+        WebSearchRequestPolicy.FinalizeUpstreamRequest(upstreamRequest, binding);
+        return (payload, upstreamRequest, binding);
+    }
+
+    private static string[] InvalidWebSearchStream(
+        string id,
+        string reasoning,
+        int promptTokens,
+        int completionTokens)
+    {
+        return
+        [
+            SseData(new
+            {
+                id,
+                choices = new[] { new { index = 0, delta = new { reasoning_content = reasoning } } }
+            }),
+            "",
+            SseData(new
+            {
+                id,
+                choices = new[]
+                {
+                    new
+                    {
+                        index = 0,
+                        delta = new
+                        {
+                            tool_calls = new[]
+                            {
+                                new
+                                {
+                                    index = 0,
+                                    id = $"{id}-tool",
+                                    type = "function",
+                                    function = new
+                                    {
+                                        name = "opensearch_web_search",
+                                        arguments = "{\"query\":\"xlog\"}"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }),
+            "",
+            SseData(new
+            {
+                id,
+                choices = new[] { new { index = 0, delta = new { }, finish_reason = "tool_calls" } },
+                usage = new { prompt_tokens = promptTokens, completion_tokens = completionTokens }
+            }),
+            "",
+            "data: [DONE]"
+        ];
+    }
+
+    private static string SseData(object payload) =>
+        $"data: {System.Text.Json.JsonSerializer.Serialize(payload)}";
+
+    private static Dictionary<string, object?> InvalidWebSearchResponse(
+        string id,
+        string reasoning,
+        int promptTokens,
+        int completionTokens)
+    {
+        return new Dictionary<string, object?>
+        {
+            ["id"] = id,
+            ["object"] = "chat.completion",
+            ["choices"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["index"] = 0,
+                    ["message"] = new Dictionary<string, object?>
+                    {
+                        ["role"] = "assistant",
+                        ["content"] = "",
+                        ["reasoning_content"] = reasoning,
+                        ["tool_calls"] = new List<object?>
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["id"] = $"{id}-tool",
+                                ["type"] = "function",
+                                ["function"] = new Dictionary<string, object?>
+                                {
+                                    ["name"] = "opensearch_web_search",
+                                    ["arguments"] = "{\"query\":\"xlog\"}"
+                                }
+                            }
+                        }
+                    },
+                    ["finish_reason"] = "tool_calls"
+                }
+            },
+            ["usage"] = new Dictionary<string, object?>
+            {
+                ["prompt_tokens"] = promptTokens,
+                ["completion_tokens"] = completionTokens
+            }
+        };
+    }
+
     private static async IAsyncEnumerable<string> ToAsyncEnumerable(
         IEnumerable<string> lines)
     {
@@ -1382,6 +1848,117 @@ public sealed class ProxyStreamServiceTests
                     await Task.Yield();
                 }
             }
+        }
+    }
+
+    private sealed class RetrySequenceUpstreamClient : IUpstreamClient
+    {
+        private readonly Queue<string[]> _responses;
+
+        public RetrySequenceUpstreamClient(IEnumerable<string[]> responses)
+        {
+            _responses = new Queue<string[]>(responses);
+        }
+
+        public int Calls { get; private set; }
+
+        public List<Dictionary<string, object?>> Payloads { get; } = [];
+
+        public Task<Dictionary<string, object?>> PostJsonAsync(
+            IReadOnlyDictionary<string, object?> channel,
+            IReadOnlyDictionary<string, object?> payload,
+            int defaultTimeout,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException("non-stream path is not used in this test");
+        }
+
+        public async IAsyncEnumerable<string> StreamJsonAsync(
+            IReadOnlyDictionary<string, object?> channel,
+            IReadOnlyDictionary<string, object?> payload,
+            int defaultTimeout,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            Calls++;
+            Payloads.Add(WebSearchPayload.DeepCopyObject(payload));
+            foreach (var line in _responses.Dequeue())
+            {
+                yield return line;
+                await Task.Yield();
+            }
+        }
+    }
+
+    private sealed class RetrySequenceJsonUpstreamClient : IUpstreamClient
+    {
+        private readonly Queue<Dictionary<string, object?>> _responses;
+
+        public RetrySequenceJsonUpstreamClient(IEnumerable<Dictionary<string, object?>> responses)
+        {
+            _responses = new Queue<Dictionary<string, object?>>(responses);
+        }
+
+        public int Calls { get; private set; }
+
+        public List<Dictionary<string, object?>> Payloads { get; } = [];
+
+        public Task<Dictionary<string, object?>> PostJsonAsync(
+            IReadOnlyDictionary<string, object?> channel,
+            IReadOnlyDictionary<string, object?> payload,
+            int defaultTimeout,
+            CancellationToken cancellationToken)
+        {
+            Calls++;
+            Payloads.Add(WebSearchPayload.DeepCopyObject(payload));
+            return Task.FromResult(_responses.Dequeue());
+        }
+
+        public async IAsyncEnumerable<string> StreamJsonAsync(
+            IReadOnlyDictionary<string, object?> channel,
+            IReadOnlyDictionary<string, object?> payload,
+            int defaultTimeout,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await Task.Yield();
+            throw new NotSupportedException("stream path is not used in this test");
+#pragma warning disable CS0162
+            yield break;
+#pragma warning restore CS0162
+        }
+    }
+
+    private sealed class SuccessfulWebSearchToolExecutor : IWebSearchToolExecutor
+    {
+        public int Calls { get; private set; }
+
+        public string CurrentMode() => WebSearchModes.Simulate;
+
+        public Task<WebSearchToolResult> ExecuteAsync(
+            string callId,
+            string arguments,
+            CancellationToken cancellationToken)
+        {
+            Calls++;
+            var raw = new Dictionary<string, object?>
+            {
+                ["answer"] = "search answer",
+                ["results"] = new List<object?>()
+            };
+            return Task.FromResult(new WebSearchToolResult(
+                callId,
+                "xlog",
+                "completed",
+                WebSearchPayload.JsonDumps(raw),
+                raw,
+                null,
+                "fake",
+                null,
+                null,
+                null,
+                null,
+                null,
+                200,
+                null));
         }
     }
 

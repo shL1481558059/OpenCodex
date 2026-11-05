@@ -49,7 +49,7 @@ public sealed class WebSearchContinuationStoreTests
         await restoreStore.RestoreAsync(
             payload,
             OwnerUserId,
-            WebSearchRequestPolicy.InternalToolName,
+            WebSearchRequestPolicy.ToolName,
             CancellationToken.None);
 
         var history = ListValue(payload, "input").Cast<Dictionary<string, object?>>().ToList();
@@ -91,7 +91,7 @@ public sealed class WebSearchContinuationStoreTests
         await restoreStore.RestoreAsync(
             payload,
             Guid.NewGuid(),
-            WebSearchRequestPolicy.InternalToolName,
+            WebSearchRequestPolicy.ToolName,
             CancellationToken.None);
 
         var output = ListValue(payload, "input").Cast<Dictionary<string, object?>>()

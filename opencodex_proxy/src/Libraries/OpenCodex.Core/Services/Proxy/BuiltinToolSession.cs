@@ -22,6 +22,7 @@ internal sealed class BuiltinToolSession(
     private readonly Dictionary<string, (string Arguments, WebSearchToolResult Result)> _executed = new(StringComparer.Ordinal);
     private readonly List<WebSearchToolResult> _results = [];
     private readonly List<Dictionary<string, object?>> _rounds = [];
+    private readonly List<Dictionary<string, object?>> _retries = [];
     private readonly List<object?> _output = [];
     private readonly HashSet<string> _outputIds = new(StringComparer.Ordinal);
     private CancellationTokenSource? _deadline;
@@ -37,8 +38,32 @@ internal sealed class BuiltinToolSession(
     public Dictionary<string, object?>? NextRequest { get; private set; }
     public Dictionary<string, object?>? ResponsePayload { get; private set; }
     public bool HasCalls => _results.Count > 0;
+    public bool HasAccountingUsage => AccountingUsage.Count > 0;
     public CancellationToken Token(CancellationToken fallback) => _deadline?.Token ?? fallback;
-    public Dictionary<string, object?>? Details => HasCalls ? WebSearchSimulationLog.Build(_results, _rounds) : null;
+    public Dictionary<string, object?>? Details => HasCalls || _retries.Count > 0
+        ? WebSearchSimulationLog.Build(_results, _rounds, _retries)
+        : null;
+
+    public void RecordRejectedRound(Dictionary<string, object?>? upstreamResponse, string error)
+    {
+        var usage = upstreamResponse is null
+            ? []
+            : ObjectValue(upstreamResponse, "usage");
+        AddUsage(AccountingUsage, usage);
+        var invalidNames = upstreamResponse is null
+            ? []
+            : WebSearchToolCallParser.ExtractToolCalls(upstreamResponse, protocol)
+                .Select(call => call.Name)
+                .Where(name => name.Length > 0 && name != binding.WebSearchToolName)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+        _retries.Add(new Dictionary<string, object?>
+        {
+            ["invalid_tool_names"] = invalidNames.Cast<object?>().ToList(),
+            ["error"] = error,
+            ["usage"] = DeepCopyObject(usage)
+        });
+    }
 
     public static int? OutputTokenBudget(IReadOnlyDictionary<string, object?> payload) =>
         GetValue(payload, "max_output_tokens") switch
@@ -59,6 +84,7 @@ internal sealed class BuiltinToolSession(
         ResponsePayload = response;
         var calls = WebSearchToolCallParser.ExtractToolCalls(upstreamResponse, protocol);
         var owned = calls.Where(call => call.Name == binding.WebSearchToolName).ToList();
+        AddUsage(AccountingUsage, ObjectValue(upstreamResponse, "usage"));
         if (owned.Count == 0 && !HasCalls)
         {
             yield break;
@@ -66,7 +92,6 @@ internal sealed class BuiltinToolSession(
 
         _responseId ??= StringValue(response, "id");
         AddUsage(Usage, ObjectValue(response, "usage"));
-        AddUsage(AccountingUsage, ObjectValue(upstreamResponse, "usage"));
         _rounds.Add(new Dictionary<string, object?>
         {
             ["iteration"] = _rounds.Count + 1,
@@ -75,7 +100,8 @@ internal sealed class BuiltinToolSession(
             ["usage"] = DeepCopyObject(ObjectValue(response, "usage")),
             ["tool_calls"] = calls.Select(call => (object?)new Dictionary<string, object?>
             {
-                ["id"] = call.Id, ["name"] = call.Name
+                ["id"] = call.Id,
+                ["name"] = call.Name
             }).ToList()
         });
         var roundResults = new List<WebSearchToolResult>();

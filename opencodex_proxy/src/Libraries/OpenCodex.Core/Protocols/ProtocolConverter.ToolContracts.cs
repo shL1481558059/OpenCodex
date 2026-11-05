@@ -28,6 +28,8 @@ internal sealed class ResponsesToolCallShape
 
 public static partial class ProtocolConverter
 {
+    public const string UndeclaredToolCallErrorCode = "undeclared_tool_call";
+
     internal static ResponsesToolCallKind GetResponsesToolCallKind(
         object? name,
         IReadOnlyDictionary<string, ResponsesToolCallMapping>? mappings = null)
@@ -66,7 +68,9 @@ public static partial class ProtocolConverter
         // A supplied request contract is authoritative, including an empty tool set.
         // Only an exact alias or an unambiguous declared leaf may restore an executable identity.
         if (mappings is not null)
-            throw new UpstreamException("Upstream tool call does not match any declared tool name. Retry with an exactly declared tool name.");
+            throw new UpstreamException(
+                "Upstream tool call does not match any declared tool name. Retry with an exactly declared tool name.",
+                errorCode: UndeclaredToolCallErrorCode);
 
         var normalized = toolName.Replace("-", "_", StringComparison.Ordinal);
         return IsApplyPatchName(normalized)

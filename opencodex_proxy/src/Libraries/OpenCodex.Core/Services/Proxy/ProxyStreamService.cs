@@ -195,7 +195,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                     error,
                     webSearchDetails)
                 {
-                    AggregatedUsage = tools?.HasCalls == true ? tools.AccountingUsage : null
+                    AggregatedUsage = tools?.HasAccountingUsage == true ? tools.AccountingUsage : null
                 },
                 context.RequestMetadata);
         }

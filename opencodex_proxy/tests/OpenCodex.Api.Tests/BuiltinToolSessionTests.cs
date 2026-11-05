@@ -13,7 +13,7 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class BuiltinToolSessionTests
 {
-    private const string Tool = WebSearchRequestPolicy.InternalToolName;
+    private const string Tool = WebSearchRequestPolicy.ToolName;
 
     [Fact]
     public async Task DeclaredButNotCalled_DoesNotExecuteOrCreateSearchLog()

@@ -1470,10 +1470,10 @@ public sealed class SseStreamConverterTests
     [Fact]
     public async Task Chat_FragmentedBuiltinToolName_DoesNotLeakPartialFunction()
     {
-        const string name = "opencodex_web_search";
+        const string name = "web_search";
         var lines = SseLines(
-            SseBlock(ChatChunk(toolCalls: new List<object?> { ChatToolCall(0, id: "search", name: "opencodex_") })),
-            SseBlock(ChatChunk(toolCalls: new List<object?> { ChatToolCall(0, name: "web_search", arguments: "{\"query\":\"test\"}") })),
+            SseBlock(ChatChunk(toolCalls: new List<object?> { ChatToolCall(0, id: "search", name: "web_") })),
+            SseBlock(ChatChunk(toolCalls: new List<object?> { ChatToolCall(0, name: "search", arguments: "{\"query\":\"test\"}") })),
             SseBlock(ChatChunk(finishReason: "tool_calls")),
             SseBlock("[DONE]"));
         var result = new ConvertedStreamResult();

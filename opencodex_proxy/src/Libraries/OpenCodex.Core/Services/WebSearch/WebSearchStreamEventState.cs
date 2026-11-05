@@ -94,6 +94,30 @@ internal sealed class WebSearchStreamEventState
         return Emit(eventName, payload);
     }
 
+    public string Fail(
+        string code,
+        string message,
+        out Dictionary<string, object?> finalResponse)
+    {
+        finalResponse = new Dictionary<string, object?>
+        {
+            ["id"] = _responseId,
+            ["object"] = "response",
+            ["created_at"] = _createdAt,
+            ["status"] = "failed",
+            ["error"] = new Dictionary<string, object?>
+            {
+                ["code"] = code,
+                ["message"] = message
+            },
+            ["output"] = _output.Values.Cast<object?>().ToList()
+        };
+        return Emit("response.failed", new Dictionary<string, object?>
+        {
+            ["response"] = DeepCopyObject(finalResponse)
+        });
+    }
+
     public int SearchIndex(string itemId) => _searchIndices[itemId];
 
     public string EmitWebSearchInProgress(string itemId) => EmitWebSearchStatus(itemId, "in_progress");

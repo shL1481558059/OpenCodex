@@ -163,7 +163,7 @@ public sealed class BuiltinToolHttpUsageTests
                 ["id"] = "search_1", ["type"] = "function",
                 ["function"] = new Dictionary<string, object?>
                 {
-                    ["name"] = "opencodex_web_search", ["arguments"] = "{\"query\":\"query\"}"
+                    ["name"] = "web_search", ["arguments"] = "{\"query\":\"query\"}"
                 }
             };
             var message = new Dictionary<string, object?>
@@ -176,7 +176,7 @@ public sealed class BuiltinToolHttpUsageTests
                 first
                     ? new Dictionary<string, object?>
                     {
-                        ["type"] = "tool_use", ["id"] = "search_1", ["name"] = "opencodex_web_search",
+                        ["type"] = "tool_use", ["id"] = "search_1", ["name"] = "web_search",
                         ["input"] = new Dictionary<string, object?> { ["query"] = "query" }
                     }
                     : new Dictionary<string, object?> { ["type"] = "text", ["text"] = "answer" }

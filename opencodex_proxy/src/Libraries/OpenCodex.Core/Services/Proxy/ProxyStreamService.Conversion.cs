@@ -22,6 +22,7 @@ public sealed partial class ProxyStreamService
             && context.ChannelType is ProtocolConverter.Chat or ProtocolConverter.Messages
             ? ProtocolConverter.BuildResponsesToolCallMappings(context.Payload)
             : null;
+        var retryUsed = false;
 
         while (true)
         {
@@ -34,30 +35,85 @@ public sealed partial class ProxyStreamService
             var validated = ValidateUpstreamCompletion(confirmed, capture, token);
             var lines = ConvertRound(context, validated, converted, streamState, skipped, token);
             string? terminal = null;
-            try
+            if (tools is null)
             {
-                await foreach (var line in lines.WithCancellation(token))
+                try
                 {
-                    if (streamState is null)
+                    await foreach (var line in lines.WithCancellation(token))
                     {
                         yield return line;
                     }
-                    else if (WebSearchStreamEventState.IsTerminal(line))
+                }
+                finally
+                {
+                    state.UpstreamResponse = converted.UpstreamResponse
+                        ?? capture.Complete(capture.IsComplete
+                            ? StreamCaptureTermination.Completed
+                            : StreamCaptureTermination.UnexpectedEnd).Response;
+                }
+            }
+            else
+            {
+                List<string> buffered = [];
+                var retryExhausted = false;
+                try
+                {
+                    buffered = await CollectLinesAsync(lines, token);
+                }
+                catch (UpstreamException exception)
+                    when (WebSearchRetryPolicy.IsUndeclaredToolCall(exception))
+                {
+                    tools.RecordRejectedRound(converted.UpstreamResponse, exception.Message);
+                    if (retryUsed)
+                    {
+                        if (!streamState!.HasResponse)
+                        {
+                            throw;
+                        }
+
+                        retryExhausted = true;
+                    }
+                    else
+                    {
+                        retryUsed = true;
+                        state.UpstreamRequest = WebSearchRetryPolicy.BuildRetryRequest(
+                            state.UpstreamRequest,
+                            context.ChannelType,
+                            mappings?.Keys ?? Array.Empty<string>(),
+                            tools.Binding.WebSearchToolName);
+                        continue;
+                    }
+                }
+                finally
+                {
+                    state.UpstreamResponse = converted.UpstreamResponse
+                        ?? capture.Complete(capture.IsComplete
+                            ? StreamCaptureTermination.Completed
+                            : StreamCaptureTermination.UnexpectedEnd).Response;
+                }
+
+                if (retryExhausted)
+                {
+                    var failed = streamState!.Fail(
+                        "upstream_tool_contract_error",
+                        "The upstream model repeatedly returned an undeclared tool name.",
+                        out var finalResponse);
+                    state.ResponsePayload = finalResponse;
+                    yield return failed;
+                    yield break;
+                }
+
+                foreach (var line in buffered)
+                {
+                    if (WebSearchStreamEventState.IsTerminal(line))
                     {
                         terminal = line;
                     }
                     else
                     {
-                        yield return streamState.Observe(line, tools!.Results);
+                        yield return streamState!.Observe(line, tools.Results);
                     }
                 }
-            }
-            finally
-            {
-                state.UpstreamResponse = converted.UpstreamResponse
-                    ?? capture.Complete(capture.IsComplete
-                        ? StreamCaptureTermination.Completed
-                        : StreamCaptureTermination.UnexpectedEnd).Response;
             }
 
             if (converted.UpstreamResponse is null)
@@ -124,6 +180,19 @@ public sealed partial class ProxyStreamService
             }
             yield break;
         }
+    }
+
+    private static async Task<List<string>> CollectLinesAsync(
+        IAsyncEnumerable<string> lines,
+        CancellationToken cancellationToken)
+    {
+        var result = new List<string>();
+        await foreach (var line in lines.WithCancellation(cancellationToken))
+        {
+            result.Add(line);
+        }
+
+        return result;
     }
 
     private static async IAsyncEnumerable<string> ValidateUpstreamCompletion(

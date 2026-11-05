@@ -120,7 +120,7 @@ public sealed class WebSearchProgressTests
                             ["index"] = 0, ["id"] = "search_1", ["type"] = "function",
                             ["function"] = new Dictionary<string, object?>
                             {
-                                ["name"] = WebSearchRequestPolicy.InternalToolName,
+                                ["name"] = WebSearchRequestPolicy.ToolName,
                                 ["arguments"] = "{\"query\":\"OpenAI Responses tools\"}"
                             }
                         }

@@ -1982,7 +1982,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         var upstream = new RecordingUpstreamClient(
             MessagesToolUseResponse(
                 "call_web",
-                "opencodex_web_search",
+                "web_search",
                 new Dictionary<string, object?>
                 {
                     ["query"] = "OpenAI"
@@ -2022,7 +2022,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                 {
                     new Dictionary<string, object?>
                     {
-                        ["name"] = "opencodex_web_search",
+                        ["name"] = "web_search",
                         ["description"] = "Search the web.",
                         ["input_schema"] = new Dictionary<string, object?>
                         {
@@ -2102,7 +2102,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         var upstream = new RecordingUpstreamClient(
             MessagesToolUseResponse(
                 "call_web",
-                "opencodex_web_search",
+                "web_search",
                 new Dictionary<string, object?>
                 {
                     ["query"] = "OpenAI"
@@ -2149,7 +2149,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                 {
                     new Dictionary<string, object?>
                     {
-                        ["name"] = "opencodex_web_search",
+                        ["name"] = "web_search",
                         ["description"] = "Search the web.",
                         ["input_schema"] = new Dictionary<string, object?>
                         {
@@ -2216,7 +2216,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Assert.DoesNotContain(output, item =>
             item is Dictionary<string, object?> entry
             && (string?)entry["type"] == "function_call"
-            && (string?)entry["name"] == "opencodex_web_search");
+            && (string?)entry["name"] == "web_search");
     }
 
     [Fact]
@@ -2767,7 +2767,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         }
 
         var upstream = new RecordingUpstreamClient(
-            ChatToolResponse("call_web", "opencodex_web_search", "{\"query\":\"OpenAI\"}"),
+            ChatToolResponse("call_web", "web_search", "{\"query\":\"OpenAI\"}"),
             ChatTextResponse("final answer"));
         var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         var simulator = new WebSearchProxyHarness(
@@ -2795,7 +2795,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                         ["type"] = "function",
                         ["function"] = new Dictionary<string, object?>
                         {
-                            ["name"] = "opencodex_web_search",
+                            ["name"] = "web_search",
                             ["parameters"] = new Dictionary<string, object?>()
                         }
                     }
@@ -2855,8 +2855,8 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         var upstream = new RecordingStreamUpstreamClient(MessagesMultiToolStreamResponse(
             [
                 new GeneratedMessagesToolCall(
-                    "call_web", "opencodex_web_search",
-                    new Dictionary<string, object?> { ["query"] = "OpenAI" }, "opencodex_web_search", null),
+                    "call_web", "web_search",
+                    new Dictionary<string, object?> { ["query"] = "OpenAI" }, "web_search", null),
                 new GeneratedMessagesToolCall(
                     "call_read", "read_file",
                     new Dictionary<string, object?> { ["path"] = "README.md" }, "read_file", null)
@@ -2907,8 +2907,8 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             MessagesMultiToolStreamResponse(
                 [
                     new GeneratedMessagesToolCall(
-                        "call_web", "opencodex_web_search",
-                        new Dictionary<string, object?> { ["query"] = "OpenAI" }, "opencodex_web_search", null)
+                        "call_web", "web_search",
+                        new Dictionary<string, object?> { ["query"] = "OpenAI" }, "web_search", null)
                 ],
                 "Before searching."),
             MessagesTextStreamResponse("After searching."));
@@ -2982,8 +2982,8 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         }
 
         var upstream = new RecordingStreamUpstreamClient(
-            ChatToolStreamResponse("call_web_1", "opencodex_web_search", "{\"query\":\"OpenAI first\"}"),
-            ChatToolStreamResponse("call_web_2", "opencodex_web_search", "{\"query\":\"OpenAI second\"}"),
+            ChatToolStreamResponse("call_web_1", "web_search", "{\"query\":\"OpenAI first\"}"),
+            ChatToolStreamResponse("call_web_2", "web_search", "{\"query\":\"OpenAI second\"}"),
             ChatTextStreamResponse("final answer"));
         var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         var simulator = new WebSearchProxyHarness(
@@ -3014,7 +3014,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                         ["type"] = "function",
                         ["function"] = new Dictionary<string, object?>
                         {
-                            ["name"] = "opencodex_web_search",
+                            ["name"] = "web_search",
                             ["parameters"] = new Dictionary<string, object?>()
                         }
                     }
@@ -3099,7 +3099,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         var upstream = new RecordingStreamUpstreamClient(
             MessagesToolStreamResponse(
                 "call_web",
-                "opencodex_web_search",
+                "web_search",
                 new Dictionary<string, object?>
                 {
                     ["query"] = "OpenAI"
@@ -3142,7 +3142,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                 {
                     new Dictionary<string, object?>
                     {
-                        ["name"] = "opencodex_web_search",
+                        ["name"] = "web_search",
                         ["description"] = "Search the web.",
                         ["input_schema"] = new Dictionary<string, object?>
                         {
@@ -3236,7 +3236,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         }
 
         var upstream = new RecordingStreamUpstreamClient(
-            ChatToolStreamResponse("call_web_1", "opencodex_web_search", "{\"query\":\"OpenAI\"}"),
+            ChatToolStreamResponse("call_web_1", "web_search", "{\"query\":\"OpenAI\"}"),
             ChatToolStreamResponse("call_ts_1", "tool_search", "{\"query\":\"browser\",\"limit\":3}"));
         var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
         var simulator = new WebSearchProxyHarness(
@@ -3266,7 +3266,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                         ["type"] = "function",
                         ["function"] = new Dictionary<string, object?>
                         {
-                            ["name"] = "opencodex_web_search",
+                            ["name"] = "web_search",
                             ["parameters"] = new Dictionary<string, object?>()
                         }
                     },
@@ -3360,7 +3360,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         var upstream = new RecordingStreamUpstreamClient(
             MessagesToolStreamResponse(
                 "call_web",
-                "opencodex_web_search",
+                "web_search",
                 new Dictionary<string, object?>
                 {
                     ["query"] = "OpenAI"
@@ -3409,7 +3409,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                 {
                     new Dictionary<string, object?>
                     {
-                        ["name"] = "opencodex_web_search",
+                        ["name"] = "web_search",
                         ["description"] = "Search the web.",
                         ["input_schema"] = new Dictionary<string, object?>
                         {
@@ -3498,7 +3498,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
         Assert.DoesNotContain(output, item =>
             item is Dictionary<string, object?> entry
             && (string?)entry["type"] == "function_call"
-            && (string?)entry["name"] == "opencodex_web_search");
+            && (string?)entry["name"] == "web_search");
     }
 
     [Fact]
@@ -3588,7 +3588,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             var upstreamResponses = testCase.WebQueries
                 .Select((query, index) => MessagesToolStreamResponse(
                     $"call_web_{index + 1}",
-                    "opencodex_web_search",
+                    "web_search",
                     new Dictionary<string, object?>
                     {
                         ["query"] = query
@@ -3631,7 +3631,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                     },
                     ["tools"] = new List<object?>(
                         [
-                            BuildMessagesToolDefinition("opencodex_web_search", "Search the web."),
+                            BuildMessagesToolDefinition("web_search", "Search the web."),
                             .. testCase.FinalToolCalls.Select(tool => (object?)BuildMessagesToolDefinition(
                                 tool.UpstreamName,
                                 $"Tool {tool.UpstreamName}."))
@@ -3684,7 +3684,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                 var toolUse = Assert.IsType<Dictionary<string, object?>>(Assert.Single(assistantContent));
                 Assert.Equal("tool_use", toolUse["type"]);
                 Assert.Equal($"call_web_{index + 1}", toolUse["id"]);
-                Assert.Equal("opencodex_web_search", toolUse["name"]);
+                Assert.Equal("web_search", toolUse["name"]);
                 var toolUseInput = Assert.IsType<Dictionary<string, object?>>(toolUse["input"]);
                 Assert.Equal(testCase.WebQueries[index], toolUseInput["query"]);
 
@@ -3703,7 +3703,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             Assert.DoesNotContain(output, item =>
                 item is Dictionary<string, object?> entry
                 && (string?)entry["type"] == "function_call"
-                && (string?)entry["name"] == "opencodex_web_search");
+                && (string?)entry["name"] == "web_search");
 
             if (!string.IsNullOrEmpty(testCase.AssistantPreamble))
             {

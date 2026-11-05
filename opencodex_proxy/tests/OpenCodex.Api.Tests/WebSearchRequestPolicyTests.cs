@@ -21,9 +21,9 @@ public sealed class WebSearchRequestPolicyTests
         Assert.NotNull(binding);
         Assert.True(binding.SearchAllowed);
         var tools = WebSearchPayload.ListValue(payload, "tools").Cast<Dictionary<string, object?>>().ToList();
-        Assert.Equal("opencodex_web_search", tools[0]["name"]);
-        Assert.Equal("web_search", tools[1]["name"]);
-        Assert.Equal("opencodex_web_search", WebSearchPayload.ObjectValue(payload, "tool_choice")["name"]);
+        Assert.Equal("web_search", tools[0]["name"]);
+        Assert.Equal("lookup", tools[1]["name"]);
+        Assert.Equal("web_search", WebSearchPayload.ObjectValue(payload, "tool_choice")["name"]);
         var converted = ProtocolConverter.ConvertRequest(payload, "responses", protocol, "upstream");
         WebSearchRequestPolicy.FinalizeUpstreamRequest(converted, binding);
         Assert.Equal(2, WebSearchPayload.ListValue(converted, "tools").Count);
@@ -51,15 +51,42 @@ public sealed class WebSearchRequestPolicyTests
     }
 
     [Fact]
-    public void Collision_UsesDeterministicDistinctName()
+    public void ExistingFunctionWithReservedWebSearchName_IsRejected()
     {
         var payload = Request();
         WebSearchPayload.ListValue(payload, "tools").Add(new Dictionary<string, object?>
         {
-            ["type"] = "function", ["name"] = WebSearchRequestPolicy.InternalToolName
+            ["type"] = "function",
+            ["name"] = WebSearchRequestPolicy.ToolName
         });
-        var binding = WebSearchRequestPolicy.RegisterBuiltin(payload, "simulate", "responses", "chat", "superadmin");
-        Assert.Equal("opencodex_web_search_2", binding!.WebSearchToolName);
+        var error = Assert.Throws<BadRequestException>(() =>
+            WebSearchRequestPolicy.RegisterBuiltin(payload, "simulate", "responses", "chat", "superadmin"));
+        Assert.Equal("proxy web search reserves the tool name 'web_search'", error.Message);
+    }
+
+    [Fact]
+    public void RetryRequestForMessages_AppendsExactToolContractToSystemPrompt()
+    {
+        var request = new Dictionary<string, object?>
+        {
+            ["model"] = "upstream",
+            ["system"] = "Existing system instruction.",
+            ["messages"] = new List<object?>
+            {
+                new Dictionary<string, object?> { ["role"] = "user", ["content"] = "Search." }
+            }
+        };
+
+        var retry = WebSearchRetryPolicy.BuildRetryRequest(
+            request,
+            ProtocolConverter.Messages,
+            ["lookup", WebSearchRequestPolicy.ToolName],
+            WebSearchRequestPolicy.ToolName);
+
+        var system = Assert.IsType<string>(retry["system"]);
+        Assert.StartsWith("Existing system instruction.", system, StringComparison.Ordinal);
+        Assert.Contains("Use each tool name exactly as declared", system, StringComparison.Ordinal);
+        Assert.Contains("Allowed tool names: `lookup`, `web_search`", system, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -112,7 +139,7 @@ public sealed class WebSearchRequestPolicyTests
 
         Assert.NotNull(binding);
         Assert.True(binding.SearchAllowed);
-        Assert.Equal("opencodex_web_search", NativeTool(payload)["name"]);
+        Assert.Equal("web_search", NativeTool(payload)["name"]);
     }
 
     [Theory]
@@ -347,7 +374,7 @@ public sealed class WebSearchRequestPolicyTests
             new Dictionary<string, object?> { ["type"] = type },
             new Dictionary<string, object?>
             {
-                ["type"] = "function", ["name"] = "web_search",
+                ["type"] = "function", ["name"] = "lookup",
                 ["parameters"] = new Dictionary<string, object?>()
             }
         }

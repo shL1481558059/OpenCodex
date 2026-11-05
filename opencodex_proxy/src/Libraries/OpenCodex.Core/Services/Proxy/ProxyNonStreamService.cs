@@ -44,6 +44,7 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
             ? ProtocolConverter.BuildResponsesToolCallMappings(context.Payload)
             : null;
         BuiltinToolSession? tools = null;
+        var retryUsed = false;
 
         try
         {
@@ -57,13 +58,34 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
                     upstreamRequest,
                     context.DefaultTimeout,
                     tools?.Token(context.CancellationToken) ?? context.CancellationToken);
-                responsePayload = ProtocolConverter.ConvertResponse(
-                    upstreamResponse,
-                    context.EntryProtocol,
-                    context.ChannelType,
-                    context.Route.OriginalModel,
-                    textFormat,
-                    toolCallMappings);
+                try
+                {
+                    responsePayload = ProtocolConverter.ConvertResponse(
+                        upstreamResponse,
+                        context.EntryProtocol,
+                        context.ChannelType,
+                        context.Route.OriginalModel,
+                        textFormat,
+                        toolCallMappings);
+                }
+                catch (UpstreamException exception)
+                    when (tools is not null
+                          && WebSearchRetryPolicy.IsUndeclaredToolCall(exception))
+                {
+                    tools.RecordRejectedRound(upstreamResponse, exception.Message);
+                    if (retryUsed)
+                    {
+                        throw;
+                    }
+
+                    retryUsed = true;
+                    upstreamRequest = WebSearchRetryPolicy.BuildRetryRequest(
+                        upstreamRequest,
+                        context.ChannelType,
+                        toolCallMappings?.Keys ?? Array.Empty<string>(),
+                        tools.Binding.WebSearchToolName);
+                    continue;
+                }
                 if (tools is null)
                 {
                     break;
@@ -135,7 +157,7 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
                     error,
                     webSearchDetails)
                 {
-                    AggregatedUsage = tools?.HasCalls == true ? tools.AccountingUsage : null
+                    AggregatedUsage = tools?.HasAccountingUsage == true ? tools.AccountingUsage : null
                 },
                 context.RequestMetadata);
         }

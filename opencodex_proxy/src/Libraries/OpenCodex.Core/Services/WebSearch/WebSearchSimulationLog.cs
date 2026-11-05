@@ -7,7 +7,8 @@ internal static class WebSearchSimulationLog
 {
     public static Dictionary<string, object?> Build(
         IReadOnlyList<WebSearchToolResult> results,
-        IReadOnlyList<Dictionary<string, object?>> upstreamCalls)
+        IReadOnlyList<Dictionary<string, object?>> upstreamCalls,
+        IReadOnlyList<Dictionary<string, object?>> retries)
     {
         return new Dictionary<string, object?>(StringComparer.Ordinal)
         {
@@ -50,7 +51,8 @@ internal static class WebSearchSimulationLog
                         ["tool_names"] = toolNames
                     };
                 })
-                .ToList()
+                .ToList(),
+            ["retries"] = retries.Select(retry => (object?)DeepCopyObject(retry)).ToList()
         };
     }
 }
