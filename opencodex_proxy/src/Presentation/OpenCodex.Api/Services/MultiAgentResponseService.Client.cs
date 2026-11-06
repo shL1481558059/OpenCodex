@@ -66,10 +66,16 @@ public sealed partial class MultiAgentResponseService
         var turn = requestScopedTurn ? MultiAgentClientIdentity.Parse(metadata.Headers)?.TurnId ?? "" : "";
         logger.LogDebug("Native client response: thread={ThreadId} root={RootThreadId} parent={ParentThreadId} turn={TurnId} transport={Transport}",
             session.ThreadId, session.RootThreadId, session.ParentThreadId, turn, requestScopedTurn ? "http" : "websocket");
+        string? upstreamProtocol = null;
         try
         {
             var result = await executor.ExecuteAsync(session, request, turn,
-                (payload, onEvent, token) => CallModelAsync(payload, metadata, onEvent, token), emit, ct);
+                async (payload, onEvent, token) =>
+                {
+                    var call = await CallModelWithProtocolAsync(payload, metadata, onEvent, token);
+                    upstreamProtocol = call.UpstreamProtocol;
+                    return call.Response;
+                }, emit, ct, () => upstreamProtocol);
             var status = JsonDictionaryValue.String(result, "status");
             if (status == "failed")
             {

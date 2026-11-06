@@ -1,4 +1,5 @@
 using OpenCodex.Core.Errors;
+using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.MultiAgent;
 using OpenCodex.CoreBase.Abstractions;
 using Xunit;
@@ -104,6 +105,78 @@ public sealed class NativeClientResponseExecutorTests
             await emit(new() { ["type"] = "response.output_item.done", ["output_index"] = 0, ["item"] = call }, ct);
             return Response("ambiguous-response", call);
         }, e => { events.Add(e); return Task.CompletedTask; }, default);
+
+        Assert.Equal("failed", result["status"]);
+        Assert.DoesNotContain(events, e => Type(e) is "response.output_item.added" or "response.output_item.done" or "response.completed");
+        Assert.Single(events, e => Type(e) == "response.failed");
+        Assert.Null((await store.ProjectRequestAsync(session, request, "turn", default)).ReplayResponse);
+    }
+
+    [Fact]
+    public async Task ResponsesUpstreamPublishesAnonymousClientToolSearchUnchanged()
+    {
+        var (_, session, executor) = await Setup();
+        var request = new D
+        {
+            ["model"] = "test",
+            ["input"] = "search",
+            ["tools"] = new List<object?> { new D { ["type"] = "tool_search", ["execution"] = "client" } }
+        };
+        var call = new D
+        {
+            ["id"] = "search-item",
+            ["type"] = "tool_search_call",
+            ["status"] = "completed",
+            ["call_id"] = "search-call",
+            ["execution"] = "client",
+            ["arguments"] = new D { ["query"] = "browser" }
+        };
+        var events = new List<D>();
+
+        var result = await executor.ExecuteAsync(session, request, "turn", async (_, emit, ct) =>
+        {
+            await emit(new() { ["type"] = "response.output_item.added", ["output_index"] = 0, ["item"] = call }, ct);
+            await emit(new() { ["type"] = "response.output_item.done", ["output_index"] = 0, ["item"] = call }, ct);
+            return Response("passthrough-response", call);
+        }, e => { events.Add(e); return Task.CompletedTask; }, default, () => ProtocolConverter.Responses);
+
+        Assert.Equal("completed", result["status"]);
+        var output = Assert.Single(JsonDictionaryValue.List(result, "output").OfType<D>());
+        Assert.False(output.ContainsKey("name"));
+        Assert.All(events.Where(e => e.TryGetValue("item", out var item) && item is D callItem && IsTool(callItem)),
+            e => Assert.False(((D)e["item"]!).ContainsKey("name")));
+        Assert.Single(events, e => Type(e) == "response.completed");
+    }
+
+    [Fact]
+    public async Task ResponsesUpstreamStillRejectsStreamedAndTerminalToolMismatch()
+    {
+        var (store, session, executor) = await Setup();
+        var request = new D
+        {
+            ["model"] = "test",
+            ["input"] = "search",
+            ["tools"] = new List<object?> { new D { ["type"] = "tool_search", ["execution"] = "client" } }
+        };
+        var streamed = new D
+        {
+            ["id"] = "search-item",
+            ["type"] = "tool_search_call",
+            ["status"] = "completed",
+            ["call_id"] = "search-call",
+            ["execution"] = "client",
+            ["arguments"] = new D { ["query"] = "streamed" }
+        };
+        var completed = WebSearchPayload.DeepCopyObject(streamed);
+        completed["arguments"] = new D { ["query"] = "completed" };
+        var events = new List<D>();
+
+        var result = await executor.ExecuteAsync(session, request, "turn", async (_, emit, ct) =>
+        {
+            await emit(new() { ["type"] = "response.output_item.added", ["output_index"] = 0, ["item"] = streamed }, ct);
+            await emit(new() { ["type"] = "response.output_item.done", ["output_index"] = 0, ["item"] = streamed }, ct);
+            return Response("mismatch-response", completed);
+        }, e => { events.Add(e); return Task.CompletedTask; }, default, () => ProtocolConverter.Responses);
 
         Assert.Equal("failed", result["status"]);
         Assert.DoesNotContain(events, e => Type(e) is "response.output_item.added" or "response.output_item.done" or "response.completed");

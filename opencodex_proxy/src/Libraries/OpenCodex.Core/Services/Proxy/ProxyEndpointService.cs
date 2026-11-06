@@ -362,7 +362,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                           requestMetadata);
                        await _channelCircuitBreaker.RecordSuccessAsync(ownerUsername, candidateChannelId);
                       streamResponseStarted = trackingWriter.HasWritten;
-                      return new ProxyEndpointResult(200, Payload: null, IsEmpty: true);
+                      return new ProxyEndpointResult(200, Payload: null, IsEmpty: true, UpstreamProtocol: channelType);
                   }
 
                    logInFinally = false;
@@ -416,7 +416,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                        upstreamResponse: null,
                       requestMetadata);
                    await _channelCircuitBreaker.RecordSuccessAsync(ownerUsername, candidateChannelId);
-                  return new ProxyEndpointResult(result.StatusCode, result.Payload, IsEmpty: false);
+                  return new ProxyEndpointResult(result.StatusCode, result.Payload, IsEmpty: false, UpstreamProtocol: channelType);
               }
               catch (ProxyException exception)
               {
@@ -563,7 +563,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             error = exception.Message;
             errorResponse = exception.ToResponse();
             upstreamResponse = UpstreamErrorBody(exception);
-            return new ProxyEndpointResult(statusCode, errorResponse, IsEmpty: false);
+            return new ProxyEndpointResult(statusCode, errorResponse, IsEmpty: false, UpstreamProtocol: channelType);
         }
         catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
         {

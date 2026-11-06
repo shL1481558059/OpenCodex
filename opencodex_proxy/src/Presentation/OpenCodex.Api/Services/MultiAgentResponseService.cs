@@ -156,6 +156,12 @@ public sealed partial class MultiAgentResponseService(
     private async Task<Dictionary<string, object?>> CallModelAsync(Dictionary<string, object?> payload,
         ProxyRequestMetadata metadata, Func<Dictionary<string, object?>, CancellationToken, Task> onEvent, CancellationToken token)
     {
+        return (await CallModelWithProtocolAsync(payload, metadata, onEvent, token)).Response;
+    }
+
+    private async Task<ModelCallResult> CallModelWithProtocolAsync(Dictionary<string, object?> payload,
+        ProxyRequestMetadata metadata, Func<Dictionary<string, object?>, CancellationToken, Task> onEvent, CancellationToken token)
+    {
         await using var scope = scopes.CreateAsyncScope();
         var endpoint = scope.ServiceProvider.GetRequiredService<IProxyEndpointService>();
         payload["stream"] = true;
@@ -165,6 +171,13 @@ public sealed partial class MultiAgentResponseService(
             writer, token));
         if (result.StatusCode != StatusCodes.Status200OK)
             throw new UpstreamException("A multi-agent model request failed.", result.StatusCode, result.Payload);
-        return writer.Result ?? throw new UpstreamException("The model stream returned no Responses result.");
+        var response = writer.Result ?? throw new UpstreamException("The model stream returned no Responses result.");
+        return new ModelCallResult(response, result.UpstreamProtocol);
+    }
+
+    private sealed class ModelCallResult(Dictionary<string, object?> response, string? upstreamProtocol)
+    {
+        public Dictionary<string, object?> Response { get; } = response;
+        public string? UpstreamProtocol { get; } = upstreamProtocol;
     }
 }

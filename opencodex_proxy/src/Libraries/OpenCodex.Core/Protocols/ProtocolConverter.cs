@@ -187,8 +187,11 @@ public static partial class ProtocolConverter
            converted["model"] = upstreamModel;
            if (sourceProtocol == targetProtocol)
            {
-               SanitizeRequestToolSchemas(converted, targetProtocol);
-               SanitizeRequestToolChoiceConsistency(converted);
+               if (sourceProtocol != Responses)
+               {
+                   SanitizeRequestToolSchemas(converted, targetProtocol);
+                   SanitizeRequestToolChoiceConsistency(converted);
+               }
                return converted;
            }
 

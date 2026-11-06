@@ -1,5 +1,7 @@
 using System.Text.Json;
+using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.MultiAgent;
+using OpenCodex.CoreBase.Domain.Proxy;
 using Xunit;
 using D = System.Collections.Generic.Dictionary<string, object?>;
 using static OpenCodex.Api.Tests.MultiAgentApiTestContext;
@@ -67,6 +69,44 @@ public sealed class MultiAgentClientWebSocketTests
             Assert.Equal(1, calls);
             Assert.DoesNotContain("generate", root.FakeEndpoint.Calls.Single().Payload!.Keys);
             Assert.Contains("root task", JsonSerializer.Serialize(root.FakeEndpoint.Calls.Single().Payload!["input"]));
+        }
+        finally { socket.ClientClose(); await operation; }
+    }
+
+    [Fact]
+    public async Task ResponsesUpstreamPublishesAnonymousToolSearchWithoutDeclaredIdentityValidation()
+    {
+        var call = new D
+        {
+            ["id"] = "search-item",
+            ["type"] = "tool_search_call",
+            ["status"] = "completed",
+            ["call_id"] = "search-call",
+            ["execution"] = "client",
+            ["arguments"] = new D { ["query"] = "browser" }
+        };
+        using var root = Root(async ctx =>
+        {
+            await Stream(ctx, Events(
+                new D { ["type"] = "response.output_item.added", ["output_index"] = 0, ["item"] = call },
+                new D { ["type"] = "response.output_item.done", ["output_index"] = 0, ["item"] = call },
+                Terminal(call)));
+            return new ProxyEndpointResult(200, null, true, ProtocolConverter.Responses);
+        });
+        var socket = root.Socket();
+        var operation = root.Service.ResponsesWebSocket();
+        try
+        {
+            var create = ClientRequest();
+            create["type"] = "response.create";
+            create["tools"] = new List<object?> { new D { ["type"] = "tool_search", ["execution"] = "client" } };
+            socket.ClientSend(create);
+
+            var completed = (D)(await socket.Until("response.completed", root.Lifetime.Token))["response"]!;
+            var output = Assert.Single(Output(completed));
+            Assert.Equal("tool_search_call", output["type"]);
+            Assert.False(output.ContainsKey("name"));
+            Assert.DoesNotContain(socket.Sent, item => Type(item) == "response.failed");
         }
         finally { socket.ClientClose(); await operation; }
     }

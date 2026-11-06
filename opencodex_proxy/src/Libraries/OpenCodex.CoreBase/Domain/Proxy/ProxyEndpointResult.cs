@@ -11,11 +11,13 @@ public sealed class ProxyEndpointResult
     /// <param name="StatusCode">端点返回的超文本传输协议状态码。</param>
     /// <param name="Payload">端点响应载荷（如果存在）。</param>
     /// <param name="IsEmpty">指示响应是否没有载荷的值。</param>
-    public ProxyEndpointResult(int StatusCode, object? Payload, bool IsEmpty)
+    /// <param name="UpstreamProtocol">实际选中的上游协议。</param>
+    public ProxyEndpointResult(int StatusCode, object? Payload, bool IsEmpty, string? UpstreamProtocol = null)
     {
         this.StatusCode = StatusCode;
         this.Payload = Payload;
         this.IsEmpty = IsEmpty;
+        this.UpstreamProtocol = UpstreamProtocol;
     }
 
     /// <summary>
@@ -32,4 +34,9 @@ public sealed class ProxyEndpointResult
     /// 获取指示响应是否没有载荷的值。
     /// </summary>
     public bool IsEmpty { get; }
+
+    /// <summary>
+    /// 获取实际选中的上游协议。
+    /// </summary>
+    public string? UpstreamProtocol { get; }
 }

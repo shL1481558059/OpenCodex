@@ -743,7 +743,6 @@ public sealed class ProtocolStructuralCompatibilityTests
     [Theory]
     [InlineData(ProtocolConverter.Responses, ProtocolConverter.Chat)]
     [InlineData(ProtocolConverter.Responses, ProtocolConverter.Messages)]
-    [InlineData(ProtocolConverter.Responses, ProtocolConverter.Responses)]
     [InlineData(ProtocolConverter.Chat, ProtocolConverter.Chat)]
     public void ConvertRequest_EmptyToolsWithToolChoice_DropsToolChoice(
         string sourceProtocol,

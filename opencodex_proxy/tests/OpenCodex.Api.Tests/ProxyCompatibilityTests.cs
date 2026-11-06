@@ -690,6 +690,63 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
     }
 
     [Fact]
+    public void ConvertRequest_ResponsesToResponses_PreservesToolChoiceWithoutTools()
+    {
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = "ping",
+                ["tools"] = new List<object?>(),
+                ["tool_choice"] = "auto"
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Responses,
+            "upstream");
+
+        Assert.Empty(Assert.IsType<List<object?>>(request["tools"]));
+        Assert.Equal("auto", request["tool_choice"]);
+    }
+
+    [Fact]
+    public void ConvertRequest_ResponsesToResponses_PreservesToolSchema()
+    {
+        var parameters = new Dictionary<string, object?>
+        {
+            ["type"] = "object",
+            ["properties"] = new Dictionary<string, object?>
+            {
+                ["value"] = new Dictionary<string, object?> { ["$ref"] = "#/$defs/Value" }
+            },
+            ["$defs"] = new Dictionary<string, object?>
+            {
+                ["Value"] = new Dictionary<string, object?> { ["type"] = "string" }
+            }
+        };
+        var request = ProtocolConverter.ConvertRequest(
+            new Dictionary<string, object?>
+            {
+                ["model"] = "local",
+                ["input"] = "ping",
+                ["tools"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "function",
+                        ["name"] = "lookup",
+                        ["parameters"] = parameters
+                    }
+                }
+            },
+            ProtocolConverter.Responses,
+            ProtocolConverter.Responses,
+            "upstream");
+
+        var tool = Assert.IsType<Dictionary<string, object?>>(Assert.Single(Assert.IsType<List<object?>>(request["tools"])));
+        Assert.Equal(JsonSerializer.Serialize(parameters), JsonSerializer.Serialize(tool["parameters"]));
+    }
+
+    [Fact]
     public void ConvertRequest_ResponsesToolSchemaWithoutRequired_AddsEmptyRequiredForChat()
     {
         var request = ProtocolConverter.ConvertRequest(

@@ -710,6 +710,7 @@ public sealed class ProxyEndpointServiceTests
 
         Assert.Equal(200, result.StatusCode);
         Assert.True(result.IsEmpty);
+        Assert.Equal(ProtocolConverter.Chat, result.UpstreamProtocol);
         Assert.NotNull(streams.LastContext);
         Assert.Equal("stream-success", streams.LastContext!.ChannelId);
         Assert.Equal(0, capacity.GetActiveRequests("admin", "stream-success"));
@@ -1187,6 +1188,7 @@ public sealed class ProxyEndpointServiceTests
             }));
 
         Assert.Equal(200, result.StatusCode);
+        Assert.Equal(ProtocolConverter.Responses, result.UpstreamProtocol);
         Assert.NotNull(nonStreams.LastContext);
         var headers = Assert.IsType<Dictionary<string, object?>>(nonStreams.LastContext!.Route.Channel["headers"]);
         Assert.Equal("Codex Desktop/0.140.0-alpha.2", headers["User-Agent"]);

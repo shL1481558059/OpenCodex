@@ -10,7 +10,8 @@ namespace OpenCodex.Core.Services.MultiAgent;
 public sealed class NativeClientResponseExecutor(NativeClientSessionStore store)
 {
     public async Task<D> ExecuteAsync(NativeClientSession session, D request, string turnId,
-        MultiAgentModelCall model, Func<D, Task> emit, CancellationToken ct)
+        MultiAgentModelCall model, Func<D, Task> emit, CancellationToken ct,
+        Func<string?>? upstreamProtocol = null)
     {
         await using var lease = await store.AcquireRequestAsync(session, ct);
         var projection = await store.ProjectRequestAsync(session, request, turnId, lease.Token);
@@ -57,6 +58,15 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store)
                 RestoreDeclaredToolIdentityIfNeeded(item);
         }
 
+        void RestoreDeclaredToolIdentitiesInEventsIfNeeded()
+        {
+            foreach (var value in validationEvents)
+            {
+                if (JsonDictionaryValue.Get(value, "item") is D item)
+                    RestoreDeclaredToolIdentityIfNeeded(item);
+            }
+        }
+
         void SetItemId(D item, int index)
         {
             var id = Text(item, "id");
@@ -97,10 +107,7 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store)
             }
             var index = WebSearchPayload.ToInt(JsonDictionaryValue.Get(value, "output_index"), -1);
             if (index >= 0 && JsonDictionaryValue.Get(value, "item") is D item)
-            {
-                RestoreDeclaredToolIdentityIfNeeded(item);
                 SetItemId(item, index);
-            }
             var argumentEvent = type.StartsWith("response.function_call_arguments.", StringComparison.Ordinal)
                 || type.StartsWith("response.custom_tool_call_input.", StringComparison.Ordinal);
             var itemEvent = type is "response.output_item.added" or "response.output_item.done";
@@ -140,12 +147,13 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store)
         {
             if (projection.ReplayResponse is { } replay)
             {
-                RestoreDeclaredToolIdentitiesIfNeeded(replay);
                 CaptureId(replay);
                 await Publish(replay, true);
                 return replay;
             }
             var result = WebSearchPayload.DeepCopyObject(await model(projection.Payload, OnEvent, lease.Token));
+            var selectedUpstreamProtocol = upstreamProtocol?.Invoke();
+            var validateDeclaredToolIdentity = selectedUpstreamProtocol != ProtocolConverter.Responses;
             lease.Token.ThrowIfCancellationRequested();
             CaptureId(result);
             if (responseId.Length == 0) responseId = "resp_native_" + Guid.NewGuid().ToString("N");
@@ -174,8 +182,12 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store)
                 return result;
             }
             if (status != "completed") throw new UpstreamException("The model response has no supported terminal status.");
-            RestoreDeclaredToolIdentitiesIfNeeded(result);
-            ProtocolConverter.ValidateResponsesToolCalls(projection.Payload, result);
+            if (validateDeclaredToolIdentity)
+            {
+                RestoreDeclaredToolIdentitiesIfNeeded(result);
+                RestoreDeclaredToolIdentitiesInEventsIfNeeded();
+                ProtocolConverter.ValidateResponsesToolCalls(projection.Payload, result);
+            }
             var items = JsonDictionaryValue.List(result, "output").OfType<D>().ToList();
             if (!items.Any(i => IsTool(i) || Text(i, "type") == "message" && JsonDictionaryValue.List(i, "content").OfType<D>()
                 .Any(p => Text(p, "type") == "output_text" && !string.IsNullOrWhiteSpace(Text(p, "text"))
