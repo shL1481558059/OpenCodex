@@ -321,8 +321,7 @@ public sealed class ResponsesUpstreamTransport(
         if (current.Count < history.Count) return null;
         for (var index = 0; index < history.Count; index++)
         {
-            if (JsonValueCanonicalizer.Canonicalize(history[index])
-                != JsonValueCanonicalizer.Canonicalize(current[index]))
+            if (!JsonValueComparer.AreEqual(history[index], current[index]))
             {
                 return null;
             }
@@ -344,7 +343,7 @@ public sealed class ResponsesUpstreamTransport(
         {
             previous.TryGetValue(key, out var left);
             current.TryGetValue(key, out var right);
-            if (JsonValueCanonicalizer.Canonicalize(left) != JsonValueCanonicalizer.Canonicalize(right))
+            if (!JsonValueComparer.AreEqual(left, right))
                 incompatible.Add(key);
         }
         return incompatible;

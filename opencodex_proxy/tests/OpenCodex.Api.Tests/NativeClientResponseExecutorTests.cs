@@ -47,6 +47,70 @@ public sealed class NativeClientResponseExecutorTests
         Assert.Null((await store.ProjectRequestAsync(session, request, "turn", default)).ReplayResponse);
     }
 
+    [Fact]
+    public async Task UniqueDeclaredLeafRestoresNamespaceAcrossStreamAndCompletion()
+    {
+        var (_, session, executor) = await Setup();
+        var request = NamespaceRequest();
+        var call = FlatFunctionCall();
+        var events = new List<D>();
+        var modelCalls = 0;
+
+        async Task<D> Model(D _, Func<D, CancellationToken, Task> emit, CancellationToken ct)
+        {
+            modelCalls++;
+            var started = WebSearchPayload.DeepCopyObject(call);
+            started["arguments"] = "";
+            await emit(new() { ["type"] = "response.output_item.added", ["output_index"] = 0, ["item"] = started }, ct);
+            await emit(new() { ["type"] = "response.function_call_arguments.delta", ["output_index"] = 0,
+                ["item_id"] = call["id"], ["delta"] = call["arguments"] }, ct);
+            await emit(new() { ["type"] = "response.function_call_arguments.done", ["output_index"] = 0,
+                ["item_id"] = call["id"], ["arguments"] = call["arguments"] }, ct);
+            await emit(new() { ["type"] = "response.output_item.done", ["output_index"] = 0, ["item"] = call }, ct);
+            return Response("namespace-response", call);
+        }
+
+        var result = await executor.ExecuteAsync(session, request, "turn", Model,
+            e => { events.Add(e); return Task.CompletedTask; }, default);
+
+        Assert.Equal("completed", result["status"]);
+        var output = Assert.Single(JsonDictionaryValue.List(result, "output").OfType<D>());
+        Assert.Equal("functions", output["namespace"]);
+        Assert.Equal("exec_command", output["name"]);
+        Assert.All(events.Where(e => e.TryGetValue("item", out var item) && item is D callItem && IsTool(callItem)),
+            e => Assert.Equal("functions", ((D)e["item"]!)["namespace"]));
+        Assert.Single(events, e => Type(e) == "response.completed");
+
+        var replayEvents = new List<D>();
+        var replay = await executor.ExecuteAsync(session, request, "turn", Model,
+            e => { replayEvents.Add(e); return Task.CompletedTask; }, default);
+        Assert.Equal(1, modelCalls);
+        Assert.Equal("functions", Assert.Single(JsonDictionaryValue.List(replay, "output").OfType<D>())["namespace"]);
+        Assert.All(replayEvents.Where(e => e.TryGetValue("item", out var item) && item is D callItem && IsTool(callItem)),
+            e => Assert.Equal("functions", ((D)e["item"]!)["namespace"]));
+    }
+
+    [Fact]
+    public async Task AmbiguousDeclaredLeafStillRejectsWholeToolBatch()
+    {
+        var (store, session, executor) = await Setup();
+        var request = NamespaceRequest(secondNamespace: "other");
+        var call = FlatFunctionCall();
+        var events = new List<D>();
+
+        var result = await executor.ExecuteAsync(session, request, "turn", async (_, emit, ct) =>
+        {
+            await emit(new() { ["type"] = "response.output_item.added", ["output_index"] = 0, ["item"] = call }, ct);
+            await emit(new() { ["type"] = "response.output_item.done", ["output_index"] = 0, ["item"] = call }, ct);
+            return Response("ambiguous-response", call);
+        }, e => { events.Add(e); return Task.CompletedTask; }, default);
+
+        Assert.Equal("failed", result["status"]);
+        Assert.DoesNotContain(events, e => Type(e) is "response.output_item.added" or "response.output_item.done" or "response.completed");
+        Assert.Single(events, e => Type(e) == "response.failed");
+        Assert.Null((await store.ProjectRequestAsync(session, request, "turn", default)).ReplayResponse);
+    }
+
     [Theory]
     [InlineData("custom_tool_call", "const value = 'a b';\ntext(value);")]
     [InlineData("custom_tool_call", " \nconst value = 'a b';\ntext(value); \r\n")]
@@ -427,6 +491,58 @@ public sealed class NativeClientResponseExecutorTests
         return (store, session, new(store));
     }
     private static D Request() => new() { ["model"] = "test", ["input"] = "question", ["tools"] = new List<object?> { new D { ["type"] = "custom", ["name"] = "exec" } } };
+    private static D NamespaceRequest(string? secondNamespace = null)
+    {
+        var tools = new List<object?>
+        {
+            new D
+            {
+                ["type"] = "namespace",
+                ["name"] = "functions",
+                ["tools"] = new List<object?>
+                {
+                    new D
+                    {
+                        ["type"] = "function",
+                        ["name"] = "exec_command",
+                        ["parameters"] = new D { ["type"] = "object" }
+                    }
+                }
+            }
+        };
+        if (secondNamespace is not null)
+        {
+            tools.Add(new D
+            {
+                ["type"] = "namespace",
+                ["name"] = secondNamespace,
+                ["tools"] = new List<object?>
+                {
+                    new D
+                    {
+                        ["type"] = "function",
+                        ["name"] = "exec_command",
+                        ["parameters"] = new D { ["type"] = "object" }
+                    }
+                }
+            });
+        }
+        return new D
+        {
+            ["model"] = "test",
+            ["input"] = new List<object?>
+            {
+                new D { ["type"] = "message", ["role"] = "user", ["content"] = "question" },
+                new D { ["type"] = "additional_tools", ["tools"] = tools }
+            }
+        };
+    }
+    private static D FlatFunctionCall() => new()
+    {
+        ["id"] = "item-exec", ["type"] = "function_call", ["status"] = "completed",
+        ["name"] = "exec_command", ["call_id"] = "call-exec", ["arguments"] = "{\"cmd\":\"pwd\"}"
+    };
+    private static bool IsTool(D value) => Type(value) is "function_call" or "custom_tool_call" or "tool_search_call";
     private static string Type(D value) => JsonDictionaryValue.String(value, "type");
     private static D Tool(string id) => new() { ["id"] = "item-" + id, ["type"] = "custom_tool_call", ["name"] = "exec", ["call_id"] = id, ["input"] = "run once" };
     private static D Message(string text, string role = "assistant") => new() { ["type"] = "message", ["role"] = role, ["content"] = new List<object?> { new D { ["type"] = role == "assistant" ? "output_text" : "input_text", ["text"] = text } } };

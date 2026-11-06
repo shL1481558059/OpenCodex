@@ -14,6 +14,7 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store)
     {
         await using var lease = await store.AcquireRequestAsync(session, ct);
         var projection = await store.ProjectRequestAsync(session, request, turnId, lease.Token);
+        IReadOnlyDictionary<string, ResponsesToolCallMapping>? toolMappings = null;
         var sequence = 0;
         var responseId = "";
         var created = false;
@@ -41,6 +42,19 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store)
             if (responseId.Length > 0 && responseId != id)
                 throw new UpstreamException("The model stream changed its response id.");
             responseId = id;
+        }
+
+        void RestoreDeclaredToolIdentityIfNeeded(D item)
+        {
+            if (!IsToolShape(item) || Text(item, "namespace").Length > 0) return;
+            toolMappings ??= ProtocolConverter.BuildResponsesToolCallMappings(projection.Payload);
+            RestoreDeclaredToolIdentity(item, toolMappings);
+        }
+
+        void RestoreDeclaredToolIdentitiesIfNeeded(D response)
+        {
+            foreach (var item in JsonDictionaryValue.List(response, "output").OfType<D>())
+                RestoreDeclaredToolIdentityIfNeeded(item);
         }
 
         void SetItemId(D item, int index)
@@ -82,7 +96,11 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store)
                 inProgress = true;
             }
             var index = WebSearchPayload.ToInt(JsonDictionaryValue.Get(value, "output_index"), -1);
-            if (index >= 0 && JsonDictionaryValue.Get(value, "item") is D item) SetItemId(item, index);
+            if (index >= 0 && JsonDictionaryValue.Get(value, "item") is D item)
+            {
+                RestoreDeclaredToolIdentityIfNeeded(item);
+                SetItemId(item, index);
+            }
             var argumentEvent = type.StartsWith("response.function_call_arguments.", StringComparison.Ordinal)
                 || type.StartsWith("response.custom_tool_call_input.", StringComparison.Ordinal);
             var itemEvent = type is "response.output_item.added" or "response.output_item.done";
@@ -122,6 +140,7 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store)
         {
             if (projection.ReplayResponse is { } replay)
             {
+                RestoreDeclaredToolIdentitiesIfNeeded(replay);
                 CaptureId(replay);
                 await Publish(replay, true);
                 return replay;
@@ -155,6 +174,7 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store)
                 return result;
             }
             if (status != "completed") throw new UpstreamException("The model response has no supported terminal status.");
+            RestoreDeclaredToolIdentitiesIfNeeded(result);
             ProtocolConverter.ValidateResponsesToolCalls(projection.Payload, result);
             var items = JsonDictionaryValue.List(result, "output").OfType<D>().ToList();
             if (!items.Any(i => IsTool(i) || Text(i, "type") == "message" && JsonDictionaryValue.List(i, "content").OfType<D>()
@@ -186,6 +206,36 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store)
             await Send(new() { ["type"] = "response.failed", ["response"] = failed });
             return failed;
         }
+    }
+
+    public async Task<D> ExecuteWarmupAsync(NativeClientSession session, D request, string turnId, CancellationToken ct)
+    {
+        await using var lease = await store.AcquireRequestAsync(session, ct);
+        var projection = await store.ProjectRequestAsync(session, request, turnId, lease.Token);
+        var response = new D
+        {
+            ["id"] = "resp_ocx_warm_" + Guid.NewGuid().ToString("N"),
+            ["object"] = "response",
+            ["created_at"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            ["status"] = "completed",
+            ["model"] = JsonDictionaryValue.String(projection.Payload, "model"),
+            ["output"] = new List<object?>(),
+            ["store"] = false
+        };
+        lease.Token.ThrowIfCancellationRequested();
+        await store.CommitResponseAsync(session, projection, response, CancellationToken.None);
+        return response;
+    }
+
+    private static void RestoreDeclaredToolIdentity(D item,
+        IReadOnlyDictionary<string, ResponsesToolCallMapping> mappings)
+    {
+        if (!IsToolShape(item) || Text(item, "namespace").Length > 0) return;
+        var name = Text(item, "name");
+        if (name.Length == 0 || !ProtocolConverter.TryGetResponsesToolCallMapping(name, mappings, out var mapping))
+            return;
+        item["name"] = mapping.ResponsesName;
+        if (!string.IsNullOrEmpty(mapping.Namespace)) item["namespace"] = mapping.Namespace;
     }
 
     private static void ValidateStreamTools(IReadOnlyList<D> output, IReadOnlyList<D> events)

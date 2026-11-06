@@ -31,6 +31,47 @@ public sealed class MultiAgentClientWebSocketTests
     }
 
     [Fact]
+    public async Task WebSocketPrewarmDoesNotCallModelAndRemainsAvailableAsContinuation()
+    {
+        var calls = 0;
+        using var root = Root(ctx =>
+        {
+            calls++;
+            return Stream(ctx, Events(Terminal(Message("DONE"))));
+        });
+        var socket = root.Socket();
+        var operation = root.Service.ResponsesWebSocket();
+        try
+        {
+            var prewarm = ClientRequest();
+            prewarm["type"] = "response.create";
+            prewarm["generate"] = false;
+            prewarm["input"] = new List<object?>();
+            socket.ClientSend(prewarm);
+
+            var created = (D)(await socket.Until("response.created", root.Lifetime.Token))["response"]!;
+            var warm = (D)(await socket.Until("response.completed", root.Lifetime.Token))["response"]!;
+            Assert.StartsWith("resp_ocx_warm_", (string)created["id"]!, StringComparison.Ordinal);
+            Assert.Equal(created["id"], warm["id"]);
+            Assert.Empty(Output(warm));
+            Assert.Equal(0, calls);
+            Assert.Empty(root.FakeEndpoint.Calls);
+
+            var actual = ClientRequest();
+            actual["type"] = "response.create";
+            actual["previous_response_id"] = warm["id"];
+            socket.ClientSend(actual);
+
+            var completed = (D)(await socket.Until("response.completed", root.Lifetime.Token))["response"]!;
+            Assert.Contains("DONE", JsonSerializer.Serialize(completed));
+            Assert.Equal(1, calls);
+            Assert.DoesNotContain("generate", root.FakeEndpoint.Calls.Single().Payload!.Keys);
+            Assert.Contains("root task", JsonSerializer.Serialize(root.FakeEndpoint.Calls.Single().Payload!["input"]));
+        }
+        finally { socket.ClientClose(); await operation; }
+    }
+
+    [Fact]
     public async Task WebSocketNativeToolsWithoutIdentityCannotSilentlyBecomeLegacyAgents()
     {
         using var context = new MultiAgentApiTestContext(ctx => Stream(ctx, Events(Terminal(Message("unexpected legacy")))));

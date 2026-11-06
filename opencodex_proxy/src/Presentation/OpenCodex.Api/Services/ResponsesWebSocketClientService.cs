@@ -59,7 +59,9 @@ public sealed class ResponsesWebSocketClientService(
         async Task Execute(Dictionary<string, object?> request, bool generate, int createIndex)
         {
             var model = JsonDictionaryValue.String(request, "model");
-            var clientRequest = WebSearchPayload.DeepCopyObject(request);
+            // The parsed frame is request-scoped and immutable after projection.
+            // Rewrite stages copy the payload before changing request semantics.
+            var clientRequest = request;
             var fullRequest = ProjectRequest(request, records, out var previous);
             if (fullRequest is null)
             {
@@ -92,8 +94,8 @@ public sealed class ResponsesWebSocketClientService(
                 var response = SyntheticResponse(responseId, model, "completed");
                 records[responseId] = new StoredClientResponse
                 {
-                    Request = WebSearchPayload.DeepCopyObject(fullRequest),
-                    Response = WebSearchPayload.DeepCopyObject(response)
+                    Request = fullRequest,
+                    Response = response
                 };
                 await Send(new Dictionary<string, object?>
                 {
@@ -140,8 +142,8 @@ public sealed class ResponsesWebSocketClientService(
                 {
                     records[responseId] = new StoredClientResponse
                     {
-                        Request = WebSearchPayload.DeepCopyObject(fullRequest),
-                        Response = WebSearchPayload.DeepCopyObject(response)
+                        Request = fullRequest,
+                        Response = response
                     };
                 }
             }
@@ -249,7 +251,7 @@ public sealed class ResponsesWebSocketClientService(
                     await SendError("invalid_request_error", "model is required.");
                     return;
                 }
-                active = Execute(WebSearchPayload.DeepCopyObject(item), generate, ++createIndex);
+                active = Execute(item, generate, ++createIndex);
                 await active;
                 active = Task.CompletedTask;
                 item = await ReceiveAsync() ?? [];
@@ -280,7 +282,7 @@ public sealed class ResponsesWebSocketClientService(
         var currentInput = ReadInput(request);
         if (previousId.Length == 0)
         {
-            var full = WebSearchPayload.DeepCopyObject(request);
+            var full = new Dictionary<string, object?>(request, StringComparer.Ordinal);
             full["input"] = currentInput;
             full.Remove("previous_response_id");
             return full;
@@ -289,15 +291,15 @@ public sealed class ResponsesWebSocketClientService(
         if (!records.TryGetValue(previousId, out previous)) return null;
         var previousInput = JsonDictionaryValue.List(previous.Request, "input");
         var previousOutput = JsonDictionaryValue.List(previous.Response, "output");
-        var history = previousInput.Concat(previousOutput).Select(WebSearchPayload.DeepCopy).ToList();
-        var fullRequest = WebSearchPayload.DeepCopyObject(previous.Request);
+        var history = previousInput.Concat(previousOutput).ToList();
+        var fullRequest = new Dictionary<string, object?>(previous.Request, StringComparer.Ordinal);
         foreach (var pair in request)
         {
-            fullRequest[pair.Key] = WebSearchPayload.DeepCopy(pair.Value);
+            fullRequest[pair.Key] = pair.Value;
         }
         fullRequest["input"] = IsPrefix(history, currentInput)
-            ? currentInput.Select(WebSearchPayload.DeepCopy).ToList()
-            : history.Concat(currentInput).Select(WebSearchPayload.DeepCopy).ToList();
+            ? currentInput
+            : history.Concat(currentInput).ToList();
         fullRequest.Remove("previous_response_id");
         return fullRequest;
     }
@@ -307,8 +309,7 @@ public sealed class ResponsesWebSocketClientService(
         if (values.Count < prefix.Count) return false;
         for (var index = 0; index < prefix.Count; index++)
         {
-            if (JsonValueCanonicalizer.Canonicalize(prefix[index])
-                != JsonValueCanonicalizer.Canonicalize(values[index]))
+            if (!JsonValueComparer.AreEqual(prefix[index], values[index]))
             {
                 return false;
             }
@@ -332,7 +333,7 @@ public sealed class ResponsesWebSocketClientService(
                 }
             ];
         }
-        return JsonDictionaryValue.List(request, "input").Select(WebSearchPayload.DeepCopy).ToList();
+        return JsonDictionaryValue.List(request, "input");
     }
 
     private static int InputItemCount(IReadOnlyDictionary<string, object?> request)

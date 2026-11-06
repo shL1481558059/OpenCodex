@@ -58,7 +58,8 @@ public sealed partial class MultiAgentResponseService
             stop.Cancel();
         }
 
-        async Task Execute(Dictionary<string, object?> request, MultiAgentRun? run, Channel<MultiAgentInjection> channel)
+        async Task Execute(Dictionary<string, object?> request, MultiAgentRun? run, Channel<MultiAgentInjection> channel,
+            bool generate)
         {
             var binding = connectionBinding;
             var gate = binding is null ? store.Gate(run!) : null;
@@ -70,7 +71,9 @@ public sealed partial class MultiAgentResponseService
                 {
                     // Upgrade headers identify a connection, not each subsequent response.create.
                     // Without a per-message turn identity, content equality cannot imply a retry.
-                    var result = await ExecuteClient(request, binding, metadata, Send, ct, requestScopedTurn: false);
+                    var result = generate
+                        ? await ExecuteClient(request, binding, metadata, Send, ct, requestScopedTurn: false)
+                        : await ExecuteClientWarmup(request, binding, Send, ct);
                     responseId = JsonDictionaryValue.String(result, "id");
                 }
                 else
@@ -179,6 +182,7 @@ public sealed partial class MultiAgentResponseService
                         continue;
                     }
                     item.Remove("type");
+                    var generate = JsonDictionaryValue.Get(item, "generate") is not false;
                     var model = JsonDictionaryValue.String(item, "model");
                     if (model.Length == 0)
                     {
@@ -231,6 +235,12 @@ public sealed partial class MultiAgentResponseService
                         }
                         if (connectionRun is not null && connectionRun.Model != model)
                             throw new BadRequestException("Start a new session to change models.");
+                        if (!generate)
+                        {
+                            if (connectionBinding is null)
+                                throw new BadRequestException("Native prewarm requires a client thread identity.");
+                            item.Remove("generate");
+                        }
                     }
                     catch (Exception exception) when (exception is BadRequestException or KeyNotFoundException)
                     {
@@ -241,7 +251,7 @@ public sealed partial class MultiAgentResponseService
                     {
                         SingleReader = true, SingleWriter = true
                     });
-                    active = Execute(item, connectionRun, injections);
+                    active = Execute(item, connectionRun, injections, generate);
                 }
                 else if (type == "response.inject")
                 {

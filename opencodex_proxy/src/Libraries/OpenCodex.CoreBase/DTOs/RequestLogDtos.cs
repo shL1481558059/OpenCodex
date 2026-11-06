@@ -10,12 +10,12 @@ namespace OpenCodex.CoreBase.DTOs;
 /// <param name="method">传入 HTTP 方法。</param>
 /// <param name="path">传入请求路径。</param>
 /// <param name="clientIp">客户端 IP 地址（如果可用）。</param>
-/// <param name="requestHeaders">序列化后的传入请求头。</param>
-/// <param name="requestBody">序列化后的传入请求体。</param>
-/// <param name="upstreamRequestBody">序列化后的上游请求体。</param>
-/// <param name="upstreamResponseBody">序列化后的上游响应体。</param>
-/// <param name="responseBody">序列化后的下游响应体。</param>
-/// <param name="webSearchJson">序列化后的 Web 搜索详情（如果可用）。</param>
+/// <param name="requestHeaders">UTF-8 编码的传入请求头。</param>
+/// <param name="requestBody">UTF-8 编码的传入请求体。</param>
+/// <param name="upstreamRequestBody">UTF-8 编码的上游请求体。</param>
+/// <param name="upstreamResponseBody">UTF-8 编码的上游响应体。</param>
+/// <param name="responseBody">UTF-8 编码的下游响应体。</param>
+/// <param name="webSearchJson">UTF-8 编码的 Web 搜索详情（如果可用）。</param>
 /// <param name="model">请求的模型（如果可用）。</param>
 /// <param name="upstreamModel">上游模型（如果可用）。</param>
 /// <param name="channelId">选中的通道标识符（如果可用）。</param>
@@ -41,12 +41,12 @@ public sealed class RequestLogWriteDto(
     string method,
     string path,
     string? clientIp,
-    string requestHeaders,
-    string requestBody,
-    string upstreamRequestBody,
-    string upstreamResponseBody,
-    string responseBody,
-    string? webSearchJson,
+    byte[] requestHeaders,
+    byte[] requestBody,
+    byte[] upstreamRequestBody,
+    byte[] upstreamResponseBody,
+    byte[] responseBody,
+    byte[]? webSearchJson,
     string? model,
     string? upstreamModel,
     Guid? channelId,
@@ -69,7 +69,7 @@ public sealed class RequestLogWriteDto(
     Guid ownerUserId,
     Guid? apiKeyId,
     string? error,
-    string? ocrJson,
+    byte[]? ocrJson,
     string? pricingPhase = null,
     string? upstreamResponseModel = null)
 {
@@ -114,34 +114,34 @@ public sealed class RequestLogWriteDto(
     public string? ClientIp { get; } = clientIp;
 
     /// <summary>
-    /// 获取序列化后的传入请求头。
+    /// 获取 UTF-8 编码的传入请求头。
     /// </summary>
-    public string RequestHeaders { get; } = requestHeaders;
+    public byte[] RequestHeaders { get; } = requestHeaders;
 
     /// <summary>
-    /// 获取序列化后的传入请求体。
+    /// 获取 UTF-8 编码的传入请求体。
     /// </summary>
-    public string RequestBody { get; } = requestBody;
+    public byte[] RequestBody { get; } = requestBody;
 
     /// <summary>
-    /// 获取序列化后的上游请求体。
+    /// 获取 UTF-8 编码的上游请求体。
     /// </summary>
-    public string UpstreamRequestBody { get; } = upstreamRequestBody;
+    public byte[] UpstreamRequestBody { get; } = upstreamRequestBody;
 
     /// <summary>
-    /// 获取序列化后的上游响应体。
+    /// 获取 UTF-8 编码的上游响应体。
     /// </summary>
-    public string UpstreamResponseBody { get; } = upstreamResponseBody;
+    public byte[] UpstreamResponseBody { get; } = upstreamResponseBody;
 
     /// <summary>
-    /// 获取序列化后的下游响应体。
+    /// 获取 UTF-8 编码的下游响应体。
     /// </summary>
-    public string ResponseBody { get; } = responseBody;
+    public byte[] ResponseBody { get; } = responseBody;
 
     /// <summary>
-    /// 获取序列化后的 Web 搜索详情（如果可用）。
+    /// 获取 UTF-8 编码的 Web 搜索详情（如果可用）。
     /// </summary>
-    public string? WebSearchJson { get; } = webSearchJson;
+    public byte[]? WebSearchJson { get; } = webSearchJson;
 
     /// <summary>
     /// 获取请求的模型（如果可用）。
@@ -254,9 +254,9 @@ public sealed class RequestLogWriteDto(
     public string? Error { get; } = error;
 
     /// <summary>
-    /// 获取序列化后的 OCR 详情（如果可用）。
+    /// 获取 UTF-8 编码的 OCR 详情（如果可用）。
     /// </summary>
-    public string? OcrJson { get; } = ocrJson;
+    public byte[]? OcrJson { get; } = ocrJson;
 
     /// <summary>
     /// 获取计费时段（peak / off_peak），未启用峰谷时为 null。

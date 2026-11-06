@@ -89,4 +89,24 @@ public sealed partial class MultiAgentResponseService
             throw;
         }
     }
+
+    private async Task<Dictionary<string, object?>> ExecuteClientWarmup(Dictionary<string, object?> request,
+        NativeClientSession session, Func<Dictionary<string, object?>, Task> emit, CancellationToken ct)
+    {
+        var executor = new NativeClientResponseExecutor(NativeSessions);
+        var response = await executor.ExecuteWarmupAsync(session, request, "", ct);
+        var created = WebSearchPayload.DeepCopyObject(response);
+        created["status"] = "in_progress";
+        await emit(new Dictionary<string, object?>
+        {
+            ["type"] = "response.created",
+            ["response"] = created
+        });
+        await emit(new Dictionary<string, object?>
+        {
+            ["type"] = "response.completed",
+            ["response"] = response
+        });
+        return response;
+    }
 }

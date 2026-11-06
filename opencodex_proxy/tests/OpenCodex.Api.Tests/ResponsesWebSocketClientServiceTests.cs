@@ -102,4 +102,57 @@ public sealed class ResponsesWebSocketClientServiceTests
             await operation;
         }
     }
+
+    [Fact]
+    public async Task BranchingFromEarlierResponseKeepsThatResponseHistory()
+    {
+        var modelCalls = 0;
+        using var context = new MultiAgentApiTestContext(
+            ctx => Stream(ctx, Events(Terminal(Message(++modelCalls == 1 ? "FIRST" : "SECOND")))));
+        context.CatalogEnabled = false;
+        var socket = context.Socket();
+        var operation = context.Service.ResponsesWebSocket();
+        try
+        {
+            var initial = Request();
+            initial["type"] = "response.create";
+            socket.ClientSend(initial);
+            var first = (D)(await socket.Until("response.completed", context.Lifetime.Token))["response"]!;
+
+            var next = Request();
+            next["type"] = "response.create";
+            next["previous_response_id"] = first["id"];
+            next["input"] = new List<object?>
+            {
+                new D { ["type"] = "message", ["role"] = "user", ["content"] = "next" }
+            };
+            socket.ClientSend(next);
+            await socket.Until("response.completed", context.Lifetime.Token);
+
+            var branch = Request();
+            branch["type"] = "response.create";
+            branch["previous_response_id"] = first["id"];
+            branch["input"] = new List<object?>
+            {
+                new D { ["type"] = "message", ["role"] = "user", ["content"] = "branch" }
+            };
+            socket.ClientSend(branch);
+            await socket.Until("response.completed", context.Lifetime.Token);
+
+            var projected = JsonDictionaryValue.List(context.FakeEndpoint.Calls[2].Payload!, "input");
+            Assert.Equal(3, projected.Count);
+            Assert.Contains("work", System.Text.Json.JsonSerializer.Serialize(projected[0]));
+            Assert.Contains("FIRST", System.Text.Json.JsonSerializer.Serialize(projected[1]));
+            Assert.Contains("branch", System.Text.Json.JsonSerializer.Serialize(projected[2]));
+
+            var clientPayload = Assert.IsType<D>(context.FakeEndpoint.Calls[2].ClientPayload);
+            Assert.Single(JsonDictionaryValue.List(clientPayload, "input"));
+            Assert.Equal(first["id"], JsonDictionaryValue.String(clientPayload, "previous_response_id"));
+        }
+        finally
+        {
+            socket.ClientClose();
+            await operation;
+        }
+    }
 }
