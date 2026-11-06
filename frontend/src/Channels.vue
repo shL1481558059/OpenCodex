@@ -580,6 +580,19 @@
               </div>
             </el-form-item>
           </el-col>
+          <el-col v-if="channelDraft.type === 'responses'" :span="12">
+            <el-form-item label="Responses WS 模式">
+              <el-select v-model="compatTexts.ws_mode" class="full-width">
+                <el-option label="自动探测" value="auto" />
+                <el-option label="上下文池" value="context_pool" />
+                <el-option label="透传" value="passthrough" />
+                <el-option label="关闭" value="off" />
+              </el-select>
+              <div class="text-muted" style="margin-top: 4px; font-size: 12px">
+                自动探测失败会回退 HTTP；上下文池强制复用上游 WebSocket；透传仅用于入站 Responses WebSocket
+              </div>
+            </el-form-item>
+          </el-col>
           <el-col :span="12">
             <el-form-item label="认证方式">
               <el-select v-model="channelDraft.auth_mode" class="full-width">
@@ -1736,7 +1749,8 @@ const compatTexts = reactive({
   default_params: "",
   unsupported_params: "",
   images_api_dialect: "openai",
-  multi_agent_v2_mode: MULTI_AGENT_V2_AUTO
+  multi_agent_v2_mode: MULTI_AGENT_V2_AUTO,
+  ws_mode: "auto"
 });
 
 const testResult = ref(null);
@@ -3327,7 +3341,8 @@ function assignCompat(compat) {
     default_params: formatAssignmentMap(compat.default_params || {}),
     unsupported_params: formatStringList(compat.unsupported_params || []),
     images_api_dialect: compat.images_api_dialect || "openai",
-    multi_agent_v2_mode: compat.multi_agent_v2_mode || MULTI_AGENT_V2_AUTO
+    multi_agent_v2_mode: compat.multi_agent_v2_mode || MULTI_AGENT_V2_AUTO,
+    ws_mode: compat.ws_mode || "auto"
   });
 }
 
@@ -3419,6 +3434,9 @@ function buildCompat() {
   const multiAgentV2Mode = compatTexts.multi_agent_v2_mode;
   if (!isImagesChannel(channelDraft) && multiAgentV2Mode && multiAgentV2Mode !== MULTI_AGENT_V2_AUTO) {
     compat.multi_agent_v2_mode = multiAgentV2Mode;
+  }
+  if (channelDraft.type === "responses" && compatTexts.ws_mode && compatTexts.ws_mode !== "auto") {
+    compat.ws_mode = compatTexts.ws_mode;
   }
   if (isImagesChannel(channelDraft)) {
     return buildImagesCompat({

@@ -9,7 +9,7 @@
 
 运行时依赖尽量少：ASP.NET Core、SQLite 和内置 HTTP 客户端。旧 Python 后端已移除；行为追溯以 Git 历史和 `.NET` 测试为准。
 
-`/v1/responses` 支持 Codex CLI 使用的 `stream=true`：代理会对上游发起非流式请求，并合成 Responses SSE 事件返回。
+`/v1/responses` 支持 Codex CLI 使用的 HTTP SSE 与 Responses WebSocket。WebSocket 会在同一连接内保存 Responses 上下文，后续 `response.create` 只上传新增 input；上游为 Responses 时还可选择上下文池，把完整历史留在代理侧并仅向上游发送 delta。
 
 ## 本地运行
 
@@ -119,7 +119,7 @@ npm run desktop:build
 
 ## Codex CLI
 
-Codex CLI 会通过 `/v1/responses` 使用 `stream=true` 和工具调用。代理会合成 Responses SSE，并按渠道服务类型自动转换到上游协议；入口协议和渠道服务类型不一致时不需要额外配置。
+Codex CLI 会通过 `/v1/responses` 使用 `stream=true` 和工具调用。代理支持 Responses SSE 与 WebSocket，并按渠道服务类型自动转换到上游协议；入口协议和渠道服务类型不一致时不需要额外配置。
 
 临时隔离测试示例：
 
@@ -134,10 +134,13 @@ name = "OpenCodex Local Proxy"
 base_url = "<OpenCodex Proxy 地址>/v1"
 env_key = "OPENCODEX_ACCESS_API_KEY"
 wire_api = "responses"
+supports_websockets = true
 requires_openai_auth = false
 ```
 
 其中 `OPENCODEX_ACCESS_API_KEY` 是通过 `/api-keys` 或管理台创建的访问 Key。Windhub、OpenAI 或其他上游服务的 Key 应配置在对应渠道的 `apikey` 字段中，不再作为客户端调用代理的环境变量。
+
+开启 `supports_websockets = true` 后，Codex 会复用一条 `GET /v1/responses` WebSocket 连接，并在工具结果续轮时通过 `previous_response_id` 只发送新增项。上游 Responses 渠道的 `compat.ws_mode` 支持 `auto`、`context_pool`、`passthrough`、`off`，默认 `auto`；完整行为、隔离规则、失效回退和限制见 [Responses WebSocket 方案](doc/responses-websocket.md)。
 
 Windhub 的 `mimo-v2.5-pro` 建议通过管理接口把服务类型配置为 `messages`，并放在渠道列表首位。上游协议严格由渠道的服务类型决定：配置为 `chat` 就走 `/v1/chat/completions`，配置为 `responses` 就走 `/v1/responses`，配置为 `messages` 就走 `/v1/messages`。实测其 `chat` 渠道文本请求可用，但工具结果续轮会因上游 `reasoning_content` 校验返回 400 或偶发 500；`messages` 渠道在保留 thinking block 后可完成工具调用闭环。
 

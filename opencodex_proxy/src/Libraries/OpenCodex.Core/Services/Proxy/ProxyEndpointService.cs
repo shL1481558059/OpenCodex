@@ -322,7 +322,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                                 requestId,
                                 ownerUsername,
                                 apiKeyId,
-                                payload,
+                                context.ClientPayload ?? payload,
                                 effectivePayload,
                                 upstreamRequest,
                                 context.EntryProtocol,

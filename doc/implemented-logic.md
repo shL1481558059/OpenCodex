@@ -27,6 +27,7 @@ OpenCodex 是多协议 LLM 代理与配套管理台：接收客户端 Responses�
 | HTTP 路径 | 入口协议 | 控制器动作 |
 |---|---|---|
 | `POST /responses`、`/v1/responses` | `responses` | `ProxyController.Responses` |
+| `GET /responses`、`/v1/responses`（WebSocket） | `responses` | `ProxyController.ResponsesWebSocket` |
 | `POST /chat/completions`、`/v1/chat/completions` | `chat` | `ProxyController.ChatCompletions` |
 | `POST /messages`、`/v1/messages` | `messages` | `ProxyController.Messages` |
 
@@ -150,6 +151,15 @@ OpenCodex 是多协议 LLM 代理与配套管理台：接收客户端 Responses�
 - URL 拼接：`baseurl` 以 `/` 结尾视为完整 API 根，不补 `/v1`；否则自动补 `/v1`，再拼协议 endpoint（`/responses`、`/chat/completions`、`/messages`）。
 - 上游认证、MCP beta 头与 JSON body 由 `HttpUpstreamClient` 统一构造；渠道可配置附加头与会话 ID 占位符。
 
+### 6.4 Responses WebSocket 与上下文池
+
+- `GET /responses`、`GET /v1/responses` 的 WebSocket 入口接受 `response.create`；未开启服务器多代理且没有既有 native 线程的普通请求走通用 Responses 会话，显式开启 `v2_agent_simulation` 的模型继续保留 native/legacy 多代理路径。同一连接只允许一个活动响应，支持 `generate=false` 预热，以及工具结果通过下一次 `response.create` 续接。
+- 入站会话按连接保存已完成的 input/output。后续请求带连接内 `previous_response_id` 时，代理接受新增 input、历史前缀重放或完整历史重放，并统一重建上游需要的完整请求；未知父响应返回 `previous_response_not_found`，不会误用其他连接状态。
+- 上游 Responses 渠道通过 `compat.ws_mode` 控制传输：`auto` 探测并优先上下文池、失败回退 HTTP；`context_pool` 强制 WebSocket 上下文池；`passthrough` 仅对入站 WebSocket 保留客户端 `previous_response_id` 与增量 input；`off` 固定 HTTP。默认 `auto`。
+- 上下文池快照按客户端访问 Key、会话、渠道、上游模型与渠道凭据指纹隔离；仅当当前 input 的前缀和关键请求属性一致时才发送 delta，否则全量重放。池内连接与快照均为进程内存，重启后不跨实例恢复。
+- 传输选择写入结构化日志：`ws_mode_requested`、`effective_mode`、`transport`、`input_item_count`、`previous_response_id`、`fallback_reason`；入站另记录 `client_input_item_count`、`reused_history_item_count`、`projected_input_item_count`。
+- 详细协议、配置与边界见 [responses-websocket.md](responses-websocket.md)。
+
 ## 7. 日志、观测与计费
 
 - 日志分四类：`main`（一次客户端请求）、`attempt`（每个渠道尝试）、`ocr`（视觉识别子请求）、`diagnostic`（渠道连接测试）。attempt/OCR 通过父日志关联主请求。
@@ -198,6 +208,6 @@ OpenCodex 是多协议 LLM 代理与配套管理台：接收客户端 Responses�
 
 ## 9. 测试与维护
 
-- 后端测试项目：`opencodex_proxy/tests/OpenCodex.Api.Tests/OpenCodex.Api.Tests.csproj`；全量结果以当前测试执行为准，另有实时流集成测试与 `ProtocolConversionMatrixTests` 覆盖 3×3 非流/SSE 组合。客户端协同模式由 `MultiAgentClientProtocolTests`、`MultiAgentClientStoreTests`、`MultiAgentClientRuntimeTests`、`MultiAgentClientResponseTests` 和 `MultiAgentClientWebSocketTests` 验证。
+- 后端测试项目：`opencodex_proxy/tests/OpenCodex.Api.Tests/OpenCodex.Api.Tests.csproj`；全量结果以当前测试执行为准，另有实时流集成测试与 `ProtocolConversionMatrixTests` 覆盖 3×3 非流/SSE 组合。Responses WebSocket 入站与上游传输由 `ResponsesWebSocketClientServiceTests`、`ResponsesUpstreamTransportTests` 及多代理 WebSocket 测试验证；客户端协同模式由 `MultiAgentClientProtocolTests`、`MultiAgentClientStoreTests`、`MultiAgentClientRuntimeTests`、`MultiAgentClientResponseTests` 和 `MultiAgentClientWebSocketTests` 验证。
 - 主题入口：主编排/容量/亲和/熔断/故障转移在 `ProxyEndpointServiceTests.cs`；路由与图片能力在 `ProxyVisionRoutingTests.cs`；协议结构在 `ProtocolStructuralCompatibilityTests.cs`；流式在 `SseStreamConverterTests.cs`、三组跨协议流式专项测试与 `StreamResponseCaptureTests.cs`；SQL 治理在 `ServiceQueryGovernanceTests.cs`、`ObservabilityAggregationSqlTests.cs`；多代理用 `--filter 'FullyQualifiedName~MultiAgent'`。
 - 修改协议转换器时至少运行完整 3×3 非流/SSE 矩阵；修改可靠性策略时同时核对同渠道重试、故障转移、熔断三个状态集合；修改源码后同步更新本文与边界文档。

@@ -15,18 +15,21 @@ public sealed class ProxyEndpointContext
     /// <param name="requestMetadata">传入请求元数据。</param>
     /// <param name="streamWriter">流式响应使用的写入器。</param>
     /// <param name="cancellationToken">请求取消令牌。</param>
+    /// <param name="clientPayload">客户端原始载荷；WebSocket 入站需要保留其增量形态。</param>
     public ProxyEndpointContext(
         string entryProtocol,
         Dictionary<string, object?>? payload,
         ProxyRequestMetadata requestMetadata,
         IProxyStreamWriter streamWriter,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Dictionary<string, object?>? clientPayload = null)
     {
         EntryProtocol = entryProtocol;
         Payload = payload;
         RequestMetadata = requestMetadata;
         StreamWriter = streamWriter;
         CancellationToken = cancellationToken;
+        ClientPayload = clientPayload;
     }
 
     /// <summary>
@@ -48,6 +51,11 @@ public sealed class ProxyEndpointContext
     /// 获取流式响应使用的写入器。
     /// </summary>
     public IProxyStreamWriter StreamWriter { get; }
+
+    /// <summary>
+    /// 获取客户端尚未展开的原始载荷（如果可用）。
+    /// </summary>
+    public Dictionary<string, object?>? ClientPayload { get; }
 
     /// <summary>
     /// 获取请求取消令牌。

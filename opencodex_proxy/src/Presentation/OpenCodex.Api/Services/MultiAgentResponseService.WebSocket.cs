@@ -188,19 +188,31 @@ public sealed partial class MultiAgentResponseService
                     var options = JsonDictionaryValue.Object(item, "multi_agent", WebSearchPayload.DeepCopyObject);
                     if (JsonDictionaryValue.Get(options, "enabled") is false)
                     {
-                        await ErrorAndClose("This WebSocket endpoint runs server multi-agent requests. Use HTTP for multi_agent.enabled=false.");
+                        var genericDisabled = HttpContext.RequestServices.GetRequiredService<ResponsesWebSocketClientService>();
+                        item["type"] = "response.create";
+                        await genericDisabled.HandleAsync(socket, item, metadata, ct);
+                        return new EmptyResult();
+                    }
+                    var clientIdentity = MultiAgentClientIdentity.Parse(metadata.Headers);
+                    var existingNative = clientIdentity is not null
+                        && await NativeSessions.TryGetAsync(identity.ApiKeyId, clientIdentity.ThreadId, ct) is not null;
+                    var simulatesMultiAgent = catalog.SimulatesMultiAgent(model);
+                    if (!simulatesMultiAgent && !existingNative)
+                    {
+                        var generic = HttpContext.RequestServices.GetRequiredService<ResponsesWebSocketClientService>();
+                        item["type"] = "response.create";
+                        await generic.HandleAsync(socket, item, metadata, ct);
                         return new EmptyResult();
                     }
                     connectionSession ??= SessionId(item);
                     try
                     {
-                        var clientIdentity = MultiAgentClientIdentity.Parse(metadata.Headers);
-                        connectionBinding = await ResolveClientBinding(item, clientIdentity, catalog.SimulatesMultiAgent(model), ct);
+                        connectionBinding = await ResolveClientBinding(item, clientIdentity, simulatesMultiAgent, ct);
                         if (connectionBinding is not null)
                             connectionRun = null;
                         else
                         {
-                            if (!catalog.SimulatesMultiAgent(model))
+                            if (!simulatesMultiAgent)
                             {
                                 await ErrorAndClose("v2 Agent simulation is not enabled for this model in the model catalog.");
                                 return new EmptyResult();

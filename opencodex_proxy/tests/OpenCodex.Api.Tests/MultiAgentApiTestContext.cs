@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using OpenCodex.Api.Services;
 using OpenCodex.Core.Services.MultiAgent;
@@ -49,7 +50,13 @@ internal sealed class MultiAgentApiTestContext : IDisposable
         Http.Response.Body = Body;
         Http.RequestAborted = Lifetime.Token;
         FakeEndpoint = new Endpoint(handler);
-        _services = new ServiceCollection().AddSingleton(NativeStore).AddScoped<IProxyEndpointService>(_ => FakeEndpoint).BuildServiceProvider();
+        _services = new ServiceCollection()
+            .AddSingleton(NativeStore)
+            .AddScoped<IProxyEndpointService>(_ => FakeEndpoint)
+            .AddSingleton<ILogger<ResponsesWebSocketClientService>>(_ =>
+                NullLogger<ResponsesWebSocketClientService>.Instance)
+            .AddScoped<ResponsesWebSocketClientService>()
+            .BuildServiceProvider();
         Http.RequestServices = _services;
         var catalog = DispatchProxy.Create<IModelCatalogService, CatalogProxy>();
         ((CatalogProxy)(object)catalog).Enabled = () => CatalogEnabled;

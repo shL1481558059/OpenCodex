@@ -34,7 +34,8 @@ public static class OpenCodexConfig
         "default_params",
         "unsupported_params",
         "images_api_dialect",
-        "multi_agent_v2_mode"
+        "multi_agent_v2_mode",
+        "ws_mode"
     };
 
     public static readonly HashSet<string> MultiAgentV2Modes = new(StringComparer.Ordinal)
@@ -42,6 +43,14 @@ public static class OpenCodexConfig
         "passthrough",
         "downgrade",
         "reject"
+    };
+
+    public static readonly HashSet<string> ResponsesWsModes = new(StringComparer.Ordinal)
+    {
+        "auto",
+        "context_pool",
+        "passthrough",
+        "off"
     };
 
     public static readonly HashSet<string> ImagesApiDialects = new(StringComparer.Ordinal)

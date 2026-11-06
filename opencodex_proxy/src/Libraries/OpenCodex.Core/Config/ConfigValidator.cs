@@ -135,6 +135,15 @@ public static class ConfigValidator
         ValidateCompat(compatValue, channelId);
 
         ConfigValue.TryAsObject(compatValue, out var compat);
+        if (channelType != "responses" && compat.ContainsKey("ws_mode"))
+        {
+            var responsesWsMode = ConfigValue.PythonString(GetValue(compat, "ws_mode", string.Empty))
+                .Trim()
+                .ToLowerInvariant();
+            throw new ConfigException(
+                $"channel {channelId} compat.ws_mode {responsesWsMode} is only supported for responses channels");
+        }
+
         if (channelType != "images" && compat.ContainsKey("images_api_dialect"))
         {
             throw new ConfigException($"channel {channelId} compat.images_api_dialect is only supported for images channels");
@@ -266,6 +275,19 @@ public static class ConfigValidator
         {
             throw new ConfigException(
                 $"{label}.multi_agent_v2_mode must be one of {ConfigValue.PythonList(OpenCodexConfig.MultiAgentV2Modes.Order(StringComparer.Ordinal))}");
+        }
+
+        var responsesWsMode = ConfigValue.PythonString(GetValue(compat, "ws_mode", string.Empty))
+            .Trim()
+            .ToLowerInvariant();
+        if (responsesWsMode.Length > 0 && !OpenCodexConfig.ResponsesWsModes.Contains(responsesWsMode))
+        {
+            throw new ConfigException(
+                $"{label}.ws_mode must be one of {ConfigValue.PythonList(OpenCodexConfig.ResponsesWsModes.Order(StringComparer.Ordinal))}");
+        }
+        if (responsesWsMode.Length > 0)
+        {
+            compat["ws_mode"] = responsesWsMode;
         }
 
         if (compat.TryGetValue("images_api_dialect", out var dialectValue)

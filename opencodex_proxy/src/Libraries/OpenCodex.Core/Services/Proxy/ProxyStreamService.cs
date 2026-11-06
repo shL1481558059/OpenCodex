@@ -16,17 +16,20 @@ public sealed partial class ProxyStreamService : IProxyStreamService
     private readonly IProxyLogService _logs;
     private readonly IWebSearchToolExecutor _webSearch;
     private readonly WebSearchContinuationStore _webSearchHistory;
+    private readonly ResponsesUpstreamTransport? _responsesWebSocket;
 
     public ProxyStreamService(
         IUpstreamClient upstream,
         IProxyLogService logs,
         IWebSearchToolExecutor webSearch,
-        WebSearchContinuationStore webSearchHistory)
+        WebSearchContinuationStore webSearchHistory,
+        ResponsesUpstreamTransport? responsesWebSocket = null)
     {
         _upstream = upstream;
         _logs = logs;
         _webSearch = webSearch;
         _webSearchHistory = webSearchHistory;
+        _responsesWebSocket = responsesWebSocket;
     }
 
     public async Task StreamAsync(ProxyStreamContext context)
@@ -55,11 +58,14 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                 context.ChannelType, context.DefaultTimeout, BuiltinToolSession.OutputTokenBudget(context.Payload));
             if (context.EntryProtocol == context.ChannelType)
             {
-                var streamLines = _upstream.StreamJsonAsync(
-                    context.Route.Channel,
-                    upstreamRequest,
-                    context.DefaultTimeout,
-                    context.CancellationToken);
+                var streamLines = _responsesWebSocket is not null
+                    && context.ChannelType == ProtocolConverter.Responses
+                    ? _responsesWebSocket.StreamAsync(context, context.CancellationToken)
+                    : _upstream.StreamJsonAsync(
+                        context.Route.Channel,
+                        upstreamRequest,
+                        context.DefaultTimeout,
+                        context.CancellationToken);
                 passThroughResponseCapture = new StreamResponseCapture(context.ChannelType);
                 streamWriteMetrics = await context.StreamWriter.WriteLinesAsync(
                     EnsureCompletedStreamEndsWithDone(

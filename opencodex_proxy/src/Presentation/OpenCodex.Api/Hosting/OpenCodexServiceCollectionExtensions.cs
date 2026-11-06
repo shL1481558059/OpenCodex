@@ -208,6 +208,8 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<IProxyRequestService, ProxyRequestService>();
         services.AddScoped<IProxyRouteService, ProxyRouteService>();
         services.AddScoped<IProxyNonStreamService, ProxyNonStreamService>();
+        services.AddSingleton<ResponsesWebSocketPool>();
+        services.AddSingleton<ResponsesUpstreamTransport>();
         services.AddScoped<IProxyStreamService, ProxyStreamService>();
         services.AddScoped<IWebSearchToolExecutor, WebSearchToolExecutor>();
         services.AddScoped<IWebSearchContinuationRepository, EfWebSearchContinuationRepository>();
@@ -215,6 +217,7 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<IRealtimeStreamService, RealtimeStreamService>();
         services.AddScoped<IProxyService, ProxyService>();
         services.AddScoped<MultiAgentResponseService>();
+        services.AddScoped<ResponsesWebSocketClientService>();
         services.AddScoped<IObservabilityQueryService, ObservabilityQueryService>();
         services.AddScoped<ISessionControllerService, SessionControllerService>();
         services.AddScoped<ISetupControllerService, SetupControllerService>();

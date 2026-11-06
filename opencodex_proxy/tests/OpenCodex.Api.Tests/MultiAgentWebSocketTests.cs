@@ -119,16 +119,18 @@ public sealed class MultiAgentWebSocketTests
     }
 
     [Fact]
-    public async Task CatalogDisabledModelNeverCallsUpstream()
+    public async Task CatalogDisabledModelUsesGenericWebSocket()
     {
-        using var test = new MultiAgentApiTestContext(_ => throw new Exception("must not call"));
+        using var test = new MultiAgentApiTestContext(
+            ctx => Stream(ctx, Events(Terminal(Message("GENERIC")))));
         test.CatalogEnabled = false;
         var socket = test.Socket();
         var operation = test.Service.ResponsesWebSocket();
         socket.ClientSend(Create());
-        await socket.Until("error", test.Lifetime.Token);
+        await socket.Until("response.completed", test.Lifetime.Token);
+        socket.ClientClose();
         await operation;
-        Assert.Empty(test.FakeEndpoint.Calls);
+        Assert.Single(test.FakeEndpoint.Calls);
     }
 
     [Fact]

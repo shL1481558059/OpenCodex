@@ -269,6 +269,7 @@ sequenceDiagram
 | `unsupported_params` | list | `[]` | 命中时显式拒绝的参数 |
 | `images_api_dialect` | string | 无 | 仅 images 渠道允许，值为 `openai` 或 `xai` |
 | `multi_agent_v2_mode` | string | 无（未设置） | 仅允许 `passthrough`、`downgrade`、`reject`；未设置时按入口/上游类型自动判定（入口与上游同为 responses 时透传，chat/messages 降级，其余拒绝） |
+| `ws_mode` | string | `auto` | 仅 responses 渠道允许；`auto`、`context_pool`、`passthrough`、`off`。`auto` 探测失败回退 HTTP，`context_pool` 强制上游 WebSocket，`passthrough` 仅用于入站 Responses WebSocket，`off` 固定 HTTP |
 
 ### 7.3 Images 渠道特殊规则
 
