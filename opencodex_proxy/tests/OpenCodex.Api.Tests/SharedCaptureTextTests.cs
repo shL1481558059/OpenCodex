@@ -59,5 +59,37 @@ public sealed class SharedCaptureTextTests:IDisposable
         }
         Assert.Equal((0L,0),spool.Usage);
     }
+    [Fact]
+    public void ArgumentLeaseReadsOnlyNewAcceptedSuffixAndAuthoritativeSetDetaches()
+    {
+        var spool=Spool();using var budget=new StreamCaptureBudget(1024,100,100,spool,default);
+        var source=budget.CreateText();var arguments=new ConverterArguments(budget);var owner=new object();
+        budget.AppendTracked(source,owner,"arguments","{\"x\":\"");arguments.Append("{\"x\":\"",budget.BorrowText(owner,"arguments"));
+        var offset=arguments.Length;budget.BeginEvent();budget.AppendTracked(source,owner,"arguments","a\"}");
+        Assert.Equal("",arguments.Suffix(offset));arguments.Append("a\"}",budget.BorrowText(owner,"arguments"));Assert.Equal("a\"}",arguments.Suffix(offset));
+        Assert.Equal(2L*source.Length,spool.Usage.Bytes);Assert.Same(source.ToString(),arguments.ToString());
+        arguments.Set("{}");Assert.Equal("{}",arguments.ToString());Assert.Equal("{\"x\":\"a\"}",source.ToString());
+    }
+    [Fact]
+    public async Task ChatFunctionConversionActuallySharesRawArgumentsUntilFinalImmutableBody()
+    {
+        var spool=Spool();using var budget=new StreamCaptureBudget(1024*1024,100,100,spool,default);using var capture=new StreamResponseCapture("chat",budget);
+        var result=new ConvertedStreamResult{SharedCapture=capture};var content=new string('x',128*1024);var arguments="{\"x\":\""+content+"\"}";
+        async IAsyncEnumerable<SseEvent> Events()
+        {
+            var payload=new Dictionary<string,object?>{["id"]="c",["choices"]=new List<object?>{new Dictionary<string,object?>{["index"]=0,["delta"]=new Dictionary<string,object?>{["tool_calls"]=new List<object?>{new Dictionary<string,object?>{["index"]=0,["id"]="tool-id",["type"]="function",["function"]=new Dictionary<string,object?>{["name"]="fn",["arguments"]=arguments}}}}}}};
+            var item=new SseEvent("message",payload);capture.Accumulator.Accept(item);yield return item;
+            // Only one copy of the large raw function-argument field is on disk.
+            Assert.True(spool.Usage.Bytes<2L*arguments.Length+1024);
+            var done=new SseEvent("message","[DONE]");capture.Accumulator.Accept(done);yield return done;await Task.CompletedTask;
+        }
+        IReadOnlyDictionary<string,object?>? terminal=null;
+        await foreach(var frame in SseStreamConverter.ChatToResponsesFrames(Events(),"visible",result,null,false,0,0,default))
+            if(frame.IsResponseCompleted)terminal=(IReadOnlyDictionary<string,object?>)((IReadOnlyDictionary<string,object?>)frame.Event!.Data!)["response"]!;
+        var choices=(List<object?>)result.UpstreamResponse!["choices"]!;var message=(Dictionary<string,object?>)((Dictionary<string,object?>)choices[0]!)["message"]!;
+        var calls=(List<object?>)message["tool_calls"]!;var function=(Dictionary<string,object?>)((Dictionary<string,object?>)calls[0]!)["function"]!;
+        var output=(IReadOnlyList<object?>)terminal!["output"]!;var call=output.Cast<IReadOnlyDictionary<string,object?>>().Single(item=>Equals(item["type"],"function_call"));
+        Assert.Same(function["arguments"],call["arguments"]);
+    }
     public void Dispose(){if(Directory.Exists(_directory))Directory.Delete(_directory,true);}
 }

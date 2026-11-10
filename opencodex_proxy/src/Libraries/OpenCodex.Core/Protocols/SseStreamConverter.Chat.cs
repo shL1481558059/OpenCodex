@@ -403,7 +403,7 @@ public static partial class SseStreamConverter
                         var arguments = StringValue(function, "arguments", string.Empty);
                         if (arguments.Length > 0)
                         {
-                            aggregate.AppendArguments(arguments);
+                            aggregate.AppendArguments(arguments,result.SharedCapture?.BorrowText(function,"arguments"));
                         }
                     }
                     else if (TryAsObject(GetValue(toolCall, "custom"), out var custom))
@@ -420,7 +420,7 @@ public static partial class SseStreamConverter
                         var input = StringValue(custom, "input", string.Empty);
                         if (input.Length > 0)
                         {
-                            aggregate.AppendArguments(input);
+                            aggregate.AppendArguments(input,result.SharedCapture?.BorrowText(custom,"input"));
                         }
                     }
 

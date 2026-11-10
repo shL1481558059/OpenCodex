@@ -14,6 +14,10 @@ internal sealed class ConverterText(StreamCaptureBudget budget):IReadOnlyCollect
     private CaptureText? _owned;
     private CaptureText? _shared;
     private int _length;
+    internal int Length=>_length;
+    internal string Suffix(int offset)=>_shared?.ReadRange(offset,_length-offset)??_owned?.ReadSuffix(offset)??(offset==0?"":throw new ArgumentOutOfRangeException(nameof(offset)));
+    internal bool IsCached(string value)=>_shared is {} source?source.Length==_length&&source.IsCached(value):_owned?.IsCached(value) is true;
+    internal void Reset(){if(_shared is {} source)source.Resetting-=Detach;_shared=null;_owned?.Clear();_length=0;}
     public int Count=>_length==0?0:1;
     public void Add(string value)=>Add(value,null);
     internal void Add(string value,CapturedTextSlice? slice)
@@ -40,11 +44,11 @@ internal sealed class ConverterText(StreamCaptureBudget budget):IReadOnlyCollect
 
 internal sealed class ConverterArguments(StreamCaptureBudget budget)
 {
-    private readonly CaptureText _text=budget.CreateText();
+    private readonly ConverterText _text=new(budget);
     internal int Length=>_text.Length;
-    internal void Append(string value)=>budget.Append(_text,value);
-    internal string Suffix(int offset)=>_text.ReadSuffix(offset);
-    internal void Set(string value) { if(_text.IsCached(value))return;_text.Clear();budget.Append(_text,value); }
+    internal void Append(string value,CapturedTextSlice? slice=null)=>_text.Add(value,slice);
+    internal string Suffix(int offset)=>_text.Suffix(offset);
+    internal void Set(string value) { if(_text.IsCached(value))return;_text.Reset();_text.Add(value); }
     public override string ToString()=>_text.ToString();
 }
 

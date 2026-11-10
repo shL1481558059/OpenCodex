@@ -206,7 +206,7 @@ internal sealed class ChatStreamResponseAccumulator : IStreamResponseAccumulator
             && StreamCaptureValues.TryObject(functionValue, out var function))
         {
             CaptureToolName(state.Name, StreamCaptureValues.String(function, "name"));
-            _budget.Append(state.Arguments, StreamCaptureValues.String(function, "arguments"));
+            _budget.AppendTracked(state.Arguments,function,"arguments", StreamCaptureValues.String(function, "arguments"));
         }
 
         if (toolCall.TryGetValue("custom", out var customValue)
@@ -214,7 +214,7 @@ internal sealed class ChatStreamResponseAccumulator : IStreamResponseAccumulator
         {
             state.Type ??= "custom";
             CaptureToolName(state.Name, StreamCaptureValues.String(custom, "name"));
-            _budget.Append(state.Arguments, StreamCaptureValues.String(custom, "input"));
+            _budget.AppendTracked(state.Arguments,custom,"input", StreamCaptureValues.String(custom, "input"));
         }
     }
 

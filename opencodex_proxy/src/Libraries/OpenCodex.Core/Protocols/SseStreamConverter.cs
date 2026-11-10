@@ -112,7 +112,7 @@ internal sealed class ToolCallAggregate(ConvertedStreamResult? result=null)
 {
     private readonly ConverterArguments _arguments=result?.SharedCapture?.CreateArguments() ?? new(new StreamCaptureBudget(int.MaxValue,int.MaxValue));
     public int ArgumentsLength=>_arguments.Length;
-    public void AppendArguments(string value)=>_arguments.Append(value);
+    public void AppendArguments(string value,CapturedTextSlice? slice=null)=>_arguments.Append(value,slice);
     public string ArgumentsSuffix(int offset)=>_arguments.Suffix(offset);
     public string? Id { get; set; }
     public string Type { get; set; } = "function";

@@ -58,15 +58,17 @@ internal sealed class CaptureText(ProxyAuditSpool? spool,CancellationToken cance
         return new MemoryStream(MemoryMarshal.AsBytes(value.AsSpan()).ToArray(),writable:false);
     }
     internal bool IsCached(string value)=>ReferenceEquals(_cached,value);
-    internal string ReadSuffix(int offset)
+    internal string ReadSuffix(int offset)=>ReadRange(offset,_length-offset);
+    internal string ReadRange(int offset,int length)
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(offset);
-        if(offset>_length)throw new ArgumentOutOfRangeException(nameof(offset));
-        if(offset==_length)return "";
-        if(_cached is not null)return _cached[offset..];
-        if(_buffer is null)return _memory?.ToString(offset,_length-offset)??"";
+        ArgumentOutOfRangeException.ThrowIfNegative(offset);ArgumentOutOfRangeException.ThrowIfNegative(length);
+        if(offset>_length-length)throw new ArgumentOutOfRangeException(nameof(length));
+        if(length==0)return "";
+        if(offset==0&&length==_length)return ToString();
+        if(_cached is not null)return _cached.Substring(offset,length);
+        if(_buffer is null)return _memory?.ToString(offset,length)??"";
         using var read=_buffer.OpenSnapshotRead();read.Position=2L*offset;
-        return string.Create(_length-offset,read,static(span,source)=>source.ReadExactly(MemoryMarshal.AsBytes(span)));
+        return string.Create(length,read,static(span,source)=>source.ReadExactly(MemoryMarshal.AsBytes(span)));
     }
     public void Dispose() { Resetting=null;Release(); }
 }

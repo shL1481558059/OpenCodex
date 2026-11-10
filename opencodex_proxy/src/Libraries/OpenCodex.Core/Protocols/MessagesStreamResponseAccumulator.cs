@@ -372,7 +372,7 @@ internal sealed class MessagesStreamResponseAccumulator : IStreamResponseAccumul
                     break;
                 case "input_json_delta":
                     _hasInputJsonDelta = true;
-                    _budget.Append(_inputJson, StreamCaptureValues.String(delta, "partial_json"));
+                    _budget.AppendTracked(_inputJson,delta,"partial_json", StreamCaptureValues.String(delta, "partial_json"));
                     break;
                 case "citations_delta":
                 case "citation_delta":

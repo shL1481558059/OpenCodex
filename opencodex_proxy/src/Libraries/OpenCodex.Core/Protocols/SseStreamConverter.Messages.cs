@@ -470,7 +470,7 @@ public static partial class SseStreamConverter
                     }
 
                     var partialJson = StringValue(delta, "partial_json", string.Empty);
-                    parts.Add(partialJson);
+                    parts.Add(partialJson,result.SharedCapture?.BorrowText(delta,"partial_json"));
 
                     if (blockType == "mcp_tool_use")
                     {

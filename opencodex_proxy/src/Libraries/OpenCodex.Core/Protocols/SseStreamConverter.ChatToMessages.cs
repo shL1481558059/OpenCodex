@@ -356,7 +356,7 @@ public static partial class SseStreamConverter
                         var arguments = StringValue(function, "arguments", string.Empty);
                         if (arguments.Length > 0)
                         {
-                            aggregate.AppendArguments(arguments);
+                            aggregate.AppendArguments(arguments,result.SharedCapture?.BorrowText(function,"arguments"));
                             if (!toolArgumentDeltas.TryGetValue(index, out var argumentDeltas))
                             {
                                 argumentDeltas = result.CreateFragments();
