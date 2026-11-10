@@ -11,7 +11,9 @@ namespace OpenCodex.Api.Services;
 /// <summary>Runs client-owned Responses requests over one WebSocket connection.</summary>
 public sealed class ResponsesWebSocketClientService(
     IServiceScopeFactory scopes,
-    ILogger<ResponsesWebSocketClientService> logger)
+    ILogger<ResponsesWebSocketClientService> logger,
+    ClientConnectionCache? connectionCache = null,
+    IProxyIdentityContext? identityContext = null)
 {
     private const string WarmResponsePrefix = "resp_ocx_warm_";
 
@@ -23,22 +25,23 @@ public sealed class ResponsesWebSocketClientService(
     {
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var sendGate = new SemaphoreSlim(1, 1);
-        var records = new Dictionary<string, StoredClientResponse>(StringComparer.Ordinal);
+        using var ownedCache = connectionCache is null ? new ClientConnectionCache() : null;
+        using var history = (connectionCache ?? ownedCache!).Open(identityContext?.RequireIdentity().ApiKeyId ?? Guid.Empty);
         var ct = stop.Token;
         Task active = Task.CompletedTask;
         CancellationTokenSource? activeStop = null;
         string activeResponseId = "";
         string terminalResponseId = "";
-        var knownIds = new System.Collections.Concurrent.ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
         var maximumBytes = 16 * 1024 * 1024;
         var first = firstRequest;
 
-        async Task Send(Dictionary<string, object?> payload)
+        async Task Send(Dictionary<string, object?> payload, CancellationToken? sendCancellation = null)
         {
-            await sendGate.WaitAsync(ct);
+            var sendToken = sendCancellation ?? ct;
+            await sendGate.WaitAsync(sendToken);
             try
             {
-                if (socket.State != WebSocketState.Open) return;
+                if (socket.State != WebSocketState.Open) throw new WebSocketException(WebSocketError.InvalidState);
                 var type = JsonDictionaryValue.String(payload, "type");
                 var responseId = JsonDictionaryValue.Get(payload, "response") is IReadOnlyDictionary<string, object?> response
                     ? JsonDictionaryValue.String(response, "id")
@@ -46,16 +49,16 @@ public sealed class ResponsesWebSocketClientService(
                 if (type == "response.created" && responseId.Length > 0)
                 {
                     activeResponseId = responseId;
-                    knownIds.TryAdd(responseId, 0);
+                    history.RememberId(responseId);
                 }
                 else if (type is "response.completed" or "response.failed" or "response.incomplete"
                     && responseId.Length > 0)
                 {
-                    knownIds.TryAdd(responseId, 0);
+                    history.RememberId(responseId);
                     terminalResponseId = responseId;
                 }
                 var bytes = JsonSerializer.SerializeToUtf8Bytes(payload);
-                await socket.SendAsync(bytes, WebSocketMessageType.Text, true, ct);
+                await socket.SendAsync(bytes, WebSocketMessageType.Text, true, sendToken);
             }
             finally { sendGate.Release(); }
         }
@@ -82,7 +85,7 @@ public sealed class ResponsesWebSocketClientService(
             // The parsed frame is request-scoped and immutable after projection.
             // Rewrite stages copy the payload before changing request semantics.
             var clientRequest = request;
-            var fullRequest = ProjectRequest(request, records, out var previous);
+            var fullRequest = ProjectRequest(request, history.FindResponse<StoredClientResponse>, out var previous);
             if (fullRequest is null)
             {
                 await SendError(
@@ -112,11 +115,11 @@ public sealed class ResponsesWebSocketClientService(
             {
                 var responseId = WarmResponsePrefix + Guid.NewGuid().ToString("N");
                 var response = SyntheticResponse(responseId, model, "completed");
-                records[responseId] = new StoredClientResponse
+                history.RememberResponse(responseId, new StoredClientResponse
                 {
                     Request = fullRequest,
                     Response = response
-                };
+                }, fullRequest, response);
                 await Send(new Dictionary<string, object?>
                 {
                     ["type"] = "response.created",
@@ -132,7 +135,7 @@ public sealed class ResponsesWebSocketClientService(
 
             fullRequest["stream"] = true;
             var writer = new MultiAgentModelStreamWriter(
-                (payload, token) => Send(payload));
+                (payload, token) => Send(payload, token));
             try
             {
                 await using var scope = scopes.CreateAsyncScope();
@@ -160,17 +163,20 @@ public sealed class ResponsesWebSocketClientService(
 
                 if (JsonDictionaryValue.String(response, "status") is "completed" or "incomplete")
                 {
-                    records[responseId] = new StoredClientResponse
+                    history.RememberResponse(responseId, new StoredClientResponse
                     {
                         Request = fullRequest,
                         Response = response
-                    };
+                    }, fullRequest, response);
                 }
             }
             catch (OperationCanceledException) when (responseCt.IsCancellationRequested) { }
             catch (Exception exception)
             {
                 logger.LogError(exception, "Responses WebSocket request failed for model {Model}", model);
+                // A terminal send was already attempted by the audited proxy. Neither a
+                // late upstream failure nor a failed terminal send permits a second terminal.
+                if (terminalResponseId.Length > 0) return;
                 await SendError(
                     exception is OpenCodex.Core.Errors.ProxyException proxy ? proxy.ErrorType : "server_error",
                     exception is OpenCodex.Core.Errors.BadRequestException
@@ -263,7 +269,7 @@ public sealed class ResponsesWebSocketClientService(
                 await active;
             }
 
-            if (knownIds.ContainsKey(responseId))
+            if (history.Knows(responseId) || activeResponseId == responseId || terminalResponseId == responseId)
             {
                 await Send(new Dictionary<string, object?>
                 {
@@ -396,7 +402,7 @@ public sealed class ResponsesWebSocketClientService(
 
     private static Dictionary<string, object?>? ProjectRequest(
         Dictionary<string, object?> request,
-        IReadOnlyDictionary<string, StoredClientResponse> records,
+        Func<string, StoredClientResponse?> records,
         out StoredClientResponse? previous)
     {
         previous = null;
@@ -410,7 +416,7 @@ public sealed class ResponsesWebSocketClientService(
             return full;
         }
 
-        if (!records.TryGetValue(previousId, out previous)) return null;
+        if ((previous = records(previousId)) is null) return null;
         var previousInput = JsonDictionaryValue.List(previous.Request, "input");
         var previousOutput = JsonDictionaryValue.List(previous.Response, "output");
         var history = previousInput.Concat(previousOutput).ToList();

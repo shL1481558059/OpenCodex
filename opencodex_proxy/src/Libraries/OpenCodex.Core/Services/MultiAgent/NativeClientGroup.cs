@@ -3,8 +3,11 @@ using OpenCodex.Core.Errors;
 namespace OpenCodex.Core.Services.MultiAgent;
 
 /// <summary>One owner's root group owns its shared policy and canonical agent identities.</summary>
-internal sealed class NativeClientGroup(bool persist, int limit)
+internal sealed class NativeClientGroup(bool persist, int limit, Guid owner, string rootThreadId)
 {
+    internal long LastAccess;
+    public Guid Owner { get; } = owner;
+    public string RootThreadId { get; } = rootThreadId;
     public bool Persist { get; } = persist;
     public int Limit { get; } = limit;
     public SemaphoreSlim ChildModels { get; } = new(limit, limit);

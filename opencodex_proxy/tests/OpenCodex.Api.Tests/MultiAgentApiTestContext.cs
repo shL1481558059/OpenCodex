@@ -36,7 +36,7 @@ internal sealed class MultiAgentApiTestContext : IDisposable
 
     public MultiAgentApiTestContext(Func<ProxyEndpointContext, Task<ProxyEndpointResult>> handler,
         MultiAgentRunStore? store = null, Guid? key = null, string session = "test-session",
-        MultiAgentClientStore? clientStore = null)
+        MultiAgentClientStore? clientStore = null, ClientConnectionCache? connectionCache = null)
     {
         Store = store ?? new MultiAgentRunStore(Path.Combine(Path.GetTempPath(), "ocxp-api-tests-" + Guid.NewGuid().ToString("N")));
         ClientStore = clientStore ?? new MultiAgentClientStore(Store,
@@ -52,6 +52,8 @@ internal sealed class MultiAgentApiTestContext : IDisposable
         FakeEndpoint = new Endpoint(handler);
         _services = new ServiceCollection()
             .AddSingleton(NativeStore)
+            .AddSingleton(connectionCache ?? new ClientConnectionCache())
+            .AddSingleton<IProxyIdentityContext>(new Identity(Key))
             .AddScoped<IProxyEndpointService>(_ => FakeEndpoint)
             .AddSingleton<ILogger<ResponsesWebSocketClientService>>(_ =>
                 NullLogger<ResponsesWebSocketClientService>.Instance)

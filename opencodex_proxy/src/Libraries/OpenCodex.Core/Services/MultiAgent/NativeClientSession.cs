@@ -10,6 +10,10 @@ public sealed class NativeClientSession
     public string AgentName { get; internal init; } = "";
     public bool Persist { get; internal init; }
     public int MaxConcurrentSubagents { get; internal init; }
+    internal NativeClientGroup Group { get; init; } = null!;
+    internal long LastAccess;
+    internal int RequestReferences;
+    internal HashSet<string> ReplayIdentities { get; } = new(StringComparer.Ordinal);
     internal SemaphoreSlim Gate { get; } = new(1, 1);
     internal SemaphoreSlim ChildModels { get; init; } = null!;
     internal object ActivityLock { get; } = new();
@@ -30,12 +34,14 @@ public sealed class NativeClientRequestLease : IAsyncDisposable
 {
     private readonly NativeClientSession _session;
     private readonly CancellationTokenSource _stop;
+    private readonly Action? _released;
     private bool _childPermit;
     private int _disposed;
 
-    internal NativeClientRequestLease(NativeClientSession session, CancellationToken ct)
+    internal NativeClientRequestLease(NativeClientSession session, CancellationToken ct, Action? released = null)
     {
         _session = session;
+        _released = released;
         _stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
         Token = _stop.Token;
     }
@@ -61,6 +67,7 @@ public sealed class NativeClientRequestLease : IAsyncDisposable
         }
         if (_childPermit) _session.ChildModels.Release();
         _session.Gate.Release();
+        _released?.Invoke();
         return ValueTask.CompletedTask;
     }
 }

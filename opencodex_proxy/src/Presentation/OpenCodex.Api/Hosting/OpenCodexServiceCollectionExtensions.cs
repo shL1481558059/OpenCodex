@@ -61,7 +61,8 @@ public static class OpenCodexServiceCollectionExtensions
             serviceProvider.GetRequiredService<OpenCodex.Core.Services.MultiAgent.MultiAgentRunStore>(),
             serviceProvider.GetRequiredService<IConfiguration>()["MultiAgent:StateDirectory"] ?? "logs/multi-agent-runs"));
         services.AddSingleton(serviceProvider => new OpenCodex.Core.Services.MultiAgent.NativeClientSessionStore(
-            serviceProvider.GetRequiredService<IConfiguration>()["MultiAgent:StateDirectory"] ?? "logs/multi-agent-runs"));
+            serviceProvider.GetRequiredService<IConfiguration>()["MultiAgent:StateDirectory"] ?? "logs/multi-agent-runs",
+            configuration.GetSection("MultiAgent:NativeClientCache").Get<OpenCodex.Core.Services.MultiAgent.NativeClientCacheOptions>()));
         services.AddOpenCodexAuthentication(configuration);
 
         return services;
@@ -225,6 +226,8 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<IRealtimeStreamService, RealtimeStreamService>();
         services.AddScoped<IProxyService, ProxyService>();
         services.AddScoped<MultiAgentResponseService>();
+        services.AddSingleton(provider => new OpenCodex.Core.Services.MultiAgent.ClientConnectionCache(
+            provider.GetRequiredService<IConfiguration>().GetSection("MultiAgent:ClientWebSocketCache").Get<OpenCodex.Core.Services.MultiAgent.ClientConnectionCacheOptions>()));
         services.AddScoped<ResponsesWebSocketClientService>();
         services.AddScoped<IObservabilityQueryService, ObservabilityQueryService>();
         services.AddScoped<ISessionControllerService, SessionControllerService>();
