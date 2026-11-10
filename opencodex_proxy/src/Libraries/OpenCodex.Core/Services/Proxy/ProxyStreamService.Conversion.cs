@@ -98,6 +98,7 @@ public sealed partial class ProxyStreamService
                             context.ChannelType,
                             mappings?.Keys ?? Array.Empty<string>(),
                             tools?.Binding.WebSearchToolName);
+                        state.UpstreamRequestBody = ProxyLogBodyHandle.CaptureJson(state.UpstreamRequest);
                         continue;
                     }
                 }
@@ -196,6 +197,7 @@ public sealed partial class ProxyStreamService
             if (tools.NextRequest is { } next)
             {
                 state.UpstreamRequest = next;
+                state.UpstreamRequestBody = ProxyLogBodyHandle.CaptureJson(next);
                 continue;
             }
             if (terminal is not null)
@@ -274,6 +276,7 @@ public sealed partial class ProxyStreamService
     private sealed class ConvertedProxyStreamState
     {
         public required Dictionary<string, object?> UpstreamRequest { get; set; }
+        public ProxyLogBodyHandle? UpstreamRequestBody { get; set; }
         public Dictionary<string, object?>? UpstreamResponse { get; set; }
         public Dictionary<string, object?>? ResponsePayload { get; set; }
         public Dictionary<string, object?> RejectedUsage { get; } = new(StringComparer.Ordinal);

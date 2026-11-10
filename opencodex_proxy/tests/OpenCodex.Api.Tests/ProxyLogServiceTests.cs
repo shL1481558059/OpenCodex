@@ -580,6 +580,59 @@ public sealed class ProxyLogServiceTests
     }
 
     [Fact]
+    public async Task BodyHandles_ShareOriginalAuditAcrossLifecycleAndAttemptButVersionChangedRounds()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), "opencodex-proxy-log-tests", $"{Guid.NewGuid():N}.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        using (var bootstrap = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}")) bootstrap.Database.Migrate();
+        EnsureAdminUser(dbPath);
+        var service = CreateService(dbPath);
+        var headers = new Dictionary<string, string> { ["x-test"] = "original-header" };
+        var nested = new Dictionary<string, object?> { ["text"] = "original-body" };
+        var payload = new Dictionary<string, object?> { ["model"] = "model", ["input"] = nested };
+        var upstream = new Dictionary<string, object?> { ["model"] = "upstream", ["input"] = new List<object?> { "first-round" } };
+        var bodies = new ProxyLogBodyHandles(ProxyLogBodyHandle.CaptureJson(headers), ProxyLogBodyHandle.CaptureJson(payload), ProxyLogBodyHandle.CaptureJson(upstream));
+        var metadata = new ProxyRequestMetadata("POST", "/v1/responses", null, headers) { LogBodies = bodies };
+        var id = service.CreateQueuedLog(new ProxyRequestLogQueuedContext("req-handles", "admin", null,
+            payload, "model", false, "POST", "/v1/responses", null, headers) { BodyHandles = bodies });
+        service.MarkProcessing(id, new ProxyRequestLogProcessingContext("admin", null, upstream, "model", "upstream", null, "responses", false)
+            { UpstreamRequestBody = bodies.UpstreamRequest });
+        Assert.Null(bodies.Request!.ReadSnapshot().Utf8);
+        Assert.Null(bodies.UpstreamRequest!.ReadSnapshot().Utf8);
+
+        // Snapshot ownership, not dictionary reference equality, determines the audit version.
+        headers["x-test"] = "later-header";
+        nested["text"] = "later-body";
+        var attempt = service.CreateQueuedLog(new ProxyRequestLogQueuedContext("req-handles", "admin", null,
+            payload, "model", false, "POST", "/v1/responses", null, headers, ProxyRequestTypes.Attempt, id)
+            { BodyHandles = bodies });
+        upstream["input"] = new List<object?> { "second-round" };
+        var secondRound = ProxyLogBodyHandle.CaptureJson(upstream);
+        await service.CompleteLogAsync(id, new ProxyLogContext("req-handles", "admin", null, payload,
+            upstream, null, new Dictionary<string, object?>(), null, "model", "upstream", null, "responses",
+            false, null, 200, 1, null, null) { UpstreamRequestBody = secondRound }, metadata);
+        await service.CompleteLogAsync(attempt, new ProxyLogContext("req-handles", "admin", null, payload,
+            upstream, null, new Dictionary<string, object?>(), null, "model", "upstream", null, "responses",
+            false, null, 200, 1, null, null, ProxyRequestTypes.Attempt, id), metadata);
+
+        using var db = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var store = new LogContentStore(db);
+        Assert.Contains("original-header", store.Read(id).Get(RequestLogContentSlot.RequestHeaders));
+        Assert.Contains("original-body", store.Read(id).Get(RequestLogContentSlot.RequestBody));
+        Assert.Contains("original-body", store.Read(attempt).Get(RequestLogContentSlot.RequestBody));
+        Assert.Contains("first-round", store.Read(attempt).Get(RequestLogContentSlot.UpstreamRequestBody));
+        Assert.Contains("second-round", store.Read(id).Get(RequestLogContentSlot.UpstreamRequestBody));
+        var requestRefs = db.RequestLogContentRefs.Where(x => (x.RequestLogId == id || x.RequestLogId == attempt) && x.Slot == RequestLogContentSlot.RequestBody).ToList();
+        Assert.Equal(2, requestRefs.Count);
+        Assert.Single(requestRefs.Select(x => x.ManifestId).Distinct());
+        Assert.Equal(1, bodies.Headers!.HashComputations);
+        Assert.Equal(1, bodies.Request.HashComputations);
+        Assert.Equal(1, bodies.UpstreamRequest.HashComputations);
+        Assert.Equal(1, secondRound.HashComputations);
+        Assert.Null(secondRound.ReadSnapshot().Utf8);
+    }
+
+    [Fact]
     public async Task LifecycleMethods_PersistStatusesAndContentSlots()
     {
         var dbPath = Path.Combine(

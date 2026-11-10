@@ -31,6 +31,7 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
     public async Task<ProxyNonStreamResult> SendAsync(ProxyNonStreamContext context)
     {
         var upstreamRequest = context.UpstreamRequest;
+        var upstreamRequestBody = context.RequestMetadata.LogBodies?.UpstreamRequest;
         Dictionary<string, object?>? upstreamResponse = null;
         Dictionary<string, object?>? responsePayload = null;
         Dictionary<string, object?>? webSearchDetails = null;
@@ -105,6 +106,7 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
                         context.ChannelType,
                         toolCallMappings?.Keys ?? Array.Empty<string>(),
                         tools?.Binding.WebSearchToolName);
+                    upstreamRequestBody = ProxyLogBodyHandle.CaptureJson(upstreamRequest);
                     continue;
                 }
                 if (tools is null)
@@ -121,6 +123,7 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
                     break;
                 }
                 upstreamRequest = next;
+                upstreamRequestBody = ProxyLogBodyHandle.CaptureJson(upstreamRequest);
             }
 
             return new ProxyNonStreamResult(statusCode, responsePayload);
@@ -178,6 +181,7 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
                     error,
                     webSearchDetails)
                 {
+                    UpstreamRequestBody = upstreamRequestBody,
                     AggregatedUsage = tools?.HasAccountingUsage == true
                         ? tools.AccountingUsage
                         : rejectedUsage.Count > 0 ? rejectedUsage : null

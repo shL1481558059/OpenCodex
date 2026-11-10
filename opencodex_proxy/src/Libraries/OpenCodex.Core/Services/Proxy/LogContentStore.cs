@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Text;
 using OpenCodex.Core.Domain;
 using OpenCodex.CoreBase.Data;
+using OpenCodex.CoreBase.Domain.Proxy;
 
 namespace OpenCodex.Core.Services.Proxy;
 
@@ -72,6 +73,35 @@ internal sealed class LogContentStore
         IReadOnlyList<RequestLogContentSlot> slots,
         Func<RequestLogContentSlot, ReadOnlyMemory<byte>?> encode)
     {
+        ArgumentNullException.ThrowIfNull(encode);
+        WriteContent(requestLogId, slots, slot => encode(slot) is { } bytes
+            ? new ContentValue(bytes, null, bytes.Length) : null);
+    }
+
+    public void WriteBodies(
+        Guid requestLogId,
+        IReadOnlyList<RequestLogContentSlot> slots,
+        Func<RequestLogContentSlot, ProxyLogBodyHandle?> body)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+        var handles = new HashSet<ProxyLogBodyHandle>();
+        WriteContent(requestLogId, slots, slot =>
+        {
+            if (body(slot) is not { } handle) return null;
+            var snapshot = handle.ReadSnapshot();
+            handles.Add(handle);
+            return new ContentValue(snapshot.Utf8, snapshot.Hash, snapshot.Length);
+        });
+        // WriteContent returns only after transaction commit. A failed transaction keeps the
+        // snapshots available for retry; no cache entry can claim uncommitted persistence.
+        foreach (var handle in handles) handle.ReleaseCommittedBuffer();
+    }
+
+    private void WriteContent(
+        Guid requestLogId,
+        IReadOnlyList<RequestLogContentSlot> slots,
+        Func<RequestLogContentSlot, ContentValue?> encode)
+    {
         ArgumentNullException.ThrowIfNull(slots);
         ArgumentNullException.ThrowIfNull(encode);
         if (slots.Count == 0) return;
@@ -94,8 +124,10 @@ internal sealed class LogContentStore
         }
     }
 
+    private readonly record struct ContentValue(ReadOnlyMemory<byte>? Bytes, string? Hash, int Length);
+
     private void WriteSlot(
-        Guid requestLogId, RequestLogContentSlot slot, ReadOnlyMemory<byte>? content,
+        Guid requestLogId, RequestLogContentSlot slot, ContentValue? content,
         List<object> ownedEntities)
     {
         var replacedManifestIds = _context.RequestLogContentRefs
@@ -104,14 +136,14 @@ internal sealed class LogContentStore
             .Distinct()
             .ToList();
         LogContentManifest? manifest = null;
-        if (content is { } bytes)
+        if (content is { } value)
         {
-            var hash = LogContentCodec.ContentHash(bytes);
+            var hash = value.Hash ?? LogContentCodec.ContentHash(value.Bytes!.Value);
             manifest = _context.LogContentManifests.AsNoTracking()
                 .FirstOrDefault(value => value.Sha256 == hash);
             if (manifest is not null)
             {
-                if (manifest.RawLength != bytes.Length)
+                if (manifest.RawLength != value.Length)
                     throw new InvalidDataException($"Content hash collision detected for manifest {hash}.");
                 // A lifecycle update with identical bytes must not churn references or
                 // repeat CDC chunk hashing, block queries, or compression.
@@ -119,6 +151,8 @@ internal sealed class LogContentStore
             }
             else
             {
+                if (value.Bytes is not { } bytes)
+                    throw new InvalidDataException("A committed audit body manifest is missing; complete audit cannot be guaranteed.");
                 var plan = LogContentCodec.Plan(bytes, hash);
                 var blocksByHash = EnsureBlocks([plan], ownedEntities);
                 manifest = EnsureManifests([plan], blocksByHash, ownedEntities)[hash];

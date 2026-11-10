@@ -2,6 +2,8 @@ namespace OpenCodex.CoreBase.Domain.Proxy;
 
 public sealed class ProxyRequestLogQueuedContext
 {
+    public ProxyLogBodyHandles? BodyHandles { get; init; }
+
     public ProxyRequestLogQueuedContext(
         string requestId,
         string ownerUsername,
@@ -64,6 +66,8 @@ public sealed class ProxyRequestLogQueuedContext
 
 public sealed class ProxyRequestLogProcessingContext
 {
+    public ProxyLogBodyHandle? UpstreamRequestBody { get; init; }
+
     public ProxyRequestLogProcessingContext(
         string ownerUsername,
         Guid? apiKeyId,

@@ -118,6 +118,7 @@ public sealed class ProxyEndpointServiceTests
     public async Task ProxyAsync_CarriesDistinctToolContractForEachRouteAttempt(string protocol, bool stream)
     {
         var contracts = new List<IReadOnlyDictionary<string, ResponsesToolCallMapping>>();
+        var bodyVersions = new List<ProxyLogBodyHandles>();
         void Observe(IReadOnlyDictionary<string, ResponsesToolCallMapping>? contract)
         {
             Assert.NotNull(contract);
@@ -127,11 +128,13 @@ public sealed class ProxyEndpointServiceTests
         }
         var nonStreams = new StubProxyNonStreamService(context =>
         {
+            bodyVersions.Add(Assert.IsType<ProxyLogBodyHandles>(context.RequestMetadata.LogBodies));
             Observe(context.ToolCallMappings);
             return Task.FromResult(new ProxyNonStreamResult(200, new { ok = true }));
         });
         var streams = new StubProxyStreamService(context =>
         {
+            bodyVersions.Add(Assert.IsType<ProxyLogBodyHandles>(context.RequestMetadata.LogBodies));
             Observe(context.ToolCallMappings);
             return Task.CompletedTask;
         });
@@ -156,6 +159,35 @@ public sealed class ProxyEndpointServiceTests
         Assert.Equal(200, result.StatusCode);
         Assert.Equal(2, contracts.Count);
         Assert.NotSame(contracts[0], contracts[1]);
+        Assert.Same(bodyVersions[0].Headers, bodyVersions[1].Headers);
+        Assert.Same(bodyVersions[0].Request, bodyVersions[1].Request);
+        Assert.NotSame(bodyVersions[0].UpstreamRequest, bodyVersions[1].UpstreamRequest);
+    }
+
+    [Fact]
+    public async Task ProxyAsync_CancelledPreparedAttempt_IsFinalizedInsteadOfLeftQueued()
+    {
+        using var stop = new CancellationTokenSource();
+        var logs = new StubProxyLogService();
+        var nonStreams = new StubProxyNonStreamService(_ =>
+        {
+            stop.Cancel();
+            throw new OperationCanceledException(stop.Token);
+        });
+        var channel = CreateChannel("cancelled-attempt", 0);
+        var service = CreateService(new ChannelCapacityService(), new StubProxyRouteService(
+            [CreateRoute(channel, "model", "upstream")]), nonStreams: nonStreams, logs: logs);
+        var request = new ProxyEndpointContext(ProtocolConverter.Responses,
+            new Dictionary<string, object?> { ["model"] = "model", ["input"] = "hello" },
+            new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
+            new StubProxyStreamWriter(), stop.Token);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.ProxyAsync(request));
+
+        var attempt = Assert.Single(logs.WrittenLogs);
+        Assert.Equal(ProxyRequestTypes.Attempt, attempt.RequestType);
+        Assert.Equal(499, attempt.StatusCode);
+        Assert.Equal(logs.QueuedLogId, attempt.ParentRequestLogId);
     }
 
     [Fact]
@@ -1756,7 +1788,7 @@ public sealed class ProxyEndpointServiceTests
 
         public Guid CreateQueuedLog(ProxyRequestLogQueuedContext context)
         {
-            return QueuedLogId;
+            return context.RequestType == ProxyRequestTypes.Attempt ? Guid.NewGuid() : QueuedLogId;
         }
 
         public void MarkProcessing(Guid requestLogId, ProxyRequestLogProcessingContext context)
@@ -1765,6 +1797,7 @@ public sealed class ProxyEndpointServiceTests
 
         public Task CompleteLogAsync(Guid requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
         {
+            if (context.RequestType == ProxyRequestTypes.Attempt) WrittenLogs.Add(context);
             return Task.CompletedTask;
         }
 

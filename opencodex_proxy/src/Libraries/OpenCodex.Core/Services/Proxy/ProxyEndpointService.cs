@@ -110,6 +110,15 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 throw new BadRequestException("request body must be a JSON object");
             }
 
+            var originalBodies = requestMetadata.LogBodies ?? new ProxyLogBodyHandles(null, null);
+            requestMetadata = requestMetadata.WithLogBodies(originalBodies with
+            {
+                Headers = originalBodies.Headers ?? ProxyLogBodyHandle.CaptureJson(requestMetadata.Headers),
+                Request = originalBodies.Request ?? (requestMetadata.RawBody is { Length: > 0 } rawBody
+                    ? ProxyLogBodyHandle.CaptureUtf8(rawBody.Span)
+                    : ProxyLogBodyHandle.CaptureJson(context.ClientPayload ?? payload)),
+                UpstreamRequest = null
+            });
             requestModel = JsonDictionaryValue.String(payload, "model");
             var sessionId = ProxySessionHeaderTemplate.ResolveSessionId(requestMetadata, payload);
             var requestContainsImages = ProxyImageRequestDetector.ContainsImageInput(payload, context.EntryProtocol);
@@ -128,7 +137,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 requestMetadata.Path,
                 requestMetadata.ClientIp,
                 requestMetadata.Headers,
-                rawRequestBody: requestMetadata.RawBody));
+                rawRequestBody: requestMetadata.RawBody) { BodyHandles = requestMetadata.LogBodies });
             var candidates = await OrderCandidatesAsync(
                 ownerUsername,
                 requestModel,
@@ -189,6 +198,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 string? attemptChannelType = null;
                 string? attemptUpstreamModel = null;
                 Dictionary<string, object?>? attemptUpstreamRequest = null;
+                Guid? attemptLogId = null;
+                requestMetadata = requestMetadata.WithLogBodies(requestMetadata.LogBodies! with { UpstreamRequest = null });
                 BuiltinToolRequestContext? builtinTools = null;
                 try
                 {
@@ -290,7 +301,12 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                     ChannelCompatRequestRewriter.ApplyForceParams(upstreamRequest, channelCompat);
                     upstreamRequest["model"] = upstreamModel;
                     WebSearchRequestPolicy.FinalizeUpstreamRequest(upstreamRequest, builtinTools);
+                    if (isStream) upstreamRequest["stream"] = true;
                     attemptUpstreamRequest = upstreamRequest;
+                    requestMetadata = requestMetadata.WithLogBodies(requestMetadata.LogBodies! with
+                    {
+                        UpstreamRequest = ProxyLogBodyHandle.CaptureJson(upstreamRequest)
+                    });
 
                     if (requestLogId.HasValue)
                     {
@@ -302,7 +318,18 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                             upstreamModel,
                             channelId,
                             channelType,
-                            isStream));
+                            isStream) { UpstreamRequestBody = requestMetadata.LogBodies!.UpstreamRequest });
+                    }
+
+                    if (requestLogId.HasValue)
+                    {
+                        // Persist the attempt's original refs now: a tool retry/search round may
+                        // replace the main log body before this attempt's final metadata is written.
+                        attemptLogId = _logs.CreateQueuedLog(new ProxyRequestLogQueuedContext(
+                            requestId, ownerUsername, apiKeyId, payload, requestModel, isStream,
+                            requestMetadata.Method, requestMetadata.Path, requestMetadata.ClientIp,
+                            requestMetadata.Headers, ProxyRequestTypes.Attempt, requestLogId,
+                            requestMetadata.RawBody) { BodyHandles = requestMetadata.LogBodies });
                     }
 
                     if (isStream)
@@ -361,7 +388,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                             error: null,
                             failoverEligible: false,
                            upstreamResponse: null,
-                          requestMetadata);
+                          requestMetadata, attemptLogId);
                        await _channelCircuitBreaker.RecordSuccessAsync(ownerUsername, candidateChannelId);
                       streamResponseStarted = trackingWriter.HasWritten;
                       return new ProxyEndpointResult(200, Payload: null, IsEmpty: true, UpstreamProtocol: channelType);
@@ -417,7 +444,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                        error: null,
                        failoverEligible: false,
                        upstreamResponse: null,
-                      requestMetadata);
+                      requestMetadata, attemptLogId);
                    await _channelCircuitBreaker.RecordSuccessAsync(ownerUsername, candidateChannelId);
                   return new ProxyEndpointResult(result.StatusCode, result.Payload, IsEmpty: false, UpstreamProtocol: channelType);
               }
@@ -462,7 +489,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                             exception.Message,
                             failoverEligible,
                             upstreamErrorResponse,
-                            requestMetadata);
+                            requestMetadata, attemptLogId);
                         if (failoverEligible)
                         {
                             lastFailoverException = exception;
@@ -492,7 +519,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         exception.Message,
                         canFailover,
                         upstreamErrorResponse,
-                        requestMetadata);
+                        requestMetadata, attemptLogId);
                     if (canFailover)
                     {
                         lastFailoverException = exception;
@@ -511,29 +538,26 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                            candidateCircuitBreakDuration);
                    }
 
-                    if (exception is not OperationCanceledException)
-                    {
-                        await WriteChannelAttemptLogAsync(
-                            requestLogId,
-                            requestId,
-                            ownerUsername,
-                            apiKeyId,
-                            payload,
-                            attemptUpstreamRequest,
-                            requestModel,
-                            attemptUpstreamModel,
-                            candidate.Route.Channel,
-                            candidateChannelId,
-                            attemptChannelType,
-                            isStream,
-                            routeAttemptNumber,
-                            attemptStarted,
-                            ProxyHttpStatus.InternalServerError,
-                            exception.Message,
-                            failoverEligible: false,
-                            upstreamResponse: null,
-                            requestMetadata);
-                    }
+                    await WriteChannelAttemptLogAsync(
+                        requestLogId,
+                        requestId,
+                        ownerUsername,
+                        apiKeyId,
+                        payload,
+                        attemptUpstreamRequest,
+                        requestModel,
+                        attemptUpstreamModel,
+                        candidate.Route.Channel,
+                        candidateChannelId,
+                        attemptChannelType,
+                        isStream,
+                        routeAttemptNumber,
+                        attemptStarted,
+                        exception is OperationCanceledException ? ProxyHttpStatus.ClientClosedRequest : ProxyHttpStatus.InternalServerError,
+                        exception is OperationCanceledException ? ProxyRequestStatusResolver.ClientCancelledError : exception.Message,
+                        failoverEligible: false,
+                        upstreamResponse: null,
+                        requestMetadata, attemptLogId);
 
                     throw;
                 }
@@ -662,7 +686,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         string? error,
         bool failoverEligible,
         Dictionary<string, object?>? upstreamResponse,
-        ProxyRequestMetadata requestMetadata)
+        ProxyRequestMetadata requestMetadata,
+        Guid? attemptLogId = null)
     {
         if (!parentRequestLogId.HasValue)
         {
@@ -689,8 +714,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             attemptDetails["error"] = error;
         }
 
-        await _logs.WriteLogAsync(
-            new ProxyLogContext(
+        var logContext = new ProxyLogContext(
                 requestId,
                 ownerUsername,
                 apiKeyId,
@@ -710,8 +734,11 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 error,
                 WebSearchDetails: null,
                 RequestType: ProxyRequestTypes.Attempt,
-                ParentRequestLogId: parentRequestLogId),
-            requestMetadata);
+                ParentRequestLogId: parentRequestLogId);
+        if (attemptLogId is { } existingId)
+            await _logs.CompleteLogAsync(existingId, logContext, requestMetadata);
+        else
+            await _logs.WriteLogAsync(logContext, requestMetadata);
     }
 
     internal static ProxyRouteDto ApplyResponsesPassthroughHeaders(

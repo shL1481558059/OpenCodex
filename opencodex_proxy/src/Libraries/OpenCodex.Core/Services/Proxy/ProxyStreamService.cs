@@ -90,7 +90,11 @@ public sealed partial class ProxyStreamService : IProxyStreamService
             }
             else
             {
-                convertedState = new ConvertedProxyStreamState { UpstreamRequest = upstreamRequest };
+                convertedState = new ConvertedProxyStreamState
+                {
+                    UpstreamRequest = upstreamRequest,
+                    UpstreamRequestBody = context.RequestMetadata.LogBodies?.UpstreamRequest
+                };
                 var convertedLines = ConvertRoundsAsync(context, convertedState, tools, context.CancellationToken);
                 streamWriteMetrics = await context.StreamWriter.WriteLinesAsync(
                     EnsureCompletedStreamEndsWithDone(
@@ -201,6 +205,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                     error,
                     webSearchDetails)
                 {
+                    UpstreamRequestBody = convertedState?.UpstreamRequestBody ?? context.RequestMetadata.LogBodies?.UpstreamRequest,
                     AggregatedUsage = tools?.HasAccountingUsage == true
                         ? tools.AccountingUsage
                         : convertedState?.RejectedUsage.Count > 0 ? convertedState.RejectedUsage : null

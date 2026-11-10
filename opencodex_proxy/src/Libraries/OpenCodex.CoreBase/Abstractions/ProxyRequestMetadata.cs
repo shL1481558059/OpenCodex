@@ -1,3 +1,5 @@
+using OpenCodex.CoreBase.Domain.Proxy;
+
 namespace OpenCodex.CoreBase.Abstractions;
 
 /// <summary>
@@ -5,6 +7,11 @@ namespace OpenCodex.CoreBase.Abstractions;
 /// </summary>
 public sealed class ProxyRequestMetadata
 {
+    public ProxyLogBodyHandles? LogBodies { get; init; }
+
+    public ProxyRequestMetadata WithLogBodies(ProxyLogBodyHandles bodies) =>
+        new(Method, Path, ClientIp, Headers, RawBody) { LogBodies = bodies };
+
     /// <summary>
     /// 初始化 <see cref="ProxyRequestMetadata"/> 类的新实例。
     /// </summary>

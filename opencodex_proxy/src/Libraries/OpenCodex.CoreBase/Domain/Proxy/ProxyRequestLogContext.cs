@@ -5,6 +5,8 @@ namespace OpenCodex.CoreBase.Domain.Proxy;
 /// </summary>
 public sealed class ProxyRequestLogContext
 {
+    public ProxyLogBodyHandles? BodyHandles { get; init; }
+
     public Dictionary<string, object?>? AggregatedUsage { get; init; }
 
     /// <summary>
