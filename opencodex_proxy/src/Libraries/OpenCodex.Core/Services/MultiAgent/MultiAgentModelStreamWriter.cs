@@ -22,12 +22,21 @@ public sealed class MultiAgentModelStreamWriter(
         WriteFramesAsync(SseFrameReader.ReadChunks(lines, cancellationToken, _frameOptions),
             countsForTtft, elapsedMilliseconds, cancellationToken);
 
-    public async Task<StreamWriteMetrics> WriteFramesAsync(IAsyncEnumerable<SseFrame> frames,
+    public Task<StreamWriteMetrics> WriteFrameBatchAsync(IAsyncEnumerable<SseFrame> frames,Func<string,bool> countsForTtft,
+        Func<int> elapsedMilliseconds,CancellationToken cancellationToken=default) =>
+        WriteCoreAsync(frames,countsForTtft,elapsedMilliseconds,false,cancellationToken);
+
+    public Task<StreamWriteMetrics> WriteFramesAsync(IAsyncEnumerable<SseFrame> frames,Func<string,bool> countsForTtft,
+        Func<int> elapsedMilliseconds,CancellationToken cancellationToken=default) =>
+        WriteCoreAsync(frames,countsForTtft,elapsedMilliseconds,true,cancellationToken);
+
+    private async Task<StreamWriteMetrics> WriteCoreAsync(IAsyncEnumerable<SseFrame> frames,
         Func<string, bool> countsForTtft, Func<int> elapsedMilliseconds,
-        CancellationToken cancellationToken = default)
+        bool finalBatch, CancellationToken cancellationToken = default)
     {
         if (_frameOptions.MaxEventBytes <= 0) throw new ArgumentOutOfRangeException(nameof(frameOptions));
         var metrics = new StreamWriteMetrics();
+        var accepted = false;
         try
         {
             await foreach (var frame in frames.WithCancellation(cancellationToken))
@@ -43,14 +52,15 @@ public sealed class MultiAgentModelStreamWriter(
                 // graph to them, and snapshot Result before an extension can mutate its copy.
                 await AcceptPayload(WebSearchPayload.DeepCopyObject(source), cancellationToken);
             }
-            if (Result is null)
+            if (finalBatch && Result is null)
                 throw new UpstreamException("The multi-agent model stream ended without a terminal Responses event.");
-            if (JsonDictionaryValue.String(Result, "status") == "completed"
-                && JsonDictionaryValue.List(Result, "output").Count == 0)
+            if (finalBatch && JsonDictionaryValue.String(Result!, "status") == "completed"
+                && JsonDictionaryValue.List(Result!, "output").Count == 0)
                 throw new UpstreamException("The multi-agent model stream completed without any output items.");
+            accepted = true;
             return metrics;
         }
-        finally { _items.Clear(); }
+        finally { if (finalBatch || !accepted) _items.Clear(); }
     }
 
     private async Task AcceptPayload(Dictionary<string, object?> payload, CancellationToken ct)
@@ -66,9 +76,12 @@ public sealed class MultiAgentModelStreamWriter(
         {
             if (JsonDictionaryValue.Get(payload, "response") is not IReadOnlyDictionary<string, object?> response)
                 throw new UpstreamException("The terminal model event is missing its Responses object.");
-            Result = WebSearchPayload.DeepCopyObject(response);
-            if (JsonDictionaryValue.List(Result, "output").Count == 0 && _items.Count > 0)
-                Result["output"] = _items.Values.ToList();
+            var candidate = WebSearchPayload.DeepCopyObject(response);
+            if (JsonDictionaryValue.List(candidate, "output").Count == 0 && _items.Count > 0)
+                candidate["output"] = _items.Values.ToList();
+            if (JsonDictionaryValue.String(candidate,"status") == "completed" && JsonDictionaryValue.List(candidate,"output").Count == 0)
+                throw new UpstreamException("The multi-agent model stream completed without any output items.");
+            Result = candidate;
         }
         if (onEvent is not null) await onEvent(payload, ct);
         if (type == "error") throw new UpstreamException("The multi-agent model stream returned an error event.", body: payload);

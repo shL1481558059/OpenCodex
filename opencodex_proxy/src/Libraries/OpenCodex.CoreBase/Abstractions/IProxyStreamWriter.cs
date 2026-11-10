@@ -33,4 +33,12 @@ public interface IProxyStreamWriter
         Func<int> elapsedMilliseconds,
         CancellationToken cancellationToken = default) =>
         WriteLinesAsync(SseFrameReader.WireFrames(frames, cancellationToken), countsForTtft, elapsedMilliseconds, cancellationToken);
+
+    // An audited stream may arrive in two phases: live events, then an audited terminal.
+    // Batch exhaustion is not whole-stream completion. Existing transport writers keep
+    // their behavior; stateful consumers can defer terminal completeness checks explicitly.
+    Task<StreamWriteMetrics> WriteFrameBatchAsync(
+        IAsyncEnumerable<SseFrame> frames, Func<string,bool> countsForTtft,
+        Func<int> elapsedMilliseconds, CancellationToken cancellationToken = default) =>
+        WriteFramesAsync(frames, countsForTtft, elapsedMilliseconds, cancellationToken);
 }

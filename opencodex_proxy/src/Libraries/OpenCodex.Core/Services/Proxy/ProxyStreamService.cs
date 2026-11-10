@@ -71,7 +71,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                     ? _responsesWebSocket.StreamEventsAsync(context, context.CancellationToken)
                     : _upstream.StreamEventsAsync(context.Route.Channel, upstreamRequest,
                         context.DefaultTimeout, context.CancellationToken);
-                streamWriteMetrics = await context.StreamWriter.WriteFramesAsync(
+                streamWriteMetrics = await context.StreamWriter.WriteFrameBatchAsync(
                     terminalGate.Hold(ObserveFrames(streamFrames, streamLogCapture, passThroughResponseCapture,
                         context.CancellationToken),context.CancellationToken),
                     static line => line.Trim().Length > 0,
@@ -92,7 +92,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                     UpstreamRequestBody = context.RequestMetadata.LogBodies?.UpstreamRequest
                 };
                 var convertedLines = ConvertRoundsAsync(context, convertedState, tools, context.CancellationToken);
-                streamWriteMetrics = await context.StreamWriter.WriteFramesAsync(
+                streamWriteMetrics = await context.StreamWriter.WriteFrameBatchAsync(
                     terminalGate.Hold(ObserveFrames(ValidateOutputFrames(convertedLines, context.CancellationToken),
                         streamLogCapture, null, context.CancellationToken),context.CancellationToken),
                     SseStreamConverter.CountsForTtft,

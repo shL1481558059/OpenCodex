@@ -23,7 +23,7 @@ using Xunit;
 
 namespace OpenCodex.Api.Tests;
 
-public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
+public sealed partial class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
 {
     private readonly HttpClient _client;
 

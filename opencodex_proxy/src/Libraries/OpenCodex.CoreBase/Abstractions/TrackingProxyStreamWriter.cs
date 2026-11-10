@@ -37,22 +37,22 @@ public sealed class TrackingProxyStreamWriter : IProxyStreamWriter
         CancellationToken cancellationToken=default) =>
         WriteFramesAsync(SseFrameReader.ReadLines(lines,cancellationToken:cancellationToken),countsForTtft,elapsedMilliseconds,cancellationToken);
 
-    public Task<StreamWriteMetrics> WriteFramesAsync(
-        IAsyncEnumerable<SseFrame> frames, Func<string, bool> countsForTtft,
-        Func<int> elapsedMilliseconds, CancellationToken cancellationToken = default)
-    {
-        return _inner.WriteFramesAsync(Track(frames, cancellationToken), countsForTtft, elapsedMilliseconds, cancellationToken);
+    public Task<StreamWriteMetrics> WriteFrameBatchAsync(IAsyncEnumerable<SseFrame> frames, Func<string,bool> countsForTtft,
+        Func<int> elapsedMilliseconds, CancellationToken cancellationToken = default) =>
+        _inner.WriteFrameBatchAsync(Track(frames,cancellationToken),countsForTtft,elapsedMilliseconds,cancellationToken);
 
-        async IAsyncEnumerable<SseFrame> Track(IAsyncEnumerable<SseFrame> source,
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken token)
+    public Task<StreamWriteMetrics> WriteFramesAsync(IAsyncEnumerable<SseFrame> frames, Func<string,bool> countsForTtft,
+        Func<int> elapsedMilliseconds, CancellationToken cancellationToken = default) =>
+        _inner.WriteFramesAsync(Track(frames,cancellationToken),countsForTtft,elapsedMilliseconds,cancellationToken);
+
+    private async IAsyncEnumerable<SseFrame> Track(IAsyncEnumerable<SseFrame> source,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken token)
+    {
+        await foreach (var frame in source.WithCancellation(token))
         {
-            await foreach (var frame in source.WithCancellation(token))
-            {
-                if (!IsPrepared) PrepareSse();
-                if (frame.IsSemantic) HasWritten = true;
-                yield return frame;
-            }
+            if (!IsPrepared) PrepareSse();
+            if (frame.IsSemantic) HasWritten = true;
+            yield return frame;
         }
     }
-
 }
