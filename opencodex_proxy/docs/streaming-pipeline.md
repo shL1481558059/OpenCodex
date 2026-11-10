@@ -60,8 +60,8 @@ Defaults below are safety/latency choices, not production performance measuremen
 }
 ```
 
-Upstream event/probe limits fail explicitly rather than discarding data. The output wire event
-limit is independent: WS JSON serialization may expand escaping. Size these together for large
+Upstream event/probe limits fail explicitly rather than discarding data. The output adapter and writer share the root MaxEventBytes setting. The output wire event
+limit is independent from upstream: WS JSON serialization may expand escaping. Size these together for large
 terminal envelopes. Setting MaxBatchBytes=1 disables batching (event-boundary flush remains).
 These are per-stream/event limits, **not** a completed tenant-wide heap/audit/session budget.
 No schema changes or production provider credentials are required.

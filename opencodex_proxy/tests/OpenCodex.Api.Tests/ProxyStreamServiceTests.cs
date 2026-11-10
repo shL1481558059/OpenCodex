@@ -43,6 +43,42 @@ public sealed class ProxyStreamServiceTests
         Assert.Equal(expectedStatus, logs.LastContext!.StatusCode);
     }
 
+    [Theory]
+    [InlineData(128, false)]
+    [InlineData(16384, true)]
+    public async Task StreamAsync_ConvertedOutputAdapterHonorsConfiguredEventBudget(int budget, bool succeeds)
+    {
+        var logs = new StubProxyLogService();
+        var writer = new CapturingProxyStreamWriter();
+        var payload = new Dictionary<string, object?>();
+        var channel = new Dictionary<string, object?> { ["id"] = "test", ["type"] = "chat" };
+        var context = new ProxyStreamContext(
+            Stopwatch.GetTimestamp(), Guid.NewGuid(), "output-budget", "admin", null, payload, payload,
+            new Dictionary<string, object?>(), "responses", new ProxyRouteDto(channel, "public", "model", false, true),
+            "chat", "test", "superadmin", "model", "public", 120,
+            new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()), writer, default);
+        var data = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            id = "chat-1", choices = new[] { new { index = 0, delta = new { content = new string('x', 2000) }, finish_reason = (string?)null } }
+        });
+        var operation = new ProxyStreamService(new SequencedUpstreamClient(
+            [("data: " + data, 0), ("", 0), ("data: [DONE]", 0), ("", 0)]),
+            logs, new StubWebSearchToolExecutor(), WebSearchTestStore.Create(),
+            outputFrames: new() { MaxEventBytes = budget }).StreamAsync(context);
+        if (succeeds)
+        {
+            await operation;
+            Assert.Equal(200, logs.LastContext!.StatusCode);
+            Assert.Contains(writer.Lines, line => line.Contains("response.completed", StringComparison.Ordinal));
+        }
+        else
+        {
+            await Assert.ThrowsAsync<InvalidDataException>(() => operation);
+            Assert.Equal(500, logs.LastContext!.StatusCode);
+            Assert.Empty(writer.Lines);
+        }
+    }
+
     private sealed class TerminalDisconnectStream(CancellationTokenSource cancellation, bool failFlush) : MemoryStream
     {
         public override Task FlushAsync(CancellationToken cancellationToken)

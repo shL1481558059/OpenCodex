@@ -17,19 +17,23 @@ public sealed partial class ProxyStreamService : IProxyStreamService
     private readonly IWebSearchToolExecutor _webSearch;
     private readonly WebSearchContinuationStore _webSearchHistory;
     private readonly ResponsesUpstreamTransport? _responsesWebSocket;
+    private readonly SseFrameOptions _outputFrames;
 
     public ProxyStreamService(
         IUpstreamClient upstream,
         IProxyLogService logs,
         IWebSearchToolExecutor webSearch,
         WebSearchContinuationStore webSearchHistory,
-        ResponsesUpstreamTransport? responsesWebSocket = null)
+        ResponsesUpstreamTransport? responsesWebSocket = null,
+        SseFrameOptions? outputFrames = null)
     {
         _upstream = upstream;
         _logs = logs;
         _webSearch = webSearch;
         _webSearchHistory = webSearchHistory;
         _responsesWebSocket = responsesWebSocket;
+        _outputFrames = outputFrames ?? new();
+        if (_outputFrames.MaxEventBytes <= 0) throw new ArgumentOutOfRangeException(nameof(outputFrames));
     }
 
     public async Task StreamAsync(ProxyStreamContext context)
@@ -86,7 +90,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                 };
                 var convertedLines = ConvertRoundsAsync(context, convertedState, tools, context.CancellationToken);
                 streamWriteMetrics = await context.StreamWriter.WriteFramesAsync(
-                    ObserveFrames(SseFrameReader.ReadLines(convertedLines, context.CancellationToken),
+                    ObserveFrames(SseFrameReader.ReadLines(convertedLines, context.CancellationToken, _outputFrames),
                         streamLogCapture, null, context.CancellationToken),
                     SseStreamConverter.CountsForTtft,
                     () => ElapsedMilliseconds(ttftStarted), context.CancellationToken);
