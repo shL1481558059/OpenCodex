@@ -1,3 +1,4 @@
+using System.Buffers;
 using Microsoft.EntityFrameworkCore;
 using System.Text;
 using OpenCodex.Core.Domain;
@@ -292,32 +293,34 @@ internal sealed class LogContentStore
     private Dictionary<string, BlockRef> EnsureStreamBlocks(Stream source, LogContentPlan plan)
     {
         var blocks = new Dictionary<string,BlockRef>(StringComparer.Ordinal);
-        // Batches bound compressed bytes and EF Data retention. Detached inserted blocks remain
-        // protected by the enclosing transaction; rollback still removes the entire body.
-        foreach (var batch in plan.Chunks.Chunk(16))
+        // One borrowed 512KiB raw window for the entire synchronous transaction. No per-chunk
+        // raw array or MemoryStream growth copies; EnsureBlocks owns any persisted Data arrays.
+        var buffer=ArrayPool<byte>.Shared.Rent(16*32*1024);
+        try
         {
-            using var bytes = new MemoryStream();
-            var chunks = new List<LogChunkPlan>();
-            foreach (var chunk in batch)
+            foreach(var batch in plan.Chunks.Chunk(16))
             {
-                if (blocks.ContainsKey(chunk.Hash)) continue;
-                source.Position=chunk.Offset;
-                var offset=checked((int)bytes.Position);
-                var data=new byte[chunk.Length];source.ReadExactly(data);
-                if (LogContentCodec.ContentHash(data) != chunk.Hash)
-                    throw new InvalidDataException("Audit spool block changed during persistence.");
-                bytes.Write(data);chunks.Add(new(offset,chunk.Length,chunk.Hash));
+                var length=0;var chunks=new List<LogChunkPlan>();
+                foreach(var chunk in batch)
+                {
+                    if(blocks.ContainsKey(chunk.Hash))continue;
+                    source.Position=chunk.Offset;
+                    source.ReadExactly(buffer.AsSpan(length,chunk.Length));
+                    if(LogContentCodec.ContentHash(buffer.AsMemory(length,chunk.Length))!=chunk.Hash)
+                        throw new InvalidDataException("Audit spool block changed during persistence.");
+                    chunks.Add(new(length,chunk.Length,chunk.Hash));length+=chunk.Length;
+                }
+                var owned=new List<object>();
+                try
+                {
+                    PeakStreamBatchRawBytes=Math.Max(PeakStreamBatchRawBytes,length);
+                    var partial=new LogContentPlan(buffer.AsMemory(0,length),length,"",chunks);
+                    foreach(var pair in EnsureBlocks([partial],owned))blocks[pair.Key]=pair.Value;
+                }
+                finally { DetachEntities(owned); }
             }
-            var owned = new List<object>();
-            try
-            {
-                var buffer=bytes.GetBuffer().AsMemory(0,checked((int)bytes.Length));
-                PeakStreamBatchRawBytes=Math.Max(PeakStreamBatchRawBytes,buffer.Length);
-                var partial=new LogContentPlan(buffer,buffer.Length,"",chunks);
-                foreach(var pair in EnsureBlocks([partial],owned)) blocks[pair.Key]=pair.Value;
-            }
-            finally { DetachEntities(owned); }
         }
+        finally { ArrayPool<byte>.Shared.Return(buffer,clearArray:true); }
         return blocks;
     }
 
