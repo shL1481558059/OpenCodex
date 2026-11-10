@@ -95,3 +95,24 @@ reconstruction is zero-parse. Quota/disk failure publishes failure, never partia
 done; request cancellation/disposal releases the journal. Native session snapshot/cache
 lifecycle governance remains a separate pending change; WS transport cache limits above
 must NOT be interpreted as bounding native-client session dictionaries.
+
+## Outer native / multi-agent HTTP output
+
+The HTTP push callbacks now feed the same complete-event writer through one request-owned
+bounded consumer. `ProxyStreaming:MaxQueuedEvents` defaults to 8 and `MaxQueuedBytes` to
+1048576 (UTF8 wire weight, not exact managed heap). Queued/in-flight weight is bounded by
+`max(MaxQueuedBytes, MaxEventBytes)`; a single larger event must be alone, and one producer
+may hold a not-yet-admitted event. `MaxEventBytes` defaults to 16777216. Limits reject or
+backpressure; no silent truncation or unbounded task/channel queue. Payload graphs are
+frozen before enqueue. Native/multi-agent HTTP still ends at its Responses terminal,
+without newly adding [DONE]. Existing general proxy DONE behavior stays unchanged.
+
+`MaxBatchBytes` (16384) and `MaxFlushDelayMilliseconds` (10) govern complete-event batches.
+First/business/terminal events flush immediately; one reusable timer flushes while the
+producer is idle. There is no per-delta CTS/timer or parallel MoveNext. Ordinary Emit
+means bounded acceptance, not immediate flush. Terminal Emit waits for the actual flush;
+once attempted, a failed terminal is not replaced with a contradictory second terminal.
+Consumer failure cancels the producer request; disposal awaits/drains it and releases the
+budget. Real socket buffers/proxies can add their own buffering, and delivered bytes
+cannot be retracted after a later flush failure. WebSocket retains its message boundaries,
+not an artificial HTTP flush policy.

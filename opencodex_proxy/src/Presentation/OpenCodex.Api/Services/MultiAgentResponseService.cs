@@ -78,14 +78,13 @@ public sealed partial class MultiAgentResponseService(
             if (run.Model != model) throw new BadRequestException("A multi-agent session keeps its initial model. Start a new session to change models.");
             var stream = JsonDictionaryValue.Get(request, "stream") is true;
             var persist = JsonDictionaryValue.Get(request, "store") is not false;
+            await using var output = stream ? new SsePushResponseWriter(Response, ct) : null;
             var sequence = 0;
             async Task Emit(Dictionary<string, object?> item)
             {
-                if (!stream) return;
-                if (!Response.HasStarted) ProxyStreamResponseWriter.PrepareSse(Response);
+                if (output is null) return;
                 sequence = Math.Max(sequence, WebSearchPayload.ToInt(JsonDictionaryValue.Get(item, "sequence_number"), sequence));
-                await Response.WriteAsync($"event: {JsonDictionaryValue.String(item, "type")}\ndata: {JsonSerializer.Serialize(item)}\n\n", ct);
-                await Response.Body.FlushAsync(ct);
+                await output.EmitAsync(item);
             }
 
             async Task<Dictionary<string, object?>> CallModel(Dictionary<string, object?> payload, Func<Dictionary<string, object?>, CancellationToken, Task> onEvent, CancellationToken token)
@@ -97,10 +96,11 @@ public sealed partial class MultiAgentResponseService(
                 () => store.SaveAsync(run, CancellationToken.None, persist),streamingOptions:StreamingOptions());
             try
             {
-                var response = await runtime.ExecuteAsync(request, ct);
+                var response = await runtime.ExecuteAsync(request, output?.CancellationToken ?? ct);
+                if (output is not null) await output.CompleteAsync();
                 return stream ? new EmptyResult() : new ObjectResult(response) { StatusCode = StatusCodes.Status200OK };
             }
-            catch (Exception exception) when (Response.HasStarted && !ct.IsCancellationRequested)
+            catch (Exception exception) when (Response.HasStarted && !ct.IsCancellationRequested && output?.TerminalCommitted is not true)
             {
                 logger.LogError(exception, "Multi-agent response failed for run {RunId}", run.Id);
                 await Emit(new Dictionary<string, object?>
@@ -117,6 +117,7 @@ public sealed partial class MultiAgentResponseService(
                         }
                     }
                 });
+                if (output is not null) await output.CompleteAsync();
                 return new EmptyResult();
             }
         }

@@ -11,10 +11,13 @@ public sealed class SseWriteOptions
     public int MaxBatchBytes { get; set; } = 16 * 1024;
     public int MaxFlushDelayMilliseconds { get; set; } = 10;
     public int MaxEventBytes { get; set; } = 16 * 1024 * 1024;
+    public int MaxQueuedEvents { get; set; } = 8;
+    public int MaxQueuedBytes { get; set; } = 1024 * 1024;
+    internal bool AppendResponsesDone { get; set; } = true;
 
     internal void Validate()
     {
-        if (MaxBatchBytes <= 0 || MaxFlushDelayMilliseconds <= 0 || MaxFlushDelayMilliseconds > 60_000 || MaxEventBytes <= 0)
+        if (MaxBatchBytes <= 0 || MaxFlushDelayMilliseconds <= 0 || MaxFlushDelayMilliseconds > 60_000 || MaxEventBytes <= 0 || MaxQueuedEvents <= 0 || MaxQueuedBytes <= 0)
             throw new ArgumentOutOfRangeException(nameof(SseWriteOptions));
     }
 }
@@ -109,7 +112,7 @@ public sealed class ProxyStreamResponseWriter : IProxyStreamWriter
                 // while awaiting upstream we can flush pending complete events on the reusable timer.
                 move = enumerator.MoveNextAsync().AsTask();
             }
-            if (sawCompleted && !sawDone)
+            if (options.AppendResponsesDone && sawCompleted && !sawDone)
             {
                 Append(SseFrame.Done, SseFrame.Done.Utf8Length);
             }

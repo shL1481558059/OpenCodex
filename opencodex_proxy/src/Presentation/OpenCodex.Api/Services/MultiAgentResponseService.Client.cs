@@ -23,15 +23,10 @@ public sealed partial class MultiAgentResponseService
 
         Response.Headers["X-OpenCodex-Multi-Agent-Session"] = session.RootThreadId;
         var stream = JsonDictionaryValue.Get(request, "stream") is true;
-        async Task Emit(Dictionary<string, object?> item)
-        {
-            if (!stream) return;
-            if (!Response.HasStarted) ProxyStreamResponseWriter.PrepareSse(Response);
-            await Response.WriteAsync($"event: {JsonDictionaryValue.String(item, "type")}\ndata: {JsonSerializer.Serialize(item)}\n\n", HttpContext.RequestAborted);
-            await Response.Body.FlushAsync(HttpContext.RequestAborted);
-        }
-
-        var result = await ExecuteClient(request, session, metadata, Emit, HttpContext.RequestAborted);
+        await using var output = stream ? new SsePushResponseWriter(Response, HttpContext.RequestAborted) : null;
+        Task Emit(Dictionary<string, object?> item) => output?.EmitAsync(item) ?? Task.CompletedTask;
+        var result = await ExecuteClient(request, session, metadata, Emit, output?.CancellationToken ?? HttpContext.RequestAborted);
+        if (output is not null) await output.CompleteAsync();
         return stream ? new EmptyResult() : new ObjectResult(result) { StatusCode = StatusCodes.Status200OK };
     }
 
