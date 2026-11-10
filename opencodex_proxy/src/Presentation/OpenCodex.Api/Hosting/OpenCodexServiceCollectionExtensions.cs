@@ -202,6 +202,9 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<IProxyEndpointService, ProxyEndpointService>();
         services.AddScoped<IProxyImageFallbackService, ProxyImageFallbackService>();
         services.AddScoped<IProxyImagePayloadRewriter, ProxyImagePayloadRewriter>();
+        services.AddSingleton(serviceProvider => new OpenCodex.CoreBase.Domain.Proxy.ProxyAuditSpool(
+            serviceProvider.GetRequiredService<IConfiguration>().GetSection("ProxyAuditSpool")
+                .Get<OpenCodex.CoreBase.Domain.Proxy.ProxyAuditSpoolOptions>() ?? new()));
         services.AddScoped<IProxyLogService, ProxyLogService>();
         services.AddSingleton<IChannelCapacityService, ChannelCapacityService>();
         services.AddSingleton<IChannelCircuitBreakerService, ChannelCircuitBreakerService>();

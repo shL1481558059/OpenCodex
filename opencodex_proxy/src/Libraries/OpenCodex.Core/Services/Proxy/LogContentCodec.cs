@@ -78,6 +78,36 @@ internal static class LogContentCodec
         return new LogContentPlan(utf8, utf8.Length, contentHash, chunks);
     }
 
+    // Same CDC boundaries as the in-memory planner; retains one 32KiB window plus metadata.
+    internal static LogContentPlan Plan(Stream source, string expectedHash, int expectedLength)
+    {
+        var window = new byte[MaximumChunkBytes];
+        var chunks = new List<LogChunkPlan>();
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffered = 0; var offset = 0; var scanned = 0; ulong fingerprint = 0;
+        while (true)
+        {
+            var count = source.Read(window, buffered, window.Length-buffered);
+            if (count > 0) { hash.AppendData(window.AsSpan(buffered,count)); buffered += count; }
+            while (scanned < buffered)
+            {
+                fingerprint=unchecked((fingerprint<<1)+GearTable[window[scanned++]]);
+                if (scanned < MinimumChunkBytes || ((fingerprint & (AverageChunkBytes-1)) != 0 && scanned < MaximumChunkBytes)) continue;
+                chunks.Add(new(offset,scanned,ContentHash(window.AsMemory(0,scanned))));
+                offset += scanned; buffered -= scanned;
+                window.AsSpan(scanned,buffered).CopyTo(window);
+                scanned=0;fingerprint=0;
+            }
+            if (count != 0) continue;
+            if (buffered > 0) { chunks.Add(new(offset,buffered,ContentHash(window.AsMemory(0,buffered))));offset += buffered; }
+            break;
+        }
+        var actualHash=Convert.ToHexStringLower(hash.GetHashAndReset());
+        if (offset != expectedLength || actualHash != expectedHash)
+            throw new InvalidDataException("Complete audit spool length/hash changed before persistence.");
+        return new LogContentPlan(ReadOnlyMemory<byte>.Empty,offset,actualHash,chunks);
+    }
+
     /// <summary>
     /// 压缩单个块。仅应在查重确认该块尚不存在时调用。
     /// </summary>

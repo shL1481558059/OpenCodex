@@ -10,7 +10,7 @@ namespace OpenCodex.CoreBase.Domain.Proxy;
 /// Capture explicitly after a request/round rewrite. After commit only its content address remains;
 /// a missing persisted manifest is an audit failure, never an invitation to reserialize changed input.
 /// </summary>
-public sealed class ProxyLogBodyHandle
+public sealed class ProxyLogBodyHandle : IDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -19,12 +19,17 @@ public sealed class ProxyLogBodyHandle
     private readonly object _gate = new();
     private ReadOnlyMemory<byte>? _utf8;
     private string? _hash;
+    private ProxyAuditSpool.AuditFile? _spool;
 
     private ProxyLogBodyHandle(ReadOnlyMemory<byte> utf8)
     {
         _utf8 = utf8;
         Length = utf8.Length;
     }
+
+    private ProxyLogBodyHandle(ProxyAuditSpool.AuditFile spool)
+    { _spool=spool; _hash=spool.Hash; HashComputations=1; Length=checked((int)spool.Length); }
+    internal static ProxyLogBodyHandle FromSpool(ProxyAuditSpool.AuditFile spool) => new(spool);
 
     public Guid Version { get; } = Guid.NewGuid();
     public int Length { get; }
@@ -50,7 +55,7 @@ public sealed class ProxyLogBodyHandle
                 _hash = Convert.ToHexStringLower(SHA256.HashData(_utf8!.Value.Span));
                 HashComputations++;
             }
-            return new Snapshot(_utf8, _hash, Length);
+            return new Snapshot(_utf8, _hash, Length, _spool);
         }
     }
 
@@ -61,10 +66,13 @@ public sealed class ProxyLogBodyHandle
             // ReadSnapshot must have computed the address before a committed writer releases bytes.
             if (_hash is null) throw new InvalidOperationException("Body has not been addressed.");
             _utf8 = null;
+            _spool?.Dispose(); _spool = null;
         }
     }
 
-    internal readonly record struct Snapshot(ReadOnlyMemory<byte>? Utf8, string Hash, int Length);
+    public void Dispose() { lock (_gate) { _spool?.Dispose(); _spool=null; } }
+
+    internal readonly record struct Snapshot(ReadOnlyMemory<byte>? Utf8, string Hash, int Length, ProxyAuditSpool.AuditFile? Spool = null);
 }
 
 /// <summary>Request-owned snapshots. Each route attempt/changed round gets a new upstream version.</summary>

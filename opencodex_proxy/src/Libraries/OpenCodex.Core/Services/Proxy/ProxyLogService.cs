@@ -27,6 +27,7 @@ public sealed class ProxyLogService : IProxyLogService
     private readonly IRepository<RequestLog> _logRepository;
     private readonly IRepository<User> _userRepository;
     private readonly LogContentStore _contentStore;
+    private readonly ProxyAuditSpool _auditSpool;
     private readonly IEventBus? _eventBus;
     private readonly Dictionary<string, Guid> _ownerUserIdCache = new(StringComparer.Ordinal);
 
@@ -36,13 +37,15 @@ public sealed class ProxyLogService : IProxyLogService
         IOpenCodexDbContext dbContext,
         IRepository<RequestLog> logRepository,
         IRepository<User> userRepository,
-        IEventBus? eventBus = null)
+        IEventBus? eventBus = null,
+        ProxyAuditSpool? auditSpool = null)
     {
         _settingsProvider = settingsProvider;
         _catalog = catalog;
         _logRepository = logRepository;
         _userRepository = userRepository;
         _contentStore = new LogContentStore(dbContext);
+        _auditSpool = auditSpool ?? ProxyAuditSpool.Default;
         _eventBus = eventBus;
     }
 
@@ -314,8 +317,7 @@ public sealed class ProxyLogService : IProxyLogService
             nameof(RequestLog.ConversationWindowId),
             nameof(RequestLog.PreviousResponseId));
 
-        _contentStore.WriteBodies(requestLogId, ContentSlots,
-            slot => SnapshotContentSlot(context, slot));
+        WriteSnapshotSlots(requestLogId,context);
 
         if (context.RequestType == ProxyRequestTypes.Main)
         {
@@ -385,12 +387,12 @@ public sealed class ProxyLogService : IProxyLogService
                 context.Method,
                 context.Path,
                 context.ClientIp,
-                context.BodyHandles?.Headers is null ? EncodeForLog(context.RequestHeaders) : Array.Empty<byte>(),
-                context.BodyHandles?.Request is null ? RawBodyBytes(context.RawRequestBody, context.Payload) : Array.Empty<byte>(),
-                context.BodyHandles?.UpstreamRequest is null ? EncodeForLog(context.UpstreamRequest) : Array.Empty<byte>(),
-                EncodeForLog(context.UpstreamResponse),
-                EncodeForLog(context.ResponsePayload ?? context.ErrorResponse),
-                context.WebSearchDetails is null ? null : EncodeForLog(context.WebSearchDetails),
+                Array.Empty<byte>(),
+                Array.Empty<byte>(),
+                Array.Empty<byte>(),
+                Array.Empty<byte>(),
+                Array.Empty<byte>(),
+                null,
                 context.RequestModel,
                 context.UpstreamModel,
                 channelId,
@@ -413,12 +415,12 @@ public sealed class ProxyLogService : IProxyLogService
                 ownerUserId,
                 context.ApiKeyId,
                 context.Error,
-                context.OcrDetails is null ? null : EncodeForLog(context.OcrDetails),
+                null,
                 PricingPhases.ForRequestLog(pricing.PhaseSource),
                 UpstreamResponseModelReader.Read(context.UpstreamResponse)),
             context.RequestHeaders,
             context.Payload,
-            context.BodyHandles);
+            context);
 
         PublishLogWritten(logId, ownerUsername, context.StatusCode, context.Error);
         return logId;
@@ -472,7 +474,7 @@ public sealed class ProxyLogService : IProxyLogService
         RequestLogWriteDto record,
         IReadOnlyDictionary<string, string> requestHeaders,
         IReadOnlyDictionary<string, object?>? requestPayload,
-        ProxyLogBodyHandles? bodyHandles)
+        ProxyRequestLogContext snapshotContext)
     {
         var log = new RequestLog
         {
@@ -512,22 +514,7 @@ public sealed class ProxyLogService : IProxyLogService
         ApplyConversationMetadata(log, requestHeaders, requestPayload);
         _logRepository.Insert(log);
 
-        _contentStore.WriteBodies(log.Id, ContentSlots, slot =>
-        {
-            if (bodyHandles?.ForSlot(slot) is { } handle) return handle;
-            var bytes = slot switch
-            {
-                RequestLogContentSlot.RequestHeaders => record.RequestHeaders,
-                RequestLogContentSlot.RequestBody => record.RequestBody,
-                RequestLogContentSlot.UpstreamRequestBody => record.UpstreamRequestBody,
-                RequestLogContentSlot.UpstreamResponseBody => record.UpstreamResponseBody,
-                RequestLogContentSlot.ResponseBody => record.ResponseBody,
-                RequestLogContentSlot.WebSearchJson => record.WebSearchJson,
-                RequestLogContentSlot.OcrJson => record.OcrJson,
-                _ => throw new ArgumentOutOfRangeException(nameof(slot))
-            };
-            return bytes is null ? null : ProxyLogBodyHandle.FromOwnedUtf8(bytes);
-        });
+        WriteSnapshotSlots(log.Id,snapshotContext);
 
         if (record.RequestType == ProxyRequestTypes.Main)
         {
@@ -582,43 +569,36 @@ public sealed class ProxyLogService : IProxyLogService
             context.UpstreamRequestBody ?? request.LogBodies?.UpstreamRequest);
     }
 
-    private static ProxyLogBodyHandle? SnapshotContentSlot(ProxyRequestLogContext context, RequestLogContentSlot slot)
+    private void WriteSnapshotSlots(Guid id, ProxyRequestLogContext context)
     {
-        if (context.BodyHandles?.ForSlot(slot) is { } handle) return handle;
-        if (slot == RequestLogContentSlot.RequestBody)
-            return ProxyLogBodyHandle.FromOwnedUtf8(RawBodyMemory(context.RawRequestBody, context.Payload));
-        return EncodeContentSlot(context, slot) is { } bytes ? ProxyLogBodyHandle.FromOwnedUtf8(bytes) : null;
-    }
-
-    private static byte[]? EncodeContentSlot(ProxyRequestLogContext context, RequestLogContentSlot slot)
-    {
-        return slot switch
+        var captured = new List<ProxyLogBodyHandle>();
+        try
         {
-            RequestLogContentSlot.RequestHeaders => EncodeForLog(context.RequestHeaders),
-            RequestLogContentSlot.RequestBody => RawBodyBytes(context.RawRequestBody, context.Payload),
-            RequestLogContentSlot.UpstreamRequestBody => EncodeForLog(context.UpstreamRequest),
-            RequestLogContentSlot.UpstreamResponseBody => EncodeForLog(context.UpstreamResponse),
-            RequestLogContentSlot.ResponseBody => EncodeForLog(context.ResponsePayload ?? context.ErrorResponse),
-            RequestLogContentSlot.WebSearchJson => context.WebSearchDetails is null
-                ? null
-                : EncodeForLog(context.WebSearchDetails),
-            RequestLogContentSlot.OcrJson => context.OcrDetails is null
-                ? null
-                : EncodeForLog(context.OcrDetails),
-            _ => throw new ArgumentOutOfRangeException(nameof(slot), slot, "unsupported log content slot")
-        };
+            _contentStore.WriteBodies(id,ContentSlots,slot=>
+            {
+                if (context.BodyHandles?.ForSlot(slot) is { } shared) return shared;
+                if (slot == RequestLogContentSlot.RequestBody)
+                    return ProxyLogBodyHandle.FromOwnedUtf8(RawBodyMemory(context.RawRequestBody,context.Payload));
+                object? value = slot switch
+                {
+                    RequestLogContentSlot.RequestHeaders => context.RequestHeaders,
+                    RequestLogContentSlot.UpstreamRequestBody => context.UpstreamRequest,
+                    RequestLogContentSlot.UpstreamResponseBody => context.UpstreamResponse,
+                    RequestLogContentSlot.ResponseBody => context.ResponsePayload ?? context.ErrorResponse,
+                    RequestLogContentSlot.WebSearchJson => context.WebSearchDetails,
+                    RequestLogContentSlot.OcrJson => context.OcrDetails,
+                    _ => throw new ArgumentOutOfRangeException(nameof(slot))
+                };
+                if (value is null && slot is RequestLogContentSlot.WebSearchJson or RequestLogContentSlot.OcrJson) return null;
+                var handle=_auditSpool.CaptureJson(value);captured.Add(handle);return handle;
+            });
+        }
+        finally { foreach (var handle in captured) handle.Dispose(); }
     }
 
     private static ReadOnlyMemory<byte> RawBodyMemory(
         ReadOnlyMemory<byte>? rawRequestBody, Dictionary<string, object?>? payload) =>
         rawRequestBody is { Length: > 0 } raw ? raw : EncodeForLog(payload);
-
-    private static byte[] RawBodyBytes(ReadOnlyMemory<byte>? rawRequestBody, Dictionary<string, object?>? payload)
-    {
-        return rawRequestBody is { Length: > 0 } raw
-            ? raw.ToArray()
-            : EncodeForLog(payload);
-    }
 
     private void PublishLogWritten(Guid logId, string ownerUsername, int statusCode, string? error)
     {

@@ -9,6 +9,7 @@ namespace OpenCodex.Core.Services.Proxy;
 internal sealed class LogContentStore
 {
     private const string Utf8Encoding = "utf-8";
+    internal int PeakStreamBatchRawBytes { get; private set; }
     private readonly IOpenCodexDbContext _context;
 
     public LogContentStore(IOpenCodexDbContext context)
@@ -90,7 +91,7 @@ internal sealed class LogContentStore
             if (body(slot) is not { } handle) return null;
             var snapshot = handle.ReadSnapshot();
             handles.Add(handle);
-            return new ContentValue(snapshot.Utf8, snapshot.Hash, snapshot.Length);
+            return new ContentValue(snapshot.Utf8, snapshot.Hash, snapshot.Length, snapshot.Spool);
         });
         // WriteContent returns only after transaction commit. A failed transaction keeps the
         // snapshots available for retry; no cache entry can claim uncommitted persistence.
@@ -124,7 +125,7 @@ internal sealed class LogContentStore
         }
     }
 
-    private readonly record struct ContentValue(ReadOnlyMemory<byte>? Bytes, string? Hash, int Length);
+    private readonly record struct ContentValue(ReadOnlyMemory<byte>? Bytes, string? Hash, int Length, ProxyAuditSpool.AuditFile? Spool = null);
 
     private void WriteSlot(
         Guid requestLogId, RequestLogContentSlot slot, ContentValue? content,
@@ -151,11 +152,21 @@ internal sealed class LogContentStore
             }
             else
             {
-                if (value.Bytes is not { } bytes)
-                    throw new InvalidDataException("A committed audit body manifest is missing; complete audit cannot be guaranteed.");
-                var plan = LogContentCodec.Plan(bytes, hash);
-                var blocksByHash = EnsureBlocks([plan], ownedEntities);
-                manifest = EnsureManifests([plan], blocksByHash, ownedEntities)[hash];
+                if (value.Spool is { } spool)
+                {
+                    using var source = spool.OpenRead();
+                    var plan = LogContentCodec.Plan(source,hash,value.Length);
+                    var blocks = EnsureStreamBlocks(source,plan);
+                    manifest=EnsureManifests([plan],blocks,ownedEntities)[hash];
+                }
+                else
+                {
+                    if (value.Bytes is not { } bytes)
+                        throw new InvalidDataException("A committed audit body manifest is missing; complete audit cannot be guaranteed.");
+                    var plan = LogContentCodec.Plan(bytes, hash);
+                    var blocksByHash = EnsureBlocks([plan], ownedEntities);
+                    manifest = EnsureManifests([plan], blocksByHash, ownedEntities)[hash];
+                }
             }
         }
         else if (replacedManifestIds.Count == 0)
@@ -276,6 +287,38 @@ internal sealed class LogContentStore
         }
 
         return new LogContentSnapshot(values);
+    }
+
+    private Dictionary<string, BlockRef> EnsureStreamBlocks(Stream source, LogContentPlan plan)
+    {
+        var blocks = new Dictionary<string,BlockRef>(StringComparer.Ordinal);
+        // Batches bound compressed bytes and EF Data retention. Detached inserted blocks remain
+        // protected by the enclosing transaction; rollback still removes the entire body.
+        foreach (var batch in plan.Chunks.Chunk(16))
+        {
+            using var bytes = new MemoryStream();
+            var chunks = new List<LogChunkPlan>();
+            foreach (var chunk in batch)
+            {
+                if (blocks.ContainsKey(chunk.Hash)) continue;
+                source.Position=chunk.Offset;
+                var offset=checked((int)bytes.Position);
+                var data=new byte[chunk.Length];source.ReadExactly(data);
+                if (LogContentCodec.ContentHash(data) != chunk.Hash)
+                    throw new InvalidDataException("Audit spool block changed during persistence.");
+                bytes.Write(data);chunks.Add(new(offset,chunk.Length,chunk.Hash));
+            }
+            var owned = new List<object>();
+            try
+            {
+                var buffer=bytes.GetBuffer().AsMemory(0,checked((int)bytes.Length));
+                PeakStreamBatchRawBytes=Math.Max(PeakStreamBatchRawBytes,buffer.Length);
+                var partial=new LogContentPlan(buffer,buffer.Length,"",chunks);
+                foreach(var pair in EnsureBlocks([partial],owned)) blocks[pair.Key]=pair.Value;
+            }
+            finally { DetachEntities(owned); }
+        }
+        return blocks;
     }
 
     private Dictionary<string, BlockRef> EnsureBlocks(IReadOnlyList<LogContentPlan> plans, List<object> ownedEntities)
