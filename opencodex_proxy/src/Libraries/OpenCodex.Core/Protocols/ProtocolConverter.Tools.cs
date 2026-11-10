@@ -912,8 +912,15 @@ public static partial class ProtocolConverter
         }
 
         var namespaceName = GetString(toolChoice, "namespace") ?? GetString(nested, "namespace");
+        // Declared leaf names may contain separators; aliases must not shadow exact identities.
+        if (toolWireNamePlan.TryResolve(responseName, namespaceName, out var entry))
+        {
+            wireName = entry.WireName;
+            return true;
+        }
+
         var (resolvedNamespace, bareName) = NamespaceCallParts(responseName, namespaceName);
-        if (toolWireNamePlan.TryResolve(bareName, resolvedNamespace, out var entry)
+        if (toolWireNamePlan.TryResolve(bareName, resolvedNamespace, out entry)
             || (string.IsNullOrEmpty(resolvedNamespace)
                 && toolWireNamePlan.TryResolveUniqueResponsesName(bareName, out entry)))
         {

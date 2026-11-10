@@ -67,6 +67,14 @@ public static partial class ProtocolConverter
             var name = ResponsesToolCallName(inputItem);
             var namespaceName = GetString(inputItem, "namespace");
             var (resolvedNamespace, bareName) = NamespaceCallParts(name, namespaceName);
+            ToolWireNameEntry? wireNameEntry = null;
+            if (toolWireNamePlan is not null
+                && (toolWireNamePlan.TryResolve(name, namespaceName, out var resolvedEntry)
+                    || toolWireNamePlan.TryResolve(bareName, resolvedNamespace, out resolvedEntry)))
+            {
+                wireNameEntry = resolvedEntry;
+            }
+
             if (!string.IsNullOrEmpty(namespaceName))
             {
                 name = $"{namespaceName}{NamespaceSeparator}{name}";
@@ -74,9 +82,8 @@ public static partial class ProtocolConverter
 
             var arguments = ResponsesToolCallArguments(inputItem);
             arguments = EnrichMcpToolCallArguments(name, arguments);
-            var argumentName = string.IsNullOrEmpty(bareName)
-                ? NamespaceCallParts(name).BareName
-                : bareName;
+            var argumentName = wireNameEntry?.ResponsesName
+                ?? (string.IsNullOrEmpty(bareName) ? NamespaceCallParts(name).BareName : bareName);
             arguments = NormalizeApplyPatchArguments(itemType ?? string.Empty, argumentName, arguments);
             if (itemType == "custom_tool_call" && !IsApplyPatchPublic(argumentName))
             {
@@ -94,10 +101,7 @@ public static partial class ProtocolConverter
                             ("id", GetValue(inputItem, "call_id") ?? GetValue(inputItem, "id") ?? NewId("call")),
                             ("type", "function"),
                             ("function", Obj(
-                                ("name", toolWireNamePlan is not null
-                                    && toolWireNamePlan.TryResolve(argumentName, resolvedNamespace, out var wireNameEntry)
-                                        ? wireNameEntry.WireName
-                                        : NamespaceNameToChat(name)),
+                                ("name", wireNameEntry?.WireName ?? NamespaceNameToChat(name)),
                                 ("arguments", JsonDumps(arguments)))))
                     }))
             ];
