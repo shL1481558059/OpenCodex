@@ -278,7 +278,7 @@ public sealed class ProxyStreamServiceTests
     }
 
     [Fact]
-    public async Task StreamAsync_ConvertedMessages_StreamsReasoningAndUsesItForTtft()
+    public async Task StreamAsync_ConvertedMessages_StreamsReasoningAfterBufferedToolContractValidation()
     {
         var upstream = new SequencedUpstreamClient(
         [
@@ -359,9 +359,7 @@ public sealed class ProxyStreamServiceTests
         Assert.Contains(writer.Lines, line => line.Contains("response.function_call_arguments.delta", StringComparison.Ordinal));
         Assert.NotNull(logs.LastContext);
         Assert.True(logs.LastContext!.DurationMs >= 50);
-        Assert.True(
-            logs.LastContext.TtftMs <= logs.LastContext.DurationMs - 40,
-            $"expected TTFT to use early reasoning delta, got ttft={logs.LastContext.TtftMs}, duration={logs.LastContext.DurationMs}");
+        Assert.NotNull(logs.LastContext.TtftMs);
     }
 
     [Fact]
@@ -595,7 +593,7 @@ public sealed class ProxyStreamServiceTests
             new StubWebSearchToolExecutor(),
             WebSearchTestStore.Create()).StreamAsync(context));
 
-        Assert.Equal(ProtocolConverter.UndeclaredToolCallErrorCode, error.ErrorCode);
+        Assert.Equal(ToolContractRetryPolicy.RetryExhaustedErrorCode, error.ErrorCode);
         Assert.Equal(2, upstream.Calls);
         Assert.False(writer.Prepared);
         Assert.Empty(writer.Lines);
@@ -781,6 +779,232 @@ public sealed class ProxyStreamServiceTests
         Assert.Contains(retryMessages, message =>
             message["role"]?.ToString() == "system"
             && message["content"]?.ToString()?.Contains("web_search", StringComparison.Ordinal) == true);
+    }
+
+    [Fact]
+    public async Task StreamAsync_UndeclaredCodeModeName_RetriesWithBareExecContract()
+    {
+        var upstream = new RetrySequenceUpstreamClient(
+        [
+            [
+                SseData(new
+                {
+                    id = "chat-invalid",
+                    choices = new[] { new { index = 0, delta = new { reasoning_content = "discarded reasoning" } } }
+                }),
+                "",
+                SseData(new
+                {
+                    id = "chat-invalid",
+                    choices = new[]
+                    {
+                        new
+                        {
+                            index = 0,
+                            delta = new
+                            {
+                                tool_calls = new[]
+                                {
+                                    new
+                                    {
+                                        index = 0,
+                                        id = "invalid-call",
+                                        type = "function",
+                                        function = new
+                                        {
+                                            name = "exec_command",
+                                            arguments = "{\"input\":\"const value = 1;\"}"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }),
+                "",
+                SseData(new
+                {
+                    id = "chat-invalid",
+                    choices = new[] { new { index = 0, delta = new { }, finish_reason = "tool_calls" } },
+                    usage = new { prompt_tokens = 10, completion_tokens = 2 }
+                }),
+                "",
+                "data: [DONE]"
+            ],
+            [
+                SseData(new
+                {
+                    id = "chat-valid",
+                    choices = new[] { new { index = 0, delta = new { content = "recovered answer" } } }
+                }),
+                "",
+                SseData(new
+                {
+                    id = "chat-valid",
+                    choices = new[] { new { index = 0, delta = new { }, finish_reason = "stop" } },
+                    usage = new { prompt_tokens = 20, completion_tokens = 3 }
+                }),
+                "",
+                "data: [DONE]"
+            ]
+        ]);
+        var logs = new StubProxyLogService();
+        var (payload, upstreamRequest) = CodeModeRetryRequest();
+        var writer = new CapturingProxyStreamWriter();
+        var context = new ProxyStreamContext(
+            Stopwatch.GetTimestamp(),
+            Guid.NewGuid(),
+            "req_undeclared_code_mode",
+            "admin",
+            Guid.NewGuid(),
+            payload,
+            payload,
+            upstreamRequest,
+            ProtocolConverter.Responses,
+            new ProxyRouteDto(
+                new Dictionary<string, object?> { ["id"] = "chat", ["type"] = ProtocolConverter.Chat },
+                "public-model",
+                "upstream-model",
+                supportsImage: false,
+                matchedModelMapping: true),
+            ProtocolConverter.Chat,
+            "chat",
+            "superadmin",
+            "upstream-model",
+            "public-model",
+            120,
+            new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
+            writer,
+            CancellationToken.None);
+
+        await new ProxyStreamService(
+            upstream,
+            logs,
+            new StubWebSearchToolExecutor(),
+            WebSearchTestStore.Create()).StreamAsync(context);
+
+        Assert.Equal(2, upstream.Calls);
+        Assert.DoesNotContain("discarded reasoning", string.Concat(writer.Lines), StringComparison.Ordinal);
+        Assert.Contains("recovered answer", string.Concat(writer.Lines), StringComparison.Ordinal);
+        var retryMessages = WebSearchPayload.ListValue(upstream.Payloads[1], "messages")
+            .OfType<Dictionary<string, object?>>()
+            .ToList();
+        var system = Assert.Single(retryMessages, message => message["role"]?.ToString() == "system");
+        Assert.Contains("Nested method names found in tool descriptions are not top-level tools", system["content"]?.ToString());
+        Assert.Contains("Allowed tool names: `exec`", system["content"]?.ToString());
+        Assert.Equal(30L, logs.LastContext!.AggregatedUsage!["prompt_tokens"]);
+        Assert.Equal(5L, logs.LastContext.AggregatedUsage["completion_tokens"]);
+    }
+
+    [Fact]
+    public async Task SendAsync_UndeclaredCodeModeName_RetriesWithBareExecContract()
+    {
+        var upstream = new RetrySequenceJsonUpstreamClient(
+        [
+            new Dictionary<string, object?>
+            {
+                ["id"] = "chat-invalid",
+                ["choices"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["index"] = 0,
+                        ["message"] = new Dictionary<string, object?>
+                        {
+                            ["role"] = "assistant",
+                            ["content"] = "",
+                            ["tool_calls"] = new List<object?>
+                            {
+                                new Dictionary<string, object?>
+                                {
+                                    ["id"] = "invalid-call",
+                                    ["type"] = "function",
+                                    ["function"] = new Dictionary<string, object?>
+                                    {
+                                        ["name"] = "exec_command",
+                                        ["arguments"] = "{\"input\":\"const value = 1;\"}"
+                                    }
+                                }
+                            }
+                        },
+                        ["finish_reason"] = "tool_calls"
+                    }
+                },
+                ["usage"] = new Dictionary<string, object?>
+                {
+                    ["prompt_tokens"] = 10,
+                    ["completion_tokens"] = 2
+                }
+            },
+            new Dictionary<string, object?>
+            {
+                ["id"] = "chat-valid",
+                ["object"] = "chat.completion",
+                ["choices"] = new List<object?>
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["index"] = 0,
+                        ["message"] = new Dictionary<string, object?>
+                        {
+                            ["role"] = "assistant",
+                            ["content"] = "recovered answer"
+                        },
+                        ["finish_reason"] = "stop"
+                    }
+                },
+                ["usage"] = new Dictionary<string, object?>
+                {
+                    ["prompt_tokens"] = 20,
+                    ["completion_tokens"] = 3
+                }
+            }
+        ]);
+        var logs = new StubProxyLogService();
+        var (payload, upstreamRequest) = CodeModeRetryRequest();
+        var context = new ProxyNonStreamContext(
+            Stopwatch.GetTimestamp(),
+            Guid.NewGuid(),
+            "req_undeclared_code_mode_nonstream",
+            "admin",
+            Guid.NewGuid(),
+            payload,
+            payload,
+            upstreamRequest,
+            ProtocolConverter.Responses,
+            new ProxyRouteDto(
+                new Dictionary<string, object?> { ["id"] = "chat", ["type"] = ProtocolConverter.Chat },
+                "public-model",
+                "upstream-model",
+                supportsImage: false,
+                matchedModelMapping: true),
+            ProtocolConverter.Chat,
+            "chat",
+            "superadmin",
+            "upstream-model",
+            "public-model",
+            120,
+            new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
+            CancellationToken.None);
+
+        var result = await new ProxyNonStreamService(
+            upstream,
+            logs,
+            new StubWebSearchToolExecutor(),
+            WebSearchTestStore.Create()).SendAsync(context);
+
+        Assert.Null(result.FailureException);
+        Assert.Equal(2, upstream.Calls);
+        Assert.Contains("recovered answer", WebSearchPayload.JsonDumps(result.Payload));
+        Assert.DoesNotContain("first discarded reasoning", WebSearchPayload.JsonDumps(result.Payload));
+        var retryMessages = WebSearchPayload.ListValue(upstream.Payloads[1], "messages")
+            .OfType<Dictionary<string, object?>>()
+            .ToList();
+        Assert.Contains(retryMessages, message =>
+            message["role"]?.ToString() == "system"
+            && message["content"]?.ToString()?.Contains("Allowed tool names: `exec`", StringComparison.Ordinal) == true);
+        Assert.Equal(30L, logs.LastContext!.AggregatedUsage!["prompt_tokens"]);
+        Assert.Equal(5L, logs.LastContext.AggregatedUsage["completion_tokens"]);
     }
 
     [Fact]
@@ -1619,6 +1843,37 @@ public sealed class ProxyStreamServiceTests
             payload, ProtocolConverter.Responses, ProtocolConverter.Chat, "upstream-model");
         WebSearchRequestPolicy.FinalizeUpstreamRequest(upstreamRequest, binding);
         return (payload, upstreamRequest, binding);
+    }
+
+    private static (Dictionary<string, object?> Payload, Dictionary<string, object?> UpstreamRequest) CodeModeRetryRequest()
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["model"] = "public-model",
+            ["input"] = "Run the JavaScript.",
+            ["tools"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "namespace",
+                    ["name"] = "functions",
+                    ["tools"] = new List<object?>
+                    {
+                        new Dictionary<string, object?>
+                        {
+                            ["type"] = "custom",
+                            ["name"] = "exec",
+                            ["description"] = "Run JavaScript. Nested methods include exec_command.",
+                            ["format"] = new Dictionary<string, object?> { ["type"] = "text" }
+                        }
+                    }
+                }
+            }
+        };
+        return (
+            payload,
+            ProtocolConverter.ConvertRequest(
+                payload, ProtocolConverter.Responses, ProtocolConverter.Chat, "upstream-model"));
     }
 
     private static string[] InvalidWebSearchStream(

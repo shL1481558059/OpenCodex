@@ -2,7 +2,9 @@ namespace OpenCodex.Core.Protocols;
 
 public static partial class ProtocolConverter
 {
-    private static List<object?> ResponsesInputItemToMessages(object? item)
+    private static List<object?> ResponsesInputItemToMessages(
+        object? item,
+        ToolWireNamePlan? toolWireNamePlan)
     {
         if (item is string text)
         {
@@ -64,6 +66,7 @@ public static partial class ProtocolConverter
         {
             var name = ResponsesToolCallName(inputItem);
             var namespaceName = GetString(inputItem, "namespace");
+            var (resolvedNamespace, bareName) = NamespaceCallParts(name, namespaceName);
             if (!string.IsNullOrEmpty(namespaceName))
             {
                 name = $"{namespaceName}{NamespaceSeparator}{name}";
@@ -71,7 +74,9 @@ public static partial class ProtocolConverter
 
             var arguments = ResponsesToolCallArguments(inputItem);
             arguments = EnrichMcpToolCallArguments(name, arguments);
-            var argumentName = NamespaceCallParts(name).BareName;
+            var argumentName = string.IsNullOrEmpty(bareName)
+                ? NamespaceCallParts(name).BareName
+                : bareName;
             arguments = NormalizeApplyPatchArguments(itemType ?? string.Empty, argumentName, arguments);
             if (itemType == "custom_tool_call" && !IsApplyPatchPublic(argumentName))
             {
@@ -88,7 +93,12 @@ public static partial class ProtocolConverter
                         Obj(
                             ("id", GetValue(inputItem, "call_id") ?? GetValue(inputItem, "id") ?? NewId("call")),
                             ("type", "function"),
-                            ("function", Obj(("name", NamespaceNameToChat(name)), ("arguments", JsonDumps(arguments)))))
+                            ("function", Obj(
+                                ("name", toolWireNamePlan is not null
+                                    && toolWireNamePlan.TryResolve(argumentName, resolvedNamespace, out var wireNameEntry)
+                                        ? wireNameEntry.WireName
+                                        : NamespaceNameToChat(name)),
+                                ("arguments", JsonDumps(arguments)))))
                     }))
             ];
         }

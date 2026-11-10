@@ -1397,7 +1397,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             .Select(item => Assert.IsType<Dictionary<string, object?>>(item))
             .ToList();
         var discovered = Assert.Single(tools, tool =>
-            Assert.IsType<Dictionary<string, object?>>(tool["function"])["name"]?.ToString() == "mcp__node_repl__js");
+            Assert.IsType<Dictionary<string, object?>>(tool["function"])["name"]?.ToString() == "js");
         var function = Assert.IsType<Dictionary<string, object?>>(discovered["function"]);
         var parameters = Assert.IsType<Dictionary<string, object?>>(function["parameters"]);
         Assert.Contains("code", Assert.IsType<Dictionary<string, object?>>(parameters["properties"]));
@@ -1706,7 +1706,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             .Select(item => Assert.IsType<Dictionary<string, object?>>(item))
             .ToArray();
         Assert.Equal(
-            ["mcp__computer_use__click", "mcp__computer_use__type_text"],
+            ["click", "type_text"],
             tools.Select(tool => tool["name"]?.ToString() ?? string.Empty).ToArray());
     }
 
@@ -1756,7 +1756,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
             .Select(item => Assert.IsType<Dictionary<string, object?>>(item))
             .ToArray();
         var tool = Assert.Single(tools);
-        Assert.Equal("mcp__computer_use__mouse__click", tool["name"]);
+        Assert.Equal("click", tool["name"]);
     }
 
     [Fact]
@@ -2166,7 +2166,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                 }),
             MessagesToolUseResponse(
                 "toolu_click",
-                "mcp__computer_use__click",
+                "click",
                 new Dictionary<string, object?>
                 {
                     ["x"] = 12,
@@ -2216,7 +2216,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                     },
                     new Dictionary<string, object?>
                     {
-                        ["name"] = "mcp__computer_use__click",
+                        ["name"] = "click",
                         ["description"] = "Click.",
                         ["input_schema"] = new Dictionary<string, object?>
                         {
@@ -3424,7 +3424,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                 }),
             MessagesToolStreamResponse(
                 "toolu_click",
-                "mcp__computer_use__mouse__click",
+                "click",
                 new Dictionary<string, object?>
                 {
                     ["x"] = 12,
@@ -3476,7 +3476,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                     },
                     new Dictionary<string, object?>
                     {
-                        ["name"] = "mcp__computer_use__mouse__click",
+                        ["name"] = "click",
                         ["description"] = "Click.",
                         ["input_schema"] = new Dictionary<string, object?>
                         {
@@ -3571,7 +3571,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                 [
                     new GeneratedMessagesToolCall(
                         "toolu_click",
-                        "mcp__computer_use__mouse__click",
+                        "click",
                         new Dictionary<string, object?>
                         {
                             ["x"] = 12,
@@ -3581,7 +3581,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                         "mcp__computer_use__mouse"),
                     new GeneratedMessagesToolCall(
                         "toolu_drag",
-                        "mcp__computer_use__mouse__drag",
+                        "drag",
                         new Dictionary<string, object?>
                         {
                             ["from_x"] = 1,
@@ -3620,7 +3620,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                        null),
                     new GeneratedMessagesToolCall(
                         "toolu_press",
-                        "mcp__computer_use__keyboard__press_key",
+                        "press_key",
                         new Dictionary<string, object?>
                         {
                             ["key"] = "Return"
@@ -3629,7 +3629,7 @@ public sealed class ProxyCompatibilityTests : IClassFixture<OpenCodexApiFactory>
                         "mcp__computer_use__keyboard"),
                     new GeneratedMessagesToolCall(
                         "toolu_type",
-                        "mcp__computer_use__keyboard__type_text",
+                        "type_text",
                         new Dictionary<string, object?>
                         {
                             ["text"] = "done"

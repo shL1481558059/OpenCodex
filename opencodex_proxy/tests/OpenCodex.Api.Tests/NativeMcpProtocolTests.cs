@@ -126,7 +126,7 @@ public sealed class NativeMcpProtocolTests
             Assert.Single(Assert.IsType<List<object?>>(request["tools"])));
         Assert.Equal("function", wrapper["type"]);
         var function = Assert.IsType<Dictionary<string, object?>>(wrapper["function"]);
-        Assert.Equal("mcp__computer_use__click", function["name"]);
+        Assert.Equal("click", function["name"]);
     }
 
     [Fact]

@@ -12,27 +12,38 @@ public sealed class MultiAgentClientProtocolTests
     [Theory]
     [InlineData("function")]
     [InlineData("custom")]
-    public void ResponseToolsRejectIrreversibleFlatAndNamespaceAliasCollisions(string nestedType)
+    public void ResponseToolsAllowDistinctFlatAndNamespaceLeafNames(string nestedType)
     {
         var request = Payload("""{"tools":[{"type":"function","name":"a__b","parameters":{"type":"object"}},{"type":"namespace","name":"a","tools":[{"type":"NESTED_TYPE","name":"b","parameters":{"type":"object"}}]}]}""".Replace("NESTED_TYPE", nestedType, StringComparison.Ordinal));
-        Assert.Throws<BadRequestException>(() => ProtocolConverter.BuildResponsesToolCallMappings(request));
-        Assert.Throws<BadRequestException>(() => ProtocolConverter.ConvertRequest(request, ProtocolConverter.Responses, ProtocolConverter.Chat, "test"));
-    }
-
-    [Fact]
-    public void ResponseToolsRejectDynamicAliasCollisionButAllowExactRedeclarationAndUniqueSeparators()
-    {
-        var request = Payload("""{"tools":[{"type":"function","name":"a__b","parameters":{"type":"object"}}],"input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"a","tools":[{"type":"function","name":"b","parameters":{"type":"object"}}]}]}]}""");
-        Assert.Throws<BadRequestException>(() => ProtocolConverter.BuildResponsesToolCallMappings(request));
-        request["input"] = new List<object?>();
-        JsonDictionaryValue.List(request, "tools").Add(Payload("""{"type":"function","name":"a__b","parameters":{"type":"object"}}"""));
-        JsonDictionaryValue.List(request, "tools").Add(Payload("""{"type":"namespace","name":"a","tools":[{"type":"custom","name":"c__d"}]}"""));
         var mappings = ProtocolConverter.BuildResponsesToolCallMappings(request);
         Assert.Equal(2, mappings.Count);
         Assert.Equal("a__b", mappings["a__b"].ResponsesName);
         Assert.Null(mappings["a__b"].Namespace);
-        Assert.Equal("c__d", mappings["a__c__d"].ResponsesName);
-        Assert.Equal("a", mappings["a__c__d"].Namespace);
+        Assert.Equal("b", mappings["b"].ResponsesName);
+        Assert.Equal("a", mappings["b"].Namespace);
+    }
+
+    [Fact]
+    public void ResponseToolsUseLeafNamesUnlessLeafNamesCollide()
+    {
+        var request = Payload("""{"tools":[{"type":"function","name":"a__b","parameters":{"type":"object"}},{"type":"namespace","name":"a","tools":[{"type":"function","name":"b","parameters":{"type":"object"}},{"type":"custom","name":"c__d"}]}]}""");
+        var mappings = ProtocolConverter.BuildResponsesToolCallMappings(request);
+        Assert.Equal(3, mappings.Count);
+        Assert.Equal("a__b", mappings["a__b"].ResponsesName);
+        Assert.Null(mappings["a__b"].Namespace);
+        Assert.Equal("b", mappings["b"].ResponsesName);
+        Assert.Equal("a", mappings["b"].Namespace);
+        Assert.Equal("c__d", mappings["c__d"].ResponsesName);
+        Assert.Equal("a", mappings["c__d"].Namespace);
+    }
+
+    [Fact]
+    public void ResponseToolsRejectFinalWireNameCollisionAfterPrefixing()
+    {
+        var request = Payload("""{"tools":[{"type":"function","name":"a__b","parameters":{"type":"object"}},{"type":"namespace","name":"a","tools":[{"type":"function","name":"b","parameters":{"type":"object"}}]},{"type":"namespace","name":"c","tools":[{"type":"function","name":"b","parameters":{"type":"object"}}]}]}""");
+        var error = Assert.Throws<BadRequestException>(
+            () => ProtocolConverter.BuildResponsesToolCallMappings(request));
+        Assert.Contains("resolve to the same wire name `a__b`", error.Message, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -205,7 +216,7 @@ public sealed class MultiAgentClientProtocolTests
     {
         var request = Payload("""{"tools":[{"type":"namespace","name":"outer","tools":[{"type":"namespace","name":"inner","tools":[{"type":"function","name":"read__file","parameters":{"type":"object","properties":{}}}]}]}]}""");
         var mappings = ProtocolConverter.BuildResponsesToolCallMappings(request);
-        var call = ProtocolConverter.ResponsesToolCallItemFromToolCall("call", "outer__inner__read__file", new Dictionary<string, object?>(), mappings: mappings);
+        var call = ProtocolConverter.ResponsesToolCallItemFromToolCall("call", "read__file", new Dictionary<string, object?>(), mappings: mappings);
         Assert.Equal("read__file", call["name"]);
         Assert.Equal("outer__inner", call["namespace"]);
     }
@@ -240,7 +251,7 @@ public sealed class MultiAgentClientProtocolTests
                 { new { id = "call", type = "function", function = new { name = "exec", arguments = JsonSerializer.Serialize(new { input }) } } } }, finish_reason = "tool_calls" } } }))
             : Payload(JsonSerializer.Serialize(new { content = new[] { new { type = "tool_use", id = "call", name = "exec", input = new { input } } }, stop_reason = "tool_use" }));
         var mappings = ProtocolConverter.BuildResponsesToolCallMappings(request);
-        Assert.Equal("exec", mappings["functions__exec"].ResponsesName);
+        Assert.Equal("exec", mappings["exec"].ResponsesName);
         var response = ProtocolConverter.ConvertResponse(upstream, ProtocolConverter.Responses, protocol, "test", toolCallMappings: mappings);
         var call = Assert.IsType<Dictionary<string, object?>>(Assert.Single(JsonDictionaryValue.List(response, "output")));
         Assert.Equal("custom_tool_call", call["type"]);
@@ -338,7 +349,7 @@ public sealed class MultiAgentClientProtocolTests
 
     [Theory]
     [InlineData("flat__name", "flat__name", null)]
-    [InlineData("outer__inner__read__file", "read__file", "outer__inner")]
+    [InlineData("read__file", "read__file", "outer__inner")]
     public void CustomTool_DeclarationPreservesLeafSeparatorsAndFullNestedNamespace(string upstreamName, string name, string? ns)
     {
         var request = Payload("""{"tools":[{"type":"custom","name":"flat__name"},{"type":"namespace","name":"outer","tools":[{"type":"namespace","name":"inner","tools":[{"type":"custom","name":"read__file"}]}]}]}""");
@@ -356,8 +367,8 @@ public sealed class MultiAgentClientProtocolTests
     [Theory]
     [InlineData("chat", "flat__name", "flat__name", null)]
     [InlineData("messages", "flat__name", "flat__name", null)]
-    [InlineData("chat", "outer__inner__read__file", "read__file", "outer__inner")]
-    [InlineData("messages", "outer__inner__read__file", "read__file", "outer__inner")]
+    [InlineData("chat", "read__file", "read__file", "outer__inner")]
+    [InlineData("messages", "read__file", "read__file", "outer__inner")]
     public void CompleteResponse_PreservesCustomDeclaredIdentity(string protocol, string upstreamName, string name, string? ns)
     {
         var request = Payload("""{"tools":[{"type":"custom","name":"flat__name"},{"type":"namespace","name":"outer","tools":[{"type":"namespace","name":"inner","tools":[{"type":"custom","name":"read__file"}]}]}]}""");

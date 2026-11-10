@@ -1240,8 +1240,8 @@ public sealed class SseStreamConverterTests
     {
         const string input = "{\"input\":\"literal\"}\ntext(1);";
         var events = await CollectAsync(SseStreamConverter.ChatToResponsesEvents(SseLines(
-            SseBlock(ChatChunk(toolCalls: new[] { ChatToolCall(0, "call", "functions__") })),
-            SseBlock(ChatChunk(toolCalls: new[] { ChatToolCall(0, name: "exec", arguments: JsonSerializer.Serialize(new { input })) })),
+            SseBlock(ChatChunk(toolCalls: new[] { ChatToolCall(0, "call", "e") })),
+            SseBlock(ChatChunk(toolCalls: new[] { ChatToolCall(0, name: "xec", arguments: JsonSerializer.Serialize(new { input })) })),
             SseBlock(ChatChunk(finishReason: "tool_calls")), SseBlock("[DONE]")),
             "test", NamespacedCustomStreamResult(), CancellationToken.None));
         var item = (Dictionary<string, object?>)ByType(ParseEvents(events), "response.output_item.done")!["item"]!;
@@ -1254,10 +1254,8 @@ public sealed class SseStreamConverterTests
     [Theory]
     [InlineData("exec", "", false)]
     [InlineData("e", "xec", false)]
-    [InlineData("functions__", "exec", false)]
     [InlineData("exec", "", true)]
     [InlineData("e", "xec", true)]
-    [InlineData("functions__", "exec", true)]
     public async Task Chat_UniqueDeclaredShortNameStreamsBeforeTerminalAndSurvivesResponseReconversion(
         string firstName, string restName, bool nativeCustom)
     {
@@ -1299,8 +1297,9 @@ public sealed class SseStreamConverterTests
     public async Task Chat_AmbiguousDeclaredShortNameCannotPublishExecutableItems()
     {
         var result = NamespacedCustomStreamResult();
-        result.ToolCallMappings = new Dictionary<string, ResponsesToolCallMapping>(result.ToolCallMappings!)
+        result.ToolCallMappings = new Dictionary<string, ResponsesToolCallMapping>
         {
+            ["legacy_exec"] = new() { ChatName = "legacy_exec", ResponsesName = "exec", Namespace = "functions", NativeType = "custom" },
             ["other__exec"] = new() { ChatName = "other__exec", ResponsesName = "exec", Namespace = "other", NativeType = "custom" }
         };
         var emitted = new List<string>();
@@ -1321,7 +1320,7 @@ public sealed class SseStreamConverterTests
         var events = await CollectAsync(SseStreamConverter.ChatToResponsesEvents(SseLines(
             SseBlock(ChatChunk(toolCalls: new[]
             {
-                new { index = 0, id = "call", type = "custom", custom = new { name = "functions__exec", input } }
+                new { index = 0, id = "call", type = "custom", custom = new { name = "exec", input } }
             })), SseBlock(ChatChunk(finishReason: "tool_calls")), SseBlock("[DONE]")),
             "test", NamespacedCustomStreamResult(), CancellationToken.None));
         foreach (var entry in ParseEvents(events).Where(e => (string?)e["type"] is "response.output_item.added" or "response.output_item.done"))

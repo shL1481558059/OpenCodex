@@ -22,6 +22,7 @@ public sealed partial class ProxyStreamService
             && context.ChannelType is ProtocolConverter.Chat or ProtocolConverter.Messages
             ? ProtocolConverter.BuildResponsesToolCallMappings(context.Payload)
             : null;
+        var shouldBuffer = tools is not null || mappings is { Count: > 0 };
         var retryUsed = false;
 
         while (true)
@@ -35,7 +36,7 @@ public sealed partial class ProxyStreamService
             var validated = ValidateUpstreamCompletion(confirmed, capture, token);
             var lines = ConvertRound(context, validated, converted, streamState, skipped, token);
             string? terminal = null;
-            if (tools is null)
+            if (!shouldBuffer)
             {
                 try
                 {
@@ -61,14 +62,30 @@ public sealed partial class ProxyStreamService
                     buffered = await CollectLinesAsync(lines, token);
                 }
                 catch (UpstreamException exception)
-                    when (WebSearchRetryPolicy.IsUndeclaredToolCall(exception))
+                    when (ToolContractRetryPolicy.IsUndeclaredToolCall(exception))
                 {
-                    tools.RecordRejectedRound(converted.UpstreamResponse, exception.Message);
+                    var rejectedResponse = converted.UpstreamResponse
+                        ?? capture.Complete(capture.IsComplete
+                            ? StreamCaptureTermination.Completed
+                            : StreamCaptureTermination.UnexpectedEnd).Response;
+                    if (tools is not null)
+                    {
+                        tools.RecordRejectedRound(rejectedResponse, exception.Message);
+                    }
+                    else
+                    {
+                        BuiltinToolSession.AddUsage(
+                            state.RejectedUsage,
+                            rejectedResponse is null
+                                ? new Dictionary<string, object?>(StringComparer.Ordinal)
+                                : ObjectValue(rejectedResponse, "usage"));
+                    }
+
                     if (retryUsed)
                     {
-                        if (!streamState!.HasResponse)
+                        if (tools is null || !streamState!.HasResponse)
                         {
-                            throw;
+                            throw ToolContractRetryPolicy.RetryExhausted(exception);
                         }
 
                         retryExhausted = true;
@@ -76,11 +93,11 @@ public sealed partial class ProxyStreamService
                     else
                     {
                         retryUsed = true;
-                        state.UpstreamRequest = WebSearchRetryPolicy.BuildRetryRequest(
+                        state.UpstreamRequest = ToolContractRetryPolicy.BuildRetryRequest(
                             state.UpstreamRequest,
                             context.ChannelType,
                             mappings?.Keys ?? Array.Empty<string>(),
-                            tools.Binding.WebSearchToolName);
+                            tools?.Binding.WebSearchToolName);
                         continue;
                     }
                 }
@@ -105,7 +122,11 @@ public sealed partial class ProxyStreamService
 
                 foreach (var line in buffered)
                 {
-                    if (WebSearchStreamEventState.IsTerminal(line))
+                    if (tools is null)
+                    {
+                        yield return line;
+                    }
+                    else if (WebSearchStreamEventState.IsTerminal(line))
                     {
                         terminal = line;
                     }
@@ -124,6 +145,12 @@ public sealed partial class ProxyStreamService
                 converted.UpstreamResponse, context.EntryProtocol, context.ChannelType,
                 context.Route.OriginalModel, textFormat, mappings);
             state.ResponsePayload = response;
+            if (tools is null && state.RejectedUsage.Count > 0)
+            {
+                BuiltinToolSession.AddUsage(
+                    state.RejectedUsage,
+                    ObjectValue(converted.UpstreamResponse, "usage"));
+            }
             if (HasStreamFailure(converted.UpstreamResponse))
             {
                 if (terminal is not null)
@@ -249,5 +276,6 @@ public sealed partial class ProxyStreamService
         public required Dictionary<string, object?> UpstreamRequest { get; set; }
         public Dictionary<string, object?>? UpstreamResponse { get; set; }
         public Dictionary<string, object?>? ResponsePayload { get; set; }
+        public Dictionary<string, object?> RejectedUsage { get; } = new(StringComparer.Ordinal);
     }
 }

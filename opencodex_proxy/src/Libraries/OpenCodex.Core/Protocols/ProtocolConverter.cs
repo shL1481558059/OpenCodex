@@ -196,8 +196,12 @@ public static partial class ProtocolConverter
            }
 
             ValidateRequestSemanticCompatibility(converted, sourceProtocol, targetProtocol);
-            var canonical = ToCanonicalRequest(converted, sourceProtocol, compat);
-            var result = FromCanonicalRequest(canonical, targetProtocol);
+            var toolWireNamePlan = sourceProtocol == Responses
+                && targetProtocol is Chat or Messages
+                ? BuildResponsesToolWireNamePlan(converted, compat)
+                : null;
+            var canonical = ToCanonicalRequest(converted, sourceProtocol, compat, toolWireNamePlan);
+            var result = FromCanonicalRequest(canonical, targetProtocol, toolWireNamePlan);
             SanitizeRequestToolChoiceConsistency(result);
             return result;
        }

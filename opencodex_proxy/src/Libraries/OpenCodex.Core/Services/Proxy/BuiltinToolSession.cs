@@ -253,7 +253,7 @@ internal sealed class BuiltinToolSession(
         return stopReason is "tool_calls" or "tool_use" or "stop" or "end_turn";
     }
 
-    private static void AddUsage(Dictionary<string, object?> total, Dictionary<string, object?> usage)
+    internal static void AddUsage(Dictionary<string, object?> total, Dictionary<string, object?> usage)
     {
         foreach (var (key, value) in usage)
         {

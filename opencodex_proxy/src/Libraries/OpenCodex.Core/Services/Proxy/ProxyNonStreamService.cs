@@ -44,6 +44,7 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
             ? ProtocolConverter.BuildResponsesToolCallMappings(context.Payload)
             : null;
         BuiltinToolSession? tools = null;
+        var rejectedUsage = new Dictionary<string, object?>(StringComparer.Ordinal);
         var retryUsed = false;
 
         try
@@ -67,23 +68,43 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
                         context.Route.OriginalModel,
                         textFormat,
                         toolCallMappings);
+                    if (tools is null && rejectedUsage.Count > 0 && responsePayload is not null)
+                    {
+                        BuiltinToolSession.AddUsage(
+                            rejectedUsage,
+                            upstreamResponse is null
+                                ? new Dictionary<string, object?>(StringComparer.Ordinal)
+                                : WebSearchPayload.ObjectValue(upstreamResponse, "usage"));
+                    }
                 }
                 catch (UpstreamException exception)
-                    when (tools is not null
-                          && WebSearchRetryPolicy.IsUndeclaredToolCall(exception))
+                    when (toolCallMappings is not null
+                          && ToolContractRetryPolicy.IsUndeclaredToolCall(exception))
                 {
-                    tools.RecordRejectedRound(upstreamResponse, exception.Message);
+                    if (tools is not null)
+                    {
+                        tools.RecordRejectedRound(upstreamResponse, exception.Message);
+                    }
+                    else
+                    {
+                        BuiltinToolSession.AddUsage(
+                            rejectedUsage,
+                            upstreamResponse is null
+                                ? new Dictionary<string, object?>(StringComparer.Ordinal)
+                                : WebSearchPayload.ObjectValue(upstreamResponse, "usage"));
+                    }
+
                     if (retryUsed)
                     {
-                        throw;
+                        throw ToolContractRetryPolicy.RetryExhausted(exception);
                     }
 
                     retryUsed = true;
-                    upstreamRequest = WebSearchRetryPolicy.BuildRetryRequest(
+                    upstreamRequest = ToolContractRetryPolicy.BuildRetryRequest(
                         upstreamRequest,
                         context.ChannelType,
                         toolCallMappings?.Keys ?? Array.Empty<string>(),
-                        tools.Binding.WebSearchToolName);
+                        tools?.Binding.WebSearchToolName);
                     continue;
                 }
                 if (tools is null)
@@ -157,7 +178,9 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
                     error,
                     webSearchDetails)
                 {
-                    AggregatedUsage = tools?.HasAccountingUsage == true ? tools.AccountingUsage : null
+                    AggregatedUsage = tools?.HasAccountingUsage == true
+                        ? tools.AccountingUsage
+                        : rejectedUsage.Count > 0 ? rejectedUsage : null
                 },
                 context.RequestMetadata);
         }

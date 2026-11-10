@@ -1,7 +1,72 @@
+using OpenCodex.Core.Errors;
+
 namespace OpenCodex.Core.Protocols;
 
 public static partial class ProtocolConverter
 {
+    internal sealed class ToolWireNamePlan
+    {
+        private readonly Dictionary<string, ToolWireNameEntry> _byIdentity;
+
+        public ToolWireNamePlan(
+            IReadOnlyDictionary<string, ToolWireNameEntry> byIdentity,
+            IReadOnlyDictionary<string, ResponsesToolCallMapping> mappings)
+        {
+            _byIdentity = new Dictionary<string, ToolWireNameEntry>(byIdentity, StringComparer.Ordinal);
+            Mappings = mappings;
+        }
+
+        public IReadOnlyDictionary<string, ResponsesToolCallMapping> Mappings { get; }
+
+        public ToolWireNameEntry Resolve(string name, string? namespaceName)
+        {
+            if (_byIdentity.TryGetValue(ToolIdentityKey(namespaceName, name), out var entry))
+            {
+                return entry;
+            }
+
+            throw new BadRequestException(
+                $"Tool `{FormatToolIdentity(namespaceName, name)}` is not present in the request wire-name plan.");
+        }
+
+        public bool TryResolve(string name, string? namespaceName, out ToolWireNameEntry entry)
+        {
+            if (_byIdentity.TryGetValue(ToolIdentityKey(namespaceName, name), out var resolved)
+                && resolved is not null)
+            {
+                entry = resolved;
+                return true;
+            }
+
+            entry = new ToolWireNameEntry();
+            return false;
+        }
+
+        public bool TryResolveUniqueResponsesName(string name, out ToolWireNameEntry entry)
+        {
+            var matches = _byIdentity.Values
+                .Where(candidate => string.Equals(candidate.ResponsesName, name, StringComparison.Ordinal))
+                .Take(2)
+                .ToList();
+            if (matches.Count == 1)
+            {
+                entry = matches[0];
+                return true;
+            }
+
+            entry = new ToolWireNameEntry();
+            return false;
+        }
+    }
+
+    internal sealed class ToolWireNameEntry
+    {
+        public string WireName { get; init; } = string.Empty;
+        public string ResponsesName { get; init; } = string.Empty;
+        public string? Namespace { get; init; }
+        public bool UsesNamespacePrefix { get; init; }
+    }
+
     private static string NamespaceNameToChat(string name)
     {
         if (name.Contains(LegacyNamespaceSeparator, StringComparison.Ordinal))
@@ -11,6 +76,18 @@ public static partial class ProtocolConverter
         }
 
         return name;
+    }
+
+    private static string ToolIdentityKey(string? namespaceName, string name)
+    {
+        return $"{namespaceName ?? string.Empty}\u001f{name}";
+    }
+
+    private static string FormatToolIdentity(string? namespaceName, string name)
+    {
+        return string.IsNullOrEmpty(namespaceName)
+            ? name
+            : $"{namespaceName}.{name}";
     }
 
     private static (string? Namespace, string BareName) NamespaceCallParts(object? name, object? namespaceValue = null)

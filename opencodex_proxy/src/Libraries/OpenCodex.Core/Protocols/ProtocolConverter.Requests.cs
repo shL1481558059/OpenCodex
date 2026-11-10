@@ -4,29 +4,39 @@ namespace OpenCodex.Core.Protocols;
 
 public static partial class ProtocolConverter
 {
-    private static Dictionary<string, object?> ToCanonicalRequest(Dictionary<string, object?> payload, string protocol, IReadOnlyDictionary<string, object?>? compat)
+    private static Dictionary<string, object?> ToCanonicalRequest(
+        Dictionary<string, object?> payload,
+        string protocol,
+        IReadOnlyDictionary<string, object?>? compat,
+        ToolWireNamePlan? toolWireNamePlan)
     {
         return protocol switch
         {
-            Responses => ResponsesRequestToCanonical(payload, compat),
+            Responses => ResponsesRequestToCanonical(payload, compat, toolWireNamePlan),
             Chat => ChatRequestToCanonical(payload, compat),
             Messages => MessagesRequestToCanonical(payload, compat),
             _ => throw new BadRequestException($"unsupported source protocol: {protocol}")
         };
     }
 
-    private static Dictionary<string, object?> FromCanonicalRequest(Dictionary<string, object?> canonical, string protocol)
+    private static Dictionary<string, object?> FromCanonicalRequest(
+        Dictionary<string, object?> canonical,
+        string protocol,
+        ToolWireNamePlan? toolWireNamePlan)
     {
         return protocol switch
         {
             Responses => CanonicalToResponsesRequest(canonical),
-            Chat => CanonicalToChatRequest(canonical),
-            Messages => CanonicalToMessagesRequest(canonical),
+            Chat => CanonicalToChatRequest(canonical, toolWireNamePlan),
+            Messages => CanonicalToMessagesRequest(canonical, toolWireNamePlan),
             _ => throw new BadRequestException($"unsupported target protocol: {protocol}")
         };
     }
 
-    private static Dictionary<string, object?> ResponsesRequestToCanonical(Dictionary<string, object?> payload, IReadOnlyDictionary<string, object?>? compat)
+    private static Dictionary<string, object?> ResponsesRequestToCanonical(
+        Dictionary<string, object?> payload,
+        IReadOnlyDictionary<string, object?>? compat,
+        ToolWireNamePlan? toolWireNamePlan)
     {
         var messages = new List<object?>();
         var instructions = GetValue(payload, "instructions");
@@ -45,7 +55,7 @@ public static partial class ProtocolConverter
         {
             foreach (var item in inputItems)
             {
-                messages.AddRange(ResponsesInputItemToMessages(item));
+                messages.AddRange(ResponsesInputItemToMessages(item, toolWireNamePlan));
             }
         }
         else
@@ -166,7 +176,9 @@ public static partial class ProtocolConverter
         return result;
     }
 
-    private static Dictionary<string, object?> CanonicalToChatRequest(Dictionary<string, object?> canonical)
+    private static Dictionary<string, object?> CanonicalToChatRequest(
+        Dictionary<string, object?> canonical,
+        ToolWireNamePlan? toolWireNamePlan)
     {
         var result = Obj(("model", GetValue(canonical, "model")), ("messages", new List<object?>()));
         MergeInto(result, ObjectValue(canonical, "params"));
@@ -228,7 +240,7 @@ public static partial class ProtocolConverter
             outputMessages.Add(converted);
         }
 
-        var tools = CanonicalToolsToChat(ListValue(canonical, "tools"));
+        var tools = CanonicalToolsToChat(ListValue(canonical, "tools"), toolWireNamePlan);
         if (tools.Count > 0)
         {
             result["tools"] = tools;
@@ -236,7 +248,7 @@ public static partial class ProtocolConverter
 
         if (HasNonNullValue(canonical, "tool_choice"))
         {
-            result["tool_choice"] = ToolChoiceToChat(GetValue(canonical, "tool_choice"));
+            result["tool_choice"] = ToolChoiceToChat(GetValue(canonical, "tool_choice"), toolWireNamePlan);
         }
 
         if (result.ContainsKey("max_output_tokens") && !result.ContainsKey("max_tokens"))
@@ -255,7 +267,9 @@ public static partial class ProtocolConverter
         return result;
     }
 
-    private static Dictionary<string, object?> CanonicalToMessagesRequest(Dictionary<string, object?> canonical)
+    private static Dictionary<string, object?> CanonicalToMessagesRequest(
+        Dictionary<string, object?> canonical,
+        ToolWireNamePlan? toolWireNamePlan)
     {
         var result = Obj(("model", GetValue(canonical, "model")), ("messages", new List<object?>()));
         MergeInto(result, ObjectValue(canonical, "params"));
@@ -358,7 +372,7 @@ public static partial class ProtocolConverter
             result["system"] = string.Join("\n\n", systemParts);
         }
 
-        var tools = CanonicalToolsToAnthropic(ListValue(canonical, "tools"));
+        var tools = CanonicalToolsToAnthropic(ListValue(canonical, "tools"), toolWireNamePlan);
         if (tools.Count > 0)
         {
             result["tools"] = tools;
@@ -372,7 +386,7 @@ public static partial class ProtocolConverter
 
         if (HasNonNullValue(canonical, "tool_choice"))
         {
-            result["tool_choice"] = ToolChoiceToMessages(GetValue(canonical, "tool_choice"));
+            result["tool_choice"] = ToolChoiceToMessages(GetValue(canonical, "tool_choice"), toolWireNamePlan);
         }
 
         if (result.ContainsKey("max_output_tokens") && !result.ContainsKey("max_tokens"))

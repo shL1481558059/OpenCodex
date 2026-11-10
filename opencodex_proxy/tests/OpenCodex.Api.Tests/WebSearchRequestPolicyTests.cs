@@ -77,7 +77,7 @@ public sealed class WebSearchRequestPolicyTests
             }
         };
 
-        var retry = WebSearchRetryPolicy.BuildRetryRequest(
+        var retry = ToolContractRetryPolicy.BuildRetryRequest(
             request,
             ProtocolConverter.Messages,
             ["lookup", WebSearchRequestPolicy.ToolName],

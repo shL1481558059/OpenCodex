@@ -8,6 +8,109 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class ProtocolStructuralCompatibilityTests
 {
+    [Theory]
+    [InlineData(ProtocolConverter.Chat)]
+    [InlineData(ProtocolConverter.Messages)]
+    public void ResponsesToFlatProtocol_UniqueLeafNameKeepsOriginalDescription(string protocol)
+    {
+        var request = NamespacedExecRequest("original exec description", "other exec description");
+        request["tools"] = new List<object?>
+        {
+            NamespaceExecTool("functions", "original exec description")
+        };
+        request["tool_choice"] = new Dictionary<string, object?>
+        {
+            ["type"] = "function",
+            ["name"] = "exec",
+            ["namespace"] = "functions"
+        };
+
+        var converted = ProtocolConverter.ConvertRequest(
+            request, ProtocolConverter.Responses, protocol, "upstream");
+        var tool = Object(Assert.Single(List(converted, "tools")));
+        var choice = Object(converted["tool_choice"]);
+        if (protocol == ProtocolConverter.Chat)
+        {
+            var function = Object(tool["function"]);
+            Assert.Equal("exec", String(function, "name"));
+            Assert.Equal("original exec description", String(function, "description"));
+            Assert.Equal("exec", String(Object(choice["function"]), "name"));
+        }
+        else
+        {
+            Assert.Equal("exec", String(tool, "name"));
+            Assert.Equal("original exec description", String(tool, "description"));
+            Assert.Equal("exec", String(choice, "name"));
+        }
+    }
+
+    [Theory]
+    [InlineData(ProtocolConverter.Chat)]
+    [InlineData(ProtocolConverter.Messages)]
+    public void ResponsesToFlatProtocol_CollidingLeafNamesAddNamespaceAndDescriptionContract(string protocol)
+    {
+        var request = NamespacedExecRequest("functions exec description", "other exec description");
+        request["tool_choice"] = new Dictionary<string, object?>
+        {
+            ["type"] = "function",
+            ["name"] = "exec",
+            ["namespace"] = "functions"
+        };
+        var converted = ProtocolConverter.ConvertRequest(
+            request,
+            ProtocolConverter.Responses,
+            protocol,
+            "upstream");
+        var tools = List(converted, "tools").Select(Object).ToList();
+        var choice = Object(converted["tool_choice"]);
+        if (protocol == ProtocolConverter.Chat)
+        {
+            var functions = Object(tools[0]["function"]);
+            var other = Object(tools[1]["function"]);
+            Assert.Equal("functions__exec", String(functions, "name"));
+            Assert.Equal("other__exec", String(other, "name"));
+            Assert.Contains("Top-level callable tool name: `functions__exec`", String(functions, "description"));
+            Assert.Contains("functions exec description", String(functions, "description"));
+            Assert.Contains("Top-level callable tool name: `other__exec`", String(other, "description"));
+            Assert.Equal("functions__exec", String(Object(choice["function"]), "name"));
+        }
+        else
+        {
+            Assert.Equal("functions__exec", String(tools[0], "name"));
+            Assert.Equal("other__exec", String(tools[1], "name"));
+            Assert.Contains("Top-level callable tool name: `functions__exec`", String(tools[0], "description"));
+            Assert.Contains("other exec description", String(tools[1], "description"));
+            Assert.Equal("functions__exec", String(choice, "name"));
+        }
+    }
+
+    private static Dictionary<string, object?> NamespacedExecRequest(string functionsDescription, string otherDescription) => new()
+    {
+        ["model"] = "public",
+        ["input"] = "hello",
+        ["tools"] = new List<object?>
+        {
+            NamespaceExecTool("functions", functionsDescription),
+            NamespaceExecTool("other", otherDescription)
+        }
+    };
+
+    private static Dictionary<string, object?> NamespaceExecTool(string namespaceName, string description) => new()
+    {
+        ["type"] = "namespace",
+        ["name"] = namespaceName,
+        ["tools"] = new List<object?>
+        {
+            new Dictionary<string, object?>
+            {
+                ["type"] = "function",
+                ["name"] = "exec",
+                ["description"] = description,
+                ["parameters"] = new Dictionary<string, object?> { ["type"] = "object" }
+            }
+        }
+    };
+
     public static IEnumerable<object[]> CustomToolInputs()
     {
         foreach (var protocol in new[] { ProtocolConverter.Chat, ProtocolConverter.Messages })
@@ -45,7 +148,7 @@ public sealed class ProtocolStructuralCompatibilityTests
         if (protocol == ProtocolConverter.Chat)
         {
             var call = messages.Single(m => m.TryGetProperty("tool_calls", out _)).GetProperty("tool_calls")[0];
-            Assert.Equal("functions__exec", call.GetProperty("function").GetProperty("name").GetString());
+            Assert.Equal("exec", call.GetProperty("function").GetProperty("name").GetString());
             using var arguments = JsonDocument.Parse(call.GetProperty("function").GetProperty("arguments").GetString()!);
             Assert.Equal(input, arguments.RootElement.GetProperty("input").GetString());
             Assert.Single(arguments.RootElement.EnumerateObject());
@@ -54,7 +157,7 @@ public sealed class ProtocolStructuralCompatibilityTests
         {
             var call = messages.SelectMany(m => m.GetProperty("content").EnumerateArray())
                 .Single(b => b.GetProperty("type").GetString() == "tool_use");
-            Assert.Equal("functions__exec", call.GetProperty("name").GetString());
+            Assert.Equal("exec", call.GetProperty("name").GetString());
             Assert.Equal(input, call.GetProperty("input").GetProperty("input").GetString());
             Assert.Single(call.GetProperty("input").EnumerateObject());
         }
@@ -109,7 +212,7 @@ public sealed class ProtocolStructuralCompatibilityTests
                     {
                         ["tool_calls"] = new List<object?>
                         {
-                            new Dictionary<string, object?> { ["type"] = "custom", ["id"] = "call_custom", ["custom"] = new Dictionary<string, object?> { ["name"] = "functions__exec", ["input"] = input } }
+                            new Dictionary<string, object?> { ["type"] = "custom", ["id"] = "call_custom", ["custom"] = new Dictionary<string, object?> { ["name"] = "exec", ["input"] = input } }
                         }
                     }
                 }
@@ -122,7 +225,7 @@ public sealed class ProtocolStructuralCompatibilityTests
 
     private static Dictionary<string, ResponsesToolCallMapping> CustomMappings() => new()
     {
-        ["functions__exec"] = new ResponsesToolCallMapping { ChatName = "functions__exec", NativeType = "custom", ResponsesName = "exec", Namespace = "functions" }
+        ["exec"] = new ResponsesToolCallMapping { ChatName = "exec", NativeType = "custom", ResponsesName = "exec", Namespace = "functions" }
     };
 
     [Theory]
@@ -169,9 +272,9 @@ public sealed class ProtocolStructuralCompatibilityTests
         if (protocol == ProtocolConverter.Chat)
         {
             var message = Object(Object(List(response, "choices")[0])["message"]);
-            Object(Object(List(message, "tool_calls")[0])["function"])["name"] = "functions__apply_patch";
+            Object(Object(List(message, "tool_calls")[0])["function"])["name"] = "apply_patch";
         }
-        else Object(List(response, "content")[0])["name"] = "functions__apply_patch";
+        else Object(List(response, "content")[0])["name"] = "apply_patch";
         var convertedResponse = ProtocolConverter.ConvertResponse(response, ProtocolConverter.Responses, protocol, "public",
             toolCallMappings: ProtocolConverter.BuildResponsesToolCallMappings(request));
         var output = List(convertedResponse, "output").Select(Object).Single(i => String(i, "type") == "custom_tool_call");
@@ -211,7 +314,7 @@ public sealed class ProtocolStructuralCompatibilityTests
                 ["stop_reason"] = "tool_use",
                 ["content"] = new List<object?>
                 {
-                    new Dictionary<string, object?> { ["type"] = "tool_use", ["id"] = "call_custom", ["name"] = "functions__exec", ["input"] = JsonSerializer.Deserialize<JsonElement>(arguments) }
+                    new Dictionary<string, object?> { ["type"] = "tool_use", ["id"] = "call_custom", ["name"] = "exec", ["input"] = JsonSerializer.Deserialize<JsonElement>(arguments) }
                 }
             };
         return new Dictionary<string, object?>
@@ -225,7 +328,7 @@ public sealed class ProtocolStructuralCompatibilityTests
                     {
                         ["tool_calls"] = new List<object?>
                         {
-                            new Dictionary<string, object?> { ["type"] = "function", ["id"] = "call_custom", ["function"] = new Dictionary<string, object?> { ["name"] = "functions__exec", ["arguments"] = arguments } }
+                            new Dictionary<string, object?> { ["type"] = "function", ["id"] = "call_custom", ["function"] = new Dictionary<string, object?> { ["name"] = "exec", ["arguments"] = arguments } }
                         }
                     }
                 }

@@ -4,18 +4,28 @@ using static OpenCodex.CoreBase.Abstractions.WebSearchPayload;
 
 namespace OpenCodex.Core.Services.WebSearch;
 
-internal static class WebSearchRetryPolicy
+internal static class ToolContractRetryPolicy
 {
+    public const string RetryExhaustedErrorCode = "upstream_tool_contract_error";
+
     public static bool IsUndeclaredToolCall(UpstreamException exception)
     {
         return exception.ErrorCode == ProtocolConverter.UndeclaredToolCallErrorCode;
+    }
+
+    public static UpstreamException RetryExhausted(UpstreamException lastFailure)
+    {
+        return new UpstreamException(
+            "The upstream model repeatedly returned an undeclared tool name.",
+            body: lastFailure.Body,
+            errorCode: RetryExhaustedErrorCode);
     }
 
     public static Dictionary<string, object?> BuildRetryRequest(
         IReadOnlyDictionary<string, object?> request,
         string channelType,
         IEnumerable<string> declaredToolNames,
-        string webSearchToolName)
+        string? webSearchToolName = null)
     {
         var result = DeepCopyObject(request);
         var names = declaredToolNames
@@ -24,11 +34,14 @@ internal static class WebSearchRetryPolicy
             .Order(StringComparer.Ordinal)
             .Select(name => $"`{name}`")
             .ToList();
+        var webSearchContract = string.IsNullOrEmpty(webSearchToolName)
+            ? string.Empty
+            : $"\nFor the proxy web search tool, use the exact name `{webSearchToolName}`.";
         var instruction = $"""
             Tool call contract:
             Call only tools explicitly declared in this request.
             Use each tool name exactly as declared. Never rename, translate, abbreviate, merge, or invent tool names.
-            For the proxy web search tool, use the exact name `{webSearchToolName}`.
+            Nested method names found in tool descriptions are not top-level tools.{webSearchContract}
             Allowed tool names: {string.Join(", ", names)}
             """;
 

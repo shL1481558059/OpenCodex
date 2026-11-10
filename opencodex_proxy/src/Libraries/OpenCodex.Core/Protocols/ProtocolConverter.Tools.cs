@@ -15,42 +15,69 @@ public static partial class ProtocolConverter
     internal static IReadOnlyDictionary<string, ResponsesToolCallMapping> BuildResponsesToolCallMappings(
         Dictionary<string, object?> payload)
     {
-        var result = new Dictionary<string, ResponsesToolCallMapping>(StringComparer.Ordinal);
-        foreach (var item in ResponsesRequestToolsToCanonical(payload))
+        return BuildResponsesToolWireNamePlan(payload).Mappings;
+    }
+
+    internal static ToolWireNamePlan BuildResponsesToolWireNamePlan(
+        Dictionary<string, object?> payload,
+        IReadOnlyDictionary<string, object?>? compat = null)
+    {
+        var tools = ResponsesRequestToolsToCanonical(payload, compat)
+            .OfType<Dictionary<string, object?>>()
+            .Where(tool => HasNonNullValue(tool, "name") && !IsNativeRemoteMcpCanonicalTool(tool))
+            .ToList();
+        var identities = tools
+            .Select(tool => (Tool: tool, Identity: CanonicalResponsesToolIdentity(tool)))
+            .ToList();
+        var bareNameCounts = identities
+            .GroupBy(item => item.Identity.Name, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
+        var entries = new Dictionary<string, ToolWireNameEntry>(StringComparer.Ordinal);
+        var mappings = new Dictionary<string, ResponsesToolCallMapping>(StringComparer.Ordinal);
+        var wireOwners = new Dictionary<string, (string? Namespace, string Name)>(StringComparer.Ordinal);
+        foreach (var (tool, identity) in identities)
         {
-            if (!TryAsObject(item, out var tool))
+            var hasCollision = bareNameCounts[identity.Name] > 1;
+            var usesNamespacePrefix = hasCollision && !string.IsNullOrEmpty(identity.Namespace);
+            var wireName = usesNamespacePrefix
+                ? $"{identity.Namespace}{NamespaceSeparator}{identity.Name}"
+                : identity.Name;
+            var identityKey = ToolIdentityKey(identity.Namespace, identity.Name);
+            if (entries.ContainsKey(identityKey))
             {
-                continue;
+                throw new BadRequestException(
+                    $"Duplicate tool identity `{FormatToolIdentity(identity.Namespace, identity.Name)}` is ambiguous.");
             }
 
-            // Native remote MCP tools execute on the Responses provider. They are not
-            // client-side function calls and must never participate in the legacy
-            // namespace/function call restoration map.
-            if (IsNativeRemoteMcpCanonicalTool(tool))
+            if (wireOwners.TryGetValue(wireName, out var existingWireOwner)
+                && existingWireOwner != (identity.Namespace, identity.Name))
             {
-                continue;
+                throw new BadRequestException(
+                    $"Tools `{FormatToolIdentity(existingWireOwner.Namespace, existingWireOwner.Name)}` and " +
+                    $"`{FormatToolIdentity(identity.Namespace, identity.Name)}` resolve to the same wire name `{wireName}`.");
             }
 
             var nativeType = (GetString(tool, "native_type") ?? "function")
                 .Replace("-", "_", StringComparison.Ordinal);
-            var responsesName = Convert.ToString(GetValue(tool, "name")) ?? string.Empty;
-            if (responsesName.Length == 0)
+            var entry = new ToolWireNameEntry
             {
-                continue;
-            }
-
-            var chatName = NamespaceNameToChat(responsesName);
-            var identity = CanonicalResponsesToolIdentity(tool);
-            result[chatName] = new ResponsesToolCallMapping
+                WireName = wireName,
+                ResponsesName = identity.Name,
+                Namespace = identity.Namespace,
+                UsesNamespacePrefix = usesNamespacePrefix
+            };
+            entries[identityKey] = entry;
+            wireOwners[wireName] = (identity.Namespace, identity.Name);
+            mappings[wireName] = new ResponsesToolCallMapping
             {
-                ChatName = chatName,
+                ChatName = wireName,
                 NativeType = nativeType,
                 ResponsesName = identity.Name,
                 Namespace = identity.Namespace
             };
         }
 
-        return result;
+        return new ToolWireNamePlan(entries, mappings);
     }
 
     private static (string Name, string? Namespace) CanonicalResponsesToolIdentity(Dictionary<string, object?> tool)
@@ -302,7 +329,9 @@ public static partial class ProtocolConverter
         return result;
     }
 
-    private static List<object?> CanonicalToolsToChat(List<object?> tools)
+    private static List<object?> CanonicalToolsToChat(
+        List<object?> tools,
+        ToolWireNamePlan? toolWireNamePlan)
     {
         var result = new List<object?>();
         foreach (var item in tools)
@@ -326,10 +355,19 @@ public static partial class ProtocolConverter
             }
 
             tool = RewriteApplyPatchToolDescription(tool);
+            var identity = CanonicalResponsesToolIdentity(tool);
+            var entry = toolWireNamePlan?.Resolve(identity.Name, identity.Namespace);
+            var wireName = entry?.WireName
+                ?? NamespaceNameToChat(Convert.ToString(GetValue(tool, "name")) ?? string.Empty);
+            var description = Convert.ToString(GetValue(tool, "description")) ?? string.Empty;
+            if (entry?.UsesNamespacePrefix == true)
+            {
+                description = AddWireNameDescriptionContract(description, wireName);
+            }
 
             var chatFunction = Obj(
-                ("name", NamespaceNameToChat(Convert.ToString(GetValue(tool, "name")) ?? string.Empty)),
-                ("description", GetValue(tool, "description") ?? string.Empty),
+                ("name", wireName),
+                ("description", description),
                 ("parameters", SanitizeToolSchema(GetValue(tool, "parameters") ?? new Dictionary<string, object?>())));
             if (HasNonNullValue(tool, "strict"))
             {
@@ -344,7 +382,9 @@ public static partial class ProtocolConverter
         return result;
     }
 
-    private static List<object?> CanonicalToolsToAnthropic(List<object?> tools)
+    private static List<object?> CanonicalToolsToAnthropic(
+        List<object?> tools,
+        ToolWireNamePlan? toolWireNamePlan)
     {
         var result = new List<object?>();
         foreach (var item in tools)
@@ -371,10 +411,19 @@ public static partial class ProtocolConverter
             }
 
             tool = RewriteApplyPatchToolDescription(tool);
+            var identity = CanonicalResponsesToolIdentity(tool);
+            var entry = toolWireNamePlan?.Resolve(identity.Name, identity.Namespace);
+            var wireName = entry?.WireName
+                ?? NamespaceNameToChat(Convert.ToString(GetValue(tool, "name")) ?? string.Empty);
+            var description = Convert.ToString(GetValue(tool, "description")) ?? string.Empty;
+            if (entry?.UsesNamespacePrefix == true)
+            {
+                description = AddWireNameDescriptionContract(description, wireName);
+            }
 
             result.Add(Obj(
-                ("name", GetValue(tool, "name")),
-                ("description", GetValue(tool, "description") ?? string.Empty),
+                ("name", wireName),
+                ("description", description),
                 ("input_schema", SanitizeToolSchema(GetValue(tool, "parameters") ?? new Dictionary<string, object?>()))));
         }
 
@@ -625,7 +674,6 @@ public static partial class ProtocolConverter
     {
         var result = new List<object?>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        var aliases = new Dictionary<string, (string Name, string? Namespace, string Type)>(StringComparer.Ordinal);
         foreach (var item in tools)
         {
             if (!TryAsObject(item, out var tool))
@@ -640,18 +688,9 @@ public static partial class ProtocolConverter
                 continue;
             }
 
-            if (!IsNativeRemoteMcpCanonicalTool(tool))
-            {
-                var identity = CanonicalResponsesToolIdentity(tool);
-                var contract = (identity.Name, identity.Namespace, nativeType);
-                var alias = NamespaceNameToChat(name);
-                if (aliases.TryGetValue(alias, out var existing) && existing != contract)
-                    throw new BadRequestException("Distinct tool declarations map to the same upstream tool name. Rename one tool or namespace to preserve an unambiguous contract.");
-                aliases[alias] = contract;
-            }
-
+            var identity = CanonicalResponsesToolIdentity(tool);
             var scope = nativeType == "function" ? "function" : nativeType;
-            if (!seen.Add($"{scope}\u001f{name}"))
+            if (!seen.Add($"{scope}\u001f{ToolIdentityKey(identity.Namespace, identity.Name)}"))
             {
                 continue;
             }
@@ -662,7 +701,9 @@ public static partial class ProtocolConverter
         return result;
     }
 
-    private static object? ToolChoiceToChat(object? toolChoice)
+    private static object? ToolChoiceToChat(
+        object? toolChoice,
+        ToolWireNamePlan? toolWireNamePlan)
     {
         if (toolChoice is string)
         {
@@ -671,6 +712,13 @@ public static partial class ProtocolConverter
 
         if (TryAsObject(toolChoice, out var toolChoiceObject))
         {
+            if (TryResolveToolChoiceWireName(toolChoiceObject, toolWireNamePlan, out var resolvedName))
+            {
+                return Obj(
+                    ("type", "function"),
+                    ("function", Obj(("name", resolvedName))));
+            }
+
             if (IsApplyPatchToolChoice(toolChoiceObject))
             {
                 return Obj(
@@ -777,7 +825,9 @@ public static partial class ProtocolConverter
         return DeepCopy(choice);
     }
 
-    private static object? ToolChoiceToMessages(object? toolChoice)
+    private static object? ToolChoiceToMessages(
+        object? toolChoice,
+        ToolWireNamePlan? toolWireNamePlan)
     {
         if (toolChoice is string text)
         {
@@ -792,6 +842,11 @@ public static partial class ProtocolConverter
         if (!TryAsObject(toolChoice, out var choice))
         {
             return toolChoice;
+        }
+
+        if (TryResolveToolChoiceWireName(choice, toolWireNamePlan, out var resolvedName))
+        {
+            return Obj(("type", "tool"), ("name", resolvedName));
         }
 
         if (IsApplyPatchToolChoice(choice))
@@ -833,6 +888,53 @@ public static partial class ProtocolConverter
             "required" or "any" => Obj(("type", "any")),
             _ => Obj(("type", "auto"))
         };
+    }
+
+    private static bool TryResolveToolChoiceWireName(
+        Dictionary<string, object?> toolChoice,
+        ToolWireNamePlan? toolWireNamePlan,
+        out string wireName)
+    {
+        wireName = string.Empty;
+        if (toolWireNamePlan is null)
+        {
+            return false;
+        }
+
+        var type = GetString(toolChoice, "type") ?? string.Empty;
+        var nested = type is "function" or "custom"
+            ? ObjectValue(toolChoice, type)
+            : new Dictionary<string, object?>(StringComparer.Ordinal);
+        var responseName = GetString(toolChoice, "name") ?? GetString(nested, "name");
+        if (string.IsNullOrEmpty(responseName))
+        {
+            return false;
+        }
+
+        var namespaceName = GetString(toolChoice, "namespace") ?? GetString(nested, "namespace");
+        var (resolvedNamespace, bareName) = NamespaceCallParts(responseName, namespaceName);
+        if (toolWireNamePlan.TryResolve(bareName, resolvedNamespace, out var entry)
+            || (string.IsNullOrEmpty(resolvedNamespace)
+                && toolWireNamePlan.TryResolveUniqueResponsesName(bareName, out entry)))
+        {
+            wireName = entry.WireName;
+            return true;
+        }
+
+        throw new BadRequestException(
+            $"tool_choice references undeclared tool `{FormatToolIdentity(resolvedNamespace, bareName)}`.");
+    }
+
+    private static string AddWireNameDescriptionContract(string description, string wireName)
+    {
+        var contract = $"""
+            Top-level callable tool name: `{wireName}`.
+            You must return exactly this name in function.name.
+            Any tool or method names mentioned inside this description are nested operations of this tool and are not top-level tool names.
+            """;
+        return string.IsNullOrEmpty(description)
+            ? contract
+            : $"{contract}\n\n{description}";
     }
 
     private static bool IsApplyPatchToolChoice(Dictionary<string, object?> toolChoiceObject)
