@@ -12,10 +12,13 @@ namespace OpenCodex.Api.Services;
 public sealed class ResponsesWebSocketClientService(
     IServiceScopeFactory scopes,
     ILogger<ResponsesWebSocketClientService> logger,
-    ClientConnectionCache? connectionCache = null,
-    IProxyIdentityContext? identityContext = null,
-    IConfiguration? configuration = null)
+    ClientConnectionCache? connectionCache,
+    IProxyIdentityContext? identityContext,
+    IConfiguration? configuration)
 {
+    public ResponsesWebSocketClientService(IServiceScopeFactory scopes,ILogger<ResponsesWebSocketClientService> logger,ClientConnectionCache? connectionCache=null,IProxyIdentityContext? identityContext=null)
+        :this(scopes,logger,connectionCache,identityContext,null){}
+
     private const string WarmResponsePrefix = "resp_ocx_warm_";
 
     public async Task HandleAsync(

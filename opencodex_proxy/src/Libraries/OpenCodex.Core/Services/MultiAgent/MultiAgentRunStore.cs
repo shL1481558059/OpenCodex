@@ -18,11 +18,14 @@ public sealed partial class MultiAgentRunStore
     private readonly Dictionary<string, string> _latest = new(StringComparer.Ordinal);
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
 
+    public Task<MultiAgentRun> GetAsync(string sessionKey,string? previousResponseId,Func<MultiAgentRun> create,CancellationToken ct)
+        =>GetAsync(sessionKey,previousResponseId,create,ct,null);
+
     public async Task<MultiAgentRun> GetAsync(
         string sessionKey,
         string? previousResponseId,
         Func<MultiAgentRun> create,
-        CancellationToken ct, Guid? owner = null)
+        CancellationToken ct, Guid? owner)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionKey);
         if(sessionKey.Length>_limits.MaxSessionKeyCharacters)throw Limit();

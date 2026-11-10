@@ -33,7 +33,8 @@ public sealed partial class MultiAgentRunStore:IDisposable
     private bool _disposed;
     private long _bytes;
     private long _nextSweep;
-    public MultiAgentRunStore(string directory,MultiAgentRunCacheOptions? options=null,TimeProvider? timeProvider=null)
+    public MultiAgentRunStore(string directory):this(directory,null,null){}
+    public MultiAgentRunStore(string directory,MultiAgentRunCacheOptions? options,TimeProvider? timeProvider=null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directory);_directory=Path.GetFullPath(directory);
         // Options are immutable for this registry, independent of later configuration mutation.

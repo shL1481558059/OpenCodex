@@ -22,7 +22,8 @@ public sealed partial class MultiAgentClientStore:IDisposable
     private readonly ITimer _timer;
     private readonly Dictionary<(Guid,string),int> _retired=[];
     private volatile bool _disposed;
-    public MultiAgentClientStore(MultiAgentRunStore runs,string directory,MultiAgentBindingCacheOptions? options=null,TimeProvider? timeProvider=null)
+    public MultiAgentClientStore(MultiAgentRunStore runs,string directory):this(runs,directory,null,null){}
+    public MultiAgentClientStore(MultiAgentRunStore runs,string directory,MultiAgentBindingCacheOptions? options,TimeProvider? timeProvider=null)
     {
         ArgumentNullException.ThrowIfNull(runs);ArgumentException.ThrowIfNullOrWhiteSpace(directory);_runs=runs;_directory=Path.Combine(Path.GetFullPath(directory),"client-bindings");
         _limits=System.Text.Json.JsonSerializer.Deserialize<MultiAgentBindingCacheOptions>(System.Text.Json.JsonSerializer.Serialize(options??new()))!;

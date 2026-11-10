@@ -19,7 +19,7 @@ public static class WebSocketJsonWriter
         // Preflight the complete event BEFORE any fragment is attempted. This uses
         // the same default encoder as the old JsonSerializer wire, not relaxed SSE JSON.
         using(var count=new CountStream(maxBytes,ct))using(var json=new Utf8JsonWriter(count))ProxyAuditSpool.WriteJson(json,payload,0);
-        var buffer=new ArrayBufferWriter<byte>(16*1024);using var writer=new Utf8JsonWriter(buffer);
+        var buffer=new ArrayBufferWriter<byte>(16*1024);using var writer=new Utf8JsonWriter(buffer);var sent=0;
         await Value(payload,0);await Drain(true);
         async ValueTask Value(object? value,int depth)
         {
@@ -45,6 +45,8 @@ public static class WebSocketJsonWriter
         async ValueTask Drain(bool final)
         {
             writer.Flush();if(!final&&buffer.WrittenCount<16*1024)return;
+            if(buffer.WrittenCount>maxBytes-sent)throw new InvalidDataException("WebSocket event changed beyond configured MaxEventBytes; output was not truncated.");
+            sent+=buffer.WrittenCount;
             await socket.SendAsync(buffer.WrittenMemory,WebSocketMessageType.Text,final,ct);buffer.Clear();
         }
     }

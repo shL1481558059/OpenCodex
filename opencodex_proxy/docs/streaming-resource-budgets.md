@@ -37,8 +37,14 @@ legacy wire encoding uses bounded string segments, not a whole intermediate JSON
 Diagnostic capture obtains at most its existing 2000-character prefix without encoding
 an entire terminal. Small generated graphs with a conservative 32 KiB JSON upper bound
 retain the single-encode fast path. Final legacy wire strings and full response graphs
-still materialize; upstream/converter spill fields are still separate, so disk use can
-include both. This is not a strict constant-heap or single-copy-spool guarantee.
+still materialize when explicitly requested. Exact raw text/reasoning/refusal and ordinary
+Chat/Messages tool-argument fields now share request-owned prefix read leases between
+capture and conversion: identity is the decoded owner object + semantic field, never
+text equality. Leases expose only accepted bytes, detach before destructive reset or
+interleaved-field concatenation, and reuse the final immutable string where identical.
+Custom decoded inputs and order-preserving deferred journals remain different logical
+representations; not every transformed path is a single-copy spool. This is not a strict
+constant-heap guarantee.
 
 Semantic commitment is conservative, before handing any role, response ID, tool start,
 text or unknown business event to the writer. No transparent whole-round retry/failover
@@ -192,3 +198,81 @@ A malformed empty success is rejected before invoking the public success callbac
 
 Missing final usage still follows the existing numeric fallback; this patch does not
 change billing or claim unknown usage is confirmed zero. No schema or migration is added.
+
+## Direct HTTP UTF8 and large WebSocket messages
+
+Production HTTP writes generated JSON directly to PipeWriter via bounded UTF8 copy
+segments, without forcing the lazy final UTF16 `WireText` or reserving an entire event
+as one contiguous PipeWriter segment. The complete event is still preflight-counted;
+existing event-boundary flush/backpressure rules are unchanged. Arbitrary public string
+TTFT callbacks still receive exact WireText (including multicast delegates); only known
+internal predicates use typed metadata. Explicit legacy string APIs retain their cost.
+
+WebSocket uses the original default JSON escaping (not SSE's relaxed escaping). Large
+string values are encoded in 1024-character pieces and awaited message fragments; only
+the final fragment has EndOfMessage. Complete default-escaped byte size is checked against
+`ProxyStreaming:MaxEventBytes` **before** the first fragment. Cancellation/send failure
+cannot end a partial message with fake success. Small plain JSON graphs keep the original
+single-message fast path. Huge property names/opaque extension DTOs may still expand the
+encoder buffer up to the event limit: this is not a universal 16 KiB serializer-heap bound.
+The complete response/audit public object graph still needs its final UTF16 strings.
+
+## Legacy runtime and binding registries
+
+`MultiAgent:RuntimeCache` defaults:
+
+| Setting | Default |
+|---|---:|
+| MaxBytes / MaxTenantBytes / MaxRunBytes / MaxColdLoadBytes | 128 / 32 / 16 / 64 MiB |
+| MaxSessions / MaxTenantSessions / MaxRunsPerSession | 4096 / 512 / 256 |
+| TtlSeconds / CleanupIntervalSeconds / MaxWaitersPerRun | 900 / 60 / 128 |
+| MaxSafetyIdentities / MaxTenantSafetyIdentities | 65536 / 8192 |
+| MaxSessionKeyCharacters | 1024 |
+
+Runtime graph weight is a bounded conservative estimate of known DTOs/JSON graphs, not
+exact CLR heap. Save remeasures mutations; rejected dirty graphs cannot accept another
+request. A request owner AND registered semaphore waiters count as references. Whole
+sessions retire only after references reach zero. Durable snapshots restore lazily;
+missing expected files or retired dirty/memory-only identities return 409 rather than
+recreating a model/tool execution. Cold file count/size is checked before loading.
+Public mutable DTOs can temporarily grow while an owner holds them; the registry is not
+a byte-accurate allocator for arbitrary external mutations.
+
+`MultiAgent:BindingCache` defaults:
+
+| Setting | Default |
+|---|---:|
+| MaxGroups / MaxTenantGroups | 512 / 128 |
+| MaxBindings / MaxTenantBindings / MaxGroupBindings | 4096 / 1024 / 256 |
+| MaxIdentityCharacters / MaxManifestBytes | 512 / 4194304 |
+| TtlSeconds / CleanupIntervalSeconds / MaxModelWaiters | 900 / 60 / 128 |
+| MaxSafetyIdentities / MaxTenantSafetyIdentities | 65536 / 8192 |
+
+Binding metadata is bounded by count × identity-length limits; its retained runtime graphs
+are separately charged to RuntimeCache. A binding group holds runtime retentions and cannot
+retire while activities/model owners/model waiters exist. Idle removal releases holds,
+child-model semaphore and cancellation sources. Rejected dirty graphs release as soon as
+their last activity/model owner finishes instead of staying pinned until TTL.
+
+The historical raw `Gate` API cannot report waiter lifetime. It intentionally pins its
+runtime/group until shutdown (still admission-quota bounded) instead of guessing semaphore
+CurrentCount and risking two locks. Production runtime HTTP/WS paths now use request leases.
+Compatibility callers must migrate to leases to obtain idle reclamation. Safety hash slots
+are finite and deliberately process-lifetime: exhausted slots reject new identities rather
+than dropping replay protection. Memory-only protection does not survive process restart.
+No persistence format/schema or recovery ordering changes were made.
+
+Legacy multi-agent client WS known/completed IDs now use the existing trusted-tenant
+`ClientWebSocketCache`, not permanent connection dictionaries. The current active/terminal
+IDs stay interruptible. The injection channel has `MultiAgent:Streaming:MaxPendingInjections`
+(default 8) and `MaxPendingInjectionBytes` (default 16777216, managed graph estimate).
+Queued AND in-flight inputs retain byte charges until consumed/disposed; cancellation and
+transport completion drain all charges. Excess input is explicitly rejected with
+`response.inject.failed` / `queue_limit_exceeded`, never silently accepted or truncated.
+
+## Accounting compatibility boundary (proposal only)
+
+Missing final usage still follows legacy numeric accounting. It is not confirmed zero.
+A no-schema follow-up could store per-round confirmed/partial/unknown observations in
+existing PricingSnapshotJson and expose lightweight confidence in DTO/UI, while retaining
+legacy numeric cost/debit rules. This proposal is not implemented and changes no billing.
