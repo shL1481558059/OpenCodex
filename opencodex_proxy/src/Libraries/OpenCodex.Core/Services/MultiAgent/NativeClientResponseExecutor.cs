@@ -2,12 +2,13 @@ using OpenCodex.Core.Errors;
 using OpenCodex.Core.Protocols;
 using OpenCodex.CoreBase.Abstractions;
 using System.Text.Json;
+using OpenCodex.CoreBase.Domain.Proxy;
 using D = System.Collections.Generic.Dictionary<string, object?>;
 
 namespace OpenCodex.Core.Services.MultiAgent;
 
 /// <summary>Executes one client-owned Responses request and publishes committed tool batches.</summary>
-public sealed class NativeClientResponseExecutor(NativeClientSessionStore store, MultiAgentStreamingOptions? streamingOptions = null)
+public sealed class NativeClientResponseExecutor(NativeClientSessionStore store, MultiAgentStreamingOptions? streamingOptions = null,ProxyAuditSpool? auditSpool=null)
 {
     public async Task<D> ExecuteAsync(NativeClientSession session, D request, string turnId,
         MultiAgentModelCall model, Func<D, Task> emit, CancellationToken ct,
@@ -22,8 +23,8 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
         var inProgress = false;
         var buffering = false;
         var terminalSent = false;
-        var buffered = new List<D>();
-        var validationEvents = new List<D>();
+        using var eventBudget=new StreamCaptureBudget((streamingOptions??new()).MaxBufferedEventBytes,int.MaxValue,4,auditSpool??ProxyAuditSpool.Default,lease.Token);
+        var events=new ConverterFragments(eventBudget);
         var added = new HashSet<int>();
         var done = new HashSet<int>();
         var itemIds = new Dictionary<int, string>();
@@ -58,12 +59,16 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
                 RestoreDeclaredToolIdentityIfNeeded(item);
         }
 
-        void RestoreDeclaredToolIdentitiesInEventsIfNeeded()
+        IEnumerable<D> ReadEvents(bool onlyBuffered,bool restore)
         {
-            foreach (var value in validationEvents)
+            foreach(var record in events)
             {
-                if (JsonDictionaryValue.Get(value, "item") is D item)
-                    RestoreDeclaredToolIdentityIfNeeded(item);
+                if(onlyBuffered && record[0]!='1')continue;
+                using var document=JsonDocument.Parse(record.AsMemory(1));
+                var value=(D)WebSearchPayload.FromJsonElement(document.RootElement)!;
+                if(restore && JsonDictionaryValue.Get(value,"item") is D item)RestoreDeclaredToolIdentityIfNeeded(item);
+                if(onlyBuffered || JsonDictionaryValue.Get(value,"item") is D || Text(value,"type").StartsWith("response.function_call_arguments.",StringComparison.Ordinal)
+                    || Text(value,"type").StartsWith("response.custom_tool_call_input.",StringComparison.Ordinal))yield return value;
             }
         }
 
@@ -121,16 +126,15 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
                 throw new UpstreamException("The model stream repeated an output item done event.");
             if (type == "response.output_item.done" && !added.Contains(index))
                 throw new UpstreamException("The model stream completed an output item before adding it.");
-            if (itemEvent || argumentEvent) validationEvents.Add(value);
-            if (buffering) buffered.Add(value);
-            else await Send(value);
+            if(itemEvent || argumentEvent || buffering)events.Add((buffering?"1":"0")+JsonSerializer.Serialize(value));
+            if(!buffering)await Send(value);
         }
 
         async Task Publish(D response, bool replay)
         {
             await EnsureStarted(response);
             if (!replay)
-                foreach (var value in buffered) await Send(value);
+                foreach (var value in ReadEvents(true,upstreamProtocol?.Invoke()!=ProtocolConverter.Responses)) await Send(value);
             var output = JsonDictionaryValue.List(response, "output").OfType<D>().ToList();
             for (var index = 0; index < output.Count; index++)
             {
@@ -185,7 +189,6 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
             if (validateDeclaredToolIdentity)
             {
                 RestoreDeclaredToolIdentitiesIfNeeded(result);
-                RestoreDeclaredToolIdentitiesInEventsIfNeeded();
                 ProtocolConverter.ValidateResponsesToolCalls(projection.Payload, result);
             }
             var items = JsonDictionaryValue.List(result, "output").OfType<D>().ToList();
@@ -194,7 +197,7 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
                     || Text(p, "type") == "refusal" && !string.IsNullOrWhiteSpace(Text(p, "refusal")))))
                 throw new UpstreamException("The completed model response contains no nonempty message or declared tool call.");
             for (var index = 0; index < items.Count; index++) SetItemId(items[index], index);
-            ValidateStreamTools(items, validationEvents,streamingOptions ?? new());
+            ValidateStreamTools(items, ReadEvents(false,validateDeclaredToolIdentity),streamingOptions ?? new());
             lease.Token.ThrowIfCancellationRequested();
             // Once committing starts, a disconnect cannot leave a partially published tool batch.
             await store.CommitResponseAsync(session, projection, result, CancellationToken.None);
@@ -250,7 +253,7 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
         if (!string.IsNullOrEmpty(mapping.Namespace)) item["namespace"] = mapping.Namespace;
     }
 
-    private static void ValidateStreamTools(IReadOnlyList<D> output, IReadOnlyList<D> events,MultiAgentStreamingOptions options)
+    private static void ValidateStreamTools(IReadOnlyList<D> output, IEnumerable<D> events,MultiAgentStreamingOptions options)
     {
         var deltas = new MultiAgentDeltaAccumulator<int>(new(options));
         foreach (var value in events)

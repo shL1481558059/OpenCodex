@@ -23,10 +23,25 @@ cleanup also covers these buffers. Use a dedicated private directory and OS file
 quota if several processes share a filesystem; this manager is not a cross-process or
 per-tenant disk-quota service.
 
-A converted attempt shares its upstream accumulator with capture. Final JSON strings
-are still materialized for the existing response/audit contracts; converter output
-lists and accepted-round queues have NOT yet been removed. This change alone is not
-the true-incremental rollout or a guarantee of constant end-to-end request heap.
+A converted attempt shares its upstream accumulator with capture. Production converted
+frames are now forwarded incrementally: there is no accepted-round typed+wire queue.
+Converter final text/argument reconstruction spills rather than retaining every delta.
+Argument suffixes are read without repeatedly materializing the old prefix. Deferred
+Chat-to-Messages argument events preserve their original fragment boundaries on disk.
+Final JSON strings are still materialized for response/audit contracts; end-to-end heap
+is NOT constant, particularly during full Responses terminal generation/serialization.
+
+Semantic commitment is conservative, before handing any role, response ID, tool start,
+text or unknown business event to the writer. No transparent whole-round retry/failover
+after that point. Headers/comments/ping alone do not commit. Internal search executes
+only after the full upstream round is accepted and validated; later failures do not
+repeat already executed searches. Already emitted reasoning cannot be retracted when
+a later tool name is invalid (an intentional change from whole-round buffering).
+
+One final protocol terminal plus optional Responses [DONE] is withheld until complete
+audit persistence succeeds. Audit failure cannot publish success. A terminal write/flush
+failure is never replayed and updates failure logging; bytes already delivered cannot be
+retracted, and transport failure can still end as an aborted stream.
 
 ## Responses WebSocket context snapshots
 
@@ -58,3 +73,16 @@ Conversation lock leases include registered waiters before waiting. Cancellation
 that reference, and the final lease removes/disposes the semaphore under the same registry
 lock. Active-key/waiter excess fails explicitly with 503. One service-level cleanup timer
 expires idle snapshots/probes even without request traffic; no per-delta timer is added.
+
+## Native client tool batches
+
+`MultiAgent:Streaming:MaxBufferedEventBytes` defaults to 67108864. Executable tool batches
+must still pass final identity/payload validation and continuation commit BEFORE executable
+done/success publication. Their deferred events and validation events now share one
+record-length-prefixed spool journal, not two in-memory DTO lists. Non-tool preceding
+output remains live. Original event order/fragmentation is preserved when publishing.
+Replay validation/publishing rereads/decode this journal; this is not a claim that disk
+reconstruction is zero-parse. Quota/disk failure publishes failure, never partial executable
+done; request cancellation/disposal releases the journal. Native session snapshot/cache
+lifecycle governance remains a separate pending change; WS transport cache limits above
+must NOT be interpreted as bounding native-client session dictionaries.

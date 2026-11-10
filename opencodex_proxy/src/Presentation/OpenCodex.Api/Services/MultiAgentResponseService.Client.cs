@@ -62,7 +62,7 @@ public sealed partial class MultiAgentResponseService
         NativeClientSession session, ProxyRequestMetadata metadata,
         Func<Dictionary<string, object?>, Task> emit, CancellationToken ct, bool requestScopedTurn = true)
     {
-        var executor = new NativeClientResponseExecutor(NativeSessions,StreamingOptions());
+        var executor = new NativeClientResponseExecutor(NativeSessions,StreamingOptions(),HttpContext.RequestServices.GetService<ProxyAuditSpool>());
         var turn = requestScopedTurn ? MultiAgentClientIdentity.Parse(metadata.Headers)?.TurnId ?? "" : "";
         logger.LogDebug("Native client response: thread={ThreadId} root={RootThreadId} parent={ParentThreadId} turn={TurnId} transport={Transport}",
             session.ThreadId, session.RootThreadId, session.ParentThreadId, turn, requestScopedTurn ? "http" : "websocket");
@@ -99,7 +99,7 @@ public sealed partial class MultiAgentResponseService
     private async Task<Dictionary<string, object?>> ExecuteClientWarmup(Dictionary<string, object?> request,
         NativeClientSession session, Func<Dictionary<string, object?>, Task> emit, CancellationToken ct)
     {
-        var executor = new NativeClientResponseExecutor(NativeSessions,StreamingOptions());
+        var executor = new NativeClientResponseExecutor(NativeSessions,StreamingOptions(),HttpContext.RequestServices.GetService<ProxyAuditSpool>());
         var response = await executor.ExecuteWarmupAsync(session, request, "", ct);
         var created = WebSearchPayload.DeepCopyObject(response);
         created["status"] = "in_progress";

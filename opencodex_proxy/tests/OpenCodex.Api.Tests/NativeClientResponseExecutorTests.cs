@@ -557,6 +557,30 @@ public sealed class NativeClientResponseExecutorTests
         if (Directory.Exists(directory)) Directory.Delete(directory, true);
     }
 
+    [Theory]
+    [InlineData(false)][InlineData(true)]
+    public async Task DeferredToolEventsQuotaOrDiskFailureNeverPublishesExecutableDoneAndReleasesSpool(bool diskFailure)
+    {
+        var (store,session,_)=await Setup();var directory=Path.Combine(Path.GetTempPath(),"native-spool-"+Guid.NewGuid().ToString("N"));
+        var spool=new OpenCodex.CoreBase.Domain.Proxy.ProxyAuditSpool(new() { Directory=directory,MemoryThresholdBytes=0 })
+        { CreateFile=(path,options)=>diskFailure?throw new IOException("ENOSPC"):new FileStream(path,options) };
+        try
+        {
+            var emitted=new List<D>();var executor=new NativeClientResponseExecutor(store,new() { MaxBufferedEventBytes=diskFailure?1024*1024:5 },spool);
+            var result=await executor.ExecuteAsync(session,Request(),"quota",async (_,emit,ct)=>
+            {
+                await emit(new() { ["type"]="response.output_item.added",["output_index"]=0,["item"]=Tool("call") },ct);
+                return Response("r",Tool("call"));
+            },e=> { emitted.Add(e);return Task.CompletedTask; },default);
+            Assert.Equal("failed",result["status"]);
+            Assert.DoesNotContain(emitted,e=>Type(e)=="response.output_item.done" || Type(e)=="response.completed");
+            Assert.Single(emitted,e=>Type(e)=="response.failed");
+            Assert.Equal((0L,0),spool.Usage);Assert.Empty(Directory.EnumerateFiles(directory));
+            Assert.Null((await store.ProjectRequestAsync(session,Request(),"quota",default)).ReplayResponse);
+        }
+        finally { Directory.Delete(directory,true); }
+    }
+
     private static async Task<(NativeClientSessionStore, NativeClientSession, NativeClientResponseExecutor)> Setup()
     {
         var store = new NativeClientSessionStore(Path.Combine(Path.GetTempPath(), "native-runner-" + Guid.NewGuid().ToString("N")));

@@ -5,6 +5,7 @@ namespace OpenCodex.Core.Services.MultiAgent;
 
 public sealed class MultiAgentStreamingOptions
 {
+    public int MaxBufferedEventBytes { get; set; }=64*1024*1024;
     // UTF16 code units, shared across all live item builders in one coordinator request.
     public int MaxAccumulatedDeltaCharacters { get; set; } = 8 * 1024 * 1024;
     public int MaxAccumulatedDeltaFields { get; set; } = 4096;
