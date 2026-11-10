@@ -82,7 +82,7 @@ public static partial class SseStreamConverter
         var toolStates = new Dictionary<int, ToolStreamState>();
         var nextOutputIndex = InitialOutputIndex;
         var toolCallMappings = result.ToolCallMappings;
-        var upstreamResponseAccumulator = new MessagesStreamResponseAccumulator(
+        var upstreamResponseAccumulator = result.SharedCapture?.Accumulator as MessagesStreamResponseAccumulator ?? new MessagesStreamResponseAccumulator(
             new StreamCaptureBudget(int.MaxValue, int.MaxValue));
 
         SseFrame Emit(string eventName, Dictionary<string, object?> payload)
@@ -232,7 +232,7 @@ public static partial class SseStreamConverter
         while (await enumerator.MoveNextAsync())
         {
             var sseEvent = enumerator.Current;
-            upstreamResponseAccumulator.Accept(sseEvent);
+            if(result.SharedCapture is null) upstreamResponseAccumulator.Accept(sseEvent);
             if (!TryAsObject(sseEvent.Data, out var payload))
             {
                 continue;

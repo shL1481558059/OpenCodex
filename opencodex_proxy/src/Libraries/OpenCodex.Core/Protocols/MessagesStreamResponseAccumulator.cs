@@ -215,7 +215,7 @@ internal sealed class MessagesStreamResponseAccumulator : IStreamResponseAccumul
 
         if (payload.TryGetValue("request_id", out var requestId))
         {
-            if (requestId is string requestIdText && requestIdText.Length > 4096)
+            if (!_budget.IsStrict && requestId is string requestIdText && requestIdText.Length > 4096)
             {
                 _budget.MarkTruncated();
                 response["request_id"] = requestIdText[..4096];
@@ -234,7 +234,7 @@ internal sealed class MessagesStreamResponseAccumulator : IStreamResponseAccumul
             {
                 if (key == "message" && value is string message)
                 {
-                    var capturedMessage = new StringBuilder();
+                    var capturedMessage = _budget.CreateText();
                     _budget.Append(capturedMessage, message);
                     capturedError[key] = capturedMessage.ToString();
                 }
@@ -292,7 +292,7 @@ internal sealed class MessagesStreamResponseAccumulator : IStreamResponseAccumul
 
     private void CaptureMessageField(string key, object? value)
     {
-        if (value is string text && text.Length > 4096)
+        if (!_budget.IsStrict && value is string text && text.Length > 4096)
         {
             _budget.MarkTruncated();
             _message[key] = text[..4096];
@@ -306,10 +306,10 @@ internal sealed class MessagesStreamResponseAccumulator : IStreamResponseAccumul
     {
         private readonly StreamCaptureBudget _budget;
         private readonly Dictionary<string, object?> _fields = new(StringComparer.Ordinal);
-        private readonly StringBuilder _text = new();
-        private readonly StringBuilder _thinking = new();
-        private readonly StringBuilder _signature = new();
-        private readonly StringBuilder _inputJson = new();
+        private readonly CaptureText _text;
+        private readonly CaptureText _thinking;
+        private readonly CaptureText _signature;
+        private readonly CaptureText _inputJson;
         private readonly List<object?> _citations = [];
         private object? _initialInput;
         private bool _hasText;
@@ -322,6 +322,7 @@ internal sealed class MessagesStreamResponseAccumulator : IStreamResponseAccumul
             StreamCaptureBudget budget)
         {
             _budget = budget;
+            _text=budget.CreateText();_thinking=budget.CreateText();_signature=budget.CreateText();_inputJson=budget.CreateText();
             foreach (var (key, value) in contentBlock)
             {
                 switch (key)
@@ -428,7 +429,7 @@ internal sealed class MessagesStreamResponseAccumulator : IStreamResponseAccumul
         {
             if (key is "type" or "id" or "name")
             {
-                if (value is string structuralText && structuralText.Length > 4096)
+                if (!_budget.IsStrict && value is string structuralText && structuralText.Length > 4096)
                 {
                     _budget.MarkTruncated();
                     _fields[key] = structuralText[..4096];
@@ -442,7 +443,7 @@ internal sealed class MessagesStreamResponseAccumulator : IStreamResponseAccumul
 
             if (value is string text)
             {
-                var captured = new StringBuilder();
+                var captured = _budget.CreateText();
                 _budget.Append(captured, text);
                 _fields[key] = captured.ToString();
                 return;

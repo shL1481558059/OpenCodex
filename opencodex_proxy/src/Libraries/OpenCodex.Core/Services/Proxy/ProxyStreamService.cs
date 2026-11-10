@@ -18,6 +18,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
     private readonly WebSearchContinuationStore _webSearchHistory;
     private readonly ResponsesUpstreamTransport? _responsesWebSocket;
     private readonly SseFrameOptions _outputFrames;
+    private readonly ProxyAuditSpool _auditSpool;
 
     public ProxyStreamService(
         IUpstreamClient upstream,
@@ -25,7 +26,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         IWebSearchToolExecutor webSearch,
         WebSearchContinuationStore webSearchHistory,
         ResponsesUpstreamTransport? responsesWebSocket = null,
-        SseFrameOptions? outputFrames = null)
+        SseFrameOptions? outputFrames = null, ProxyAuditSpool? auditSpool = null)
     {
         _upstream = upstream;
         _logs = logs;
@@ -33,7 +34,8 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         _webSearchHistory = webSearchHistory;
         _responsesWebSocket = responsesWebSocket;
         _outputFrames = outputFrames ?? new();
-        if (_outputFrames.MaxEventBytes <= 0 || _outputFrames.MaxBufferedRoundBytes <= 0 || _outputFrames.MaxBufferedRoundFrames <= 0) throw new ArgumentOutOfRangeException(nameof(outputFrames));
+        _auditSpool=auditSpool ?? ProxyAuditSpool.Default;
+        if (_outputFrames.MaxCaptureBytes <=0 || _outputFrames.MaxCaptureItems<=0 || _outputFrames.MaxCaptureFields<=0 || _outputFrames.MaxEventBytes <= 0 || _outputFrames.MaxBufferedRoundBytes <= 0 || _outputFrames.MaxBufferedRoundFrames <= 0) throw new ArgumentOutOfRangeException(nameof(outputFrames));
     }
 
     public async Task StreamAsync(ProxyStreamContext context)
@@ -48,7 +50,8 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         Dictionary<string, object?>? webSearchDetails = null;
         Dictionary<string, object?>? upstreamResponse = null;
         Dictionary<string, object?>? responsePayload = null;
-        StreamResponseCapture? passThroughResponseCapture = null;
+        using var passThroughResponseCapture=context.EntryProtocol==context.ChannelType
+            ? CreateFullCapture(context.ChannelType,context.CancellationToken) : null;
         var streamTermination = StreamCaptureTermination.UnexpectedEnd;
         var streamLogCapture = new StreamLogCapture(context.EntryProtocol);
         var statusCode = ProxyHttpStatus.Ok;
@@ -67,7 +70,6 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                     ? _responsesWebSocket.StreamEventsAsync(context, context.CancellationToken)
                     : _upstream.StreamEventsAsync(context.Route.Channel, upstreamRequest,
                         context.DefaultTimeout, context.CancellationToken);
-                passThroughResponseCapture = new StreamResponseCapture(context.ChannelType);
                 streamWriteMetrics = await context.StreamWriter.WriteFramesAsync(
                     ObserveFrames(streamFrames, streamLogCapture, passThroughResponseCapture,
                         context.CancellationToken),
@@ -77,7 +79,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                 streamTermination = streamLogCapture.SawTerminalEvent
                     ? StreamCaptureTermination.Completed
                     : StreamCaptureTermination.UnexpectedEnd;
-                upstreamResponse = passThroughResponseCapture
+                upstreamResponse = passThroughResponseCapture!
                     .Complete(streamTermination)
                     .Response;
             }
@@ -166,7 +168,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
             webSearchDetails = tools?.Details;
             if (passThroughResponseCapture is not null && upstreamResponse is null)
             {
-                upstreamResponse = passThroughResponseCapture
+                upstreamResponse = passThroughResponseCapture!
                     .Complete(streamTermination)
                     .Response;
             }
@@ -201,6 +203,10 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                 context.RequestMetadata);
         }
     }
+
+    private StreamResponseCapture CreateFullCapture(string protocol,CancellationToken cancellationToken,IReadOnlySet<string>? toolNames=null) =>
+        new(protocol,new StreamCaptureBudget(_outputFrames.MaxCaptureBytes,_outputFrames.MaxCaptureItems,
+            _outputFrames.MaxCaptureFields,_auditSpool,cancellationToken),toolNames);
 
     private static bool HasStreamFailure(Dictionary<string, object?>? response)
     {

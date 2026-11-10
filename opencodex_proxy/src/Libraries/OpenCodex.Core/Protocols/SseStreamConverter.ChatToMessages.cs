@@ -71,7 +71,7 @@ public static partial class SseStreamConverter
         var createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var finishReason = "stop";
         var usage = new Dictionary<string, object?>(StringComparer.Ordinal);
-        var upstreamResponseAccumulator = new ChatStreamResponseAccumulator(
+        var upstreamResponseAccumulator = result.SharedCapture?.Accumulator as ChatStreamResponseAccumulator ?? new ChatStreamResponseAccumulator(
             new StreamCaptureBudget(int.MaxValue, int.MaxValue));
 
         var nextBlockIndex = 0;
@@ -196,7 +196,7 @@ public static partial class SseStreamConverter
         while (await enumerator.MoveNextAsync())
         {
             var sseEvent = enumerator.Current;
-            upstreamResponseAccumulator.Accept(sseEvent);
+            if(result.SharedCapture is null) upstreamResponseAccumulator.Accept(sseEvent);
             if (sseEvent.Data is string dataText && dataText == "[DONE]")
             {
                 break;

@@ -47,27 +47,30 @@ public sealed class ProxyAuditSpool
     internal (long Bytes, int Files) Usage { get { lock (_gate) return (_bytes + _inheritedBytes, _files + _inheritedFiles); } }
     public ProxyLogBodyHandle CaptureJson(object? value, CancellationToken cancellationToken = default)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        if (Environment.TickCount64 >= Interlocked.Read(ref _nextSweep)) CleanupExpired();
-        var path = Path.Combine(_directory, $"audit-{Guid.NewGuid():N}.tmp");
-        lock (_gate)
-        {
-            if (_files + _inheritedFiles >= _maxFiles) throw new IOException("Complete audit spool file quota exceeded.");
-            _files++;_ownedPaths.Add(path);
-        }
-        AuditFile? body = null;
+        var body=CreateStaging(cancellationToken);
         try
         {
-            body = new AuditFile(this, path, cancellationToken);
-            using (var writer = new Utf8JsonWriter(body,new() { Encoder=JavaScriptEncoder.UnsafeRelaxedJsonEscaping }))
-            {
-                WriteJson(writer,value,0);
-                writer.Flush();
-            }
-            body.Seal();
-            return ProxyLogBodyHandle.FromSpool(body);
+            using(var writer=new Utf8JsonWriter(body,new() { Encoder=JavaScriptEncoder.UnsafeRelaxedJsonEscaping }))
+            { WriteJson(writer,value,0);writer.Flush(); }
+            body.Seal();return ProxyLogBodyHandle.FromSpool(body);
         }
-        catch { if (body is not null) body.Dispose(); else Release(0, true, path); throw; }
+        catch { body.Dispose();throw; }
+    }
+
+    // A request-owned append buffer shares EXACTLY the same quota, lifecycle and crash cleanup
+    // as immutable JSON snapshots. Only Core can use this; callers must Dispose in all paths.
+    internal AuditFile CreateStaging(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if(Environment.TickCount64>=Interlocked.Read(ref _nextSweep))CleanupExpired();
+        var path=Path.Combine(_directory,$"audit-{Guid.NewGuid():N}.tmp");
+        lock(_gate)
+        {
+            if(_files+_inheritedFiles>=_maxFiles)throw new IOException("Complete audit spool file quota exceeded.");
+            _files++;_ownedPaths.Add(path);
+        }
+        try { return new AuditFile(this,path,cancellationToken); }
+        catch { Release(0,true,path);throw; }
     }
     private Stream CreateStorage(string path)
     {
@@ -183,6 +186,12 @@ public sealed class ProxyAuditSpool
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             if (!_sealed) throw new InvalidOperationException("Audit body is not sealed.");
+            return OpenSnapshotRead();
+        }
+        internal Stream OpenSnapshotRead()
+        {
+            ObjectDisposedException.ThrowIf(_disposed,this);
+            _storage.Flush();
             if (_storage is MemoryStream memory)
                 return new MemoryStream(memory.GetBuffer(),0,checked((int)_length),writable:false);
             return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 16384, FileOptions.SequentialScan);

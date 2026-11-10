@@ -28,11 +28,18 @@ public sealed partial class ProxyStreamService
         while (true)
         {
             var token = tools?.Token(cancellationToken) ?? cancellationToken;
-            var converted = new ConvertedStreamResult { TextFormat = textFormat, ToolCallMappings = mappings };
+            var knownNames=new HashSet<string>(skipped ?? (IEnumerable<string>)Array.Empty<string>(),StringComparer.Ordinal);
+            if(mappings is not null)
+            {
+                knownNames.UnionWith(mappings.Keys);
+                foreach(var mapping in mappings.Values)
+                    if(ProtocolConverter.TryGetResponsesToolCallMapping(mapping.ResponsesName,mappings,out _))knownNames.Add(mapping.ResponsesName);
+            }
+            using var capture=CreateFullCapture(context.ChannelType,token,knownNames);
+            var converted = new ConvertedStreamResult { TextFormat = textFormat, ToolCallMappings = mappings,SharedCapture=capture };
             var upstreamLines = _upstream.StreamEventsAsync(context.Route.Channel, state.UpstreamRequest, context.DefaultTimeout, token);
             var confirmed = await UpstreamStreamPrimer.PrimeAsync(
                 upstreamLines, token);
-            var capture = new StreamResponseCapture(context.ChannelType);
             var validated = ValidateUpstreamCompletion(confirmed, capture, token);
             var lines = ConvertRound(context, validated, converted, streamState, skipped, token);
             SseFrame? terminal = null;
@@ -241,7 +248,7 @@ public sealed partial class ProxyStreamService
             if (line.Event is { } decoded) yield return decoded;
         }
 
-        if (!capture.Complete(StreamCaptureTermination.Completed).Completed)
+        if (!capture.IsComplete)
         {
             throw new UpstreamException("upstream stream ended before its terminal event");
         }

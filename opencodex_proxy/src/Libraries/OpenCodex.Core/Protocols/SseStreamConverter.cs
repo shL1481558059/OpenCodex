@@ -6,6 +6,7 @@ namespace OpenCodex.Core.Protocols;
 
 public sealed class ConvertedStreamResult
 {
+    internal StreamResponseCapture? SharedCapture { get; set; }
     public Dictionary<string, object?>? UpstreamResponse { get; set; }
 
     internal bool UpstreamCompleted { get; set; }

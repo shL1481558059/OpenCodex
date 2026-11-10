@@ -79,7 +79,7 @@ public static partial class SseStreamConverter
         var nextChatToolIndex = 0;
         var toolStates = new Dictionary<int, ChatToolStreamState>();
         var outputByIndex = new SortedDictionary<int, Dictionary<string, object?>>();
-        var responseAccumulator = new ResponsesStreamResponseAccumulator(
+        var responseAccumulator = result.SharedCapture?.Accumulator as ResponsesStreamResponseAccumulator ?? new ResponsesStreamResponseAccumulator(
             new StreamCaptureBudget(int.MaxValue, int.MaxValue));
 
         SseFrame EmitChunk(List<object?> choices)
@@ -122,7 +122,7 @@ public static partial class SseStreamConverter
         while (await enumerator.MoveNextAsync())
         {
             var sseEvent = enumerator.Current;
-            responseAccumulator.Accept(sseEvent);
+            if(result.SharedCapture is null) responseAccumulator.Accept(sseEvent);
             if (!TryAsObject(sseEvent.Data, out var payload))
             {
                 continue;

@@ -90,7 +90,7 @@ public static partial class SseStreamConverter
                 if (ProtocolConverter.TryGetResponsesToolCallMapping(mapping.ResponsesName, toolCallMappings, out _))
                     knownToolNames.Add(mapping.ResponsesName);
         }
-        var upstreamResponseAccumulator = new ChatStreamResponseAccumulator(
+        var upstreamResponseAccumulator = result.SharedCapture?.Accumulator as ChatStreamResponseAccumulator ?? new ChatStreamResponseAccumulator(
             new StreamCaptureBudget(int.MaxValue, int.MaxValue), knownToolNames);
 
         SseFrame Emit(string eventName, Dictionary<string, object?> payload)
@@ -241,7 +241,7 @@ public static partial class SseStreamConverter
         while (await enumerator.MoveNextAsync())
         {
             var sseEvent = enumerator.Current;
-            upstreamResponseAccumulator.Accept(sseEvent);
+            if(result.SharedCapture is null) upstreamResponseAccumulator.Accept(sseEvent);
             if (sseEvent.Data is string dataText && dataText == "[DONE]")
             {
                 break;

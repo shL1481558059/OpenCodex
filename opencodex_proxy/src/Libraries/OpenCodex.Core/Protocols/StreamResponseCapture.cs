@@ -1,5 +1,7 @@
 using System.Text;
 using System.Text.Json;
+using OpenCodex.Core.Errors;
+using OpenCodex.CoreBase.Domain.Proxy;
 
 namespace OpenCodex.Core.Protocols;
 
@@ -26,7 +28,7 @@ internal interface IStreamResponseAccumulator
     Dictionary<string, object?>? BuildResponse();
 }
 
-internal sealed class StreamResponseCapture
+internal sealed class StreamResponseCapture : IDisposable
 {
     internal const int DefaultMaxCapturedBytes = 1024 * 1024;
     internal const int MaxCapturedCollectionItems = 256;
@@ -46,25 +48,31 @@ internal sealed class StreamResponseCapture
     public StreamResponseCapture(
         string protocol,
         int maxCapturedBytes = DefaultMaxCapturedBytes)
+        : this(protocol,new StreamCaptureBudget(maxCapturedBytes)) { }
+
+    internal StreamResponseCapture(string protocol,StreamCaptureBudget budget,IReadOnlySet<string>? toolNames=null)
     {
-        _budget = new StreamCaptureBudget(maxCapturedBytes);
+        _budget=budget;
         _accumulator = protocol switch
         {
             ProtocolConverter.Responses => new ResponsesStreamResponseAccumulator(_budget),
-            ProtocolConverter.Chat => new ChatStreamResponseAccumulator(_budget),
+            ProtocolConverter.Chat => new ChatStreamResponseAccumulator(_budget,toolNames),
             ProtocolConverter.Messages => new MessagesStreamResponseAccumulator(_budget),
             _ => new UsageOnlyStreamResponseAccumulator()
         };
     }
+
+    internal IStreamResponseAccumulator Accumulator=>_accumulator;
+    public void Dispose()=>_budget.Dispose();
 
     internal bool IsComplete => !_observerFailed && _accumulator.IsComplete;
 
     public void Accept(SseFrame frame)
     {
         if (_observerFailed || frame.Event is null) return;
-        if (frame.Malformed) { _malformedEventCount++; return; }
+        if (frame.Malformed) { _malformedEventCount++; if(_budget.IsStrict)throw new UpstreamException("The upstream audit contains malformed JSON; complete audit cannot be guaranteed.");return; }
         try { _accumulator.Accept(frame.Event); }
-        catch (Exception exception) when (IsRecoverableCaptureException(exception)) { _observerFailed = true; }
+        catch (Exception exception) when (!_budget.IsStrict && IsRecoverableCaptureException(exception)) { _observerFailed = true; }
     }
 
     public void Accept(string chunk)
@@ -90,7 +98,7 @@ internal sealed class StreamResponseCapture
                 AcceptLine(parts[index]);
             }
         }
-        catch (Exception exception) when (IsRecoverableCaptureException(exception))
+        catch (Exception exception) when (!_budget.IsStrict && IsRecoverableCaptureException(exception))
         {
             _observerFailed = true;
         }
@@ -109,7 +117,7 @@ internal sealed class StreamResponseCapture
         {
             response = _accumulator.BuildResponse();
         }
-        catch (Exception exception) when (IsRecoverableCaptureException(exception))
+        catch (Exception exception) when (!_budget.IsStrict && IsRecoverableCaptureException(exception))
         {
             _observerFailed = true;
             response = null;
@@ -298,9 +306,35 @@ internal sealed class StreamResponseCapture
     }
 }
 
-internal sealed class StreamCaptureBudget
+internal sealed class StreamCaptureBudget : IDisposable
 {
     private int _remainingBytes;
+    private readonly ProxyAuditSpool? _spool;
+    private readonly CancellationToken _cancellation;
+    private readonly int _maxFields;
+    private readonly List<CaptureText> _texts=[];
+    public bool IsStrict => _spool is not null;
+    internal StreamCaptureBudget(int maxBytes,int maxItems,int maxFields,ProxyAuditSpool spool,CancellationToken cancellationToken)
+        :this(maxBytes,maxItems)
+    { if(maxBytes<=0 || maxItems<=0 || maxFields<=0)throw new ArgumentOutOfRangeException(nameof(maxBytes));_spool=spool;_cancellation=cancellationToken;_maxFields=maxFields; }
+    internal CaptureText CreateText()
+    {
+        if(IsStrict && _texts.Count>=_maxFields)throw new UpstreamException("Complete stream audit exceeds its field budget; no content was truncated.");
+        var text=new CaptureText(_spool,_cancellation);_texts.Add(text);return text;
+    }
+    public void Dispose() { foreach(var text in _texts)text.Dispose();_texts.Clear(); }
+    private void Consume(int bytes)
+    {
+        _cancellation.ThrowIfCancellationRequested();
+        if(bytes>_remainingBytes)throw new UpstreamException("Complete stream audit exceeds its byte budget; no content was truncated.");
+        _remainingBytes-=bytes;
+    }
+    public void Append(CaptureText target,string? fragment)
+    {
+        if(string.IsNullOrEmpty(fragment))return;
+        if(IsStrict) { Consume(Encoding.UTF8.GetByteCount(fragment));target.Append(fragment);return; }
+        target.AppendLegacy(this,fragment);
+    }
 
     public StreamCaptureBudget(
         int maxBytes,
@@ -316,6 +350,7 @@ internal sealed class StreamCaptureBudget
 
     public void MarkTruncated()
     {
+        if(IsStrict)throw new UpstreamException("Complete stream audit exceeds its collection budget; no content was truncated.");
         Truncated = true;
     }
 
@@ -367,6 +402,11 @@ internal sealed class StreamCaptureBudget
 
     public bool Fits(object? value)
     {
+        if(IsStrict)
+        {
+            using var body=_spool!.CaptureJson(value,_cancellation);
+            Consume(body.Length);return true;
+        }
         var bytes = JsonSerializer.SerializeToUtf8Bytes(value).Length;
         if (bytes <= _remainingBytes)
         {

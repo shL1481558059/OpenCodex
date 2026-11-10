@@ -74,7 +74,7 @@ internal sealed class ChatStreamResponseAccumulator : IStreamResponseAccumulator
                     continue;
                 }
 
-                state = new ChoiceState(index);
+                state = new ChoiceState(index,_budget);
                 _choices[index] = state;
             }
 
@@ -188,7 +188,7 @@ internal sealed class ChatStreamResponseAccumulator : IStreamResponseAccumulator
                     continue;
                 }
 
-                toolState = new ToolCallState();
+                toolState = new ToolCallState(_budget);
                 state.ToolCalls[toolIndex] = toolState;
             }
 
@@ -217,7 +217,7 @@ internal sealed class ChatStreamResponseAccumulator : IStreamResponseAccumulator
         }
     }
 
-    private void CaptureToolName(StringBuilder target, string? name)
+    private void CaptureToolName(CaptureText target, string? name)
     {
         if (!string.IsNullOrEmpty(name) && target.Length > 0
             && _builtinToolNames?.Any(candidate => candidate.StartsWith(target.ToString() + name, StringComparison.Ordinal)) is true)
@@ -330,7 +330,7 @@ internal sealed class ChatStreamResponseAccumulator : IStreamResponseAccumulator
         return result;
     }
 
-    private void AppendOnce(StringBuilder target, string? value)
+    private void AppendOnce(CaptureText target, string? value)
     {
         if (target.Length == 0)
         {
@@ -340,6 +340,7 @@ internal sealed class ChatStreamResponseAccumulator : IStreamResponseAccumulator
 
     private string? CaptureIdentifier(string? value)
     {
+        if(_budget.IsStrict) { if(value is not null)_budget.Fits(value);return value; }
         const int maxIdentifierLength = 4096;
         if (value is null || value.Length <= maxIdentifierLength)
         {
@@ -396,7 +397,7 @@ internal sealed class ChatStreamResponseAccumulator : IStreamResponseAccumulator
 
             if (field == "message" && fieldValue is string message)
             {
-                var capturedMessage = new StringBuilder();
+                var capturedMessage = _budget.CreateText();
                 _budget.Append(capturedMessage, message);
                 result[field] = capturedMessage.ToString();
             }
@@ -422,20 +423,21 @@ internal sealed class ChatStreamResponseAccumulator : IStreamResponseAccumulator
 
     private sealed class ChoiceState
     {
-        public ChoiceState(int index)
+        public ChoiceState(int index,StreamCaptureBudget budget)
         {
             Index = index;
+            Content=budget.CreateText();ReasoningContent=budget.CreateText();Refusal=budget.CreateText();
         }
 
         public int Index { get; }
 
         public string? Role { get; set; }
 
-        public StringBuilder Content { get; } = new();
+        public CaptureText Content { get; }
 
-        public StringBuilder ReasoningContent { get; } = new();
+        public CaptureText ReasoningContent { get; }
 
-        public StringBuilder Refusal { get; } = new();
+        public CaptureText Refusal { get; }
 
         public SortedDictionary<int, ToolCallState> ToolCalls { get; } = [];
 
@@ -446,12 +448,13 @@ internal sealed class ChatStreamResponseAccumulator : IStreamResponseAccumulator
 
     private sealed class ToolCallState
     {
+        public ToolCallState(StreamCaptureBudget budget) { Id=budget.CreateText();Name=budget.CreateText();Arguments=budget.CreateText(); }
         public string? Type { get; set; }
 
-        public StringBuilder Id { get; } = new();
+        public CaptureText Id { get; }
 
-        public StringBuilder Name { get; } = new();
+        public CaptureText Name { get; }
 
-        public StringBuilder Arguments { get; } = new();
+        public CaptureText Arguments { get; }
     }
 }

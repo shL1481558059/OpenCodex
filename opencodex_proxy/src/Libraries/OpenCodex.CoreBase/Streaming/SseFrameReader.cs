@@ -7,6 +7,9 @@ public sealed class SseFrameOptions
 {
     // A bounded event, not a bound on the response. Configurable by transport/writer callers.
     public int MaxEventBytes { get; init; } = 16 * 1024 * 1024;
+    public int MaxCaptureBytes { get; set; } = 64 * 1024 * 1024;
+    public int MaxCaptureItems { get; set; } = 4096;
+    public int MaxCaptureFields { get; set; } = 8192;
     public long MaxBufferedRoundBytes { get; init; } = 32 * 1024 * 1024;
     public int MaxBufferedRoundFrames { get; init; } = 65536;
 }

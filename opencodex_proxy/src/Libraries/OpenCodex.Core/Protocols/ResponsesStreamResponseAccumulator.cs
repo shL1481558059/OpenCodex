@@ -245,13 +245,13 @@ internal sealed class ResponsesStreamResponseAccumulator : IStreamResponseAccumu
     private sealed class ResponseOutputState
     {
         private readonly StreamCaptureBudget _budget;
-        private readonly SortedDictionary<int, StringBuilder> _outputText = [];
-        private readonly SortedDictionary<int, StringBuilder> _refusals = [];
-        private readonly SortedDictionary<int, StringBuilder> _reasoningSummary = [];
+        private readonly SortedDictionary<int, CaptureText> _outputText = [];
+        private readonly SortedDictionary<int, CaptureText> _refusals = [];
+        private readonly SortedDictionary<int, CaptureText> _reasoningSummary = [];
         private readonly SortedDictionary<int, Dictionary<string, object?>> _contentParts = [];
         private Dictionary<string, object?>? _baseItem;
         private Dictionary<string, object?>? _completedItem;
-        private StringBuilder? _toolPayload;
+        private CaptureText? _toolPayload;
         private string? _toolPayloadField;
         private string? _inferredType;
 
@@ -295,6 +295,10 @@ internal sealed class ResponsesStreamResponseAccumulator : IStreamResponseAccumu
             if (_budget.Fits(item))
             {
                 _completedItem = StreamCaptureValues.CloneObject(item);
+                // Authoritative completed items supersede their append buffers. Keep one owner.
+                foreach(var text in _outputText.Values.Concat(_refusals.Values).Concat(_reasoningSummary.Values))text.Clear();
+                _outputText.Clear();_refusals.Clear();_reasoningSummary.Clear();_contentParts.Clear();_baseItem=null;
+                _toolPayload?.Clear();_toolPayload=null;
             }
         }
 
@@ -348,6 +352,7 @@ internal sealed class ResponsesStreamResponseAccumulator : IStreamResponseAccumu
             IReadOnlyDictionary<string, object?> part,
             bool completed)
         {
+            EnsureContentIndex(contentIndex);
             if (_contentParts.Count >= _budget.MaxCollectionItems
                 && !_contentParts.ContainsKey(contentIndex))
             {
@@ -379,7 +384,7 @@ internal sealed class ResponsesStreamResponseAccumulator : IStreamResponseAccumu
         {
             _inferredType ??= type;
             _toolPayloadField ??= field;
-            _toolPayload ??= new StringBuilder();
+            _toolPayload ??= _budget.CreateText();
             _budget.Append(_toolPayload, delta);
         }
 
@@ -474,6 +479,7 @@ internal sealed class ResponsesStreamResponseAccumulator : IStreamResponseAccumu
 
         private object? CaptureScalar(object? value)
         {
+            if(_budget.IsStrict) { _budget.Fits(value);return StreamCaptureValues.CloneValue(value); }
             if (value is not string text || text.Length <= 4096)
             {
                 return StreamCaptureValues.CloneValue(value);
@@ -483,13 +489,26 @@ internal sealed class ResponsesStreamResponseAccumulator : IStreamResponseAccumu
             return text[..4096];
         }
 
-        private static StringBuilder GetBuilder(
-            IDictionary<int, StringBuilder> builders,
+        private void EnsureContentIndex(int index)
+        {
+            if(_budget.IsStrict && !_contentParts.ContainsKey(index) && !_outputText.ContainsKey(index) && !_refusals.ContainsKey(index)
+                && _contentParts.Keys.Concat(_outputText.Keys).Concat(_refusals.Keys).Distinct().Count()>=_budget.MaxCollectionItems)
+                _budget.MarkTruncated();
+        }
+
+        private CaptureText GetBuilder(
+            IDictionary<int, CaptureText> builders,
             int index)
         {
             if (!builders.TryGetValue(index, out var builder))
             {
-                builder = new StringBuilder();
+                if(_budget.IsStrict)
+                {
+                    if(ReferenceEquals(builders,_reasoningSummary))
+                    { if(builders.Count>=_budget.MaxCollectionItems)_budget.MarkTruncated(); }
+                    else EnsureContentIndex(index);
+                }
+                builder = _budget.CreateText();
                 builders[index] = builder;
             }
 

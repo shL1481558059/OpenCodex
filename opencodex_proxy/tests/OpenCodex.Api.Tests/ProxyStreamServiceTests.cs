@@ -2032,6 +2032,61 @@ public sealed class ProxyStreamServiceTests
         await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
     }
 
+    [Theory]
+    [InlineData("chat","chat")][InlineData("messages","messages")][InlineData("responses","responses")]
+    [InlineData("responses","chat")][InlineData("responses","messages")][InlineData("chat","messages")]
+    [InlineData("chat","responses")][InlineData("messages","chat")][InlineData("messages","responses")]
+    public async Task StreamAsync_FullAuditIsNotTruncatedAndSharedCaptureDoesNotDuplicateDeltas(string entry,string upstreamProtocol)
+    {
+        var directory=Path.Combine(Path.GetTempPath(),"ocx-proxy-full-audit-"+Guid.NewGuid().ToString("N"));
+        var spool=new OpenCodex.CoreBase.Domain.Proxy.ProxyAuditSpool(new() { Directory=directory,MemoryThresholdBytes=32768 });
+        try
+        {
+            var fragment=new string('x',4096);var expected=string.Concat(Enumerable.Repeat(fragment,300));
+            var frames=new List<string>();
+            void Add(string type,Dictionary<string,object?> payload)
+            { payload["type"]=type;frames.Add(SseFrame.FromJson(payload,type).WireText); }
+            if(upstreamProtocol=="messages")
+            {
+                Add("message_start",new() { ["message"]=new Dictionary<string,object?> { ["id"]="m",["model"]="upstream-model",["usage"]=new Dictionary<string,object?> { ["input_tokens"]=7 } } });
+                Add("content_block_start",new() { ["index"]=0,["content_block"]=new Dictionary<string,object?> { ["type"]="text",["text"]="" } });
+            }
+            if(upstreamProtocol=="responses")Add("response.created",new() { ["response"]=new Dictionary<string,object?> { ["id"]="r",["model"]="upstream-model",["status"]="in_progress" } });
+            for(var n=0;n<300;n++)
+            {
+                if(upstreamProtocol=="chat")frames.Add(SseFrame.FromJson(new Dictionary<string,object?> { ["id"]="c",["model"]="upstream-model",["choices"]=new object?[] { new Dictionary<string,object?> { ["index"]=0,["delta"]=new Dictionary<string,object?> { ["role"]="assistant",["content"]=fragment } } } }).WireText);
+                else if(upstreamProtocol=="messages")Add("content_block_delta",new() { ["index"]=0,["delta"]=new Dictionary<string,object?> { ["type"]="text_delta",["text"]=fragment } });
+                else Add("response.output_text.delta",new() { ["output_index"]=0,["content_index"]=0,["delta"]=fragment });
+            }
+            if(upstreamProtocol=="chat")
+            {
+                frames.Add(SseFrame.FromJson(new Dictionary<string,object?> { ["choices"]=new object?[] { new Dictionary<string,object?> { ["index"]=0,["delta"]=new Dictionary<string,object?>(),["finish_reason"]="stop" } },["usage"]=new Dictionary<string,object?> { ["prompt_tokens"]=7,["completion_tokens"]=11 } }).WireText);frames.Add(SseFrame.Done.WireText);
+            }
+            else if(upstreamProtocol=="messages")
+            {
+                Add("content_block_stop",new() { ["index"]=0 });
+                Add("message_delta",new() { ["delta"]=new Dictionary<string,object?> { ["stop_reason"]="end_turn" },["usage"]=new Dictionary<string,object?> { ["output_tokens"]=11 } });Add("message_stop",new());
+            }
+            else Add("response.completed",new() { ["response"]=new Dictionary<string,object?> { ["id"]="r",["status"]="completed",["output"]=new List<object?>(),["usage"]=new Dictionary<string,object?> { ["input_tokens"]=7,["output_tokens"]=11 } } });
+            var logs=new StubProxyLogService();
+            var service=new ProxyStreamService(new SequencedUpstreamClient(frames.Select(frame=>(frame,0)).ToArray()),logs,new StubWebSearchToolExecutor(),WebSearchTestStore.Create(),outputFrames:new SseFrameOptions { MaxEventBytes=4*1024*1024 },auditSpool:spool);
+            var context=new ProxyStreamContext(startedTimestamp:Stopwatch.GetTimestamp(),requestLogId:Guid.NewGuid(),requestId:"large-audit",ownerUsername:"test",apiKeyId:Guid.NewGuid(),
+                originalPayload:new(),payload:new(),upstreamRequest:new(),entryProtocol:entry,
+                route:new ProxyRouteDto(new Dictionary<string,object?> { ["id"]="test",["type"]=upstreamProtocol },"public-model","upstream-model",false,true),
+                channelType:upstreamProtocol,channelId:"test",ownerRole:"superadmin",upstreamModel:"upstream-model",requestModel:"public-model",defaultTimeout:120,
+                requestMetadata:new ProxyRequestMetadata("POST","/test",null,new Dictionary<string,string>()),streamWriter:new CapturingProxyStreamWriter(),cancellationToken:default);
+            await service.StreamAsync(context);
+            Assert.Null(logs.LastContext!.Error);
+            var body=System.Text.Json.JsonSerializer.Serialize(logs.LastContext.UpstreamResponse);
+            Assert.Contains(expected,body);Assert.DoesNotContain(expected+fragment,body);Assert.DoesNotContain("_opencodex_capture",body);
+            var usage=Assert.IsType<Dictionary<string,object?>>(logs.LastContext.UpstreamResponse!["usage"]);
+            Assert.Equal(7,Convert.ToInt32(usage[upstreamProtocol=="chat"?"prompt_tokens":"input_tokens"]));
+            Assert.Equal(11,Convert.ToInt32(usage[upstreamProtocol=="chat"?"completion_tokens":"output_tokens"]));
+            Assert.Equal((0L,0),spool.Usage);Assert.Empty(Directory.EnumerateFiles(directory));
+        }
+        finally { Directory.Delete(directory,true); }
+    }
+
     private sealed class CapturingProxyStreamWriter : IProxyStreamWriter
     {
         public bool Prepared { get; private set; }
