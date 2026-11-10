@@ -26,7 +26,9 @@ per-tenant disk-quota service.
 A converted attempt shares its upstream accumulator with capture. Production converted
 frames are now forwarded incrementally: there is no accepted-round typed+wire queue.
 Converter final text/argument reconstruction spills rather than retaining every delta.
-Argument suffixes are read without repeatedly materializing the old prefix. Deferred
+Argument suffixes are read without repeatedly materializing the old prefix. The custom
+JSON-string decoder drops already consumed raw input while retaining escape/surrogate state;
+prefix data before a recognized envelope value can still consume request capture budget. Deferred
 Chat-to-Messages argument events preserve their original fragment boundaries on disk.
 Final JSON strings are still materialized for response/audit contracts; end-to-end heap
 is NOT constant, particularly during full Responses terminal generation/serialization.

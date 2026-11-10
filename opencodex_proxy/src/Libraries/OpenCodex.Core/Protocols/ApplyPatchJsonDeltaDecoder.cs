@@ -15,6 +15,8 @@ internal sealed class ApplyPatchJsonDeltaDecoder
     private int _unicodeValue;
     private char? _pendingHighSurrogate;
 
+    internal int BufferedCharacters=>_buffer.Length;
+
     public string Append(string jsonFragment)
     {
         if (string.IsNullOrEmpty(jsonFragment) || _completed)
@@ -87,6 +89,13 @@ internal sealed class ApplyPatchJsonDeltaDecoder
             _consumeIndex++;
         }
 
+        // Once the JSON string has started, all decoding state lives in scalar fields.
+        // Keeping the already decoded prefix retained an entire raw tool input until done.
+        if(_consumeIndex>0)
+        {
+            _buffer.Remove(0,_consumeIndex);_consumeIndex=0;_valueStartIndex=0;
+        }
+        if(_completed)_buffer.Clear();
         return delta.ToString();
     }
 
