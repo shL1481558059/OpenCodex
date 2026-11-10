@@ -8,6 +8,36 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class GeneratedSseFrameTests
 {
+    [Theory]
+    [InlineData(null)]
+    [InlineData("response.completed")]
+    public void CountingLargeEscapedUnicodeFrame_DoesNotMaterializeWireAndRetainsExactLegacyBytes(string? name)
+    {
+        var value = string.Concat(Enumerable.Repeat("汉😀\"\n\\\t", 20_000));
+        var data = new Dictionary<string,object?> { ["type"]="response.completed", ["value"]=value, ["int"]=42, ["nil"]=null };
+        var frame = SseFrame.FromJson(data,name);
+        var json = JsonSerializer.Serialize(data,new JsonSerializerOptions { Encoder=System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+        var expected = name is null ? $"data: {json}\n\n" : $"event: {name}\ndata: {json}\n\n";
+        Assert.Equal(System.Text.Encoding.UTF8.GetByteCount(expected),frame.Utf8Length);
+        Assert.False(frame.IsWireMaterialized);
+        Assert.Equal(expected,frame.WireText);
+        Assert.Equal(System.Text.Encoding.UTF8.GetByteCount(expected),frame.Utf8Length);
+    }
+
+    [Fact]
+    public void DiagnosticCapture_DoesNotMaterializeLargeGeneratedTerminal()
+    {
+        var frame = SseFrame.FromJson(new Dictionary<string,object?> { ["type"]="response.completed", ["value"]=new string('x',1024*1024) },"response.completed");
+        var capture = new OpenCodex.Core.Services.Proxy.StreamLogCapture("responses");
+        capture.Observe(frame);
+        Assert.True(capture.SawTerminalEvent);
+        Assert.Equal(2000,capture.LastDataLine!.Length);
+        Assert.False(frame.IsWireMaterialized);
+        var wire = frame.WireText;
+        var expected = wire[wire.IndexOf("data:",StringComparison.Ordinal)..];
+        Assert.Equal(expected[..2000],capture.LastDataLine);
+    }
+
     [Fact]
     public async Task GeneratedFrame_FreezesNestedAndBorrowedValues_EncodesOnceLazily()
     {

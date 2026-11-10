@@ -137,7 +137,7 @@ public sealed class ProxyAuditSpool
 
     // Normalized protocol graphs are dictionaries/lists. Flush each bounded leaf so a
     // long numeric/empty-item history cannot grow the writer's pending buffer indefinitely.
-    private static void WriteJson(Utf8JsonWriter writer,object? value,int depth)
+    internal static void WriteJson(Utf8JsonWriter writer,object? value,int depth)
     {
         if(depth>64)throw new JsonException("Audit JSON exceeds maximum depth or contains a cycle.");
         if(value is IReadOnlyDictionary<string,object?> dictionary)

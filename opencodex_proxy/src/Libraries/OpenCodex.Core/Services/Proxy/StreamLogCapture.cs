@@ -48,10 +48,9 @@ internal sealed class StreamLogCapture
     {
         if (frame.IsDone || IsTerminalEventName(frame.Type)) SawTerminalEvent = true;
         if (frame.Event is null || frame.IsDone) return;
-        // Preserve the diagnostic contract without scanning/allocating every physical line.
-        var wire = frame.WireText.AsSpan().Trim();
-        var data = wire.IndexOf("data:", StringComparison.Ordinal);
-        if (data >= 0) _lastDataLine = wire.Slice(data,Math.Min(wire.Length-data,MaxErrorTextLength)).ToString();
+        // Obtain only the bounded diagnostic prefix; do not materialize a complete
+        // generated terminal JSON/wire merely to keep its first 2000 characters.
+        if (frame.DiagnosticDataPrefix(MaxErrorTextLength) is { } prefix) _lastDataLine = prefix;
     }
 
     public void Observe(string rawLine)

@@ -33,6 +33,8 @@ public sealed class SseFrame
     }
 
     private readonly Lazy<string>? _generatedWire;
+    private readonly string? _generatedEventName;
+    private readonly bool _smallGeneratedEvent;
     private readonly string _wireText;
     public string WireText => _generatedWire?.Value ?? _wireText;
     private int _utf8Length = -1;
@@ -42,7 +44,9 @@ public sealed class SseFrame
         {
             var cached = Volatile.Read(ref _utf8Length);
             if (cached >= 0) return cached;
-            var length = System.Text.Encoding.UTF8.GetByteCount(WireText);
+            var length = _generatedWire is not null && !_smallGeneratedEvent && !_generatedWire.IsValueCreated
+                ? GeneratedSseSerialization.Count(Event!.Data, _generatedEventName)
+                : System.Text.Encoding.UTF8.GetByteCount(WireText);
             Interlocked.CompareExchange(ref _utf8Length, length, -1);
             return length;
         }
@@ -77,8 +81,11 @@ public sealed class SseFrame
 
     private SseFrame(SseEvent snapshot, string? eventName) : this("", snapshot)
     {
+        _generatedEventName = eventName;
+        _smallGeneratedEvent = GeneratedSseSerialization.IsSmall(snapshot.Data, eventName);
         _generatedWire = new Lazy<string>(() =>
         {
+            if (!_smallGeneratedEvent) return GeneratedSseSerialization.ToWire(snapshot.Data, eventName);
             var data = JsonSerializer.Serialize(snapshot.Data, GeneratedJson);
             return eventName is null ? $"data: {data}\n\n" : $"event: {eventName}\ndata: {data}\n\n";
         });
@@ -89,6 +96,15 @@ public sealed class SseFrame
     /// Consumers must still treat Event.Data as read-only, like decoded upstream events.</summary>
     public static SseFrame FromJson(IReadOnlyDictionary<string, object?> payload, string? eventName = null) =>
         new(new SseEvent(eventName ?? "message", Freeze(payload)), eventName);
+
+    internal string? DiagnosticDataPrefix(int maxCharacters)
+    {
+        if (_generatedWire is not null && !_smallGeneratedEvent && !_generatedWire.IsValueCreated)
+            return GeneratedSseSerialization.DiagnosticPrefix(Event!.Data, maxCharacters);
+        var wire = WireText.AsSpan().Trim();
+        var data = wire.IndexOf("data:", StringComparison.Ordinal);
+        return data < 0 ? null : wire.Slice(data, Math.Min(wire.Length - data, maxCharacters)).ToString();
+    }
 
     internal bool IsWireMaterialized => _generatedWire?.IsValueCreated ?? true;
 

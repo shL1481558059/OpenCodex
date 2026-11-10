@@ -32,6 +32,13 @@ prefix data before a recognized envelope value can still consume request capture
 Chat-to-Messages argument events preserve their original fragment boundaries on disk.
 Final JSON strings are still materialized for response/audit contracts; end-to-end heap
 is NOT constant, particularly during full Responses terminal generation/serialization.
+Generated large events count encoded bytes without first retaining a UTF16 wire string;
+legacy wire encoding uses bounded string segments, not a whole intermediate JSON string.
+Diagnostic capture obtains at most its existing 2000-character prefix without encoding
+an entire terminal. Small generated graphs with a conservative 32 KiB JSON upper bound
+retain the single-encode fast path. Final legacy wire strings and full response graphs
+still materialize; upstream/converter spill fields are still separate, so disk use can
+include both. This is not a strict constant-heap or single-copy-spool guarantee.
 
 Semantic commitment is conservative, before handing any role, response ID, tool start,
 text or unknown business event to the writer. No transparent whole-round retry/failover
