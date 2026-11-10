@@ -54,6 +54,7 @@ public sealed class ProxyLogService : IProxyLogService
         var ownerUserId = ResolveOwnerUserId(ownerUsername);
         var createdAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
 
+        var preparedAttempt = context.RequestType == ProxyRequestTypes.Attempt && context.BodyHandles?.UpstreamRequest is not null;
         var log = new RequestLog
         {
             RequestId = context.RequestId,
@@ -67,7 +68,10 @@ public sealed class ProxyLogService : IProxyLogService
             IsStream = context.IsStream,
             OwnerUserId = ownerUserId,
             ApiKeyId = context.ApiKeyId,
-            LifecycleStatus = ProxyRequestLifecycleStatus.Queued
+            LifecycleStatus = preparedAttempt ? ProxyRequestLifecycleStatus.Processing : ProxyRequestLifecycleStatus.Queued,
+            ProcessingStartedAt = preparedAttempt ? createdAt : null,
+            UpstreamModel = preparedAttempt ? context.PreparedUpstreamModel : null,
+            ChannelId = preparedAttempt ? ParseChannelId(context.PreparedChannelId) : null
         };
         ApplyConversationMetadata(log, context.RequestHeaders, context.Payload);
         _logRepository.Insert(log);

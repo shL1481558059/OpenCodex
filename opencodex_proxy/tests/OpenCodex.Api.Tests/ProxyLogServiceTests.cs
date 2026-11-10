@@ -605,7 +605,15 @@ public sealed class ProxyLogServiceTests
         nested["text"] = "later-body";
         var attempt = service.CreateQueuedLog(new ProxyRequestLogQueuedContext("req-handles", "admin", null,
             payload, "model", false, "POST", "/v1/responses", null, headers, ProxyRequestTypes.Attempt, id)
-            { BodyHandles = bodies });
+            { BodyHandles = bodies, PreparedUpstreamModel = "upstream", PreparedChannelId = TestChannelId.ToString() });
+        using (var processingDb = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            var prepared = processingDb.RequestLogs.Single(x => x.Id == attempt);
+            Assert.Equal(ProxyRequestLifecycleStatus.Processing, prepared.LifecycleStatus);
+            Assert.NotNull(prepared.ProcessingStartedAt);
+            Assert.Equal("upstream", prepared.UpstreamModel);
+            Assert.Equal(TestChannelId, prepared.ChannelId);
+        }
         upstream["input"] = new List<object?> { "second-round" };
         var secondRound = ProxyLogBodyHandle.CaptureJson(upstream);
         await service.CompleteLogAsync(id, new ProxyLogContext("req-handles", "admin", null, payload,

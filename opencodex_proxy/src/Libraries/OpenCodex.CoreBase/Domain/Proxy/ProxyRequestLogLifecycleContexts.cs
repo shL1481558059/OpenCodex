@@ -3,6 +3,8 @@ namespace OpenCodex.CoreBase.Domain.Proxy;
 public sealed class ProxyRequestLogQueuedContext
 {
     public ProxyLogBodyHandles? BodyHandles { get; init; }
+    public string? PreparedUpstreamModel { get; init; }
+    public string? PreparedChannelId { get; init; }
 
     public ProxyRequestLogQueuedContext(
         string requestId,

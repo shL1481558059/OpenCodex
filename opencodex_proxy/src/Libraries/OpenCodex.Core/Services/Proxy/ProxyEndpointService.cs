@@ -331,7 +331,12 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                             requestId, ownerUsername, apiKeyId, payload, requestModel, isStream,
                             requestMetadata.Method, requestMetadata.Path, requestMetadata.ClientIp,
                             requestMetadata.Headers, ProxyRequestTypes.Attempt, requestLogId,
-                            requestMetadata.RawBody) { BodyHandles = requestMetadata.LogBodies });
+                            requestMetadata.RawBody)
+                        {
+                            BodyHandles = requestMetadata.LogBodies,
+                            PreparedUpstreamModel = upstreamModel,
+                            PreparedChannelId = channelId
+                        });
                     }
 
                     if (isStream)
