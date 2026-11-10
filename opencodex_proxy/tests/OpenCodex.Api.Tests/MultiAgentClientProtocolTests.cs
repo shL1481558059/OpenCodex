@@ -205,7 +205,7 @@ public sealed class MultiAgentClientProtocolTests
         var request = Request();
         var tools = MultiAgentClientTools.FromRequest(request);
         var mappings = ProtocolConverter.BuildResponsesToolCallMappings(request);
-        var call = ProtocolConverter.ResponsesToolCallItemFromToolCall("call", "collaboration__spawn_agent", new Dictionary<string, object?>(), mappings: mappings);
+        var call = ProtocolConverter.ResponsesToolCallItemFromToolCall("call", "spawn_agent", new Dictionary<string, object?>(), mappings: mappings);
         Assert.Equal("spawn_agent", call["name"]);
         Assert.Equal("collaboration", call["namespace"]);
         Assert.Equal("spawn_agent", tools.Action(call));
