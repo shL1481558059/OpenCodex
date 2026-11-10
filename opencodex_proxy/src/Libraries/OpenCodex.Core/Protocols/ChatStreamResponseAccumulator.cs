@@ -27,6 +27,7 @@ internal sealed class ChatStreamResponseAccumulator : IStreamResponseAccumulator
 
     public void Accept(SseEvent streamEvent)
     {
+        _budget.BeginEvent();
         if (streamEvent.Data is string text && text == "[DONE]")
         {
             IsComplete = true;
@@ -162,9 +163,9 @@ internal sealed class ChatStreamResponseAccumulator : IStreamResponseAccumulator
         }
 
         state.Role ??= StreamCaptureValues.String(delta, "role");
-        _budget.Append(state.Content, StreamCaptureValues.String(delta, "content"));
-        _budget.Append(state.ReasoningContent, ChatReasoningText.Extract(delta));
-        _budget.Append(state.Refusal, StreamCaptureValues.String(delta, "refusal"));
+        _budget.AppendTracked(state.Content, delta, "content", StreamCaptureValues.String(delta, "content"));
+        _budget.AppendTracked(state.ReasoningContent, delta, "$reasoning", ChatReasoningText.Extract(delta));
+        _budget.AppendTracked(state.Refusal, delta, "refusal", StreamCaptureValues.String(delta, "refusal"));
 
         if (!delta.TryGetValue("tool_calls", out var toolCallsValue)
             || !StreamCaptureValues.TryList(toolCallsValue, out var toolCalls))

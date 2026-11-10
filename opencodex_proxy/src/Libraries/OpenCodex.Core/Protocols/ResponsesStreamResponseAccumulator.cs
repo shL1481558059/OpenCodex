@@ -43,6 +43,7 @@ internal sealed class ResponsesStreamResponseAccumulator : IStreamResponseAccumu
 
     public void Accept(SseEvent streamEvent)
     {
+        _budget.BeginEvent();
         if (!StreamCaptureValues.TryObject(streamEvent.Data, out var payload))
         {
             return;
@@ -125,7 +126,7 @@ internal sealed class ResponsesStreamResponseAccumulator : IStreamResponseAccumu
         {
             case "response.output_text.delta":
                 GetOutputState(outputIndex)?
-                    .AppendOutputText(StreamCaptureValues.Int(payload, "content_index"), delta);
+                    .AppendOutputText(StreamCaptureValues.Int(payload, "content_index"), delta, payload);
                 break;
             case "response.output_text.done":
                 GetOutputState(outputIndex)?
@@ -136,7 +137,7 @@ internal sealed class ResponsesStreamResponseAccumulator : IStreamResponseAccumu
             case "response.reasoning_summary_text.delta":
                 GetOutputState(outputIndex)?.AppendReasoningSummary(
                     StreamCaptureValues.Int(payload, "summary_index", StreamCaptureValues.Int(payload, "content_index")),
-                    delta);
+                    delta, payload);
                 break;
             case "response.reasoning_summary_text.done":
                 GetOutputState(outputIndex)?.CaptureReasoningSummaryDone(
@@ -163,7 +164,7 @@ internal sealed class ResponsesStreamResponseAccumulator : IStreamResponseAccumu
                 break;
             case "response.refusal.delta":
                 GetOutputState(outputIndex)?
-                    .AppendRefusal(StreamCaptureValues.Int(payload, "content_index"), delta);
+                    .AppendRefusal(StreamCaptureValues.Int(payload, "content_index"), delta, payload);
                 break;
             case "response.refusal.done":
                 GetOutputState(outputIndex)?
@@ -302,16 +303,16 @@ internal sealed class ResponsesStreamResponseAccumulator : IStreamResponseAccumu
             }
         }
 
-        public void AppendOutputText(int contentIndex, string? delta)
+        public void AppendOutputText(int contentIndex, string? delta, object? source=null)
         {
             _inferredType ??= "message";
-            _budget.Append(GetBuilder(_outputText, contentIndex), delta);
+            _budget.AppendTracked(GetBuilder(_outputText, contentIndex), source, "delta", delta);
         }
 
-        public void AppendReasoningSummary(int summaryIndex, string? delta)
+        public void AppendReasoningSummary(int summaryIndex, string? delta, object? source=null)
         {
             _inferredType ??= "reasoning";
-            _budget.Append(GetBuilder(_reasoningSummary, summaryIndex), delta);
+            _budget.AppendTracked(GetBuilder(_reasoningSummary, summaryIndex), source, "delta", delta);
         }
 
         public void CaptureOutputTextDone(int contentIndex, string? text)
@@ -332,10 +333,10 @@ internal sealed class ResponsesStreamResponseAccumulator : IStreamResponseAccumu
             }
         }
 
-        public void AppendRefusal(int contentIndex, string? delta)
+        public void AppendRefusal(int contentIndex, string? delta, object? source=null)
         {
             _inferredType ??= "message";
-            _budget.Append(GetBuilder(_refusals, contentIndex), delta);
+            _budget.AppendTracked(GetBuilder(_refusals, contentIndex), source, "delta", delta);
         }
 
         public void CaptureRefusalDone(int contentIndex, string? refusal)

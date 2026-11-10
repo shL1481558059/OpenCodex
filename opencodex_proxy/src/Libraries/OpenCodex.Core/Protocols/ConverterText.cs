@@ -4,12 +4,36 @@ namespace OpenCodex.Core.Protocols;
 /// <summary>A logical final text value, not a retained list of every upstream fragment.
 /// Enumeration materializes once at final protocol reconstruction. No caller may depend
 /// on original fragment boundaries (deltas are emitted directly from the current event).</summary>
+internal readonly record struct CapturedTextSlice(CaptureText Source,int Offset,int Length);
+
+// A request-owned, prefix-only read lease on an exact upstream field. Contiguous
+// slices share its spool/cache. Interleaved fields detach once, preserving arrival
+// order; destructive reset detaches BEFORE the upstream owner releases its bytes.
 internal sealed class ConverterText(StreamCaptureBudget budget):IReadOnlyCollection<string>
 {
-    private readonly CaptureText _text=budget.CreateText();
-    public int Count=>_text.Length==0?0:1;
-    public void Add(string value)=>budget.Append(_text,value);
-    public override string ToString()=>_text.ToString();
+    private CaptureText? _owned;
+    private CaptureText? _shared;
+    private int _length;
+    public int Count=>_length==0?0:1;
+    public void Add(string value)=>Add(value,null);
+    internal void Add(string value,CapturedTextSlice? slice)
+    {
+        if(value.Length==0)return;
+        if(_owned is null && slice is { } view && view.Length==value.Length
+            && view.Offset==_length && (_shared is null&&_length==0 || ReferenceEquals(_shared,view.Source)))
+        {
+            if(_shared is null){_shared=view.Source;_shared.Resetting+=Detach;}
+            _length=checked(_length+view.Length);return;
+        }
+        Detach();_owned??=budget.CreateText();budget.Append(_owned,value);_length=_owned.Length;
+    }
+    private void Detach()
+    {
+        if(_shared is not {} source)return;
+        _shared=null;source.Resetting-=Detach;
+        _owned??=budget.CreateText();source.CopyPrefixTo(_owned,_length,budget);
+    }
+    public override string ToString()=>_shared?.Prefix(_length)??_owned?.ToString()??"";
     public IEnumerator<string> GetEnumerator() { if(Count!=0)yield return ToString(); }
     IEnumerator IEnumerable.GetEnumerator()=>GetEnumerator();
 }

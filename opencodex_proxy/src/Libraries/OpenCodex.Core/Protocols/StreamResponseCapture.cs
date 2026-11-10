@@ -64,6 +64,7 @@ internal sealed class StreamResponseCapture : IDisposable
 
     internal IStreamResponseAccumulator Accumulator=>_accumulator;
     internal ConverterText CreateConverterText()=>new(_budget);
+    internal CapturedTextSlice? BorrowText(object owner,string field)=>_budget.BorrowText(owner,field);
     internal ConverterFragments CreateFragments()=>new(_budget);
     internal ConverterArguments CreateArguments()=>new(_budget);
     public void Dispose()=>_budget.Dispose();
@@ -325,7 +326,25 @@ internal sealed class StreamCaptureBudget : IDisposable
         if(IsStrict && _texts.Count>=_maxFields)throw new UpstreamException("Complete stream audit exceeds its field budget; no content was truncated.");
         var text=new CaptureText(_spool,_cancellation);_texts.Add(text);return text;
     }
-    public void Dispose() { foreach(var text in _texts)text.Dispose();_texts.Clear(); }
+    public void Dispose() { foreach(var text in _texts)text.Dispose();_texts.Clear();_eventText.Clear(); }
+    // One event-scoped lookup: keys are parsed OBJECT IDENTITY + semantic field, not
+    // equal delta text. It is cleared before the next Accept; no history/delta cache.
+    private readonly Dictionary<CaptureField,CapturedTextSlice?> _eventText = new(new CaptureFieldComparer());
+    internal void BeginEvent()=>_eventText.Clear();
+    internal void AppendTracked(CaptureText target,object? owner,string field,string? fragment)
+    {
+        var offset=target.Length;Append(target,fragment);
+        if(owner is null || string.IsNullOrEmpty(fragment) || target.Length-offset!=fragment.Length)return;
+        var key=new CaptureField(owner,field);
+        if(!_eventText.TryAdd(key,new(target,offset,fragment.Length)))_eventText[key]=null;
+    }
+    internal CapturedTextSlice? BorrowText(object owner,string field)=>_eventText.GetValueOrDefault(new(owner,field));
+    private readonly record struct CaptureField(object Owner,string Field);
+    private sealed class CaptureFieldComparer:IEqualityComparer<CaptureField>
+    {
+        public bool Equals(CaptureField left,CaptureField right)=>ReferenceEquals(left.Owner,right.Owner)&&StringComparer.Ordinal.Equals(left.Field,right.Field);
+        public int GetHashCode(CaptureField value)=>HashCode.Combine(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value.Owner),StringComparer.Ordinal.GetHashCode(value.Field));
+    }
     private void Consume(int bytes)
     {
         _cancellation.ThrowIfCancellationRequested();

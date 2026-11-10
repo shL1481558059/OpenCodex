@@ -305,7 +305,7 @@ public static partial class SseStreamConverter
                         yield return line;
                     }
 
-                    textParts.Add(text);
+                    textParts.Add(text,result.SharedCapture?.BorrowText(delta,"content"));
                     yield return Emit(
                         "response.output_text.delta",
                         new Dictionary<string, object?>
@@ -326,7 +326,7 @@ public static partial class SseStreamConverter
                         yield return line;
                     }
 
-                    textParts.Add(refusal);
+                    textParts.Add(refusal,result.SharedCapture?.BorrowText(delta,"refusal"));
                     yield return Emit(
                         "response.output_text.delta",
                         new Dictionary<string, object?>
@@ -347,7 +347,7 @@ public static partial class SseStreamConverter
                         yield return line;
                     }
 
-                    reasoningParts.Add(reasoningText);
+                    reasoningParts.Add(reasoningText,result.SharedCapture?.BorrowText(delta,"$reasoning"));
                     yield return Emit(
                         "response.reasoning_summary_text.delta",
                         new Dictionary<string, object?>

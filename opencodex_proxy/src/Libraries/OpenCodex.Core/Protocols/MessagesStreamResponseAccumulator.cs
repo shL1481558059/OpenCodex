@@ -36,6 +36,7 @@ internal sealed class MessagesStreamResponseAccumulator : IStreamResponseAccumul
 
     public void Accept(SseEvent streamEvent)
     {
+        _budget.BeginEvent();
         if (!StreamCaptureValues.TryObject(streamEvent.Data, out var payload))
         {
             return;
@@ -329,11 +330,11 @@ internal sealed class MessagesStreamResponseAccumulator : IStreamResponseAccumul
                 {
                     case "text":
                         _hasText = true;
-                        _budget.Append(_text, value as string);
+                        _budget.AppendTracked(_text, contentBlock, "text", value as string);
                         break;
                     case "thinking":
                         _hasThinking = true;
-                        _budget.Append(_thinking, value as string);
+                        _budget.AppendTracked(_thinking, contentBlock, "thinking", value as string);
                         break;
                     case "signature":
                         _hasSignature = true;
@@ -359,11 +360,11 @@ internal sealed class MessagesStreamResponseAccumulator : IStreamResponseAccumul
             {
                 case "text_delta":
                     _hasText = true;
-                    _budget.Append(_text, StreamCaptureValues.String(delta, "text"));
+                    _budget.AppendTracked(_text, delta, "text", StreamCaptureValues.String(delta, "text"));
                     break;
                 case "thinking_delta":
                     _hasThinking = true;
-                    _budget.Append(_thinking, StreamCaptureValues.String(delta, "thinking"));
+                    _budget.AppendTracked(_thinking, delta, "thinking", StreamCaptureValues.String(delta, "thinking"));
                     break;
                 case "signature_delta":
                     _hasSignature = true;

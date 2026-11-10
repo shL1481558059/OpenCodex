@@ -244,7 +244,7 @@ public static partial class SseStreamConverter
                     yield return line;
                 }
 
-                textParts.Add(text);
+                textParts.Add(text,result.SharedCapture?.BorrowText(payload,"delta"));
                 yield return EmitChunk(new List<object?>
                 {
                     new Dictionary<string, object?>
@@ -275,7 +275,7 @@ public static partial class SseStreamConverter
                     yield return line;
                 }
 
-                refusalParts.Add(refusal);
+                refusalParts.Add(refusal,result.SharedCapture?.BorrowText(payload,"delta"));
                 yield return EmitChunk(new List<object?>
                 {
                     new Dictionary<string, object?>
@@ -329,7 +329,7 @@ public static partial class SseStreamConverter
                     yield return line;
                 }
 
-                reasoningParts.Add(text);
+                reasoningParts.Add(text,result.SharedCapture?.BorrowText(payload,"delta"));
                 yield return EmitChunk(new List<object?>
                 {
                     new Dictionary<string, object?>

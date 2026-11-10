@@ -287,7 +287,7 @@ public static partial class SseStreamConverter
                         var initialText = StringValue(block, "text", string.Empty);
                         if (initialText.Length > 0)
                         {
-                            textParts.Add(initialText);
+                            textParts.Add(initialText,result.SharedCapture?.BorrowText(block,"text"));
                         }
                     }
                     else if (blockType == "thinking")
@@ -300,7 +300,7 @@ public static partial class SseStreamConverter
                                 yield return emitted;
                             }
 
-                            reasoningParts.Add(initialThinking);
+                            reasoningParts.Add(initialThinking,result.SharedCapture?.BorrowText(block,"thinking"));
                             yield return Emit(
                                 "response.reasoning_summary_text.delta",
                                 new Dictionary<string, object?>
@@ -416,7 +416,7 @@ public static partial class SseStreamConverter
                         yield return line;
                     }
 
-                    reasoningParts.Add(thinking);
+                    reasoningParts.Add(thinking,result.SharedCapture?.BorrowText(delta,"thinking"));
                     block["thinking"] = $"{StringValue(block, "thinking", string.Empty)}{thinking}";
                     yield return Emit(
                         "response.reasoning_summary_text.delta",
@@ -449,7 +449,7 @@ public static partial class SseStreamConverter
                         yield return line;
                     }
 
-                    textParts.Add(text);
+                    textParts.Add(text,result.SharedCapture?.BorrowText(delta,"text"));
                     block["text"] = $"{StringValue(block, "text", string.Empty)}{text}";
                     yield return Emit(
                         "response.output_text.delta",

@@ -13,6 +13,7 @@ internal sealed class CaptureText(ProxyAuditSpool? spool,CancellationToken cance
     private ProxyAuditSpool.AuditFile? _buffer;
     private int _length;
     private string? _cached;
+    internal event Action? Resetting;
     public int Length=>_length;
     public void Append(string value)=>Append(value.AsSpan());
     public void Append(ReadOnlySpan<char> value)
@@ -25,7 +26,24 @@ internal sealed class CaptureText(ProxyAuditSpool? spool,CancellationToken cance
     }
     internal void AppendLegacy(StreamCaptureBudget budget,string fragment)
     { budget.Append(_memory??=new(),fragment);_length=_memory.Length;_cached=null; }
-    public void Clear() { _buffer?.Dispose();_buffer=null;_memory=null;_length=0;_cached=null; }
+    public void Clear() { Resetting?.Invoke(); Release(); }
+    private void Release() { _buffer?.Dispose();_buffer=null;_memory=null;_length=0;_cached=null; }
+    internal string Prefix(int length)
+    {
+        if(length==_length)return ToString();
+        using var source=OpenRawRead();
+        return string.Create(length,source,static(span,read)=>read.ReadExactly(MemoryMarshal.AsBytes(span)));
+    }
+    internal void CopyPrefixTo(CaptureText target,int length,StreamCaptureBudget budget)
+    {
+        using var source=OpenRawRead();var chars=new char[Math.Min(length,8192)];
+        while(length>0)
+        {
+            var count=Math.Min(length,chars.Length);source.ReadExactly(MemoryMarshal.AsBytes(chars.AsSpan(0,count)));
+            if(count<length && char.IsHighSurrogate(chars[count-1])){source.Position-=2;count--;}
+            budget.Append(target,new string(chars,0,count));length-=count;
+        }
+    }
     public override string ToString()
     {
         if(_cached is not null)return _cached;
@@ -50,5 +68,5 @@ internal sealed class CaptureText(ProxyAuditSpool? spool,CancellationToken cance
         using var read=_buffer.OpenSnapshotRead();read.Position=2L*offset;
         return string.Create(_length-offset,read,static(span,source)=>source.ReadExactly(MemoryMarshal.AsBytes(span)));
     }
-    public void Dispose()=>Clear();
+    public void Dispose() { Resetting=null;Release(); }
 }
