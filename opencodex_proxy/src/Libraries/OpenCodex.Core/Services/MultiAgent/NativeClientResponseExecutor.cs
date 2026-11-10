@@ -7,7 +7,7 @@ using D = System.Collections.Generic.Dictionary<string, object?>;
 namespace OpenCodex.Core.Services.MultiAgent;
 
 /// <summary>Executes one client-owned Responses request and publishes committed tool batches.</summary>
-public sealed class NativeClientResponseExecutor(NativeClientSessionStore store)
+public sealed class NativeClientResponseExecutor(NativeClientSessionStore store, MultiAgentStreamingOptions? streamingOptions = null)
 {
     public async Task<D> ExecuteAsync(NativeClientSession session, D request, string turnId,
         MultiAgentModelCall model, Func<D, Task> emit, CancellationToken ct,
@@ -194,7 +194,7 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store)
                     || Text(p, "type") == "refusal" && !string.IsNullOrWhiteSpace(Text(p, "refusal")))))
                 throw new UpstreamException("The completed model response contains no nonempty message or declared tool call.");
             for (var index = 0; index < items.Count; index++) SetItemId(items[index], index);
-            ValidateStreamTools(items, validationEvents);
+            ValidateStreamTools(items, validationEvents,streamingOptions ?? new());
             lease.Token.ThrowIfCancellationRequested();
             // Once committing starts, a disconnect cannot leave a partially published tool batch.
             await store.CommitResponseAsync(session, projection, result, CancellationToken.None);
@@ -250,9 +250,9 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store)
         if (!string.IsNullOrEmpty(mapping.Namespace)) item["namespace"] = mapping.Namespace;
     }
 
-    private static void ValidateStreamTools(IReadOnlyList<D> output, IReadOnlyList<D> events)
+    private static void ValidateStreamTools(IReadOnlyList<D> output, IReadOnlyList<D> events,MultiAgentStreamingOptions options)
     {
-        var deltas = new Dictionary<int, string>();
+        var deltas = new MultiAgentDeltaAccumulator<int>(new(options));
         foreach (var value in events)
         {
             var type = Text(value, "type");
@@ -287,14 +287,14 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store)
                     throw new UpstreamException("The streamed tool argument event targets a different output item.");
                 if (!type.StartsWith(ArgumentEventPrefix(expected), StringComparison.Ordinal))
                     throw new UpstreamException("The streamed tool argument event has the wrong tool type.");
-                if (type.EndsWith(".delta", StringComparison.Ordinal)) deltas[index] = deltas.GetValueOrDefault(index, "") + Text(value, "delta");
+                if (type.EndsWith(".delta", StringComparison.Ordinal)) deltas.Append(index,Text(value,"delta"));
                 else if (type.EndsWith(".done", StringComparison.Ordinal) && !ToolPayloadMatches(expected, JsonDictionaryValue.Get(value, field)))
                     throw new UpstreamException("The streamed tool arguments differ from its completed output item.");
             }
         }
-        foreach (var (index, value) in deltas)
+        foreach (var index in deltas.Keys.ToArray())
         {
-            if (!ToolPayloadMatches(output[index], value))
+            if (!ToolPayloadMatches(output[index], deltas.Take(index)))
                 throw new UpstreamException("The streamed tool argument deltas differ from its completed output item.");
         }
     }

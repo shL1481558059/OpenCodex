@@ -100,7 +100,7 @@ public sealed partial class MultiAgentResponseService
                 {
                     var persist = JsonDictionaryValue.Get(request, "store") is not false;
                     var runtime = new MultiAgentRuntime(run!, (payload, onEvent, token) => CallModelAsync(payload, metadata, onEvent, token), Send,
-                        () => store.SaveAsync(run!, CancellationToken.None, persist));
+                        () => store.SaveAsync(run!, CancellationToken.None, persist),streamingOptions:StreamingOptions());
                     await runtime.ExecuteAsync(request, responseCt, channel.Reader);
                 }
             }

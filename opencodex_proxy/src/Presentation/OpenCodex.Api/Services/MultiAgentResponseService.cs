@@ -94,7 +94,7 @@ public sealed partial class MultiAgentResponseService(
             }
 
             var runtime = new MultiAgentRuntime(run, CallModel, Emit,
-                () => store.SaveAsync(run, CancellationToken.None, persist));
+                () => store.SaveAsync(run, CancellationToken.None, persist),streamingOptions:StreamingOptions());
             try
             {
                 var response = await runtime.ExecuteAsync(request, ct);
@@ -122,6 +122,9 @@ public sealed partial class MultiAgentResponseService(
         }
         finally { gate.Release(); }
     }
+
+    private MultiAgentStreamingOptions StreamingOptions() =>
+        configuration.GetSection("MultiAgent:Streaming").Get<MultiAgentStreamingOptions>() ?? new();
 
     private string SessionId(Dictionary<string, object?> request)
     {

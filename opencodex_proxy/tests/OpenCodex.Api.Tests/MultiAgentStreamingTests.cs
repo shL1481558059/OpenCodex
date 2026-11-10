@@ -446,6 +446,46 @@ public sealed class MultiAgentStreamingTests
         Assert.Equal("response." + status, Type(events.Last()));
     }
 
+    [Theory]
+    [InlineData("failed")]
+    [InlineData("incomplete")]
+    public async Task LongFragmentedTextIsCompleteInFailureClosureWithoutPerDeltaSnapshots(string status)
+    {
+        var events=new ConcurrentQueue<D>();var expected=string.Concat(Enumerable.Repeat("中😀 ",1000));
+        MultiAgentModelCall model=async (_,emit,ct)=>
+        {
+            await StartMessage(emit,"",ct);
+            for(var i=0;i<1000;i++) await emit(new() { ["type"]="response.output_text.delta",["output_index"]=0,["content_index"]=0,["delta"]="中😀 " },ct);
+            var response=Response();response["status"]=status;
+            response["incomplete_details"]=new D { ["reason"]="max_output_tokens" };
+            response["error"]=new D { ["message"]="injected failure" };return response;
+        };
+        using var timeout=Deadline();var result=await Runtime(Run(),model,events).ExecuteAsync(Request(),timeout.Token);
+        Assert.Equal(status,result["status"]);
+        var item=(D)Assert.Single(events,e=>Type(e)=="response.output_item.done")["item"]!;
+        Assert.Equal(expected,((D)JsonDictionaryValue.List(item,"content")[0]!)["text"]);
+        Assert.DoesNotContain(events,e=>Type(e)=="response.completed");
+    }
+    [Fact]
+    public async Task DeltaBudgetFailsExplicitlyBeforePublishingRejectedDeltaOrExecutableTool()
+    {
+        var events=new ConcurrentQueue<D>();
+        MultiAgentModelCall model=async (_,emit,ct)=>
+        {
+            await StartMessage(emit,"ab",ct);
+            await emit(new() { ["type"]="response.output_text.delta",["output_index"]=0,["content_index"]=0,["delta"]="rejected" },ct);
+            return Response(Message("unreachable"));
+        };
+        var runtime=new MultiAgentRuntime(Run(),model,e=>{events.Enqueue(e);return Task.CompletedTask;},()=>Task.CompletedTask,
+            streamingOptions:new() { MaxAccumulatedDeltaCharacters=3 });
+        using var timeout=Deadline();var result=await runtime.ExecuteAsync(Request(),timeout.Token);
+        Assert.Equal("failed",result["status"]);
+        Assert.DoesNotContain(events,e=>Equals(e.GetValueOrDefault("delta"),"rejected"));
+        var item=(D)Assert.Single(events,e=>Type(e)=="response.output_item.done")["item"]!;
+        Assert.Equal("ab",((D)JsonDictionaryValue.List(item,"content")[0]!)["text"]);
+        Assert.Contains("budget",JsonSerializer.Serialize(result["error"]));
+    }
+
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     private static CancellationTokenSource Deadline() => new(TimeSpan.FromSeconds(10));
     private static string Type(D item) => JsonDictionaryValue.String(item, "type");

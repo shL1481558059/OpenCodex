@@ -20,11 +20,16 @@ public sealed partial class MultiAgentRuntime
         public int Index { get; init; }
         public bool Hidden { get; init; }
         public bool Finished { get; set; }
+        public required MultiAgentDeltaAccumulator<(Dictionary<string,object?> Target,string Field)> Deltas { get; init; }
         public string CallId => Text(Item, "call_id");
     }
     private readonly Channel<ModelEvent> _modelEvents = Channel.CreateBounded<ModelEvent>(new BoundedChannelOptions(64)
     { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
     private readonly Dictionary<(string Round, int Index), LiveItem> _liveItems = [];
+
+    // Unlike identity fields, wire text/arguments must not trim whitespace.
+    private static string Raw(IReadOnlyDictionary<string,object?> value,string field) =>
+        JsonDictionaryValue.Get(value,field)?.ToString() ?? "";
 
     private async Task EnqueueModelEvent(string agent, string round, Dictionary<string, object?> data, CancellationToken ct)
     {
@@ -57,7 +62,7 @@ public sealed partial class MultiAgentRuntime
                 // accepting the whole model response and checking unfinished descendants.
                 if (itemType == "message" && Text(source, "phase") != "commentary") source.Remove("phase");
                 if (itemType is "function_call" or "custom_tool_call") source["call_id"] = Id("call_ma");
-                var live = new LiveItem { Agent = incoming.Agent, Round = incoming.Round, Item = source, Index = _output.Count, Hidden = hidden };
+                var live = new LiveItem { Agent = incoming.Agent, Round = incoming.Round, Item = source, Index = _output.Count, Hidden = hidden, Deltas = new(_deltaBudget) };
                 _liveItems.Add((incoming.Round, sourceIndex), live);
                 if (hidden) return;
                 _output.Add(source);
@@ -79,19 +84,21 @@ public sealed partial class MultiAgentRuntime
             {
                 var contents = JsonDictionaryValue.List(state.Item, "content");
                 var n = WebSearchPayload.ToInt(JsonDictionaryValue.Get(data, "content_index"), 0);
+                if(n < 0 || n >= _maxDeltaFields) throw new OpenCodex.Core.Errors.UpstreamException("The multi-agent content index exceeds its delta field budget.");
                 while (contents.Count <= n) contents.Add(new Dictionary<string, object?> { ["type"] = "output_text", ["text"] = "", ["annotations"] = new List<object?>() });
                 var textPart = (Dictionary<string, object?>)contents[n]!;
-                textPart["text"] = (JsonDictionaryValue.Get(textPart, "text")?.ToString() ?? "") + JsonDictionaryValue.Get(data, "delta");
+                state.Deltas.Append((textPart,"text"),Raw(data,"delta"),Raw(textPart,"text"));
                 state.Item["content"] = contents;
             }
             if (type == "response.function_call_arguments.delta")
-                state.Item["arguments"] = (JsonDictionaryValue.Get(state.Item, "arguments")?.ToString() ?? "") + JsonDictionaryValue.Get(data, "delta");
+                state.Deltas.Append((state.Item,"arguments"),Raw(data,"delta"),Raw(state.Item,"arguments"));
             if (type == "response.custom_tool_call_input.delta")
-                state.Item["input"] = (JsonDictionaryValue.Get(state.Item, "input")?.ToString() ?? "") + JsonDictionaryValue.Get(data, "delta");
+                state.Deltas.Append((state.Item,"input"),Raw(data,"delta"),Raw(state.Item,"input"));
             if (type == "response.custom_tool_call_input.done")
             {
                 var complete = JsonDictionaryValue.Get(data, "input")?.ToString()
-                    ?? JsonDictionaryValue.Get(state.Item, "input")?.ToString() ?? "";
+                    ?? state.Deltas.Take((state.Item,"input")) ?? Raw(state.Item,"input");
+                state.Deltas.Discard((state.Item,"input"));
                 state.Item["input"] = complete;
                 forwarded["input"] = complete;
             }
@@ -114,6 +121,9 @@ public sealed partial class MultiAgentRuntime
         if (live.Hidden || live.Finished) return;
         var id = live.Item["id"];
         var attribution = live.Item["agent"];
+        // Accepted terminal item remains authoritative; discard speculative builders without
+        // creating a second complete string just before replacing it.
+        live.Deltas.Clear();
         live.Item.Clear();
         foreach (var p in WebSearchPayload.DeepCopyObject(source)) live.Item[p.Key] = p.Value;
         live.Item["id"] = id;
@@ -127,6 +137,7 @@ public sealed partial class MultiAgentRuntime
     {
         foreach (var state in _liveItems.Values.Where(s => !s.Hidden && !s.Finished && (round is null || s.Round == round)))
         {
+            foreach(var key in state.Deltas.Keys.ToArray()) key.Target[key.Field]=state.Deltas.Take(key);
             state.Finished = true;
             state.Item["status"] = "incomplete";
             if (Text(state.Item, "type") is "function_call" or "custom_tool_call") continue;

@@ -20,16 +20,18 @@ public sealed partial class MultiAgentRuntime
     private readonly Dictionary<string, (Task<Dictionary<string, object?>> Task, CancellationTokenSource Stop, int Generation, string Round, Dictionary<string, object?> Request)> _active = [];
     private readonly List<object?> _output = [];
     private int _sequence;
+    private readonly MultiAgentDeltaBudget _deltaBudget;
+    private readonly int _maxDeltaFields;
 
     public MultiAgentRuntime(MultiAgentRun run,
         Func<Dictionary<string, object?>, CancellationToken, Task<Dictionary<string, object?>>> model,
         Func<Dictionary<string, object?>, Task> emit, Func<Task> save, TimeProvider? timeProvider = null,
-        MultiAgentClientRuntimeHooks? client = null)
-        : this(run, (payload, _, token) => model(payload, token), emit, save, timeProvider, client) { }
+        MultiAgentClientRuntimeHooks? client = null, MultiAgentStreamingOptions? streamingOptions = null)
+        : this(run, (payload, _, token) => model(payload, token), emit, save, timeProvider, client, streamingOptions) { }
 
     public MultiAgentRuntime(MultiAgentRun run, MultiAgentModelCall model,
         Func<Dictionary<string, object?>, Task> emit, Func<Task> save, TimeProvider? timeProvider = null,
-        MultiAgentClientRuntimeHooks? client = null)
+        MultiAgentClientRuntimeHooks? client = null, MultiAgentStreamingOptions? streamingOptions = null)
     {
         _run = run;
         _model = model;
@@ -37,6 +39,9 @@ public sealed partial class MultiAgentRuntime
         _save = save;
         _time = timeProvider ?? TimeProvider.System;
         _client = client;
+        var options=streamingOptions ?? new();
+        _deltaBudget=new MultiAgentDeltaBudget(options);
+        _maxDeltaFields=options.MaxAccumulatedDeltaFields;
     }
 
     public async Task<Dictionary<string, object?>> ExecuteAsync(Dictionary<string, object?> request, CancellationToken ct,
@@ -251,6 +256,8 @@ public sealed partial class MultiAgentRuntime
             }
             foreach (var agent in _run.Agents.Values.Where(a => a.Status == "running")) agent.Status = "ready";
             _active.Clear();
+            foreach(var live in _liveItems.Values) live.Deltas.Clear();
+            _liveItems.Clear();
             await _save();
         }
     }

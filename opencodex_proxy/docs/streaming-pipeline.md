@@ -79,3 +79,61 @@ limit is independent from upstream: WS JSON serialization may expand escaping. S
 terminal envelopes. Setting MaxBatchBytes=1 disables batching (event-boundary flush remains).
 These are per-stream/event limits, **not** a completed tenant-wide heap/audit/session budget.
 No schema changes or production provider credentials are required.
+
+## Complete snapshot spool and multi-agent delta accumulation
+
+Completed/attempt log slots now serialize **the complete supplied normalized JSON graph** into an
+immutable, incrementally hashed staging stream. Small snapshots stay in bounded memory; larger
+ones spill to private files. Ordinary string values use bounded escaped segments; normalized
+container leaves flush to staging without per-leaf filesystem flush. Sealing precedes reading.
+Existing content-addressed SHA/CDC boundaries, JSON bytes, slots and pricing inputs remain intact.
+CDC planning retains a32KiB window; persistence batches at most16 chunks, detaching only their
+inserted block entities after each batch. Metadata remains proportional to body size, capped by
+body quota. Transaction rollback keeps externally owned snapshots retryable. Log-owned snapshots
+are disposed even when encoding/DB writes fail; commit leaves only durable addresses.
+
+This is **not yet** spool-backed streaming reconstruction: the old capture1MiB/256-item limits,
+full converter accumulators, native-client tool batch/event lists and whole-round typed+wire queue
+still exist. Their previous explicit capture metadata is not hidden or relabeled complete. The next
+stage must replace those capture/accumulation paths and remove the whole-round dual representation
+before the overall task is complete. A giant extension DTO/JsonElement/binary scalar can still need
+serializer working memory; normalized ordinary string/list/dictionary paths are segmented.
+
+Proposed configurable safety defaults (not production measurements):
+
+```json
+{
+  "ProxyAuditSpool": {
+    "Directory": "/var/lib/opencodex/audit-spool",
+    "MemoryThresholdBytes": 262144,
+    "MaxBodyBytes": 67108864,
+    "MaxTotalBytes": 1073741824,
+    "MaxFiles": 256,
+    "OrphanAgeSeconds": 3600
+  },
+  "MultiAgent": {
+    "Streaming": {
+      "MaxAccumulatedDeltaCharacters": 8388608,
+      "MaxAccumulatedDeltaFields": 4096
+    }
+  }
+}
+```
+
+The default directory when omitted is `Path.GetTempPath()/opencodex-audit-spool`. Use a dedicated,
+restricted directory and an OS disk quota; do not use an unrestricted shared multi-process path.
+Snapshot bytes (including memory), open-body/file slots and fresh crash leftovers consume admission
+quota. Limits are per spool singleton/process, not an atomic cross-process or tenant-wide quota.
+Startup and lazy five-minute sweeps remove only expired exact managed filenames that can be opened
+exclusively; live leases are protected, symlinks/unrelated files ignored. Disposal deletes spilled
+files; crash leftovers remain quota-charged until reclaimed. Quota/disk errors propagate explicitly,
+never produce truncated bodies. Client-cancelled requests still finalize accounting; the capture API
+also supports explicit cancellation and releases partially created snapshots.
+
+Multi-agent text/argument/input deltas append to request-owned chunked builders, sharing character
+and field limits across concurrent live items. UTF16 character quota is not an exact heap-byte count.
+Only closure/validation materializes a string; accepted authoritative terminal items discard builders
+without another snapshot. Incomplete message closure retains exact accumulated whitespace; incomplete
+tools remain non-executable. Runtime cancellation/finally clears builder references. Native-client
+argument validation also uses builders but its retained event/tool batch policy is not changed yet.
+HTTP/WS read the same options. No schema migration or production provider is needed.
