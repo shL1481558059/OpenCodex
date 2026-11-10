@@ -192,8 +192,31 @@ public static partial class ProtocolConverter
            IReadOnlyDictionary<string, object?>? compat = null)
        {
            ArgumentNullException.ThrowIfNull(payload);
+           return ConvertRequestGraph(AsObject(DeepCopy(payload)), sourceProtocol, targetProtocol, upstreamModel, compat);
+       }
 
-           var converted = AsObject(DeepCopy(payload));
+       // For the endpoint's exclusively owned attempt graph only. A shallow root keeps the
+       // working payload's model intact; nested containers already belong to this attempt.
+       // Public conversion APIs continue to deep-copy caller-owned graphs.
+       internal static RequestConversionResult ConvertOwnedRequestWithMetadata(
+           Dictionary<string, object?> payload,
+           string sourceProtocol,
+           string targetProtocol,
+           string upstreamModel,
+           IReadOnlyDictionary<string, object?>? compat = null)
+       {
+           ArgumentNullException.ThrowIfNull(payload);
+           return ConvertRequestGraph(new Dictionary<string, object?>(payload, StringComparer.Ordinal),
+               sourceProtocol, targetProtocol, upstreamModel, compat);
+       }
+
+       private static RequestConversionResult ConvertRequestGraph(
+           Dictionary<string, object?> converted,
+           string sourceProtocol,
+           string targetProtocol,
+           string upstreamModel,
+           IReadOnlyDictionary<string, object?>? compat)
+       {
            converted["model"] = upstreamModel;
            if (sourceProtocol == targetProtocol)
            {

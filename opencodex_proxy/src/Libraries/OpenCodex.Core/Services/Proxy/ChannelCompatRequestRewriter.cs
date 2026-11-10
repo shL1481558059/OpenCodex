@@ -9,7 +9,14 @@ public static class ChannelCompatRequestRewriter
         IReadOnlyDictionary<string, object?> payload,
         IReadOnlyDictionary<string, object?> compat)
     {
-        var result = WebSearchPayload.DeepCopyObject(payload);
+        return ApplyOwned(WebSearchPayload.DeepCopyObject(payload), compat);
+    }
+
+    // The caller owns the entire JSON graph. Public Apply keeps its isolation contract.
+    internal static ChannelCompatRewriteResult ApplyOwned(
+        Dictionary<string, object?> result,
+        IReadOnlyDictionary<string, object?> compat)
+    {
         var details = new List<string>();
 
         // 1. default_params: 仅在参数不存在时添加

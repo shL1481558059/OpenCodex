@@ -27,7 +27,12 @@ public static class MultiAgentV2RequestRewriter
             return payload as Dictionary<string, object?> ?? WebSearchPayload.DeepCopyObject(payload);
         }
 
-        var result = WebSearchPayload.DeepCopyObject(payload);
+        return ApplyOwned(WebSearchPayload.DeepCopyObject(payload), action);
+    }
+
+    internal static Dictionary<string, object?> ApplyOwned(Dictionary<string, object?> result, MultiAgentV2Action action)
+    {
+        if (action != MultiAgentV2Action.Downgrade) return result;
         result.Remove("multi_agent");
 
         if (JsonDictionaryValue.Get(result, "input") is IEnumerable<object?> inputItems)

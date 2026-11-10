@@ -257,13 +257,15 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                     }
 
                     var webSearchMode = _webSearch.CurrentMode();
+                    // This clone is the attempt's ownership boundary. All following owned
+                    // rewriters/conversion may reuse its containers, never the client graph.
                     effectivePayload = WebSearchRequestPolicy.ApplyMode(effectivePayload, webSearchMode);
 
                     var channelCompat = JsonDictionaryValue.Object(route.Channel, "compat", WebSearchPayload.DeepCopyObject);
                     // 渠道没有 compat 配置时无需重写，跳过整棵载荷的深拷贝。
                     if (channelCompat.Count > 0)
                     {
-                        effectivePayload = ChannelCompatRequestRewriter.Apply(
+                        effectivePayload = ChannelCompatRequestRewriter.ApplyOwned(
                             effectivePayload,
                             channelCompat).Payload;
                     }
@@ -279,7 +281,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         effectivePayload = _multiAgentRepeatGuard.Apply(sessionId, effectivePayload);
                     }
 
-                    effectivePayload = MultiAgentV2RequestRewriter.Apply(effectivePayload, multiAgentAction);
+                    effectivePayload = MultiAgentV2RequestRewriter.ApplyOwned(effectivePayload, multiAgentAction);
                     if (context.EntryProtocol == ProtocolConverter.Responses
                         && channelType is ProtocolConverter.Chat or ProtocolConverter.Messages)
                     {
@@ -290,7 +292,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                             context.CancellationToken);
                     }
 
-                    var conversion = ProtocolConverter.ConvertRequestWithMetadata(
+                    var conversion = ProtocolConverter.ConvertOwnedRequestWithMetadata(
                         effectivePayload,
                         context.EntryProtocol,
                         channelType,
