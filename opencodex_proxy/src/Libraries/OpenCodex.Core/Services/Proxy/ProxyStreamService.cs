@@ -55,6 +55,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         var streamTermination = StreamCaptureTermination.UnexpectedEnd;
         var streamLogCapture = new StreamLogCapture(context.EntryProtocol);
         var statusCode = ProxyHttpStatus.Ok;
+        var terminalGate = new StreamTerminalGate();
         var upstreamRequest = context.UpstreamRequest;
         ConvertedProxyStreamState? convertedState = null;
         BuiltinToolSession? tools = null;
@@ -71,8 +72,8 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                     : _upstream.StreamEventsAsync(context.Route.Channel, upstreamRequest,
                         context.DefaultTimeout, context.CancellationToken);
                 streamWriteMetrics = await context.StreamWriter.WriteFramesAsync(
-                    ObserveFrames(streamFrames, streamLogCapture, passThroughResponseCapture,
-                        context.CancellationToken),
+                    terminalGate.Hold(ObserveFrames(streamFrames, streamLogCapture, passThroughResponseCapture,
+                        context.CancellationToken),context.CancellationToken),
                     static line => line.Trim().Length > 0,
                     () => ElapsedMilliseconds(ttftStarted), context.CancellationToken);
                 ttftMs = streamWriteMetrics.TtftMs;
@@ -92,8 +93,8 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                 };
                 var convertedLines = ConvertRoundsAsync(context, convertedState, tools, context.CancellationToken);
                 streamWriteMetrics = await context.StreamWriter.WriteFramesAsync(
-                    ObserveFrames(ValidateOutputFrames(convertedLines, context.CancellationToken),
-                        streamLogCapture, null, context.CancellationToken),
+                    terminalGate.Hold(ObserveFrames(ValidateOutputFrames(convertedLines, context.CancellationToken),
+                        streamLogCapture, null, context.CancellationToken),context.CancellationToken),
                     SseStreamConverter.CountsForTtft,
                     () => ElapsedMilliseconds(ttftStarted), context.CancellationToken);
                 ttftMs = streamWriteMetrics.TtftMs;
@@ -143,6 +144,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                     : ProxyHttpStatus.InternalServerError;
                 upstreamResponse ??= capturedUpstreamResponse;
             }
+            terminalGate.Fail(context.EntryProtocol,error,(exception as UpstreamException)?.ErrorCode);
             if (exception is OperationCanceledException && !context.CancellationToken.IsCancellationRequested)
             {
                 var timeout = new UpstreamException("proxy request timed out", ProxyHttpStatus.GatewayTimeout);
@@ -173,6 +175,28 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                     .Response;
             }
 
+            await PersistLog();
+            if(error is not null && terminalGate.HasCommitted && !context.CancellationToken.IsCancellationRequested)
+                await context.StreamWriter.WriteFramesAsync(terminalGate.Release(context.CancellationToken),static _=>false,
+                    ()=>ElapsedMilliseconds(ttftStarted),context.CancellationToken);
+        }
+        // Success/stop is not publishable until complete audit persistence succeeds. This
+        // does not delay any preceding role, tool-start or text event.
+        try
+        {
+            await context.StreamWriter.WriteFramesAsync(terminalGate.Release(context.CancellationToken),
+                static _=>false,()=>ElapsedMilliseconds(ttftStarted),context.CancellationToken);
+        }
+        catch(Exception exception)
+        {
+            statusCode=exception is OperationCanceledException?ProxyHttpStatus.ClientClosedRequest:ProxyHttpStatus.InternalServerError;
+            error="Terminal stream write/flush failed: "+exception.Message;
+            try { await PersistLog(); }
+            catch(Exception auditError) { throw new AggregateException("Terminal output and failure audit both failed.",exception,auditError); }
+            throw;
+        }
+        async Task PersistLog()
+        {
             await _logs.CompleteLogAsync(
                 context.RequestLogId,
                 new ProxyLogContext(

@@ -85,7 +85,7 @@ public static partial class SseStreamConverter
         var toolAggregates = new SortedDictionary<int, ToolCallAggregate>();
         // Chat 允许多个 tool_calls 的 arguments delta 交错出现；Anthropic content block
         // 一旦 stop 后不能再次追加 delta。因此保留原始片段，读取完成后按工具顺序逐块输出。
-        var toolArgumentDeltas = new Dictionary<int, List<string>>();
+        var toolArgumentDeltas = new Dictionary<int, ConverterFragments>();
 
         SseFrame Emit(string eventName, Dictionary<string, object?> payload)
         {
@@ -329,7 +329,7 @@ public static partial class SseStreamConverter
                     var index = ToInt(GetValue(toolCall, "index"));
                     if (!toolAggregates.TryGetValue(index, out var aggregate))
                     {
-                        aggregate = new ToolCallAggregate();
+                        aggregate = new ToolCallAggregate(result);
                         toolAggregates[index] = aggregate;
                     }
 
@@ -356,10 +356,10 @@ public static partial class SseStreamConverter
                         var arguments = StringValue(function, "arguments", string.Empty);
                         if (arguments.Length > 0)
                         {
-                            aggregate.Arguments += arguments;
+                            aggregate.AppendArguments(arguments);
                             if (!toolArgumentDeltas.TryGetValue(index, out var argumentDeltas))
                             {
-                                argumentDeltas = [];
+                                argumentDeltas = result.CreateFragments();
                                 toolArgumentDeltas[index] = argumentDeltas;
                             }
 
@@ -373,7 +373,7 @@ public static partial class SseStreamConverter
         foreach (var (index, aggregate) in toolAggregates.ToList())
         {
             var callId = string.IsNullOrEmpty(aggregate.Id) ? $"call_{Guid.NewGuid():N}" : aggregate.Id;
-            var arguments = aggregate.Arguments.Length > 0 ? aggregate.Arguments : "{}";
+            var arguments = aggregate.ArgumentsLength > 0 ? aggregate.Arguments : "{}";
             aggregate.Id = callId;
             aggregate.Arguments = arguments;
             toolAggregates[index] = aggregate;

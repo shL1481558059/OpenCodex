@@ -51,7 +51,7 @@ internal sealed class StreamLogCapture
         // Preserve the diagnostic contract without scanning/allocating every physical line.
         var wire = frame.WireText.AsSpan().Trim();
         var data = wire.IndexOf("data:", StringComparison.Ordinal);
-        if (data >= 0) _lastDataLine = wire[data..].ToString();
+        if (data >= 0) _lastDataLine = wire.Slice(data,Math.Min(wire.Length-data,MaxErrorTextLength)).ToString();
     }
 
     public void Observe(string rawLine)

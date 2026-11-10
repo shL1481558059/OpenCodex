@@ -167,6 +167,7 @@ public static partial class SseStreamConverter
                     }
                 }
 
+                foreach(var frame in EnsureRoleChunk())yield return frame;
                 continue;
             }
 

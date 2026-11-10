@@ -33,5 +33,22 @@ internal sealed class CaptureText(ProxyAuditSpool? spool,CancellationToken cance
         using var read=_buffer.OpenSnapshotRead();
         return _cached=string.Create(_length,read,static (span,source)=>source.ReadExactly(MemoryMarshal.AsBytes(span)));
     }
+    internal Stream OpenRawRead()
+    {
+        if(_buffer is not null)return _buffer.OpenSnapshotRead();
+        var value=_memory?.ToString()??"";
+        return new MemoryStream(MemoryMarshal.AsBytes(value.AsSpan()).ToArray(),writable:false);
+    }
+    internal bool IsCached(string value)=>ReferenceEquals(_cached,value);
+    internal string ReadSuffix(int offset)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(offset);
+        if(offset>_length)throw new ArgumentOutOfRangeException(nameof(offset));
+        if(offset==_length)return "";
+        if(_cached is not null)return _cached[offset..];
+        if(_buffer is null)return _memory?.ToString(offset,_length-offset)??"";
+        using var read=_buffer.OpenSnapshotRead();read.Position=2L*offset;
+        return string.Create(_length-offset,read,static(span,source)=>source.ReadExactly(MemoryMarshal.AsBytes(span)));
+    }
     public void Dispose()=>Clear();
 }

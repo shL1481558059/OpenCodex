@@ -67,10 +67,10 @@ public static partial class SseStreamConverter
         var messageItemId = $"msg_{Guid.NewGuid():N}";
         var createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var responseModel = model;
-        var textParts = new List<string>();
-        var reasoningParts = new List<string>();
+        var textParts = result.CreateTextParts();
+        var reasoningParts = result.CreateTextParts();
         var contentBlocks = new SortedDictionary<int, Dictionary<string, object?>>();
-        var inputJsonParts = new Dictionary<int, List<string>>();
+        var inputJsonParts = new Dictionary<int, ConverterText>();
         var stopReason = "stop";
         var usage = new Dictionary<string, object?>(StringComparer.Ordinal);
         var textStarted = false;
@@ -334,7 +334,7 @@ public static partial class SseStreamConverter
                             ? new ApplyPatchJsonDeltaDecoder()
                             : null;
                         state.DecodedInputBuilder ??= state.CallKind == ResponsesToolCallKind.CustomTool
-                            ? new StringBuilder()
+                            ? result.CreateArguments()
                             : null;
                         if (!state.ItemAdded)
                         {
@@ -465,7 +465,7 @@ public static partial class SseStreamConverter
                 {
                     if (!inputJsonParts.TryGetValue(index, out var parts))
                     {
-                        parts = [];
+                        parts = result.CreateTextParts();
                         inputJsonParts[index] = parts;
                     }
 
@@ -587,7 +587,7 @@ public static partial class SseStreamConverter
             }
 
             var arguments = inputJsonParts.TryGetValue(index, out var fragments)
-                ? string.Concat(fragments)
+                ? fragments.ToString()
                 : GetValue(block, "input");
             decodedCustomInputs[index] = ProtocolConverter.DecodeCustomToolArguments(arguments);
         }
@@ -620,13 +620,13 @@ public static partial class SseStreamConverter
             }
             else
             {
-                block["input"] = ParseJsonObject(string.Concat(parts));
+                block["input"] = ParseJsonObject(parts.ToString());
             }
         }
 
         var output = new List<object?>();
-        var combinedReasoning = string.Concat(reasoningParts);
-        var combinedText = string.Concat(textParts);
+        var combinedReasoning = reasoningParts.ToString();
+        var combinedText = textParts.ToString();
         if (result.TextFormat is { Type: "json_schema" } && combinedText.Length > 0)
         {
             combinedText = WrapTextForJsonSchema(combinedText, result.TextFormat);

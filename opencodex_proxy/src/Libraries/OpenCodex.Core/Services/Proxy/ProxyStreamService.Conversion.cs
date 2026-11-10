@@ -22,7 +22,7 @@ public sealed partial class ProxyStreamService
             && context.ChannelType is ProtocolConverter.Chat or ProtocolConverter.Messages
             ? context.ToolCallMappings ?? ProtocolConverter.BuildResponsesToolCallMappings(context.Payload)
             : null;
-        var shouldBuffer = tools is not null || mappings is { Count: > 0 };
+        var committed = false;
         var retryUsed = false;
 
         while (true)
@@ -43,107 +43,49 @@ public sealed partial class ProxyStreamService
             var validated = ValidateUpstreamCompletion(confirmed, capture, token);
             var lines = ConvertRound(context, validated, converted, streamState, skipped, token);
             SseFrame? terminal = null;
-            if (!shouldBuffer)
+            var retryRound=false;
+            await using(var enumerator=lines.GetAsyncEnumerator(token))
             {
                 try
                 {
-                    await foreach (var line in lines.WithCancellation(token))
+                    while(true)
                     {
-                        yield return line;
-                    }
-                }
-                finally
-                {
-                    state.UpstreamResponse = converted.UpstreamResponse
-                        ?? capture.Complete(capture.IsComplete
-                            ? StreamCaptureTermination.Completed
-                            : StreamCaptureTermination.UnexpectedEnd).Response;
-                }
-            }
-            else
-            {
-                Queue<SseFrame> buffered = new();
-                var retryExhausted = false;
-                try
-                {
-                    buffered = await CollectFramesAsync(lines, _outputFrames, token);
-                }
-                catch (UpstreamException exception)
-                    when (ToolContractRetryPolicy.IsUndeclaredToolCall(exception))
-                {
-                    var rejectedResponse = converted.UpstreamResponse
-                        ?? capture.Complete(capture.IsComplete
-                            ? StreamCaptureTermination.Completed
-                            : StreamCaptureTermination.UnexpectedEnd).Response;
-                    if (tools is not null)
-                    {
-                        tools.RecordRejectedRound(rejectedResponse, exception.Message);
-                    }
-                    else
-                    {
-                        BuiltinToolSession.AddUsage(
-                            state.RejectedUsage,
-                            rejectedResponse is null
-                                ? new Dictionary<string, object?>(StringComparer.Ordinal)
-                                : ObjectValue(rejectedResponse, "usage"));
-                    }
-
-                    if (retryUsed)
-                    {
-                        if (tools is null || !streamState!.HasResponse)
+                        bool moved;
+                        try { moved=await enumerator.MoveNextAsync(); }
+                        catch(UpstreamException exception) when(ToolContractRetryPolicy.IsUndeclaredToolCall(exception))
                         {
-                            throw ToolContractRetryPolicy.RetryExhausted(exception);
+                            var rejected=converted.UpstreamResponse ?? capture.Complete(capture.IsComplete
+                                ? StreamCaptureTermination.Completed : StreamCaptureTermination.UpstreamError).Response;
+                            if(tools is not null)tools.RecordRejectedRound(rejected,exception.Message);
+                            else BuiltinToolSession.AddUsage(state.RejectedUsage,rejected is null?new(StringComparer.Ordinal):ObjectValue(rejected,"usage"));
+                            // Semantic commitment survives every internal round. Never replay a role,
+                            // response ID, text or tool start already handed to the downstream writer.
+                            if(committed || tools?.HasCalls==true)throw;
+                            if(retryUsed)throw ToolContractRetryPolicy.RetryExhausted(exception);
+                            retryUsed=true;retryRound=true;
+                            state.UpstreamRequest=ToolContractRetryPolicy.BuildRetryRequest(state.UpstreamRequest,
+                                context.ChannelType,mappings?.Keys??Array.Empty<string>(),tools?.Binding.WebSearchToolName);
+                            state.UpstreamRequestBody=ProxyLogBodyHandle.CaptureJson(state.UpstreamRequest);
+                            break;
                         }
-
-                        retryExhausted = true;
-                    }
-                    else
-                    {
-                        retryUsed = true;
-                        state.UpstreamRequest = ToolContractRetryPolicy.BuildRetryRequest(
-                            state.UpstreamRequest,
-                            context.ChannelType,
-                            mappings?.Keys ?? Array.Empty<string>(),
-                            tools?.Binding.WebSearchToolName);
-                        state.UpstreamRequestBody = ProxyLogBodyHandle.CaptureJson(state.UpstreamRequest);
-                        continue;
+                        if(!moved)break;
+                        var frame=enumerator.Current;
+                        if(tools is not null && WebSearchStreamEventState.IsTerminal(frame))terminal=frame;
+                        else
+                        {
+                            var visible=tools is null?frame:streamState!.Observe(frame,tools.Results);
+                            if(visible.IsSemantic)committed=true; // before yield, even if write fails partially
+                            yield return visible;
+                        }
                     }
                 }
                 finally
                 {
-                    state.UpstreamResponse = converted.UpstreamResponse
-                        ?? capture.Complete(capture.IsComplete
-                            ? StreamCaptureTermination.Completed
-                            : StreamCaptureTermination.UnexpectedEnd).Response;
-                }
-
-                if (retryExhausted)
-                {
-                    var failed = streamState!.FailFrame(
-                        "upstream_tool_contract_error",
-                        "The upstream model repeatedly returned an undeclared tool name.",
-                        out var finalResponse);
-                    state.ResponsePayload = finalResponse;
-                    yield return failed;
-                    yield break;
-                }
-
-                while (buffered.TryDequeue(out var line))
-                {
-                    if (tools is null)
-                    {
-                        yield return line;
-                    }
-                    else if (WebSearchStreamEventState.IsTerminal(line))
-                    {
-                        terminal = line;
-                    }
-                    else
-                    {
-                        yield return streamState!.Observe(line, tools.Results);
-                    }
+                    state.UpstreamResponse=converted.UpstreamResponse ?? capture.Complete(capture.IsComplete
+                        ? StreamCaptureTermination.Completed : StreamCaptureTermination.UnexpectedEnd).Response;
                 }
             }
+            if(retryRound)continue;
 
             if (converted.UpstreamResponse is null)
             {

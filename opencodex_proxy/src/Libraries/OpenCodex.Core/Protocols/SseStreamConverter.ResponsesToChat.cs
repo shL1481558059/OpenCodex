@@ -71,9 +71,9 @@ public static partial class SseStreamConverter
         var finishStatus = "completed";
         var usage = new Dictionary<string, object?>(StringComparer.Ordinal);
 
-        var textParts = new List<string>();
-        var refusalParts = new List<string>();
-        var reasoningParts = new List<string>();
+        var textParts = result.CreateTextParts();
+        var refusalParts = result.CreateTextParts();
+        var reasoningParts = result.CreateTextParts();
         var annotations = new List<object?>();
         var firstRoleEmitted = false;
         var nextChatToolIndex = 0;
@@ -141,6 +141,7 @@ public static partial class SseStreamConverter
                         usage = responseUsage;
                     }
                 }
+                foreach(var frame in EnsureRoleChunk())yield return frame;
                 continue;
             }
 
@@ -400,8 +401,6 @@ public static partial class SseStreamConverter
                 }
 
                 var deltaText = StringValue(payload, "delta", string.Empty);
-                state.CustomInputBuilder ??= new StringBuilder();
-                state.CustomInputBuilder.Append(deltaText);
                 continue;
             }
 
@@ -570,8 +569,8 @@ public static partial class SseStreamConverter
             }
         }
 
-        var combinedText = string.Concat(textParts);
-        var combinedReasoning = string.Concat(reasoningParts);
+        var combinedText = textParts.ToString();
+        var combinedReasoning = reasoningParts.ToString();
 
         // 确保 output 里有 message / reasoning 项，供 ProxyStreamService 的 ConvertResponse 提取
         if ((combinedText.Length > 0 || refusalParts.Count > 0)
@@ -847,6 +846,5 @@ internal sealed class ChatToolStreamState
     public string CallId { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public ResponsesToolCallKind CallKind { get; set; } = ResponsesToolCallKind.Function;
-    public StringBuilder? CustomInputBuilder { get; set; }
     public bool ArgumentsDeltaEmitted { get; set; }
 }

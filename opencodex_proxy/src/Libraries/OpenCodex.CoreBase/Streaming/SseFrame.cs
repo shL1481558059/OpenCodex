@@ -56,6 +56,20 @@ public sealed class SseFrame
     public bool IsSuccessfulResponseCompleted { get; }
     public bool IsError { get; }
     public bool IsTerminal { get; }
+    // Commitment is deliberately broader than TTFT: IDs, roles, tool starts and unknown
+    // business events may already change client state. Comments/heartbeat alone do not.
+    public bool IsSemantic
+    {
+        get
+        {
+            if(Event is null)return false;
+            if(Type is not ("ping" or "heartbeat"))return true;
+            // A provider cannot smuggle roles/tools/errors under a ping discriminator and
+            // regain retry eligibility. Only an otherwise empty heartbeat envelope is exempt.
+            return Event.Data is not IReadOnlyDictionary<string,object?> envelope
+                || envelope.Keys.Any(key=>key!="type");
+        }
+    }
 
     public static SseFrame Done { get; } = new("data: [DONE]\n\n", new SseEvent("message", "[DONE]"));
 

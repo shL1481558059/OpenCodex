@@ -481,7 +481,7 @@ public sealed class ProxyStreamServiceTests
     }
 
     [Fact]
-    public async Task StreamAsync_UndeclaredWebSearchName_RetriesWithoutExposingFirstAttempt()
+    public async Task StreamAsync_UndeclaredWebSearchName_AfterSemanticOutputDoesNotReplay()
     {
         var upstream = new RetrySequenceUpstreamClient(
         [
@@ -552,39 +552,18 @@ public sealed class ProxyStreamServiceTests
             BuiltinTools = binding
         };
 
-        await new ProxyStreamService(
-            upstream,
-            logs,
-            new StubWebSearchToolExecutor(),
-            WebSearchTestStore.Create()).StreamAsync(context);
-
-        Assert.Equal(2, upstream.Calls);
-        Assert.DoesNotContain("discarded reasoning", string.Concat(writer.Lines), StringComparison.Ordinal);
-        Assert.DoesNotContain("opensearch_web_search", string.Concat(writer.Lines), StringComparison.Ordinal);
-        Assert.DoesNotContain("\"type\":\"function_call\"", string.Concat(writer.Lines), StringComparison.Ordinal);
-        Assert.Contains("recovered answer", string.Concat(writer.Lines), StringComparison.Ordinal);
-        Assert.Single(writer.Lines, line => line.StartsWith("event: response.created\n", StringComparison.Ordinal));
-        Assert.Single(writer.Lines, line => line.StartsWith("event: response.completed\n", StringComparison.Ordinal));
-        Assert.Equal("data: [DONE]\n\n", writer.Lines[^1]);
-        var retryMessages = WebSearchPayload.ListValue(upstream.Payloads[1], "messages")
-            .OfType<Dictionary<string, object?>>()
-            .ToList();
-        var system = Assert.Single(retryMessages, message => message["role"]?.ToString() == "system");
-        Assert.Contains("Use each tool name exactly as declared", system["content"]?.ToString(), StringComparison.Ordinal);
-        Assert.Contains("web_search", system["content"]?.ToString(), StringComparison.Ordinal);
-        Assert.Contains("lookup", system["content"]?.ToString(), StringComparison.Ordinal);
-        Assert.NotNull(logs.LastContext);
-        Assert.Equal(30L, logs.LastContext!.AggregatedUsage!["prompt_tokens"]);
-        Assert.Equal(5L, logs.LastContext.AggregatedUsage["completion_tokens"]);
-        var retries = WebSearchPayload.ListValue(logs.LastContext.WebSearchDetails!, "retries")
-            .Cast<Dictionary<string, object?>>()
-            .ToList();
-        var retry = Assert.Single(retries);
-        Assert.Equal("opensearch_web_search", Assert.Single(WebSearchPayload.ListValue(retry, "invalid_tool_names")));
+        await Assert.ThrowsAsync<UpstreamException>(()=>new ProxyStreamService(upstream,logs,new StubWebSearchToolExecutor(),WebSearchTestStore.Create()).StreamAsync(context));
+        Assert.Equal(1,upstream.Calls);
+        var output=string.Concat(writer.Lines);
+        Assert.Contains("discarded reasoning",output,StringComparison.Ordinal);
+        Assert.DoesNotContain("recovered answer",output,StringComparison.Ordinal);
+        Assert.DoesNotContain("response.completed",output,StringComparison.Ordinal);
+        Assert.Single(writer.Lines,line=>line.StartsWith("event: error\n",StringComparison.Ordinal));
+        Assert.Equal(502,logs.LastContext!.StatusCode);
     }
 
     [Fact]
-    public async Task StreamAsync_UndeclaredWebSearchNameRetryExhausted_DoesNotExposePartialSse()
+    public async Task StreamAsync_UndeclaredWebSearchName_DoesNotRetryAfterCreated()
     {
         var upstream = new RetrySequenceUpstreamClient(
         [
@@ -629,15 +608,13 @@ public sealed class ProxyStreamServiceTests
             new StubWebSearchToolExecutor(),
             WebSearchTestStore.Create()).StreamAsync(context));
 
-        Assert.Equal(ToolContractRetryPolicy.RetryExhaustedErrorCode, error.ErrorCode);
-        Assert.Equal(2, upstream.Calls);
-        Assert.False(writer.Prepared);
-        Assert.Empty(writer.Lines);
-        Assert.NotNull(logs.LastContext);
-        var retries = WebSearchPayload.ListValue(logs.LastContext!.WebSearchDetails!, "retries");
-        Assert.Equal(2, retries.Count);
-        Assert.Equal(30L, logs.LastContext.AggregatedUsage!["prompt_tokens"]);
-        Assert.Equal(5L, logs.LastContext.AggregatedUsage["completion_tokens"]);
+        Assert.True(ToolContractRetryPolicy.IsUndeclaredToolCall(error));
+        Assert.Equal(1,upstream.Calls);
+        Assert.Contains("first discarded reasoning",string.Concat(writer.Lines));
+        Assert.DoesNotContain("response.completed",string.Concat(writer.Lines));
+        Assert.Single(writer.Lines,line=>line.StartsWith("event: error\n",StringComparison.Ordinal));
+        Assert.Equal(10L,logs.LastContext!.AggregatedUsage!["prompt_tokens"]);
+        Assert.Equal(2L,logs.LastContext.AggregatedUsage["completion_tokens"]);
     }
 
     [Fact]
@@ -726,12 +703,12 @@ public sealed class ProxyStreamServiceTests
             executor,
             WebSearchTestStore.Create()).StreamAsync(context));
 
-        Assert.Equal(3, upstream.Calls);
+        Assert.Equal(2, upstream.Calls);
         Assert.Equal(1, executor.Calls);
         var output = string.Concat(writer.Lines);
-        Assert.Contains("response.failed", output, StringComparison.Ordinal);
-        Assert.DoesNotContain("late discarded reasoning", output, StringComparison.Ordinal);
-        Assert.DoesNotContain("opensearch_web_search", output, StringComparison.Ordinal);
+        Assert.Contains("event: error", output, StringComparison.Ordinal);
+        Assert.Contains("late discarded reasoning", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"name\":\"opensearch_web_search\"", output, StringComparison.Ordinal);
         Assert.DoesNotContain("response.completed", output, StringComparison.Ordinal);
     }
 
@@ -818,7 +795,7 @@ public sealed class ProxyStreamServiceTests
     }
 
     [Fact]
-    public async Task StreamAsync_UndeclaredCodeModeName_RetriesWithBareExecContract()
+    public async Task StreamAsync_UndeclaredCodeModeName_AfterSemanticOutputDoesNotReplay()
     {
         var upstream = new RetrySequenceUpstreamClient(
         [
@@ -913,23 +890,14 @@ public sealed class ProxyStreamServiceTests
             writer,
             CancellationToken.None);
 
-        await new ProxyStreamService(
-            upstream,
-            logs,
-            new StubWebSearchToolExecutor(),
-            WebSearchTestStore.Create()).StreamAsync(context);
-
-        Assert.Equal(2, upstream.Calls);
-        Assert.DoesNotContain("discarded reasoning", string.Concat(writer.Lines), StringComparison.Ordinal);
-        Assert.Contains("recovered answer", string.Concat(writer.Lines), StringComparison.Ordinal);
-        var retryMessages = WebSearchPayload.ListValue(upstream.Payloads[1], "messages")
-            .OfType<Dictionary<string, object?>>()
-            .ToList();
-        var system = Assert.Single(retryMessages, message => message["role"]?.ToString() == "system");
-        Assert.Contains("Nested method names found in tool descriptions are not top-level tools", system["content"]?.ToString());
-        Assert.Contains("Allowed tool names: `exec`", system["content"]?.ToString());
-        Assert.Equal(30L, logs.LastContext!.AggregatedUsage!["prompt_tokens"]);
-        Assert.Equal(5L, logs.LastContext.AggregatedUsage["completion_tokens"]);
+        await Assert.ThrowsAsync<UpstreamException>(()=>new ProxyStreamService(upstream,logs,new StubWebSearchToolExecutor(),WebSearchTestStore.Create()).StreamAsync(context));
+        Assert.Equal(1,upstream.Calls);
+        var output=string.Concat(writer.Lines);
+        Assert.Contains("discarded reasoning",output,StringComparison.Ordinal);
+        Assert.DoesNotContain("recovered answer",output,StringComparison.Ordinal);
+        Assert.DoesNotContain("response.completed",output,StringComparison.Ordinal);
+        Assert.Single(writer.Lines,line=>line.StartsWith("event: error\n",StringComparison.Ordinal));
+        Assert.Equal(502,logs.LastContext!.StatusCode);
     }
 
     [Fact]
@@ -2087,6 +2055,89 @@ public sealed class ProxyStreamServiceTests
         finally { Directory.Delete(directory,true); }
     }
 
+    [Theory]
+    [InlineData("chat","chat")][InlineData("messages","messages")][InlineData("responses","responses")]
+    [InlineData("responses","chat")][InlineData("responses","messages")][InlineData("chat","messages")]
+    [InlineData("chat","responses")][InlineData("messages","chat")][InlineData("messages","responses")]
+    public async Task Incremental_FirstSemanticEventArrivesBeforeUpstreamTerminal_AndTerminalAfterAudit(string entry,string protocol)
+    {
+        var first=protocol switch
+        {
+            "chat"=>"data: {\"id\":\"c\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+            "messages"=>"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"role\":\"assistant\",\"content\":[]}}\n\n",
+            _=>"event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"r\",\"status\":\"in_progress\"}}\n\n"
+        };
+        var terminal=protocol switch { "chat"=>"data: [DONE]\n\n","messages"=>"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",_=>"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"output\":[]}}\n\n" };
+        var source=new BarrierClient(first,terminal);var logs=new StubProxyLogService();var writer=new IncrementalWriter { Audit=()=>Assert.NotNull(logs.LastContext) };
+        var running=new ProxyStreamService(source,logs,new StubWebSearchToolExecutor(),WebSearchTestStore.Create()).StreamAsync(IncrementalContext(entry,protocol,writer));
+        try { await writer.First.Task.WaitAsync(TimeSpan.FromSeconds(5));Assert.False(running.IsCompleted);Assert.Null(logs.LastContext); }
+        finally { source.AllowTerminal.TrySetResult(); }
+        await running;Assert.Contains(writer.Frames,f=>f.IsTerminal);
+    }
+    [Theory]
+    [InlineData(false)][InlineData(true)]
+    public async Task Incremental_AuditFailureNeverPublishesSuccess_AndTerminalFlushFailureUpdatesFailureLog(bool failFlush)
+    {
+        var logs=new StubProxyLogService();
+        if(!failFlush)logs.CompleteHook=_=>throw new IOException("audit disk full");
+        var writer=new IncrementalWriter { ThrowTerminal=failFlush };
+        var source=new BarrierClient("data: {\"id\":\"c\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\n\n","data: [DONE]\n\n");source.AllowTerminal.TrySetResult();
+        await Assert.ThrowsAsync<IOException>(()=>new ProxyStreamService(source,logs,new StubWebSearchToolExecutor(),WebSearchTestStore.Create()).StreamAsync(IncrementalContext("chat","chat",writer)));
+        Assert.DoesNotContain(writer.Frames,f=>f.IsDone);
+        if(failFlush) { Assert.Equal(500,logs.LastContext!.StatusCode);Assert.Contains("Terminal",logs.LastContext.Error); }
+    }
+    [Fact]
+    public async Task Incremental_CancelAfterSpilledDeltaReleasesAllBuffersAndDoesNotPublishTerminal()
+    {
+        var directory=Path.Combine(Path.GetTempPath(),"ocx-cancel-live-"+Guid.NewGuid().ToString("N"));
+        var spool=new ProxyAuditSpool(new() { Directory=directory,MemoryThresholdBytes=0 });
+        using var ct=new CancellationTokenSource();var writer=new IncrementalWriter();
+        var first=SseFrame.FromJson(new Dictionary<string,object?> { ["id"]="c",["choices"]=new object?[] { new Dictionary<string,object?> { ["index"]=0,["delta"]=new Dictionary<string,object?> { ["content"]=new string('x',4096) } } } }).WireText;
+        var source=new BarrierClient(first,"data: [DONE]\n\n");
+        try
+        {
+            var running=new ProxyStreamService(source,new StubProxyLogService(),new StubWebSearchToolExecutor(),WebSearchTestStore.Create(),auditSpool:spool)
+                .StreamAsync(IncrementalContext("responses","chat",writer,ct.Token));
+            await source.Waiting.Task.WaitAsync(TimeSpan.FromSeconds(5));Assert.True(spool.Usage.Bytes>0);
+            ct.Cancel();await Assert.ThrowsAnyAsync<OperationCanceledException>(()=>running);
+            Assert.DoesNotContain(writer.Frames,f=>f.IsTerminal);Assert.Equal((0L,0),spool.Usage);Assert.Empty(Directory.EnumerateFiles(directory));
+        }
+        finally { ct.Cancel();source.AllowTerminal.TrySetResult();Directory.Delete(directory,true); }
+    }
+
+    private static ProxyStreamContext IncrementalContext(string entry,string protocol,IProxyStreamWriter writer,CancellationToken ct=default)
+    {
+        var payload=new Dictionary<string,object?> { ["tools"]=new List<object?> { new Dictionary<string,object?> { ["type"]="function",["name"]="declared",["parameters"]=new Dictionary<string,object?> { ["type"]="object" } } } };
+        return new ProxyStreamContext(Stopwatch.GetTimestamp(),Guid.NewGuid(),"incremental","test",Guid.NewGuid(),payload,payload,new(),entry,
+            new ProxyRouteDto(new Dictionary<string,object?> { ["id"]="test",["type"]=protocol },"public","model",false,true),protocol,"test","superadmin","model","public",120,
+            new ProxyRequestMetadata("POST","/test",null,new Dictionary<string,string>()),writer,ct);
+    }
+    private sealed class IncrementalWriter:IProxyStreamWriter
+    {
+        public readonly TaskCompletionSource First=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public readonly List<SseFrame> Frames=[];
+        public Action? Audit;public bool ThrowTerminal;
+        public void PrepareSse() { }
+        public Task<StreamWriteMetrics> WriteLinesAsync(IAsyncEnumerable<string> lines,Func<string,bool> count,Func<int> elapsed,CancellationToken ct=default)=>throw new NotSupportedException();
+        public async Task<StreamWriteMetrics> WriteFramesAsync(IAsyncEnumerable<SseFrame> frames,Func<string,bool> count,Func<int> elapsed,CancellationToken ct=default)
+        {
+            await foreach(var frame in frames.WithCancellation(ct))
+            {
+                if(frame.IsTerminal) { Audit?.Invoke();if(ThrowTerminal)throw new IOException("terminal flush failed"); }
+                Frames.Add(frame);if(frame.IsSemantic)First.TrySetResult();
+            }
+            return new();
+        }
+    }
+    private sealed class BarrierClient(string first,string terminal):IUpstreamClient
+    {
+        public readonly TaskCompletionSource AllowTerminal=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public readonly TaskCompletionSource Waiting=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task<Dictionary<string,object?>> PostJsonAsync(IReadOnlyDictionary<string,object?> channel,IReadOnlyDictionary<string,object?> payload,int timeout,CancellationToken ct)=>throw new NotSupportedException();
+        public async IAsyncEnumerable<string> StreamJsonAsync(IReadOnlyDictionary<string,object?> channel,IReadOnlyDictionary<string,object?> payload,int timeout,[System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+        { yield return first;Waiting.TrySetResult();await AllowTerminal.Task.WaitAsync(ct);yield return terminal; }
+    }
+
     private sealed class CapturingProxyStreamWriter : IProxyStreamWriter
     {
         public bool Prepared { get; private set; }
@@ -2337,9 +2388,10 @@ public sealed class ProxyStreamServiceTests
         public Task CompleteLogAsync(Guid requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
         {
             LastContext = context;
-            return Task.CompletedTask;
+            return CompleteHook?.Invoke(context) ?? Task.CompletedTask;
         }
 
+        public Func<ProxyLogContext,Task>? CompleteHook { get; set; }
         public ProxyLogContext? LastContext { get; private set; }
 
         public Task<Guid> WriteLogAsync(ProxyLogContext context, ProxyRequestMetadata request)

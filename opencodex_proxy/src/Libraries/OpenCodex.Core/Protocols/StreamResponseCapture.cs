@@ -63,6 +63,9 @@ internal sealed class StreamResponseCapture : IDisposable
     }
 
     internal IStreamResponseAccumulator Accumulator=>_accumulator;
+    internal ConverterText CreateConverterText()=>new(_budget);
+    internal ConverterFragments CreateFragments()=>new(_budget);
+    internal ConverterArguments CreateArguments()=>new(_budget);
     public void Dispose()=>_budget.Dispose();
 
     internal bool IsComplete => !_observerFailed && _accumulator.IsComplete;

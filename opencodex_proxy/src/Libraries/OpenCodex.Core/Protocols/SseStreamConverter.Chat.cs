@@ -66,11 +66,11 @@ public static partial class SseStreamConverter
         var messageItemId = $"msg_{Guid.NewGuid():N}";
         var createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var responseModel = model;
-        var textParts = new List<string>();
+        var textParts = result.CreateTextParts();
         var usage = new Dictionary<string, object?>(StringComparer.Ordinal);
         var finishReason = "stop";
         var textStarted = false;
-        var reasoningParts = new List<string>();
+        var reasoningParts = result.CreateTextParts();
         var reasoningStarted = false;
         var reasoningOutputIndex = (int?)null;
         var reasoningItemId = $"rs_{Guid.NewGuid():N}";
@@ -374,7 +374,7 @@ public static partial class SseStreamConverter
                     var index = ToInt(GetValue(toolCall, "index"));
                     if (!toolCalls.TryGetValue(index, out var aggregate))
                     {
-                        aggregate = new ToolCallAggregate();
+                        aggregate = new ToolCallAggregate(result);
                         toolCalls[index] = aggregate;
                     }
 
@@ -403,7 +403,7 @@ public static partial class SseStreamConverter
                         var arguments = StringValue(function, "arguments", string.Empty);
                         if (arguments.Length > 0)
                         {
-                            aggregate.Arguments += arguments;
+                            aggregate.AppendArguments(arguments);
                         }
                     }
                     else if (TryAsObject(GetValue(toolCall, "custom"), out var custom))
@@ -420,7 +420,7 @@ public static partial class SseStreamConverter
                         var input = StringValue(custom, "input", string.Empty);
                         if (input.Length > 0)
                         {
-                            aggregate.Arguments += input;
+                            aggregate.AppendArguments(input);
                         }
                     }
 
@@ -453,7 +453,7 @@ public static partial class SseStreamConverter
                         ? new ApplyPatchJsonDeltaDecoder()
                         : null;
                     state.DecodedInputBuilder ??= requiresCustomInputDecoding
-                        ? new StringBuilder()
+                        ? result.CreateArguments()
                         : null;
                     if (!state.ItemAdded)
                     {
@@ -481,15 +481,15 @@ public static partial class SseStreamConverter
                             });
                     }
 
-                    if (aggregate.Arguments.Length <= state.StreamedArgumentsLength)
+                    if (aggregate.ArgumentsLength <= state.StreamedArgumentsLength)
                     {
                         continue;
                     }
 
                     if (aggregate.Type == "custom")
                     {
-                        var customDelta = aggregate.Arguments[state.StreamedArgumentsLength..];
-                        state.StreamedArgumentsLength = aggregate.Arguments.Length;
+                        var customDelta = aggregate.ArgumentsSuffix(state.StreamedArgumentsLength);
+                        state.StreamedArgumentsLength = aggregate.ArgumentsLength;
                         state.DecodedInputBuilder?.Append(customDelta);
                         yield return Emit(
                             "response.custom_tool_call_input.delta",
@@ -507,8 +507,8 @@ public static partial class SseStreamConverter
                         || usesCustomInputEnvelope)
                     {
                         var decodedDelta = state.ApplyPatchDecoder?.Append(
-                            aggregate.Arguments[state.StreamedArgumentsLength..]) ?? string.Empty;
-                        state.StreamedArgumentsLength = aggregate.Arguments.Length;
+                            aggregate.ArgumentsSuffix(state.StreamedArgumentsLength)) ?? string.Empty;
+                        state.StreamedArgumentsLength = aggregate.ArgumentsLength;
                         if (decodedDelta.Length == 0)
                         {
                             continue;
@@ -531,12 +531,12 @@ public static partial class SseStreamConverter
                         // web_search has its own lifecycle events (searching/completed) handled elsewhere
                         if (ProtocolConverter.IsWebSearchName(aggregate.Name))
                         {
-                            state.StreamedArgumentsLength = aggregate.Arguments.Length;
+                            state.StreamedArgumentsLength = aggregate.ArgumentsLength;
                             continue;
                         }
 
-                        var nativeDelta = aggregate.Arguments[state.StreamedArgumentsLength..];
-                        state.StreamedArgumentsLength = aggregate.Arguments.Length;
+                        var nativeDelta = aggregate.ArgumentsSuffix(state.StreamedArgumentsLength);
+                        state.StreamedArgumentsLength = aggregate.ArgumentsLength;
                         var deltaEvent = state.ArgumentField == "input"
                             ? "response.custom_tool_call_input.delta"
                             : "response.function_call_arguments.delta";
@@ -551,8 +551,8 @@ public static partial class SseStreamConverter
                         continue;
                     }
 
-                    var deltaText = aggregate.Arguments[state.StreamedArgumentsLength..];
-                    state.StreamedArgumentsLength = aggregate.Arguments.Length;
+                    var deltaText = aggregate.ArgumentsSuffix(state.StreamedArgumentsLength);
+                    state.StreamedArgumentsLength = aggregate.ArgumentsLength;
                     yield return Emit(
                         "response.function_call_arguments.delta",
                         new Dictionary<string, object?>
@@ -565,16 +565,16 @@ public static partial class SseStreamConverter
             }
         }
 
-        var combinedText = string.Concat(textParts);
+        var combinedText = textParts.ToString();
         if (result.TextFormat is { Type: "json_schema" } && combinedText.Length > 0)
         {
             combinedText = WrapTextForJsonSchema(combinedText, result.TextFormat);
         }
-        var combinedReasoning = string.Concat(reasoningParts);
+        var combinedReasoning = reasoningParts.ToString();
         foreach (var (index, aggregate) in toolCalls.ToList())
         {
             var callId = string.IsNullOrEmpty(aggregate.Id) ? $"call_{Guid.NewGuid():N}" : aggregate.Id;
-            var arguments = aggregate.Arguments.Length > 0 ? aggregate.Arguments : aggregate.Type == "custom" ? string.Empty : "{}";
+            var arguments = aggregate.ArgumentsLength > 0 ? aggregate.Arguments : aggregate.Type == "custom" ? string.Empty : "{}";
             aggregate.Id = callId;
             aggregate.Arguments = arguments;
             toolCalls[index] = aggregate;

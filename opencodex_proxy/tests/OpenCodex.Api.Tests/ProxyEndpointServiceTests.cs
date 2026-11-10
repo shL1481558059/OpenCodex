@@ -996,7 +996,7 @@ public sealed class ProxyEndpointServiceTests
     }
 
     [Fact]
-    public async Task ProxyAsync_ResponsesToChat_SkeletonOnlyThen429_FailsOverToSecondary()
+    public async Task ProxyAsync_ResponsesToChat_SkeletonOnlyThen429_DoesNotReplayResponseIdentity()
     {
         var capacity = new ChannelCapacityService();
         var primary = CreateChannel("primary", priority: 0, capacity: 1);
@@ -1043,7 +1043,7 @@ public sealed class ProxyEndpointServiceTests
             ["stream"] = true
         };
         var writer = new RecordingProxyStreamWriter();
-        var result = await service.ProxyAsync(
+        var failure = await Assert.ThrowsAsync<UpstreamException>(()=>service.ProxyAsync(
             new ProxyEndpointContext(
                 ProtocolConverter.Responses,
                 payload,
@@ -1053,13 +1053,11 @@ public sealed class ProxyEndpointServiceTests
                     null,
                     new Dictionary<string, string>()),
                 writer,
-                CancellationToken.None));
+                CancellationToken.None)));
 
-        Assert.Equal(200, result.StatusCode);
-        Assert.Equal(["primary", "secondary"], attempts);
-        Assert.Contains(
-            writer.WrittenLines,
-            line => line.Contains("response.output_item.added", StringComparison.Ordinal));
+        Assert.Equal(429,failure.StatusCode);
+        Assert.Equal(["primary"],attempts);
+        Assert.DoesNotContain(writer.WrittenLines,line=>line.Contains("response.output_item.added",StringComparison.Ordinal));
     }
 
     [Fact]

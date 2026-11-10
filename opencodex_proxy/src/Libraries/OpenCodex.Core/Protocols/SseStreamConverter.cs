@@ -7,6 +7,9 @@ namespace OpenCodex.Core.Protocols;
 public sealed class ConvertedStreamResult
 {
     internal StreamResponseCapture? SharedCapture { get; set; }
+    internal ConverterFragments CreateFragments()=>SharedCapture?.CreateFragments() ?? new(new StreamCaptureBudget(int.MaxValue,int.MaxValue));
+    internal ConverterArguments CreateArguments()=>SharedCapture?.CreateArguments() ?? new(new StreamCaptureBudget(int.MaxValue,int.MaxValue));
+    internal ConverterText CreateTextParts()=>SharedCapture?.CreateConverterText() ?? new(new StreamCaptureBudget(int.MaxValue,int.MaxValue));
     public Dictionary<string, object?>? UpstreamResponse { get; set; }
 
     internal bool UpstreamCompleted { get; set; }
@@ -105,12 +108,16 @@ public static partial class SseStreamConverter
     }
 }
 
-internal sealed class ToolCallAggregate
+internal sealed class ToolCallAggregate(ConvertedStreamResult? result=null)
 {
+    private readonly ConverterArguments _arguments=result?.SharedCapture?.CreateArguments() ?? new(new StreamCaptureBudget(int.MaxValue,int.MaxValue));
+    public int ArgumentsLength=>_arguments.Length;
+    public void AppendArguments(string value)=>_arguments.Append(value);
+    public string ArgumentsSuffix(int offset)=>_arguments.Suffix(offset);
     public string? Id { get; set; }
     public string Type { get; set; } = "function";
     public string? Name { get; set; }
-    public string Arguments { get; set; } = string.Empty;
+    public string Arguments { get=>_arguments.ToString();set=>_arguments.Set(value); }
 }
 
 internal sealed class ToolStreamState
@@ -122,5 +129,5 @@ internal sealed class ToolStreamState
     public ResponsesToolCallKind CallKind { get; set; } = ResponsesToolCallKind.Function;
     public string ArgumentField { get; set; } = "arguments";
     public ApplyPatchJsonDeltaDecoder? ApplyPatchDecoder { get; set; }
-    public StringBuilder? DecodedInputBuilder { get; set; }
+    public ConverterArguments? DecodedInputBuilder { get; set; }
 }

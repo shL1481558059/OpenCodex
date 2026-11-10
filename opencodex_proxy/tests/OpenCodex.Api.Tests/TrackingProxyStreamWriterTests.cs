@@ -6,7 +6,7 @@ namespace OpenCodex.Api.Tests;
 public sealed class TrackingProxyStreamWriterTests
 {
     [Fact]
-    public async Task WriteLines_MeaningfulOnly_SyntheticSkeletonDoesNotCountAsWritten()
+    public async Task WriteLines_ResponseIdentityIsSemanticEvenBeforeText()
     {
         var inner = new RecordingWriter();
         var writer = new TrackingProxyStreamWriter(inner, countOnlyMeaningfulWrites: true);
@@ -20,7 +20,7 @@ public sealed class TrackingProxyStreamWriterTests
             static () => 1,
             CancellationToken.None);
 
-        Assert.False(writer.HasWritten);
+        Assert.True(writer.HasWritten);
 
         await writer.WriteLinesAsync(
             ToAsyncEnumerable("event: response.output_item.added\ndata: {}\n\n"),
@@ -45,6 +45,16 @@ public sealed class TrackingProxyStreamWriterTests
             static () => 1,
             CancellationToken.None);
 
+        Assert.True(writer.HasWritten);
+    }
+
+    [Fact]
+    public async Task WriteLines_OnlyHeadersCommentsAndHeartbeatDoNotCommitButRoleDoes()
+    {
+        var writer=new TrackingProxyStreamWriter(new RecordingWriter());writer.PrepareSse();
+        await writer.WriteLinesAsync(ToAsyncEnumerable(": heartbeat\n\n","event: ping\ndata: {\"type\":\"ping\"}\n\n"),_=>false,()=>0);
+        Assert.True(writer.IsPrepared);Assert.False(writer.HasWritten);
+        await writer.WriteLinesAsync(ToAsyncEnumerable("data: {\"type\":\"ping\",\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n"),_=>false,()=>0);
         Assert.True(writer.HasWritten);
     }
 
