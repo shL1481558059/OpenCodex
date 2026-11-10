@@ -1,6 +1,7 @@
 using System.Text.Json;
 using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.MultiAgent;
+using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
 using Xunit;
 using D = System.Collections.Generic.Dictionary<string, object?>;
@@ -183,6 +184,105 @@ public sealed class MultiAgentClientWebSocketTests
         Assert.Contains("next response.create", JsonSerializer.Serialize(error));
         await operation;
         Assert.Single(root.FakeEndpoint.Calls);
+    }
+
+    [Fact]
+    public async Task NativeWebSocketInterruptCancelsActiveResponseAndKeepsConnectionOpen()
+    {
+        var calls = 0;
+        var modelStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var modelCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var root = Root(async ctx =>
+        {
+            if (Interlocked.Increment(ref calls) > 1)
+                return await Stream(ctx, Events(Terminal(Message("NEXT"))));
+
+            async IAsyncEnumerable<D> Waiting(
+                [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+            {
+                yield return new D
+                {
+                    ["type"] = "response.created",
+                    ["response"] = new D
+                    {
+                        ["id"] = "resp_interrupt",
+                        ["object"] = "response",
+                        ["status"] = "in_progress",
+                        ["model"] = "fake",
+                        ["output"] = new List<object?>()
+                    }
+                };
+                modelStarted.TrySetResult();
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    modelCancelled.TrySetResult();
+                    throw;
+                }
+            }
+
+            return await Stream(ctx, Waiting(ctx.CancellationToken));
+        });
+        var socket = root.Socket();
+        var operation = root.Service.ResponsesWebSocket();
+        try
+        {
+            var create = ClientRequest();
+            create["type"] = "response.create";
+            socket.ClientSend(create);
+            var created = (D)(await socket.Until("response.created", root.Lifetime.Token))["response"]!;
+            var responseId = (string)created["id"]!;
+            await modelStarted.Task.WaitAsync(root.Lifetime.Token);
+
+            socket.ClientSend(new D
+            {
+                ["type"] = "response.interrupt",
+                ["response_id"] = responseId,
+                ["mode"] = "discard_partial_items"
+            });
+
+            using var interruptTimeout = CancellationTokenSource.CreateLinkedTokenSource(root.Lifetime.Token);
+            interruptTimeout.CancelAfter(TimeSpan.FromSeconds(2));
+            var accepted = await socket.Until("response.interrupt.accepted", interruptTimeout.Token);
+            Assert.Equal(responseId, accepted["response_id"]);
+            await modelCancelled.Task.WaitAsync(interruptTimeout.Token);
+            Assert.Equal(System.Net.WebSockets.WebSocketState.Open, socket.State);
+            Assert.DoesNotContain(socket.Sent, item => Type(item) is "error" or "response.failed");
+
+            socket.ClientSend(create);
+            var completed = (D)(await socket.Until("response.completed", root.Lifetime.Token))["response"]!;
+            Assert.Contains("NEXT", JsonSerializer.Serialize(completed));
+
+            socket.ClientSend(new D
+            {
+                ["type"] = "response.interrupt",
+                ["response_id"] = responseId,
+                ["mode"] = "discard_partial_items"
+            });
+            var completedInterrupt = await socket.Until("response.interrupt.accepted", interruptTimeout.Token);
+            Assert.Equal(responseId, completedInterrupt["response_id"]);
+
+            socket.ClientSend(new D
+            {
+                ["type"] = "response.interrupt",
+                ["response_id"] = "missing",
+                ["mode"] = "discard_partial_items"
+            });
+            var missing = await socket.Until("response.interrupt.failed", interruptTimeout.Token);
+            Assert.Equal("missing", missing["response_id"]);
+            Assert.Equal("response_not_found",
+                JsonDictionaryValue.String(JsonDictionaryValue.Object(missing, "error", WebSearchPayload.DeepCopyObject), "code"));
+            Assert.Equal(System.Net.WebSockets.WebSocketState.Open, socket.State);
+            Assert.Equal(2, calls);
+        }
+        finally
+        {
+            socket.ClientClose();
+            await operation;
+        }
     }
 
     [Fact]

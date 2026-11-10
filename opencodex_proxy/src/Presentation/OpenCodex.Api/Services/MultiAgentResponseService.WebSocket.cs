@@ -24,10 +24,14 @@ public sealed partial class MultiAgentResponseService
         var ct = stop.Token;
         var maximumBytes = ProxyRequestLimits.ResolveMaxRequestBodyBytes(configuration);
         Task active = Task.CompletedTask;
+        CancellationTokenSource? activeStop = null;
+        string activeResponseId = "";
+        string terminalResponseId = "";
         Channel<MultiAgentInjection>? injections = null;
         MultiAgentRun? connectionRun = null;
         NativeClientSession? connectionBinding = null;
         string? connectionSession = null;
+        var knownIds = new System.Collections.Concurrent.ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
         var completedIds = new System.Collections.Concurrent.ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
         var sequence = 0;
 
@@ -36,6 +40,22 @@ public sealed partial class MultiAgentResponseService
             await sendGate.WaitAsync(ct);
             try
             {
+                var type = JsonDictionaryValue.String(item, "type");
+                var responseId = JsonDictionaryValue.Get(item, "response") is IReadOnlyDictionary<string, object?> response
+                    ? JsonDictionaryValue.String(response, "id")
+                    : "";
+                if (type == "response.created" && responseId.Length > 0)
+                {
+                    activeResponseId = responseId;
+                    knownIds.TryAdd(responseId, 0);
+                }
+                else if (type is "response.completed" or "response.failed" or "response.incomplete"
+                    && responseId.Length > 0)
+                {
+                    knownIds.TryAdd(responseId, 0);
+                    completedIds.TryAdd(responseId, 0);
+                    terminalResponseId = responseId;
+                }
                 if (item.TryGetValue("sequence_number", out var value))
                 {
                     sequence = Math.Max(sequence + 1, WebSearchPayload.ToInt(value, sequence));
@@ -59,12 +79,12 @@ public sealed partial class MultiAgentResponseService
         }
 
         async Task Execute(Dictionary<string, object?> request, MultiAgentRun? run, Channel<MultiAgentInjection> channel,
-            bool generate)
+            bool generate, CancellationToken responseCt)
         {
             var binding = connectionBinding;
             var gate = binding is null ? store.Gate(run!) : null;
             var responseId = "";
-            if (gate is not null) await gate.WaitAsync(ct);
+            if (gate is not null) await gate.WaitAsync(responseCt);
             try
             {
                 if (binding is not null)
@@ -72,8 +92,8 @@ public sealed partial class MultiAgentResponseService
                     // Upgrade headers identify a connection, not each subsequent response.create.
                     // Without a per-message turn identity, content equality cannot imply a retry.
                     var result = generate
-                        ? await ExecuteClient(request, binding, metadata, Send, ct, requestScopedTurn: false)
-                        : await ExecuteClientWarmup(request, binding, Send, ct);
+                        ? await ExecuteClient(request, binding, metadata, Send, responseCt, requestScopedTurn: false)
+                        : await ExecuteClientWarmup(request, binding, Send, responseCt);
                     responseId = JsonDictionaryValue.String(result, "id");
                 }
                 else
@@ -81,10 +101,10 @@ public sealed partial class MultiAgentResponseService
                     var persist = JsonDictionaryValue.Get(request, "store") is not false;
                     var runtime = new MultiAgentRuntime(run!, (payload, onEvent, token) => CallModelAsync(payload, metadata, onEvent, token), Send,
                         () => store.SaveAsync(run!, CancellationToken.None, persist));
-                    await runtime.ExecuteAsync(request, ct, channel.Reader);
+                    await runtime.ExecuteAsync(request, responseCt, channel.Reader);
                 }
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+            catch (OperationCanceledException) when (responseCt.IsCancellationRequested) { }
             catch (Exception exception)
             {
                 logger.LogError(exception, "Multi-agent WebSocket response failed for run {RunId}", run?.Id ?? binding?.ThreadId);
@@ -106,7 +126,7 @@ public sealed partial class MultiAgentResponseService
             finally
             {
                 if (run is not null) responseId = run.LastResponseId;
-                if (responseId.Length > 0) completedIds.TryAdd(responseId, 0);
+                if (responseId.Length > 0) knownIds.TryAdd(responseId, 0);
                 channel.Writer.TryComplete();
                 gate?.Release();
                 while (!ct.IsCancellationRequested && channel.Reader.TryRead(out var pending))
@@ -251,7 +271,59 @@ public sealed partial class MultiAgentResponseService
                     {
                         SingleReader = true, SingleWriter = true
                     });
-                    active = Execute(item, connectionRun, injections, generate);
+                    activeStop?.Dispose();
+                    activeStop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    activeResponseId = "";
+                    terminalResponseId = "";
+                    active = Execute(item, connectionRun, injections, generate, activeStop.Token);
+                }
+                else if (type == "response.interrupt")
+                {
+                    var responseId = JsonDictionaryValue.String(item, "response_id");
+                    var mode = JsonDictionaryValue.String(item, "mode");
+                    if (responseId.Length == 0 || mode is not ("" or "discard_partial_items"))
+                    {
+                        await Send(new Dictionary<string, object?>
+                        {
+                            ["type"] = "response.interrupt.failed",
+                            ["response_id"] = responseId,
+                            ["error"] = new Dictionary<string, object?>
+                            {
+                                ["code"] = "invalid_request",
+                                ["message"] = "response.interrupt requires response_id and mode discard_partial_items."
+                            }
+                        });
+                        continue;
+                    }
+
+                    if (!active.IsCompleted && activeResponseId == responseId
+                        && terminalResponseId != responseId && activeStop is not null)
+                    {
+                        activeStop.Cancel();
+                        await active;
+                    }
+
+                    if (knownIds.ContainsKey(responseId))
+                    {
+                        await Send(new Dictionary<string, object?>
+                        {
+                            ["type"] = "response.interrupt.accepted",
+                            ["response_id"] = responseId
+                        });
+                    }
+                    else
+                    {
+                        await Send(new Dictionary<string, object?>
+                        {
+                            ["type"] = "response.interrupt.failed",
+                            ["response_id"] = responseId,
+                            ["error"] = new Dictionary<string, object?>
+                            {
+                                ["code"] = "response_not_found",
+                                ["message"] = "The response was not found on this connection."
+                            }
+                        });
+                    }
                 }
                 else if (type == "response.inject")
                 {
@@ -277,7 +349,7 @@ public sealed partial class MultiAgentResponseService
                 }
                 else
                 {
-                    await ErrorAndClose("Supported event types are response.create and response.inject.");
+                    await ErrorAndClose("Supported event types are response.create, response.inject, and response.interrupt.");
                     return new EmptyResult();
                 }
             }
@@ -294,6 +366,7 @@ public sealed partial class MultiAgentResponseService
             try { await active; }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
             catch (WebSocketException) { }
+            activeStop?.Dispose();
         }
         return new EmptyResult();
     }

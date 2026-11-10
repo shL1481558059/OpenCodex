@@ -119,6 +119,64 @@ public sealed class MultiAgentWebSocketTests
     }
 
     [Fact]
+    public async Task InterruptCancelsServerAgentResponseAndAllowsNextCreate()
+    {
+        var calls = 0;
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var test = new MultiAgentApiTestContext(async ctx =>
+        {
+            if (Interlocked.Increment(ref calls) > 1)
+                return await Stream(ctx, Events(Terminal(Message("NEXT"))));
+
+            started.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, ctx.CancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                cancelled.TrySetResult();
+                throw;
+            }
+            throw new InvalidOperationException("The interrupted model request cannot complete.");
+        });
+        var socket = test.Socket();
+        var operation = test.Service.ResponsesWebSocket();
+        try
+        {
+            socket.ClientSend(Create());
+            var created = (D)(await socket.Until("response.created", test.Lifetime.Token))["response"]!;
+            var responseId = (string)created["id"]!;
+            await started.Task.WaitAsync(test.Lifetime.Token);
+
+            socket.ClientSend(new D
+            {
+                ["type"] = "response.interrupt",
+                ["response_id"] = responseId,
+                ["mode"] = "discard_partial_items"
+            });
+
+            using var interruptTimeout = CancellationTokenSource.CreateLinkedTokenSource(test.Lifetime.Token);
+            interruptTimeout.CancelAfter(TimeSpan.FromSeconds(2));
+            var accepted = await socket.Until("response.interrupt.accepted", interruptTimeout.Token);
+            Assert.Equal(responseId, accepted["response_id"]);
+            await cancelled.Task.WaitAsync(interruptTimeout.Token);
+            Assert.Equal(System.Net.WebSockets.WebSocketState.Open, socket.State);
+
+            socket.ClientSend(Create());
+            var completed = (D)(await socket.Until("response.completed", test.Lifetime.Token))["response"]!;
+            Assert.Contains("NEXT", System.Text.Json.JsonSerializer.Serialize(completed));
+            Assert.Equal(2, calls);
+        }
+        finally
+        {
+            socket.ClientClose();
+            await operation;
+        }
+    }
+
+    [Fact]
     public async Task CatalogDisabledModelUsesGenericWebSocket()
     {
         using var test = new MultiAgentApiTestContext(

@@ -26,6 +26,10 @@ public sealed class ResponsesWebSocketClientService(
         var records = new Dictionary<string, StoredClientResponse>(StringComparer.Ordinal);
         var ct = stop.Token;
         Task active = Task.CompletedTask;
+        CancellationTokenSource? activeStop = null;
+        string activeResponseId = "";
+        string terminalResponseId = "";
+        var knownIds = new System.Collections.Concurrent.ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
         var maximumBytes = 16 * 1024 * 1024;
         var first = firstRequest;
 
@@ -35,6 +39,21 @@ public sealed class ResponsesWebSocketClientService(
             try
             {
                 if (socket.State != WebSocketState.Open) return;
+                var type = JsonDictionaryValue.String(payload, "type");
+                var responseId = JsonDictionaryValue.Get(payload, "response") is IReadOnlyDictionary<string, object?> response
+                    ? JsonDictionaryValue.String(response, "id")
+                    : "";
+                if (type == "response.created" && responseId.Length > 0)
+                {
+                    activeResponseId = responseId;
+                    knownIds.TryAdd(responseId, 0);
+                }
+                else if (type is "response.completed" or "response.failed" or "response.incomplete"
+                    && responseId.Length > 0)
+                {
+                    knownIds.TryAdd(responseId, 0);
+                    terminalResponseId = responseId;
+                }
                 var bytes = JsonSerializer.SerializeToUtf8Bytes(payload);
                 await socket.SendAsync(bytes, WebSocketMessageType.Text, true, ct);
             }
@@ -56,7 +75,8 @@ public sealed class ResponsesWebSocketClientService(
             });
         }
 
-        async Task Execute(Dictionary<string, object?> request, bool generate, int createIndex)
+        async Task Execute(Dictionary<string, object?> request, bool generate, int createIndex,
+            CancellationToken responseCt)
         {
             var model = JsonDictionaryValue.String(request, "model");
             // The parsed frame is request-scoped and immutable after projection.
@@ -122,7 +142,7 @@ public sealed class ResponsesWebSocketClientService(
                     fullRequest,
                     metadata,
                     writer,
-                    ct,
+                    responseCt,
                     clientRequest));
                 if (!result.IsEmpty)
                 {
@@ -147,7 +167,7 @@ public sealed class ResponsesWebSocketClientService(
                     };
                 }
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+            catch (OperationCanceledException) when (responseCt.IsCancellationRequested) { }
             catch (Exception exception)
             {
                 logger.LogError(exception, "Responses WebSocket request failed for model {Model}", model);
@@ -217,25 +237,124 @@ public sealed class ResponsesWebSocketClientService(
             }
         }
 
+        async Task HandleInterrupt(Dictionary<string, object?> interrupt)
+        {
+            var responseId = JsonDictionaryValue.String(interrupt, "response_id");
+            var mode = JsonDictionaryValue.String(interrupt, "mode");
+            if (responseId.Length == 0 || mode is not ("" or "discard_partial_items"))
+            {
+                await Send(new Dictionary<string, object?>
+                {
+                    ["type"] = "response.interrupt.failed",
+                    ["response_id"] = responseId,
+                    ["error"] = new Dictionary<string, object?>
+                    {
+                        ["code"] = "invalid_request",
+                        ["message"] = "response.interrupt requires response_id and mode discard_partial_items."
+                    }
+                });
+                return;
+            }
+
+            if (!active.IsCompleted && activeResponseId == responseId
+                && terminalResponseId != responseId && activeStop is not null)
+            {
+                activeStop.Cancel();
+                await active;
+            }
+
+            if (knownIds.ContainsKey(responseId))
+            {
+                await Send(new Dictionary<string, object?>
+                {
+                    ["type"] = "response.interrupt.accepted",
+                    ["response_id"] = responseId
+                });
+            }
+            else
+            {
+                await Send(new Dictionary<string, object?>
+                {
+                    ["type"] = "response.interrupt.failed",
+                    ["response_id"] = responseId,
+                    ["error"] = new Dictionary<string, object?>
+                    {
+                        ["code"] = "response_not_found",
+                        ["message"] = "The response was not found on this connection."
+                    }
+                });
+            }
+        }
+
+        async Task<Dictionary<string, object?>?> RunActiveAsync()
+        {
+            var inbound = ReceiveAsync();
+            while (true)
+            {
+                if (await Task.WhenAny(active, inbound) == active)
+                {
+                    await active;
+                    return await inbound;
+                }
+
+                var received = await inbound;
+                if (received is null)
+                {
+                    activeStop?.Cancel();
+                    await active;
+                    return null;
+                }
+
+                var type = JsonDictionaryValue.String(received, "type");
+                if (type == "response.interrupt")
+                {
+                    await HandleInterrupt(received);
+                    if (active.IsCompleted) return await ReceiveAsync();
+                    inbound = ReceiveAsync();
+                    continue;
+                }
+                if (type == "response.create")
+                {
+                    if (terminalResponseId.Length > 0 || active.IsCompleted)
+                    {
+                        await active;
+                        return received;
+                    }
+                    await SendError("response_in_progress", "Only one response may be active on this connection.");
+                    inbound = ReceiveAsync();
+                    continue;
+                }
+
+                await SendError(
+                    "unsupported_event",
+                    "Supported event types are response.create and response.interrupt.");
+                await socket.CloseOutputAsync(WebSocketCloseStatus.InvalidPayloadData, "Unsupported event", ct);
+                activeStop?.Cancel();
+                await active;
+                return null;
+            }
+        }
+
         try
         {
-            var item = first;
+            Dictionary<string, object?>? item = first;
             var createIndex = 0;
-            while (socket.State == WebSocketState.Open && !ct.IsCancellationRequested)
+            while (socket.State == WebSocketState.Open && !ct.IsCancellationRequested && item is not null)
             {
                 var type = JsonDictionaryValue.String(item, "type");
+                if (type == "response.interrupt")
+                {
+                    await HandleInterrupt(item);
+                    item = await ReceiveAsync();
+                    continue;
+                }
                 if (type != "response.create")
                 {
-                    await SendError("unsupported_event", "Supported event types are response.create.");
+                    await SendError(
+                        "unsupported_event",
+                        "Supported event types are response.create and response.interrupt.");
                     await socket.CloseOutputAsync(WebSocketCloseStatus.InvalidPayloadData, "Unsupported event", ct);
                     return;
-                }
-                if (!active.IsCompleted)
-                {
-                    await SendError("response_in_progress", "Only one response may be active on this connection.");
-                    item = await ReceiveAsync() ?? [];
-                    if (item.Count == 0) return;
-                    continue;
                 }
                 if (!string.IsNullOrWhiteSpace(JsonDictionaryValue.String(item, "stream_id")))
                 {
@@ -251,11 +370,12 @@ public sealed class ResponsesWebSocketClientService(
                     await SendError("invalid_request_error", "model is required.");
                     return;
                 }
-                active = Execute(item, generate, ++createIndex);
-                await active;
-                active = Task.CompletedTask;
-                item = await ReceiveAsync() ?? [];
-                if (item.Count == 0) break;
+                activeStop?.Dispose();
+                activeStop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                activeResponseId = "";
+                terminalResponseId = "";
+                active = Execute(item, generate, ++createIndex, activeStop.Token);
+                item = await RunActiveAsync();
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
@@ -266,9 +386,11 @@ public sealed class ResponsesWebSocketClientService(
         finally
         {
             stop.Cancel();
+            activeStop?.Cancel();
             try { await active; }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
             catch (WebSocketException) { }
+            activeStop?.Dispose();
         }
     }
 
