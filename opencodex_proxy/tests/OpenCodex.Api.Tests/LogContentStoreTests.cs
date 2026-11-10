@@ -221,7 +221,7 @@ public sealed class LogContentStoreTests
     }
 
     [Fact]
-    public void DeduplicatedBlockLookup_SqlDoesNotSelectDataColumn()
+    public void DeduplicatedManifestLookup_DoesNotQueryBlocks()
     {
         var (dbPath, firstLogId, secondLogId) = CreateDatabaseWithTwoLogs();
         var value = BuildConversation(180);
@@ -231,6 +231,11 @@ public sealed class LogContentStoreTests
         {
             var store = new LogContentStore(context);
             store.Write(firstLogId, Values(value));
+            var blockLookups = probe.Commands.Where(command =>
+                command.Contains("LogContentBlocks", StringComparison.OrdinalIgnoreCase)
+                && command.StartsWith("SELECT", StringComparison.OrdinalIgnoreCase)).ToList();
+            Assert.NotEmpty(blockLookups);
+            Assert.All(blockLookups, sql => Assert.DoesNotContain("Data", sql, StringComparison.OrdinalIgnoreCase));
         }
 
         probe.Reset();
@@ -240,11 +245,10 @@ public sealed class LogContentStoreTests
             store.Write(secondLogId, Values(value));
         }
 
-        var lookupSql = probe.Commands
-            .FirstOrDefault(command => command.Contains("LogContentBlocks", StringComparison.OrdinalIgnoreCase)
-                && command.StartsWith("SELECT", StringComparison.OrdinalIgnoreCase));
-        Assert.NotNull(lookupSql);
-        Assert.DoesNotContain("Data", lookupSql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(probe.Commands,
+            command => command.Contains("LogContentBlocks", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(probe.Commands,
+            command => command.Contains("LogContentManifests", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -303,6 +307,86 @@ public sealed class LogContentStoreTests
         var exception = Assert.Throws<InvalidDataException>(
             () => store.Write(logId, Values(BuildConversation(10))));
         Assert.Contains("Content hash collision detected for block", exception.Message);
+    }
+
+    [Fact]
+    public void UnchangedSlot_PreservesReferenceAndDoesNotQueryOrWriteBlocks()
+    {
+        var (dbPath, logId, _) = CreateDatabaseWithTwoLogs();
+        var probe = new BlockSqlProbe();
+        using var context = CreateCapturingContext(dbPath, probe);
+        var store = new LogContentStore(context);
+        var value = BuildConversation(180);
+        store.Write(logId, Values(value));
+        var referenceId = context.RequestLogContentRefs.AsNoTracking().Single().Id;
+        probe.Reset();
+
+        store.Write(logId, Values(value));
+
+        Assert.Equal(referenceId, context.RequestLogContentRefs.AsNoTracking().Single().Id);
+        Assert.DoesNotContain(probe.Commands, sql =>
+            sql.Contains("LogContentBlocks", StringComparison.OrdinalIgnoreCase)
+            || sql.StartsWith("DELETE", StringComparison.OrdinalIgnoreCase)
+            || sql.StartsWith("INSERT", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void SuccessfulWrite_DetachesOnlyOwnedEntitiesAndRetainsUnrelatedPendingChange()
+    {
+        var (dbPath, logId, _) = CreateDatabaseWithTwoLogs();
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var log = context.RequestLogs.Single(value => value.Id == logId);
+        new LogContentStore(context).Write(logId, Values(BuildConversation(180)));
+
+        Assert.Empty(context.ChangeTracker.Entries<LogContentBlock>());
+        Assert.Empty(context.ChangeTracker.Entries<LogContentManifest>());
+        Assert.Empty(context.ChangeTracker.Entries<LogContentManifestChunk>());
+        Assert.Empty(context.ChangeTracker.Entries<RequestLogContentRef>());
+        Assert.Same(log, context.ChangeTracker.Entries<RequestLog>().Single().Entity);
+        log.Error = "pending after body persistence";
+        context.ChangeTracker.DetectChanges();
+        Assert.Equal(EntityState.Modified, context.Entry(log).State);
+        context.SaveChanges();
+        Assert.Equal(log.Error, context.RequestLogs.AsNoTracking().Single(value => value.Id == logId).Error);
+    }
+
+    [Fact]
+    public void FailedBatch_RollsBackSlotsAndDetachesOwnedEntities()
+    {
+        var (dbPath, logId, _) = CreateDatabaseWithTwoLogs();
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var store = new LogContentStore(context);
+        store.Write(logId, Values("original"));
+        Assert.Throws<IOException>(() => store.WriteSequential(logId,
+            [RequestLogContentSlot.RequestBody, RequestLogContentSlot.ResponseBody],
+            slot => slot == RequestLogContentSlot.RequestBody
+                ? System.Text.Encoding.UTF8.GetBytes(BuildConversation(100))
+                : throw new IOException("injected encoding failure")));
+
+        Assert.Equal("original", store.Read(logId).Get(RequestLogContentSlot.RequestBody));
+        Assert.Null(store.Read(logId).Get(RequestLogContentSlot.ResponseBody));
+        Assert.Empty(context.ChangeTracker.Entries<LogContentBlock>());
+        Assert.Empty(context.ChangeTracker.Entries<LogContentManifest>());
+        Assert.Empty(context.ChangeTracker.Entries<LogContentManifestChunk>());
+        Assert.Empty(context.ChangeTracker.Entries<RequestLogContentRef>());
+        store.Write(logId, Values("recovered"));
+        Assert.Equal("recovered", store.Read(logId).Get(RequestLogContentSlot.RequestBody));
+    }
+
+    [Fact]
+    public void MemorySlice_StoresOnlySliceAndNullStillDeletes()
+    {
+        var (dbPath, logId, _) = CreateDatabaseWithTwoLogs();
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var store = new LogContentStore(context);
+        var bytes = System.Text.Encoding.UTF8.GetBytes("prefix正文suffix");
+        var slice = bytes.AsMemory(6, System.Text.Encoding.UTF8.GetByteCount("正文"));
+        store.WriteSequentialMemory(logId, [RequestLogContentSlot.RequestBody], _ => slice);
+        Assert.Equal("正文", store.Read(logId).Get(RequestLogContentSlot.RequestBody));
+        store.WriteSequentialMemory(logId, [RequestLogContentSlot.RequestBody], _ => null);
+        Assert.Null(store.Read(logId).Get(RequestLogContentSlot.RequestBody));
+        Assert.Empty(context.LogContentManifests);
+        Assert.Empty(context.LogContentBlocks);
     }
 
     private static (string DbPath, Guid FirstLogId, Guid SecondLogId) CreateDatabaseWithTwoLogs()
@@ -425,6 +509,13 @@ public sealed class LogContentStoreTests
             {
                 _commands.Clear();
             }
+        }
+
+        public override InterceptionResult<int> NonQueryExecuting(
+            DbCommand command, CommandEventData eventData, InterceptionResult<int> result)
+        {
+            lock (_sync) _commands.Add(command.CommandText);
+            return result;
         }
 
         public override InterceptionResult<DbDataReader> ReaderExecuting(

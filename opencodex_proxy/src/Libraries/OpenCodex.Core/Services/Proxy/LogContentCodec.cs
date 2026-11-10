@@ -51,7 +51,17 @@ internal static class LogContentCodec
     {
         ArgumentNullException.ThrowIfNull(utf8);
 
-        var contentHash = Convert.ToHexStringLower(SHA256.HashData(utf8));
+        return Plan((ReadOnlyMemory<byte>)utf8);
+    }
+
+    public static string ContentHash(ReadOnlyMemory<byte> utf8) =>
+        Convert.ToHexStringLower(SHA256.HashData(utf8.Span));
+
+    public static LogContentPlan Plan(ReadOnlyMemory<byte> utf8) => Plan(utf8, ContentHash(utf8));
+
+    // The caller has already hashed these exact bytes during the manifest lookup.
+    internal static LogContentPlan Plan(ReadOnlyMemory<byte> utf8, string contentHash)
+    {
         if (utf8.Length == 0)
         {
             return new LogContentPlan(utf8, 0, contentHash, []);
@@ -61,7 +71,7 @@ internal static class LogContentCodec
         foreach (var range in FindChunkRanges(utf8))
         {
             // 直接对切片求哈希,不再为每个块复制一份 byte[]。
-            var hash = Convert.ToHexStringLower(SHA256.HashData(utf8.AsSpan(range.Offset, range.Length)));
+            var hash = Convert.ToHexStringLower(SHA256.HashData(utf8.Span.Slice(range.Offset, range.Length)));
             chunks.Add(new LogChunkPlan(range.Offset, range.Length, hash));
         }
 
@@ -74,9 +84,13 @@ internal static class LogContentCodec
     public static EncodedLogContentChunk Compress(byte[] source, LogChunkPlan chunk)
     {
         ArgumentNullException.ThrowIfNull(source);
-        ArgumentNullException.ThrowIfNull(chunk);
+        return Compress((ReadOnlyMemory<byte>)source, chunk);
+    }
 
-        var raw = source.AsSpan(chunk.Offset, chunk.Length);
+    public static EncodedLogContentChunk Compress(ReadOnlyMemory<byte> source, LogChunkPlan chunk)
+    {
+        ArgumentNullException.ThrowIfNull(chunk);
+        var raw = source.Span.Slice(chunk.Offset, chunk.Length);
         var compressed = Compress(raw);
         return compressed.Length < raw.Length
             ? new EncodedLogContentChunk(chunk.Hash, BrotliCodec, chunk.Length, compressed)
@@ -181,7 +195,7 @@ internal static class LogContentCodec
         return output.ToArray();
     }
 
-    private static IEnumerable<ChunkRange> FindChunkRanges(byte[] source)
+    private static IEnumerable<ChunkRange> FindChunkRanges(ReadOnlyMemory<byte> source)
     {
         var start = 0;
         while (start < source.Length)
@@ -197,7 +211,7 @@ internal static class LogContentCodec
             var end = start;
             while (end < maximumEnd)
             {
-                fingerprint = unchecked((fingerprint << 1) + GearTable[source[end]]);
+                fingerprint = unchecked((fingerprint << 1) + GearTable[source.Span[end]]);
                 end++;
 
                 var length = end - start;
@@ -250,7 +264,7 @@ internal static class LogContentCodec
 internal sealed class LogContentPlan
 {
     public LogContentPlan(
-        byte[] source,
+        ReadOnlyMemory<byte> source,
         int originalLength,
         string hash,
         IReadOnlyList<LogChunkPlan> chunks)
@@ -261,7 +275,7 @@ internal sealed class LogContentPlan
         Chunks = chunks;
     }
 
-    public byte[] Source { get; }
+    public ReadOnlyMemory<byte> Source { get; }
 
     public int OriginalLength { get; }
 

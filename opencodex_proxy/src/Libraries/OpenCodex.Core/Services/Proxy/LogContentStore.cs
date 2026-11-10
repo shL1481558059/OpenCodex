@@ -63,49 +63,88 @@ internal sealed class LogContentStore
     {
         ArgumentNullException.ThrowIfNull(slots);
         ArgumentNullException.ThrowIfNull(encode);
-        if (slots.Count == 0)
-        {
-            return;
-        }
-
-        using var transaction = _context.Database.BeginTransaction();
-        foreach (var slot in slots)
-        {
-            WriteSlot(requestLogId, slot, encode(slot));
-        }
-
-        transaction.Commit();
+        WriteSequentialMemory(requestLogId, slots, slot =>
+            encode(slot) is { } bytes ? (ReadOnlyMemory<byte>?)bytes : null);
     }
 
-    private void WriteSlot(Guid requestLogId, RequestLogContentSlot slot, byte[]? content)
+    public void WriteSequentialMemory(
+        Guid requestLogId,
+        IReadOnlyList<RequestLogContentSlot> slots,
+        Func<RequestLogContentSlot, ReadOnlyMemory<byte>?> encode)
+    {
+        ArgumentNullException.ThrowIfNull(slots);
+        ArgumentNullException.ThrowIfNull(encode);
+        if (slots.Count == 0) return;
+
+        var ownedEntities = new List<object>();
+        try
+        {
+            using var transaction = _context.Database.BeginTransaction();
+            foreach (var slot in slots)
+            {
+                WriteSlot(requestLogId, slot, encode(slot), ownedEntities);
+            }
+            transaction.Commit();
+        }
+        finally
+        {
+            // Only our inserts are detached, after commit/rollback. Never clear the shared
+            // request context: it can contain unrelated pending business changes.
+            DetachEntities(ownedEntities);
+        }
+    }
+
+    private void WriteSlot(
+        Guid requestLogId, RequestLogContentSlot slot, ReadOnlyMemory<byte>? content,
+        List<object> ownedEntities)
     {
         var replacedManifestIds = _context.RequestLogContentRefs
             .Where(reference => reference.RequestLogId == requestLogId && reference.Slot == slot)
             .Select(reference => reference.ManifestId)
             .Distinct()
             .ToList();
-        _context.RequestLogContentRefs
-            .Where(reference => reference.RequestLogId == requestLogId && reference.Slot == slot)
-            .ExecuteDelete();
-
-        if (content is null)
+        LogContentManifest? manifest = null;
+        if (content is { } bytes)
         {
-            RemoveOrphanedReplacedContent(replacedManifestIds);
+            var hash = LogContentCodec.ContentHash(bytes);
+            manifest = _context.LogContentManifests.AsNoTracking()
+                .FirstOrDefault(value => value.Sha256 == hash);
+            if (manifest is not null)
+            {
+                if (manifest.RawLength != bytes.Length)
+                    throw new InvalidDataException($"Content hash collision detected for manifest {hash}.");
+                // A lifecycle update with identical bytes must not churn references or
+                // repeat CDC chunk hashing, block queries, or compression.
+                if (replacedManifestIds.Count == 1 && replacedManifestIds[0] == manifest.Id) return;
+            }
+            else
+            {
+                var plan = LogContentCodec.Plan(bytes, hash);
+                var blocksByHash = EnsureBlocks([plan], ownedEntities);
+                manifest = EnsureManifests([plan], blocksByHash, ownedEntities)[hash];
+            }
+        }
+        else if (replacedManifestIds.Count == 0)
+        {
             return;
         }
 
-        // 先只分块 + 算哈希,不压缩;等查重结果出来后再压缩缺失的块。
-        var plan = LogContentCodec.Plan(content);
-        var blocksByHash = EnsureBlocks([plan]);
-        var manifestsByHash = EnsureManifests([plan], blocksByHash);
-        _context.RequestLogContentRefs.Add(new RequestLogContentRef
+        _context.RequestLogContentRefs
+            .Where(reference => reference.RequestLogId == requestLogId && reference.Slot == slot)
+            .ExecuteDelete();
+        if (manifest is not null)
         {
-            Id = Guid.NewGuid(),
-            RequestLogId = requestLogId,
-            Slot = slot,
-            ManifestId = manifestsByHash[plan.Hash].Id
-        });
-        _context.SaveChanges();
+            var reference = new RequestLogContentRef
+            {
+                Id = Guid.NewGuid(),
+                RequestLogId = requestLogId,
+                Slot = slot,
+                ManifestId = manifest.Id
+            };
+            ownedEntities.Add(reference);
+            _context.RequestLogContentRefs.Add(reference);
+            _context.SaveChanges();
+        }
         RemoveOrphanedReplacedContent(replacedManifestIds);
     }
 
@@ -205,7 +244,7 @@ internal sealed class LogContentStore
         return new LogContentSnapshot(values);
     }
 
-    private Dictionary<string, BlockRef> EnsureBlocks(IReadOnlyList<LogContentPlan> plans)
+    private Dictionary<string, BlockRef> EnsureBlocks(IReadOnlyList<LogContentPlan> plans, List<object> ownedEntities)
     {
         var chunkPlansByHash = plans
             .SelectMany(plan => plan.Chunks)
@@ -256,6 +295,7 @@ internal sealed class LogContentStore
             }
 
             CreateSavepoint("log_content_blocks");
+            ownedEntities.AddRange(missingBlocks);
             _context.LogContentBlocks.AddRange(missingBlocks);
             try
             {
@@ -291,7 +331,8 @@ internal sealed class LogContentStore
 
     private Dictionary<string, LogContentManifest> EnsureManifests(
         IReadOnlyList<LogContentPlan> plans,
-        IReadOnlyDictionary<string, BlockRef> blocksByHash)
+        IReadOnlyDictionary<string, BlockRef> blocksByHash,
+        List<object> ownedEntities)
     {
         var values = plans
             .GroupBy(value => value.Hash, StringComparer.Ordinal)
@@ -319,6 +360,7 @@ internal sealed class LogContentStore
                 ChunkCount = value.Chunks.Count,
                 Encoding = Utf8Encoding
             }).ToList();
+            ownedEntities.AddRange(addedManifests);
             _context.LogContentManifests.AddRange(addedManifests);
             foreach (var manifest in addedManifests)
             {
@@ -330,7 +372,8 @@ internal sealed class LogContentStore
                     Ordinal = ordinal,
                     BlockId = blocksByHash[chunk.Hash].Id,
                     RawLength = chunk.Length
-                });
+                }).ToList();
+                ownedEntities.AddRange(manifestChunks);
                 _context.LogContentManifestChunks.AddRange(manifestChunks);
             }
 

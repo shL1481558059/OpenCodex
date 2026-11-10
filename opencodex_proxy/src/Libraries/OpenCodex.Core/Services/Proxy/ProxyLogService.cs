@@ -72,11 +72,11 @@ public sealed class ProxyLogService : IProxyLogService
         ApplyConversationMetadata(log, context.RequestHeaders, context.Payload);
         _logRepository.Insert(log);
 
-        _contentStore.WriteUtf8(log.Id, new Dictionary<RequestLogContentSlot, byte[]?>
-        {
-            [RequestLogContentSlot.RequestHeaders] = EncodeForLog(context.RequestHeaders),
-            [RequestLogContentSlot.RequestBody] = RawBodyBytes(context.RawRequestBody, context.Payload)
-        });
+        _contentStore.WriteSequentialMemory(log.Id,
+            [RequestLogContentSlot.RequestHeaders, RequestLogContentSlot.RequestBody],
+            slot => slot == RequestLogContentSlot.RequestHeaders
+                ? EncodeForLog(context.RequestHeaders)
+                : RawBodyMemory(context.RawRequestBody, context.Payload));
         PublishLogWritten(log.Id, ownerUsername, 0, null);
         return log.Id;
     }
@@ -306,10 +306,12 @@ public sealed class ProxyLogService : IProxyLogService
             nameof(RequestLog.ConversationWindowId),
             nameof(RequestLog.PreviousResponseId));
 
-        _contentStore.WriteSequential(
+        _contentStore.WriteSequentialMemory(
             requestLogId,
             ContentSlots,
-            slot => EncodeContentSlot(context, slot));
+            slot => slot == RequestLogContentSlot.RequestBody
+                ? RawBodyMemory(context.RawRequestBody, context.Payload)
+                : EncodeContentSlot(context, slot) is { } bytes ? bytes : null);
 
         if (context.RequestType == ProxyRequestTypes.Main)
         {
@@ -579,6 +581,10 @@ public sealed class ProxyLogService : IProxyLogService
             _ => throw new ArgumentOutOfRangeException(nameof(slot), slot, "unsupported log content slot")
         };
     }
+
+    private static ReadOnlyMemory<byte> RawBodyMemory(
+        ReadOnlyMemory<byte>? rawRequestBody, Dictionary<string, object?>? payload) =>
+        rawRequestBody is { Length: > 0 } raw ? raw : EncodeForLog(payload);
 
     private static byte[] RawBodyBytes(ReadOnlyMemory<byte>? rawRequestBody, Dictionary<string, object?>? payload)
     {
