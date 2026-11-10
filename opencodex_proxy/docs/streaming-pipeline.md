@@ -14,10 +14,21 @@ and normalized JSON body contracts have not been replaced with raw SSE logs.
   longer serializes and parses it again for downstream capture. Receive buffer, message storage
   and idle cancellation are reused per exclusive lease. Large receive storage is released after
   the event; no JsonDocument or borrowed JsonElement escapes decode.
-* The six converters retain public string APIs; internal overloads accept shared decoded events.
-  Consumers must not mutate the shared input graph. Cross-protocol generated **output** strings
-  are decoded once in the output adapter for metadata/log observation. Native typed output
-  emitters and the built-in-search output string reparsing are still follow-up work.
+* The six converters retain public string APIs; the native pipeline accepts shared decoded events
+  and emits typed `SseFrame` snapshots. Built-in search observes and rewrites the same decoded
+  output instead of parsing generated strings. Capture, usage and terminal validation share that
+  graph; the writer never parses it back. Legacy wrappers alone retain string parsing.
+* `SseFrame.FromJson` freezes generated container graphs before the producer can mutate later
+  items/status. Serialization is lazy and cached once, as is the UTF8 wire byte count. No borrowed
+  JsonElement/JsonDocument escapes. Input and output graphs remain read-only by consumer contract.
+* Whole-round tool buffering is still enabled. It uses a queue that releases replayed frames,
+  with explicit byte/frame limits; overflow fails rather than silently truncates. Typed frames
+  retain snapshots as well as encoded wire, so their buffered heap can be larger than the old
+  wire-only list. This is not a claim that full-response/audit memory is already bounded: converter
+  final-response accumulation and the audit spool are still follow-up stages.
+* Multi-agent model collection implements the typed writer directly (callbacks receive a private
+  copy, not the shared graph); terminal Result is isolated from callback mutation. Its legacy
+  string entry point uses the same chunk assembler, including multi-line data and CR/LF splits.
 * Legacy standalone string capture/APIs remain compatible; those legacy callers may still parse.
   `SseFrameReader.ReadLines` accepts physical lines (with/without terminators) or full frames.
   Arbitrary character chunks must use `ReadChunks` (including CR/LF split across chunks).
@@ -51,6 +62,8 @@ Defaults below are safety/latency choices, not production performance measuremen
     "MaxBatchBytes": 16384,
     "MaxFlushDelayMilliseconds": 10,
     "MaxEventBytes": 16777216,
+    "MaxBufferedRoundBytes": 33554432,
+    "MaxBufferedRoundFrames": 65536,
     "Upstream": {
       "MaxEventBytes": 16777216,
       "MaxProbeBytes": 16777216,

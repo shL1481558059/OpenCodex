@@ -53,6 +53,16 @@ public static partial class SseStreamConverter
         IReadOnlySet<string>? SkipToolNames,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        await foreach (var frame in ResponsesToChatFrames(upstreamEvents, model, result, SkipToolNames, cancellationToken)) yield return frame.WireText;
+    }
+
+    internal static async IAsyncEnumerable<SseFrame> ResponsesToChatFrames(
+        IAsyncEnumerable<SseEvent> upstreamEvents,
+        string? model,
+        ConvertedStreamResult result,
+        IReadOnlySet<string>? SkipToolNames,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
         var completionId = $"chatcmpl_{Guid.NewGuid():N}";
         var responseModel = model ?? string.Empty;
         var upstreamResponseModel = string.Empty;
@@ -72,7 +82,7 @@ public static partial class SseStreamConverter
         var responseAccumulator = new ResponsesStreamResponseAccumulator(
             new StreamCaptureBudget(int.MaxValue, int.MaxValue));
 
-        string EmitChunk(List<object?> choices)
+        SseFrame EmitChunk(List<object?> choices)
         {
             var chunk = new Dictionary<string, object?>
             {
@@ -82,10 +92,10 @@ public static partial class SseStreamConverter
                 ["model"] = responseModel,
                 ["choices"] = choices
             };
-            return $"data: {JsonSerializer.Serialize(chunk, JsonOptions)}\n\n";
+            return SseFrame.FromJson(chunk);
         }
 
-        List<string> EnsureRoleChunk()
+        List<SseFrame> EnsureRoleChunk()
         {
             if (firstRoleEmitted)
             {
@@ -555,7 +565,7 @@ public static partial class SseStreamConverter
                     ["code"] = "response_failed",
                     ["message"] = "The upstream Responses stream failed."
                 };
-                yield return $"data: {JsonSerializer.Serialize(new Dictionary<string, object?> { ["error"] = error }, JsonOptions)}\n\n";
+                yield return SseFrame.FromJson(new Dictionary<string, object?> { ["error"] = error });
                 yield break;
             }
         }
@@ -644,10 +654,10 @@ public static partial class SseStreamConverter
                     ["total_tokens"] = promptTokens + completionTokens
                 }
             };
-            yield return $"data: {JsonSerializer.Serialize(usageChunk, JsonOptions)}\n\n";
+            yield return SseFrame.FromJson(usageChunk);
         }
 
-        yield return "data: [DONE]\n\n";
+        yield return SseFrame.Done;
     }
 
     private static Dictionary<string, object?> BuildCapturedResponsesUpstreamResponse(

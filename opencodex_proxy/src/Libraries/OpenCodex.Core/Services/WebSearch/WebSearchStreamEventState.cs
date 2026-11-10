@@ -1,3 +1,4 @@
+using OpenCodex.Core.Protocols;
 using OpenCodex.CoreBase.Domain.WebSearch;
 using static OpenCodex.CoreBase.Abstractions.WebSearchPayload;
 
@@ -18,19 +19,22 @@ internal sealed class WebSearchStreamEventState
 
     public bool HasResponse => _responseId is not null;
 
-    public static bool IsTerminal(string line)
+    public static bool IsTerminal(string line) => IsTerminal(LegacyFrame(line));
+    public static bool IsTerminal(SseFrame frame) => frame.Type is "response.completed" or "response.failed" or "response.incomplete";
+    private static SseFrame LegacyFrame(string line)
     {
-        var (eventName, payload) = WebSearchResponsePayload.ParseSseLine(line);
-        return StringValue(payload ?? [], "type", eventName)
-            is "response.completed" or "response.failed" or "response.incomplete";
+        var (name, payload) = WebSearchResponsePayload.ParseSseLine(line);
+        return new SseFrame(line, payload is null ? null : new SseEvent(name, payload));
     }
 
-    public string Observe(string line, IReadOnlyList<WebSearchToolResult> results)
+    public string Observe(string line, IReadOnlyList<WebSearchToolResult> results) => Observe(LegacyFrame(line), results).WireText;
+    public SseFrame Observe(SseFrame frame, IReadOnlyList<WebSearchToolResult> results)
     {
-        var (eventName, payload) = WebSearchResponsePayload.ParseSseLine(line);
+        var eventName = frame.Event?.EventName ?? "message";
+        var payload = frame.Event?.Data is IReadOnlyDictionary<string, object?> source ? DeepCopyObject(source) : null;
         if (payload is null)
         {
-            return line;
+            return frame;
         }
         if (TryAsObject(GetValue(payload, "response"), out var response))
         {
@@ -62,13 +66,18 @@ internal sealed class WebSearchStreamEventState
         return Emit(eventName, payload);
     }
 
-    public string Complete(
-        string line,
+    public string Complete(string line, Dictionary<string, object?>? aggregateUsage,
+        Dictionary<string, object?>? overrideResponse, out Dictionary<string, object?> finalResponse) =>
+        Complete(LegacyFrame(line), aggregateUsage, overrideResponse, out finalResponse).WireText;
+
+    public SseFrame Complete(
+        SseFrame frame,
         Dictionary<string, object?>? aggregateUsage,
         Dictionary<string, object?>? overrideResponse,
         out Dictionary<string, object?> finalResponse)
     {
-        var (eventName, payload) = WebSearchResponsePayload.ParseSseLine(line);
+        var eventName = frame.Event?.EventName ?? "message";
+        var payload = frame.Event?.Data is IReadOnlyDictionary<string, object?> source ? DeepCopyObject(source) : null;
         payload ??= new Dictionary<string, object?>();
         var response = ObjectValue(payload, "response");
         response["id"] = _responseId ?? StringValue(response, "id");
@@ -94,7 +103,9 @@ internal sealed class WebSearchStreamEventState
         return Emit(eventName, payload);
     }
 
-    public string Fail(
+    public string Fail(string code, string message, out Dictionary<string, object?> finalResponse) =>
+        FailFrame(code, message, out finalResponse).WireText;
+    public SseFrame FailFrame(
         string code,
         string message,
         out Dictionary<string, object?> finalResponse)
@@ -120,13 +131,16 @@ internal sealed class WebSearchStreamEventState
 
     public int SearchIndex(string itemId) => _searchIndices[itemId];
 
-    public string EmitWebSearchInProgress(string itemId) => EmitWebSearchStatus(itemId, "in_progress");
+    public string EmitWebSearchInProgress(string itemId) => EmitWebSearchInProgressFrame(itemId).WireText;
+    public SseFrame EmitWebSearchInProgressFrame(string itemId) => EmitWebSearchStatus(itemId, "in_progress");
 
-    public string EmitWebSearchSearching(string itemId) => EmitWebSearchStatus(itemId, "searching");
+    public string EmitWebSearchSearching(string itemId) => EmitWebSearchSearchingFrame(itemId).WireText;
+    public SseFrame EmitWebSearchSearchingFrame(string itemId) => EmitWebSearchStatus(itemId, "searching");
 
-    public string EmitWebSearchCompleted(string itemId) => EmitWebSearchStatus(itemId, "completed");
+    public string EmitWebSearchCompleted(string itemId) => EmitWebSearchCompletedFrame(itemId).WireText;
+    public SseFrame EmitWebSearchCompletedFrame(string itemId) => EmitWebSearchStatus(itemId, "completed");
 
-    private string EmitWebSearchStatus(string itemId, string status)
+    private SseFrame EmitWebSearchStatus(string itemId, string status)
     {
         var index = SearchIndex(itemId);
         _output[index]["status"] = status;
@@ -137,7 +151,9 @@ internal sealed class WebSearchStreamEventState
         });
     }
 
-    public string EmitWebSearchAdded(
+    public string EmitWebSearchAdded(string itemId, string query, out int outputIndex) =>
+        EmitWebSearchAddedFrame(itemId, query, out outputIndex).WireText;
+    public SseFrame EmitWebSearchAddedFrame(
         string itemId,
         string query,
         out int outputIndex)
@@ -161,7 +177,9 @@ internal sealed class WebSearchStreamEventState
             });
     }
 
-    public string EmitWebSearchDone(int outputIndex, WebSearchToolResult result, bool includeSources = false)
+    public string EmitWebSearchDone(int outputIndex, WebSearchToolResult result, bool includeSources = false) =>
+        EmitWebSearchDoneFrame(outputIndex, result, includeSources).WireText;
+    public SseFrame EmitWebSearchDoneFrame(int outputIndex, WebSearchToolResult result, bool includeSources = false)
     {
         var item = WebSearchResponsePayload.BuildWebSearchItem(result, true, includeSources);
         _output[outputIndex] = item;
@@ -174,7 +192,7 @@ internal sealed class WebSearchStreamEventState
             });
     }
 
-    private string Emit(
+    private SseFrame Emit(
         string eventName,
         Dictionary<string, object?> payload)
     {
@@ -183,7 +201,7 @@ internal sealed class WebSearchStreamEventState
             ["type"] = eventName,
             ["sequence_number"] = _sequenceNumber++
         };
-        return $"event: {eventName}\ndata: {JsonDumps(enriched)}\n\n";
+        return SseFrame.FromJson(enriched, eventName);
     }
 
 }

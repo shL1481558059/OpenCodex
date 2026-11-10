@@ -94,7 +94,7 @@ public sealed class ProxyStreamResponseWriter : IProxyStreamWriter
                 lifetime.Token.ThrowIfCancellationRequested();
                 if (!await move) break;
                 var frame = enumerator.Current;
-                var bytes = Encoding.UTF8.GetByteCount(frame.WireText);
+                var bytes = frame.Utf8Length;
                 if (bytes > options.MaxEventBytes)
                     throw new InvalidDataException("SSE event exceeds configured writer MaxEventBytes; output was not truncated.");
                 if (pendingBytes > 0 && (long)pendingBytes + bytes > options.MaxBatchBytes) await Flush();
@@ -111,7 +111,7 @@ public sealed class ProxyStreamResponseWriter : IProxyStreamWriter
             }
             if (sawCompleted && !sawDone)
             {
-                Append(SseFrame.Done, Encoding.UTF8.GetByteCount(SseFrame.Done.WireText));
+                Append(SseFrame.Done, SseFrame.Done.Utf8Length);
             }
             await Flush();
         }

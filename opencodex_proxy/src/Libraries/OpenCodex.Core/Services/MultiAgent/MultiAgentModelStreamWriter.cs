@@ -1,5 +1,4 @@
-using System.Text;
-using System.Text.Json;
+using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Errors;
 using OpenCodex.CoreBase.Abstractions;
 
@@ -7,69 +6,55 @@ namespace OpenCodex.Core.Services.MultiAgent;
 
 /// <summary>Collects the existing Responses stream conversion without writing to the client response.</summary>
 public sealed class MultiAgentModelStreamWriter(
-    Func<Dictionary<string, object?>, CancellationToken, Task>? onEvent = null) : IProxyStreamWriter
+    Func<Dictionary<string, object?>, CancellationToken, Task>? onEvent = null,
+    SseFrameOptions? frameOptions = null) : IProxyStreamWriter
 {
-    private readonly StringBuilder _line = new();
-    private readonly List<string> _data = [];
+    private readonly SseFrameOptions _frameOptions = frameOptions ?? new();
     private readonly SortedDictionary<int, object?> _items = [];
 
     public Dictionary<string, object?>? Result { get; private set; }
 
     public void PrepareSse() { }
 
-    public async Task<StreamWriteMetrics> WriteLinesAsync(IAsyncEnumerable<string> lines,
+    public Task<StreamWriteMetrics> WriteLinesAsync(IAsyncEnumerable<string> lines,
+        Func<string, bool> countsForTtft, Func<int> elapsedMilliseconds,
+        CancellationToken cancellationToken = default) =>
+        WriteFramesAsync(SseFrameReader.ReadChunks(lines, cancellationToken, _frameOptions),
+            countsForTtft, elapsedMilliseconds, cancellationToken);
+
+    public async Task<StreamWriteMetrics> WriteFramesAsync(IAsyncEnumerable<SseFrame> frames,
         Func<string, bool> countsForTtft, Func<int> elapsedMilliseconds,
         CancellationToken cancellationToken = default)
     {
+        if (_frameOptions.MaxEventBytes <= 0) throw new ArgumentOutOfRangeException(nameof(frameOptions));
         var metrics = new StreamWriteMetrics();
-        await foreach (var chunk in lines.WithCancellation(cancellationToken))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (metrics.TtftMs is null && countsForTtft(chunk)) metrics.TtftMs = elapsedMilliseconds();
-            foreach (var character in chunk)
-            {
-                if (character == '\n')
-                {
-                    await AcceptLine(_line.ToString().TrimEnd('\r'), cancellationToken);
-                    _line.Clear();
-                }
-                else _line.Append(character);
-            }
-        }
-        if (_line.Length > 0) await AcceptLine(_line.ToString().TrimEnd('\r'), cancellationToken);
-        await CompleteEvent(cancellationToken);
-        if (Result is null)
-            throw new UpstreamException("The multi-agent model stream ended without a terminal Responses event.");
-        if (JsonDictionaryValue.String(Result, "status") == "completed"
-            && JsonDictionaryValue.List(Result, "output").Count == 0)
-            throw new UpstreamException("The multi-agent model stream completed without any output items.");
-        return metrics;
-    }
-
-    private async Task AcceptLine(string line, CancellationToken ct)
-    {
-        if (line.Length == 0) await CompleteEvent(ct);
-        else if (line.StartsWith("data:", StringComparison.Ordinal)) _data.Add(line[5..].TrimStart());
-    }
-
-    private async Task CompleteEvent(CancellationToken ct)
-    {
-        if (_data.Count == 0) return;
-        var json = string.Join("\n", _data);
-        _data.Clear();
-        if (json == "[DONE]") return;
-        Dictionary<string, object?> payload;
         try
         {
-            using var document = JsonDocument.Parse(json);
-            payload = WebSearchPayload.FromJsonElement(document.RootElement) as Dictionary<string, object?>
-                ?? throw new JsonException("The event payload must be an object.");
+            await foreach (var frame in frames.WithCancellation(cancellationToken))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (frame.Utf8Length > _frameOptions.MaxEventBytes)
+                    throw new UpstreamException("The multi-agent model event exceeds configured MaxEventBytes.");
+                if (metrics.TtftMs is null && countsForTtft(frame.WireText)) metrics.TtftMs = elapsedMilliseconds();
+                if (frame.Event is null || frame.IsDone) continue;
+                if (frame.Malformed || frame.Event.Data is not IReadOnlyDictionary<string, object?> source)
+                    throw new UpstreamException("The multi-agent model stream contains an invalid JSON event: the payload must be an object.");
+                // Callbacks historically own a mutable event. Do not expose the shared frame
+                // graph to them, and snapshot Result before an extension can mutate its copy.
+                await AcceptPayload(WebSearchPayload.DeepCopyObject(source), cancellationToken);
+            }
+            if (Result is null)
+                throw new UpstreamException("The multi-agent model stream ended without a terminal Responses event.");
+            if (JsonDictionaryValue.String(Result, "status") == "completed"
+                && JsonDictionaryValue.List(Result, "output").Count == 0)
+                throw new UpstreamException("The multi-agent model stream completed without any output items.");
+            return metrics;
         }
-        catch (JsonException exception)
-        {
-            throw new UpstreamException("The multi-agent model stream contains an invalid JSON event: " + exception.Message);
-        }
+        finally { _items.Clear(); }
+    }
 
+    private async Task AcceptPayload(Dictionary<string, object?> payload, CancellationToken ct)
+    {
         var type = JsonDictionaryValue.String(payload, "type");
         if (type == "response.output_item.done")
         {

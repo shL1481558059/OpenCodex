@@ -58,6 +58,17 @@ public static partial class SseStreamConverter
         bool SkipMessageStart,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        await foreach (var frame in ResponsesToMessagesFrames(upstreamEvents, model, result, SkipToolNames, SkipMessageStart, cancellationToken)) yield return frame.WireText;
+    }
+
+    internal static async IAsyncEnumerable<SseFrame> ResponsesToMessagesFrames(
+        IAsyncEnumerable<SseEvent> upstreamEvents,
+        string? model,
+        ConvertedStreamResult result,
+        IReadOnlySet<string>? SkipToolNames,
+        bool SkipMessageStart,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
         var messageId = $"msg_{Guid.NewGuid():N}";
         var responseModel = model ?? string.Empty;
         var upstreamResponseModel = string.Empty;
@@ -83,15 +94,15 @@ public static partial class SseStreamConverter
         var responseAccumulator = new ResponsesStreamResponseAccumulator(
             new StreamCaptureBudget(int.MaxValue, int.MaxValue));
 
-        string Emit(string eventName, Dictionary<string, object?> payload)
+        SseFrame Emit(string eventName, Dictionary<string, object?> payload)
         {
             payload["type"] = eventName;
-            return $"event: {eventName}\ndata: {JsonSerializer.Serialize(payload, JsonOptions)}\n\n";
+            return SseFrame.FromJson(payload, eventName);
         }
 
         int AllocateBlockIndex() => nextBlockIndex++;
 
-        void CloseOpenBlock(List<string> output)
+        void CloseOpenBlock(List<SseFrame> output)
         {
             if (openBlockIndex is null)
             {
@@ -105,7 +116,7 @@ public static partial class SseStreamConverter
             openBlockIndex = null;
         }
 
-        List<string> EnsureThinkingStarted()
+        List<SseFrame> EnsureThinkingStarted()
         {
             if (thinkingStarted)
             {
@@ -114,7 +125,7 @@ public static partial class SseStreamConverter
 
             thinkingStarted = true;
             thinkingIndex = AllocateBlockIndex();
-            var output = new List<string>();
+            var output = new List<SseFrame>();
             CloseOpenBlock(output);
             openBlockIndex = thinkingIndex;
             output.Add(Emit("content_block_start", new Dictionary<string, object?>
@@ -129,7 +140,7 @@ public static partial class SseStreamConverter
             return output;
         }
 
-        List<string> EnsureTextStarted()
+        List<SseFrame> EnsureTextStarted()
         {
             if (textStarted)
             {
@@ -138,7 +149,7 @@ public static partial class SseStreamConverter
 
             textStarted = true;
             textIndex = AllocateBlockIndex();
-            var output = new List<string>();
+            var output = new List<SseFrame>();
             CloseOpenBlock(output);
             openBlockIndex = textIndex;
             output.Add(Emit("content_block_start", new Dictionary<string, object?>
@@ -375,7 +386,7 @@ public static partial class SseStreamConverter
                 };
                 pendingToolUseCount++;
 
-                var startOutput = new List<string>();
+                var startOutput = new List<SseFrame>();
                 CloseOpenBlock(startOutput);
                 foreach (var line in startOutput)
                 {
@@ -513,7 +524,7 @@ public static partial class SseStreamConverter
                     if (mcpOutput is not null || mcpError is not null)
                     {
                         pendingToolUseCount = Math.Max(0, pendingToolUseCount - 1);
-                        var resultOutput = new List<string>();
+                        var resultOutput = new List<SseFrame>();
                         CloseOpenBlock(resultOutput);
                         foreach (var line in resultOutput)
                         {
@@ -603,7 +614,7 @@ public static partial class SseStreamConverter
                     preserveCapturedOutputAndUsage: true)!;
                 result.UpstreamResponse = failedResponse;
 
-                var closing = new List<string>();
+                var closing = new List<SseFrame>();
                 CloseOpenBlock(closing);
                 foreach (var line in closing)
                 {
@@ -674,7 +685,7 @@ public static partial class SseStreamConverter
             usage);
 
         // 关闭最后一个仍打开的块
-        var closingOutput = new List<string>();
+        var closingOutput = new List<SseFrame>();
         CloseOpenBlock(closingOutput);
         foreach (var line in closingOutput)
         {

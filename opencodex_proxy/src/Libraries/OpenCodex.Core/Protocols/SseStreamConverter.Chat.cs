@@ -49,6 +49,19 @@ public static partial class SseStreamConverter
         int InitialOutputIndex,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        await foreach (var frame in ChatToResponsesFrames(upstreamEvents, model, result, SkipToolNames, SkipResponseCreated, InitialSequenceNumber, InitialOutputIndex, cancellationToken)) yield return frame.WireText;
+    }
+
+    internal static async IAsyncEnumerable<SseFrame> ChatToResponsesFrames(
+        IAsyncEnumerable<SseEvent> upstreamEvents,
+        string? model,
+        ConvertedStreamResult result,
+        IReadOnlySet<string>? SkipToolNames,
+        bool SkipResponseCreated,
+        int InitialSequenceNumber,
+        int InitialOutputIndex,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
         var responseId = $"resp_{Guid.NewGuid():N}";
         var messageItemId = $"msg_{Guid.NewGuid():N}";
         var createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -80,14 +93,14 @@ public static partial class SseStreamConverter
         var upstreamResponseAccumulator = new ChatStreamResponseAccumulator(
             new StreamCaptureBudget(int.MaxValue, int.MaxValue), knownToolNames);
 
-        string Emit(string eventName, Dictionary<string, object?> payload)
+        SseFrame Emit(string eventName, Dictionary<string, object?> payload)
         {
             var enriched = new Dictionary<string, object?>(payload, StringComparer.Ordinal)
             {
                 ["type"] = eventName,
                 ["sequence_number"] = sequenceNumber++
             };
-            return $"event: {eventName}\ndata: {JsonSerializer.Serialize(enriched, JsonOptions)}\n\n";
+            return SseFrame.FromJson(enriched, eventName);
         }
 
         int AllocateOutputIndex()
@@ -95,7 +108,7 @@ public static partial class SseStreamConverter
             return nextOutputIndex++;
         }
 
-        List<string> EnsureMessageStarted()
+        List<SseFrame> EnsureMessageStarted()
         {
             if (textStarted)
             {
@@ -150,7 +163,7 @@ public static partial class SseStreamConverter
             return state;
         }
 
-        List<string> EnsureReasoningStarted()
+        List<SseFrame> EnsureReasoningStarted()
         {
             if (reasoningStarted)
             {

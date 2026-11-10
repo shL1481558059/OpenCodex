@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Threading.Channels;
 using OpenCodex.Core.Errors;
+using OpenCodex.Core.Protocols;
 using OpenCodex.Core.Services.MultiAgent;
 using OpenCodex.CoreBase.Abstractions;
 using Xunit;
@@ -207,6 +208,68 @@ public sealed class MultiAgentModelStreamWriterTests
         Assert.Equal(17, metrics.TtftMs);
         Assert.Equal(1, calls);
     }
+
+    [Fact]
+    public async Task TypedFramesUseDecodedPayloadInsteadOfReparsingWireAndCallbacksAreIsolated()
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["type"] = "response.completed", ["response"] = new Dictionary<string, object?>
+            {
+                ["id"] = "typed", ["status"] = "completed", ["output"] = new List<object?>
+                { new Dictionary<string, object?> { ["type"] = "message" } }
+            }
+        };
+        // Deliberately non-JSON wire proves the native writer consumes supplied metadata.
+        var frame = new SseFrame("data: not-json\n\n", new SseEvent("response.completed", payload));
+        var writer = Writer((eventPayload, _) =>
+        {
+            ((Dictionary<string, object?>)eventPayload["response"]!)["output"] = new List<object?>();
+            return Task.CompletedTask;
+        });
+        await writer.WriteFramesAsync(Frames(frame), _ => true, () => 23);
+        Assert.Single(JsonDictionaryValue.List(writer.Result!, "output"));
+        Assert.Single(JsonDictionaryValue.List((Dictionary<string, object?>)payload["response"]!, "output"));
+    }
+
+    [Fact]
+    public async Task TypedCallbackBackpressureCancellationAndQuotaDisposeSource()
+    {
+        var disposed = false;
+        var reads = 0;
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cancellation = new CancellationTokenSource();
+        var writer = Writer(async (_, ct) => { entered.SetResult();await Task.Delay(Timeout.InfiniteTimeSpan,ct); });
+        var operation = writer.WriteFramesAsync(Source(), _ => false, () => 0,cancellation.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, reads);
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(()=>operation);
+        Assert.True(disposed);
+        disposed = false;reads = 0;
+        var limited = new MultiAgentModelStreamWriter(frameOptions:new() { MaxEventBytes=1 });
+        await Assert.ThrowsAsync<UpstreamException>(()=>limited.WriteFramesAsync(Source(),_=>false,()=>0));
+        Assert.True(disposed);Assert.Equal(1,reads);
+        async IAsyncEnumerable<SseFrame> Source()
+        {
+            try { for(var i=0;i<2;i++) { reads++;yield return SseFrame.FromJson(new Dictionary<string,object?> { ["type"]="response.output_text.delta",["delta"]="hello" });await Task.CompletedTask; } }
+            finally { disposed=true; }
+        }
+    }
+
+    [Fact]
+    public async Task LegacyAdapterHandlesMultilineDataAndSplitCrLf()
+    {
+        var seen = new List<Dictionary<string,object?>>();
+        var writer = Writer((item,_)=>{seen.Add(item);return Task.CompletedTask;});
+        var multiline = "event: response.output_text.delta\r\ndata: {\"type\":\"response.output_text.delta\",\r\ndata: \"delta\":\" hello\"}\r\n\r\n";
+        await writer.WriteLinesAsync(Chunks((multiline+Terminal()).Select(c=>c.ToString()).ToArray()),_=>false,()=>0);
+        Assert.Equal(" hello",seen[0]["delta"]);
+        Assert.Equal(2,seen.Count);
+    }
+
+    private static async IAsyncEnumerable<SseFrame> Frames(params SseFrame[] frames)
+    { foreach(var frame in frames) { yield return frame;await Task.CompletedTask; } }
 
     private static async IAsyncEnumerable<string> Chunks(params string[] values)
     {

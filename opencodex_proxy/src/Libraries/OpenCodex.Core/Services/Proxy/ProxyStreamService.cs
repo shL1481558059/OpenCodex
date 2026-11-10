@@ -33,7 +33,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         _webSearchHistory = webSearchHistory;
         _responsesWebSocket = responsesWebSocket;
         _outputFrames = outputFrames ?? new();
-        if (_outputFrames.MaxEventBytes <= 0) throw new ArgumentOutOfRangeException(nameof(outputFrames));
+        if (_outputFrames.MaxEventBytes <= 0 || _outputFrames.MaxBufferedRoundBytes <= 0 || _outputFrames.MaxBufferedRoundFrames <= 0) throw new ArgumentOutOfRangeException(nameof(outputFrames));
     }
 
     public async Task StreamAsync(ProxyStreamContext context)
@@ -90,7 +90,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                 };
                 var convertedLines = ConvertRoundsAsync(context, convertedState, tools, context.CancellationToken);
                 streamWriteMetrics = await context.StreamWriter.WriteFramesAsync(
-                    ObserveFrames(SseFrameReader.ReadLines(convertedLines, context.CancellationToken, _outputFrames),
+                    ObserveFrames(ValidateOutputFrames(convertedLines, context.CancellationToken),
                         streamLogCapture, null, context.CancellationToken),
                     SseStreamConverter.CountsForTtft,
                     () => ElapsedMilliseconds(ttftStarted), context.CancellationToken);
@@ -250,6 +250,17 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         return (int)Math.Round(
             Stopwatch.GetElapsedTime(started).TotalMilliseconds,
             MidpointRounding.AwayFromZero);
+    }
+
+    private async IAsyncEnumerable<SseFrame> ValidateOutputFrames(
+        IAsyncEnumerable<SseFrame> frames, [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await foreach (var frame in frames.WithCancellation(cancellationToken))
+        {
+            if (frame.Utf8Length > _outputFrames.MaxEventBytes)
+                throw new InvalidDataException("SSE event exceeds configured MaxEventBytes; output was not truncated.");
+            yield return frame;
+        }
     }
 
     private static async IAsyncEnumerable<SseFrame> ObserveFrames(

@@ -9,7 +9,7 @@ namespace OpenCodex.Core.Services.Proxy;
 
 public sealed partial class ProxyStreamService
 {
-    private async IAsyncEnumerable<string> ConvertRoundsAsync(
+    private async IAsyncEnumerable<SseFrame> ConvertRoundsAsync(
         ProxyStreamContext context,
         ConvertedProxyStreamState state,
         BuiltinToolSession? tools,
@@ -35,7 +35,7 @@ public sealed partial class ProxyStreamService
             var capture = new StreamResponseCapture(context.ChannelType);
             var validated = ValidateUpstreamCompletion(confirmed, capture, token);
             var lines = ConvertRound(context, validated, converted, streamState, skipped, token);
-            string? terminal = null;
+            SseFrame? terminal = null;
             if (!shouldBuffer)
             {
                 try
@@ -55,11 +55,11 @@ public sealed partial class ProxyStreamService
             }
             else
             {
-                List<string> buffered = [];
+                Queue<SseFrame> buffered = new();
                 var retryExhausted = false;
                 try
                 {
-                    buffered = await CollectLinesAsync(lines, token);
+                    buffered = await CollectFramesAsync(lines, _outputFrames, token);
                 }
                 catch (UpstreamException exception)
                     when (ToolContractRetryPolicy.IsUndeclaredToolCall(exception))
@@ -112,7 +112,7 @@ public sealed partial class ProxyStreamService
 
                 if (retryExhausted)
                 {
-                    var failed = streamState!.Fail(
+                    var failed = streamState!.FailFrame(
                         "upstream_tool_contract_error",
                         "The upstream model repeatedly returned an undeclared tool name.",
                         out var finalResponse);
@@ -121,7 +121,7 @@ public sealed partial class ProxyStreamService
                     yield break;
                 }
 
-                foreach (var line in buffered)
+                while (buffered.TryDequeue(out var line))
                 {
                     if (tools is null)
                     {
@@ -166,7 +166,7 @@ public sealed partial class ProxyStreamService
             }
             if (terminal is not null)
             {
-                var (_, terminalPayload) = WebSearchResponsePayload.ParseSseLine(terminal);
+                var terminalPayload = terminal.Event?.Data as Dictionary<string, object?>;
                 if (TryAsObject(GetValue(ObjectValue(terminalPayload ?? [], "response"), "usage"), out var usage))
                 {
                     // Preserve usage details already normalized by the stream converter.
@@ -179,17 +179,17 @@ public sealed partial class ProxyStreamService
             {
                 if (progress.Result is null)
                 {
-                    yield return streamState!.EmitWebSearchAdded(progress.ItemId, progress.Query, out _);
-                    yield return streamState.EmitWebSearchInProgress(progress.ItemId);
-                    yield return streamState.EmitWebSearchSearching(progress.ItemId);
+                    yield return streamState!.EmitWebSearchAddedFrame(progress.ItemId, progress.Query, out _);
+                    yield return streamState.EmitWebSearchInProgressFrame(progress.ItemId);
+                    yield return streamState.EmitWebSearchSearchingFrame(progress.ItemId);
                 }
                 else
                 {
                     if (progress.Result.Status == "completed")
                     {
-                        yield return streamState!.EmitWebSearchCompleted(progress.ItemId);
+                        yield return streamState!.EmitWebSearchCompletedFrame(progress.ItemId);
                     }
-                    yield return streamState!.EmitWebSearchDone(
+                    yield return streamState!.EmitWebSearchDoneFrame(
                         streamState.SearchIndex(progress.ItemId), progress.Result, tools.Binding.IncludeSources);
                 }
             }
@@ -211,14 +211,20 @@ public sealed partial class ProxyStreamService
         }
     }
 
-    private static async Task<List<string>> CollectLinesAsync(
-        IAsyncEnumerable<string> lines,
+    internal static async Task<Queue<SseFrame>> CollectFramesAsync(
+        IAsyncEnumerable<SseFrame> lines, SseFrameOptions options,
         CancellationToken cancellationToken)
     {
-        var result = new List<string>();
+        var result = new Queue<SseFrame>();
+        long bytes = 0;
         await foreach (var line in lines.WithCancellation(cancellationToken))
         {
-            result.Add(line);
+            if (line.Utf8Length > options.MaxEventBytes)
+                throw new InvalidDataException("SSE event exceeds configured MaxEventBytes; output was not truncated.");
+            if (result.Count >= options.MaxBufferedRoundFrames || line.Utf8Length > options.MaxBufferedRoundBytes - bytes)
+                throw new InvalidDataException("SSE round exceeds configured buffer byte/frame budget; output was not truncated.");
+            bytes += line.Utf8Length;
+            result.Enqueue(line);
         }
 
         return result;
@@ -241,7 +247,7 @@ public sealed partial class ProxyStreamService
         }
     }
 
-    private static IAsyncEnumerable<string> ConvertRound(
+    private static IAsyncEnumerable<SseFrame> ConvertRound(
         ProxyStreamContext context,
         IAsyncEnumerable<SseEvent> lines,
         ConvertedStreamResult converted,
@@ -255,19 +261,19 @@ public sealed partial class ProxyStreamService
             && streamOptions.TryGetValue("include_usage", out var usage) && usage is true;
         return (context.EntryProtocol, context.ChannelType) switch
         {
-            (ProtocolConverter.Responses, ProtocolConverter.Chat) => SseStreamConverter.ChatToResponsesEvents(
+            (ProtocolConverter.Responses, ProtocolConverter.Chat) => SseStreamConverter.ChatToResponsesFrames(
                 lines, model, converted, skipped, state?.HasResponse == true,
                 state?.SequenceNumber ?? 0, state?.NextOutputIndex ?? 0, cancellationToken),
-            (ProtocolConverter.Responses, ProtocolConverter.Messages) => SseStreamConverter.MessagesToResponsesEvents(
+            (ProtocolConverter.Responses, ProtocolConverter.Messages) => SseStreamConverter.MessagesToResponsesFrames(
                 lines, model, converted, skipped, state?.HasResponse == true,
                 state?.SequenceNumber ?? 0, state?.NextOutputIndex ?? 0, cancellationToken),
-            (ProtocolConverter.Messages, ProtocolConverter.Chat) => SseStreamConverter.ChatToMessagesEvents(
+            (ProtocolConverter.Messages, ProtocolConverter.Chat) => SseStreamConverter.ChatToMessagesFrames(
                 lines, model, converted, null, false, cancellationToken),
-            (ProtocolConverter.Chat, ProtocolConverter.Messages) => SseStreamConverter.MessagesToChatEvents(
+            (ProtocolConverter.Chat, ProtocolConverter.Messages) => SseStreamConverter.MessagesToChatFrames(
                 lines, model, converted, null, includeUsage, cancellationToken),
-            (ProtocolConverter.Chat, ProtocolConverter.Responses) => SseStreamConverter.ResponsesToChatEvents(
+            (ProtocolConverter.Chat, ProtocolConverter.Responses) => SseStreamConverter.ResponsesToChatFrames(
                 lines, model, converted, null, cancellationToken),
-            (ProtocolConverter.Messages, ProtocolConverter.Responses) => SseStreamConverter.ResponsesToMessagesEvents(
+            (ProtocolConverter.Messages, ProtocolConverter.Responses) => SseStreamConverter.ResponsesToMessagesFrames(
                 lines, model, converted, null, false, cancellationToken),
             _ => throw new BadRequestException($"streaming conversion not implemented for {context.EntryProtocol} to {context.ChannelType}")
         };

@@ -72,6 +72,17 @@ public static partial class SseStreamConverter
         bool IncludeUsage,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        await foreach (var frame in MessagesToChatFrames(upstreamEvents, model, result, SkipToolNames, IncludeUsage, cancellationToken)) yield return frame.WireText;
+    }
+
+    internal static async IAsyncEnumerable<SseFrame> MessagesToChatFrames(
+        IAsyncEnumerable<SseEvent> upstreamEvents,
+        string? model,
+        ConvertedStreamResult result,
+        IReadOnlySet<string>? SkipToolNames,
+        bool IncludeUsage,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
         var completionId = $"chatcmpl_{Guid.NewGuid():N}";
         var responseModel = model ?? string.Empty;
         var createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -86,7 +97,7 @@ public static partial class SseStreamConverter
         var chatToolIndexByBlock = new Dictionary<int, int>();
         var nextChatToolIndex = 0;
 
-        string EmitChunk(List<object?> choices)
+        SseFrame EmitChunk(List<object?> choices)
         {
             var chunk = new Dictionary<string, object?>
             {
@@ -96,10 +107,10 @@ public static partial class SseStreamConverter
                 ["model"] = responseModel,
                 ["choices"] = choices
             };
-            return $"data: {JsonSerializer.Serialize(chunk, JsonOptions)}\n\n";
+            return SseFrame.FromJson(chunk);
         }
 
-        List<string> EnsureRoleChunk()
+        List<SseFrame> EnsureRoleChunk()
         {
             if (firstRoleEmitted)
             {
@@ -141,7 +152,7 @@ public static partial class SseStreamConverter
                 {
                     ["error"] = GetValue(payload, "error") ?? payload
                 };
-                yield return $"data: {JsonSerializer.Serialize(errorPayload, JsonOptions)}\n\n";
+                yield return SseFrame.FromJson(errorPayload);
                 yield break;
             }
 
@@ -410,10 +421,10 @@ public static partial class SseStreamConverter
                     ["total_tokens"] = promptTokens + completionTokens
                 }
             };
-            yield return $"data: {JsonSerializer.Serialize(usageChunk, JsonOptions)}\n\n";
+            yield return SseFrame.FromJson(usageChunk);
         }
 
-        yield return "data: [DONE]\n\n";
+        yield return SseFrame.Done;
     }
 
     private static string MessagesStopReasonToChatFinishReason(string stopReason)

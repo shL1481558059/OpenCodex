@@ -55,6 +55,17 @@ public static partial class SseStreamConverter
         bool SkipMessageStart,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        await foreach (var frame in ChatToMessagesFrames(upstreamEvents, model, result, SkipToolNames, SkipMessageStart, cancellationToken)) yield return frame.WireText;
+    }
+
+    internal static async IAsyncEnumerable<SseFrame> ChatToMessagesFrames(
+        IAsyncEnumerable<SseEvent> upstreamEvents,
+        string? model,
+        ConvertedStreamResult result,
+        IReadOnlySet<string>? SkipToolNames,
+        bool SkipMessageStart,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
         var messageId = $"msg_{Guid.NewGuid():N}";
         var responseModel = model;
         var createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -76,10 +87,10 @@ public static partial class SseStreamConverter
         // 一旦 stop 后不能再次追加 delta。因此保留原始片段，读取完成后按工具顺序逐块输出。
         var toolArgumentDeltas = new Dictionary<int, List<string>>();
 
-        string Emit(string eventName, Dictionary<string, object?> payload)
+        SseFrame Emit(string eventName, Dictionary<string, object?> payload)
         {
             payload["type"] = eventName;
-            return $"event: {eventName}\ndata: {JsonSerializer.Serialize(payload, JsonOptions)}\n\n";
+            return SseFrame.FromJson(payload, eventName);
         }
 
         int AllocateBlockIndex()
@@ -87,7 +98,7 @@ public static partial class SseStreamConverter
             return nextBlockIndex++;
         }
 
-        void CloseOpenBlock(List<string> output)
+        void CloseOpenBlock(List<SseFrame> output)
         {
             if (openBlockIndex is null)
             {
@@ -103,7 +114,7 @@ public static partial class SseStreamConverter
             openBlockIndex = null;
         }
 
-        List<string> EnsureThinkingStarted()
+        List<SseFrame> EnsureThinkingStarted()
         {
             if (thinkingStarted)
             {
@@ -112,7 +123,7 @@ public static partial class SseStreamConverter
 
             thinkingStarted = true;
             thinkingIndex = AllocateBlockIndex();
-            var output = new List<string>();
+            var output = new List<SseFrame>();
             CloseOpenBlock(output);
             openBlockIndex = thinkingIndex;
             output.Add(Emit(
@@ -129,7 +140,7 @@ public static partial class SseStreamConverter
             return output;
         }
 
-        List<string> EnsureTextStarted()
+        List<SseFrame> EnsureTextStarted()
         {
             if (textStarted)
             {
@@ -138,7 +149,7 @@ public static partial class SseStreamConverter
 
             textStarted = true;
             textIndex = AllocateBlockIndex();
-            var output = new List<string>();
+            var output = new List<SseFrame>();
             CloseOpenBlock(output);
             openBlockIndex = textIndex;
             output.Add(Emit(
@@ -372,7 +383,7 @@ public static partial class SseStreamConverter
             ?? BuildEmptyChatCompletion(responseModel, createdAt, finishReason, usage);
 
         // 关闭最后一个仍打开的块
-        var closingOutput = new List<string>();
+        var closingOutput = new List<SseFrame>();
         CloseOpenBlock(closingOutput);
         foreach (var line in closingOutput)
         {

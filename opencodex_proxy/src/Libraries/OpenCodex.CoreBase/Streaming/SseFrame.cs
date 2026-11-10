@@ -1,3 +1,4 @@
+using System.Text.Encodings.Web;
 using System.Text.Json;
 
 namespace OpenCodex.Core.Protocols;
@@ -15,7 +16,7 @@ public sealed class SseFrame
 {
     public SseFrame(string wireText, SseEvent? decoded, bool boundaryComplete = true, bool malformed = false)
     {
-        WireText = wireText;
+        _wireText = wireText;
         Event = decoded;
         BoundaryComplete = boundaryComplete;
         Malformed = malformed;
@@ -31,7 +32,21 @@ public sealed class SseFrame
         IsTerminal = IsDone || IsResponseCompleted || IsError || Type == "message_stop";
     }
 
-    public string WireText { get; }
+    private readonly Lazy<string>? _generatedWire;
+    private readonly string _wireText;
+    public string WireText => _generatedWire?.Value ?? _wireText;
+    private int _utf8Length = -1;
+    public int Utf8Length
+    {
+        get
+        {
+            var cached = Volatile.Read(ref _utf8Length);
+            if (cached >= 0) return cached;
+            var length = System.Text.Encoding.UTF8.GetByteCount(WireText);
+            Interlocked.CompareExchange(ref _utf8Length, length, -1);
+            return length;
+        }
+    }
     public SseEvent? Event { get; }
     public bool BoundaryComplete { get; }
     public bool Malformed { get; }
@@ -43,6 +58,42 @@ public sealed class SseFrame
     public bool IsTerminal { get; }
 
     public static SseFrame Done { get; } = new("data: [DONE]\n\n", new SseEvent("message", "[DONE]"));
+
+    private static readonly JsonSerializerOptions GeneratedJson = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
+    private SseFrame(SseEvent snapshot, string? eventName) : this("", snapshot)
+    {
+        _generatedWire = new Lazy<string>(() =>
+        {
+            var data = JsonSerializer.Serialize(snapshot.Data, GeneratedJson);
+            return eventName is null ? $"data: {data}\n\n" : $"event: {eventName}\ndata: {data}\n\n";
+        });
+    }
+
+    /// <summary>Capture a generated event before its producer mutates the next round/item.
+    /// Freeze the graph without an encode/parse round-trip; wire serialization is lazy/once.
+    /// Consumers must still treat Event.Data as read-only, like decoded upstream events.</summary>
+    public static SseFrame FromJson(IReadOnlyDictionary<string, object?> payload, string? eventName = null) =>
+        new(new SseEvent(eventName ?? "message", Freeze(payload)), eventName);
+
+    internal bool IsWireMaterialized => _generatedWire?.IsValueCreated ?? true;
+
+    private static object? Freeze(object? value, int depth = 0)
+    {
+        if (depth > 64) throw new JsonException("Generated event exceeds the JSON depth limit or contains a cycle.");
+        return value switch
+        {
+            null => null,
+            string => value,
+            bool or byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal => value,
+            JsonElement element => Own(element),
+            IReadOnlyDictionary<string, object?> dictionary => dictionary.ToDictionary(p => p.Key, p => Freeze(p.Value, depth + 1), StringComparer.Ordinal),
+            IReadOnlyList<object?> items => items.Select(item => Freeze(item, depth + 1)).ToList(),
+            // Extension DTOs / typed dictionaries / value-type arrays normalize to JSON values
+            // once. Do not mistake IDictionary<string,string> for a JSON array of KeyValuePairs.
+            _ => Own(JsonSerializer.SerializeToElement(value, GeneratedJson))
+        };
+    }
 
     internal static SseFrame Decode(string wire, string name, string? data, bool complete)
     {

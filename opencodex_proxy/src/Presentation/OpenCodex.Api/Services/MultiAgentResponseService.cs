@@ -165,7 +165,7 @@ public sealed partial class MultiAgentResponseService(
         await using var scope = scopes.CreateAsyncScope();
         var endpoint = scope.ServiceProvider.GetRequiredService<IProxyEndpointService>();
         payload["stream"] = true;
-        var writer = new MultiAgentModelStreamWriter(onEvent);
+        var writer = new MultiAgentModelStreamWriter(onEvent, configuration.GetSection("ProxyStreaming").Get<SseFrameOptions>());
         var result = await endpoint.ProxyAsync(new ProxyEndpointContext(ProtocolConverter.Responses, payload,
             new ProxyRequestMetadata(metadata.Method, metadata.Path, metadata.ClientIp, metadata.Headers),
             writer, token));
