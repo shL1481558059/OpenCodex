@@ -31,6 +31,13 @@ public sealed class ResponsesUpstreamTransport(
         ProxyStreamContext context,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        await foreach (var frame in StreamEventsAsync(context, cancellationToken)) yield return frame.WireText;
+    }
+
+    public async IAsyncEnumerable<SseFrame> StreamEventsAsync(
+        ProxyStreamContext context,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
         var mode = ReadMode(context.Route.Channel);
         if (!CanUseWebSocket(context, mode))
         {
@@ -514,18 +521,18 @@ public sealed class ResponsesUpstreamTransport(
         }
     }
 
-    private static string Sse(Dictionary<string, object?> payload)
+    private static SseFrame Sse(Dictionary<string, object?> payload)
     {
         var type = JsonDictionaryValue.String(payload, "type");
-        return $"event: {type}\ndata: {JsonSerializer.Serialize(payload)}\n\n";
+        return new SseFrame($"event: {type}\ndata: {JsonSerializer.Serialize(payload)}\n\n", new SseEvent(type, payload));
     }
 
-    private async IAsyncEnumerable<string> HttpStreamAsync(
+    private async IAsyncEnumerable<SseFrame> HttpStreamAsync(
         ProxyStreamContext context,
         IReadOnlyDictionary<string, object?> payload,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        await foreach (var line in http.StreamJsonAsync(
+        await foreach (var line in http.StreamEventsAsync(
             context.Route.Channel,
             payload,
             context.DefaultTimeout,

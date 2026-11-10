@@ -7,8 +7,8 @@ namespace OpenCodex.Core.Services.Proxy;
 /// </summary>
 internal static class UpstreamStreamPrimer
 {
-    public static async Task<IAsyncEnumerable<string>> PrimeAsync(
-        IAsyncEnumerable<string> lines,
+    public static async Task<IAsyncEnumerable<T>> PrimeAsync<T>(
+        IAsyncEnumerable<T> lines,
         CancellationToken cancellationToken)
     {
         var enumerator = lines.GetAsyncEnumerator(cancellationToken);
@@ -26,16 +26,16 @@ internal static class UpstreamStreamPrimer
         if (!hasFirstLine)
         {
             await enumerator.DisposeAsync();
-            return EmptyStreamLines(cancellationToken);
+            return EmptyStreamLines<T>(cancellationToken);
         }
 
-        return ReplayPrimedStreamLines(
+        return ReplayPrimedStreamLines<T>(
             enumerator.Current,
             enumerator,
             cancellationToken);
     }
 
-    private static async IAsyncEnumerable<string> EmptyStreamLines(
+    private static async IAsyncEnumerable<T> EmptyStreamLines<T>(
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -43,9 +43,9 @@ internal static class UpstreamStreamPrimer
         yield break;
     }
 
-    private static async IAsyncEnumerable<string> ReplayPrimedStreamLines(
-        string firstLine,
-        IAsyncEnumerator<string> enumerator,
+    private static async IAsyncEnumerable<T> ReplayPrimedStreamLines<T>(
+        T firstLine,
+        IAsyncEnumerator<T> enumerator,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         try

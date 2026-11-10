@@ -1,3 +1,4 @@
+using OpenCodex.Core.Protocols;
 using System.Net;
 using System.Net.Http.Headers;
 using OpenCodex.Core.Errors;
@@ -37,6 +38,7 @@ public sealed partial class HttpUpstreamClient : IUpstreamClient, IUpstreamModel
     private const double RetryJitterRatio = 0.2;
 
     private readonly HttpClient _httpClient;
+    private readonly SseTransportOptions _streamOptions;
 
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
 
@@ -44,9 +46,12 @@ public sealed partial class HttpUpstreamClient : IUpstreamClient, IUpstreamModel
     // 必须保持单一构造函数：AddHttpClient 的 ActivatorUtilities 工厂遇到多个候选构造函数会解析失败。
     public HttpUpstreamClient(
         HttpClient httpClient,
-        Func<TimeSpan, CancellationToken, Task>? delay = null)
+        Func<TimeSpan, CancellationToken, Task>? delay = null,
+        SseTransportOptions? streamOptions = null)
     {
         _httpClient = httpClient;
+        _streamOptions = streamOptions ?? new();
+        _streamOptions.Validate();
         _delay = delay ?? ((duration, token) => Task.Delay(duration, token));
     }
 

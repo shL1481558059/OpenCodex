@@ -59,6 +59,14 @@ internal sealed class StreamResponseCapture
 
     internal bool IsComplete => !_observerFailed && _accumulator.IsComplete;
 
+    public void Accept(SseFrame frame)
+    {
+        if (_observerFailed || frame.Event is null) return;
+        if (frame.Malformed) { _malformedEventCount++; return; }
+        try { _accumulator.Accept(frame.Event); }
+        catch (Exception exception) when (IsRecoverableCaptureException(exception)) { _observerFailed = true; }
+    }
+
     public void Accept(string chunk)
     {
         if (_observerFailed)

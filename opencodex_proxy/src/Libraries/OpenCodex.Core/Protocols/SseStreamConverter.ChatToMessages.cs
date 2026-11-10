@@ -44,6 +44,17 @@ public static partial class SseStreamConverter
         bool SkipMessageStart,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        await foreach (var line in ChatToMessagesEvents(ParseEvents(upstreamLines, cancellationToken), model, result, SkipToolNames, SkipMessageStart, cancellationToken)) yield return line;
+    }
+
+    internal static async IAsyncEnumerable<string> ChatToMessagesEvents(
+        IAsyncEnumerable<SseEvent> upstreamEvents,
+        string? model,
+        ConvertedStreamResult result,
+        IReadOnlySet<string>? SkipToolNames,
+        bool SkipMessageStart,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
         var messageId = $"msg_{Guid.NewGuid():N}";
         var responseModel = model;
         var createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -145,7 +156,7 @@ public static partial class SseStreamConverter
         }
 
         // 提前启动上游HTTP请求，避免延迟（与现有转换器一致的 TTFT 策略）
-        var enumerator = ParseEvents(upstreamLines, cancellationToken).GetAsyncEnumerator(cancellationToken);
+        await using var enumerator = upstreamEvents.GetAsyncEnumerator(cancellationToken);
 
         if (!SkipMessageStart)
         {

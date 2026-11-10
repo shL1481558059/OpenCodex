@@ -47,6 +47,17 @@ public static partial class SseStreamConverter
         bool SkipMessageStart,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        await foreach (var line in ResponsesToMessagesEvents(ParseEvents(upstreamLines, cancellationToken), model, result, SkipToolNames, SkipMessageStart, cancellationToken)) yield return line;
+    }
+
+    internal static async IAsyncEnumerable<string> ResponsesToMessagesEvents(
+        IAsyncEnumerable<SseEvent> upstreamEvents,
+        string? model,
+        ConvertedStreamResult result,
+        IReadOnlySet<string>? SkipToolNames,
+        bool SkipMessageStart,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
         var messageId = $"msg_{Guid.NewGuid():N}";
         var responseModel = model ?? string.Empty;
         var upstreamResponseModel = string.Empty;
@@ -142,7 +153,7 @@ public static partial class SseStreamConverter
             return output;
         }
 
-        var enumerator = ParseEvents(upstreamLines, cancellationToken).GetAsyncEnumerator(cancellationToken);
+        await using var enumerator = upstreamEvents.GetAsyncEnumerator(cancellationToken);
 
         if (!SkipMessageStart)
         {

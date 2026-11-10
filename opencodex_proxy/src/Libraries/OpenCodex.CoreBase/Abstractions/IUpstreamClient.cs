@@ -1,3 +1,5 @@
+using OpenCodex.Core.Protocols;
+
 namespace OpenCodex.CoreBase.Abstractions;
 
 /// <summary>
@@ -32,6 +34,15 @@ public interface IUpstreamClient
         IReadOnlyDictionary<string, object?> payload,
         int defaultTimeout,
         CancellationToken cancellationToken);
+
+    // Compatibility default for existing integrations. Production HTTP/WS provide decoded frames.
+    IAsyncEnumerable<SseFrame> StreamEventsAsync(
+        IReadOnlyDictionary<string, object?> channel,
+        IReadOnlyDictionary<string, object?> payload,
+        int defaultTimeout,
+        CancellationToken cancellationToken) =>
+        SseFrameReader.ReadLines(StreamJsonAsync(channel, payload, defaultTimeout, cancellationToken), cancellationToken);
+
 }
 
 /// <summary>

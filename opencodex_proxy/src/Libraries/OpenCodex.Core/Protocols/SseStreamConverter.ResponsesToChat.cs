@@ -43,6 +43,16 @@ public static partial class SseStreamConverter
         IReadOnlySet<string>? SkipToolNames,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        await foreach (var line in ResponsesToChatEvents(ParseEvents(upstreamLines, cancellationToken), model, result, SkipToolNames, cancellationToken)) yield return line;
+    }
+
+    internal static async IAsyncEnumerable<string> ResponsesToChatEvents(
+        IAsyncEnumerable<SseEvent> upstreamEvents,
+        string? model,
+        ConvertedStreamResult result,
+        IReadOnlySet<string>? SkipToolNames,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
         var completionId = $"chatcmpl_{Guid.NewGuid():N}";
         var responseModel = model ?? string.Empty;
         var upstreamResponseModel = string.Empty;
@@ -97,7 +107,7 @@ public static partial class SseStreamConverter
             ];
         }
 
-        var enumerator = ParseEvents(upstreamLines, cancellationToken).GetAsyncEnumerator(cancellationToken);
+        await using var enumerator = upstreamEvents.GetAsyncEnumerator(cancellationToken);
 
         while (await enumerator.MoveNextAsync())
         {

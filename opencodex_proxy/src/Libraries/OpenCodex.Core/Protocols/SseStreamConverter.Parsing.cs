@@ -8,42 +8,8 @@ public static partial class SseStreamConverter
         IAsyncEnumerable<string> lines,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var eventName = "message";
-        var dataLines = new List<string>();
-        await foreach (var rawLine in lines.WithCancellation(cancellationToken))
-        {
-            var line = rawLine.TrimEnd('\r', '\n');
-            if (line.Length == 0)
-            {
-                if (dataLines.Count > 0)
-                {
-                    yield return new SseEvent(eventName, ParseData(string.Join("\n", dataLines)));
-                }
-
-                eventName = "message";
-                dataLines = [];
-                continue;
-            }
-
-            if (line.StartsWith(':'))
-            {
-                continue;
-            }
-
-            if (line.StartsWith("event:", StringComparison.Ordinal))
-            {
-                eventName = line["event:".Length..].Trim();
-            }
-            else if (line.StartsWith("data:", StringComparison.Ordinal))
-            {
-                dataLines.Add(line["data:".Length..].TrimStart());
-            }
-        }
-
-        if (dataLines.Count > 0)
-        {
-            yield return new SseEvent(eventName, ParseData(string.Join("\n", dataLines)));
-        }
+        await foreach (var frame in SseFrameReader.ReadLines(lines, cancellationToken))
+            if (frame.Event is { } decoded) yield return decoded;
     }
 
     public static bool CountsForTtft(string line)
@@ -53,19 +19,6 @@ public static partial class SseStreamConverter
             || line.Contains("response.function_call_arguments.delta", StringComparison.Ordinal)
             || line.Contains("response.custom_tool_call_input.delta", StringComparison.Ordinal)
             || line.Contains("response.output_item.done", StringComparison.Ordinal);
-    }
-
-    private static object? ParseData(string data)
-    {
-        try
-        {
-            using var document = JsonDocument.Parse(data);
-            return FromJsonElement(document.RootElement);
-        }
-        catch (JsonException)
-        {
-            return data;
-        }
     }
 
     private static Dictionary<string, object?> ChatUsageToResponsesUsage(

@@ -29,7 +29,7 @@ public sealed partial class ProxyStreamService
         {
             var token = tools?.Token(cancellationToken) ?? cancellationToken;
             var converted = new ConvertedStreamResult { TextFormat = textFormat, ToolCallMappings = mappings };
-            var upstreamLines = _upstream.StreamJsonAsync(context.Route.Channel, state.UpstreamRequest, context.DefaultTimeout, token);
+            var upstreamLines = _upstream.StreamEventsAsync(context.Route.Channel, state.UpstreamRequest, context.DefaultTimeout, token);
             var confirmed = await UpstreamStreamPrimer.PrimeAsync(
                 upstreamLines, token);
             var capture = new StreamResponseCapture(context.ChannelType);
@@ -224,15 +224,15 @@ public sealed partial class ProxyStreamService
         return result;
     }
 
-    private static async IAsyncEnumerable<string> ValidateUpstreamCompletion(
-        IAsyncEnumerable<string> lines,
+    private static async IAsyncEnumerable<SseEvent> ValidateUpstreamCompletion(
+        IAsyncEnumerable<SseFrame> lines,
         StreamResponseCapture capture,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         await foreach (var line in lines.WithCancellation(cancellationToken))
         {
             capture.Accept(line);
-            yield return line;
+            if (line.Event is { } decoded) yield return decoded;
         }
 
         if (!capture.Complete(StreamCaptureTermination.Completed).Completed)
@@ -243,7 +243,7 @@ public sealed partial class ProxyStreamService
 
     private static IAsyncEnumerable<string> ConvertRound(
         ProxyStreamContext context,
-        IAsyncEnumerable<string> lines,
+        IAsyncEnumerable<SseEvent> lines,
         ConvertedStreamResult converted,
         WebSearchStreamEventState? state,
         IReadOnlySet<string>? skipped,

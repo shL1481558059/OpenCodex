@@ -1,3 +1,4 @@
+using OpenCodex.Core.Protocols;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -9,6 +10,19 @@ namespace OpenCodex.Core.ExternalIntegrations;
 public sealed partial class HttpUpstreamClient
 {
     public async IAsyncEnumerable<string> StreamJsonAsync(
+        IReadOnlyDictionary<string, object?> channel,
+        IReadOnlyDictionary<string, object?> payload,
+        int defaultTimeout,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await foreach (var frame in StreamEventsAsync(channel, payload, defaultTimeout, cancellationToken))
+        {
+            using var lines = new StringReader(frame.WireText);
+            while (lines.ReadLine() is { } line) yield return line + "\n";
+        }
+    }
+
+    public async IAsyncEnumerable<SseFrame> StreamEventsAsync(
         IReadOnlyDictionary<string, object?> channel,
         IReadOnlyDictionary<string, object?> payload,
         int defaultTimeout,
@@ -27,7 +41,10 @@ public sealed partial class HttpUpstreamClient
         totalCts.CancelAfter(policy.Total);
         HttpResponseMessage? response = null;
         StreamReader? reader = null;
-        var bufferedLines = new List<string>();
+        var bufferedFrames = new List<SseFrame>();
+        var eventOptions = new SseFrameOptions { MaxEventBytes = _streamOptions.MaxEventBytes };
+        SseHttpFrameReader? frames = null;
+        using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(totalCts.Token);
 
         try
         {
@@ -50,8 +67,11 @@ public sealed partial class HttpUpstreamClient
                     {
                         var stream = await response.Content.ReadAsStreamAsync(attemptCts.Token);
                         reader = new StreamReader(stream, Encoding.UTF8);
-                        bufferedLines.Clear();
-                        var probe = await ProbeStreamForRetryableError(reader, bufferedLines, attemptCts.Token);
+                        bufferedFrames.Clear();
+                        frames = new SseHttpFrameReader(reader, eventOptions);
+                        var probe = await ProbeStreamForRetryableError(frames, bufferedFrames,
+                            _streamOptions.MaxProbeBytes,
+                            _streamOptions.MaxProbeFrames, attemptCts.Token);
                         if (probe.Error is not null)
                         {
                             if (!probe.Error.Retryable || attempt >= retryCount)
@@ -131,21 +151,18 @@ public sealed partial class HttpUpstreamClient
             }
 
             // 缓冲回放也位于资源作用域内，消费者在首行停止时仍会释放响应。
-            foreach (var line in bufferedLines)
+            foreach (var frame in bufferedFrames)
             {
                 ThrowIfStreamBudgetExpired(channel, totalCts.Token, cancellationToken);
-                yield return line;
+                yield return frame;
             }
+            bufferedFrames.Clear();
 
             while (true)
             {
-                var line = await ReadStreamLineAsync(reader!, policy.Idle, channel, totalCts.Token, cancellationToken);
-                if (line is null)
-                {
-                    break;
-                }
-
-                yield return line + "\n";
+                var frame = await ReadStreamFrameAsync(frames!, idleCts, policy.Idle, channel, totalCts.Token, cancellationToken);
+                if (frame is null) break;
+                yield return frame;
             }
         }
         finally
@@ -155,25 +172,26 @@ public sealed partial class HttpUpstreamClient
         }
     }
 
-    private static async Task<string?> ReadStreamLineAsync(
-        StreamReader reader,
+    private static async Task<SseFrame?> ReadStreamFrameAsync(
+        SseHttpFrameReader reader,
+        CancellationTokenSource idleCts,
         TimeSpan idleTimeout,
         IReadOnlyDictionary<string, object?> channel,
         CancellationToken totalToken,
         CancellationToken cancellationToken)
     {
         ThrowIfStreamBudgetExpired(channel, totalToken, cancellationToken);
-        using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(totalToken);
         idleCts.CancelAfter(idleTimeout);
         try
         {
-            return await reader.ReadLineAsync(idleCts.Token);
+            return await reader.ReadAsync(idleCts.Token, idleCts, idleTimeout);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             ThrowIfStreamBudgetExpired(channel, totalToken, cancellationToken);
             throw StreamTimeout(channel, "upstream stream idle timed out");
         }
+        finally { idleCts.CancelAfter(System.Threading.Timeout.InfiniteTimeSpan); }
     }
 
     private static void ThrowIfStreamBudgetExpired(
@@ -196,122 +214,86 @@ public sealed partial class HttpUpstreamClient
 
     // 读取流直到遇到有效内容或流结束，检查是否只包含可忽略的响应骨架。
     private static async Task<StreamProbeResult> ProbeStreamForRetryableError(
-        StreamReader reader,
-        List<string> bufferedLines,
-        CancellationToken cancellationToken)
+        SseHttpFrameReader reader, List<SseFrame> buffered,
+        int maxBytes, int maxFrames, CancellationToken cancellationToken)
     {
+        long bytes = 0;
         while (true)
         {
-            var line = await reader.ReadLineAsync(cancellationToken);
-            if (line is null)
-            {
-                return new StreamProbeResult { EmptySkeleton = true };
-            }
+            var frame = await reader.ReadAsync(cancellationToken);
+            if (frame is null) return new StreamProbeResult { EmptySkeleton = true };
+            if (Inspect(frame) is { } outcome) return outcome;
+        }
 
-            bufferedLines.Add(line + "\n");
-
-            if (!line.StartsWith("data:", StringComparison.Ordinal))
-            {
-                var trimmed = line.Trim();
-                // SSE 元数据和心跳不是正文；必须读到 data 才能判断首段错误。
-                if (trimmed.Length != 0
-                    && !trimmed.StartsWith(':')
-                    && !trimmed.StartsWith("event:", StringComparison.Ordinal)
-                    && !trimmed.StartsWith("id:", StringComparison.Ordinal)
-                    && !trimmed.StartsWith("retry:", StringComparison.Ordinal))
-                {
-                    return new StreamProbeResult { EmptySkeleton = false };
-                }
-
-                continue;
-            }
-
-            var json = line["data:".Length..].TrimStart();
-            if (json.Length == 0 || json == "[DONE]")
-            {
-                // 空 data 行可继续观察；[DONE] 已是明确结束标记，继续等待可能会保持连接。
-                if (json == "[DONE]")
-                {
-                    return new StreamProbeResult { EmptySkeleton = false };
-                }
-
-                continue;
-            }
-
-            try
-            {
-                using var document = JsonDocument.Parse(json);
-                if (TryGetStreamErrorFromElement(document.RootElement) is { } streamError)
-                {
-                    return new StreamProbeResult
-                    {
-                        Error = streamError
-                    };
-                }
-
-                var type = document.RootElement.ValueKind == JsonValueKind.Object
-                    && document.RootElement.TryGetProperty("type", out var typeElement)
-                    && typeElement.ValueKind == JsonValueKind.String
-                    ? typeElement.GetString()
-                    : null;
-                if (type is not ("response.created" or "response.in_progress"))
-                {
-                    return new StreamProbeResult { EmptySkeleton = false };
-                }
-
-                continue;
-            }
-            catch (JsonException)
-            {
-                // 非 JSON data 行，不视为可重试错误
-                return new StreamProbeResult { EmptySkeleton = false };
-            }
+        StreamProbeResult? Inspect(SseFrame frame)
+        {
+            bytes += Encoding.UTF8.GetByteCount(frame.WireText);
+            if (bytes > maxBytes || buffered.Count >= maxFrames)
+                throw new UpstreamException("upstream pre-content SSE buffer limit exceeded");
+            buffered.Add(frame);
+            if (frame.Event is null || frame.Malformed && frame.Event.Data is "") return null;
+            if (TryGetStreamError(frame.Event.Data) is { } error) return new() { Error = error };
+            return frame.Type is "response.created" or "response.in_progress" ? null : new() { EmptySkeleton = false };
         }
     }
 
-    // 只在尚未发布正文时重试瞬态错误；错误状态与重试资格分别判定。
-    private static StreamError? TryGetStreamErrorFromElement(JsonElement root)
+    // Fixed-size reads ensure a malicious single physical line cannot allocate an unbounded
+    // StreamReader.ReadLine result before the event limit is checked. Queue holds at most one
+    // 4096-character read's frames, not the response. Parser survives the pre-content probe.
+    private sealed class SseHttpFrameReader(StreamReader reader, SseFrameOptions options)
     {
-        if (root.ValueKind != JsonValueKind.Object
-            || StreamErrorText(root, "type") != "error"
-            || !root.TryGetProperty("error", out var error)
-            || error.ValueKind != JsonValueKind.Object)
+        private readonly char[] _buffer = new char[4096];
+        private readonly Queue<SseFrame> _ready = new();
+        private readonly SseFrameReader _parser = new(options);
+        private bool _ended;
+        public async Task<SseFrame?> ReadAsync(CancellationToken token,
+            CancellationTokenSource? idle = null, TimeSpan idleTimeout = default)
         {
-            return null;
+            while (_ready.Count == 0 && !_ended)
+            {
+                idle?.CancelAfter(idleTimeout);
+                var count = await reader.ReadAsync(_buffer.AsMemory(), token);
+                if (count == 0)
+                {
+                    _ended = true;
+                    if (_parser.Complete() is { } final) _ready.Enqueue(final);
+                }
+                else
+                {
+                    try
+                    {
+                        foreach (var frame in _parser.Feed(new string(_buffer, 0, count))) _ready.Enqueue(frame);
+                    }
+                    catch (InvalidDataException exception)
+                    {
+                        throw new UpstreamException(exception.Message, ProxyHttpStatus.BadGateway);
+                    }
+                }
+            }
+            return _ready.Count > 0 ? _ready.Dequeue() : null;
         }
+    }
 
-        var code = StreamErrorText(error, "code");
-        var type = StreamErrorText(error, "type");
+    private static StreamError? TryGetStreamError(object? data)
+    {
+        if (data is not IReadOnlyDictionary<string, object?> root || JsonDictionaryValue.String(root, "type") != "error"
+            || JsonDictionaryValue.Get(root, "error") is not IReadOnlyDictionary<string, object?> error) return null;
+        var code = JsonDictionaryValue.String(error, "code");
+        var type = JsonDictionaryValue.String(error, "type");
         var status = StreamErrorStatus(error) ?? StreamErrorStatus(root)
-            ?? StreamErrorStatusFromIdentifier(code) ?? StreamErrorStatusFromIdentifier(type)
-            ?? ProxyHttpStatus.BadGateway;
-        var message = StreamErrorText(error, "message");
+            ?? StreamErrorStatusFromIdentifier(code) ?? StreamErrorStatusFromIdentifier(type) ?? ProxyHttpStatus.BadGateway;
+        var message = JsonDictionaryValue.String(error, "message");
         if (message.Length == 0) message = "upstream stream failed";
         var identifier = code.Length > 0 ? code : type;
         if (identifier.Length > 0) message = $"{message} ({identifier})";
-        return new StreamError
-        {
-            Message = message, Body = FromJsonElement(root), StatusCode = status,
-            Retryable = status == ProxyHttpStatus.TooManyRequests || status >= 500
-        };
+        return new() { Message = message, Body = data, StatusCode = status,
+            Retryable = status == ProxyHttpStatus.TooManyRequests || status >= 500 };
     }
 
-    private static string StreamErrorText(JsonElement value, string name)
-    {
-        return value.TryGetProperty(name, out var field) && field.ValueKind == JsonValueKind.String
-            ? field.GetString() ?? "" : "";
-    }
-
-    private static int? StreamErrorStatus(JsonElement value)
+    private static int? StreamErrorStatus(IReadOnlyDictionary<string, object?> value)
     {
         foreach (var name in new[] { "status", "status_code", "http_status" })
-        {
-            if (!value.TryGetProperty(name, out var field)) continue;
-            if (field.ValueKind == JsonValueKind.Number && field.TryGetInt32(out var number) && number is >= 400 and <= 599)
-                return number;
-            if (field.ValueKind == JsonValueKind.String && int.TryParse(field.GetString(), out number) && number is >= 400 and <= 599)
-                return number;
-        }
+            if (int.TryParse(JsonDictionaryValue.Get(value, name)?.ToString(), out var status) && status is >= 400 and <= 599) return status;
         return null;
     }
 

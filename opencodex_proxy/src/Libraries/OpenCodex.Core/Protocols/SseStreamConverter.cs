@@ -104,19 +104,6 @@ public static partial class SseStreamConverter
     }
 }
 
-public sealed class SseEvent
-{
-    public SseEvent(string eventName, object? data)
-    {
-        EventName = eventName;
-        Data = data;
-    }
-
-    public string EventName { get; }
-
-    public object? Data { get; }
-}
-
 internal sealed class ToolCallAggregate
 {
     public string? Id { get; set; }

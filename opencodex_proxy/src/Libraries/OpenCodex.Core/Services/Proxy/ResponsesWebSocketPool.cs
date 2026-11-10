@@ -1,3 +1,4 @@
+using OpenCodex.Core.Protocols;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
@@ -16,6 +17,12 @@ public sealed class ResponsesWebSocketPool : IAsyncDisposable
     private readonly object _gate = new();
     private readonly Dictionary<string, ConnectionEntry> _connections = new(StringComparer.Ordinal);
     private bool _disposed;
+    private readonly SseTransportOptions _streamOptions;
+    public ResponsesWebSocketPool(SseTransportOptions? streamOptions = null)
+    {
+        _streamOptions = streamOptions ?? new();
+        _streamOptions.Validate();
+    }
 
     public async Task<ResponsesWebSocketLease> AcquireAsync(
         string key,
@@ -54,7 +61,7 @@ public sealed class ResponsesWebSocketPool : IAsyncDisposable
                 entry.Socket = await ConnectAsync(channel, defaultTimeoutSeconds, cancellationToken);
             }
             entry.LastUsed = DateTimeOffset.UtcNow;
-            return new ResponsesWebSocketLease(entry);
+            return new ResponsesWebSocketLease(entry, _streamOptions.MaxWebSocketMessageBytes);
         }
         catch
         {
@@ -232,9 +239,15 @@ public sealed class ResponsesWebSocketLease : IAsyncDisposable
     private readonly ResponsesWebSocketPool.ConnectionEntry _entry;
     private bool _disposed;
 
-    internal ResponsesWebSocketLease(ResponsesWebSocketPool.ConnectionEntry entry)
+    private readonly int _maxMessageBytes;
+    private readonly byte[] _receiveBuffer = new byte[16 * 1024];
+    private MemoryStream _receiveMessage = new();
+    private CancellationTokenSource? _receiveTimeout;
+    private CancellationToken _receiveParent;
+    internal ResponsesWebSocketLease(ResponsesWebSocketPool.ConnectionEntry entry, int maxMessageBytes)
     {
         _entry = entry;
+        _maxMessageBytes = maxMessageBytes;
     }
 
     private ClientWebSocket Socket => _entry.Socket
@@ -257,37 +270,59 @@ public sealed class ResponsesWebSocketLease : IAsyncDisposable
         int timeoutSeconds,
         CancellationToken cancellationToken)
     {
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
-        using var message = new MemoryStream();
-        var buffer = new byte[16 * 1024];
-        WebSocketReceiveResult received;
-        do
+        if (_receiveTimeout is null || _receiveParent != cancellationToken)
         {
-            try
-            {
-                received = await Socket.ReceiveAsync(buffer, timeoutCts.Token);
-            }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            {
-                throw new UpstreamException("upstream WebSocket stream idle timeout", ProxyHttpStatus.GatewayTimeout);
-            }
-            if (received.MessageType == WebSocketMessageType.Close) return null;
-            if (received.MessageType != WebSocketMessageType.Text || message.Length + received.Count > 32 * 1024 * 1024)
-                throw new UpstreamException("upstream WebSocket returned an invalid message.", ProxyHttpStatus.BadGateway);
-            message.Write(buffer, 0, received.Count);
+            _receiveTimeout?.Dispose();
+            _receiveTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            _receiveParent = cancellationToken;
         }
-        while (!received.EndOfMessage);
-
+        var timeoutCts = _receiveTimeout;
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+        var message = _receiveMessage;
+        message.Position = 0;
+        message.SetLength(0);
+        var buffer = _receiveBuffer;
         try
         {
-            using var json = JsonDocument.Parse(message.ToArray());
-            return WebSearchPayload.FromJsonElement(json.RootElement) as Dictionary<string, object?>
-                ?? throw new JsonException("A JSON object is required.");
+            WebSocketReceiveResult received;
+            do
+            {
+                try
+                {
+                    received = await Socket.ReceiveAsync(buffer, timeoutCts.Token);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    throw new UpstreamException("upstream WebSocket stream idle timeout", ProxyHttpStatus.GatewayTimeout);
+                }
+                if (received.MessageType == WebSocketMessageType.Close) return null;
+                if (received.MessageType != WebSocketMessageType.Text || message.Length + received.Count > _maxMessageBytes)
+                    throw new UpstreamException("upstream WebSocket returned an invalid message.", ProxyHttpStatus.BadGateway);
+                message.Write(buffer, 0, received.Count);
+            }
+            while (!received.EndOfMessage);
+
+            try
+            {
+                message.TryGetBuffer(out var contents);
+                using var json = JsonDocument.Parse(contents.AsMemory(0, checked((int)message.Length)));
+                return WebSearchPayload.FromJsonElement(json.RootElement) as Dictionary<string, object?>
+                    ?? throw new JsonException("A JSON object is required.");
+            }
+            catch (JsonException)
+            {
+                throw new UpstreamException("upstream WebSocket returned invalid JSON.", ProxyHttpStatus.BadGateway);
+            }
         }
-        catch (JsonException)
+        finally
         {
-            throw new UpstreamException("upstream WebSocket returned invalid JSON.", ProxyHttpStatus.BadGateway);
+            timeoutCts.CancelAfter(System.Threading.Timeout.InfiniteTimeSpan);
+            message.SetLength(0);
+            if (message.Capacity > 256 * 1024)
+            {
+                message.Dispose();
+                _receiveMessage = new MemoryStream();
+            }
         }
     }
 
@@ -295,6 +330,8 @@ public sealed class ResponsesWebSocketLease : IAsyncDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        _receiveTimeout?.Dispose();
+        _receiveMessage.Dispose();
         _entry.LastUsed = DateTimeOffset.UtcNow;
         _entry.Gate.Release();
         _entry.LeaseReleased();
