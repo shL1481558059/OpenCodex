@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -11,38 +10,39 @@ namespace OpenCodex.Core.Services.MultiAgent;
 /// 重启只在下一次请求加载快照，不自动发起模型调用；running 恢复为 ready，模型回合可能重做。
 /// ReceivedCalls 保留已消费工具结果，调用方须据此拒绝重复投递。
 /// </summary>
-public sealed class MultiAgentRunStore
+public sealed partial class MultiAgentRunStore
 {
     private readonly string _directory;
     private readonly SemaphoreSlim _indexGate = new(1, 1);
     private readonly Dictionary<string, Dictionary<string, MultiAgentRun>> _sessions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _latest = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<MultiAgentRun, SemaphoreSlim> _gates = new();
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
-
-    public MultiAgentRunStore(string directory)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(directory);
-        _directory = Path.GetFullPath(directory);
-    }
-
-    public SemaphoreSlim Gate(MultiAgentRun run) => _gates.GetOrAdd(run, static _ => new SemaphoreSlim(1, 1));
 
     public async Task<MultiAgentRun> GetAsync(
         string sessionKey,
         string? previousResponseId,
         Func<MultiAgentRun> create,
-        CancellationToken ct)
+        CancellationToken ct, Guid? owner = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionKey);
+        if(sessionKey.Length>_limits.MaxSessionKeyCharacters)throw Limit();
         await _indexGate.WaitAsync(ct);
         try
         {
+            ObjectDisposedException.ThrowIf(_disposed,this);Sweep();
             if (!_sessions.TryGetValue(sessionKey, out var runs))
             {
-                runs = await LoadSessionAsync(sessionKey, ct);
-                _sessions.Add(sessionKey, runs);
+                var tenant=owner??Guid.Empty;Reserve(tenant,sessionKey);MakeRoom(tenant,0,1,null);
+                Dictionary<string,MultiAgentRun> restored;
+                try{restored=await LoadSessionAsync(sessionKey,ct);}
+                catch{_latest.Remove(sessionKey);throw;}
+                if(restored.Count==0&&_safety[(tenant,Hash(sessionKey))]==1)throw Missing();
+                _sessions.Add(sessionKey,runs=new());_sessionResources.Add(sessionKey,new(tenant,Now));
+                try{foreach(var restoredRun in restored.Values)Register(restoredRun,true);}
+                catch{Retire(sessionKey);throw;}
             }
+            else if(owner is not null&&_sessionResources[sessionKey].Owner!=owner.Value)throw Missing();
+            _sessionResources[sessionKey].Accessed=Now;
 
             if (!string.IsNullOrEmpty(previousResponseId))
             {
@@ -59,7 +59,8 @@ public sealed class MultiAgentRunStore
             var created = create();
             ArgumentException.ThrowIfNullOrWhiteSpace(created.Id);
             created.SessionKey = sessionKey;
-            runs.Add(created.Id, created);
+            try{Register(created,false);}
+            catch{if(runs.Count==0){_sessions.Remove(sessionKey);_sessionResources.Remove(sessionKey);_latest.Remove(sessionKey);}throw;}
             _latest[sessionKey] = created.Id;
             return created;
         }
@@ -81,12 +82,21 @@ public sealed class MultiAgentRunStore
                 run.ResponseIds.Add(run.LastResponseId);
             }
 
-            if (!_sessions.TryGetValue(run.SessionKey, out var runs))
+            ObjectDisposedException.ThrowIf(_disposed,this);
+            if(!_sessions.ContainsKey(run.SessionKey))
             {
-                runs = new Dictionary<string, MultiAgentRun>(StringComparer.Ordinal);
-                _sessions.Add(run.SessionKey, runs);
+                if(_safety.ContainsKey((Guid.Empty,Hash(run.SessionKey))))throw Missing();
+                Reserve(Guid.Empty,run.SessionKey);MakeRoom(Guid.Empty,0,1,null);
+                _sessions.Add(run.SessionKey,new());_sessionResources.Add(run.SessionKey,new(Guid.Empty,Now));
             }
-            runs[run.Id] = run;
+            if(!_resources.TryGetValue(run,out var entry)){Register(run,false);entry=Owned(run);}
+            entry.Durable=false;
+            var weight=Weight(run);_bytes+=weight-entry.Weight;entry.Weight=weight;
+            _sessionResources[run.SessionKey].Accessed=Now;
+            entry.Rejected=true;
+            if(weight>_limits.MaxRunBytes)throw Limit();
+            MakeRoom(_sessionResources[run.SessionKey].Owner,0,0,run.SessionKey);
+            entry.Rejected=false;
             _latest[run.SessionKey] = run.Id;
             if (!persist)
             {
@@ -109,6 +119,7 @@ public sealed class MultiAgentRunStore
 
                 ct.ThrowIfCancellationRequested();
                 File.Move(temporary, destination, overwrite: true);
+                entry.Durable=true;
             }
             finally
             {
@@ -133,8 +144,10 @@ public sealed class MultiAgentRunStore
             return runs;
         }
 
+        long bytes=0;
         foreach (var path in Directory.EnumerateFiles(directory, "*.json").OrderBy(File.GetLastWriteTimeUtc))
         {
+            if(runs.Count>=_limits.MaxRunsPerSession||(bytes+=new FileInfo(path).Length)>_limits.MaxColdLoadBytes)throw Limit();
             await using var stream = File.OpenRead(path);
             var run = await JsonSerializer.DeserializeAsync<MultiAgentRun>(stream, JsonOptions, ct)
                 ?? throw new InvalidDataException("The multi-agent snapshot is empty.");

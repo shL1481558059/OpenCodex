@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.AspNetCore.Mvc;
 using OpenCodex.CoreBase.Abstractions;
 using Xunit;
@@ -50,6 +51,24 @@ public sealed class MultiAgentWebSocketTests
         Assert.Single(socket.Sent, e => Type(e) == "response.completed");
         var sequence = socket.Sent.Where(e => e.ContainsKey("sequence_number")).Select(e => Convert.ToInt64(e["sequence_number"])).ToArray();
         Assert.True(sequence.Zip(sequence.Skip(1)).All(pair => pair.First < pair.Second));
+    }
+
+    [Fact]
+    public async Task InjectionByteQuotaRejectsWithoutExecutionAndNextSmallInputStillSucceeds()
+    {
+        var calls=0;
+        var config=new Microsoft.Extensions.Configuration.ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?>
+        { ["MultiAgent:Streaming:MaxPendingInjectionBytes"]="1024",["MultiAgent:Streaming:MaxPendingInjections"]="1" }).Build();
+        using var test=new MultiAgentApiTestContext(ctx=>++calls==1
+            ?Stream(ctx,Events(Terminal(new D{["type"]="function_call",["id"]="tool",["name"]="lookup",["call_id"]="up",["arguments"]="{}"})))
+            :Stream(ctx,Events(Terminal(Message("accepted small input")))),configuration:config);
+        var socket=test.Socket();var operation=test.Service.ResponsesWebSocket();socket.ClientSend(Create());
+        var created=await socket.Until("response.created",test.Lifetime.Token);var response=(string)((D)created["response"]!)["id"]!;
+        var tool=await socket.Until("response.output_item.done",test.Lifetime.Token);var call=(string)((D)tool["item"]!)["call_id"]!;
+        var large=Injection(response,call);((D)((List<object?>)large["input"]!)[0]!)["output"]=new string('x',4096);socket.ClientSend(large);
+        var rejected=await socket.Until("response.inject.failed",test.Lifetime.Token);Assert.Equal("queue_limit_exceeded",((D)rejected["error"]!)["code"]);Assert.Equal(1,calls);
+        socket.ClientSend(Injection(response,call));await socket.Until("response.inject.created",test.Lifetime.Token);await socket.Until("response.completed",test.Lifetime.Token);
+        Assert.Equal(2,calls);socket.ClientClose();await operation;
     }
 
     [Theory]

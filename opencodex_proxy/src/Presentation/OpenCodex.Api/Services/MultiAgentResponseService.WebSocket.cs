@@ -31,8 +31,10 @@ public sealed partial class MultiAgentResponseService
         MultiAgentRun? connectionRun = null;
         NativeClientSession? connectionBinding = null;
         string? connectionSession = null;
-        var knownIds = new System.Collections.Concurrent.ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
-        var completedIds = new System.Collections.Concurrent.ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
+        using var knownIds=HttpContext.RequestServices.GetRequiredService<ClientConnectionCache>().Open(identity.ApiKeyId);
+        var streamingLimits=StreamingOptions();
+        if(streamingLimits.MaxPendingInjections<=0||streamingLimits.MaxPendingInjectionBytes<=0||streamingLimits.MaxPendingInjectionBytes>long.MaxValue/8)throw new InvalidOperationException("Invalid injection queue limits.");
+        long pendingInjectionBytes=0;
         var sequence = 0;
 
         async Task Send(Dictionary<string, object?> item)
@@ -47,13 +49,13 @@ public sealed partial class MultiAgentResponseService
                 if (type == "response.created" && responseId.Length > 0)
                 {
                     activeResponseId = responseId;
-                    knownIds.TryAdd(responseId, 0);
+                    knownIds.RememberId(responseId);
                 }
                 else if (type is "response.completed" or "response.failed" or "response.incomplete"
                     && responseId.Length > 0)
                 {
-                    knownIds.TryAdd(responseId, 0);
-                    completedIds.TryAdd(responseId, 0);
+                    knownIds.RememberId(responseId);
+                    knownIds.RememberResponse(responseId,CompletedResponseMarker,true,true);
                     terminalResponseId = responseId;
                 }
                 if (item.TryGetValue("sequence_number", out var value))
@@ -61,8 +63,7 @@ public sealed partial class MultiAgentResponseService
                     sequence = Math.Max(sequence + 1, WebSearchPayload.ToInt(value, sequence));
                     item["sequence_number"] = sequence;
                 }
-                var bytes = JsonSerializer.SerializeToUtf8Bytes(item);
-                await socket.SendAsync(bytes, WebSocketMessageType.Text, true, ct);
+                await OpenCodex.Core.Protocols.WebSocketJsonWriter.SendAsync(socket,item,configuration.GetValue<int?>("ProxyStreaming:MaxEventBytes")??16*1024*1024,ct);
             }
             finally { sendGate.Release(); }
         }
@@ -82,9 +83,9 @@ public sealed partial class MultiAgentResponseService
             bool generate, CancellationToken responseCt)
         {
             var binding = connectionBinding;
-            var gate = binding is null ? store.Gate(run!) : null;
+            var runtimeLease = binding is null ? await store.AcquireRequestAsync(run!,responseCt) : null;
             var responseId = "";
-            if (gate is not null) await gate.WaitAsync(responseCt);
+
             try
             {
                 if (binding is not null)
@@ -126,17 +127,21 @@ public sealed partial class MultiAgentResponseService
             finally
             {
                 if (run is not null) responseId = run.LastResponseId;
-                if (responseId.Length > 0) knownIds.TryAdd(responseId, 0);
+                if (responseId.Length > 0) knownIds.RememberId(responseId);
                 channel.Writer.TryComplete();
-                gate?.Release();
-                while (!ct.IsCancellationRequested && channel.Reader.TryRead(out var pending))
-                    await InjectionFailed(pending.ResponseId, pending.Input);
+                if(runtimeLease is not null)await runtimeLease.DisposeAsync();
+                try
+                {
+                    while(channel.Reader.TryRead(out var pending))
+                    { pending.Dispose();if(!ct.IsCancellationRequested)await InjectionFailed(pending.ResponseId,pending.Input); }
+                }
+                finally{while(channel.Reader.TryRead(out var abandoned))abandoned.Dispose();}
             }
         }
 
         Task InjectionFailed(string responseId, List<object?> input)
         {
-            var completed = completedIds.ContainsKey(responseId);
+            var completed = knownIds.FindResponse<object>(responseId) is not null || terminalResponseId==responseId;
             return Send(new Dictionary<string, object?>
             {
                 ["type"] = "response.inject.failed", ["sequence_number"] = 0,
@@ -251,7 +256,7 @@ public sealed partial class MultiAgentResponseService
                                 {
                                     ["/root"] = new() { Name = "/root", History = MultiAgentProtocol.InitialHistory(item) }
                                 }
-                            }, ct);
+                            }, ct, identity.ApiKeyId);
                         }
                         if (connectionRun is not null && connectionRun.Model != model)
                             throw new BadRequestException("Start a new session to change models.");
@@ -267,9 +272,9 @@ public sealed partial class MultiAgentResponseService
                         await ErrorAndClose(exception.Message);
                         return new EmptyResult();
                     }
-                    injections = Channel.CreateUnbounded<MultiAgentInjection>(new UnboundedChannelOptions
+                    injections = Channel.CreateBounded<MultiAgentInjection>(new BoundedChannelOptions(streamingLimits.MaxPendingInjections)
                     {
-                        SingleReader = true, SingleWriter = true
+                        SingleReader = true, SingleWriter = true, FullMode=BoundedChannelFullMode.Wait
                     });
                     activeStop?.Dispose();
                     activeStop = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -303,7 +308,7 @@ public sealed partial class MultiAgentResponseService
                         await active;
                     }
 
-                    if (knownIds.ContainsKey(responseId))
+                    if (knownIds.Knows(responseId)||activeResponseId==responseId||terminalResponseId==responseId)
                     {
                         await Send(new Dictionary<string, object?>
                         {
@@ -341,11 +346,22 @@ public sealed partial class MultiAgentResponseService
                         await ErrorAndClose("response.inject requires response_id and a non-empty input array of objects.");
                         return new EmptyResult();
                     }
-                    if (!active.IsCompleted && injections is not null
-                        && injections.Writer.TryWrite(new MultiAgentInjection { ResponseId = responseId, Input = input }))
+                    if(!active.IsCompleted&&injections is not null)
+                    {
+                        var weight=InjectionWeight(input,streamingLimits.MaxPendingInjectionBytes);
+                        var charged=Interlocked.Add(ref pendingInjectionBytes,weight);
+                        if(charged<=streamingLimits.MaxPendingInjectionBytes)
+                        {
+                            var queued=new MultiAgentInjection{ResponseId=responseId,Input=input,QueueLease=new InjectionLease(()=>Interlocked.Add(ref pendingInjectionBytes,-weight))};
+                            if(injections.Writer.TryWrite(queued))continue;
+                            queued.Dispose();
+                        }
+                        else Interlocked.Add(ref pendingInjectionBytes,-weight);
+                        await Send(new(){["type"]="response.inject.failed",["response_id"]=responseId,["input"]=input,
+                            ["error"]=new Dictionary<string,object?>{["code"]="queue_limit_exceeded",["message"]="The injection queue admission limit was reached; the input was not accepted."}});
                         continue;
-
-                    await InjectionFailed(responseId, input);
+                    }
+                    await InjectionFailed(responseId,input);
                 }
                 else
                 {
@@ -370,4 +386,19 @@ public sealed partial class MultiAgentResponseService
         }
         return new EmptyResult();
     }
+    private static readonly object CompletedResponseMarker=new();
+    private sealed class InjectionLease(Action release):IDisposable
+    {private Action? _release=release;public void Dispose()=>Interlocked.Exchange(ref _release,null)?.Invoke();}
+    private static long InjectionWeight(object? value,long cap,int depth=0)
+    {
+        if(depth>64)return cap+1;
+        if(value is string text)return 24L+2L*text.Length;
+        long total=64;
+        if(value is IReadOnlyDictionary<string,object?> map)
+        {foreach(var pair in map){total+=64+2L*pair.Key.Length+InjectionWeight(pair.Value,cap,depth+1);if(total>cap)return cap+1;}}
+        else if(value is IReadOnlyList<object?> items)
+        {foreach(var item in items){total+=8+InjectionWeight(item,cap,depth+1);if(total>cap)return cap+1;}}
+        return total;
+    }
+
 }

@@ -1,7 +1,10 @@
 namespace OpenCodex.Core.Services.MultiAgent;
 
-public sealed class MultiAgentInjection
+public sealed class MultiAgentInjection : IDisposable
 {
+    [System.Text.Json.Serialization.JsonIgnore] public IDisposable? QueueLease { get; set; }
+    private int _disposed;
+    public void Dispose(){if(Interlocked.Exchange(ref _disposed,1)==0){QueueLease?.Dispose();QueueLease=null;}}
     public string ResponseId { get; set; } = "";
     public List<object?> Input { get; set; } = [];
 }

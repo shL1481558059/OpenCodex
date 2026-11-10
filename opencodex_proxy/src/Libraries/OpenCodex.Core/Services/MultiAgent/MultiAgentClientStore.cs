@@ -9,7 +9,7 @@ namespace OpenCodex.Core.Services.MultiAgent;
 /// The root's initial persistence choice applies to its whole group. The metadata lock is never
 /// held while waiting for an actor gate or a model permit. Callers hold Gate when changing a Run.
 /// </summary>
-public sealed class MultiAgentClientStore
+public sealed partial class MultiAgentClientStore
 {
     private readonly MultiAgentRunStore _runs;
     private readonly string _directory;
@@ -18,20 +18,19 @@ public sealed class MultiAgentClientStore
     private readonly object _activityGate = new();
     private readonly Dictionary<MultiAgentClientBinding, MultiAgentClientActivity> _activities = new();
 
-    public MultiAgentClientStore(MultiAgentRunStore runs, string directory)
+    public SemaphoreSlim Gate(MultiAgentClientBinding binding)
     {
-        ArgumentNullException.ThrowIfNull(runs);
-        ArgumentException.ThrowIfNullOrWhiteSpace(directory);
-        _runs = runs;
-        _directory = Path.Combine(Path.GetFullPath(directory), "client-bindings");
+        _indexGate.Wait();try{_=OwnedGroup(binding);return _runs.Gate(binding.Run);}finally{_indexGate.Release();}
     }
-
-    public SemaphoreSlim Gate(MultiAgentClientBinding binding) => _runs.Gate(binding.Run);
 
     public MultiAgentClientActivity BeginActivity(MultiAgentClientBinding binding, CancellationToken ct)
     {
-        binding.Stop.Token.ThrowIfCancellationRequested();
         ct.ThrowIfCancellationRequested();
+        _indexGate.Wait();
+        try
+        {
+        _=OwnedGroup(binding);
+        binding.Stop.Token.ThrowIfCancellationRequested();
         lock (_activityGate)
         {
             if (_activities.ContainsKey(binding))
@@ -41,10 +40,13 @@ public sealed class MultiAgentClientStore
                 lock (_activityGate)
                     if (_activities.TryGetValue(binding, out var active) && ReferenceEquals(active, completed))
                         _activities.Remove(binding);
+                if(_disposed||_runs.NeedsRetirement(binding.Run)){_indexGate.Wait();try{Sweep();}finally{_indexGate.Release();}}
             });
             _activities.Add(binding, activity);
             return activity;
         }
+        }
+        finally{_indexGate.Release();}
     }
 
     public Task CancelActivityAsync(MultiAgentClientBinding binding)
@@ -75,10 +77,11 @@ public sealed class MultiAgentClientStore
         await _indexGate.WaitAsync(ct);
         try
         {
+            Sweep();Reserve(owner,threadId);
             var existing = await LoadGroupAsync(owner, threadId, ct);
             if (existing is not null) return existing.Root;
             var id = Guid.NewGuid().ToString("N");
-            var run = await _runs.GetAsync(SessionKey(owner, threadId, id), null, create, ct);
+            var run = await _runs.GetAsync(SessionKey(owner, threadId, id), null, create, ct, owner);
             ValidateActor(run);
             if (run.MaxConcurrentSubagents < 1)
                 throw new ArgumentOutOfRangeException(nameof(create), "MaxConcurrentSubagents must be positive.");
@@ -90,6 +93,7 @@ public sealed class MultiAgentClientStore
             var group = new BindingGroup(root, run.MaxConcurrentSubagents);
             await _runs.SaveAsync(run, ct, persist);
             await SaveManifestAsync(group, ct);
+            await HoldGroup(group,ct);
             _groups.Add(GroupKey(owner, threadId), group);
             return root;
         }
@@ -131,6 +135,7 @@ public sealed class MultiAgentClientStore
         ArgumentException.ThrowIfNullOrWhiteSpace(taskName);
         if (taskName.Contains('/') || taskName is "." or "..")
             throw new ArgumentException("task_name must be one nonempty path segment.", nameof(taskName));
+        if(callId.Length>_limits.MaxIdentityCharacters||taskName.Length>_limits.MaxIdentityCharacters)throw Limit();
         ValidateActor(childRun);
         await _indexGate.WaitAsync(ct);
         try
@@ -149,8 +154,10 @@ public sealed class MultiAgentClientStore
             }
             if (group.Bindings.Values.Any(binding => binding.AgentName == name && !binding.SpawnFailed))
                 throw new InvalidOperationException("The agent already exists; use followup_task.");
+            if(group.Bindings.Count>=_limits.MaxGroupBindings||name.Length>_limits.MaxIdentityCharacters)throw Limit();
+            MakeRoom(parent.Owner,0,1,GroupKey(parent.Owner,parent.RootThreadId));
             var id = Guid.NewGuid().ToString("N");
-            var run = await _runs.GetAsync(SessionKey(parent.Owner, parent.RootThreadId, id), null, () => childRun, ct);
+            var run = await _runs.GetAsync(SessionKey(parent.Owner, parent.RootThreadId, id), null, () => childRun, ct, parent.Owner);
             var child = new MultiAgentClientBinding
             {
                 Id = id, Owner = parent.Owner, RootThreadId = parent.RootThreadId,
@@ -159,9 +166,11 @@ public sealed class MultiAgentClientStore
             };
             // Persist the seed before publishing the reservation to the client.
             await _runs.SaveAsync(run, ct, child.Persist);
+            var retention=await _runs.RetainAsync(child.Run,ct);
             group.Bindings.Add(child.Id, child);
             try { await SaveManifestAsync(group, ct); }
-            catch { group.Bindings.Remove(child.Id); throw; }
+            catch { group.Bindings.Remove(child.Id);await retention.DisposeAsync();throw; }
+            group.Holds.Add(retention);
             return child;
         }
         finally { _indexGate.Release(); }
@@ -174,6 +183,7 @@ public sealed class MultiAgentClientStore
         ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
         ArgumentException.ThrowIfNullOrWhiteSpace(agentName);
         ArgumentException.ThrowIfNullOrWhiteSpace(model);
+        if(new[]{rootThreadId,parentThreadId,threadId,agentName,model}.Any(value=>value.Length>_limits.MaxIdentityCharacters))throw Limit();
         await _indexGate.WaitAsync(ct);
         try
         {
@@ -239,7 +249,14 @@ public sealed class MultiAgentClientStore
         try { _ = OwnedGroup(binding); }
         finally { _indexGate.Release(); }
         // Only this actor's snapshot is serialized; siblings may currently be executing.
-        await _runs.SaveAsync(binding.Run, ct, binding.Persist);
+        try { await _runs.SaveAsync(binding.Run, ct, binding.Persist); }
+        catch
+        {
+            // A rejected dirty graph cannot stay pinned by an otherwise idle binding.
+            // Active models/activities still retain the old lock until they release.
+            await _indexGate.WaitAsync();try { Sweep(); }finally { _indexGate.Release(); }
+            throw;
+        }
         await _indexGate.WaitAsync(ct);
         try { await SaveManifestAsync(OwnedGroup(binding), ct); }
         finally { _indexGate.Release(); }
@@ -247,49 +264,60 @@ public sealed class MultiAgentClientStore
 
     public async Task<IAsyncDisposable> AcquireModelAsync(MultiAgentClientBinding binding, CancellationToken ct)
     {
-        SemaphoreSlim? semaphore;
+        BindingGroup group;SemaphoreSlim? semaphore;
         await _indexGate.WaitAsync(ct);
         try
         {
-            var group = OwnedGroup(binding);
-            binding.Stop.Token.ThrowIfCancellationRequested();
-            if (binding.SpawnFailed) throw new OperationCanceledException("The native spawn failed.");
-            semaphore = binding.ParentName.Length == 0 ? null : group.ChildModels;
+            group=OwnedGroup(binding);binding.Stop.Token.ThrowIfCancellationRequested();
+            if(binding.SpawnFailed)throw new OperationCanceledException("The native spawn failed.");
+            semaphore=binding.ParentName.Length==0?null:group.ChildModels;
+            if(group.ModelReferences>=_limits.MaxModelWaiters+1L)throw Limit();
+            group.ModelReferences++;
         }
-        finally { _indexGate.Release(); }
-        if (semaphore is null) return new ModelLease(null);
-        using var cancelled = CancellationTokenSource.CreateLinkedTokenSource(ct, binding.Stop.Token);
-        await semaphore.WaitAsync(cancelled.Token);
-        return new ModelLease(semaphore);
+        finally{_indexGate.Release();}
+        try
+        {
+            using var cancelled=CancellationTokenSource.CreateLinkedTokenSource(ct,binding.Stop.Token);
+            if(semaphore is not null)await semaphore.WaitAsync(cancelled.Token);
+            return new ModelLease(semaphore,()=>ReleaseModel(group));
+        }
+        catch{ReleaseModel(group);throw;}
     }
 
     private BindingGroup OwnedGroup(MultiAgentClientBinding binding)
     {
+        ObjectDisposedException.ThrowIf(_disposed,this);
+        if(_groups.TryGetValue(GroupKey(binding.Owner,binding.RootThreadId),out var idle)&&Now-idle.Accessed>=TimeSpan.FromSeconds(_limits.TtlSeconds).Ticks)Sweep();
         if (!_groups.TryGetValue(GroupKey(binding.Owner, binding.RootThreadId), out var group)
             || !group.Bindings.TryGetValue(binding.Id, out var owned) || !ReferenceEquals(owned, binding))
             throw new InvalidOperationException("The client binding does not belong to this store.");
+        group.Accessed=Now;
         return group;
     }
 
     private async Task<BindingGroup?> LoadGroupAsync(Guid owner, string rootThreadId, CancellationToken ct)
     {
+        Sweep();Reserve(owner,rootThreadId);
         var key = GroupKey(owner, rootThreadId);
-        if (_groups.TryGetValue(key, out var group)) return group;
+        if (_groups.TryGetValue(key, out var group)){group.Accessed=Now;return group;}
         var path = ManifestPath(owner, rootThreadId);
-        if (!File.Exists(path)) return null;
+        if (!File.Exists(path)){if(_retired[(owner,HashIdentity(rootThreadId))]==1)throw Missing();return null;}
+        if(new FileInfo(path).Length>_limits.MaxManifestBytes)throw Limit();
         await using var stream = File.OpenRead(path);
         var manifest = await JsonSerializer.DeserializeAsync<BindingManifest>(stream, cancellationToken: ct)
             ?? throw new InvalidDataException("The client binding manifest is empty.");
         if (manifest.Version != 1 || manifest.Owner != owner || manifest.RootThreadId != rootThreadId
             || !manifest.Persist || manifest.MaxConcurrentSubagents < 1)
             throw new InvalidDataException("The client binding manifest is incompatible or belongs to another owner.");
+        if(manifest.Bindings.Count>_limits.MaxGroupBindings)throw Limit();
         var bindings = new List<MultiAgentClientBinding>();
         foreach (var entry in manifest.Bindings)
         {
+            if(new[]{entry.Id,entry.ThreadId,entry.AgentName,entry.ParentName,entry.ParentThreadId,entry.SpawnCallId}.Any(value=>value.Length>_limits.MaxIdentityCharacters))throw Limit();
             if (entry.Id.Length == 0 || entry.RunSessionKey != SessionKey(owner, rootThreadId, entry.Id))
                 throw new InvalidDataException("The client actor snapshot reference is invalid.");
             var run = await _runs.GetAsync(entry.RunSessionKey, null,
-                () => throw new InvalidDataException("The client actor snapshot is unavailable."), ct);
+                () => throw new InvalidDataException("The client actor snapshot is unavailable."), ct, owner);
             if (run.Id != entry.RunId) throw new InvalidDataException("The client actor snapshot identity does not match its manifest.");
             ValidateActor(run);
             var binding = new MultiAgentClientBinding
@@ -311,6 +339,7 @@ public sealed class MultiAgentClientStore
         group = new BindingGroup(roots[0], manifest.MaxConcurrentSubagents);
         foreach (var binding in bindings.Where(binding => !ReferenceEquals(binding, roots[0])))
             group.Bindings.Add(binding.Id, binding);
+        await HoldGroup(group,ct);
         _groups.Add(key, group);
         return group;
     }
@@ -363,18 +392,23 @@ public sealed class MultiAgentClientStore
 
     private sealed class BindingGroup(MultiAgentClientBinding root, int maxConcurrentSubagents)
     {
+        internal long Accessed;internal int ModelReferences;internal readonly List<IAsyncDisposable> Holds=[];
         public MultiAgentClientBinding Root { get; } = root;
         public int MaxConcurrentSubagents { get; } = maxConcurrentSubagents;
         public SemaphoreSlim ChildModels { get; } = new(maxConcurrentSubagents, maxConcurrentSubagents);
         public Dictionary<string, MultiAgentClientBinding> Bindings { get; } = new(StringComparer.Ordinal) { [root.Id] = root };
     }
 
-    private sealed class ModelLease(SemaphoreSlim? semaphore) : IAsyncDisposable
+    private sealed class ModelLease(SemaphoreSlim? semaphore,Action release) : IAsyncDisposable
     {
         private SemaphoreSlim? _semaphore = semaphore;
+        private Action? _release=release;
+        private int _disposed;
         public ValueTask DisposeAsync()
         {
+            if(Interlocked.Exchange(ref _disposed,1)!=0)return ValueTask.CompletedTask;
             Interlocked.Exchange(ref _semaphore, null)?.Release();
+            Interlocked.Exchange(ref _release,null)?.Invoke();
             return ValueTask.CompletedTask;
         }
     }

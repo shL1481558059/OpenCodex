@@ -84,7 +84,8 @@ public sealed partial class MultiAgentRuntime
                 while (_modelEvents.Reader.TryRead(out var modelEvent)) await ProcessModelEvent(modelEvent);
                 if (injections is not null)
                 {
-                    while (injections.TryRead(out var injection)) await Inject(injection, ct);
+                    while (injections.TryRead(out var injection))
+                        try{await Inject(injection,ct);}finally{injection.Dispose();}
                 }
                 foreach (var agent in _run.Agents.Values.ToList())
                 {

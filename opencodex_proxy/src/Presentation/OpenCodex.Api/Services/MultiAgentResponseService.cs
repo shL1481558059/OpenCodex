@@ -64,16 +64,15 @@ public sealed partial class MultiAgentResponseService(
                     {
                         ["/root"] = new() { Name = "/root", History = MultiAgentProtocol.InitialHistory(request) }
                     }
-                }, ct);
+                }, ct, owner);
         }
         catch (KeyNotFoundException)
         {
             throw new BadRequestException("The previous response is unavailable for this API key and session. Reuse the session identifier or start a new conversation.");
         }
 
-        var gate = store.Gate(run);
-        await gate.WaitAsync(ct);
-        try
+        await using var runtimeLease = await store.AcquireRequestAsync(run,ct);
+
         {
             if (run.Model != model) throw new BadRequestException("A multi-agent session keeps its initial model. Start a new session to change models.");
             var stream = JsonDictionaryValue.Get(request, "stream") is true;
@@ -121,7 +120,7 @@ public sealed partial class MultiAgentResponseService(
                 return new EmptyResult();
             }
         }
-        finally { gate.Release(); }
+
     }
 
     private MultiAgentStreamingOptions StreamingOptions() =>

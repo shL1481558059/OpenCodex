@@ -56,10 +56,12 @@ public static class OpenCodexServiceCollectionExtensions
         });
         services.AddOpenCodexServices();
         services.AddSingleton(serviceProvider => new OpenCodex.Core.Services.MultiAgent.MultiAgentRunStore(
-            serviceProvider.GetRequiredService<IConfiguration>()["MultiAgent:StateDirectory"] ?? "logs/multi-agent-runs"));
+            serviceProvider.GetRequiredService<IConfiguration>()["MultiAgent:StateDirectory"] ?? "logs/multi-agent-runs",
+            configuration.GetSection("MultiAgent:RuntimeCache").Get<OpenCodex.Core.Services.MultiAgent.MultiAgentRunCacheOptions>()));
         services.AddSingleton(serviceProvider => new OpenCodex.Core.Services.MultiAgent.MultiAgentClientStore(
             serviceProvider.GetRequiredService<OpenCodex.Core.Services.MultiAgent.MultiAgentRunStore>(),
-            serviceProvider.GetRequiredService<IConfiguration>()["MultiAgent:StateDirectory"] ?? "logs/multi-agent-runs"));
+            serviceProvider.GetRequiredService<IConfiguration>()["MultiAgent:StateDirectory"] ?? "logs/multi-agent-runs",
+            configuration.GetSection("MultiAgent:BindingCache").Get<OpenCodex.Core.Services.MultiAgent.MultiAgentBindingCacheOptions>()));
         services.AddSingleton(serviceProvider => new OpenCodex.Core.Services.MultiAgent.NativeClientSessionStore(
             serviceProvider.GetRequiredService<IConfiguration>()["MultiAgent:StateDirectory"] ?? "logs/multi-agent-runs",
             configuration.GetSection("MultiAgent:NativeClientCache").Get<OpenCodex.Core.Services.MultiAgent.NativeClientCacheOptions>()));
