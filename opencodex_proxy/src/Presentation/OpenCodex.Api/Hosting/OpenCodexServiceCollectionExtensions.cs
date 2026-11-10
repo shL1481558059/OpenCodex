@@ -205,6 +205,8 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddSingleton(serviceProvider => new OpenCodex.CoreBase.Domain.Proxy.ProxyAuditSpool(
             serviceProvider.GetRequiredService<IConfiguration>().GetSection("ProxyAuditSpool")
                 .Get<OpenCodex.CoreBase.Domain.Proxy.ProxyAuditSpoolOptions>() ?? new()));
+        services.AddSingleton(serviceProvider => serviceProvider.GetRequiredService<IConfiguration>()
+            .GetSection("ProxyStreaming:Sessions").Get<OpenCodex.Core.Services.Proxy.ResponsesContextCacheOptions>() ?? new());
         services.AddScoped<IProxyLogService, ProxyLogService>();
         services.AddSingleton<IChannelCapacityService, ChannelCapacityService>();
         services.AddSingleton<IChannelCircuitBreakerService, ChannelCircuitBreakerService>();

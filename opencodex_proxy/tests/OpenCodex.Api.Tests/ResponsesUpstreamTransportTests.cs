@@ -23,7 +23,7 @@ public sealed class ResponsesUpstreamTransportTests
     {
         await using var server = new ResponsesWebSocketServer();
         await using var pool = new ResponsesWebSocketPool();
-        var transport = new ResponsesUpstreamTransport(
+        using var transport = new ResponsesUpstreamTransport(
             new CountingHttpClient(),
             pool,
             NullLogger<ResponsesUpstreamTransport>.Instance);
@@ -50,7 +50,7 @@ public sealed class ResponsesUpstreamTransportTests
     {
         await using var server = new ResponsesWebSocketServer();
         await using var pool = new ResponsesWebSocketPool();
-        var transport = new ResponsesUpstreamTransport(
+        using var transport = new ResponsesUpstreamTransport(
             new CountingHttpClient(),
             pool,
             NullLogger<ResponsesUpstreamTransport>.Instance);
@@ -80,7 +80,7 @@ public sealed class ResponsesUpstreamTransportTests
     {
         await using var server = new ResponsesWebSocketServer(rejectPreviousResponse: true);
         await using var pool = new ResponsesWebSocketPool();
-        var transport = new ResponsesUpstreamTransport(
+        using var transport = new ResponsesUpstreamTransport(
             new CountingHttpClient(),
             pool,
             NullLogger<ResponsesUpstreamTransport>.Instance);
@@ -105,7 +105,7 @@ public sealed class ResponsesUpstreamTransportTests
     {
         await using var server = new ResponsesWebSocketServer();
         await using var pool = new ResponsesWebSocketPool();
-        var transport = new ResponsesUpstreamTransport(
+        using var transport = new ResponsesUpstreamTransport(
             new CountingHttpClient(),
             pool,
             NullLogger<ResponsesUpstreamTransport>.Instance);
@@ -130,7 +130,7 @@ public sealed class ResponsesUpstreamTransportTests
         await using var server = new ResponsesWebSocketServer();
         await using var pool = new ResponsesWebSocketPool();
         var http = new CountingHttpClient();
-        var transport = new ResponsesUpstreamTransport(
+        using var transport = new ResponsesUpstreamTransport(
             http,
             pool,
             NullLogger<ResponsesUpstreamTransport>.Instance);
@@ -147,7 +147,7 @@ public sealed class ResponsesUpstreamTransportTests
     {
         await using var pool = new ResponsesWebSocketPool();
         var http = new CountingHttpClient();
-        var transport = new ResponsesUpstreamTransport(
+        using var transport = new ResponsesUpstreamTransport(
             http,
             pool,
             NullLogger<ResponsesUpstreamTransport>.Instance);
@@ -164,7 +164,7 @@ public sealed class ResponsesUpstreamTransportTests
     {
         await using var pool = new ResponsesWebSocketPool();
         var http = new CountingHttpClient();
-        var transport = new ResponsesUpstreamTransport(
+        using var transport = new ResponsesUpstreamTransport(
             http,
             pool,
             NullLogger<ResponsesUpstreamTransport>.Instance);
@@ -181,7 +181,7 @@ public sealed class ResponsesUpstreamTransportTests
     {
         await using var server = new ResponsesWebSocketServer();
         await using var pool = new ResponsesWebSocketPool();
-        var transport = new ResponsesUpstreamTransport(
+        using var transport = new ResponsesUpstreamTransport(
             new CountingHttpClient(),
             pool,
             NullLogger<ResponsesUpstreamTransport>.Instance);

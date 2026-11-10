@@ -10,12 +10,28 @@ using OpenCodex.CoreBase.Domain.Proxy;
 namespace OpenCodex.Core.Services.Proxy;
 
 /// <summary>Selects HTTP or Responses WebSocket for a streaming upstream request.</summary>
-public sealed class ResponsesUpstreamTransport(
-    IUpstreamClient http,
-    ResponsesWebSocketPool sockets,
-    ILogger<ResponsesUpstreamTransport> logger)
+public sealed class ResponsesUpstreamTransport : IDisposable
 {
-    private const int MaximumSnapshots = 2_000;
+    private readonly IUpstreamClient http;
+    private readonly ResponsesWebSocketPool sockets;
+    private readonly ResponsesContextCacheOptions _options;
+    private readonly TimeProvider _time;
+    private readonly ITimer _cleanup;
+    private readonly RefCountedKeyedLock _conversationLocks;
+    private readonly Dictionary<string,long> _tenantBytes=new(StringComparer.Ordinal);
+    private readonly object _probeGate=new();
+    private long _snapshotBytes;
+    public ResponsesUpstreamTransport(IUpstreamClient http,ResponsesWebSocketPool sockets,ILogger<ResponsesUpstreamTransport> logger,
+        ResponsesContextCacheOptions? cacheOptions=null,TimeProvider? timeProvider=null)
+    {
+        this.http=http;this.sockets=sockets;_logger=logger;
+        _options=(cacheOptions??new()).CopyValidated();_time=timeProvider??TimeProvider.System;
+        _conversationLocks=new(_options.MaxConversationLocks,_options.MaxWaitersPerConversation);
+        _cleanup=_time.CreateTimer(_=>CleanupExpired(),null,TimeSpan.FromSeconds(_options.CleanupIntervalSeconds),TimeSpan.FromSeconds(_options.CleanupIntervalSeconds));
+    }
+    public void Dispose()=>_cleanup.Dispose();
+    internal (long Bytes,int Snapshots,int Tenants,int Locks,int Probes) CacheUsage
+    { get { lock(_storeGate)return (_snapshotBytes,_responses.Count,_tenantBytes.Count,_conversationLocks.Count,_probes.Count); } }
     private static readonly string[] ComparisonIgnoredKeys =
     [
         "input", "previous_response_id", "stream", "stream_options", "background", "type", "client_metadata"
@@ -23,9 +39,8 @@ public sealed class ResponsesUpstreamTransport(
     private readonly object _storeGate = new();
     private readonly Dictionary<string, ContextSnapshot> _responses = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ContextSnapshot> _latest = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, SemaphoreSlim> _conversationGates = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, ProbeState> _probes = new(StringComparer.Ordinal);
-    private readonly ILogger _logger = logger;
+    private readonly ILogger _logger;
 
     public async IAsyncEnumerable<string> StreamAsync(
         ProxyStreamContext context,
@@ -58,18 +73,17 @@ public sealed class ResponsesUpstreamTransport(
         var owner = context.ApiKeyId?.ToString("N") ?? context.OwnerUsername;
         var fingerprint = ResponsesWebSocketLease.Fingerprint(context.Route.Channel);
         var conversationScope = owner + ":" + conversation;
-        var contextScope = string.Join(':', conversationScope, context.ChannelId, context.UpstreamModel, fingerprint);
+        var contextScope = JsonSerializer.Serialize(new[] { owner,conversation,context.ChannelId,context.UpstreamModel,fingerprint });
         var probeKey = fingerprint + ":" + context.UpstreamModel;
         if (mode == "auto" && _probes.TryGetValue(probeKey, out var probe)
-            && probe.ExpiresAt > DateTimeOffset.UtcNow && !probe.Supported)
+            && probe.ExpiresAt > _time.GetUtcNow() && !probe.Supported)
         {
             LogTransport(context, mode, "http", null, "probe_unsupported");
             await foreach (var line in HttpStreamAsync(context, context.UpstreamRequest, cancellationToken)) yield return line;
             yield break;
         }
 
-        var gate = ConversationGate(conversationScope);
-        await gate.WaitAsync(cancellationToken);
+        var conversationLease=await _conversationLocks.AcquireAsync(conversationScope,cancellationToken);
         try
         {
             var passthrough = mode == "passthrough";
@@ -152,7 +166,7 @@ public sealed class ResponsesUpstreamTransport(
                     CaptureTerminal(started.First, ref terminal);
                     sawTerminal = IsTerminal(started.First);
                     if (terminal is not null && !passthrough)
-                        Store(contextScope, planning.Logical, terminal);
+                        Store(owner,contextScope, planning.Logical, terminal);
                     _logger.LogDebug(
                         "Responses upstream event. event_type={EventType} terminal={Terminal} context_scope={ContextScope}",
                         JsonDictionaryValue.String(started.First, "type"),
@@ -168,7 +182,7 @@ public sealed class ResponsesUpstreamTransport(
                     CaptureTerminal(next, ref terminal);
                     sawTerminal = IsTerminal(next);
                     if (terminal is not null && !passthrough)
-                        Store(contextScope, planning.Logical, terminal);
+                        Store(owner,contextScope, planning.Logical, terminal);
                     _logger.LogDebug(
                         "Responses upstream event. event_type={EventType} terminal={Terminal} context_scope={ContextScope}",
                         JsonDictionaryValue.String(next, "type"),
@@ -204,7 +218,7 @@ public sealed class ResponsesUpstreamTransport(
         }
         finally
         {
-            gate.Release();
+            conversationLease.Dispose();
         }
     }
 
@@ -277,7 +291,8 @@ public sealed class ResponsesUpstreamTransport(
         ContextSnapshot? snapshot = null;
         if (previousId.Length > 0)
         {
-            lock (_storeGate) _responses.TryGetValue(scope + ":" + previousId, out snapshot);
+            lock (_storeGate)
+            { SweepSnapshots();_responses.TryGetValue(scope+":"+previousId,out snapshot);Touch(snapshot); }
             if (snapshot is null)
             {
                 LogContextReplay(scope, "previous_response_missing", request, null);
@@ -286,7 +301,8 @@ public sealed class ResponsesUpstreamTransport(
         }
         else
         {
-            lock (_storeGate) _latest.TryGetValue(scope, out snapshot);
+            lock (_storeGate)
+            { SweepSnapshots();_latest.TryGetValue(scope,out snapshot);Touch(snapshot); }
             if (snapshot is null)
             {
                 LogContextReplay(scope, "latest_snapshot_missing", request, null);
@@ -372,53 +388,73 @@ public sealed class ResponsesUpstreamTransport(
             properties is null ? null : string.Join(',', properties));
     }
 
-    private void Store(string scope, Dictionary<string, object?> request, Dictionary<string, object?> response)
+    private void Store(string tenant,string scope,Dictionary<string,object?> request,Dictionary<string,object?> response)
     {
-        var responseId = JsonDictionaryValue.String(response, "id");
-        if (responseId.Length == 0)
+        var id=JsonDictionaryValue.String(response,"id");if(id.Length==0)return;
+        var weight=EstimateWeight(request)+EstimateWeight(response)+2L*(scope.Length+id.Length+tenant.Length)+128;
+        if(weight>_options.MaxSnapshotBytes || weight>_options.MaxTenantBytes || weight>_options.MaxBytes)
         {
-            _logger.LogWarning(
-                "Responses upstream context was not stored because the terminal response has no id. context_scope={ContextScope}",
-                scope);
+            _logger.LogWarning("Responses context exceeds cache budget; continuation requires full history. context_scope={ContextScope}",scope);
             return;
         }
-        var snapshot = new ContextSnapshot
+        var snapshot=new ContextSnapshot { Request=WebSearchPayload.DeepCopyObject(request),Response=WebSearchPayload.DeepCopyObject(response),
+            LastUsed=_time.GetUtcNow(),Tenant=tenant,Scope=scope,Weight=weight };
+        lock(_storeGate)
         {
-            Request = WebSearchPayload.DeepCopyObject(request),
-            Response = WebSearchPayload.DeepCopyObject(response),
-            LastUsed = DateTimeOffset.UtcNow
-        };
-        lock (_storeGate)
-        {
-            _responses[scope + ":" + responseId] = snapshot;
-            _latest[scope] = snapshot;
-            if (_responses.Count > MaximumSnapshots)
-            {
-                var oldest = _responses.MinBy(pair => pair.Value.LastUsed);
-                if (oldest.Key is not null)
-                {
-                    _responses.Remove(oldest.Key);
-                    var staleLatestKeys = _latest
-                        .Where(pair => ReferenceEquals(pair.Value, oldest.Value))
-                        .Select(pair => pair.Key)
-                        .ToList();
-                    foreach (var staleKey in staleLatestKeys) _latest.Remove(staleKey);
-                }
-            }
+            SweepSnapshots();var key=scope+":"+id;
+            if(_responses.ContainsKey(key))RemoveSnapshot(key);
+            _responses[key]=snapshot;_latest[scope]=snapshot;_snapshotBytes+=weight;
+            _tenantBytes[tenant]=_tenantBytes.GetValueOrDefault(tenant)+weight;
+            while(_tenantBytes.GetValueOrDefault(tenant)>_options.MaxTenantBytes)
+                RemoveSnapshot(_responses.Where(p=>p.Value.Tenant==tenant).MinBy(p=>p.Value.LastUsed).Key);
+            while(_snapshotBytes>_options.MaxBytes || _responses.Count>_options.MaxSnapshots)
+                RemoveSnapshot(_responses.MinBy(p=>p.Value.LastUsed).Key);
         }
-        _logger.LogInformation(
-            "Responses upstream context stored. context_scope={ContextScope} response_id={ResponseId}",
-            scope,
-            responseId);
     }
-
-    private SemaphoreSlim ConversationGate(string scope)
+    private void Touch(ContextSnapshot? snapshot) { if(snapshot is not null)snapshot.LastUsed=_time.GetUtcNow(); }
+    private void RemoveSnapshot(string key)
     {
-        lock (_storeGate)
+        if(!_responses.Remove(key,out var value))return;
+        _snapshotBytes-=value.Weight;var remaining=_tenantBytes[value.Tenant]-value.Weight;
+        if(remaining==0)_tenantBytes.Remove(value.Tenant);else _tenantBytes[value.Tenant]=remaining;
+        if(_latest.TryGetValue(value.Scope,out var latest) && ReferenceEquals(latest,value))_latest.Remove(value.Scope);
+    }
+    private void SweepSnapshots()
+    {
+        var expired=_time.GetUtcNow().AddSeconds(-_options.SnapshotTtlSeconds);
+        foreach(var key in _responses.Where(p=>p.Value.LastUsed<=expired).Select(p=>p.Key).ToArray())RemoveSnapshot(key);
+    }
+    internal void CleanupExpired()
+    {
+        lock(_storeGate)SweepSnapshots();
+        lock(_probeGate)
+            foreach(var pair in _probes.Where(p=>p.Value.ExpiresAt<=_time.GetUtcNow()).ToArray())_probes.TryRemove(pair.Key,out _);
+    }
+    // Conservative managed-graph weight: UTF16 content plus container/entry/reference overhead.
+    // No full JSON serialization/copy solely to compute cache admission; not an exact heap profiler.
+    private long EstimateWeight(object? value,int depth=0)
+    {
+        var cap=Math.Min(_options.MaxSnapshotBytes,Math.Min(_options.MaxBytes,_options.MaxTenantBytes));
+        if(depth>64)return cap+1;
+        switch(value)
         {
-            if (!_conversationGates.TryGetValue(scope, out var gate))
-                _conversationGates[scope] = gate = new SemaphoreSlim(1, 1);
-            return gate;
+            case null:return 8;
+            case string text:return 24L+2L*text.Length;
+            case IReadOnlyDictionary<string,object?> dictionary:
+                long dictionaryBytes=128;
+                foreach(var pair in dictionary)
+                {
+                    dictionaryBytes+=64L+2L*pair.Key.Length+EstimateWeight(pair.Value,depth+1);
+                    if(dictionaryBytes>cap)return cap+1;
+                }
+                return dictionaryBytes;
+            case IReadOnlyList<object?> items:
+                long listBytes=64;
+                foreach(var item in items)
+                { listBytes+=8L+EstimateWeight(item,depth+1);if(listBytes>cap)return cap+1; }
+                return listBytes;
+            case bool or byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal:return 32;
+            default:return cap+1; // Unknown/borrowed/mutable objects cannot safely enter a JSON snapshot cache.
         }
     }
 
@@ -579,13 +615,14 @@ public sealed class ResponsesUpstreamTransport(
         };
     }
 
-    private void MarkProbe(string key, bool supported)
+    private void MarkProbe(string key,bool supported)
     {
-        _probes[key] = new ProbeState
+        lock(_probeGate)
         {
-            Supported = supported,
-            ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5)
-        };
+            foreach(var pair in _probes.Where(p=>p.Value.ExpiresAt<=_time.GetUtcNow()).ToArray())_probes.TryRemove(pair.Key,out _);
+            _probes[key]=new ProbeState { Supported=supported,ExpiresAt=_time.GetUtcNow().AddSeconds(_options.ProbeTtlSeconds) };
+            while(_probes.Count>_options.MaxProbes) _probes.TryRemove(_probes.MinBy(p=>p.Value.ExpiresAt).Key,out _);
+        }
     }
 
     private sealed class ContextSnapshot
@@ -593,6 +630,9 @@ public sealed class ResponsesUpstreamTransport(
         public Dictionary<string, object?> Request { get; init; } = [];
         public Dictionary<string, object?> Response { get; init; } = [];
         public DateTimeOffset LastUsed { get; set; }
+        public string Tenant { get; init; }="";
+        public string Scope { get; init; }="";
+        public long Weight { get; init; }
     }
 
     private sealed class StreamPlan(
