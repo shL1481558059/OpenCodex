@@ -58,28 +58,17 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                 context.ChannelType, context.DefaultTimeout, BuiltinToolSession.OutputTokenBudget(context.Payload));
             if (context.EntryProtocol == context.ChannelType)
             {
-                var streamLines = _responsesWebSocket is not null
+                var streamFrames = _responsesWebSocket is not null
                     && context.ChannelType == ProtocolConverter.Responses
-                    ? _responsesWebSocket.StreamAsync(context, context.CancellationToken)
-                    : _upstream.StreamJsonAsync(
-                        context.Route.Channel,
-                        upstreamRequest,
-                        context.DefaultTimeout,
-                        context.CancellationToken);
+                    ? _responsesWebSocket.StreamEventsAsync(context, context.CancellationToken)
+                    : _upstream.StreamEventsAsync(context.Route.Channel, upstreamRequest,
+                        context.DefaultTimeout, context.CancellationToken);
                 passThroughResponseCapture = new StreamResponseCapture(context.ChannelType);
-                streamWriteMetrics = await context.StreamWriter.WriteLinesAsync(
-                    EnsureCompletedStreamEndsWithDone(
-                        CapturePassThroughResponse(
-                            CaptureStreamLogLines(
-                                streamLines,
-                                streamLogCapture,
-                                context.CancellationToken),
-                            passThroughResponseCapture,
-                            context.CancellationToken),
+                streamWriteMetrics = await context.StreamWriter.WriteFramesAsync(
+                    ObserveFrames(streamFrames, streamLogCapture, passThroughResponseCapture,
                         context.CancellationToken),
                     static line => line.Trim().Length > 0,
-                    () => ElapsedMilliseconds(ttftStarted),
-                    context.CancellationToken);
+                    () => ElapsedMilliseconds(ttftStarted), context.CancellationToken);
                 ttftMs = streamWriteMetrics.TtftMs;
                 streamTermination = streamLogCapture.SawTerminalEvent
                     ? StreamCaptureTermination.Completed
@@ -96,16 +85,11 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                     UpstreamRequestBody = context.RequestMetadata.LogBodies?.UpstreamRequest
                 };
                 var convertedLines = ConvertRoundsAsync(context, convertedState, tools, context.CancellationToken);
-                streamWriteMetrics = await context.StreamWriter.WriteLinesAsync(
-                    EnsureCompletedStreamEndsWithDone(
-                        CaptureStreamLogLines(
-                            convertedLines,
-                            streamLogCapture,
-                            context.CancellationToken),
-                        context.CancellationToken),
+                streamWriteMetrics = await context.StreamWriter.WriteFramesAsync(
+                    ObserveFrames(SseFrameReader.ReadLines(convertedLines, context.CancellationToken),
+                        streamLogCapture, null, context.CancellationToken),
                     SseStreamConverter.CountsForTtft,
-                    () => ElapsedMilliseconds(ttftStarted),
-                    context.CancellationToken);
+                    () => ElapsedMilliseconds(ttftStarted), context.CancellationToken);
                 ttftMs = streamWriteMetrics.TtftMs;
                 streamTermination = streamLogCapture.SawTerminalEvent
                     ? StreamCaptureTermination.Completed
@@ -264,6 +248,28 @@ public sealed partial class ProxyStreamService : IProxyStreamService
             MidpointRounding.AwayFromZero);
     }
 
+    private static async IAsyncEnumerable<SseFrame> ObserveFrames(
+        IAsyncEnumerable<SseFrame> frames, StreamLogCapture log, StreamResponseCapture? capture,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var sawCompleted = false;
+        var sawDone = false;
+        await foreach (var frame in frames.WithCancellation(cancellationToken))
+        {
+            capture?.Accept(frame);
+            log.Observe(frame);
+            sawCompleted |= frame.IsResponseCompleted && frame.BoundaryComplete;
+            sawDone |= frame.IsDone;
+            yield return frame;
+            if (capture?.IsComplete == true) break;
+        }
+        if (sawCompleted && !sawDone)
+        {
+            log.Observe(SseFrame.Done);
+            yield return SseFrame.Done;
+        }
+    }
+
     internal static async IAsyncEnumerable<string> CapturePassThroughResponse(
         IAsyncEnumerable<string> lines,
         StreamResponseCapture capture,
@@ -294,28 +300,6 @@ public sealed partial class ProxyStreamService : IProxyStreamService
 
             yield return line;
         }
-    }
-
-    private static async IAsyncEnumerable<string> EnsureCompletedStreamEndsWithDone(
-        IAsyncEnumerable<string> lines,
-        [EnumeratorCancellation] CancellationToken cancellationToken)
-    {
-        var sawCompleted = false;
-        var sawDone = false;
-        await foreach (var line in lines.WithCancellation(cancellationToken))
-        {
-            sawCompleted |= line.Contains("response.completed", StringComparison.Ordinal);
-            sawDone |= line.Contains("data: [DONE]", StringComparison.Ordinal);
-            yield return line;
-        }
-
-        if (!sawCompleted || sawDone)
-        {
-            yield break;
-        }
-
-        const string done = "data: [DONE]\n\n";
-        yield return done;
     }
 
     private static IEnumerable<string> SplitStreamLogLines(string chunk)

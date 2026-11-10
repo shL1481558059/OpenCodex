@@ -1,36 +1,43 @@
+using Microsoft.AspNetCore.Http.Features;
+using Microsoft.Extensions.Options;
+using OpenCodex.Core.Protocols;
 using OpenCodex.CoreBase.Abstractions;
 using System.Text;
-using System.Text.Json;
 
 namespace OpenCodex.Api.Infrastructure;
+
+public sealed class SseWriteOptions
+{
+    public int MaxBatchBytes { get; set; } = 16 * 1024;
+    public int MaxFlushDelayMilliseconds { get; set; } = 10;
+    public int MaxEventBytes { get; set; } = 16 * 1024 * 1024;
+
+    internal void Validate()
+    {
+        if (MaxBatchBytes <= 0 || MaxFlushDelayMilliseconds <= 0 || MaxFlushDelayMilliseconds > 60_000 || MaxEventBytes <= 0)
+            throw new ArgumentOutOfRangeException(nameof(SseWriteOptions));
+    }
+}
 
 public sealed class ProxyStreamResponseWriter : IProxyStreamWriter
 {
     private readonly HttpResponse _response;
-
-    public ProxyStreamResponseWriter(HttpResponse response)
+    private readonly SseWriteOptions _options;
+    public ProxyStreamResponseWriter(HttpResponse response, SseWriteOptions? options = null)
     {
         _response = response;
+        _options = options ?? response.HttpContext.RequestServices?.GetService<IOptions<SseWriteOptions>>()?.Value ?? new();
     }
 
-    public void PrepareSse()
-    {
-        PrepareSse(_response);
-    }
+    public void PrepareSse() => PrepareSse(_response);
+    public Task<StreamWriteMetrics> WriteLinesAsync(IAsyncEnumerable<string> lines,
+        Func<string, bool> countsForTtft, Func<int> elapsedMilliseconds, CancellationToken cancellationToken = default) =>
+        WriteFramesAsync(SseFrameReader.ReadLines(lines, cancellationToken,
+            new() { MaxEventBytes = _options.MaxEventBytes }), countsForTtft, elapsedMilliseconds, cancellationToken);
 
-    public Task<StreamWriteMetrics> WriteLinesAsync(
-        IAsyncEnumerable<string> lines,
-        Func<string, bool> countsForTtft,
-        Func<int> elapsedMilliseconds,
-        CancellationToken cancellationToken = default)
-    {
-        return WriteLinesAsync(
-            _response,
-            lines,
-            countsForTtft,
-            elapsedMilliseconds,
-            cancellationToken);
-    }
+    public Task<StreamWriteMetrics> WriteFramesAsync(IAsyncEnumerable<SseFrame> frames,
+        Func<string, bool> countsForTtft, Func<int> elapsedMilliseconds, CancellationToken cancellationToken = default) =>
+        WriteFramesAsync(_response, frames, countsForTtft, elapsedMilliseconds, cancellationToken, _options);
 
     public static void PrepareSse(HttpResponse response)
     {
@@ -38,105 +45,110 @@ public sealed class ProxyStreamResponseWriter : IProxyStreamWriter
         response.ContentType = "text/event-stream";
         response.Headers.CacheControl = "no-cache";
         response.Headers["X-Accel-Buffering"] = "no";
+        response.HttpContext.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
     }
 
-    public static async Task<StreamWriteMetrics> WriteLinesAsync(
-        HttpResponse response,
-        IAsyncEnumerable<string> lines,
-        Func<string, bool> countsForTtft,
-        Func<int> elapsedMilliseconds,
-        CancellationToken cancellationToken = default)
+    // Legacy string consumers are normalized at the adapter. The event writer below never
+    // parses JSON, searches payload strings, or assumes one string is one physical SSE line.
+    public static Task<StreamWriteMetrics> WriteLinesAsync(HttpResponse response, IAsyncEnumerable<string> lines,
+        Func<string, bool> countsForTtft, Func<int> elapsedMilliseconds, CancellationToken cancellationToken = default) =>
+        WriteFramesAsync(response, SseFrameReader.ReadLines(lines, cancellationToken),
+            countsForTtft, elapsedMilliseconds, cancellationToken);
+
+    public static async Task<StreamWriteMetrics> WriteFramesAsync(HttpResponse response,
+        IAsyncEnumerable<SseFrame> frames, Func<string, bool> countsForTtft, Func<int> elapsedMilliseconds,
+        CancellationToken cancellationToken = default, SseWriteOptions? options = null)
     {
+        options ??= new();
+        options.Validate();
         var metrics = new StreamWriteMetrics();
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(options.MaxFlushDelayMilliseconds));
+        var enumerator = frames.GetAsyncEnumerator(lifetime.Token);
+        Task<bool>? move = null;
+        Task<bool>? tick = null;
+        var pendingBytes = 0;
+        var pendingSuccess = false;
+        var flushedSuccess = false;
+        var first = true;
+        var firstBusiness = true;
         var sawCompleted = false;
         var sawDone = false;
-        var flushedFrames = new FlushedSseFrames();
+        var output = response.BodyWriter;
         try
         {
-            await foreach (var line in lines.WithCancellation(cancellationToken))
+            move = enumerator.MoveNextAsync().AsTask();
+            tick = timer.WaitForNextTickAsync(lifetime.Token).AsTask();
+            while (true)
             {
-                if (metrics.TtftMs is null && countsForTtft(line))
+                if (pendingBytes > 0 && (tick.IsCompleted || !move.IsCompleted))
                 {
-                    metrics.TtftMs = elapsedMilliseconds();
+                    if (await Task.WhenAny(move, tick) == tick)
+                    {
+                        await tick;
+                        await Flush();
+                        tick = timer.WaitForNextTickAsync(lifetime.Token).AsTask();
+                        continue;
+                    }
                 }
-
-                if (!sawCompleted && line.Contains("response.completed", StringComparison.Ordinal))
-                {
-                    sawCompleted = true;
-                }
-
-                if (!sawDone && line.Contains("data: [DONE]", StringComparison.Ordinal))
-                {
-                    sawDone = true;
-                }
-
-                await response.WriteAsync(line, cancellationToken);
-                await response.Body.FlushAsync(cancellationToken);
-                flushedFrames.Append(line);
+                lifetime.Token.ThrowIfCancellationRequested();
+                if (!await move) break;
+                var frame = enumerator.Current;
+                var bytes = Encoding.UTF8.GetByteCount(frame.WireText);
+                if (bytes > options.MaxEventBytes)
+                    throw new InvalidDataException("SSE event exceeds configured writer MaxEventBytes; output was not truncated.");
+                if (pendingBytes > 0 && (long)pendingBytes + bytes > options.MaxBatchBytes) await Flush();
+                Append(frame, bytes);
+                if (metrics.TtftMs is null && countsForTtft(frame.WireText)) metrics.TtftMs = elapsedMilliseconds();
+                sawCompleted |= frame.IsResponseCompleted && frame.BoundaryComplete;
+                sawDone |= frame.IsDone;
+                if (first || firstBusiness && frame.Event is not null || frame.IsTerminal || frame.Event is null || pendingBytes >= options.MaxBatchBytes) await Flush();
+                first = false;
+                if (frame.Event is not null) firstBusiness = false;
+                // Exactly one outstanding MoveNext. Awaited flush provides downstream backpressure;
+                // while awaiting upstream we can flush pending complete events on the reusable timer.
+                move = enumerator.MoveNextAsync().AsTask();
             }
-
             if (sawCompleted && !sawDone)
             {
-                await response.WriteAsync("data: [DONE]\n\n", cancellationToken);
-                await response.Body.FlushAsync(cancellationToken);
+                Append(SseFrame.Done, Encoding.UTF8.GetByteCount(SseFrame.Done.WireText));
             }
-
+            await Flush();
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested && flushedFrames.SuccessfullyCompleted)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested && flushedSuccess)
         {
-            // A complete successful terminal frame was flushed before the peer closed.
+            // Only a complete successful terminal frame whose Flush actually returned is success.
         }
-
+        finally
+        {
+            // A slow/downstream failure can leave one upstream read pending. Cancel then await it
+            // before disposing; never race DisposeAsync against MoveNextAsync on an iterator.
+            lifetime.Cancel();
+            timer.Dispose();
+            if (move is not null) { try { await move; } catch { } }
+            if (tick is not null) { try { await tick; } catch { } }
+            await enumerator.DisposeAsync();
+        }
         return metrics;
-    }
 
-    private sealed class FlushedSseFrames
-    {
-        private readonly StringBuilder _line = new();
-        private readonly StringBuilder _data = new();
-        public bool SuccessfullyCompleted { get; private set; }
-
-        public void Append(string chunk)
+        void Append(SseFrame frame, int bytes)
         {
-            foreach (var character in chunk)
-            {
-                if (character != '\n')
-                {
-                    _line.Append(character);
-                    continue;
-                }
-
-                var line = _line.ToString().TrimEnd('\r');
-                _line.Clear();
-                if (line.Length == 0)
-                {
-                    InspectFrame();
-                    _data.Clear();
-                }
-                else if (line.StartsWith("data:", StringComparison.Ordinal))
-                {
-                    if (_data.Length > 0) _data.Append('\n');
-                    _data.Append(line.AsSpan(5).TrimStart(' '));
-                }
-            }
+            var memory = output.GetMemory(bytes);
+            var written = Encoding.UTF8.GetBytes(frame.WireText, memory.Span);
+            output.Advance(written);
+            pendingBytes += written;
+            pendingSuccess |= frame.IsSuccessfulResponseCompleted;
         }
-
-        private void InspectFrame()
+        async Task Flush()
         {
-            if (SuccessfullyCompleted || _data.Length == 0) return;
-            try
-            {
-                using var document = JsonDocument.Parse(_data.ToString());
-                var root = document.RootElement;
-                SuccessfullyCompleted = root.ValueKind == JsonValueKind.Object
-                    && root.TryGetProperty("type", out var type)
-                    && type.ValueKind == JsonValueKind.String && type.GetString() == "response.completed"
-                    && root.TryGetProperty("response", out var response) && response.ValueKind == JsonValueKind.Object
-                    && response.TryGetProperty("status", out var status)
-                    && status.ValueKind == JsonValueKind.String && status.GetString() == "completed";
-            }
-            catch (JsonException) { }
+            if (pendingBytes == 0) return;
+            var result = await output.FlushAsync(lifetime.Token);
+            if (result.IsCanceled) throw new OperationCanceledException(lifetime.Token);
+            if (result.IsCompleted) throw new IOException("Downstream completed before SSE flush was accepted.");
+            flushedSuccess |= pendingSuccess;
+            pendingSuccess = false;
+            pendingBytes = 0;
+            lifetime.Token.ThrowIfCancellationRequested();
         }
     }
-
 }

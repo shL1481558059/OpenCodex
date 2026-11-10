@@ -35,6 +35,7 @@ public static class OpenCodexServiceCollectionExtensions
         this IServiceCollection services,
         IConfiguration configuration)
     {
+        services.Configure<OpenCodex.Api.Infrastructure.SseWriteOptions>(configuration.GetSection("ProxyStreaming"));
         services.AddSingleton(configuration.GetSection("ProxyStreaming:Upstream").Get<OpenCodex.Core.Protocols.SseTransportOptions>() ?? new());
         services.AddControllers();
         services.Configure<KestrelServerOptions>(options =>

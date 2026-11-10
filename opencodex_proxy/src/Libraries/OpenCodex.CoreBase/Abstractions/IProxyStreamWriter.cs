@@ -1,3 +1,5 @@
+using OpenCodex.Core.Protocols;
+
 namespace OpenCodex.CoreBase.Abstractions;
 
 /// <summary>
@@ -23,4 +25,12 @@ public interface IProxyStreamWriter
         Func<string, bool> countsForTtft,
         Func<int> elapsedMilliseconds,
         CancellationToken cancellationToken = default);
+
+    // Existing integrations need not implement the event API immediately.
+    Task<StreamWriteMetrics> WriteFramesAsync(
+        IAsyncEnumerable<SseFrame> frames,
+        Func<string, bool> countsForTtft,
+        Func<int> elapsedMilliseconds,
+        CancellationToken cancellationToken = default) =>
+        WriteLinesAsync(SseFrameReader.WireFrames(frames, cancellationToken), countsForTtft, elapsedMilliseconds, cancellationToken);
 }

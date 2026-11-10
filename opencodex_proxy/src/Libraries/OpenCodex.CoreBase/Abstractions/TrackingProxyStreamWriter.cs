@@ -1,3 +1,5 @@
+using OpenCodex.Core.Protocols;
+
 namespace OpenCodex.CoreBase.Abstractions;
 
 public sealed class TrackingProxyStreamWriter : IProxyStreamWriter
@@ -62,6 +64,24 @@ public sealed class TrackingProxyStreamWriter : IProxyStreamWriter
             countsForTtft,
             elapsedMilliseconds,
             cancellationToken);
+    }
+
+    public Task<StreamWriteMetrics> WriteFramesAsync(
+        IAsyncEnumerable<SseFrame> frames, Func<string, bool> countsForTtft,
+        Func<int> elapsedMilliseconds, CancellationToken cancellationToken = default)
+    {
+        return _inner.WriteFramesAsync(Track(frames, cancellationToken), countsForTtft, elapsedMilliseconds, cancellationToken);
+
+        async IAsyncEnumerable<SseFrame> Track(IAsyncEnumerable<SseFrame> source,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken token)
+        {
+            await foreach (var frame in source.WithCancellation(token))
+            {
+                if (!IsPrepared) PrepareSse();
+                if (!_countOnlyMeaningfulWrites || IsMeaningfulLine(frame.WireText)) HasWritten = true;
+                yield return frame;
+            }
+        }
     }
 
     private static bool IsMeaningfulLine(string line)

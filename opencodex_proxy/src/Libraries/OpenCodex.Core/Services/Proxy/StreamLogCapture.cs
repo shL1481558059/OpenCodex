@@ -44,6 +44,16 @@ internal sealed class StreamLogCapture
     /// 观察单行流内容，命中可读的数据行时替换已保存的最后一行。
     /// </summary>
     /// <param name="rawLine">按换行拆分后的单行原文。</param>
+    public void Observe(SseFrame frame)
+    {
+        if (frame.IsDone || IsTerminalEventName(frame.Type)) SawTerminalEvent = true;
+        if (frame.Event is null || frame.IsDone) return;
+        // Preserve the diagnostic contract without scanning/allocating every physical line.
+        var wire = frame.WireText.AsSpan().Trim();
+        var data = wire.IndexOf("data:", StringComparison.Ordinal);
+        if (data >= 0) _lastDataLine = wire[data..].ToString();
+    }
+
     public void Observe(string rawLine)
     {
         var trimmed = rawLine.TrimStart();

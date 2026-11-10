@@ -1286,7 +1286,8 @@ public sealed class ProxyStreamServiceTests
         await service.StreamAsync(context);
 
         Assert.True(writer.Prepared);
-        Assert.Equal(5, writer.Lines.Count);
+        // Service now hands the writer complete events (created/completed/DONE), not physical lines.
+        Assert.Equal(3, writer.Lines.Count);
     }
 
     [Fact]
@@ -1397,9 +1398,7 @@ public sealed class ProxyStreamServiceTests
 
         await service.StreamAsync(context);
 
-        Assert.Equal(
-            upstreamLines[..3].Append("data: [DONE]\n\n"),
-            writer.Lines);
+        Assert.Equal(string.Join("\n", upstreamLines[..3]) + "\ndata: [DONE]\n\n", string.Concat(writer.Lines));
         Assert.NotNull(logs.LastContext?.UpstreamResponse);
         var response = logs.LastContext!.UpstreamResponse!;
         Assert.Equal("resp-1", response["id"]);
