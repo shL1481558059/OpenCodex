@@ -130,6 +130,27 @@ public sealed class SseFramePipelineTests
         Assert.True(source.Disposed);
     }
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(7)]
+    public async Task LegacyWriter_ArbitraryChunkBoundariesDoNotInsertLineBreaks(int size)
+    {
+        const string wire = "data: {\"delta\":\"汉😀\"}\n\ndata: [DONE]\n\n";
+        var response = new DefaultHttpContext().Response;
+        response.Body = new MemoryStream();
+        await ProxyStreamResponseWriter.WriteLinesAsync(response, Parts(), _ => false, () => 1);
+        Assert.Equal(wire, Encoding.UTF8.GetString(((MemoryStream)response.Body).ToArray()));
+        async IAsyncEnumerable<string> Parts()
+        {
+            for (var i = 0; i < wire.Length; i += size)
+            {
+                yield return wire.Substring(i, Math.Min(size, wire.Length - i));
+                await Task.Yield();
+            }
+        }
+    }
+
     private static SseFrame Frame(int n) => new SseFrameReader().Feed($"data: {{\"n\":{n}}}\n\n").Single();
     private static async IAsyncEnumerable<SseFrame> Frames(IEnumerable<SseFrame> frames)
     {

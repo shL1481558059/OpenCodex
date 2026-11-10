@@ -32,7 +32,7 @@ public sealed class ProxyStreamResponseWriter : IProxyStreamWriter
     public void PrepareSse() => PrepareSse(_response);
     public Task<StreamWriteMetrics> WriteLinesAsync(IAsyncEnumerable<string> lines,
         Func<string, bool> countsForTtft, Func<int> elapsedMilliseconds, CancellationToken cancellationToken = default) =>
-        WriteFramesAsync(SseFrameReader.ReadLines(lines, cancellationToken,
+        WriteFramesAsync(SseFrameReader.ReadChunks(lines, cancellationToken,
             new() { MaxEventBytes = _options.MaxEventBytes }), countsForTtft, elapsedMilliseconds, cancellationToken);
 
     public Task<StreamWriteMetrics> WriteFramesAsync(IAsyncEnumerable<SseFrame> frames,
@@ -52,7 +52,7 @@ public sealed class ProxyStreamResponseWriter : IProxyStreamWriter
     // parses JSON, searches payload strings, or assumes one string is one physical SSE line.
     public static Task<StreamWriteMetrics> WriteLinesAsync(HttpResponse response, IAsyncEnumerable<string> lines,
         Func<string, bool> countsForTtft, Func<int> elapsedMilliseconds, CancellationToken cancellationToken = default) =>
-        WriteFramesAsync(response, SseFrameReader.ReadLines(lines, cancellationToken),
+        WriteFramesAsync(response, SseFrameReader.ReadChunks(lines, cancellationToken),
             countsForTtft, elapsedMilliseconds, cancellationToken);
 
     public static async Task<StreamWriteMetrics> WriteFramesAsync(HttpResponse response,

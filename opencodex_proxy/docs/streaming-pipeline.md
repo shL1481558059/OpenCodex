@@ -21,6 +21,7 @@ and normalized JSON body contracts have not been replaced with raw SSE logs.
 * Legacy standalone string capture/APIs remain compatible; those legacy callers may still parse.
   `SseFrameReader.ReadLines` accepts physical lines (with/without terminators) or full frames.
   Arbitrary character chunks must use `ReadChunks` (including CR/LF split across chunks).
+  The legacy HTTP writer string adapter uses chunk semantics to preserve exact existing wire text.
 * Wire line endings are normalized to LF. Multi-line `data` joins with LF; exactly one optional
   field-value space is removed. Comments/unknown fields are preserved on the wire. EOF data
   tolerance is retained for compatibility, but an unterminated frame is never marked as a
