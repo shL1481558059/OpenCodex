@@ -279,12 +279,13 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                             context.CancellationToken);
                     }
 
-                    upstreamRequest = ProtocolConverter.ConvertRequest(
+                    var conversion = ProtocolConverter.ConvertRequestWithMetadata(
                         effectivePayload,
                         context.EntryProtocol,
                         channelType,
                         route.UpstreamModel,
                         channelCompat);
+                    upstreamRequest = conversion.Request;
                     // force_params 是最终覆盖：协议转换完成后统一执行一次，避免转换产物与原始字段并存。
                     ChannelCompatRequestRewriter.ApplyForceParams(upstreamRequest, channelCompat);
                     upstreamRequest["model"] = upstreamModel;
@@ -337,7 +338,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                                 trackingWriter,
                                 context.CancellationToken)
                             {
-                                BuiltinTools = builtinTools
+                                BuiltinTools = builtinTools,
+                                ToolCallMappings = conversion.ToolCallMappings
                             });
 
                         await WriteChannelAttemptLogAsync(
@@ -387,7 +389,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                            requestMetadata,
                            context.CancellationToken)
                        {
-                           BuiltinTools = builtinTools
+                           BuiltinTools = builtinTools,
+                           ToolCallMappings = conversion.ToolCallMappings
                        });
 
                    if (result.FailureException is ProxyException failureException)

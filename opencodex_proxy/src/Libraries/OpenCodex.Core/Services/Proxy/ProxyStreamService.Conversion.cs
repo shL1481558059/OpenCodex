@@ -20,7 +20,7 @@ public sealed partial class ProxyStreamService
         var textFormat = ProtocolConverter.ExtractTextFormat(context.OriginalPayload);
         var mappings = context.EntryProtocol == ProtocolConverter.Responses
             && context.ChannelType is ProtocolConverter.Chat or ProtocolConverter.Messages
-            ? ProtocolConverter.BuildResponsesToolCallMappings(context.Payload)
+            ? context.ToolCallMappings ?? ProtocolConverter.BuildResponsesToolCallMappings(context.Payload)
             : null;
         var shouldBuffer = tools is not null || mappings is { Count: > 0 };
         var retryUsed = false;

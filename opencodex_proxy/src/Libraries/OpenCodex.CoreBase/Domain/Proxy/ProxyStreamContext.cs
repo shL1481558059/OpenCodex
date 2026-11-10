@@ -1,3 +1,4 @@
+using OpenCodex.Core.Protocols;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.DTOs.Proxy;
 
@@ -9,6 +10,9 @@ namespace OpenCodex.CoreBase.Domain.Proxy;
 public sealed class ProxyStreamContext
 {
     public BuiltinToolRequestContext? BuiltinTools { get; init; }
+
+    /// <summary>The immutable tool contract produced by this attempt's request conversion.</summary>
+    public IReadOnlyDictionary<string, ResponsesToolCallMapping>? ToolCallMappings { get; init; }
 
     /// <summary>
     /// 初始化 <see cref="ProxyStreamContext"/> 类的新实例。

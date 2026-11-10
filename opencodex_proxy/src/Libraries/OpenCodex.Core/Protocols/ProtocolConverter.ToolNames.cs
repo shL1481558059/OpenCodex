@@ -13,7 +13,8 @@ public static partial class ProtocolConverter
             IReadOnlyDictionary<string, ResponsesToolCallMapping> mappings)
         {
             _byIdentity = new Dictionary<string, ToolWireNameEntry>(byIdentity, StringComparer.Ordinal);
-            Mappings = mappings;
+            Mappings = new System.Collections.ObjectModel.ReadOnlyDictionary<string, ResponsesToolCallMapping>(
+                new Dictionary<string, ResponsesToolCallMapping>(mappings, StringComparer.Ordinal));
         }
 
         public IReadOnlyDictionary<string, ResponsesToolCallMapping> Mappings { get; }

@@ -8,11 +8,12 @@ public static partial class ProtocolConverter
         Dictionary<string, object?> payload,
         string protocol,
         IReadOnlyDictionary<string, object?>? compat,
-        ToolWireNamePlan? toolWireNamePlan)
+        ToolWireNamePlan? toolWireNamePlan,
+        List<object?>? canonicalTools)
     {
         return protocol switch
         {
-            Responses => ResponsesRequestToCanonical(payload, compat, toolWireNamePlan),
+            Responses => ResponsesRequestToCanonical(payload, compat, toolWireNamePlan, canonicalTools),
             Chat => ChatRequestToCanonical(payload, compat),
             Messages => MessagesRequestToCanonical(payload, compat),
             _ => throw new BadRequestException($"unsupported source protocol: {protocol}")
@@ -36,7 +37,8 @@ public static partial class ProtocolConverter
     private static Dictionary<string, object?> ResponsesRequestToCanonical(
         Dictionary<string, object?> payload,
         IReadOnlyDictionary<string, object?>? compat,
-        ToolWireNamePlan? toolWireNamePlan)
+        ToolWireNamePlan? toolWireNamePlan,
+        List<object?>? canonicalTools)
     {
         var messages = new List<object?>();
         var instructions = GetValue(payload, "instructions");
@@ -73,7 +75,7 @@ public static partial class ProtocolConverter
         return Obj(
             ("model", GetValue(payload, "model")),
             ("messages", messages),
-            ("tools", ResponsesRequestToolsToCanonical(payload, compat)),
+            ("tools", canonicalTools ?? ResponsesRequestToolsToCanonical(payload, compat)),
             ("tool_choice", GetValue(payload, "tool_choice")),
             ("params", CopyCommonRequestParams(payload, Responses)));
     }

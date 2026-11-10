@@ -41,7 +41,7 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
         var toolCallMappings = context.EntryProtocol == ProtocolConverter.Responses
             && (context.ChannelType == ProtocolConverter.Chat
                 || context.ChannelType == ProtocolConverter.Messages)
-            ? ProtocolConverter.BuildResponsesToolCallMappings(context.Payload)
+            ? context.ToolCallMappings ?? ProtocolConverter.BuildResponsesToolCallMappings(context.Payload)
             : null;
         BuiltinToolSession? tools = null;
         var rejectedUsage = new Dictionary<string, object?>(StringComparer.Ordinal);

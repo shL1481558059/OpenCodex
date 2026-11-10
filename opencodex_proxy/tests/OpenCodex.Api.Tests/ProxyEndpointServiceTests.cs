@@ -110,6 +110,54 @@ public sealed class ProxyEndpointServiceTests
         Assert.Equal(0, executor.Calls);
     }
 
+    [Theory]
+    [InlineData(ProtocolConverter.Chat, false)]
+    [InlineData(ProtocolConverter.Chat, true)]
+    [InlineData(ProtocolConverter.Messages, false)]
+    [InlineData(ProtocolConverter.Messages, true)]
+    public async Task ProxyAsync_CarriesDistinctToolContractForEachRouteAttempt(string protocol, bool stream)
+    {
+        var contracts = new List<IReadOnlyDictionary<string, ResponsesToolCallMapping>>();
+        void Observe(IReadOnlyDictionary<string, ResponsesToolCallMapping>? contract)
+        {
+            Assert.NotNull(contract);
+            Assert.Equal("a__b", contract["a__b"].ResponsesName);
+            contracts.Add(contract);
+            if (contracts.Count == 1) throw new UpstreamException("retry this channel", ProxyHttpStatus.ServiceUnavailable);
+        }
+        var nonStreams = new StubProxyNonStreamService(context =>
+        {
+            Observe(context.ToolCallMappings);
+            return Task.FromResult(new ProxyNonStreamResult(200, new { ok = true }));
+        });
+        var streams = new StubProxyStreamService(context =>
+        {
+            Observe(context.ToolCallMappings);
+            return Task.CompletedTask;
+        });
+        var first = CreateChannel("plan-first", 0, type: protocol);
+        var second = CreateChannel("plan-second", 1, type: protocol);
+        var service = CreateService(new ChannelCapacityService(), new StubProxyRouteService(
+            [CreateRoute(first, "model", "upstream"), CreateRoute(second, "model", "upstream")]),
+            nonStreams: nonStreams, streams: streams);
+        var request = CreateResponsesContext("model", new Dictionary<string, string>());
+        request.Payload!["stream"] = stream;
+        request.Payload["tools"] = new List<object?>
+        {
+            new Dictionary<string, object?>
+            {
+                ["type"] = "function", ["name"] = "a__b",
+                ["parameters"] = new Dictionary<string, object?> { ["type"] = "object" }
+            }
+        };
+
+        var result = await service.ProxyAsync(request);
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.Equal(2, contracts.Count);
+        Assert.NotSame(contracts[0], contracts[1]);
+    }
+
     [Fact]
     public void ApplyResponsesPassthroughHeaders_MergesOpenAiBetaValues()
     {

@@ -22,8 +22,12 @@ public static partial class ProtocolConverter
         Dictionary<string, object?> payload,
         IReadOnlyDictionary<string, object?>? compat = null)
     {
-        var tools = ResponsesRequestToolsToCanonical(payload, compat)
-            .OfType<Dictionary<string, object?>>()
+        return BuildResponsesToolWireNamePlan(ResponsesRequestToolsToCanonical(payload, compat));
+    }
+
+    private static ToolWireNamePlan BuildResponsesToolWireNamePlan(List<object?> canonicalTools)
+    {
+        var tools = canonicalTools.OfType<Dictionary<string, object?>>()
             .Where(tool => HasNonNullValue(tool, "name") && !IsNativeRemoteMcpCanonicalTool(tool))
             .ToList();
         var identities = tools

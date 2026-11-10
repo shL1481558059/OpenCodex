@@ -181,6 +181,16 @@ public static partial class ProtocolConverter
             string upstreamModel,
             IReadOnlyDictionary<string, object?>? compat = null)
        {
+           return ConvertRequestWithMetadata(payload, sourceProtocol, targetProtocol, upstreamModel, compat).Request;
+       }
+
+       public static RequestConversionResult ConvertRequestWithMetadata(
+           Dictionary<string, object?> payload,
+           string sourceProtocol,
+           string targetProtocol,
+           string upstreamModel,
+           IReadOnlyDictionary<string, object?>? compat = null)
+       {
            ArgumentNullException.ThrowIfNull(payload);
 
            var converted = AsObject(DeepCopy(payload));
@@ -192,18 +202,18 @@ public static partial class ProtocolConverter
                    SanitizeRequestToolSchemas(converted, targetProtocol);
                    SanitizeRequestToolChoiceConsistency(converted);
                }
-               return converted;
+               return new RequestConversionResult(converted, null);
            }
 
             ValidateRequestSemanticCompatibility(converted, sourceProtocol, targetProtocol);
-            var toolWireNamePlan = sourceProtocol == Responses
-                && targetProtocol is Chat or Messages
-                ? BuildResponsesToolWireNamePlan(converted, compat)
+            var canonicalTools = sourceProtocol == Responses && targetProtocol is Chat or Messages
+                ? ResponsesRequestToolsToCanonical(converted, compat)
                 : null;
-            var canonical = ToCanonicalRequest(converted, sourceProtocol, compat, toolWireNamePlan);
+            var toolWireNamePlan = canonicalTools is null ? null : BuildResponsesToolWireNamePlan(canonicalTools);
+            var canonical = ToCanonicalRequest(converted, sourceProtocol, compat, toolWireNamePlan, canonicalTools);
             var result = FromCanonicalRequest(canonical, targetProtocol, toolWireNamePlan);
             SanitizeRequestToolChoiceConsistency(result);
-            return result;
+            return new RequestConversionResult(result, toolWireNamePlan?.Mappings);
        }
 
     public static Dictionary<string, object?> ConvertResponse(
