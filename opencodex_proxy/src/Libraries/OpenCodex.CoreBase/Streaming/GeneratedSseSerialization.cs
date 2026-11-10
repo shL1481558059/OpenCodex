@@ -108,6 +108,26 @@ internal static class GeneratedSseSerialization
         public override void Write(byte[] buffer, int offset, int count) => Write(buffer.AsSpan(offset, count));
         public abstract override void Write(ReadOnlySpan<byte> buffer);
     }
+    internal static int WriteUtf8(IBufferWriter<byte> output,object? data,string? name)
+    {
+        using var sink=new BufferStream(output);Write(sink,data,name);return sink.Count;
+    }
+    internal static int WriteUtf8(IBufferWriter<byte> output,string wire)
+    {
+        using var sink=new BufferStream(output);WriteText(sink,wire);return sink.Count;
+    }
+    private sealed class BufferStream(IBufferWriter<byte> output):WriteOnlyStream
+    {
+        internal int Count;
+        public override void Write(ReadOnlySpan<byte> bytes)
+        {
+            while(!bytes.IsEmpty)
+            {
+                var count=Math.Min(bytes.Length,16*1024);bytes[..count].CopyTo(output.GetSpan(count));
+                output.Advance(count);Count=checked(Count+count);bytes=bytes[count..];
+            }
+        }
+    }
     private sealed class CountingStream : WriteOnlyStream
     {
         internal int Count { get; private set; }

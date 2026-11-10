@@ -44,7 +44,7 @@ public sealed class MultiAgentModelStreamWriter(
                 cancellationToken.ThrowIfCancellationRequested();
                 if (frame.Utf8Length > _frameOptions.MaxEventBytes)
                     throw new UpstreamException("The multi-agent model event exceeds configured MaxEventBytes.");
-                if (metrics.TtftMs is null && countsForTtft(frame.WireText)) metrics.TtftMs = elapsedMilliseconds();
+                if (metrics.TtftMs is null && SseFramePredicate.Evaluate(countsForTtft,frame)) metrics.TtftMs = elapsedMilliseconds();
                 if (frame.Event is null || frame.IsDone) continue;
                 if (frame.Malformed || frame.Event.Data is not IReadOnlyDictionary<string, object?> source)
                     throw new UpstreamException("The multi-agent model stream contains an invalid JSON event: the payload must be an object.");

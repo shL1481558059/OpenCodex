@@ -21,6 +21,21 @@ public static partial class SseStreamConverter
             || line.Contains("response.output_item.done", StringComparison.Ordinal);
     }
 
+    // ASCII marker matching over frozen generated values has exactly the old substring
+    // behavior (including markers inside content/keys), without encoding a long event.
+    // Raw wire, comments and malformed input retain the original byte/text semantics.
+    internal static Func<string,bool> FrameCountsForTtft { get; }=SseFramePredicate.Create(CountsForTtft,
+        static frame=>frame.IsGenerated
+            ?CountsForTtft(frame.Event!.EventName)||ContainsTtftMarker(frame.Event.Data)
+            :CountsForTtft(frame.WireText));
+    private static bool ContainsTtftMarker(object? value)=>value switch
+    {
+        string text=>CountsForTtft(text),
+        IReadOnlyDictionary<string,object?> map=>map.Any(pair=>CountsForTtft(pair.Key)||ContainsTtftMarker(pair.Value)),
+        IReadOnlyList<object?> items=>items.Any(ContainsTtftMarker),
+        _=>false
+    };
+
     private static Dictionary<string, object?> ChatUsageToResponsesUsage(
         IReadOnlyDictionary<string, object?> usage)
     {

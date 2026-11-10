@@ -102,7 +102,7 @@ public sealed class ProxyStreamResponseWriter : IProxyStreamWriter
                     throw new InvalidDataException("SSE event exceeds configured writer MaxEventBytes; output was not truncated.");
                 if (pendingBytes > 0 && (long)pendingBytes + bytes > options.MaxBatchBytes) await Flush();
                 Append(frame, bytes);
-                if (metrics.TtftMs is null && countsForTtft(frame.WireText)) metrics.TtftMs = elapsedMilliseconds();
+                if (metrics.TtftMs is null && SseFramePredicate.Evaluate(countsForTtft,frame)) metrics.TtftMs = elapsedMilliseconds();
                 sawCompleted |= frame.IsResponseCompleted && frame.BoundaryComplete;
                 sawDone |= frame.IsDone;
                 if (first || firstBusiness && frame.Event is not null || frame.IsTerminal || frame.Event is null || pendingBytes >= options.MaxBatchBytes) await Flush();
@@ -136,9 +136,7 @@ public sealed class ProxyStreamResponseWriter : IProxyStreamWriter
 
         void Append(SseFrame frame, int bytes)
         {
-            var memory = output.GetMemory(bytes);
-            var written = Encoding.UTF8.GetBytes(frame.WireText, memory.Span);
-            output.Advance(written);
+            var written = frame.WriteUtf8(output);
             pendingBytes += written;
             pendingSuccess |= frame.IsSuccessfulResponseCompleted;
         }

@@ -95,7 +95,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                 streamWriteMetrics = await context.StreamWriter.WriteFrameBatchAsync(
                     terminalGate.Hold(ObserveFrames(ValidateOutputFrames(convertedLines, context.CancellationToken),
                         streamLogCapture, null, context.CancellationToken),context.CancellationToken),
-                    SseStreamConverter.CountsForTtft,
+                    SseStreamConverter.FrameCountsForTtft,
                     () => ElapsedMilliseconds(ttftStarted), context.CancellationToken);
                 ttftMs = streamWriteMetrics.TtftMs;
                 streamTermination = streamLogCapture.SawTerminalEvent
@@ -177,7 +177,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
 
             await PersistLog();
             if(error is not null && terminalGate.HasCommitted && !context.CancellationToken.IsCancellationRequested)
-                await context.StreamWriter.WriteFramesAsync(terminalGate.Release(context.CancellationToken),static _=>false,
+                await context.StreamWriter.WriteFramesAsync(terminalGate.Release(context.CancellationToken),SseFramePredicate.Never,
                     ()=>ElapsedMilliseconds(ttftStarted),context.CancellationToken);
         }
         // Success/stop is not publishable until complete audit persistence succeeds. This
@@ -185,7 +185,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         try
         {
             await context.StreamWriter.WriteFramesAsync(terminalGate.Release(context.CancellationToken),
-                static _=>false,()=>ElapsedMilliseconds(ttftStarted),context.CancellationToken);
+                SseFramePredicate.Never,()=>ElapsedMilliseconds(ttftStarted),context.CancellationToken);
         }
         catch(Exception exception)
         {

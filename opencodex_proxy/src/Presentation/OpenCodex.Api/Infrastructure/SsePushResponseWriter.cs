@@ -83,7 +83,7 @@ public sealed class SsePushResponseWriter : IAsyncDisposable
     {
         try
         {
-            await ProxyStreamResponseWriter.WriteFramesAsync(_response, ReadAsync(), static _ => false, static () => 0,
+            await ProxyStreamResponseWriter.WriteFramesAsync(_response, ReadAsync(), SseFramePredicate.Never, static () => 0,
                 _lifetime.Token, _options);
         }
         catch (Exception error)

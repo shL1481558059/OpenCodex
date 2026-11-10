@@ -51,6 +51,13 @@ public sealed class SseFrame
             return length;
         }
     }
+    /// <summary>Encode a complete event into bounded writer segments, without a generated
+    /// full UTF16 wire string. The caller owns event-boundary flushing/backpressure.</summary>
+    public int WriteUtf8(System.Buffers.IBufferWriter<byte> output)=>
+        _generatedWire is not null && !_smallGeneratedEvent && !_generatedWire.IsValueCreated
+            ? GeneratedSseSerialization.WriteUtf8(output,Event!.Data,_generatedEventName)
+            : GeneratedSseSerialization.WriteUtf8(output,WireText);
+
     public SseEvent? Event { get; }
     public bool BoundaryComplete { get; }
     public bool Malformed { get; }
@@ -106,6 +113,7 @@ public sealed class SseFrame
         return data < 0 ? null : wire.Slice(data, Math.Min(wire.Length - data, maxCharacters)).ToString();
     }
 
+    internal bool IsGenerated => _generatedWire is not null;
     internal bool IsWireMaterialized => _generatedWire?.IsValueCreated ?? true;
 
     private static object? Freeze(object? value, int depth = 0)

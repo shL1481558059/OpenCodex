@@ -13,7 +13,8 @@ public sealed class ResponsesWebSocketClientService(
     IServiceScopeFactory scopes,
     ILogger<ResponsesWebSocketClientService> logger,
     ClientConnectionCache? connectionCache = null,
-    IProxyIdentityContext? identityContext = null)
+    IProxyIdentityContext? identityContext = null,
+    IConfiguration? configuration = null)
 {
     private const string WarmResponsePrefix = "resp_ocx_warm_";
 
@@ -57,8 +58,7 @@ public sealed class ResponsesWebSocketClientService(
                     history.RememberId(responseId);
                     terminalResponseId = responseId;
                 }
-                var bytes = JsonSerializer.SerializeToUtf8Bytes(payload);
-                await socket.SendAsync(bytes, WebSocketMessageType.Text, true, sendToken);
+                await OpenCodex.Core.Protocols.WebSocketJsonWriter.SendAsync(socket,payload,configuration?.GetValue<int?>("ProxyStreaming:MaxEventBytes")??16*1024*1024,sendToken);
             }
             finally { sendGate.Release(); }
         }
