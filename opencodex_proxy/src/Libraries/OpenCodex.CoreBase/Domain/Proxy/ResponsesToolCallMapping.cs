@@ -7,4 +7,5 @@ public sealed class ResponsesToolCallMapping
     public string NativeType { get; init; } = "function";
     public string ResponsesName { get; init; } = string.Empty;
     public string? Namespace { get; init; }
+    public bool IsAmbiguous { get; init; }
 }

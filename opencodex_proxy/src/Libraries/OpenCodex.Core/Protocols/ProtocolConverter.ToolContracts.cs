@@ -78,6 +78,12 @@ public static partial class ProtocolConverter
         if (mappings is not null
             && mappings.TryGetValue(toolName, out var exact))
         {
+            if (exact.IsAmbiguous)
+            {
+                mapping = new ResponsesToolCallMapping();
+                return false;
+            }
+
             mapping = exact;
             return true;
         }
@@ -85,6 +91,11 @@ public static partial class ProtocolConverter
         ResponsesToolCallMapping? candidate = null;
         foreach (var declared in mappings?.Values ?? [])
         {
+            if (declared.IsAmbiguous)
+            {
+                continue;
+            }
+
             if (!string.Equals(declared.ResponsesName, toolName, StringComparison.Ordinal)) continue;
             if (candidate is not null
                 && (!string.Equals(candidate.Namespace ?? string.Empty, declared.Namespace ?? string.Empty, StringComparison.Ordinal)
@@ -102,6 +113,28 @@ public static partial class ProtocolConverter
         }
 
         mapping = new ResponsesToolCallMapping();
+        return false;
+    }
+
+    internal static bool ShouldWaitForLongerDeclaredToolName(
+        string currentName,
+        IReadOnlyCollection<string> knownToolNames,
+        bool argumentsStarted)
+    {
+        if (argumentsStarted || string.IsNullOrEmpty(currentName))
+        {
+            return false;
+        }
+
+        foreach (var candidate in knownToolNames)
+        {
+            if (candidate.Length > currentName.Length
+                && candidate.StartsWith(currentName, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
         return false;
     }
 

@@ -66,24 +66,20 @@ public static partial class ProtocolConverter
         {
             var name = ResponsesToolCallName(inputItem);
             var namespaceName = GetString(inputItem, "namespace");
-            var (resolvedNamespace, bareName) = NamespaceCallParts(name, namespaceName);
             ToolWireNameEntry? wireNameEntry = null;
             if (toolWireNamePlan is not null
-                && (toolWireNamePlan.TryResolve(name, namespaceName, out var resolvedEntry)
-                    || toolWireNamePlan.TryResolve(bareName, resolvedNamespace, out resolvedEntry)))
+                && toolWireNamePlan.TryResolveInbound(name, namespaceName, out var resolvedEntry))
             {
                 wireNameEntry = resolvedEntry;
             }
 
-            if (!string.IsNullOrEmpty(namespaceName))
-            {
-                name = $"{namespaceName}{NamespaceSeparator}{name}";
-            }
-
+            var outboundName = wireNameEntry?.WireName
+                ?? (string.IsNullOrEmpty(namespaceName)
+                    ? NamespaceNameToChat(name)
+                    : $"{namespaceName}{NamespaceSeparator}{name}");
             var arguments = ResponsesToolCallArguments(inputItem);
-            arguments = EnrichMcpToolCallArguments(name, arguments);
-            var argumentName = wireNameEntry?.ResponsesName
-                ?? (string.IsNullOrEmpty(bareName) ? NamespaceCallParts(name).BareName : bareName);
+            arguments = EnrichMcpToolCallArguments(wireNameEntry, arguments);
+            var argumentName = wireNameEntry?.ResponsesName ?? name;
             arguments = NormalizeApplyPatchArguments(itemType ?? string.Empty, argumentName, arguments);
             if (itemType == "custom_tool_call" && !IsApplyPatchPublic(argumentName))
             {
@@ -101,7 +97,7 @@ public static partial class ProtocolConverter
                             ("id", GetValue(inputItem, "call_id") ?? GetValue(inputItem, "id") ?? NewId("call")),
                             ("type", "function"),
                             ("function", Obj(
-                                ("name", wireNameEntry?.WireName ?? NamespaceNameToChat(name)),
+                                ("name", outboundName),
                                 ("arguments", JsonDumps(arguments)))))
                     }))
             ];
@@ -331,10 +327,11 @@ public static partial class ProtocolConverter
     /// 临时修复：为 MCP 工具补全必需参数
     /// TODO: 迁移到专用的 McpToolCallEnricher 服务
     /// </summary>
-    private static object? EnrichMcpToolCallArguments(string toolName, object? arguments)
+    private static object? EnrichMcpToolCallArguments(ToolWireNameEntry? entry, object? arguments)
     {
-        // 只处理 MCP 工具
-        if (!toolName.StartsWith("mcp__", StringComparison.Ordinal))
+        // Only a resolved declared identity may be enriched; do not infer MCP tools from undeclared strings.
+        var namespaceName = entry?.Namespace ?? string.Empty;
+        if (!namespaceName.StartsWith("mcp__", StringComparison.Ordinal))
         {
             return arguments;
         }
@@ -344,9 +341,10 @@ public static partial class ProtocolConverter
             return arguments;
         }
 
-        // 为 node_repl 工具补全 sandboxPolicy
-        if (toolName.StartsWith("mcp__node_repl__", StringComparison.Ordinal) 
-            && !argsDict.ContainsKey("sandboxPolicy"))
+        // Preserve the previous mcp__node_repl__* wire-prefix scope using the resolved namespace.
+        var isNodeRepl = string.Equals(namespaceName, "mcp__node_repl", StringComparison.Ordinal)
+            || namespaceName.StartsWith("mcp__node_repl__", StringComparison.Ordinal);
+        if (isNodeRepl && !argsDict.ContainsKey("sandboxPolicy"))
         {
             argsDict["sandboxPolicy"] = "use_default";
         }

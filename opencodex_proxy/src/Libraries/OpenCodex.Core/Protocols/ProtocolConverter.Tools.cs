@@ -81,7 +81,65 @@ public static partial class ProtocolConverter
             };
         }
 
+        RegisterDeclaredToolInboundAliases(entries, mappings, wireOwners);
         return new ToolWireNamePlan(entries, mappings);
+    }
+
+    private static void RegisterDeclaredToolInboundAliases(
+        Dictionary<string, ToolWireNameEntry> entries,
+        Dictionary<string, ResponsesToolCallMapping> mappings,
+        Dictionary<string, (string? Namespace, string Name)> wireOwners)
+    {
+        var aliasOwners = new Dictionary<string, (string? Namespace, string Name)>(StringComparer.Ordinal);
+        foreach (var entry in entries.Values)
+        {
+            if (string.IsNullOrEmpty(entry.Namespace))
+            {
+                continue;
+            }
+
+            var aliases = new[]
+            {
+                $"{entry.Namespace}{LegacyNamespaceSeparator}{entry.ResponsesName}",
+                $"{entry.Namespace}{NamespaceSeparator}{entry.ResponsesName}"
+            };
+            foreach (var alias in aliases)
+            {
+                if (string.Equals(alias, entry.WireName, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (wireOwners.ContainsKey(alias))
+                {
+                    // An exact declared wire or literal name always wins over a generated alias.
+                    continue;
+                }
+
+                var owner = (entry.Namespace, entry.ResponsesName);
+                if (aliasOwners.TryGetValue(alias, out var existing) && existing != owner)
+                {
+                    aliasOwners.Remove(alias);
+                    mappings[alias] = new ResponsesToolCallMapping { IsAmbiguous = true };
+                    continue;
+                }
+
+                if (mappings.TryGetValue(alias, out var occupied) && occupied.IsAmbiguous)
+                {
+                    continue;
+                }
+
+                aliasOwners[alias] = owner;
+                var exact = mappings[entry.WireName];
+                mappings[alias] = new ResponsesToolCallMapping
+                {
+                    ChatName = entry.WireName,
+                    NativeType = exact.NativeType,
+                    ResponsesName = entry.ResponsesName,
+                    Namespace = entry.Namespace
+                };
+            }
+        }
     }
 
     private static (string Name, string? Namespace) CanonicalResponsesToolIdentity(Dictionary<string, object?> tool)
@@ -917,23 +975,14 @@ public static partial class ProtocolConverter
 
         var namespaceName = GetString(toolChoice, "namespace") ?? GetString(nested, "namespace");
         // Declared leaf names may contain separators; aliases must not shadow exact identities.
-        if (toolWireNamePlan.TryResolve(responseName, namespaceName, out var entry))
-        {
-            wireName = entry.WireName;
-            return true;
-        }
-
-        var (resolvedNamespace, bareName) = NamespaceCallParts(responseName, namespaceName);
-        if (toolWireNamePlan.TryResolve(bareName, resolvedNamespace, out entry)
-            || (string.IsNullOrEmpty(resolvedNamespace)
-                && toolWireNamePlan.TryResolveUniqueResponsesName(bareName, out entry)))
+        if (toolWireNamePlan.TryResolveInbound(responseName, namespaceName, out var entry))
         {
             wireName = entry.WireName;
             return true;
         }
 
         throw new BadRequestException(
-            $"tool_choice references undeclared tool `{FormatToolIdentity(resolvedNamespace, bareName)}`.");
+            $"tool_choice references undeclared tool `{FormatToolIdentity(namespaceName, responseName)}`.");
     }
 
     private static string AddWireNameDescriptionContract(string description, string wireName)

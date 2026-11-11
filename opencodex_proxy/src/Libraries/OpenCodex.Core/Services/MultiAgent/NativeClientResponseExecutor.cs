@@ -242,7 +242,7 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
         return response;
     }
 
-    private static void RestoreDeclaredToolIdentity(D item,
+    internal static void RestoreDeclaredToolIdentity(D item,
         IReadOnlyDictionary<string, ResponsesToolCallMapping> mappings)
     {
         if (!IsToolShape(item) || Text(item, "namespace").Length > 0) return;

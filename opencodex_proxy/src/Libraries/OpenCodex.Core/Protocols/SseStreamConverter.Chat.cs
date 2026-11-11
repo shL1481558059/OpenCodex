@@ -434,10 +434,21 @@ public static partial class SseStreamConverter
                         continue;
                     }
 
-                    // A name may arrive in fragments. Wait until it resolves to one declared identity.
+                    // A name may arrive in fragments. Wait until it resolves to one declared identity
+                    // that is not also a proper prefix of a longer declared name.
                     if (toolCallMappings is not null
                         && !ProtocolConverter.TryGetResponsesToolCallMapping(aggregate.Name, toolCallMappings, out _))
+                    {
                         continue;
+                    }
+
+                    if (ProtocolConverter.ShouldWaitForLongerDeclaredToolName(
+                        aggregate.Name ?? string.Empty,
+                        knownToolNames,
+                        aggregate.ArgumentsLength > 0))
+                    {
+                        continue;
+                    }
 
                     var state = EnsureToolStreamState(index);
                     var shape = ProtocolConverter.ResolveResponsesToolCallShape(aggregate.Name, toolCallMappings);

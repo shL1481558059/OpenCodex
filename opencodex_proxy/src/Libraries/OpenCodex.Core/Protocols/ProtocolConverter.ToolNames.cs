@@ -58,6 +58,29 @@ public static partial class ProtocolConverter
             entry = new ToolWireNameEntry();
             return false;
         }
+
+        public bool TryResolveInbound(string name, string? namespaceName, out ToolWireNameEntry entry)
+        {
+            if (TryResolve(name, namespaceName, out entry))
+            {
+                return true;
+            }
+
+            if (TryGetResponsesToolCallMapping(name, Mappings, out var mapping))
+            {
+                if (!string.IsNullOrEmpty(namespaceName)
+                    && !string.Equals(mapping.Namespace ?? string.Empty, namespaceName, StringComparison.Ordinal))
+                {
+                    entry = new ToolWireNameEntry();
+                    return false;
+                }
+
+                return TryResolve(mapping.ResponsesName, mapping.Namespace, out entry);
+            }
+
+            entry = new ToolWireNameEntry();
+            return false;
+        }
     }
 
     internal sealed class ToolWireNameEntry

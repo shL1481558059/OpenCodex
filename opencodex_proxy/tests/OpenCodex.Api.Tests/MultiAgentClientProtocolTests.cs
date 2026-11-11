@@ -16,11 +16,13 @@ public sealed class MultiAgentClientProtocolTests
     {
         var request = Payload("""{"tools":[{"type":"function","name":"a__b","parameters":{"type":"object"}},{"type":"namespace","name":"a","tools":[{"type":"NESTED_TYPE","name":"b","parameters":{"type":"object"}}]}]}""".Replace("NESTED_TYPE", nestedType, StringComparison.Ordinal));
         var mappings = ProtocolConverter.BuildResponsesToolCallMappings(request);
-        Assert.Equal(2, mappings.Count);
         Assert.Equal("a__b", mappings["a__b"].ResponsesName);
         Assert.Null(mappings["a__b"].Namespace);
         Assert.Equal("b", mappings["b"].ResponsesName);
         Assert.Equal("a", mappings["b"].Namespace);
+        Assert.Equal("a", mappings["a.b"].Namespace);
+        Assert.Equal("b", mappings["a.b"].ResponsesName);
+        Assert.Equal("b", mappings["a.b"].ChatName);
     }
 
     [Fact]
@@ -28,13 +30,16 @@ public sealed class MultiAgentClientProtocolTests
     {
         var request = Payload("""{"tools":[{"type":"function","name":"a__b","parameters":{"type":"object"}},{"type":"namespace","name":"a","tools":[{"type":"function","name":"b","parameters":{"type":"object"}},{"type":"custom","name":"c__d"}]}]}""");
         var mappings = ProtocolConverter.BuildResponsesToolCallMappings(request);
-        Assert.Equal(3, mappings.Count);
         Assert.Equal("a__b", mappings["a__b"].ResponsesName);
         Assert.Null(mappings["a__b"].Namespace);
         Assert.Equal("b", mappings["b"].ResponsesName);
         Assert.Equal("a", mappings["b"].Namespace);
         Assert.Equal("c__d", mappings["c__d"].ResponsesName);
         Assert.Equal("a", mappings["c__d"].Namespace);
+        Assert.Equal("a", mappings["a.b"].Namespace);
+        Assert.Equal("a", mappings["a.c__d"].Namespace);
+        Assert.Equal("a", mappings["a__c__d"].Namespace);
+        Assert.Equal("c__d", mappings["a.c__d"].ResponsesName);
     }
 
     [Fact]
@@ -223,7 +228,7 @@ public sealed class MultiAgentClientProtocolTests
 
     [Theory]
     [InlineData("exec")]
-    [InlineData("functions.exec")]
+    [InlineData("functions.missing")]
     [InlineData("exec_command_placeholder_note")]
     [InlineData("missing__exec")]
     [InlineData("Exec")]
@@ -329,12 +334,17 @@ public sealed class MultiAgentClientProtocolTests
         var mappings = ProtocolConverter.BuildResponsesToolCallMappings(NamespacedTools());
         var custom = ProtocolConverter.ResponsesToolCallItemFromToolCall(
             "custom-call", "functions__exec", input, mappings: mappings);
+        var dotted = ProtocolConverter.ResponsesToolCallItemFromToolCall(
+            "custom-call-dot", "functions.exec", input, mappings: mappings);
         var function = ProtocolConverter.ResponsesToolCallItemFromToolCall(
-            "function-call", "other__exec", "{}", mappings: mappings);
+            "function-call", "other.exec", "{}", mappings: mappings);
         Assert.Equal("custom_tool_call", custom["type"]);
         Assert.Equal("exec", custom["name"]);
         Assert.Equal("functions", custom["namespace"]);
         Assert.Equal(input, custom["input"]);
+        Assert.Equal("custom_tool_call", dotted["type"]);
+        Assert.Equal("exec", dotted["name"]);
+        Assert.Equal("functions", dotted["namespace"]);
         Assert.Equal("function_call", function["type"]);
         Assert.Equal("exec", function["name"]);
         Assert.Equal("other", function["namespace"]);
