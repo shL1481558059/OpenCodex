@@ -49,7 +49,6 @@ public sealed partial class MultiAgentResponseService
         // Client thread identity establishes native ownership even when this request
         // has no collaboration tools (for example during a client checkpoint).
         return await NativeSessions.ResolveAsync(owner, identity,
-            JsonDictionaryValue.Get(request, "store") is not false,
             ConcurrentLimit(JsonDictionaryValue.Object(request, "multi_agent", WebSearchPayload.DeepCopyObject)), ct);
     }
 

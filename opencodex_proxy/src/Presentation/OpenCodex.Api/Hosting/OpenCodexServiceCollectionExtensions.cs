@@ -64,7 +64,11 @@ public static class OpenCodexServiceCollectionExtensions
             configuration.GetSection("MultiAgent:BindingCache").Get<OpenCodex.Core.Services.MultiAgent.MultiAgentBindingCacheOptions>()));
         services.AddSingleton(serviceProvider => new OpenCodex.Core.Services.MultiAgent.NativeClientSessionStore(
             serviceProvider.GetRequiredService<IConfiguration>()["MultiAgent:StateDirectory"] ?? "logs/multi-agent-runs",
-            configuration.GetSection("MultiAgent:NativeClientCache").Get<OpenCodex.Core.Services.MultiAgent.NativeClientCacheOptions>()));
+            configuration.GetSection("MultiAgent:NativeClientCache").Get<OpenCodex.Core.Services.MultiAgent.NativeClientCacheOptions>(),
+            null,
+            new OpenCodex.Core.Services.MultiAgent.NativeClientStateCache(
+                serviceProvider.GetRequiredService<OpenCodex.Core.Services.Caching.IRedisConnectionProvider>(),
+                configuration.GetSection("MultiAgent:NativeClientState").Get<OpenCodex.Core.Services.MultiAgent.NativeClientStateCacheOptions>())));
         services.AddOpenCodexAuthentication(configuration);
 
         return services;

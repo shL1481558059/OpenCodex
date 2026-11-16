@@ -533,7 +533,7 @@ public sealed class NativeClientResponseExecutorTests
         var owner = Guid.NewGuid();
         var identity = new MultiAgentClientIdentity { ThreadId = "root", RootThreadId = "root", AgentName = "/root" };
         var store = new NativeClientSessionStore(directory);
-        var session = await store.ResolveAsync(owner, identity, persist, 1, default);
+        var session = await store.ResolveAsync(owner, identity, 1, default);
         var request = Request();
         var partial = Response("partial", Message("partial answer"), Tool("unfinished"));
         partial["status"] = "incomplete";
@@ -545,7 +545,7 @@ public sealed class NativeClientResponseExecutorTests
         if (persist)
         {
             store = new NativeClientSessionStore(directory);
-            session = await store.ResolveAsync(owner, identity, persist, 1, default);
+            session = await store.ResolveAsync(owner, identity, 1, default);
         }
         Assert.Null((await store.ProjectRequestAsync(session, request, "turn", default)).ReplayResponse);
         var continuation = await store.ProjectRequestAsync(session,
@@ -584,7 +584,7 @@ public sealed class NativeClientResponseExecutorTests
     private static async Task<(NativeClientSessionStore, NativeClientSession, NativeClientResponseExecutor)> Setup()
     {
         var store = new NativeClientSessionStore(Path.Combine(Path.GetTempPath(), "native-runner-" + Guid.NewGuid().ToString("N")));
-        var session = await store.ResolveAsync(Guid.NewGuid(), new() { ThreadId = "root", RootThreadId = "root", AgentName = "/root" }, false, 1, default);
+        var session = await store.ResolveAsync(Guid.NewGuid(), new() { ThreadId = "root", RootThreadId = "root", AgentName = "/root" }, 1, default);
         return (store, session, new(store));
     }
     private static D Request() => new() { ["model"] = "test", ["input"] = "question", ["tools"] = new List<object?> { new D { ["type"] = "custom", ["name"] = "exec" } } };

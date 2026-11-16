@@ -10,7 +10,7 @@ namespace OpenCodex.Core.Services.MultiAgent;
 
 /// <summary>
 /// Stores Responses continuations independently of the legacy server agent runtime.
-/// Client input owns the conversation; persisted records only resolve response references and retries.
+/// Client input owns the conversation; JSON files retain durable identity and response records.
 /// </summary>
 public sealed partial class NativeClientSessionStore
 {
@@ -18,12 +18,18 @@ public sealed partial class NativeClientSessionStore
     private readonly SemaphoreSlim _indexGate = new(1, 1);
     private readonly ConcurrentDictionary<string, NativeClientSession> _sessions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, NativeClientGroup> _groups = new(StringComparer.Ordinal);
-    private readonly Dictionary<(Guid Owner, string Thread, string Response), StoredResponse> _memoryResponses = [];
-    private readonly Dictionary<(Guid Owner, string Thread, string Replay), StoredResponse> _memoryReplays = [];
-    private readonly Dictionary<string, NativeClientSnapshotPool> _snapshotPools = new(StringComparer.Ordinal);
+    private readonly NativeClientStateCache _cache;
+
+    public NativeClientSessionStore(string directory, NativeClientCacheOptions? options = null,
+        TimeProvider? timeProvider = null, NativeClientStateCache? cache = null)
+    {
+        _directory = Path.Combine(Path.GetFullPath(directory), "native-client-v1");
+        _cache = cache ?? new NativeClientStateCache(null);
+        InitializeResources(options, timeProvider);
+    }
 
     public async Task<NativeClientSession> ResolveAsync(Guid owner, MultiAgentClientIdentity identity,
-        bool persist, int maxConcurrentSubagents, CancellationToken ct)
+        int maxConcurrentSubagents, CancellationToken ct)
     {
         ValidateIdentity(identity);
         ValidateSize(identity);
@@ -33,10 +39,8 @@ public sealed partial class NativeClientSessionStore
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             Sweep();
-            CheckIdleSession(FindSession(owner,identity.ThreadId));
-            CheckIdleGroup(owner,identity.RootThreadId);
-            CheckRetired(owner, identity.ThreadId);
-            CheckRetired(owner, identity.RootThreadId);
+            CheckIdleSession(FindSession(owner, identity.ThreadId));
+            CheckIdleGroup(owner, identity.RootThreadId);
             await RestoreGroup(owner, identity.RootThreadId, ct);
             var session = FindSession(owner, identity.ThreadId);
             if (session is not null)
@@ -44,44 +48,39 @@ public sealed partial class NativeClientSessionStore
                 if (session.RootThreadId != identity.RootThreadId || session.ParentThreadId != identity.ParentThreadId
                     || session.AgentName != identity.AgentName)
                     throw new BadRequestException("The client thread identity cannot change its root, parent, or agent name.");
-                if (session.Persist != persist)
-                    throw new BadRequestException("The client thread must keep its initial storage policy.");
-                _groups[SessionKey(owner, identity.RootThreadId)].Validate(identity, persist, maxConcurrentSubagents);
+                _groups[SessionKey(owner, identity.RootThreadId)].Validate(identity, maxConcurrentSubagents);
                 Touch(session);
                 return session;
             }
+
             var root = identity.ParentThreadId.Length == 0 ? null : FindSession(owner, identity.RootThreadId);
             var parent = identity.ParentThreadId.Length == 0 ? null : FindSession(owner, identity.ParentThreadId);
             if (parent is not null && (parent.RootThreadId != identity.RootThreadId
                 || identity.AgentName[..identity.AgentName.LastIndexOf('/')] != parent.AgentName))
                 throw new BadRequestException("The child identity does not belong to the declared parent.");
-            if (root is not null && root.Persist != persist)
-                throw new BadRequestException("Client children must use their root's storage policy.");
             if (_groups.TryGetValue(SessionKey(owner, identity.RootThreadId), out var existingGroup))
             {
-                existingGroup.Validate(identity, persist, maxConcurrentSubagents);
+                existingGroup.Validate(identity, maxConcurrentSubagents);
                 if (existingGroup.Agents.Count >= _options.MaxGroupSessions) throw Quota("group member");
             }
+
             MakeRoom(owner, 1, identity.RootThreadId);
-            if (!persist) ReserveIdentities(owner, identity.ThreadId, identity.RootThreadId);
-            session = CreateSession(owner, identity, persist, root?.MaxConcurrentSubagents ?? maxConcurrentSubagents);
+            session = CreateSession(owner, identity, root?.MaxConcurrentSubagents ?? maxConcurrentSubagents);
             try
             {
-                if (persist) await WriteAtomic(SessionPath(session), new SessionDocument
-                {
-                    Owner = owner, ThreadId = session.ThreadId, RootThreadId = session.RootThreadId,
-                    ParentThreadId = session.ParentThreadId, AgentName = session.AgentName,
-                    MaxConcurrentSubagents = session.MaxConcurrentSubagents
-                }, ct);
+                await WriteAtomic(SessionPath(session), ToDocument(session), ct);
                 RegisterSession(session);
+                await CacheSessionAsync(session, ct);
+                await _cache.RemoveGroupAsync(owner, identity.RootThreadId, ct);
             }
             catch
             {
                 session.Gate.Dispose();
-                var groupKey=SessionKey(owner,identity.RootThreadId);
-                if (_groups.TryGetValue(groupKey,out var failedGroup) && failedGroup.Agents.Count==0)
+                var groupKey = SessionKey(owner, identity.RootThreadId);
+                if (_groups.TryGetValue(groupKey, out var failedGroup) && failedGroup.Agents.Count == 0)
                 {
-                    _groups.Remove(groupKey);failedGroup.ChildModels.Dispose();
+                    _groups.Remove(groupKey);
+                    failedGroup.ChildModels.Dispose();
                 }
                 throw;
             }
@@ -95,14 +94,19 @@ public sealed partial class NativeClientSessionStore
         await _indexGate.WaitAsync(ct);
         try
         {
-            ObjectDisposedException.ThrowIf(_disposed, this); Sweep(); CheckIdleSession(FindSession(owner,threadId)); CheckRetired(owner, threadId);
-            if (FindSession(owner, threadId) is not { } found)
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            Sweep();
+            CheckIdleSession(FindSession(owner, threadId));
+            if (FindSession(owner, threadId) is { } found)
             {
-                var document = await ReadIdentity(owner, threadId, ct);
-                if (document is null) return null;
-                await RestoreGroup(owner, document.RootThreadId, ct);
-                found = FindSession(owner, threadId);
+                Touch(found);
+                return found;
             }
+
+            var document = await ReadIdentity(owner, threadId, ct);
+            if (document is null) return null;
+            await RestoreGroup(owner, document.RootThreadId, ct);
+            found = FindSession(owner, threadId);
             if (found is not null) Touch(found);
             return found;
         }
@@ -114,11 +118,16 @@ public sealed partial class NativeClientSessionStore
         await _indexGate.WaitAsync(ct);
         try
         {
-            ObjectDisposedException.ThrowIf(_disposed, this); Sweep(); CheckIdleSession(session); EnsureOwned(session);
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            Sweep();
+            CheckIdleSession(session);
+            EnsureOwned(session);
             if (session.RequestReferences >= _options.MaxWaitersPerSession + 1L) throw Quota("session waiter");
-            Interlocked.Increment(ref session.RequestReferences); Touch(session);
+            Interlocked.Increment(ref session.RequestReferences);
+            Touch(session);
         }
         finally { _indexGate.Release(); }
+
         try { await session.Gate.WaitAsync(ct); }
         catch { ReleaseReference(session); throw; }
         var lease = new NativeClientRequestLease(session, ct, () => ReleaseReference(session));
@@ -155,13 +164,19 @@ public sealed partial class NativeClientSessionStore
         await _indexGate.WaitAsync(ct);
         try
         {
-            Sweep(); EnsureOwned(session); Touch(session);
+            Sweep();
+            EnsureOwned(session);
+            Touch(session);
             var replay = replayKey.Length == 0 ? null : await FindReplay(session, replayKey, ct);
             if (replay is not null)
-                return new() { Session = session, Payload = WebSearchPayload.DeepCopyObject(replay.Payload),
-                    ReplayKey = replayKey, ReplayResponse = WebSearchPayload.DeepCopyObject(replay.Response) };
-            if (!session.Persist && replayKey.Length > 0 && session.ReplayIdentities.Contains(replayKey)) throw Unavailable();
-            if (!session.Persist) CheckReplayCapacity(session,replayKey);
+                return new()
+                {
+                    Session = session,
+                    Payload = WebSearchPayload.DeepCopyObject(replay.Payload),
+                    ReplayKey = replayKey,
+                    ReplayResponse = WebSearchPayload.DeepCopyObject(replay.Response)
+                };
+
             var previousId = JsonDictionaryValue.String(request, "previous_response_id");
             var payload = new D();
             var input = new List<object?>();
@@ -169,13 +184,10 @@ public sealed partial class NativeClientSessionStore
             {
                 var previous = await ReadResponse(session, previousId, ct)
                     ?? throw new BadRequestException("The previous response is unavailable for this API key and client thread. Resend the full client history without previous_response_id.");
-                // Responses instructions are request-scoped; tools and model settings may be omitted in a delta.
                 foreach (var pair in previous.Payload.Where(p => p.Key is not ("input" or "instructions" or "previous_response_id")))
                     payload[pair.Key] = WebSearchPayload.DeepCopy(pair.Value);
                 input.AddRange(JsonDictionaryValue.List(previous.Payload, "input").Select(WebSearchPayload.DeepCopy));
                 var previousOutput = JsonDictionaryValue.List(previous.Response, "output");
-                // Incomplete responses never published executable tools, so those partial calls
-                // must not introduce unanswered tool calls into the continuation history.
                 if (JsonDictionaryValue.String(previous.Response, "status") == "incomplete")
                     previousOutput = previousOutput.Where(i => i is not D item
                         || !(JsonDictionaryValue.String(item, "type") is "function_call" or "custom_tool_call"
@@ -183,6 +195,7 @@ public sealed partial class NativeClientSessionStore
                             && JsonDictionaryValue.String(item, "execution") == "client")).ToList();
                 input.AddRange(previousOutput.Select(WebSearchPayload.DeepCopy));
             }
+
             foreach (var pair in request) payload[pair.Key] = WebSearchPayload.DeepCopy(pair.Value);
             input.AddRange(ReadInput(request));
             payload["input"] = input;
@@ -197,79 +210,63 @@ public sealed partial class NativeClientSessionStore
         D response, CancellationToken ct)
     {
         EnsureOwned(session);
-        if (!ReferenceEquals(request.Session, session)) throw new InvalidOperationException("The request belongs to another client session.");
+        if (!ReferenceEquals(request.Session, session))
+            throw new InvalidOperationException("The request belongs to another client session.");
         var responseId = JsonDictionaryValue.String(response, "id");
         var status = JsonDictionaryValue.String(response, "status");
         if (responseId.Length == 0 || status is not ("completed" or "incomplete"))
             throw new InvalidOperationException("Only a completed or incomplete response with an id can be committed.");
-        var cap = Math.Min(_options.MaxSnapshotBytes, Math.Min(_options.MaxBytes, _options.MaxTenantBytes));
-        long weight = 0;
-        if (!session.Persist)
+
+        var stored = new StoredResponse
         {
-            var payloadWeight = ClientGraphWeight.Estimate(request.Payload, cap);
-            var responseWeight = ClientGraphWeight.Estimate(response, cap);
-            if (payloadWeight > cap || responseWeight > cap || payloadWeight + responseWeight > (cap - 512) / 4) throw Quota("snapshot bytes");
-            weight = 4 * (payloadWeight + responseWeight) + 512; // Include intern table/reference overhead conservatively.
-        }
-        var stored = new StoredResponse { Owner = session.Owner, ThreadId = session.ThreadId, ResponseId = responseId, Weight = weight, ReplayKey = status == "completed" ? request.ReplayKey : "",
-            Payload = WebSearchPayload.DeepCopyObject(request.Payload), Response = WebSearchPayload.DeepCopyObject(response) };
+            Owner = session.Owner,
+            ThreadId = session.ThreadId,
+            ResponseId = responseId,
+            ReplayKey = status == "completed" ? request.ReplayKey : "",
+            Payload = WebSearchPayload.DeepCopyObject(request.Payload),
+            Response = WebSearchPayload.DeepCopyObject(response)
+        };
+
         await _indexGate.WaitAsync(ct);
         try
         {
-            Sweep(); EnsureOwned(session); Touch(session);
+            Sweep();
+            EnsureOwned(session);
+            Touch(session);
             var existing = await ReadResponse(session, responseId, ct);
             if (existing is not null && (Canonical(existing.Payload) != Canonical(stored.Payload)
                 || Canonical(existing.Response) != Canonical(stored.Response)))
                 throw new InvalidOperationException("A response id cannot be reused for different content.");
-            if (!session.Persist)
-            {
-                CheckReplayCapacity(session, stored.ReplayKey);
-                if (existing is not null)
-                {
-                    RememberReplay(session, stored.ReplayKey);
-                    if (stored.ReplayKey.Length > 0) _memoryReplays[(session.Owner, session.ThreadId, stored.ReplayKey)] = existing;
-                    return;
-                }
-                if (stored.ReplayKey.Length > 0 && session.ReplayIdentities.Contains(stored.ReplayKey) && !_memoryReplays.ContainsKey((session.Owner,session.ThreadId,stored.ReplayKey))) throw Unavailable();
-            }
-            if (session.Persist)
-            {
-                var recordName = stored.ReplayKey.Length > 0 ? "turn-" + stored.ReplayKey : "response-" + Hash(responseId);
-                // One atomic record contains the response and retry identity. The response-id file is a derived index.
-                await WriteAtomic(RecordPath(session, recordName), stored, ct);
-                await WriteAtomic(ResponsePath(session, responseId), recordName, ct);
-            }
-            else
-            {
-                if (existing is not null) RemoveRecord(existing);
-                AdmitRecord(stored);
-                var key = SessionKey(session.Owner, session.ThreadId);
-                if (!_snapshotPools.TryGetValue(key, out var pool))
-                    _snapshotPools[key] = pool = new NativeClientSnapshotPool();
-                try
-                {
-                    stored.Payload = pool.Snapshot(stored.Payload);
-                    stored.Response = pool.Snapshot(stored.Response);
-                }
-                catch { _snapshotPools.Remove(key); throw; }
-                RememberReplay(session, stored.ReplayKey);
-                _memoryResponses[(session.Owner, session.ThreadId, responseId)] = stored;
-                _memoryBytes += stored.Weight;
-                if (stored.ReplayKey.Length > 0) _memoryReplays[(session.Owner, session.ThreadId, stored.ReplayKey)] = stored;
-            }
+
+            var recordName = stored.ReplayKey.Length > 0 ? "turn-" + stored.ReplayKey : "response-" + Hash(responseId);
+            await WriteAtomic(RecordPath(session, recordName), stored, ct);
+            await WriteAtomic(ResponsePath(session, responseId), recordName, ct);
         }
         finally { _indexGate.Release(); }
+
+        var cached = ToCachedResponse(stored);
+        await _cache.SetResponseAsync(cached, ct);
+        await _cache.SetReplayAsync(cached, ct);
     }
 
-    private NativeClientSession CreateSession(Guid owner, MultiAgentClientIdentity identity, bool persist, int limit)
+    private NativeClientSession CreateSession(Guid owner, MultiAgentClientIdentity identity, int limit)
     {
         var groupKey = SessionKey(owner, identity.RootThreadId);
         if (!_groups.TryGetValue(groupKey, out var group) || group.Agents.Count == 0)
-            _groups[groupKey] = group = new NativeClientGroup(persist, limit, owner, identity.RootThreadId) { LastAccess=Now };
-        group.Validate(identity, persist, limit);
-        return new() { Owner = owner, ThreadId = identity.ThreadId, RootThreadId = identity.RootThreadId,
-            ParentThreadId = identity.ParentThreadId, AgentName = identity.AgentName, Persist = persist,
-            MaxConcurrentSubagents = group.Limit, ChildModels = group.ChildModels, Group=group, LastAccess = Now };
+            _groups[groupKey] = group = new NativeClientGroup(limit, owner, identity.RootThreadId) { LastAccess = Now };
+        group.Validate(identity, limit);
+        return new()
+        {
+            Owner = owner,
+            ThreadId = identity.ThreadId,
+            RootThreadId = identity.RootThreadId,
+            ParentThreadId = identity.ParentThreadId,
+            AgentName = identity.AgentName,
+            MaxConcurrentSubagents = group.Limit,
+            ChildModels = group.ChildModels,
+            Group = group,
+            LastAccess = Now
+        };
     }
 
     private void RegisterSession(NativeClientSession session)
@@ -285,63 +282,112 @@ public sealed partial class NativeClientSessionStore
 
     private async Task<SessionDocument?> ReadIdentity(Guid owner, string thread, CancellationToken ct)
     {
+        var cached = await _cache.GetSessionAsync(owner, thread, ct);
+        if (cached is not null)
+        {
+            var fromCache = ToDocument(cached);
+            ValidateDocument(owner, thread, fromCache, fromCache.MaxConcurrentSubagents);
+            return fromCache;
+        }
+
         var path = Path.Combine(_directory, Hash(SessionKey(owner, thread)), "session.json");
         if (!File.Exists(path)) return null;
         await using var stream = File.OpenRead(path);
         var document = await JsonSerializer.DeserializeAsync<SessionDocument>(stream, cancellationToken: ct)
             ?? throw new InvalidDataException("The native client identity is empty.");
-        if (document.Version != 1 || document.Owner != owner || document.ThreadId != thread || document.MaxConcurrentSubagents < 1)
-            throw new InvalidDataException("The native client identity is invalid.");
+        ValidateDocument(owner, thread, document, document.MaxConcurrentSubagents);
+        await _cache.SetSessionAsync(ToCachedSession(owner, document), ct);
         return document;
     }
 
     private async Task RestoreGroup(Guid owner, string rootThread, CancellationToken ct)
     {
-        if (_groups.ContainsKey(SessionKey(owner, rootThread)) || !Directory.Exists(_directory)) return;
-        // Restore only this group, never every historical owner's identities into RAM.
-        // Agent names must all be checked before accepting a new child binding.
-        var documents = new List<SessionDocument>();
-        foreach (var folder in Directory.EnumerateDirectories(_directory))
-        {
-            ct.ThrowIfCancellationRequested();
-            var path = Path.Combine(folder, "session.json"); if (!File.Exists(path)) continue;
-            await using var stream = File.OpenRead(path);
-            var document = await JsonSerializer.DeserializeAsync<SessionDocument>(stream, cancellationToken: ct)
-                ?? throw new InvalidDataException("The native client identity is empty.");
-            if (document.Owner != owner || document.RootThreadId != rootThread) continue;
-            if (document.Version != 1 || document.MaxConcurrentSubagents < 1 || Path.GetFileName(folder) != Hash(SessionKey(owner, document.ThreadId)))
-                throw new InvalidDataException("The native client identity is invalid.");
-            var identity = new MultiAgentClientIdentity { ThreadId=document.ThreadId, RootThreadId=document.RootThreadId, ParentThreadId=document.ParentThreadId, AgentName=document.AgentName };
-            ValidateIdentity(identity); ValidateSize(identity);
-            if (documents.Count >= _options.MaxGroupSessions) throw Quota("persisted group member");
-            documents.Add(document);
-        }
+        if (_groups.ContainsKey(SessionKey(owner, rootThread))) return;
+
+        var documents = await ReadCachedGroup(owner, rootThread, ct) ?? await ReadGroupFromDisk(owner, rootThread, ct);
         if (documents.Count == 0) return;
         MakeRoom(owner, documents.Count);
         try
         {
             foreach (var document in documents.OrderBy(d => d.AgentName.Count(c => c == '/')))
             {
-                var identity = new MultiAgentClientIdentity { ThreadId=document.ThreadId, RootThreadId=document.RootThreadId, ParentThreadId=document.ParentThreadId, AgentName=document.AgentName };
-                RegisterSession(CreateSession(owner, identity, true, document.MaxConcurrentSubagents));
+                var identity = ToIdentity(document);
+                RegisterSession(CreateSession(owner, identity, document.MaxConcurrentSubagents));
+                await _cache.SetSessionAsync(ToCachedSession(owner, document), ct);
             }
+            await CacheGroupAsync(owner, rootThread, ct);
         }
         catch
         {
-            if (_groups.TryGetValue(SessionKey(owner, rootThread),out var failed)) RemoveGroup(SessionKey(owner,rootThread),failed);
+            if (_groups.TryGetValue(SessionKey(owner, rootThread), out var failed))
+                RemoveGroup(SessionKey(owner, rootThread), failed);
             throw;
         }
     }
 
+    private async Task<List<SessionDocument>?> ReadCachedGroup(Guid owner, string rootThread, CancellationToken ct)
+    {
+        var cached = await _cache.GetGroupAsync(owner, rootThread, ct);
+        if (cached is null || cached.MaxConcurrentSubagents < 1 || cached.Sessions.Count == 0) return null;
+        var documents = new List<SessionDocument>(cached.Sessions.Count);
+        foreach (var session in cached.Sessions)
+        {
+            if (session.RootThreadId != rootThread)
+            {
+                await _cache.RemoveGroupAsync(owner, rootThread, ct);
+                return null;
+            }
+            var document = ToDocument(session);
+            try { ValidateDocument(owner, session.ThreadId, document, cached.MaxConcurrentSubagents); }
+            catch (Exception exception) when (exception is InvalidDataException or BadRequestException)
+            {
+                await _cache.RemoveGroupAsync(owner, rootThread, ct);
+                return null;
+            }
+            documents.Add(document);
+        }
+        return documents;
+    }
+
+    private async Task<List<SessionDocument>> ReadGroupFromDisk(Guid owner, string rootThread, CancellationToken ct)
+    {
+        var documents = new List<SessionDocument>();
+        if (!Directory.Exists(_directory)) return documents;
+        foreach (var folder in Directory.EnumerateDirectories(_directory))
+        {
+            ct.ThrowIfCancellationRequested();
+            var path = Path.Combine(folder, "session.json");
+            if (!File.Exists(path)) continue;
+            await using var stream = File.OpenRead(path);
+            var document = await JsonSerializer.DeserializeAsync<SessionDocument>(stream, cancellationToken: ct)
+                ?? throw new InvalidDataException("The native client identity is empty.");
+            if (document.Owner != owner || document.RootThreadId != rootThread) continue;
+            ValidateDocument(owner, document.ThreadId, document, document.MaxConcurrentSubagents);
+            if (Path.GetFileName(folder) != Hash(SessionKey(owner, document.ThreadId)))
+                throw new InvalidDataException("The native client identity path is invalid.");
+            if (documents.Count >= _options.MaxGroupSessions) throw Quota("persisted group member");
+            documents.Add(document);
+        }
+        return documents;
+    }
+
+    private static void ValidateDocument(Guid owner, string requestedThread, SessionDocument document, int groupLimit)
+    {
+        if (document.Version != 1 || document.Owner != owner || document.ThreadId != requestedThread
+            || document.MaxConcurrentSubagents < 1 || groupLimit < 1)
+            throw new InvalidDataException("The native client identity is invalid.");
+        ValidateIdentity(ToIdentity(document));
+    }
+
     private async Task<StoredResponse?> ReadResponse(NativeClientSession session, string responseId, CancellationToken ct)
     {
-        if (!session.Persist)
+        var cached = await _cache.GetResponseAsync(session.Owner, session.ThreadId, responseId, ct);
+        if (cached is not null)
         {
-            var cached = _memoryResponses.GetValueOrDefault((session.Owner, session.ThreadId, responseId));
-            if (cached is not null && Expired(cached)) { RemoveRecord(cached); return null; }
-            if (cached is not null) cached.LastAccess = Now;
-            return cached;
+            try { return FromCachedResponse(cached); }
+            catch (JsonException) { await _cache.RemoveResponseAsync(session.Owner, session.ThreadId, responseId, ct); }
         }
+
         var path = ResponsePath(session, responseId);
         if (!File.Exists(path)) return null;
         var recordName = JsonSerializer.Deserialize<string>(await File.ReadAllTextAsync(path, ct));
@@ -351,27 +397,35 @@ public sealed partial class NativeClientSessionStore
         if (stored.Owner != session.Owner || stored.ThreadId != session.ThreadId
             || JsonDictionaryValue.String(stored.Response, "id") != responseId)
             throw new InvalidDataException("The native response identity is invalid.");
+        await _cache.SetResponseAsync(ToCachedResponse(stored), ct);
         return stored;
     }
 
     private async Task<StoredResponse?> FindReplay(NativeClientSession session, string replayKey, CancellationToken ct)
     {
-        if (!session.Persist)
+        var cached = await _cache.GetReplayAsync(session.Owner, session.ThreadId, replayKey, ct);
+        if (cached is not null)
         {
-            var cached = _memoryReplays.GetValueOrDefault((session.Owner, session.ThreadId, replayKey));
-            if (cached is not null && Expired(cached)) { RemoveRecord(cached); return null; }
-            if (cached is not null) cached.LastAccess = Now;
-            return cached;
+            try { return FromCachedResponse(cached); }
+            catch (JsonException)
+            {
+                await _cache.RemoveReplayAsync(session.Owner, session.ThreadId, replayKey, ct);
+                if (cached.ResponseId.Length > 0)
+                    await _cache.RemoveResponseAsync(session.Owner, session.ThreadId, cached.ResponseId, ct);
+            }
         }
+
         var recordName = "turn-" + replayKey;
         var path = RecordPath(session, recordName);
         if (!File.Exists(path)) return null;
         var stored = await ReadStored(path, ct);
         if (stored.Owner != session.Owner || stored.ThreadId != session.ThreadId || stored.ReplayKey != replayKey)
             throw new InvalidDataException("The native replay identity is invalid.");
-        // Recover the index if a crash occurred after the atomic record write and before index publication.
         var responseId = JsonDictionaryValue.String(stored.Response, "id");
         await WriteAtomic(ResponsePath(session, responseId), recordName, ct);
+        var cache = ToCachedResponse(stored);
+        await _cache.SetResponseAsync(cache, ct);
+        await _cache.SetReplayAsync(cache, ct);
         return stored;
     }
 
@@ -380,15 +434,19 @@ public sealed partial class NativeClientSessionStore
         await using var stream = File.OpenRead(path);
         using var json = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
         var value = (D)WebSearchPayload.FromJsonElement(json.RootElement)!;
-        if (!json.RootElement.TryGetProperty("Version", out var version) || !version.TryGetInt32(out var versionNumber) || versionNumber != 1
-            || !Guid.TryParse(JsonDictionaryValue.String(value, "Owner"), out var owner))
+        if (!json.RootElement.TryGetProperty("Version", out var version) || !version.TryGetInt32(out var versionNumber)
+            || versionNumber != 1 || !Guid.TryParse(JsonDictionaryValue.String(value, "Owner"), out var owner))
             throw new InvalidDataException("The native response record is invalid.");
-        return new() { Owner = owner, ThreadId = JsonDictionaryValue.String(value, "ThreadId"),
+        var response = JsonDictionaryValue.Object(value, "Response", static data => (D)data);
+        return new()
+        {
+            Owner = owner,
+            ThreadId = JsonDictionaryValue.String(value, "ThreadId"),
             ReplayKey = JsonDictionaryValue.String(value, "ReplayKey"),
-            // FromJsonElement created this private graph; no borrower can observe it.
-            // Transfer the two child dictionaries rather than cloning their entire history again.
+            ResponseId = JsonDictionaryValue.String(response, "id"),
             Payload = JsonDictionaryValue.Object(value, "Payload", static data => (D)data),
-            Response = JsonDictionaryValue.Object(value, "Response", static data => (D)data) };
+            Response = response
+        };
     }
 
     private static List<object?> ReadInput(D request)
@@ -420,8 +478,99 @@ public sealed partial class NativeClientSessionStore
     private void EnsureOwned(NativeClientSession session)
     {
         if (!_sessions.TryGetValue(SessionKey(session.Owner, session.ThreadId), out var known) || !ReferenceEquals(known, session))
-            throw Unavailable();
+            throw new InvalidOperationException("The native client session is no longer active.");
     }
+
+    private async Task CacheSessionAsync(NativeClientSession session, CancellationToken ct)
+        => await _cache.SetSessionAsync(new()
+        {
+            Owner = session.Owner,
+            ThreadId = session.ThreadId,
+            RootThreadId = session.RootThreadId,
+            ParentThreadId = session.ParentThreadId,
+            AgentName = session.AgentName,
+            MaxConcurrentSubagents = session.MaxConcurrentSubagents
+        }, ct);
+
+    private async Task CacheGroupAsync(Guid owner, string rootThread, CancellationToken ct)
+    {
+        if (!_groups.TryGetValue(SessionKey(owner, rootThread), out var group)) return;
+        var sessions = group.Agents.Values.Select(thread => FindSession(owner, thread)).OfType<NativeClientSession>()
+            .Select(session => new NativeClientCachedSession
+            {
+                Owner = session.Owner,
+                ThreadId = session.ThreadId,
+                RootThreadId = session.RootThreadId,
+                ParentThreadId = session.ParentThreadId,
+                AgentName = session.AgentName,
+                MaxConcurrentSubagents = session.MaxConcurrentSubagents
+            }).ToList();
+        await _cache.SetGroupAsync(new()
+        {
+            Owner = owner,
+            RootThreadId = rootThread,
+            MaxConcurrentSubagents = group.Limit,
+            Sessions = sessions
+        }, ct);
+    }
+
+    private static SessionDocument ToDocument(NativeClientSession session) => new()
+    {
+        Owner = session.Owner,
+        ThreadId = session.ThreadId,
+        RootThreadId = session.RootThreadId,
+        ParentThreadId = session.ParentThreadId,
+        AgentName = session.AgentName,
+        MaxConcurrentSubagents = session.MaxConcurrentSubagents
+    };
+
+    private static SessionDocument ToDocument(NativeClientCachedSession session) => new()
+    {
+        Owner = session.Owner,
+        ThreadId = session.ThreadId,
+        RootThreadId = session.RootThreadId,
+        ParentThreadId = session.ParentThreadId,
+        AgentName = session.AgentName,
+        MaxConcurrentSubagents = session.MaxConcurrentSubagents
+    };
+
+    private static NativeClientCachedSession ToCachedSession(Guid owner, SessionDocument document) => new()
+    {
+        Owner = owner,
+        ThreadId = document.ThreadId,
+        RootThreadId = document.RootThreadId,
+        ParentThreadId = document.ParentThreadId,
+        AgentName = document.AgentName,
+        MaxConcurrentSubagents = document.MaxConcurrentSubagents
+    };
+
+    private static MultiAgentClientIdentity ToIdentity(SessionDocument document) => new()
+    {
+        ThreadId = document.ThreadId,
+        RootThreadId = document.RootThreadId,
+        ParentThreadId = document.ParentThreadId,
+        AgentName = document.AgentName
+    };
+
+    private static NativeClientCachedResponse ToCachedResponse(StoredResponse response) => new()
+    {
+        Owner = response.Owner,
+        ThreadId = response.ThreadId,
+        ResponseId = response.ResponseId,
+        ReplayKey = response.ReplayKey,
+        PayloadJson = WebSearchPayload.JsonDumps(response.Payload),
+        ResponseJson = WebSearchPayload.JsonDumps(response.Response)
+    };
+
+    private static StoredResponse FromCachedResponse(NativeClientCachedResponse response) => new()
+    {
+        Owner = response.Owner,
+        ThreadId = response.ThreadId,
+        ResponseId = response.ResponseId,
+        ReplayKey = response.ReplayKey,
+        Payload = response.Payload(),
+        Response = response.Response()
+    };
 
     private static string Canonical(D value) => NativeClientSnapshotPool.Canonical(value);
 
@@ -433,10 +582,17 @@ public sealed partial class NativeClientSessionStore
         {
             await using (var stream = new FileStream(temporary, new FileStreamOptions
             {
-                Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None,
-                Options = FileOptions.Asynchronous, BufferSize = 16 * 1024
+                Mode = FileMode.CreateNew,
+                Access = FileAccess.Write,
+                Share = FileShare.None,
+                Options = FileOptions.Asynchronous,
+                BufferSize = 16 * 1024
             }))
+            {
                 await JsonSerializer.SerializeAsync(stream, value, value.GetType(), cancellationToken: ct);
+                await stream.FlushAsync(ct);
+                stream.Flush(true);
+            }
 
             File.Move(temporary, path, true);
         }
@@ -468,8 +624,6 @@ public sealed partial class NativeClientSessionStore
         public string ThreadId { get; set; } = "";
         public string ReplayKey { get; set; } = "";
         [System.Text.Json.Serialization.JsonIgnore] public string ResponseId { get; set; } = "";
-        [System.Text.Json.Serialization.JsonIgnore] public long Weight { get; set; }
-        [System.Text.Json.Serialization.JsonIgnore] public long LastAccess { get; set; }
         public D Payload { get; set; } = [];
         public D Response { get; set; } = [];
     }

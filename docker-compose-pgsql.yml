@@ -61,6 +61,9 @@ services:
       - OPENCODEX_REDIS_CONNECTION=redis:6379,abortConnect=false
       - OPENCODEX_REDIS_PREFIX=opencodex
       - OPENCODEX_CACHE_DEFAULT_TTL_SECONDS=300
+      - MultiAgent__StateDirectory=/app/logs/multi-agent-runs
+      - MultiAgent__NativeClientState__RedisTtlHours=24
+      - MultiAgent__NativeClientState__RedisMaxValueBytes=8388608
       - Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command=Warning
     volumes:
       - ./logs:/app/logs

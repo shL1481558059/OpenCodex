@@ -22,10 +22,11 @@ public sealed class MultiAgentClientResponseTests
     }
 
     [Fact]
-    public async Task NativeIdentityWithoutSpawnDeclarationKeepsClientOwnership()
+    public async Task NativeIdentityWithoutSpawnDeclarationPersistsClientOwnershipWhenStoreIsFalse()
     {
         using var root = Root(ctx => Stream(ctx, Events(Terminal(Message("NATIVE")))));
         var request = ClientRequest();
+        Assert.False(Assert.IsType<bool>(request["store"]));
         request["tools"] = new List<object?>();
         var response = await Complete(root, request);
         Assert.Contains("NATIVE", JsonSerializer.Serialize(response));

@@ -88,7 +88,7 @@ public sealed class ProxyControllerTests
         SetChildHeaders(client);
         var root = await client.NativeStore.ResolveAsync(client.Key,
             new MultiAgentClientIdentity { ThreadId = "routing-root", RootThreadId = "routing-root", AgentName = "/root" },
-            false, 4, client.Lifetime.Token);
+            4, client.Lifetime.Token);
         const string childModel = "explicit-child-model";
         var proxy = new StubProxyEndpointService();
         var request = MultiAgentApiTestContext.Request();

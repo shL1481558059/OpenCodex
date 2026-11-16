@@ -8,7 +8,6 @@ public sealed class NativeClientSession
     public string RootThreadId { get; internal init; } = "";
     public string ParentThreadId { get; internal init; } = "";
     public string AgentName { get; internal init; } = "";
-    public bool Persist { get; internal init; }
     public int MaxConcurrentSubagents { get; internal init; }
     internal NativeClientGroup Group { get; init; } = null!;
     internal long LastAccess;

@@ -17,6 +17,7 @@ services:
     environment:
       - OPENCODEX_DB_PROVIDER=sqlite
       - OPENCODEX_DB_CONNECTION_STRING=Data Source=/app/logs/opencodex.db
+      - MultiAgent__StateDirectory=/app/logs/multi-agent-runs
       - Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command=Warning
     volumes:
       - ./logs:/app/logs

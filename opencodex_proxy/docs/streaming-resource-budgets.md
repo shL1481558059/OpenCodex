@@ -125,47 +125,44 @@ not an artificial HTTP flush policy.
 
 ## Native client continuations and request leases
 
-`MultiAgent:NativeClientCache` configures the client-owned session store (not legacy
-`MultiAgentClientStore`/`MultiAgentRunStore` runtime bindings). Defaults:
+`MultiAgent:NativeClientCache` configures the process-local active objects for the
+client-owned session store. JSON files under `MultiAgent:StateDirectory/native-client-v1`
+are the durable source of truth for every native client thread. The request-level `store`
+value is forwarded upstream but does not disable local persistence. Defaults:
 
 | Setting | Default |
 |---|---:|
-| MaxBytes / MaxTenantBytes / MaxSnapshotBytes | 128 / 32 / 16 MiB |
-| MaxResponses / MaxTenantResponses | 2048 / 512 |
-| SnapshotTtlSeconds / SessionTtlSeconds / CleanupIntervalSeconds | 900 / 900 / 60 |
+| SessionTtlSeconds / CleanupIntervalSeconds | 900 / 60 |
 | MaxSessions / MaxTenantSessions / MaxGroupSessions | 4096 / 512 / 256 |
 | MaxWaitersPerSession / MaxIdentityCharacters | 128 / 512 |
-| MaxReplayIdentities / MaxTenantReplayIdentities / MaxSessionReplayIdentities | 65536 / 8192 / 4096 |
-| MaxEphemeralIdentities / MaxTenantEphemeralIdentities | 65536 / 8192 |
 
-Weights conservatively include graph, strings, dictionaries and snapshot-intern metadata
-(JSON graph estimate times four plus fixed overhead), not an exact CLR heap measurement.
-`persist=false` response/replay aliases share eviction; dropping a record also drops its
-session intern table so interned prefixes cannot outlive the budget via that table. TTL
-is checked on read as well as periodic cleanup. Oversize commit fails explicitly (503),
-before executable tool completion/success is published. There is no hidden truncation.
+`MultiAgent:NativeClientState` configures the Redis cache for group, session, response and
+replay records. Defaults:
+
+| Setting | Default |
+|---|---:|
+| RedisTtlHours | 24 |
+| RedisMaxValueBytes | 8 MiB |
+
+Redis uses sliding expiration and refreshes the key on every hit. Expired or unavailable
+cache entries fall back to JSON files. Redis never decides whether a thread still exists.
 
 Request references include registered thread-gate waiters and child-model-permit waiters.
 Cancellation and lease disposal release the reference. Only whole parent/child groups
 without any owners or waiters can retire; live groups reject excess admission instead of
 creating a second lock. Final release refreshes idle time before the count reaches zero.
-Persistent groups restore lazily, with all group agent names checked before admitting a
-new binding. The old record/index formats and crash recovery remain intact. A cold restore
-still scans historical identity directories: RAM admission is bounded, scan CPU/I/O is not
-constant. Durable record retention and complete per-request history materialization are
-not limited by these **memory-cache** settings. Persistent writes stream JSON instead of
-building an additional full JSON string; serializer buffers are not claimed constant-size.
+Groups restore lazily from Redis or JSON, with all group agent names checked before
+admitting a new binding. Memory TTL retires process-local objects only; the corresponding
+`session.json`, response index and turn record remain on disk. A subsequent request restores
+the same identity and continuation. Writes use a flushed temporary file followed by an
+atomic rename before executable tool completion or terminal success is published.
 
-Evicting a replay payload must never re-run its tools. An exact bounded SHA256 turn-key
-set distinguishes an evicted old turn (409) from a genuinely new turn. A live session's
-safety-key quota is checked before the model call. On ephemeral whole-group retirement,
-process-lifetime hashed thread/root tombstones prevent recreating an old lock or executing
-an old turn. Identity slots are reserved before admission and deliberately **not recycled**:
-new identities fail 503 when these finite safety quotas fill, even when payloads/gates have
-returned to zero. `persist=false` writes no recovery data to disk; replay protection does
-not survive process restart. This is a safety/availability tradeoff, not unbounded uptime
-with zero retained metadata. Start a new thread/turn with full history on an expired
-continuation; a persistent identity can instead recover its existing durable group/record.
+Exact SHA256 turn keys make retries return the committed response without calling the model
+or executing tools again. The durable turn record and response index also recover a commit
+that completed immediately before process termination. A missing or invalid file remains a
+fail-closed condition; the server never guesses that an old executable turn is safe to rerun.
+No automatic disk retention is applied in this version, so operators must monitor the
+`native-client-v1` directory and back up the persisted state together with the log volume.
 
 ## Responses WebSocket connection history / interrupt IDs
 
