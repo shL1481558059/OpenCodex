@@ -19,6 +19,7 @@ public sealed partial class NativeClientSessionStore
     private readonly ConcurrentDictionary<string, NativeClientSession> _sessions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, NativeClientGroup> _groups = new(StringComparer.Ordinal);
     private readonly NativeClientStateCache _cache;
+    private readonly List<Func<CancellationToken, Task>> _cachePublishes = [];
 
     public NativeClientSessionStore(string directory, NativeClientCacheOptions? options = null,
         TimeProvider? timeProvider = null, NativeClientStateCache? cache = null)
@@ -35,82 +36,122 @@ public sealed partial class NativeClientSessionStore
         ValidateSize(identity);
         if (maxConcurrentSubagents < 1) throw new BadRequestException("max_concurrent_subagents must be positive.");
         await _indexGate.WaitAsync(ct);
+        NativeClientSession? session = null;
+        List<Func<CancellationToken, Task>> publishes = [];
+        Exception? error = null;
         try
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             Sweep();
             CheckIdleSession(FindSession(owner, identity.ThreadId));
             CheckIdleGroup(owner, identity.RootThreadId);
-            await RestoreGroup(owner, identity.RootThreadId, ct);
-            var session = FindSession(owner, identity.ThreadId);
+            await RestoreGroup(owner, identity.RootThreadId, ct, identity.ThreadId);
+            session = FindSession(owner, identity.ThreadId);
             if (session is not null)
             {
                 if (session.RootThreadId != identity.RootThreadId || session.ParentThreadId != identity.ParentThreadId
                     || session.AgentName != identity.AgentName)
                     throw new BadRequestException("The client thread identity cannot change its root, parent, or agent name.");
-                _groups[SessionKey(owner, identity.RootThreadId)].Validate(identity, maxConcurrentSubagents);
+                var group = _groups[SessionKey(owner, identity.RootThreadId)];
+                group.Validate(identity, maxConcurrentSubagents);
+                EnsureBound(group, session);
                 Touch(session);
-                return session;
             }
-
-            var root = identity.ParentThreadId.Length == 0 ? null : FindSession(owner, identity.RootThreadId);
-            var parent = identity.ParentThreadId.Length == 0 ? null : FindSession(owner, identity.ParentThreadId);
-            if (parent is not null && (parent.RootThreadId != identity.RootThreadId
-                || identity.AgentName[..identity.AgentName.LastIndexOf('/')] != parent.AgentName))
-                throw new BadRequestException("The child identity does not belong to the declared parent.");
-            if (_groups.TryGetValue(SessionKey(owner, identity.RootThreadId), out var existingGroup))
+            else
             {
-                existingGroup.Validate(identity, maxConcurrentSubagents);
-                if (existingGroup.Agents.Count >= _options.MaxGroupSessions) throw Quota("group member");
-            }
-
-            MakeRoom(owner, 1, identity.RootThreadId);
-            session = CreateSession(owner, identity, root?.MaxConcurrentSubagents ?? maxConcurrentSubagents);
-            try
-            {
-                await WriteAtomic(SessionPath(session), ToDocument(session), ct);
-                RegisterSession(session);
-                await CacheSessionAsync(session, ct);
-                await _cache.RemoveGroupAsync(owner, identity.RootThreadId, ct);
-            }
-            catch
-            {
-                session.Gate.Dispose();
-                var groupKey = SessionKey(owner, identity.RootThreadId);
-                if (_groups.TryGetValue(groupKey, out var failedGroup) && failedGroup.Agents.Count == 0)
+                var root = identity.ParentThreadId.Length == 0 ? null : FindSession(owner, identity.RootThreadId);
+                var parent = identity.ParentThreadId.Length == 0 ? null : FindSession(owner, identity.ParentThreadId);
+                if (parent is not null && (parent.RootThreadId != identity.RootThreadId
+                    || identity.AgentName[..identity.AgentName.LastIndexOf('/')] != parent.AgentName))
+                    throw new BadRequestException("The child identity does not belong to the declared parent.");
+                if (_groups.TryGetValue(SessionKey(owner, identity.RootThreadId), out var existingGroup))
                 {
-                    _groups.Remove(groupKey);
-                    failedGroup.ChildModels.Dispose();
+                    existingGroup.Validate(identity, maxConcurrentSubagents);
+                    if (existingGroup.Agents.Count >= _options.MaxGroupSessions) throw Quota("group member");
                 }
-                throw;
+
+                MakeRoom(owner, 1, identity.RootThreadId);
+                session = CreateSession(owner, identity, root?.MaxConcurrentSubagents ?? maxConcurrentSubagents);
+                GroupManifest? previousManifest = null;
+                try
+                {
+                    previousManifest = await ReadGroupManifest(owner, identity.RootThreadId, ct);
+                    var generation = NextGeneration(session.Group, previousManifest);
+                    await WriteGroupManifest(session.Group, owner, identity.RootThreadId, generation,
+                        Members(session.Group).Concat([session]).ToList(), ct);
+                    await WriteAtomic(SessionPath(session), ToDocument(session), ct);
+                    RegisterSession(session);
+                    session.Group.Generation = generation;
+                    QueueGroupPublish(session.Group);
+                }
+                catch
+                {
+                    session.Gate.Dispose();
+                    await TryRevertGroupManifest(owner, identity.RootThreadId, previousManifest, ct);
+                    var groupKey = SessionKey(owner, identity.RootThreadId);
+                    if (_groups.TryGetValue(groupKey, out var failedGroup) && failedGroup.Agents.Count == 0)
+                    {
+                        _groups.Remove(groupKey);
+                        failedGroup.ChildModels.Dispose();
+                    }
+                    throw;
+                }
             }
-            return session;
         }
-        finally { _indexGate.Release(); }
+        catch (Exception exception) { error = exception; }
+        finally
+        {
+            publishes = TakeCachePublishes();
+            _indexGate.Release();
+        }
+        await FlushCachePublishes(publishes, ct);
+        if (error is not null) throw error;
+        return session!;
     }
 
     public async Task<NativeClientSession?> TryGetAsync(Guid owner, string threadId, CancellationToken ct)
     {
         await _indexGate.WaitAsync(ct);
+        NativeClientSession? found = null;
+        List<Func<CancellationToken, Task>> publishes = [];
+        Exception? error = null;
         try
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             Sweep();
             CheckIdleSession(FindSession(owner, threadId));
-            if (FindSession(owner, threadId) is { } found)
-            {
-                Touch(found);
-                return found;
-            }
-
-            var document = await ReadIdentity(owner, threadId, ct);
-            if (document is null) return null;
-            await RestoreGroup(owner, document.RootThreadId, ct);
             found = FindSession(owner, threadId);
-            if (found is not null) Touch(found);
-            return found;
+            if (found is not null)
+            {
+                if (!TryEnsureBound(found, owner, threadId)) found = null;
+                else Touch(found);
+            }
+            else
+            {
+                var document = await ReadIdentity(owner, threadId, ct);
+                if (document is not null)
+                {
+                    await RestoreGroup(owner, document.RootThreadId, ct, threadId);
+                    found = FindSession(owner, threadId);
+                    if (found is null || !TryEnsureBound(found, owner, threadId))
+                    {
+                        await RestoreGroup(owner, document.RootThreadId, ct, threadId, forceDisk: true);
+                        found = FindSession(owner, threadId);
+                    }
+                    if (found is null || !TryEnsureBound(found, owner, threadId)) found = null;
+                    else Touch(found);
+                }
+            }
         }
-        finally { _indexGate.Release(); }
+        catch (Exception exception) { error = exception; }
+        finally
+        {
+            publishes = TakeCachePublishes();
+            _indexGate.Release();
+        }
+        await FlushCachePublishes(publishes, ct);
+        if (error is not null) throw error;
+        return found;
     }
 
     public async Task<NativeClientRequestLease> AcquireRequestAsync(NativeClientSession session, CancellationToken ct)
@@ -282,70 +323,139 @@ public sealed partial class NativeClientSessionStore
 
     private async Task<SessionDocument?> ReadIdentity(Guid owner, string thread, CancellationToken ct)
     {
-        var cached = await _cache.GetSessionAsync(owner, thread, ct);
-        if (cached is not null)
-        {
-            var fromCache = ToDocument(cached);
-            ValidateDocument(owner, thread, fromCache, fromCache.MaxConcurrentSubagents);
-            return fromCache;
-        }
-
         var path = Path.Combine(_directory, Hash(SessionKey(owner, thread)), "session.json");
         if (!File.Exists(path)) return null;
         await using var stream = File.OpenRead(path);
         var document = await JsonSerializer.DeserializeAsync<SessionDocument>(stream, cancellationToken: ct)
             ?? throw new InvalidDataException("The native client identity is empty.");
         ValidateDocument(owner, thread, document, document.MaxConcurrentSubagents);
-        await _cache.SetSessionAsync(ToCachedSession(owner, document), ct);
+        QueueCachePublish(token => _cache.SetSessionAsync(ToCachedSession(owner, document), token));
         return document;
     }
 
-    private async Task RestoreGroup(Guid owner, string rootThread, CancellationToken ct)
+    private async Task RestoreGroup(Guid owner, string rootThread, CancellationToken ct,
+        string? requiredThread = null, bool forceDisk = false)
     {
-        if (_groups.ContainsKey(SessionKey(owner, rootThread))) return;
+        var groupKey = SessionKey(owner, rootThread);
+        if (_groups.ContainsKey(groupKey) && !forceDisk
+            && (requiredThread is null || FindSession(owner, requiredThread) is not null))
+            return;
 
-        var documents = await ReadCachedGroup(owner, rootThread, ct) ?? await ReadGroupFromDisk(owner, rootThread, ct);
+        if (_groups.ContainsKey(groupKey) && requiredThread is not null
+            && FindSession(owner, requiredThread) is null
+            && !SessionFileExists(owner, requiredThread))
+            return;
+
+        if (_groups.TryGetValue(groupKey, out var existing) && !HasReferences(existing))
+            RemoveGroup(groupKey, existing);
+
+        var manifest = await ReadGroupManifest(owner, rootThread, ct);
+        var cached = forceDisk ? null : await ReadTrustedCachedGroup(owner, rootThread, manifest, requiredThread, ct);
+        var documents = cached
+            ?? await ReadManifestGroup(owner, rootThread, manifest, requiredThread, ct)
+            ?? await ReadGroupFromDisk(owner, rootThread, ct);
+        if (requiredThread is not null && documents.All(d => d.ThreadId != requiredThread)
+            && cached is not null)
+        {
+            QueueCachePublish(token => _cache.RemoveGroupAsync(owner, rootThread, token));
+            documents = await ReadManifestGroup(owner, rootThread, manifest, requiredThread, ct)
+                ?? await ReadGroupFromDisk(owner, rootThread, ct);
+        }
         if (documents.Count == 0) return;
-        MakeRoom(owner, documents.Count);
+        RejectDuplicateAgents(documents);
+        var missing = documents.Where(d => FindSession(owner, d.ThreadId) is null).ToList();
+        if (missing.Count == 0)
+        {
+            if (_groups.TryGetValue(groupKey, out var loaded))
+                QueueGroupPublish(loaded);
+            return;
+        }
+        if (!_groups.ContainsKey(groupKey)) MakeRoom(owner, documents.Count);
         try
         {
-            foreach (var document in documents.OrderBy(d => d.AgentName.Count(c => c == '/')))
+            NativeClientGroup? group = _groups.GetValueOrDefault(groupKey);
+            foreach (var document in missing.OrderBy(d => d.AgentName.Count(c => c == '/')))
             {
                 var identity = ToIdentity(document);
-                RegisterSession(CreateSession(owner, identity, document.MaxConcurrentSubagents));
-                await _cache.SetSessionAsync(ToCachedSession(owner, document), ct);
+                var session = CreateSession(owner, identity, document.MaxConcurrentSubagents);
+                RegisterSession(session);
+                group = session.Group;
+                QueueCachePublish(token => _cache.SetSessionAsync(ToCachedSession(owner, document), token));
             }
-            await CacheGroupAsync(owner, rootThread, ct);
+            if (group is null) return;
+            if (manifest is { Generation: > 0 } && SameThreads(manifest.Sessions, documents))
+                group.Generation = manifest.Generation;
+            else
+            {
+                var generation = Math.Max(manifest?.Generation ?? 0, group.Generation) + 1;
+                if (generation < 1) generation = 1;
+                await WriteGroupManifest(group, owner, rootThread, generation, Members(group), ct);
+                group.Generation = generation;
+            }
+            QueueGroupPublish(group);
         }
         catch
         {
-            if (_groups.TryGetValue(SessionKey(owner, rootThread), out var failed))
-                RemoveGroup(SessionKey(owner, rootThread), failed);
+            if (_groups.TryGetValue(groupKey, out var failed))
+                RemoveGroup(groupKey, failed);
             throw;
         }
     }
 
-    private async Task<List<SessionDocument>?> ReadCachedGroup(Guid owner, string rootThread, CancellationToken ct)
+    private async Task<List<SessionDocument>?> ReadTrustedCachedGroup(Guid owner, string rootThread,
+        GroupManifest? manifest, string? requiredThread, CancellationToken ct)
     {
         var cached = await _cache.GetGroupAsync(owner, rootThread, ct);
-        if (cached is null || cached.MaxConcurrentSubagents < 1 || cached.Sessions.Count == 0) return null;
+        if (cached is null) return null;
+        if (manifest is null || cached.Generation <= 0 || cached.Generation != manifest.Generation
+            || cached.MaxConcurrentSubagents < 1 || cached.Sessions.Count == 0
+            || !SameThreads(cached.Sessions.Select(ToDocument), manifest.Sessions)
+            || (requiredThread is not null && cached.Sessions.All(s => s.ThreadId != requiredThread)))
+        {
+            QueueCachePublish(token => _cache.RemoveGroupAsync(owner, rootThread, token));
+            return null;
+        }
+
         var documents = new List<SessionDocument>(cached.Sessions.Count);
         foreach (var session in cached.Sessions)
         {
             if (session.RootThreadId != rootThread)
             {
-                await _cache.RemoveGroupAsync(owner, rootThread, ct);
+                QueueCachePublish(token => _cache.RemoveGroupAsync(owner, rootThread, token));
                 return null;
             }
             var document = ToDocument(session);
             try { ValidateDocument(owner, session.ThreadId, document, cached.MaxConcurrentSubagents); }
             catch (Exception exception) when (exception is InvalidDataException or BadRequestException)
             {
-                await _cache.RemoveGroupAsync(owner, rootThread, ct);
+                QueueCachePublish(token => _cache.RemoveGroupAsync(owner, rootThread, token));
                 return null;
             }
             documents.Add(document);
         }
+        QueueCachePublish(token => _cache.TouchGroupAsync(owner, rootThread, token));
+        return documents;
+    }
+
+    private async Task<List<SessionDocument>?> ReadManifestGroup(Guid owner, string rootThread,
+        GroupManifest? manifest, string? requiredThread, CancellationToken ct)
+    {
+        if (manifest is null || manifest.Generation <= 0 || manifest.Sessions.Count == 0) return null;
+        var documents = new List<SessionDocument>(manifest.Sessions.Count);
+        foreach (var document in manifest.Sessions)
+        {
+            if (document.RootThreadId != rootThread) return null;
+            var path = Path.Combine(_directory, Hash(SessionKey(owner, document.ThreadId)), "session.json");
+            if (!File.Exists(path)) continue;
+            try { ValidateDocument(owner, document.ThreadId, document, manifest.MaxConcurrentSubagents); }
+            catch (Exception exception) when (exception is InvalidDataException or BadRequestException)
+            {
+                return null;
+            }
+            documents.Add(document);
+        }
+        if (documents.Count == 0) return null;
+        if (requiredThread is not null && documents.All(d => d.ThreadId != requiredThread)) return null;
         return documents;
     }
 
@@ -509,6 +619,7 @@ public sealed partial class NativeClientSessionStore
         {
             Owner = owner,
             RootThreadId = rootThread,
+            Generation = group.Generation,
             MaxConcurrentSubagents = group.Limit,
             Sessions = sessions
         }, ct);
@@ -573,6 +684,150 @@ public sealed partial class NativeClientSessionStore
     };
 
     private static string Canonical(D value) => NativeClientSnapshotPool.Canonical(value);
+
+    private void QueueCachePublish(Func<CancellationToken, Task> work) => _cachePublishes.Add(work);
+
+    private List<Func<CancellationToken, Task>> TakeCachePublishes()
+    {
+        var work = _cachePublishes.ToList();
+        _cachePublishes.Clear();
+        return work;
+    }
+
+    private void QueueGroupPublish(NativeClientGroup group)
+        => QueueCachePublish(token => CacheGroupAsync(group.Owner, group.RootThreadId, token));
+
+    private static async Task FlushCachePublishes(IReadOnlyList<Func<CancellationToken, Task>> work, CancellationToken ct)
+    {
+        foreach (var publish in work)
+        {
+            ct.ThrowIfCancellationRequested();
+            await publish(ct);
+        }
+    }
+
+    private static long NextGeneration(NativeClientGroup group, GroupManifest? manifest)
+        => Math.Max(group.Generation, manifest?.Generation ?? 0) + 1;
+
+    private bool TryEnsureBound(NativeClientSession session, Guid owner, string threadId)
+    {
+        try { EnsureBound(session.Group, session, owner, threadId); return true; }
+        catch (Exception exception) when (exception is InvalidDataException or BadRequestException)
+        {
+            return false;
+        }
+    }
+
+    private void EnsureBound(NativeClientGroup group, NativeClientSession session, Guid? owner = null, string? threadId = null)
+    {
+        if (owner is { } expectedOwner && session.Owner != expectedOwner)
+            throw new InvalidDataException("The native client identity is invalid.");
+        if (threadId is not null && session.ThreadId != threadId)
+            throw new InvalidDataException("The native client identity is invalid.");
+        if (!ReferenceEquals(session.Group, group) || group.Owner != session.Owner
+            || group.RootThreadId != session.RootThreadId)
+            throw new InvalidDataException("The native client identity is invalid.");
+        if (!group.Agents.TryGetValue(session.AgentName, out var bound) || bound != session.ThreadId)
+            throw new InvalidDataException("The native client identity is invalid.");
+        if (session.ParentThreadId.Length == 0) return;
+        var parent = FindSession(session.Owner, session.ParentThreadId);
+        if (parent is null) return;
+        if (parent.Owner != session.Owner || parent.RootThreadId != session.RootThreadId
+            || parent.AgentName != session.AgentName[..session.AgentName.LastIndexOf('/')])
+            throw new InvalidDataException("The native client identity is invalid.");
+    }
+
+    private static void RejectDuplicateAgents(IEnumerable<SessionDocument> documents)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        var threads = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var document in documents)
+        {
+            if (!names.Add(document.AgentName) || !threads.Add(document.ThreadId))
+                throw new InvalidDataException("The native client group contains conflicting identities.");
+        }
+    }
+
+    private static bool SameThreads(IEnumerable<SessionDocument> left, IEnumerable<SessionDocument> right)
+    {
+        var first = left.Select(d => d.ThreadId).OrderBy(t => t, StringComparer.Ordinal).ToArray();
+        var second = right.Select(d => d.ThreadId).OrderBy(t => t, StringComparer.Ordinal).ToArray();
+        return first.SequenceEqual(second, StringComparer.Ordinal);
+    }
+
+    private bool SessionFileExists(Guid owner, string thread)
+        => File.Exists(Path.Combine(_directory, Hash(SessionKey(owner, thread)), "session.json"));
+
+    private string GroupManifestPath(Guid owner, string rootThread)
+        => Path.Combine(_directory, "groups", Hash(SessionKey(owner, rootThread)), "group.json");
+
+    private async Task<GroupManifest?> ReadGroupManifest(Guid owner, string rootThread, CancellationToken ct)
+    {
+        var path = GroupManifestPath(owner, rootThread);
+        if (!File.Exists(path)) return null;
+        try
+        {
+            await using var stream = File.OpenRead(path);
+            var manifest = await JsonSerializer.DeserializeAsync<GroupManifest>(stream, cancellationToken: ct);
+            if (manifest is null || manifest.Version != 1 || manifest.Generation <= 0
+                || manifest.Owner != owner || manifest.RootThreadId != rootThread
+                || manifest.MaxConcurrentSubagents < 1)
+                return null;
+            foreach (var document in manifest.Sessions)
+            {
+                try { ValidateDocument(owner, document.ThreadId, document, manifest.MaxConcurrentSubagents); }
+                catch (Exception exception) when (exception is InvalidDataException or BadRequestException)
+                {
+                    return null;
+                }
+            }
+            return manifest;
+        }
+        catch (JsonException) { return null; }
+        catch (InvalidDataException) { return null; }
+    }
+
+    private async Task WriteGroupManifest(NativeClientGroup group, Guid owner, string rootThread, long generation,
+        IReadOnlyList<NativeClientSession> sessions, CancellationToken ct)
+    {
+        var manifest = new GroupManifest
+        {
+            Version = 1,
+            Generation = generation,
+            Owner = owner,
+            RootThreadId = rootThread,
+            MaxConcurrentSubagents = group.Limit,
+            Sessions = sessions.Select(ToDocument).ToList()
+        };
+        await WriteAtomic(GroupManifestPath(owner, rootThread), manifest, ct);
+    }
+
+    private async Task TryRevertGroupManifest(Guid owner, string rootThread, GroupManifest? previous, CancellationToken ct)
+    {
+        try
+        {
+            var path = GroupManifestPath(owner, rootThread);
+            if (previous is null)
+            {
+                if (File.Exists(path)) File.Delete(path);
+                return;
+            }
+            await WriteAtomic(path, previous, ct);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    private sealed class GroupManifest
+    {
+        public int Version { get; set; } = 1;
+        public long Generation { get; set; }
+        public Guid Owner { get; set; }
+        public string RootThreadId { get; set; } = "";
+        public int MaxConcurrentSubagents { get; set; }
+        public List<SessionDocument> Sessions { get; set; } = [];
+    }
+
 
     private static async Task WriteAtomic(string path, object value, CancellationToken ct)
     {

@@ -68,7 +68,8 @@ public static class OpenCodexServiceCollectionExtensions
             null,
             new OpenCodex.Core.Services.MultiAgent.NativeClientStateCache(
                 serviceProvider.GetRequiredService<OpenCodex.Core.Services.Caching.IRedisConnectionProvider>(),
-                configuration.GetSection("MultiAgent:NativeClientState").Get<OpenCodex.Core.Services.MultiAgent.NativeClientStateCacheOptions>())));
+                configuration.GetSection("MultiAgent:NativeClientState").Get<OpenCodex.Core.Services.MultiAgent.NativeClientStateCacheOptions>(),
+                serviceProvider.GetService<Microsoft.Extensions.Logging.ILogger<OpenCodex.Core.Services.MultiAgent.NativeClientStateCache>>())));
         services.AddOpenCodexAuthentication(configuration);
 
         return services;

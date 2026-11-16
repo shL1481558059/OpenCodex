@@ -193,7 +193,7 @@ OpenCodex 是多协议 LLM 代理与配套管理台：接收客户端 Responses�
 - 原生 spawn 保留客户端实际声明的工具 schema；显式 `model` 和推理强度在 schema 支持时进入子代理配置及实际上游请求，省略时继承父配置。子请求依据同一 API key、根 thread、父 thread、代理路径与预登记调用绑定；缺少必要身份或出现冲突时不猜测绑定。子完成消息批量进入当前任务邮箱，已完成代理一次收到多条消息也只激活一个任务，避免每条报告产生一次额外最终回复。
 - 每次模型调用独立 DI 作用域，复用流式管线的路由/认证/转换/日志/计量；增量文本、推理、工具参数即时转发，统一分配代理归属、item ID、output index 与事件序号。
 - 会话按 API Key 隔离，`previous_response_id` 只允许所属代理续接。legacy 会话标识依次取 `client_metadata.session_id`、`thread_id`、`session-id`/`X-OpenCodex-Multi-Agent-Session` 请求头、`prompt_cache_key`，未提供时生成；客户端协同模式使用 native thread/parent 元数据与 root session 建立稳定组内绑定。
-- JSON 运行快照默认写入 `logs/multi-agent-runs`（`MultiAgent:StateDirectory` 可改）；客户端协同模式还在该目录的 `client-bindings/` 保存按 owner/root 隔离的组清单。所有 native client 线程无论请求是否携带 `store:false` 都写入 `native-client-v1`，`store` 仅控制上游请求语义。会话内存 TTL 到期后从 JSON 恢复身份、响应和重放索引；Redis 按 24 小时滑动 TTL 缓存这些记录，缓存过期或不可用时直接回源磁盘。完全未识别为托管运行的普通 native 请求继续原转发路径，不承诺识别所有失联会话。
+- JSON 运行快照默认写入 `logs/multi-agent-runs`（`MultiAgent:StateDirectory` 可改）；客户端协同模式还在该目录的 `client-bindings/` 保存按 owner/root 隔离的组清单。所有 native client 线程无论请求是否携带 `store:false` 都写入 `native-client-v1`，`store` 仅控制上游请求语义。会话内存 TTL 到期后从 JSON 恢复身份、响应和重放索引；磁盘是 native-client 组的真源，组清单带单调 generation，Redis 只按匹配的 generation 加速，过期、无版本或不完整的缓存不会续命，也不再否定磁盘上已有的会话。完全未识别为托管运行的普通 native 请求继续原转发路径，不承诺识别所有失联会话。
 - `multi_agent.max_concurrent_subagents` 默认 3，根模型不占子并发额度；不同代理使用独立请求锁。native 客户端停止本地工具且没有在途 HTTP 请求时，服务端不一定立即收到停止通知。
 - `ModelTurns` 按调度预先累计并用于续接输入判定：普通回合计 1，需要摘要的回合计 2，摘要失败而主调用未发起时也不回退。该计数不限制运行，也不会触发压缩；旧配置 `MultiAgent:MaxModelTurns` 不再读取。
 - 按 token 阈值自动压缩继续有效：`MultiAgent:CompactThresholdTokens` 默认 64000，可由请求 `context_management.compact_threshold` 覆盖，小于 1 返回 400。达到阈值时先请求独立摘要，再以摘要和保留的历史尾部继续主调用；摘要成功且主回合进入处理流程后合并两次调用的 usage。阈值由本地消费，`context_management` 在规范化时移除，不透传上游。

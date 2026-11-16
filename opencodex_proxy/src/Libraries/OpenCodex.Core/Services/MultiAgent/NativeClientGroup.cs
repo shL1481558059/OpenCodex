@@ -6,6 +6,7 @@ namespace OpenCodex.Core.Services.MultiAgent;
 internal sealed class NativeClientGroup(int limit, Guid owner, string rootThreadId)
 {
     internal long LastAccess;
+    internal long Generation;
     public Guid Owner { get; } = owner;
     public string RootThreadId { get; } = rootThreadId;
     public int Limit { get; } = limit;

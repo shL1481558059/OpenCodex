@@ -144,8 +144,7 @@ replay records. Defaults:
 | RedisTtlHours | 24 |
 | RedisMaxValueBytes | 8 MiB |
 
-Redis uses sliding expiration and refreshes the key on every hit. Expired or unavailable
-cache entries fall back to JSON files. Redis never decides whether a thread still exists.
+Redis uses sliding expiration for trusted entries. Group cache is only trusted when its generation matches the on-disk group manifest; unversioned, incomplete, or mismatched snapshots are discarded and not refreshed. Expired or unavailable cache entries fall back to JSON files. Redis never decides whether a thread still exists.
 
 Request references include registered thread-gate waiters and child-model-permit waiters.
 Cancellation and lease disposal release the reference. Only whole parent/child groups

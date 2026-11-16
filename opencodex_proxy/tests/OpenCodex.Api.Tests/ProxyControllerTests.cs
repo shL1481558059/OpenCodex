@@ -604,23 +604,26 @@ public sealed class ProxyControllerTests
 
     private static string FindRepositoryRoot()
     {
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
-        while (directory is not null)
+        foreach (var start in new[] { AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
         {
-            var marker = Path.Combine(
-                directory.FullName,
-                "opencodex_proxy",
-                "src",
-                "Presentation",
-                "OpenCodex.Api",
-                "wwwroot",
-                "ocxp_codex_official_models.json");
-            if (File.Exists(marker))
+            var directory = new DirectoryInfo(start);
+            while (directory is not null)
             {
-                return directory.FullName;
-            }
+                var marker = Path.Combine(
+                    directory.FullName,
+                    "opencodex_proxy",
+                    "src",
+                    "Presentation",
+                    "OpenCodex.Api",
+                    "wwwroot",
+                    "ocxp_codex_official_models.json");
+                if (File.Exists(marker))
+                {
+                    return directory.FullName;
+                }
 
-            directory = directory.Parent;
+                directory = directory.Parent;
+            }
         }
 
         throw new InvalidOperationException("Unable to locate the OpenCodex repository root.");

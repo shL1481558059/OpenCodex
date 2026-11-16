@@ -36,12 +36,13 @@ internal sealed class MultiAgentApiTestContext : IDisposable
 
     public MultiAgentApiTestContext(Func<ProxyEndpointContext, Task<ProxyEndpointResult>> handler,
         MultiAgentRunStore? store = null, Guid? key = null, string session = "test-session",
-        MultiAgentClientStore? clientStore = null, ClientConnectionCache? connectionCache = null, IConfiguration? configuration = null)
+        MultiAgentClientStore? clientStore = null, ClientConnectionCache? connectionCache = null, IConfiguration? configuration = null,
+        NativeClientSessionStore? nativeStore = null)
     {
         Store = store ?? new MultiAgentRunStore(Path.Combine(Path.GetTempPath(), "ocxp-api-tests-" + Guid.NewGuid().ToString("N")));
         ClientStore = clientStore ?? new MultiAgentClientStore(Store,
             Path.Combine(Path.GetTempPath(), "ocxp-api-client-tests-" + Guid.NewGuid().ToString("N")));
-        NativeStore = NativeStores.GetValue(Store, _ => new NativeClientSessionStore(
+        NativeStore = nativeStore ?? NativeStores.GetValue(Store, _ => new NativeClientSessionStore(
             Path.Combine(Path.GetTempPath(), "ocxp-api-native-tests-" + Guid.NewGuid().ToString("N"))));
         Key = key ?? Guid.NewGuid();
         Http.Request.Path = "/v1/responses";

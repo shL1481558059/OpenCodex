@@ -20,6 +20,7 @@ public sealed class NativeClientStateCacheTests
         {
             Owner = owner,
             RootThreadId = "root",
+            Generation = 1,
             MaxConcurrentSubagents = 2,
             Sessions =
             [
@@ -38,6 +39,8 @@ public sealed class NativeClientStateCacheTests
         Assert.Equal((Expiration)TimeSpan.FromHours(24), redis.LastSetExpiry);
         var restored = await cache.GetGroupAsync(owner, "root", default);
         Assert.Equal("root", restored!.RootThreadId);
+        Assert.Null(redis.LastRefreshExpiry);
+        await cache.TouchGroupAsync(owner, "root", default);
         Assert.Equal(TimeSpan.FromHours(24), redis.LastRefreshExpiry);
     }
 
@@ -119,63 +122,4 @@ public sealed class NativeClientStateCacheTests
         }
     }
 
-    private sealed class RecordingRedisConnectionProvider : IRedisConnectionProvider
-    {
-        private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
-
-        public RecordingRedisConnectionProvider()
-        {
-            var database = DispatchProxy.Create<IDatabase, RedisDatabaseProxy>();
-            ((RedisDatabaseProxy)(object)database).Provider = this;
-            Database = database;
-        }
-
-        public IDatabase Database { get; }
-        public bool IsAvailable => true;
-        public string KeyPrefix => "test";
-        public int SetCount { get; private set; }
-        public Expiration? LastSetExpiry { get; private set; }
-        public TimeSpan? LastRefreshExpiry { get; private set; }
-        public IDatabase? GetDatabase(int db = -1) => Database;
-        public ISubscriber? GetSubscriber() => null;
-
-        internal Task<bool> SetAsync(string key, string value, Expiration expiry)
-        {
-            _values[key] = value;
-            SetCount++;
-            LastSetExpiry = expiry;
-            return Task.FromResult(true);
-        }
-
-        internal Task<RedisValue> GetAsync(string key)
-            => Task.FromResult(_values.TryGetValue(key, out var value) ? (RedisValue)value : RedisValue.Null);
-
-        internal Task<bool> ExpireAsync(string key, TimeSpan? expiry)
-        {
-            LastRefreshExpiry = expiry;
-            return Task.FromResult(_values.ContainsKey(key));
-        }
-
-        internal Task<bool> DeleteAsync(string key) => Task.FromResult(_values.Remove(key));
-
-        internal void Clear() => _values.Clear();
-    }
-
-    private class RedisDatabaseProxy : DispatchProxy
-    {
-        internal RecordingRedisConnectionProvider Provider { get; set; } = null!;
-
-        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
-        {
-            if (targetMethod?.Name == nameof(IDatabase.StringSetAsync) && args is { Length: >= 3 })
-                return Provider.SetAsync(args[0]!.ToString()!, args[1]!.ToString()!, (Expiration)args[2]!);
-            if (targetMethod?.Name == nameof(IDatabase.StringGetAsync) && args is { Length: >= 1 })
-                return Provider.GetAsync(args[0]!.ToString()!);
-            if (targetMethod?.Name == nameof(IDatabase.KeyExpireAsync) && args is { Length: >= 2 })
-                return Provider.ExpireAsync(args[0]!.ToString()!, (TimeSpan?)args[1]);
-            if (targetMethod?.Name == nameof(IDatabase.KeyDeleteAsync) && args is { Length: >= 1 })
-                return Provider.DeleteAsync(args[0]!.ToString()!);
-            throw new NotSupportedException(targetMethod?.Name);
-        }
-    }
 }
