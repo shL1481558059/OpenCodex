@@ -40,9 +40,12 @@ public sealed class ProxyLogBodyHandle : IDisposable
     /// <summary>Copies caller-owned memory, so future mutations cannot alter this version.</summary>
     public static ProxyLogBodyHandle CaptureUtf8(ReadOnlySpan<byte> utf8) => new(utf8.ToArray());
 
+    /// <summary>Adopts immutable caller-owned memory without copying it.</summary>
+    public static ProxyLogBodyHandle AdoptOwnedUtf8(ReadOnlyMemory<byte> utf8) => new(utf8);
+
     // Only for buffers exclusively owned by the caller (serializer/request reader), which must
     // remain immutable. The handle never returns them to a pool or exposes writable memory.
-    internal static ProxyLogBodyHandle FromOwnedUtf8(ReadOnlyMemory<byte> utf8) => new(utf8);
+    internal static ProxyLogBodyHandle FromOwnedUtf8(ReadOnlyMemory<byte> utf8) => AdoptOwnedUtf8(utf8);
 
     internal int HashComputations { get; private set; }
 

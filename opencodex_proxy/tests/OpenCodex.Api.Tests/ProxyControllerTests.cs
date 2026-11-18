@@ -314,11 +314,10 @@ public sealed class ProxyControllerTests
         Assert.NotNull(logs.LastRequestMetadata);
         Assert.Equal("POST", logs.LastRequestMetadata!.Method);
         Assert.Equal("/v1/messages", logs.LastRequestMetadata.Path);
-        var raw = logs.LastRequestMetadata.LogBodies!.Request!.ReadSnapshot().Spool!.OpenRead();
-        using var rawReader = new StreamReader(raw);
+        var raw = logs.LastRequestMetadata.LogBodies!.Request!.ReadSnapshot().Utf8;
         Assert.Equal(
             "{\"model\":\"claude-opus-5\",\"max_tokens\":1}",
-            rawReader.ReadToEnd());
+            System.Text.Encoding.UTF8.GetString(raw!.Value.Span));
     }
 
     [Fact]
