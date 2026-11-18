@@ -6,10 +6,10 @@ public static partial class ProtocolConverter
 {
     private static void ValidateRequestSemanticCompatibility(
         Dictionary<string, object?> payload,
-        string sourceProtocol,
-        string targetProtocol)
+        string clientProtocol,
+        string upstreamProtocol)
     {
-        foreach (var parameter in UnsupportedSemanticParameters(sourceProtocol, targetProtocol))
+        foreach (var parameter in UnsupportedSemanticParameters(clientProtocol, upstreamProtocol))
         {
             if (!HasNonNullValue(payload, parameter))
             {
@@ -17,13 +17,13 @@ public static partial class ProtocolConverter
             }
 
             throw new BadRequestException(
-                $"request parameter '{parameter}' cannot be converted from {sourceProtocol} to {targetProtocol} without changing request semantics");
+                $"request parameter '{parameter}' cannot be converted from {clientProtocol} to {upstreamProtocol} without changing request semantics");
         }
     }
 
-    private static IReadOnlyList<string> UnsupportedSemanticParameters(string sourceProtocol, string targetProtocol)
+    private static IReadOnlyList<string> UnsupportedSemanticParameters(string clientProtocol, string upstreamProtocol)
     {
-        if (sourceProtocol == Responses && targetProtocol is Chat or Messages)
+        if (clientProtocol == Responses && upstreamProtocol is Chat or Messages)
         {
             var parameters = new List<string>
             {
@@ -37,14 +37,14 @@ public static partial class ProtocolConverter
             return parameters;
         }
 
-        if (sourceProtocol == Messages && targetProtocol is Responses or Chat)
+        if (clientProtocol == Messages && upstreamProtocol is Responses or Chat)
         {
-            return targetProtocol == Chat
+            return upstreamProtocol == Chat
                 ? ["container"]
                 : ["container", "thinking"];
         }
 
-        if (sourceProtocol == Chat && targetProtocol == Messages)
+        if (clientProtocol == Chat && upstreamProtocol == Messages)
         {
             return ["parallel_tool_calls", "reasoning_effort"];
         }

@@ -295,7 +295,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                             context.CancellationToken);
                     }
 
-                    var conversion = ProtocolConverter.ConvertOwnedRequestWithMetadata(
+                    var conversion = ProtocolConverter.ConvertOwnedClientRequestToUpstreamWithMetadata(
                         effectivePayload,
                         context.EntryProtocol,
                         channelType,

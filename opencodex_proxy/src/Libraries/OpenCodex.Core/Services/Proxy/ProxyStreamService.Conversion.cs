@@ -41,7 +41,25 @@ public sealed partial class ProxyStreamService
             var confirmed = await UpstreamStreamPrimer.PrimeAsync(
                 upstreamLines, token);
             var validated = ValidateUpstreamCompletion(confirmed, capture, token);
-            var lines = ConvertRound(context, validated, converted, streamState, skipped, token);
+            var includeUsage = context.Payload.TryGetValue("stream_options", out var streamOptionsValue)
+                && streamOptionsValue is Dictionary<string, object?> streamOptions
+                && streamOptions.TryGetValue("include_usage", out var usageValue)
+                && usageValue is true;
+            var lines = SseStreamConverter.ConvertUpstreamStreamToClient(
+                new UpstreamStreamConversionContext
+                {
+                    UpstreamEvents = validated,
+                    Model = VisibleModel(context),
+                    Result = converted,
+                    SkipToolNames = skipped,
+                    IncludeUsage = includeUsage,
+                    SkipResponseCreated = streamState?.HasResponse == true,
+                    InitialSequenceNumber = streamState?.SequenceNumber ?? 0,
+                    InitialOutputIndex = streamState?.NextOutputIndex ?? 0
+                },
+                context.ChannelType,
+                context.EntryProtocol,
+                token);
             SseFrame? terminal = null;
             var retryRound=false;
             await using(var enumerator=lines.GetAsyncEnumerator(token))
@@ -91,8 +109,8 @@ public sealed partial class ProxyStreamService
             {
                 yield break;
             }
-            var response = ProtocolConverter.ConvertOwnedResponse(
-                converted.UpstreamResponse, context.EntryProtocol, context.ChannelType,
+            var response = ProtocolConverter.ConvertOwnedUpstreamResponseToClient(
+                converted.UpstreamResponse, context.ChannelType, context.EntryProtocol,
                 context.Route.OriginalModel, textFormat, mappings);
             state.ResponsePayload = response;
             if (tools is null && state.RejectedUsage.Count > 0)
@@ -194,38 +212,6 @@ public sealed partial class ProxyStreamService
         {
             throw new UpstreamException("upstream stream ended before its terminal event");
         }
-    }
-
-    private static IAsyncEnumerable<SseFrame> ConvertRound(
-        ProxyStreamContext context,
-        IAsyncEnumerable<SseEvent> lines,
-        ConvertedStreamResult converted,
-        WebSearchStreamEventState? state,
-        IReadOnlySet<string>? skipped,
-        CancellationToken cancellationToken)
-    {
-        var model = VisibleModel(context);
-        var includeUsage = context.Payload.TryGetValue("stream_options", out var options)
-            && options is Dictionary<string, object?> streamOptions
-            && streamOptions.TryGetValue("include_usage", out var usage) && usage is true;
-        return (context.EntryProtocol, context.ChannelType) switch
-        {
-            (ProtocolConverter.Responses, ProtocolConverter.Chat) => SseStreamConverter.ChatToResponsesFrames(
-                lines, model, converted, skipped, state?.HasResponse == true,
-                state?.SequenceNumber ?? 0, state?.NextOutputIndex ?? 0, cancellationToken),
-            (ProtocolConverter.Responses, ProtocolConverter.Messages) => SseStreamConverter.MessagesToResponsesFrames(
-                lines, model, converted, skipped, state?.HasResponse == true,
-                state?.SequenceNumber ?? 0, state?.NextOutputIndex ?? 0, cancellationToken),
-            (ProtocolConverter.Messages, ProtocolConverter.Chat) => SseStreamConverter.ChatToMessagesFrames(
-                lines, model, converted, null, false, cancellationToken),
-            (ProtocolConverter.Chat, ProtocolConverter.Messages) => SseStreamConverter.MessagesToChatFrames(
-                lines, model, converted, null, includeUsage, cancellationToken),
-            (ProtocolConverter.Chat, ProtocolConverter.Responses) => SseStreamConverter.ResponsesToChatFrames(
-                lines, model, converted, null, cancellationToken),
-            (ProtocolConverter.Messages, ProtocolConverter.Responses) => SseStreamConverter.ResponsesToMessagesFrames(
-                lines, model, converted, null, false, cancellationToken),
-            _ => throw new BadRequestException($"streaming conversion not implemented for {context.EntryProtocol} to {context.ChannelType}")
-        };
     }
 
     private sealed class ConvertedProxyStreamState

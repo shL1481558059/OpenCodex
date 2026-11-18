@@ -80,7 +80,7 @@ public sealed class ProxyOcrService : IProxyOcrService
                 upstreamRequest = engine == ProxyOcrEngines.Vision
                     && !string.IsNullOrWhiteSpace(channelType)
                     && !string.IsNullOrWhiteSpace(upstreamModel)
-                    ? ProtocolConverter.ConvertRequest(
+                    ? ProtocolConverter.ConvertClientRequestToUpstream(
                         requestPayload,
                         ProtocolConverter.Responses,
                         channelType,
@@ -105,7 +105,7 @@ public sealed class ProxyOcrService : IProxyOcrService
                 channelId = ChannelId(context.VisionRoute.Channel);
                 channelType = ChannelType(context.VisionRoute.Channel);
                 requestPayload = CreateOcrRequestPayload(context.Image, requestModel);
-                upstreamRequest = ProtocolConverter.ConvertRequest(
+                upstreamRequest = ProtocolConverter.ConvertClientRequestToUpstream(
                     requestPayload,
                     ProtocolConverter.Responses,
                     channelType,
@@ -233,10 +233,10 @@ public sealed class ProxyOcrService : IProxyOcrService
                 upstreamRequest,
                 context.DefaultTimeout,
                 context.CancellationToken);
-            var responsesPayload = ProtocolConverter.ConvertResponse(
+            var responsesPayload = ProtocolConverter.ConvertUpstreamResponseToClient(
                 upstreamResponse,
-                ProtocolConverter.Responses,
                 ChannelType(context.VisionRoute.Channel),
+                ProtocolConverter.Responses,
                 context.VisionRoute.OriginalModel);
             var responseText = ExtractResponseText(responsesPayload);
             var parsed = ParseVisionResult(responseText);

@@ -154,127 +154,234 @@ public static partial class ProtocolConverter
             ?? new Dictionary<string, object?>();
     }
 
-   public static bool SupportsStreamingConversion(string sourceProtocol, string targetProtocol)
-   {
-        if (sourceProtocol == targetProtocol)
+    public static bool SupportsStreamingConversion(string clientProtocol, string upstreamProtocol)
+    {
+        return SseStreamConverter.SupportsUpstreamStreamConversion(clientProtocol, upstreamProtocol);
+    }
+
+    /// <summary>
+    /// Converts a client request into the request sent to the upstream channel.
+    /// This entry point owns and deep-copies the caller's payload graph.
+    /// </summary>
+    public static Dictionary<string, object?> ConvertClientRequestToUpstream(
+        Dictionary<string, object?> payload,
+        string clientProtocol,
+        string upstreamProtocol,
+        string upstreamModel,
+        IReadOnlyDictionary<string, object?>? compat = null)
+    {
+        return ConvertClientRequestToUpstreamWithMetadata(
+            payload,
+            clientProtocol,
+            upstreamProtocol,
+            upstreamModel,
+            compat).Request;
+    }
+
+    /// <summary>
+    /// Converts a client request into the upstream request and returns the route-owned
+    /// tool-name mappings produced by that conversion.
+    /// This entry point owns and deep-copies the caller's payload graph.
+    /// </summary>
+    public static RequestConversionResult ConvertClientRequestToUpstreamWithMetadata(
+        Dictionary<string, object?> payload,
+        string clientProtocol,
+        string upstreamProtocol,
+        string upstreamModel,
+        IReadOnlyDictionary<string, object?>? compat = null)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        return ConvertRequestGraph(
+            AsObject(DeepCopy(payload)),
+            clientProtocol,
+            upstreamProtocol,
+            upstreamModel,
+            compat);
+    }
+
+    // Compatibility entry for tests and existing callers. Production code uses the
+    // direction-explicit method above.
+    internal static Dictionary<string, object?> ConvertRequest(
+        Dictionary<string, object?> payload,
+        string clientProtocol,
+        string upstreamProtocol,
+        string upstreamModel,
+        IReadOnlyDictionary<string, object?>? compat = null)
+    {
+        return ConvertClientRequestToUpstream(
+            payload,
+            clientProtocol,
+            upstreamProtocol,
+            upstreamModel,
+            compat);
+    }
+
+    // Compatibility entry for tests and existing callers. Production code uses the
+    // direction-explicit method above.
+    internal static RequestConversionResult ConvertRequestWithMetadata(
+        Dictionary<string, object?> payload,
+        string clientProtocol,
+        string upstreamProtocol,
+        string upstreamModel,
+        IReadOnlyDictionary<string, object?>? compat = null)
+    {
+        return ConvertClientRequestToUpstreamWithMetadata(
+            payload,
+            clientProtocol,
+            upstreamProtocol,
+            upstreamModel,
+            compat);
+    }
+
+    // For the endpoint's exclusively owned attempt graph only. A shallow root keeps the
+    // working payload's model intact; nested containers already belong to this attempt.
+    // Public conversion APIs continue to deep-copy caller-owned graphs.
+    internal static RequestConversionResult ConvertOwnedClientRequestToUpstreamWithMetadata(
+        Dictionary<string, object?> payload,
+        string clientProtocol,
+        string upstreamProtocol,
+        string upstreamModel,
+        IReadOnlyDictionary<string, object?>? compat = null)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        return ConvertRequestGraph(
+            new Dictionary<string, object?>(payload, StringComparer.Ordinal),
+            clientProtocol,
+            upstreamProtocol,
+            upstreamModel,
+            compat);
+    }
+
+    // Compatibility entry for tests. Production code uses the direction-explicit method above.
+    internal static RequestConversionResult ConvertOwnedRequestWithMetadata(
+        Dictionary<string, object?> payload,
+        string clientProtocol,
+        string upstreamProtocol,
+        string upstreamModel,
+        IReadOnlyDictionary<string, object?>? compat = null)
+    {
+        return ConvertOwnedClientRequestToUpstreamWithMetadata(
+            payload,
+            clientProtocol,
+            upstreamProtocol,
+            upstreamModel,
+            compat);
+    }
+
+    private static RequestConversionResult ConvertRequestGraph(
+        Dictionary<string, object?> converted,
+        string clientProtocol,
+        string upstreamProtocol,
+        string upstreamModel,
+        IReadOnlyDictionary<string, object?>? compat)
+    {
+        converted["model"] = upstreamModel;
+        if (clientProtocol == upstreamProtocol)
         {
-            return true;
+            if (clientProtocol != Responses)
+            {
+                SanitizeRequestToolSchemas(converted, upstreamProtocol);
+                SanitizeRequestToolChoiceConsistency(converted);
+            }
+            return new RequestConversionResult(converted, null);
         }
 
-        // 仅放行已实现流式转换器的跨协议方向；新增方向时在此登记。
-       return (sourceProtocol, targetProtocol) switch
-       {
-           (Responses, Chat) => true,
-           (Responses, Messages) => true,
-           (Messages, Chat) => true,
-           (Chat, Messages) => true,
-           (Chat, Responses) => true,
-           (Messages, Responses) => true,
-           _ => false
-       };
-   }
+        ValidateRequestSemanticCompatibility(converted, clientProtocol, upstreamProtocol);
+        var canonicalTools = clientProtocol == Responses && upstreamProtocol is Chat or Messages
+            ? ResponsesRequestToolsToCanonical(converted, compat)
+            : null;
+        var toolWireNamePlan = canonicalTools is null ? null : BuildResponsesToolWireNamePlan(canonicalTools);
+        var canonical = ToCanonicalRequest(converted, clientProtocol, compat, toolWireNamePlan, canonicalTools);
+        var result = FromCanonicalRequest(canonical, upstreamProtocol, toolWireNamePlan);
+        SanitizeRequestToolChoiceConsistency(result);
+        return new RequestConversionResult(result, toolWireNamePlan?.Mappings);
+    }
 
-       public static Dictionary<string, object?> ConvertRequest(
-           Dictionary<string, object?> payload,
-           string sourceProtocol,
-           string targetProtocol,
-            string upstreamModel,
-            IReadOnlyDictionary<string, object?>? compat = null)
-       {
-           return ConvertRequestWithMetadata(payload, sourceProtocol, targetProtocol, upstreamModel, compat).Request;
-       }
-
-       public static RequestConversionResult ConvertRequestWithMetadata(
-           Dictionary<string, object?> payload,
-           string sourceProtocol,
-           string targetProtocol,
-           string upstreamModel,
-           IReadOnlyDictionary<string, object?>? compat = null)
-       {
-           ArgumentNullException.ThrowIfNull(payload);
-           return ConvertRequestGraph(AsObject(DeepCopy(payload)), sourceProtocol, targetProtocol, upstreamModel, compat);
-       }
-
-       // For the endpoint's exclusively owned attempt graph only. A shallow root keeps the
-       // working payload's model intact; nested containers already belong to this attempt.
-       // Public conversion APIs continue to deep-copy caller-owned graphs.
-       internal static RequestConversionResult ConvertOwnedRequestWithMetadata(
-           Dictionary<string, object?> payload,
-           string sourceProtocol,
-           string targetProtocol,
-           string upstreamModel,
-           IReadOnlyDictionary<string, object?>? compat = null)
-       {
-           ArgumentNullException.ThrowIfNull(payload);
-           return ConvertRequestGraph(new Dictionary<string, object?>(payload, StringComparer.Ordinal),
-               sourceProtocol, targetProtocol, upstreamModel, compat);
-       }
-
-       private static RequestConversionResult ConvertRequestGraph(
-           Dictionary<string, object?> converted,
-           string sourceProtocol,
-           string targetProtocol,
-           string upstreamModel,
-           IReadOnlyDictionary<string, object?>? compat)
-       {
-           converted["model"] = upstreamModel;
-           if (sourceProtocol == targetProtocol)
-           {
-               if (sourceProtocol != Responses)
-               {
-                   SanitizeRequestToolSchemas(converted, targetProtocol);
-                   SanitizeRequestToolChoiceConsistency(converted);
-               }
-               return new RequestConversionResult(converted, null);
-           }
-
-            ValidateRequestSemanticCompatibility(converted, sourceProtocol, targetProtocol);
-            var canonicalTools = sourceProtocol == Responses && targetProtocol is Chat or Messages
-                ? ResponsesRequestToolsToCanonical(converted, compat)
-                : null;
-            var toolWireNamePlan = canonicalTools is null ? null : BuildResponsesToolWireNamePlan(canonicalTools);
-            var canonical = ToCanonicalRequest(converted, sourceProtocol, compat, toolWireNamePlan, canonicalTools);
-            var result = FromCanonicalRequest(canonical, targetProtocol, toolWireNamePlan);
-            SanitizeRequestToolChoiceConsistency(result);
-            return new RequestConversionResult(result, toolWireNamePlan?.Mappings);
-       }
-
-    public static Dictionary<string, object?> ConvertResponse(
+    /// <summary>
+    /// Converts an upstream response into the response returned to the client.
+    /// This entry point owns and deep-copies the caller's payload graph.
+    /// </summary>
+    public static Dictionary<string, object?> ConvertUpstreamResponseToClient(
         Dictionary<string, object?> payload,
-        string sourceProtocol,
-        string targetProtocol,
+        string upstreamProtocol,
+        string clientProtocol,
         string? originalModel,
         TextFormatInfo? textFormat = null,
         IReadOnlyDictionary<string, ResponsesToolCallMapping>? toolCallMappings = null)
     {
         ArgumentNullException.ThrowIfNull(payload);
-        return ConvertResponseCore(AsObject(DeepCopy(payload)), sourceProtocol, targetProtocol,
+        return ConvertUpstreamResponseCore(AsObject(DeepCopy(payload)), upstreamProtocol, clientProtocol,
             originalModel, textFormat, toolCallMappings);
     }
 
-    internal static Dictionary<string, object?> ConvertOwnedResponse(
+    // Compatibility entry for tests and existing callers. Production code uses the
+    // direction-explicit method above.
+    internal static Dictionary<string, object?> ConvertResponse(
         Dictionary<string, object?> payload,
-        string sourceProtocol,
-        string targetProtocol,
+        string clientProtocol,
+        string upstreamProtocol,
+        string? originalModel,
+        TextFormatInfo? textFormat = null,
+        IReadOnlyDictionary<string, ResponsesToolCallMapping>? toolCallMappings = null)
+    {
+        return ConvertUpstreamResponseToClient(
+            payload,
+            upstreamProtocol,
+            clientProtocol,
+            originalModel,
+            textFormat,
+            toolCallMappings);
+    }
+
+    /// <summary>
+    /// Converts an upstream response for the endpoint's exclusively owned attempt graph.
+    /// A shallow root preserves the attempt-owned graph; nested containers already belong to it.
+    /// </summary>
+    internal static Dictionary<string, object?> ConvertOwnedUpstreamResponseToClient(
+        Dictionary<string, object?> payload,
+        string upstreamProtocol,
+        string clientProtocol,
         string? originalModel,
         TextFormatInfo? textFormat = null,
         IReadOnlyDictionary<string, ResponsesToolCallMapping>? toolCallMappings = null)
     {
         ArgumentNullException.ThrowIfNull(payload);
-        return ConvertResponseCore(new Dictionary<string, object?>(payload, StringComparer.Ordinal),
-            sourceProtocol, targetProtocol, originalModel, textFormat, toolCallMappings);
+        return ConvertUpstreamResponseCore(
+            new Dictionary<string, object?>(payload, StringComparer.Ordinal),
+            upstreamProtocol,
+            clientProtocol,
+            originalModel,
+            textFormat,
+            toolCallMappings);
     }
 
-    private static Dictionary<string, object?> ConvertResponseCore(
+    // Compatibility entry for tests. Production code uses the direction-explicit method above.
+    internal static Dictionary<string, object?> ConvertOwnedResponse(
+        Dictionary<string, object?> payload,
+        string clientProtocol,
+        string upstreamProtocol,
+        string? originalModel,
+        TextFormatInfo? textFormat = null,
+        IReadOnlyDictionary<string, ResponsesToolCallMapping>? toolCallMappings = null)
+    {
+        return ConvertOwnedUpstreamResponseToClient(
+            payload,
+            upstreamProtocol,
+            clientProtocol,
+            originalModel,
+            textFormat,
+            toolCallMappings);
+    }
+
+    private static Dictionary<string, object?> ConvertUpstreamResponseCore(
         Dictionary<string, object?> converted,
-        string sourceProtocol,
-        string targetProtocol,
+        string upstreamProtocol,
+        string clientProtocol,
         string? originalModel,
         TextFormatInfo? textFormat,
         IReadOnlyDictionary<string, ResponsesToolCallMapping>? toolCallMappings)
     {
-
-        if (sourceProtocol == targetProtocol)
+        if (upstreamProtocol == clientProtocol)
         {
             if (!string.IsNullOrEmpty(originalModel))
             {
@@ -284,10 +391,10 @@ public static partial class ProtocolConverter
             return converted;
         }
 
-        var canonical = ToCanonicalResponse(converted, targetProtocol, originalModel, toolCallMappings);
-        var result = FromCanonicalResponse(canonical, sourceProtocol);
+        var canonical = ToCanonicalResponse(converted, upstreamProtocol, originalModel, toolCallMappings);
+        var result = FromCanonicalResponse(canonical, clientProtocol);
 
-        if (textFormat is { Type: "json_schema" } && sourceProtocol == Responses)
+        if (textFormat is { Type: "json_schema" } && clientProtocol == Responses)
         {
             result = ApplyJsonSchemaTextFormat(result, textFormat);
         }

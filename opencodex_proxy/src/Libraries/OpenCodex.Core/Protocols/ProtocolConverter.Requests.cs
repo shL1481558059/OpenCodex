@@ -6,31 +6,31 @@ public static partial class ProtocolConverter
 {
     private static Dictionary<string, object?> ToCanonicalRequest(
         Dictionary<string, object?> payload,
-        string protocol,
+        string clientProtocol,
         IReadOnlyDictionary<string, object?>? compat,
         ToolWireNamePlan? toolWireNamePlan,
         List<object?>? canonicalTools)
     {
-        return protocol switch
+        return clientProtocol switch
         {
             Responses => ResponsesRequestToCanonical(payload, compat, toolWireNamePlan, canonicalTools),
             Chat => ChatRequestToCanonical(payload, compat),
             Messages => MessagesRequestToCanonical(payload, compat),
-            _ => throw new BadRequestException($"unsupported source protocol: {protocol}")
+            _ => throw new BadRequestException($"unsupported client protocol: {clientProtocol}")
         };
     }
 
     private static Dictionary<string, object?> FromCanonicalRequest(
         Dictionary<string, object?> canonical,
-        string protocol,
+        string upstreamProtocol,
         ToolWireNamePlan? toolWireNamePlan)
     {
-        return protocol switch
+        return upstreamProtocol switch
         {
             Responses => CanonicalToResponsesRequest(canonical),
             Chat => CanonicalToChatRequest(canonical, toolWireNamePlan),
             Messages => CanonicalToMessagesRequest(canonical, toolWireNamePlan),
-            _ => throw new BadRequestException($"unsupported target protocol: {protocol}")
+            _ => throw new BadRequestException($"unsupported upstream protocol: {upstreamProtocol}")
         };
     }
 
@@ -602,7 +602,7 @@ public static partial class ProtocolConverter
         }
     }
 
-    private static Dictionary<string, object?> CopyCommonRequestParams(Dictionary<string, object?> payload, string protocol)
+    private static Dictionary<string, object?> CopyCommonRequestParams(Dictionary<string, object?> payload, string upstreamProtocol)
     {
         var ignored = new HashSet<string>(StringComparer.Ordinal)
         {
@@ -623,13 +623,13 @@ public static partial class ProtocolConverter
             }
         }
 
-        if (protocol == Responses && result.ContainsKey("max_output_tokens"))
+        if (upstreamProtocol == Responses && result.ContainsKey("max_output_tokens"))
         {
             result["max_tokens"] = result["max_output_tokens"];
             result.Remove("max_output_tokens");
         }
 
-        if (protocol == Chat
+        if (upstreamProtocol == Chat
             && result.ContainsKey("max_completion_tokens")
             && !result.ContainsKey("max_tokens"))
         {
@@ -640,14 +640,14 @@ public static partial class ProtocolConverter
         return result;
     }
 
-    private static void FilterRequestParameters(Dictionary<string, object?> payload, string protocol)
+    private static void FilterRequestParameters(Dictionary<string, object?> payload, string upstreamProtocol)
     {
-        var allowed = protocol switch
+        var allowed = upstreamProtocol switch
         {
             Responses => ResponsesRequestParameterNames,
             Chat => ChatRequestParameterNames,
             Messages => MessagesRequestParameterNames,
-            _ => throw new BadRequestException($"unsupported target protocol: {protocol}")
+            _ => throw new BadRequestException($"unsupported upstream protocol: {upstreamProtocol}")
         };
 
         foreach (var key in payload.Keys.Where(key => !allowed.Contains(key)).ToList())

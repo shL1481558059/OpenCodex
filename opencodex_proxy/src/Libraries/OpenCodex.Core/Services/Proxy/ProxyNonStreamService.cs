@@ -65,10 +65,10 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
                     tools?.Token(context.CancellationToken) ?? context.CancellationToken);
                 try
                 {
-                    responsePayload = ProtocolConverter.ConvertOwnedResponse(
+                    responsePayload = ProtocolConverter.ConvertOwnedUpstreamResponseToClient(
                         upstreamResponse,
-                        context.EntryProtocol,
                         context.ChannelType,
+                        context.EntryProtocol,
                         context.Route.OriginalModel,
                         textFormat,
                         toolCallMappings);

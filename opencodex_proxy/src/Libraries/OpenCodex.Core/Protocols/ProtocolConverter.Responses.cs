@@ -6,16 +6,16 @@ public static partial class ProtocolConverter
 {
     private static Dictionary<string, object?> ToCanonicalResponse(
         Dictionary<string, object?> payload,
-        string protocol,
+        string upstreamProtocol,
         string? originalModel,
         IReadOnlyDictionary<string, ResponsesToolCallMapping>? toolCallMappings)
     {
-        var canonical = protocol switch
+        var canonical = upstreamProtocol switch
         {
             Responses => ResponsesResponseToCanonical(payload, originalModel),
             Chat => ChatResponseToCanonical(payload, originalModel, toolCallMappings),
             Messages => MessagesResponseToCanonical(payload, originalModel, toolCallMappings),
-            _ => throw new BadRequestException($"unsupported upstream protocol: {protocol}")
+            _ => throw new BadRequestException($"unsupported upstream protocol: {upstreamProtocol}")
         };
         if (HasNonNullValue(payload, "error") || GetString(payload, "status") == "failed")
         {
@@ -26,34 +26,36 @@ public static partial class ProtocolConverter
         return canonical;
     }
 
-    private static Dictionary<string, object?> FromCanonicalResponse(Dictionary<string, object?> canonical, string protocol)
+    private static Dictionary<string, object?> FromCanonicalResponse(
+        Dictionary<string, object?> canonical,
+        string clientProtocol)
     {
         if (GetString(canonical, "status") == "failed")
         {
             var error = DeepCopy(GetValue(canonical, "error"));
-            if (protocol == Responses)
+            if (clientProtocol == Responses)
             {
                 var failed = CanonicalToResponsesResponse(canonical);
                 failed["status"] = "failed";
                 failed["error"] = error;
                 return failed;
             }
-            if (protocol == Chat)
+            if (clientProtocol == Chat)
             {
                 return Obj(("error", error));
             }
-            if (protocol == Messages)
+            if (clientProtocol == Messages)
             {
                 return Obj(("type", "error"), ("error", error));
             }
         }
 
-        return protocol switch
+        return clientProtocol switch
         {
             Responses => CanonicalToResponsesResponse(canonical),
             Chat => CanonicalToChatResponse(canonical),
             Messages => CanonicalToMessagesResponse(canonical),
-            _ => throw new BadRequestException($"unsupported response protocol: {protocol}")
+            _ => throw new BadRequestException($"unsupported client protocol: {clientProtocol}")
         };
     }
 

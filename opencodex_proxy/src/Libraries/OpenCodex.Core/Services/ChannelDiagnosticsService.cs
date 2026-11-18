@@ -334,7 +334,7 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
         channel = route.Channel;
 
         var channelCompat = JsonDictionaryValue.Object(channel, "compat", CloneObject);
-        var upstreamRequest = ProtocolConverter.ConvertRequest(
+        var upstreamRequest = ProtocolConverter.ConvertClientRequestToUpstream(
             payload,
             channelType,
             channelType,

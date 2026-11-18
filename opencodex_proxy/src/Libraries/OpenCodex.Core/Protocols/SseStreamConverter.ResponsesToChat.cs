@@ -64,23 +64,10 @@ public static partial class SseStreamConverter
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var completionId = $"chatcmpl_{Guid.NewGuid():N}";
-        var responseModel = model ?? string.Empty;
-        var upstreamResponseModel = string.Empty;
-        var createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var responseId = $"resp_{Guid.NewGuid():N}";
-        var finishStatus = "completed";
-        var usage = new Dictionary<string, object?>(StringComparer.Ordinal);
-
-        var textParts = result.CreateTextParts();
-        var refusalParts = result.CreateTextParts();
-        var reasoningParts = result.CreateTextParts();
-        var annotations = new List<object?>();
+        var streamState = new ResponsesStreamState(model, result);
         var firstRoleEmitted = false;
         var nextChatToolIndex = 0;
         var toolStates = new Dictionary<int, ChatToolStreamState>();
-        var outputByIndex = new SortedDictionary<int, Dictionary<string, object?>>();
-        var responseAccumulator = result.SharedCapture?.Accumulator as ResponsesStreamResponseAccumulator ?? new ResponsesStreamResponseAccumulator(
-            new StreamCaptureBudget(int.MaxValue, int.MaxValue));
 
         SseFrame EmitChunk(List<object?> choices)
         {
@@ -88,8 +75,8 @@ public static partial class SseStreamConverter
             {
                 ["id"] = completionId,
                 ["object"] = "chat.completion.chunk",
-                ["created"] = createdAt,
-                ["model"] = responseModel,
+                ["created"] = streamState.CreatedAt,
+                ["model"] = streamState.ResponseModel,
                 ["choices"] = choices
             };
             return SseFrame.FromJson(chunk);
@@ -122,33 +109,27 @@ public static partial class SseStreamConverter
         while (await enumerator.MoveNextAsync())
         {
             var sseEvent = enumerator.Current;
-            if(result.SharedCapture is null) responseAccumulator.Accept(sseEvent);
-            if (!TryAsObject(sseEvent.Data, out var payload))
+            streamState.Accept(sseEvent);
+            if (!ResponsesStreamEvent.TryCreate(sseEvent, out var streamEvent))
             {
                 continue;
             }
 
-            var eventType = StringValue(payload, "type", sseEvent.EventName);
-            if (eventType == "response.created" || eventType == "response.in_progress")
+            var payload = streamEvent.Payload;
+            if (streamEvent.Kind is ResponsesStreamEventKind.Created or ResponsesStreamEventKind.InProgress)
             {
-                if (TryAsObject(GetValue(payload, "response"), out var response))
+                if (streamEvent.TryGetResponse(out var response))
                 {
-                    responseId = StringValue(response, "id", responseId);
-                    upstreamResponseModel = StringValue(response, "model", upstreamResponseModel);
-                    responseModel = model ?? upstreamResponseModel;
-                    if (TryAsObject(GetValue(response, "usage"), out var responseUsage))
-                    {
-                        usage = responseUsage;
-                    }
+                    streamState.ApplyResponse(response);
                 }
                 foreach(var frame in EnsureRoleChunk())yield return frame;
                 continue;
             }
 
-            if (eventType == "response.output_item.added")
+            if (streamEvent.Kind == ResponsesStreamEventKind.OutputItemAdded)
             {
-                var outputIndex = ToInt(GetValue(payload, "output_index"));
-                if (!TryAsObject(GetValue(payload, "item"), out var item))
+                var outputIndex = streamEvent.OutputIndex;
+                if (!streamEvent.TryGetItem(out var item))
                 {
                     continue;
                 }
@@ -163,7 +144,7 @@ public static partial class SseStreamConverter
                 if (IsServerExecutedNativeToolCallType(itemType)
                     || IsServerExecutedToolSearchCall(item))
                 {
-                    outputByIndex[outputIndex] = new Dictionary<string, object?>(item, StringComparer.Ordinal);
+                    streamState.OutputByIndex[outputIndex] = new Dictionary<string, object?>(item, StringComparer.Ordinal);
                     continue;
                 }
 
@@ -231,9 +212,9 @@ public static partial class SseStreamConverter
                 continue;
             }
 
-            if (eventType == "response.output_text.delta")
+            if (streamEvent.Kind == ResponsesStreamEventKind.OutputTextDelta)
             {
-                var text = StringValue(payload, "delta", string.Empty);
+                var text = streamEvent.Delta;
                 if (text.Length == 0)
                 {
                     continue;
@@ -244,7 +225,7 @@ public static partial class SseStreamConverter
                     yield return line;
                 }
 
-                textParts.Add(text,result.SharedCapture?.BorrowText(payload,"delta"));
+                streamState.TextParts.Add(text,result.SharedCapture?.BorrowText(payload,"delta"));
                 yield return EmitChunk(new List<object?>
                 {
                     new Dictionary<string, object?>
@@ -257,14 +238,14 @@ public static partial class SseStreamConverter
                 continue;
             }
 
-            if (eventType == "response.refusal.delta" || eventType == "response.refusal.done")
+            if (streamEvent.Kind is ResponsesStreamEventKind.RefusalDelta or ResponsesStreamEventKind.RefusalDone)
             {
-                var completeRefusal = eventType == "response.refusal.done"
-                    ? StringValue(payload, "refusal", string.Empty)
+                var completeRefusal = streamEvent.Kind == ResponsesStreamEventKind.RefusalDone
+                    ? streamEvent.Refusal
                     : string.Empty;
-                var refusal = eventType == "response.refusal.delta"
-                    ? StringValue(payload, "delta", string.Empty)
-                    : MissingSuffix(string.Concat(refusalParts), completeRefusal);
+                var refusal = streamEvent.Kind == ResponsesStreamEventKind.RefusalDelta
+                    ? streamEvent.Delta
+                    : MissingSuffix(string.Concat(streamState.RefusalParts), completeRefusal);
                 if (refusal.Length == 0)
                 {
                     continue;
@@ -275,7 +256,7 @@ public static partial class SseStreamConverter
                     yield return line;
                 }
 
-                refusalParts.Add(refusal,result.SharedCapture?.BorrowText(payload,"delta"));
+                streamState.RefusalParts.Add(refusal,result.SharedCapture?.BorrowText(payload,"delta"));
                 yield return EmitChunk(new List<object?>
                 {
                     new Dictionary<string, object?>
@@ -288,9 +269,9 @@ public static partial class SseStreamConverter
                 continue;
             }
 
-            if (eventType == "response.output_text.annotation.added")
+            if (streamEvent.Kind == ResponsesStreamEventKind.AnnotationAdded)
             {
-                if (GetValue(payload, "annotation") is not { } annotation)
+                if (streamEvent.Annotation is not { } annotation)
                 {
                     continue;
                 }
@@ -300,7 +281,7 @@ public static partial class SseStreamConverter
                     yield return line;
                 }
 
-                annotations.Add(annotation);
+                streamState.Annotations.Add(annotation);
                 yield return EmitChunk(new List<object?>
                 {
                     new Dictionary<string, object?>
@@ -316,9 +297,9 @@ public static partial class SseStreamConverter
                 continue;
             }
 
-            if (eventType == "response.reasoning_summary_text.delta")
+            if (streamEvent.Kind == ResponsesStreamEventKind.ReasoningDelta)
             {
-                var text = StringValue(payload, "delta", string.Empty);
+                var text = streamEvent.Delta;
                 if (text.Length == 0)
                 {
                     continue;
@@ -329,7 +310,7 @@ public static partial class SseStreamConverter
                     yield return line;
                 }
 
-                reasoningParts.Add(text,result.SharedCapture?.BorrowText(payload,"delta"));
+                streamState.ReasoningParts.Add(text,result.SharedCapture?.BorrowText(payload,"delta"));
                 yield return EmitChunk(new List<object?>
                 {
                     new Dictionary<string, object?>
@@ -342,18 +323,16 @@ public static partial class SseStreamConverter
                 continue;
             }
 
-            if (eventType == "response.function_call_arguments.delta"
-                || eventType.EndsWith("_call.arguments.delta", StringComparison.Ordinal)
-                || eventType.EndsWith("_call_arguments.delta", StringComparison.Ordinal))
+            if (streamEvent.Kind == ResponsesStreamEventKind.ToolArgumentsDelta)
             {
-                var outputIndex = ToInt(GetValue(payload, "output_index"));
+                var outputIndex = streamEvent.OutputIndex;
                 if (!toolStates.TryGetValue(outputIndex, out var state)
                     || state.CallKind == ResponsesToolCallKind.CustomTool)
                 {
                     continue;
                 }
 
-                var deltaText = StringValue(payload, "delta", string.Empty);
+                var deltaText = streamEvent.Delta;
                 if (deltaText.Length == 0)
                 {
                     continue;
@@ -390,10 +369,10 @@ public static partial class SseStreamConverter
                 continue;
             }
 
-            if (eventType == "response.custom_tool_call_input.delta")
+            if (streamEvent.Kind == ResponsesStreamEventKind.CustomToolInputDelta)
             {
                 // custom tool 的 input 不实时流（见文件头注释），仅累积
-                var outputIndex = ToInt(GetValue(payload, "output_index"));
+                var outputIndex = streamEvent.OutputIndex;
                 if (!toolStates.TryGetValue(outputIndex, out var state)
                     || state.CallKind != ResponsesToolCallKind.CustomTool)
                 {
@@ -404,10 +383,10 @@ public static partial class SseStreamConverter
                 continue;
             }
 
-            if (eventType == "response.output_item.done")
+            if (streamEvent.Kind == ResponsesStreamEventKind.OutputItemDone)
             {
-                var outputIndex = ToInt(GetValue(payload, "output_index"));
-                if (!TryAsObject(GetValue(payload, "item"), out var item))
+                var outputIndex = streamEvent.OutputIndex;
+                if (!streamEvent.TryGetItem(out var item))
                 {
                     continue;
                 }
@@ -423,7 +402,7 @@ public static partial class SseStreamConverter
                         $"Responses stream item '{completedItemType}' completed without a compatible Chat tool-call start event.");
                 }
 
-                outputByIndex[outputIndex] = new Dictionary<string, object?>(item, StringComparer.Ordinal);
+                streamState.OutputByIndex[outputIndex] = new Dictionary<string, object?>(item, StringComparer.Ordinal);
 
                 // custom_tool_call：done 时把完整 input 序列化为 JSON 作为 arguments 一次性发出
                 if (toolStates.TryGetValue(outputIndex, out var state)
@@ -433,7 +412,7 @@ public static partial class SseStreamConverter
                     var normalizedInput = ProtocolConverter.IsApplyPatchPublic(state.Name) && input is string patch
                         ? new Dictionary<string, object?> { ["patch"] = patch }
                         : input;
-                    var argumentsJson = JsonSerializer.Serialize(NormalizeJsonValueForChat(normalizedInput), JsonOptions);
+                    var argumentsJson = JsonSerializer.Serialize(NormalizeResponsesStreamJsonValue(normalizedInput), JsonOptions);
                     foreach (var line in EnsureRoleChunk())
                     {
                         yield return line;
@@ -498,65 +477,25 @@ public static partial class SseStreamConverter
                 continue;
             }
 
-            if (eventType == "response.completed" || eventType == "response.incomplete")
+            if (streamEvent.Kind is ResponsesStreamEventKind.Completed or ResponsesStreamEventKind.Incomplete)
             {
-                if (TryAsObject(GetValue(payload, "response"), out var response))
-                {
-                    responseId = StringValue(response, "id", responseId);
-                    upstreamResponseModel = StringValue(response, "model", upstreamResponseModel);
-                    responseModel = model ?? upstreamResponseModel;
-                    finishStatus = StringValue(
-                        response,
-                        "status",
-                        eventType == "response.incomplete" ? "incomplete" : finishStatus);
-                    if (TryAsObject(GetValue(response, "usage"), out var responseUsage))
-                    {
-                        usage = responseUsage;
-                    }
-
-                    if (TryAsList(GetValue(response, "output"), out var responseOutput))
-                    {
-                        outputByIndex.Clear();
-                        for (var i = 0; i < responseOutput.Count; i++)
-                        {
-                            if (TryAsObject(responseOutput[i], out var doneItem))
-                            {
-                                var doneItemType = StringValue(doneItem, "type", string.Empty);
-                                if ((IsNativeMcpItemType(doneItemType)
-                                        || (IsResponsesNativeToolCallType(doneItemType)
-                                            && !IsServerExecutedNativeToolCallType(doneItemType)
-                                            && !IsServerExecutedToolSearchCall(doneItem)))
-                                    && !toolStates.ContainsKey(i))
-                                {
-                                    throw new InvalidOperationException(
-                                        $"Responses terminal output item '{doneItemType}' has no compatible Chat stream representation.");
-                                }
-
-                                outputByIndex[i] = new Dictionary<string, object?>(doneItem, StringComparer.Ordinal);
-                            }
-                        }
-                    }
-                }
+                streamState.ApplyTerminalResponse(
+                    payload,
+                    streamEvent.Type,
+                    toolStates.ContainsKey,
+                    "Chat stream");
                 break;
             }
 
-            if (eventType == "response.failed")
+            if (streamEvent.Kind == ResponsesStreamEventKind.Failed)
             {
-                var capturedFailure = responseAccumulator.BuildResponse()
+                var capturedFailure = streamState.Accumulator.BuildResponse()
                     ?? new Dictionary<string, object?>(StringComparer.Ordinal);
-                responseId = StringValue(capturedFailure, "id", responseId);
-                upstreamResponseModel = StringValue(capturedFailure, "model", upstreamResponseModel);
-                responseModel = model ?? upstreamResponseModel;
-                var failedResponse = BuildCapturedResponsesUpstreamResponse(
-                    responseAccumulator,
+                streamState.ApplyCapturedResponse(capturedFailure);
+                var failedResponse = streamState.BuildCapturedResponse(
                     "response.failed",
-                    responseId,
-                    createdAt,
                     "failed",
-                    upstreamResponseModel.Length > 0 ? upstreamResponseModel : responseModel,
-                    outputByIndex.Values,
-                    usage,
-                    preserveCapturedOutputAndUsage: true)!;
+                    preserveCapturedOutputAndUsage: true);
                 result.UpstreamResponse = failedResponse;
 
                 var error = GetValue(failedResponse, "error") ?? new Dictionary<string, object?>
@@ -569,60 +508,17 @@ public static partial class SseStreamConverter
             }
         }
 
-        var combinedText = textParts.ToString();
-        var combinedReasoning = reasoningParts.ToString();
-
-        // 确保 output 里有 message / reasoning 项，供 ProxyStreamService 的 ConvertResponse 提取
-        if ((combinedText.Length > 0 || refusalParts.Count > 0)
-            && !outputByIndex.Values.Any(o => StringValue(o, "type", string.Empty) == "message"))
-        {
-            var msgIndex = outputByIndex.Count > 0 ? outputByIndex.Keys.Max() + 1 : 0;
-            outputByIndex[msgIndex] = new Dictionary<string, object?>
-            {
-                ["id"] = $"msg_{Guid.NewGuid():N}",
-                ["type"] = "message",
-                ["status"] = "completed",
-                ["role"] = "assistant",
-                ["content"] = BuildResponsesMessageContent(combinedText, refusalParts, annotations)
-            };
-        }
-
-        if (combinedReasoning.Length > 0 && !outputByIndex.Values.Any(o => StringValue(o, "type", string.Empty) == "reasoning"))
-        {
-            var rsIndex = outputByIndex.Count > 0 ? outputByIndex.Keys.Max() + 1 : 0;
-            outputByIndex[rsIndex] = new Dictionary<string, object?>
-            {
-                ["id"] = $"rs_{Guid.NewGuid():N}",
-                ["type"] = "reasoning",
-                ["status"] = "completed",
-                ["summary"] = new List<object?>
-                {
-                    new Dictionary<string, object?>
-                    {
-                        ["type"] = "summary_text",
-                        ["text"] = combinedReasoning
-                    }
-                },
-                ["encrypted_content"] = combinedReasoning
-            };
-        }
-
-        result.UpstreamResponse = BuildCapturedResponsesUpstreamResponse(
-            responseAccumulator,
-            finishStatus == "incomplete" ? "response.incomplete" : "response.completed",
-            responseId,
-            createdAt,
-            finishStatus,
-            upstreamResponseModel.Length > 0 ? upstreamResponseModel : responseModel,
-            outputByIndex.Values,
-            usage);
+        streamState.AddFallbackOutputItems();
+        result.UpstreamResponse = streamState.BuildCapturedResponse(
+            streamState.FinishStatus == "incomplete" ? "response.incomplete" : "response.completed",
+            streamState.FinishStatus);
 
         foreach (var line in EnsureRoleChunk())
         {
             yield return line;
         }
 
-        var finishReason = finishStatus == "incomplete"
+        var finishReason = streamState.FinishStatus == "incomplete"
             ? "length"
             : toolStates.Count > 0 ? "tool_calls" : "stop";
         yield return EmitChunk(new List<object?>
@@ -635,16 +531,16 @@ public static partial class SseStreamConverter
             }
         });
 
-        var promptTokens = ToInt(GetValue(usage, "input_tokens"));
-        var completionTokens = ToInt(GetValue(usage, "output_tokens"));
+        var promptTokens = ToInt(GetValue(streamState.Usage, "input_tokens"));
+        var completionTokens = ToInt(GetValue(streamState.Usage, "output_tokens"));
         if (promptTokens > 0 || completionTokens > 0)
         {
             var usageChunk = new Dictionary<string, object?>
             {
                 ["id"] = completionId,
                 ["object"] = "chat.completion.chunk",
-                ["created"] = createdAt,
-                ["model"] = responseModel,
+                ["created"] = streamState.CreatedAt,
+                ["model"] = streamState.ResponseModel,
                 ["choices"] = new List<object?>(),
                 ["usage"] = new Dictionary<string, object?>
                 {
@@ -659,185 +555,6 @@ public static partial class SseStreamConverter
         yield return SseFrame.Done;
     }
 
-    private static Dictionary<string, object?> BuildCapturedResponsesUpstreamResponse(
-        ResponsesStreamResponseAccumulator responseAccumulator,
-        string eventType,
-        string responseId,
-        long createdAt,
-        string status,
-        string responseModel,
-        IEnumerable<Dictionary<string, object?>> outputItems,
-        Dictionary<string, object?> usage,
-        bool preserveCapturedOutputAndUsage = false)
-    {
-        var response = responseAccumulator.BuildResponse()
-            ?? new Dictionary<string, object?>(StringComparer.Ordinal);
-        response["id"] = responseId;
-        response["object"] = "response";
-        response["status"] = status;
-        response["model"] = responseModel;
-        if (preserveCapturedOutputAndUsage)
-        {
-            response.TryAdd("output", outputItems.Cast<object?>().ToList());
-            response.TryAdd("usage", usage);
-        }
-        else
-        {
-            response["created_at"] = createdAt;
-            response["output"] = outputItems.Cast<object?>().ToList();
-            response["usage"] = usage;
-        }
-
-        responseAccumulator.Accept(new SseEvent(eventType, new Dictionary<string, object?>
-        {
-            ["type"] = eventType,
-            ["response"] = response
-        }));
-        return responseAccumulator.BuildResponse()!;
-    }
-
-    private static object? NormalizeJsonValueForChat(object? value)
-    {
-        if (value is Dictionary<string, object?> dict)
-        {
-            var result = new Dictionary<string, object?>(StringComparer.Ordinal);
-            foreach (var (key, val) in dict)
-            {
-                result[key] = NormalizeJsonValueForChat(val);
-            }
-            return result;
-        }
-
-        if (value is List<object?> list)
-        {
-            return list.Select(NormalizeJsonValueForChat).ToList();
-        }
-
-        return value;
-    }
-
-    private static string MissingSuffix(string emitted, string complete)
-        => complete.StartsWith(emitted, StringComparison.Ordinal) ? complete[emitted.Length..] : complete;
-
-    private static List<object?> BuildResponsesMessageContent(
-        string text,
-        IReadOnlyCollection<string> refusalParts,
-        IReadOnlyCollection<object?> annotations)
-    {
-        var content = new List<object?>();
-        if (text.Length > 0)
-        {
-            content.Add(new Dictionary<string, object?>
-            {
-                ["type"] = "output_text",
-                ["text"] = text,
-                ["annotations"] = annotations.ToList()
-            });
-        }
-
-        if (refusalParts.Count > 0)
-        {
-            content.Add(new Dictionary<string, object?>
-            {
-                ["type"] = "refusal",
-                ["refusal"] = string.Concat(refusalParts)
-            });
-        }
-
-        return content;
-    }
-
-    private static bool IsNativeMcpItemType(string itemType)
-        => itemType is "mcp_call" or "mcp_list_tools" or "mcp_approval_request" or "mcp_approval_response";
-
-    private static bool IsResponsesNativeToolCallType(string itemType)
-        => itemType.EndsWith("_call", StringComparison.Ordinal)
-            || itemType is "mcp_list_tools" or "mcp_approval_request" or "mcp_approval_response";
-
-    private static bool IsServerExecutedNativeToolCallType(string itemType)
-        => itemType is "web_search_call" or "file_search_call" or "code_interpreter_call" or "image_generation_call";
-
-    private static bool IsServerExecutedToolSearchCall(Dictionary<string, object?> item)
-        => string.Equals(StringValue(item, "type", string.Empty), "tool_search_call", StringComparison.Ordinal)
-            && string.Equals(StringValue(item, "execution", string.Empty), "server", StringComparison.Ordinal);
-
-    private static bool TryGetClientToolCallInfo(
-        Dictionary<string, object?> item,
-        out string name,
-        out ResponsesToolCallKind callKind,
-        out string argumentField)
-    {
-        var itemType = StringValue(item, "type", string.Empty);
-        name = StringValue(item, "name", string.Empty);
-        argumentField = "arguments";
-        callKind = ProtocolConverter.GetResponsesToolCallKind(name);
-        if (itemType == "function_call")
-        {
-            return name.Length > 0;
-        }
-
-        if (itemType == "custom_tool_call")
-        {
-            callKind = ResponsesToolCallKind.CustomTool;
-            argumentField = "input";
-            return name.Length > 0;
-        }
-
-        var defaultName = itemType switch
-        {
-            "tool_search_call" => "tool_search",
-            "apply_patch_call" => "apply_patch",
-            "local_shell_call" => "local_shell",
-            "shell_call" => "shell",
-            "computer_call" or "computer_use_call" => "computer_use",
-            _ => string.Empty
-        };
-        if (defaultName.Length == 0)
-        {
-            return false;
-        }
-
-        name = name.Length > 0 ? name : defaultName;
-        argumentField = itemType == "tool_search_call" ? "arguments" : "input";
-        callKind = itemType == "apply_patch_call"
-            ? ResponsesToolCallKind.CustomTool
-            : ResponsesToolCallKind.NativeTool;
-        return itemType != "tool_search_call"
-            || !item.TryGetValue("execution", out var execution)
-            || string.Equals(execution?.ToString(), "client", StringComparison.Ordinal);
-    }
-
-    private static bool TryGetToolArguments(Dictionary<string, object?> item, out string argumentsJson)
-    {
-        argumentsJson = string.Empty;
-        foreach (var key in new[] { "arguments", "input", "action" })
-        {
-            if (!item.TryGetValue(key, out var value) || value is null)
-            {
-                continue;
-            }
-
-            argumentsJson = value is string text && LooksLikeJson(text)
-                ? text
-                : JsonSerializer.Serialize(NormalizeJsonValueForChat(value), JsonOptions);
-            return true;
-        }
-
-        return false;
-    }
-
-    private static bool LooksLikeJson(string value)
-    {
-        try
-        {
-            using var _ = JsonDocument.Parse(value);
-            return true;
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
 }
 
 internal sealed class ChatToolStreamState

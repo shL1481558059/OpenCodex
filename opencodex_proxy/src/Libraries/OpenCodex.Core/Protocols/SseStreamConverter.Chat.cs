@@ -868,33 +868,4 @@ public static partial class SseStreamConverter
             "response.completed");
     }
 
-    private static Dictionary<string, object?> BuildEmptyChatCompletion(
-        string? model,
-        long createdAt,
-        string finishReason,
-        Dictionary<string, object?> usage)
-    {
-        return new Dictionary<string, object?>
-        {
-            ["id"] = $"chatcmpl_{Guid.NewGuid():N}",
-            ["object"] = "chat.completion",
-            ["created"] = createdAt,
-            ["model"] = model,
-            ["choices"] = new List<object?>
-            {
-                new Dictionary<string, object?>
-                {
-                    ["index"] = 0,
-                    ["message"] = new Dictionary<string, object?>
-                    {
-                        ["role"] = "assistant",
-                        ["content"] = string.Empty,
-                        ["tool_calls"] = new List<object?>()
-                    },
-                    ["finish_reason"] = finishReason
-                }
-            },
-            ["usage"] = usage
-        };
-    }
 }
