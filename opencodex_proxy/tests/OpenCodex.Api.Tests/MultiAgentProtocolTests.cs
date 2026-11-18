@@ -21,6 +21,30 @@ public sealed class MultiAgentProtocolTests
         Assert.True(request.ContainsKey("input"));
     }
 
+    [Fact]
+    public void NormalizeAndInitialHistoryShareReadOnlyItemsInsteadOfCopyingTheWholeHistory()
+    {
+        var sourceItem = new Dictionary<string, object?>
+        {
+            ["type"] = "function_call_output",
+            ["call_id"] = "call-1",
+            ["output"] = new string('x', 1024 * 1024)
+        };
+        var request = new Dictionary<string, object?>
+        {
+            ["model"] = "m",
+            ["input"] = new List<object?> { sourceItem }
+        };
+
+        var template = MultiAgentProtocol.NormalizeRequest(request);
+        var history = MultiAgentProtocol.InitialHistory(request);
+
+        Assert.NotSame(request, template);
+        Assert.False(template.ContainsKey("input"));
+        Assert.Same(sourceItem, history.Single());
+        Assert.True(request.ContainsKey("input"));
+    }
+
     [Theory]
     [InlineData("ocxp_ma_spawn_agent")]
     [InlineData("ocxp_ma_unknown")]

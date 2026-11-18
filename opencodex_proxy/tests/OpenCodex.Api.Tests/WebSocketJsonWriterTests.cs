@@ -26,6 +26,28 @@ public sealed class WebSocketJsonWriterTests
         await first.Task.WaitAsync(TimeSpan.FromSeconds(5));Assert.Equal(1,socket.Frames);Assert.False(operation.IsCompleted);stop.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(()=>operation);Assert.Equal(0,socket.Ends);
     }
+    [Fact]
+    public async Task RootFieldOverrideAndFilteringStreamWithoutCopyingThePayload()
+    {
+        var history=new List<object?>{new Dictionary<string,object?>{["role"]="user",["content"]=new string('中',200000)}};
+        var payload=new Dictionary<string,object?>{["model"]="test",["type"]="response",["stream"]=true,["stream_options"]=new Dictionary<string,object?>(),["background"]=true,["input"]=history};
+        var expected=new Dictionary<string,object?>{["type"]="response.create",["model"]="test",["input"]=history};
+        using var socket=new Capture();
+
+        await WebSocketJsonWriter.SendAsync(
+            socket,
+            payload,
+            4*1024*1024,
+            default,
+            "response.create",
+            new HashSet<string>(["stream","stream_options","background"],StringComparer.Ordinal));
+
+        using var expectedDocument=JsonDocument.Parse(JsonSerializer.SerializeToUtf8Bytes(expected));
+        using var actualDocument=JsonDocument.Parse(socket.Body.ToArray());
+        Assert.Equal(expectedDocument.RootElement.GetRawText(),actualDocument.RootElement.GetRawText());
+        Assert.Equal(1,socket.Ends);
+        Assert.Same(history,payload["input"]);
+    }
     private sealed class Capture:WebSocket
     {
         internal readonly MemoryStream Body=new();internal int Frames,Ends,Largest;internal Func<CancellationToken,Task>? Block;

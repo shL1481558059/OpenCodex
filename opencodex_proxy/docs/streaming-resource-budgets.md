@@ -136,15 +136,16 @@ value is forwarded upstream but does not disable local persistence. Defaults:
 | MaxSessions / MaxTenantSessions / MaxGroupSessions | 4096 / 512 / 256 |
 | MaxWaitersPerSession / MaxIdentityCharacters | 128 / 512 |
 
-`MultiAgent:NativeClientState` configures the Redis cache for group, session, response and
-replay records. Defaults:
+`MultiAgent:NativeClientState` configures the Redis coordination cache for group and
+session identity only. Request, response and replay bodies are never serialized into
+Redis. Defaults:
 
 | Setting | Default |
 |---|---:|
 | RedisTtlHours | 24 |
 | RedisMaxValueBytes | 8 MiB |
 
-Redis uses sliding expiration for trusted entries. Group cache is only trusted when its generation matches the on-disk group manifest; unversioned, incomplete, or mismatched snapshots are discarded and not refreshed. Expired or unavailable cache entries fall back to JSON files. Redis never decides whether a thread still exists.
+Redis uses sliding expiration for trusted entries. Group cache is only trusted when its generation matches the on-disk group manifest; unversioned, incomplete, or mismatched snapshots are discarded and not refreshed. Expired or unavailable cache entries fall back to JSON files. Redis never decides whether a thread or response exists.
 
 Request references include registered thread-gate waiters and child-model-permit waiters.
 Cancellation and lease disposal release the reference. Only whole parent/child groups
@@ -153,11 +154,14 @@ creating a second lock. Final release refreshes idle time before the count reach
 Groups restore lazily from Redis or JSON, with all group agent names checked before
 admitting a new binding. Memory TTL retires process-local objects only; the corresponding
 `session.json`, response index and turn record remain on disk. A subsequent request restores
-the same identity and continuation. Writes use a flushed temporary file followed by an
-atomic rename before executable tool completion or terminal success is published.
+the same identity and continuation. Version-2 response records contain a small manifest with
+separate payload and response files; legacy version-1 records remain readable. Writes use a
+flushed temporary file followed by an atomic rename before executable tool completion or
+terminal success is published.
 
 Exact SHA256 turn keys make retries return the committed response without calling the model
-or executing tools again. The durable turn record and response index also recover a commit
+or executing tools again. Canonical hashing streams directly into SHA256 and does not
+materialize a second request string. The durable turn manifest and response index also recover a commit
 that completed immediately before process termination. A missing or invalid file remains a
 fail-closed condition; the server never guesses that an old executable turn is safe to rerun.
 No automatic disk retention is applied in this version, so operators must monitor the
@@ -212,6 +216,10 @@ cannot end a partial message with fake success. Small plain JSON graphs keep the
 single-message fast path. Huge property names/opaque extension DTOs may still expand the
 encoder buffer up to the event limit: this is not a universal 16 KiB serializer-heap bound.
 The complete response/audit public object graph still needs its final UTF16 strings.
+
+Upstream JSON request bodies use a streaming `HttpContent` with segmented string encoding.
+The body is serialized directly into the transport stream and its length is computed without
+retaining a complete `byte[]` request copy.
 
 ## Legacy runtime and binding registries
 

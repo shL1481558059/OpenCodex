@@ -15,17 +15,20 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
     private readonly IProxyLogService _logs;
     private readonly IWebSearchToolExecutor _webSearch;
     private readonly WebSearchContinuationStore _webSearchHistory;
+    private readonly ProxyAuditSpool _auditSpool;
 
     public ProxyNonStreamService(
         IUpstreamClient upstream,
         IProxyLogService logs,
         IWebSearchToolExecutor webSearch,
-        WebSearchContinuationStore webSearchHistory)
+        WebSearchContinuationStore webSearchHistory,
+        ProxyAuditSpool? auditSpool = null)
     {
         _upstream = upstream;
         _logs = logs;
         _webSearch = webSearch;
         _webSearchHistory = webSearchHistory;
+        _auditSpool = auditSpool ?? ProxyAuditSpool.Default;
     }
 
     public async Task<ProxyNonStreamResult> SendAsync(ProxyNonStreamContext context)
@@ -62,7 +65,7 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
                     tools?.Token(context.CancellationToken) ?? context.CancellationToken);
                 try
                 {
-                    responsePayload = ProtocolConverter.ConvertResponse(
+                    responsePayload = ProtocolConverter.ConvertOwnedResponse(
                         upstreamResponse,
                         context.EntryProtocol,
                         context.ChannelType,
@@ -106,7 +109,7 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
                         context.ChannelType,
                         toolCallMappings?.Keys ?? Array.Empty<string>(),
                         tools?.Binding.WebSearchToolName);
-                    upstreamRequestBody = ProxyLogBodyHandle.CaptureJson(upstreamRequest);
+                    upstreamRequestBody = _auditSpool.CaptureJson(upstreamRequest);
                     continue;
                 }
                 if (tools is null)
@@ -123,7 +126,7 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
                     break;
                 }
                 upstreamRequest = next;
-                upstreamRequestBody = ProxyLogBodyHandle.CaptureJson(upstreamRequest);
+                upstreamRequestBody = _auditSpool.CaptureJson(upstreamRequest);
             }
 
             return new ProxyNonStreamResult(statusCode, responsePayload);

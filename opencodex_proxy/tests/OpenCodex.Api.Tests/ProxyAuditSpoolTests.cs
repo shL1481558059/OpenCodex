@@ -23,6 +23,17 @@ public sealed class ProxyAuditSpoolTests : IDisposable
         using var source=body.ReadSnapshot().Spool!.OpenRead();using var bytes=new MemoryStream();source.CopyTo(bytes);
         Assert.Equal(old.ReadSnapshot().Utf8!.Value.ToArray(),bytes.ToArray());
     }
+
+    [Fact]
+    public void CaptureUtf8PreservesExactWireBytes()
+    {
+        var spool=new ProxyAuditSpool(Options());
+        var expected=Encoding.UTF8.GetBytes("""{"text":"中文😀","ok":true}""");
+        using var body=spool.CaptureUtf8(expected);
+        using var source=body.ReadSnapshot().Spool!.OpenRead();
+        using var actual=new MemoryStream();source.CopyTo(actual);
+        Assert.Equal(expected,actual.ToArray());
+    }
     [Fact]
     public void SmallSnapshotsStayInMemoryAndSpillOnlyAfterConfiguredThreshold()
     {

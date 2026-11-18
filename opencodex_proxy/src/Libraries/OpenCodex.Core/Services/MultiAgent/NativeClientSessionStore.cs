@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using OpenCodex.Core.Errors;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Domain.Proxy;
 using D = System.Collections.Generic.Dictionary<string, object?>;
 
 namespace OpenCodex.Core.Services.MultiAgent;
@@ -201,7 +202,7 @@ public sealed partial class NativeClientSessionStore
     public async Task<NativeClientRequest> ProjectRequestAsync(NativeClientSession session, D request,
         string turnId, CancellationToken ct)
     {
-        var replayKey = turnId.Length == 0 ? "" : Hash(turnId + "\n" + Canonical(request));
+        var replayKey = turnId.Length == 0 ? "" : Hash(turnId + "\n" + JsonHash(request));
         await _indexGate.WaitAsync(ct);
         try
         {
@@ -213,9 +214,9 @@ public sealed partial class NativeClientSessionStore
                 return new()
                 {
                     Session = session,
-                    Payload = WebSearchPayload.DeepCopyObject(replay.Payload),
                     ReplayKey = replayKey,
-                    ReplayResponse = WebSearchPayload.DeepCopyObject(replay.Response)
+                    ReplayResponse = replay.Response,
+                    PayloadLoader = () => ReadReplayPayload(RecordPath(session, "turn-" + replayKey))
                 };
 
             var previousId = JsonDictionaryValue.String(request, "previous_response_id");
@@ -226,18 +227,21 @@ public sealed partial class NativeClientSessionStore
                 var previous = await ReadResponse(session, previousId, ct)
                     ?? throw new BadRequestException("The previous response is unavailable for this API key and client thread. Resend the full client history without previous_response_id.");
                 foreach (var pair in previous.Payload.Where(p => p.Key is not ("input" or "instructions" or "previous_response_id")))
-                    payload[pair.Key] = WebSearchPayload.DeepCopy(pair.Value);
-                input.AddRange(JsonDictionaryValue.List(previous.Payload, "input").Select(WebSearchPayload.DeepCopy));
+                    payload[pair.Key] = pair.Value;
+                input.AddRange(JsonDictionaryValue.List(previous.Payload, "input"));
                 var previousOutput = JsonDictionaryValue.List(previous.Response, "output");
                 if (JsonDictionaryValue.String(previous.Response, "status") == "incomplete")
                     previousOutput = previousOutput.Where(i => i is not D item
                         || !(JsonDictionaryValue.String(item, "type") is "function_call" or "custom_tool_call"
                             || JsonDictionaryValue.String(item, "type") == "tool_search_call"
                             && JsonDictionaryValue.String(item, "execution") == "client")).ToList();
-                input.AddRange(previousOutput.Select(WebSearchPayload.DeepCopy));
+                input.AddRange(previousOutput);
             }
 
-            foreach (var pair in request) payload[pair.Key] = WebSearchPayload.DeepCopy(pair.Value);
+            foreach (var pair in request)
+            {
+                if (pair.Key is not ("input" or "previous_response_id")) payload[pair.Key] = pair.Value;
+            }
             input.AddRange(ReadInput(request));
             payload["input"] = input;
             payload.Remove("previous_response_id");
@@ -264,8 +268,8 @@ public sealed partial class NativeClientSessionStore
             ThreadId = session.ThreadId,
             ResponseId = responseId,
             ReplayKey = status == "completed" ? request.ReplayKey : "",
-            Payload = WebSearchPayload.DeepCopyObject(request.Payload),
-            Response = WebSearchPayload.DeepCopyObject(response)
+            Payload = request.Payload,
+            Response = response
         };
 
         await _indexGate.WaitAsync(ct);
@@ -275,19 +279,16 @@ public sealed partial class NativeClientSessionStore
             EnsureOwned(session);
             Touch(session);
             var existing = await ReadResponse(session, responseId, ct);
-            if (existing is not null && (Canonical(existing.Payload) != Canonical(stored.Payload)
-                || Canonical(existing.Response) != Canonical(stored.Response)))
+            if (existing is not null && (JsonHash(existing.Payload) != JsonHash(stored.Payload)
+                || JsonHash(existing.Response) != JsonHash(stored.Response)))
                 throw new InvalidOperationException("A response id cannot be reused for different content.");
 
             var recordName = stored.ReplayKey.Length > 0 ? "turn-" + stored.ReplayKey : "response-" + Hash(responseId);
-            await WriteAtomic(RecordPath(session, recordName), stored, ct);
+            await WriteStoredResponse(session, recordName, stored, ct);
             await WriteAtomic(ResponsePath(session, responseId), recordName, ct);
         }
         finally { _indexGate.Release(); }
 
-        var cached = ToCachedResponse(stored);
-        await _cache.SetResponseAsync(cached, ct);
-        await _cache.SetReplayAsync(cached, ct);
     }
 
     private NativeClientSession CreateSession(Guid owner, MultiAgentClientIdentity identity, int limit)
@@ -491,13 +492,6 @@ public sealed partial class NativeClientSessionStore
 
     private async Task<StoredResponse?> ReadResponse(NativeClientSession session, string responseId, CancellationToken ct)
     {
-        var cached = await _cache.GetResponseAsync(session.Owner, session.ThreadId, responseId, ct);
-        if (cached is not null)
-        {
-            try { return FromCachedResponse(cached); }
-            catch (JsonException) { await _cache.RemoveResponseAsync(session.Owner, session.ThreadId, responseId, ct); }
-        }
-
         var path = ResponsePath(session, responseId);
         if (!File.Exists(path)) return null;
         var recordName = JsonSerializer.Deserialize<string>(await File.ReadAllTextAsync(path, ct));
@@ -507,56 +501,138 @@ public sealed partial class NativeClientSessionStore
         if (stored.Owner != session.Owner || stored.ThreadId != session.ThreadId
             || JsonDictionaryValue.String(stored.Response, "id") != responseId)
             throw new InvalidDataException("The native response identity is invalid.");
-        await _cache.SetResponseAsync(ToCachedResponse(stored), ct);
         return stored;
     }
 
     private async Task<StoredResponse?> FindReplay(NativeClientSession session, string replayKey, CancellationToken ct)
     {
-        var cached = await _cache.GetReplayAsync(session.Owner, session.ThreadId, replayKey, ct);
-        if (cached is not null)
-        {
-            try { return FromCachedResponse(cached); }
-            catch (JsonException)
-            {
-                await _cache.RemoveReplayAsync(session.Owner, session.ThreadId, replayKey, ct);
-                if (cached.ResponseId.Length > 0)
-                    await _cache.RemoveResponseAsync(session.Owner, session.ThreadId, cached.ResponseId, ct);
-            }
-        }
-
         var recordName = "turn-" + replayKey;
         var path = RecordPath(session, recordName);
         if (!File.Exists(path)) return null;
-        var stored = await ReadStored(path, ct);
+        var stored = await ReadReplayRecord(path, ct);
         if (stored.Owner != session.Owner || stored.ThreadId != session.ThreadId || stored.ReplayKey != replayKey)
             throw new InvalidDataException("The native replay identity is invalid.");
         var responseId = JsonDictionaryValue.String(stored.Response, "id");
         await WriteAtomic(ResponsePath(session, responseId), recordName, ct);
-        var cache = ToCachedResponse(stored);
-        await _cache.SetResponseAsync(cache, ct);
-        await _cache.SetReplayAsync(cache, ct);
         return stored;
+    }
+
+    private static async Task<StoredResponse> ReadReplayRecord(string path, CancellationToken ct)
+    {
+        await using var stream = File.OpenRead(path);
+        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+        var root = json.RootElement;
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("Version", out var version)
+            || !version.TryGetInt32(out var versionNumber))
+            throw new InvalidDataException("The native replay record is invalid.");
+        if (versionNumber == 1)
+            return await ReadStored(path, ct);
+        if (versionNumber != 2)
+            throw new InvalidDataException("The native replay record version is unsupported.");
+
+        var manifest = JsonSerializer.Deserialize<StoredResponseManifest>(root.GetRawText())
+            ?? throw new InvalidDataException("The native replay manifest is invalid.");
+        if (manifest.Owner == Guid.Empty || manifest.ResponseFile.Length == 0
+            || manifest.ResponseFile != Path.GetFileName(manifest.ResponseFile))
+            throw new InvalidDataException("The native replay manifest is invalid.");
+        var response = await ReadStoredJson(
+            Path.Combine(Path.GetDirectoryName(path)!, manifest.ResponseFile), ct);
+        var responseId = JsonDictionaryValue.String(response, "id");
+        if (responseId != manifest.ResponseId)
+            throw new InvalidDataException("The native replay manifest identity is invalid.");
+        return new()
+        {
+            Owner = manifest.Owner,
+            ThreadId = manifest.ThreadId,
+            ReplayKey = manifest.ReplayKey,
+            ResponseId = responseId,
+            Payload = [],
+            Response = response
+        };
+    }
+
+    private static D ReadReplayPayload(string path)
+    {
+        using var document = JsonDocument.Parse(File.ReadAllBytes(path));
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("Version", out var version)
+            || !version.TryGetInt32(out var versionNumber))
+            throw new InvalidDataException("The native replay record is invalid.");
+        if (versionNumber == 1)
+            return JsonDictionaryValue.Object(
+                (D)WebSearchPayload.FromJsonElement(root)!, "Payload", static value => (D)value);
+        if (versionNumber != 2)
+            throw new InvalidDataException("The native replay record version is unsupported.");
+        var manifest = JsonSerializer.Deserialize<StoredResponseManifest>(root.GetRawText())
+            ?? throw new InvalidDataException("The native replay manifest is invalid.");
+        if (manifest.PayloadFile.Length == 0 || manifest.PayloadFile != Path.GetFileName(manifest.PayloadFile))
+            throw new InvalidDataException("The native replay manifest is invalid.");
+        var payloadPath = Path.Combine(Path.GetDirectoryName(path)!, manifest.PayloadFile);
+        using var payloadDocument = JsonDocument.Parse(File.ReadAllBytes(payloadPath));
+        if (payloadDocument.RootElement.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException("The native response payload is invalid.");
+        return (D)WebSearchPayload.FromJsonElement(payloadDocument.RootElement)!;
     }
 
     private static async Task<StoredResponse> ReadStored(string path, CancellationToken ct)
     {
         await using var stream = File.OpenRead(path);
         using var json = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
-        var value = (D)WebSearchPayload.FromJsonElement(json.RootElement)!;
-        if (!json.RootElement.TryGetProperty("Version", out var version) || !version.TryGetInt32(out var versionNumber)
-            || versionNumber != 1 || !Guid.TryParse(JsonDictionaryValue.String(value, "Owner"), out var owner))
+        var root = json.RootElement;
+        if (!root.TryGetProperty("Version", out var version) || !version.TryGetInt32(out var versionNumber)
+            || root.ValueKind != JsonValueKind.Object)
             throw new InvalidDataException("The native response record is invalid.");
-        var response = JsonDictionaryValue.Object(value, "Response", static data => (D)data);
+        if (versionNumber == 2)
+        {
+            var manifest = JsonSerializer.Deserialize<StoredResponseManifest>(root.GetRawText())
+                ?? throw new InvalidDataException("The native response manifest is invalid.");
+            if (manifest.Owner == Guid.Empty
+                || manifest.PayloadFile.Length == 0 || manifest.ResponseFile.Length == 0
+                || manifest.PayloadFile != Path.GetFileName(manifest.PayloadFile)
+                || manifest.ResponseFile != Path.GetFileName(manifest.ResponseFile))
+                throw new InvalidDataException("The native response manifest is invalid.");
+            var payload = await ReadStoredJson(Path.Combine(Path.GetDirectoryName(path)!, manifest.PayloadFile), ct);
+            var response = await ReadStoredJson(Path.Combine(Path.GetDirectoryName(path)!, manifest.ResponseFile), ct);
+            var responseId = JsonDictionaryValue.String(response, "id");
+            if (responseId != manifest.ResponseId)
+                throw new InvalidDataException("The native response manifest identity is invalid.");
+            return new()
+            {
+                Owner = manifest.Owner,
+                ThreadId = manifest.ThreadId,
+                ReplayKey = manifest.ReplayKey,
+                ResponseId = responseId,
+                Payload = payload,
+                Response = response
+            };
+        }
+
+        if (versionNumber != 1)
+            throw new InvalidDataException("The native response record version is unsupported.");
+        var value = (D)WebSearchPayload.FromJsonElement(root)!;
+        if (!Guid.TryParse(JsonDictionaryValue.String(value, "Owner"), out var legacyOwner))
+            throw new InvalidDataException("The native response record is invalid.");
+        var legacyResponse = JsonDictionaryValue.Object(value, "Response", static data => (D)data);
         return new()
         {
-            Owner = owner,
+            Owner = legacyOwner,
             ThreadId = JsonDictionaryValue.String(value, "ThreadId"),
             ReplayKey = JsonDictionaryValue.String(value, "ReplayKey"),
-            ResponseId = JsonDictionaryValue.String(response, "id"),
+            ResponseId = JsonDictionaryValue.String(legacyResponse, "id"),
             Payload = JsonDictionaryValue.Object(value, "Payload", static data => (D)data),
-            Response = response
+            Response = legacyResponse
         };
+    }
+
+    private static async Task<D> ReadStoredJson(string path, CancellationToken ct)
+    {
+        await using var stream = File.OpenRead(path);
+        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+        if (json.RootElement.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException("The native response payload is invalid.");
+        return (D)WebSearchPayload.FromJsonElement(json.RootElement)!;
     }
 
     private static List<object?> ReadInput(D request)
@@ -566,7 +642,7 @@ public sealed partial class NativeClientSessionStore
         if (input is string text) return [new D { ["type"] = "message", ["role"] = "user", ["content"] = text }];
         if (input is not List<object?> list || list.Any(i => i is not IReadOnlyDictionary<string, object?>))
             throw new BadRequestException("input must be a string or an array of objects.");
-        return list.Select(WebSearchPayload.DeepCopy).ToList();
+        return list;
     }
 
     private static void ValidateIdentity(MultiAgentClientIdentity identity)
@@ -663,27 +739,7 @@ public sealed partial class NativeClientSessionStore
         AgentName = document.AgentName
     };
 
-    private static NativeClientCachedResponse ToCachedResponse(StoredResponse response) => new()
-    {
-        Owner = response.Owner,
-        ThreadId = response.ThreadId,
-        ResponseId = response.ResponseId,
-        ReplayKey = response.ReplayKey,
-        PayloadJson = WebSearchPayload.JsonDumps(response.Payload),
-        ResponseJson = WebSearchPayload.JsonDumps(response.Response)
-    };
-
-    private static StoredResponse FromCachedResponse(NativeClientCachedResponse response) => new()
-    {
-        Owner = response.Owner,
-        ThreadId = response.ThreadId,
-        ResponseId = response.ResponseId,
-        ReplayKey = response.ReplayKey,
-        Payload = response.Payload(),
-        Response = response.Response()
-    };
-
-    private static string Canonical(D value) => NativeClientSnapshotPool.Canonical(value);
+    private static string JsonHash(D value) => NativeClientSnapshotPool.Hash(value);
 
     private void QueueCachePublish(Func<CancellationToken, Task> work) => _cachePublishes.Add(work);
 
@@ -844,7 +900,11 @@ public sealed partial class NativeClientSessionStore
                 BufferSize = 16 * 1024
             }))
             {
-                await JsonSerializer.SerializeAsync(stream, value, value.GetType(), cancellationToken: ct);
+                using (var writer = new Utf8JsonWriter(stream))
+                {
+                    ProxyAuditSpool.WriteJson(writer, value, 0);
+                    writer.Flush();
+                }
                 await stream.FlushAsync(ct);
                 stream.Flush(true);
             }
@@ -852,6 +912,28 @@ public sealed partial class NativeClientSessionStore
             File.Move(temporary, path, true);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
+    private async Task WriteStoredResponse(
+        NativeClientSession session,
+        string recordName,
+        StoredResponse response,
+        CancellationToken ct)
+    {
+        var payloadFile = recordName + ".payload.json";
+        var responseFile = recordName + ".response.json";
+        var directory = Path.Combine(SessionDirectory(session), "records");
+        await WriteAtomic(Path.Combine(directory, payloadFile), response.Payload, ct);
+        await WriteAtomic(Path.Combine(directory, responseFile), response.Response, ct);
+        await WriteAtomic(RecordPath(session, recordName), new StoredResponseManifest
+        {
+            Owner = response.Owner,
+            ThreadId = response.ThreadId,
+            ResponseId = response.ResponseId,
+            ReplayKey = response.ReplayKey,
+            PayloadFile = payloadFile,
+            ResponseFile = responseFile
+        }, ct);
     }
 
     private static string SessionKey(Guid owner, string thread) => owner.ToString("N") + ":" + thread;
@@ -874,12 +956,23 @@ public sealed partial class NativeClientSessionStore
 
     private sealed class StoredResponse
     {
-        public int Version { get; set; } = 1;
+        public int Version { get; set; } = 2;
         public Guid Owner { get; set; }
         public string ThreadId { get; set; } = "";
         public string ReplayKey { get; set; } = "";
-        [System.Text.Json.Serialization.JsonIgnore] public string ResponseId { get; set; } = "";
+        public string ResponseId { get; set; } = "";
         public D Payload { get; set; } = [];
         public D Response { get; set; } = [];
+    }
+
+    private sealed class StoredResponseManifest
+    {
+        public int Version { get; set; } = 2;
+        public Guid Owner { get; set; }
+        public string ThreadId { get; set; } = "";
+        public string ResponseId { get; set; } = "";
+        public string ReplayKey { get; set; } = "";
+        public string PayloadFile { get; set; } = "";
+        public string ResponseFile { get; set; } = "";
     }
 }

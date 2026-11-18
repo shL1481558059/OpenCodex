@@ -842,10 +842,11 @@ public static partial class SseStreamConverter
                 });
         }
 
-        yield return Emit(
-            "response.completed",
+        yield return SseFrame.FromOwnedJson(
             new Dictionary<string, object?>
             {
+                ["type"] = "response.completed",
+                ["sequence_number"] = sequenceNumber,
                 ["response"] = new Dictionary<string, object?>
                 {
                     ["id"] = responseId,
@@ -863,7 +864,8 @@ public static partial class SseStreamConverter
                     ["error"] = null,
                     ["truncation"] = "disabled"
                 }
-            });
+            },
+            "response.completed");
     }
 
     private static Dictionary<string, object?> BuildEmptyChatCompletion(

@@ -22,7 +22,8 @@ public sealed class ProxyEndpointContext
         ProxyRequestMetadata requestMetadata,
         IProxyStreamWriter streamWriter,
         CancellationToken cancellationToken,
-        Dictionary<string, object?>? clientPayload = null)
+        Dictionary<string, object?>? clientPayload = null,
+        JsonPayload? payloadSource = null)
     {
         EntryProtocol = entryProtocol;
         Payload = payload;
@@ -30,6 +31,7 @@ public sealed class ProxyEndpointContext
         StreamWriter = streamWriter;
         CancellationToken = cancellationToken;
         ClientPayload = clientPayload;
+        PayloadSource = payloadSource;
     }
 
     /// <summary>
@@ -56,6 +58,11 @@ public sealed class ProxyEndpointContext
     /// 获取客户端尚未展开的原始载荷（如果可用）。
     /// </summary>
     public Dictionary<string, object?>? ClientPayload { get; }
+
+    /// <summary>
+    /// 获取本次请求唯一的 JSON 载体；大规模 Native 请求可直接从它读取。
+    /// </summary>
+    public JsonPayload? PayloadSource { get; }
 
     /// <summary>
     /// 获取请求取消令牌。

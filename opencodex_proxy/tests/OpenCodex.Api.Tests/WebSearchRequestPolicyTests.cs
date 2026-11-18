@@ -90,6 +90,77 @@ public sealed class WebSearchRequestPolicyTests
     }
 
     [Fact]
+    public void RetryRequestForChat_CopiesOnlyTheSystemMessage()
+    {
+        var user = new Dictionary<string, object?> { ["role"] = "user", ["content"] = "Search." };
+        var system = new Dictionary<string, object?> { ["role"] = "system", ["content"] = "Existing." };
+        var request = new Dictionary<string, object?>
+        {
+            ["model"] = "upstream",
+            ["messages"] = new List<object?> { system, user }
+        };
+
+        var retry = ToolContractRetryPolicy.BuildRetryRequest(
+            request,
+            ProtocolConverter.Chat,
+            ["lookup"],
+            WebSearchRequestPolicy.ToolName);
+
+        var messages = Assert.IsType<List<object?>>(retry["messages"]);
+        Assert.NotSame(request["messages"], messages);
+        Assert.NotSame(system, messages[0]);
+        Assert.Same(user, messages[1]);
+        Assert.Equal("Existing.", system["content"]);
+        Assert.StartsWith("Existing.", Assert.IsType<string>(Assert.IsType<Dictionary<string, object?>>(messages[0])["content"]),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Continuation_CopiesOnlyTheAppendedMessageList()
+    {
+        var history = new Dictionary<string, object?> { ["role"] = "user", ["content"] = "History." };
+        var request = new Dictionary<string, object?>
+        {
+            ["model"] = "upstream",
+            ["messages"] = new List<object?> { history },
+            ["tool_choice"] = new Dictionary<string, object?>
+            {
+                ["type"] = "allowed_tools",
+                ["mode"] = "required",
+                ["tools"] = new List<object?> { new Dictionary<string, object?> { ["type"] = "web_search" } }
+            }
+        };
+        var response = new Dictionary<string, object?>
+        {
+            ["choices"] = new List<object?>
+            {
+                new Dictionary<string, object?>
+                {
+                    ["message"] = new Dictionary<string, object?>
+                    {
+                        ["role"] = "assistant",
+                        ["tool_calls"] = new List<object?>()
+                    }
+                }
+            }
+        };
+
+        var next = WebSearchContinuationRequest.AppendToolResults(
+            request,
+            response,
+            ProtocolConverter.Chat,
+            []);
+
+        var messages = Assert.IsType<List<object?>>(next["messages"]);
+        Assert.NotSame(request["messages"], messages);
+        Assert.Same(history, messages[0]);
+        Assert.Equal("required",
+            Assert.IsType<Dictionary<string, object?>>(request["tool_choice"])["mode"]);
+        Assert.Equal("auto",
+            Assert.IsType<Dictionary<string, object?>>(next["tool_choice"])["mode"]);
+    }
+
+    [Fact]
     public void None_KeepsChoiceAndDisallowsExecution()
     {
         var payload = Request();

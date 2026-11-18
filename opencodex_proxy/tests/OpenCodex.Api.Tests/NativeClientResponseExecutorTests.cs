@@ -581,6 +581,40 @@ public sealed class NativeClientResponseExecutorTests
         finally { Directory.Delete(directory,true); }
     }
 
+    [Fact]
+    public async Task LargeMessageEventTraversesDeferredJsonJournalWithoutWireString()
+    {
+        var (store, session, _) = await Setup();
+        var directory = Path.Combine(Path.GetTempPath(), "native-large-event-" + Guid.NewGuid().ToString("N"));
+        var spool = new OpenCodex.CoreBase.Domain.Proxy.ProxyAuditSpool(new() { Directory = directory });
+        var executor = new NativeClientResponseExecutor(store, auditSpool: spool);
+        var text = string.Concat(Enumerable.Repeat("large-response-中文\n", 120_000));
+        var complete = Message(text);
+        var started = Message("");
+        var events = new List<D>();
+
+        try
+        {
+            var result = await executor.ExecuteAsync(session, Request(), "large-event", async (_, emit, ct) =>
+            {
+                await emit(new() { ["type"] = "response.output_item.added", ["output_index"] = 0, ["item"] = started }, ct);
+                await emit(new() { ["type"] = "response.output_item.done", ["output_index"] = 0, ["item"] = complete }, ct);
+                return Response("large-event-response", complete);
+            }, e => { events.Add(e); return Task.CompletedTask; }, default);
+
+            Assert.Equal("completed", result["status"]);
+            var done = Assert.Single(events, e => Type(e) == "response.output_item.done");
+            var item = Assert.IsType<D>(done["item"]);
+            var content = Assert.IsType<D>(Assert.Single(JsonDictionaryValue.List(item, "content")));
+            Assert.Equal(text, content["text"]);
+            Assert.Single(events, e => Type(e) == "response.completed");
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, true);
+        }
+    }
+
     private static async Task<(NativeClientSessionStore, NativeClientSession, NativeClientResponseExecutor)> Setup()
     {
         var store = new NativeClientSessionStore(Path.Combine(Path.GetTempPath(), "native-runner-" + Guid.NewGuid().ToString("N")));

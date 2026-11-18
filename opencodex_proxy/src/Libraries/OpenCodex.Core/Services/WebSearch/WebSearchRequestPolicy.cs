@@ -59,7 +59,7 @@ public static class WebSearchRequestPolicy
             return null;
         }
 
-        var tools = ListValue(payload, "tools");
+        var tools = new List<object?>(ListValue(payload, "tools"));
         var nativeTools = tools.Where(IsWebSearchTool).Cast<Dictionary<string, object?>>().ToList();
         if (nativeTools.Count != 1)
         {
@@ -108,11 +108,14 @@ public static class WebSearchRequestPolicy
         }
         else if (TryAsObject(choice, out var allowed) && StringValue(allowed, "type") == "allowed_tools")
         {
-            var choices = ListValue(allowed, "tools")
+            var ownedChoice = new Dictionary<string, object?>(allowed, StringComparer.Ordinal);
+            var choices = ListValue(ownedChoice, "tools")
                 .Select(item => IsWebSearchToolChoice(item) ? (object?)FunctionChoice(name) : DeepCopy(item))
                 .ToList();
-            allowed["tools"] = choices;
-            payload["tool_choice"] = allowed;
+            ownedChoice["tools"] = choices;
+            payload["tool_choice"] = ownedChoice;
+            allowed = ownedChoice;
+            choice = ownedChoice;
             allowedNames = choices.Select(ChoiceName).ToHashSet(StringComparer.Ordinal);
             if (allowedNames.Contains(string.Empty))
             {
@@ -195,12 +198,14 @@ public static class WebSearchRequestPolicy
         IReadOnlyDictionary<string, object?> payload,
         string mode)
     {
+        // Attempt ownership starts at the root. Unchanged history remains shared and read-only;
+        // each rewriter replaces only the containers it needs to mutate.
+        var result = new Dictionary<string, object?>(payload, StringComparer.Ordinal);
         if (mode != WebSearchModes.Disabled)
         {
-            return DeepCopyObject(payload);
+            return result;
         }
 
-        var result = DeepCopyObject(payload);
         DropWebSearchTools(result);
         DropWebSearchToolChoice(result);
         DropWebSearchIncludeItems(result);
@@ -284,10 +289,16 @@ public static class WebSearchRequestPolicy
         var toolChoice = GetValue(payload, "tool_choice");
         if (TryAsObject(toolChoice, out var choice) && StringValue(choice, "type") == "allowed_tools")
         {
-            choice["tools"] = ListValue(choice, "tools").Where(item => !IsWebSearchToolChoice(item)).ToList();
-            if (ListValue(choice, "tools").Count == 0)
+            var ownedChoice = new Dictionary<string, object?>(choice, StringComparer.Ordinal);
+            var filtered = ListValue(ownedChoice, "tools").Where(item => !IsWebSearchToolChoice(item)).ToList();
+            if (filtered.Count == 0)
             {
                 payload["tool_choice"] = "none";
+            }
+            else
+            {
+                ownedChoice["tools"] = filtered;
+                payload["tool_choice"] = ownedChoice;
             }
             return;
         }

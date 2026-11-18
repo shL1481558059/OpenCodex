@@ -104,6 +104,9 @@ public sealed class SseFrame
     public static SseFrame FromJson(IReadOnlyDictionary<string, object?> payload, string? eventName = null) =>
         new(new SseEvent(eventName ?? "message", Freeze(payload)), eventName);
 
+    public static SseFrame FromOwnedJson(IReadOnlyDictionary<string, object?> payload, string? eventName = null) =>
+        new(new SseEvent(eventName ?? "message", payload), eventName);
+
     internal string? DiagnosticDataPrefix(int maxCharacters)
     {
         if (_generatedWire is not null && !_smallGeneratedEvent && !_generatedWire.IsValueCreated)

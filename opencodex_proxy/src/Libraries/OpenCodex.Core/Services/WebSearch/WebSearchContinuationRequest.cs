@@ -14,7 +14,7 @@ internal static class WebSearchContinuationRequest
         bool forceFinalAnswer = false,
         string internalToolName = WebSearchRequestPolicy.ToolName)
     {
-        var request = DeepCopyObject(upstreamRequest);
+        var request = new Dictionary<string, object?>(upstreamRequest, StringComparer.Ordinal);
         RelaxToolChoice(request, internalToolName);
         if (forceFinalAnswer)
         {
@@ -23,11 +23,11 @@ internal static class WebSearchContinuationRequest
 
         if (protocol == ProtocolConverter.Chat)
         {
-            var messages = ListValue(request, "messages");
+            var messages = new List<object?>(ListValue(request, "messages"));
             request["messages"] = messages;
             var choice = FirstObject(ListValue(upstreamResponse, "choices"));
             var message = choice is null ? [] : ObjectValue(choice, "message");
-            messages.Add(DeepCopyObject(message));
+            messages.Add(message);
             foreach (var result in results)
             {
                 messages.Add(new Dictionary<string, object?>
@@ -43,7 +43,7 @@ internal static class WebSearchContinuationRequest
 
         if (protocol == ProtocolConverter.Messages)
         {
-            var messages = ListValue(request, "messages");
+            var messages = new List<object?>(ListValue(request, "messages"));
             request["messages"] = messages;
             var content = ListValue(upstreamResponse, "content");
             if (content.Count > 0)
@@ -51,7 +51,7 @@ internal static class WebSearchContinuationRequest
                 messages.Add(new Dictionary<string, object?>
                 {
                     ["role"] = "assistant",
-                    ["content"] = DeepCopy(content)
+                    ["content"] = content
                 });
             }
 
@@ -87,6 +87,8 @@ internal static class WebSearchContinuationRequest
             var name = StringValue(value, "name", StringValue(ObjectValue(value, "function"), "name"));
             if (type == "allowed_tools")
             {
+                value = new Dictionary<string, object?>(value, StringComparer.Ordinal);
+                request["tool_choice"] = value;
                 if (StringValue(value, "mode") == "required")
                 {
                     value["mode"] = "auto";
@@ -100,7 +102,11 @@ internal static class WebSearchContinuationRequest
                 }
                 else
                 {
-                    value["type"] = "auto";
+                    var owned = new Dictionary<string, object?>(value, StringComparer.Ordinal)
+                    {
+                        ["type"] = "auto"
+                    };
+                    request["tool_choice"] = owned;
                 }
             }
         }

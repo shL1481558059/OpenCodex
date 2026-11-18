@@ -1,11 +1,21 @@
-using System.Text;
 using System.Text.Json;
+using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Domain.Proxy;
 
 namespace OpenCodex.Api.Infrastructure;
 
-public sealed class RequestBodyReader : IRequestBodyReader
+public sealed class RequestBodyReader(ProxyAuditSpool? auditSpool = null) : IRequestBodyReader
 {
     private static readonly object RawBodyItemKey = new();
+    private readonly ProxyAuditSpool _auditSpool = auditSpool ?? ProxyAuditSpool.Default;
+
+    public async Task<JsonPayload?> ReadJsonPayloadAsync(
+        HttpRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var bytes = await ReadBodyAsync(request, cancellationToken);
+        return bytes.Length == 0 ? null : JsonPayload.FromOwnedUtf8(bytes);
+    }
 
     public async Task<Dictionary<string, object?>?> ReadJsonObjectAsync(
         HttpRequest request,
@@ -13,11 +23,8 @@ public sealed class RequestBodyReader : IRequestBodyReader
     {
         try
         {
-            var bytes = await ReadBodyAsync(request, cancellationToken);
-            using var document = JsonDocument.Parse(bytes);
-            return document.RootElement.ValueKind == JsonValueKind.Object
-                ? (Dictionary<string, object?>?)FromJsonElement(document.RootElement)
-                : null;
+            await using var payload = await ReadJsonPayloadAsync(request, cancellationToken);
+            return payload is null ? null : await payload.MaterializeObjectAndReleaseAsync(cancellationToken);
         }
         catch (JsonException)
         {
@@ -25,15 +32,15 @@ public sealed class RequestBodyReader : IRequestBodyReader
         }
     }
 
-    internal static ReadOnlyMemory<byte>? ReadCapturedRawBody(HttpRequest request)
+    internal static ProxyLogBodyHandle? ReadCapturedRawBody(HttpRequest request)
     {
         return request.HttpContext.Items.TryGetValue(RawBodyItemKey, out var value)
-            && value is ReadOnlyMemory<byte> captured
+            && value is ProxyLogBodyHandle captured
                 ? captured
                 : null;
     }
 
-    private static async Task<ReadOnlyMemory<byte>> ReadBodyAsync(
+    private async Task<ReadOnlyMemory<byte>> ReadBodyAsync(
         HttpRequest request,
         CancellationToken cancellationToken)
     {
@@ -44,40 +51,16 @@ public sealed class RequestBodyReader : IRequestBodyReader
             : 0;
         var buffer = new MemoryStream(capacity);
         await request.Body.CopyToAsync(buffer, cancellationToken);
-        var bytes = new ReadOnlyMemory<byte>(buffer.GetBuffer(), 0, (int)buffer.Length);
-        request.HttpContext.Items[RawBodyItemKey] = bytes;
+        var written = (int)buffer.Length;
+        var bytes = new ReadOnlyMemory<byte>(buffer.GetBuffer(), 0, written);
+        var captured = _auditSpool.CaptureUtf8(bytes.Span, cancellationToken);
+        request.HttpContext.Items[RawBodyItemKey] = captured;
+        request.HttpContext.Response.OnCompleted(() =>
+        {
+            captured.Dispose();
+            return Task.CompletedTask;
+        });
         return bytes;
     }
 
-    private static object? FromJsonElement(JsonElement element)
-    {
-        return element.ValueKind switch
-        {
-            JsonValueKind.Object => element.EnumerateObject().ToDictionary(
-                property => property.Name,
-                property => FromJsonElement(property.Value),
-                StringComparer.Ordinal),
-            JsonValueKind.Array => element.EnumerateArray().Select(FromJsonElement).ToList(),
-            JsonValueKind.String => element.GetString(),
-            JsonValueKind.Number => NumberValue(element),
-            JsonValueKind.True => true,
-            JsonValueKind.False => false,
-            _ => null
-        };
-    }
-
-    private static object NumberValue(JsonElement element)
-    {
-        if (!element.TryGetInt64(out var longValue))
-        {
-            return element.GetDouble();
-        }
-
-        if (longValue is >= int.MinValue and <= int.MaxValue)
-        {
-            return (int)longValue;
-        }
-
-        return longValue;
-    }
 }

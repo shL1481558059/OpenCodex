@@ -45,29 +45,29 @@ public sealed class NativeClientStateCacheTests
     }
 
     [Fact]
-    public async Task ResponseCacheRoundTripsExactPayloadAndResponseJson()
+    public async Task ResponsePayloadsAreNotWrittenToRedis()
     {
         var redis = new RecordingRedisConnectionProvider();
         var cache = new NativeClientStateCache(redis);
         var owner = Guid.NewGuid();
         var payload = new D { ["model"] = "test", ["input"] = "question" };
         var response = new D { ["id"] = "r1", ["status"] = "completed", ["output"] = new List<object?>() };
-        var record = new NativeClientCachedResponse
+        using var store = new NativeClientSessionStore(
+            Path.Combine(Path.GetTempPath(), "native-cache-response-" + Guid.NewGuid().ToString("N")),
+            cache: cache);
+        var session = await store.ResolveAsync(owner, new MultiAgentClientIdentity
         {
-            Owner = owner,
             ThreadId = "root",
-            ResponseId = "r1",
-            ReplayKey = "turn-key",
-            PayloadJson = WebSearchPayload.JsonDumps(payload),
-            ResponseJson = WebSearchPayload.JsonDumps(response)
-        };
+            RootThreadId = "root",
+            AgentName = "/root"
+        }, 1, default);
+        var projection = await store.ProjectRequestAsync(session, payload, "turn-key", default);
+        var setsBefore = redis.SetCount;
 
-        await cache.SetResponseAsync(record, default);
-        await cache.SetReplayAsync(record, default);
-        var byResponse = await cache.GetResponseAsync(owner, "root", "r1", default);
-        var byReplay = await cache.GetReplayAsync(owner, "root", "turn-key", default);
-        Assert.Equal("test", byResponse!.Payload()["model"]);
-        Assert.Equal("r1", byReplay!.Response()["id"]);
+        await store.CommitResponseAsync(session, projection, response, default);
+
+        Assert.Equal(setsBefore, redis.SetCount);
+        Assert.Equal("r1", (await store.ProjectRequestAsync(session, payload, "turn-key", default)).ReplayResponse!["id"]);
     }
 
     [Fact]

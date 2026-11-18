@@ -24,7 +24,7 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
         var buffering = false;
         var terminalSent = false;
         using var eventBudget=new StreamCaptureBudget((streamingOptions??new()).MaxBufferedEventBytes,int.MaxValue,4,auditSpool??ProxyAuditSpool.Default,lease.Token);
-        var events=new ConverterFragments(eventBudget);
+        var events=new ConverterJsonFragments(eventBudget);
         var added = new HashSet<int>();
         var done = new HashSet<int>();
         var itemIds = new Dictionary<int, string>();
@@ -32,7 +32,7 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
         async Task Send(D value)
         {
             lease.Token.ThrowIfCancellationRequested();
-            var copy = WebSearchPayload.DeepCopyObject(value);
+            var copy = new D(value, StringComparer.Ordinal);
             copy["sequence_number"] = ++sequence;
             await emit(copy);
         }
@@ -61,11 +61,8 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
 
         IEnumerable<D> ReadEvents(bool onlyBuffered,bool restore)
         {
-            foreach(var record in events)
+            foreach(var value in events.Read(onlyBuffered))
             {
-                if(onlyBuffered && record[0]!='1')continue;
-                using var document=JsonDocument.Parse(record.AsMemory(1));
-                var value=(D)WebSearchPayload.FromJsonElement(document.RootElement)!;
                 if(restore && JsonDictionaryValue.Get(value,"item") is D item)RestoreDeclaredToolIdentityIfNeeded(item);
                 if(onlyBuffered || JsonDictionaryValue.Get(value,"item") is D || Text(value,"type").StartsWith("response.function_call_arguments.",StringComparison.Ordinal)
                     || Text(value,"type").StartsWith("response.custom_tool_call_input.",StringComparison.Ordinal))yield return value;
@@ -84,7 +81,7 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
 
         async Task EnsureStarted(D response)
         {
-            var initial = WebSearchPayload.DeepCopyObject(response);
+            var initial = new D(response, StringComparer.Ordinal);
             initial["status"] = "in_progress";
             initial["output"] = new List<object?>();
             initial.Remove("error");
@@ -96,7 +93,7 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
         async Task OnEvent(D source, CancellationToken token)
         {
             token.ThrowIfCancellationRequested();
-            var value = WebSearchPayload.DeepCopyObject(source);
+            var value = new D(source, StringComparer.Ordinal);
             var type = Text(value, "type");
             if (JsonDictionaryValue.Get(value, "response") is D response) CaptureId(response);
             if (type is "response.completed" or "response.failed" or "response.incomplete" or "error") return;
@@ -112,7 +109,11 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
             }
             var index = WebSearchPayload.ToInt(JsonDictionaryValue.Get(value, "output_index"), -1);
             if (index >= 0 && JsonDictionaryValue.Get(value, "item") is D item)
+            {
+                item = new D(item, StringComparer.Ordinal);
+                value["item"] = item;
                 SetItemId(item, index);
+            }
             var argumentEvent = type.StartsWith("response.function_call_arguments.", StringComparison.Ordinal)
                 || type.StartsWith("response.custom_tool_call_input.", StringComparison.Ordinal);
             var itemEvent = type is "response.output_item.added" or "response.output_item.done";
@@ -126,7 +127,7 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
                 throw new UpstreamException("The model stream repeated an output item done event.");
             if (type == "response.output_item.done" && !added.Contains(index))
                 throw new UpstreamException("The model stream completed an output item before adding it.");
-            if(itemEvent || argumentEvent || buffering)events.Add((buffering?"1":"0")+JsonSerializer.Serialize(value));
+            if(itemEvent || argumentEvent || buffering)events.Add(buffering, value);
             if(!buffering)await Send(value);
         }
 
@@ -155,7 +156,7 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
                 await Publish(replay, true);
                 return replay;
             }
-            var result = WebSearchPayload.DeepCopyObject(await model(projection.Payload, OnEvent, lease.Token));
+            var result = await model(projection.Payload, OnEvent, lease.Token);
             var selectedUpstreamProtocol = upstreamProtocol?.Invoke();
             var validateDeclaredToolIdentity = selectedUpstreamProtocol != ProtocolConverter.Responses;
             lease.Token.ThrowIfCancellationRequested();
@@ -215,7 +216,7 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
                 ["error"] = new D { ["code"] = error is ProxyException proxy ? proxy.ErrorType : "server_error", ["message"] = error.Message }
             };
             if (error is UpstreamException upstream && upstream.Body is D body && JsonDictionaryValue.Get(body, "error") is D upstreamError)
-                failed["error"] = WebSearchPayload.DeepCopyObject(upstreamError);
+                failed["error"] = new D(upstreamError, StringComparer.Ordinal);
             await EnsureStarted(failed);
             terminalSent = true;
             await Send(new() { ["type"] = "response.failed", ["response"] = failed });
@@ -304,7 +305,7 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
 
     private static IEnumerable<D> ItemEvents(D item, int index)
     {
-        var initial = WebSearchPayload.DeepCopyObject(item);
+        var initial = new D(item, StringComparer.Ordinal);
         var type = Text(item, "type");
         if (type is "message" or "reasoning") initial[type == "message" ? "content" : "summary"] = new List<object?>();
         if (type is "function_call" or "tool_search_call") initial["arguments"] = "";
@@ -320,7 +321,7 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
                 var part = content[partIndex];
                 var field = Text(part, "type") == "refusal" ? "refusal" : "text";
                 var eventType = field == "refusal" ? "refusal" : "output_text";
-                var initialPart = WebSearchPayload.DeepCopyObject(part); initialPart[field] = "";
+                var initialPart = new D(part, StringComparer.Ordinal); initialPart[field] = "";
                 D Event(string name) => new() { ["type"] = name, ["item_id"] = itemId, ["output_index"] = index, ["content_index"] = partIndex };
                 var added = Event("response.content_part.added"); added["part"] = initialPart; yield return added;
                 var delta = Event("response." + eventType + ".delta"); delta["delta"] = Text(part, field); yield return delta;
@@ -348,12 +349,15 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
     {
         if (Text(expected, "type") != "tool_search_call")
             return actual is string text && text == Text(expected, ArgumentField(expected));
+        var expectedArguments = JsonDictionaryValue.Get(expected, "arguments");
+        if (actual is not string json)
+            return actual is IReadOnlyDictionary<string, object?>
+                && JsonValueComparer.AreEqual(actual, expectedArguments);
         try
         {
-            using var supplied = JsonDocument.Parse(actual is string json ? json : JsonSerializer.Serialize(actual));
-            using var complete = JsonDocument.Parse(JsonSerializer.Serialize(JsonDictionaryValue.Get(expected, "arguments")));
+            using var supplied = JsonDocument.Parse(json);
             return supplied.RootElement.ValueKind == JsonValueKind.Object
-                && JsonElement.DeepEquals(supplied.RootElement, complete.RootElement);
+                && JsonValueComparer.AreEqual(supplied.RootElement, expectedArguments);
         }
         catch (JsonException) { return false; }
     }

@@ -29,7 +29,7 @@ internal static class WebSearchSimulationLog
                     ["raw"] = result.Raw
                 })
                 .ToList(),
-            ["upstream_calls"] = upstreamCalls.Select(call => (object?)DeepCopyObject(call)).ToList(),
+            ["upstream_calls"] = upstreamCalls.Cast<object?>().ToList(),
             ["upstream_call_summary"] = upstreamCalls
                 .Select(call =>
                 {

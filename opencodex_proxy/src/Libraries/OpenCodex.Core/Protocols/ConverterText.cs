@@ -1,4 +1,8 @@
 using System.Collections;
+using System.Text.Json;
+using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Domain.Proxy;
+using D = System.Collections.Generic.Dictionary<string, object?>;
 namespace OpenCodex.Core.Protocols;
 
 /// <summary>A logical final text value, not a retained list of every upstream fragment.
@@ -75,4 +79,164 @@ internal sealed class ConverterFragments(StreamCaptureBudget budget):IReadOnlyCo
         }
     }
     IEnumerator IEnumerable.GetEnumerator()=>GetEnumerator();
+}
+
+internal sealed class CaptureBinary(StreamCaptureBudget budget) : Stream
+{
+    private MemoryStream? _memory;
+    private ProxyAuditSpool.AuditFile? _buffer;
+
+    internal void Append(ReadOnlySpan<byte> value)
+    {
+        if (value.IsEmpty) return;
+        if (_buffer is null)
+        {
+            _memory ??= new MemoryStream();
+            if (budget.Spool is { } spool && _memory.Length + value.Length > budget.MemoryThresholdBytes)
+            {
+                _buffer = spool.CreateStaging(budget.CancellationToken);
+                _memory.Position = 0;
+                _memory.CopyTo(_buffer);
+                _memory.Dispose();
+                _memory = null;
+            }
+        }
+        if (_buffer is not null) _buffer.Write(value);
+        else _memory!.Write(value);
+    }
+
+    internal Stream OpenSnapshotRead()
+    {
+        if (_buffer is not null) return _buffer.OpenSnapshotRead();
+        return new MemoryStream(_memory?.GetBuffer() ?? [], 0, checked((int)(_memory?.Length ?? 0)), writable: false);
+    }
+
+    public override void Write(ReadOnlySpan<byte> buffer) => Append(buffer);
+    public override void Write(byte[] buffer, int offset, int count) => Append(buffer.AsSpan(offset, count));
+    public override void WriteByte(byte value) => Append([value]);
+    public override void Flush() { }
+    public override bool CanRead => false;
+    public override bool CanSeek => false;
+    public override bool CanWrite => true;
+    public override long Length => _buffer?.Length ?? _memory?.Length ?? 0;
+    public override long Position { get => Length; set => throw new NotSupportedException(); }
+    public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _memory?.Dispose();
+            _buffer?.Dispose();
+        }
+        _memory = null;
+        _buffer = null;
+        base.Dispose(disposing);
+    }
+}
+
+internal sealed class ConverterJsonFragments
+{
+    private readonly StreamCaptureBudget _budget;
+    private readonly CaptureBinary _journal;
+
+    internal ConverterJsonFragments(StreamCaptureBudget budget)
+    {
+        _budget = budget;
+        _journal = budget.CreateBinary();
+    }
+
+    internal void Add(bool buffered, object? value)
+    {
+        _journal.WriteByte((byte)(buffered ? '1' : '0'));
+        using (var writer = new System.Text.Json.Utf8JsonWriter(_journal))
+        {
+            ProxyAuditSpool.WriteJson(writer, value, 0);
+            writer.Flush();
+        }
+        _journal.WriteByte((byte)'\n');
+        var current = _journal.Length;
+        _budget.Spend(current - _budgetSpent);
+        _budgetSpent = current;
+    }
+
+    private long _budgetSpent;
+
+    internal IEnumerable<D> Read(bool onlyBuffered)
+    {
+        using var cursor = new JournalCursor(_journal.OpenSnapshotRead());
+        while (cursor.TryReadByte(out var flag))
+        {
+            if (flag != '1' && onlyBuffered)
+            {
+                cursor.SkipLine();
+                continue;
+            }
+            using var document = JsonDocument.Parse(cursor.CreateLineStream());
+            yield return (D)WebSearchPayload.FromJsonElement(document.RootElement)!;
+        }
+    }
+
+    private sealed class JournalCursor(Stream source) : IDisposable
+    {
+        private readonly byte[] _buffer = new byte[16 * 1024];
+        private int _offset;
+        private int _count;
+
+        internal bool TryReadByte(out byte value)
+        {
+            if (_offset == _count && !Fill()) { value = 0; return false; }
+            value = _buffer[_offset++];
+            return true;
+        }
+
+        internal void SkipLine()
+        {
+            while (TryReadByte(out var value))
+                if (value == '\n') return;
+        }
+
+        internal Stream CreateLineStream() => new LineReadStream(this);
+
+        private bool Fill()
+        {
+            _count = source.Read(_buffer, 0, _buffer.Length);
+            _offset = 0;
+            return _count > 0;
+        }
+
+        private sealed class LineReadStream(JournalCursor cursor) : Stream
+        {
+            private bool _done;
+            public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+            public override int Read(Span<byte> buffer)
+            {
+                if (_done || buffer.IsEmpty) return 0;
+                var written = 0;
+                while (written < buffer.Length && cursor.TryReadByte(out var value))
+                {
+                    if (value == '\n')
+                    {
+                        _done = true;
+                        break;
+                    }
+                    buffer[written++] = value;
+                }
+                return written;
+            }
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+            public override void Flush() { }
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        }
+
+        public void Dispose() => source.Dispose();
+    }
 }

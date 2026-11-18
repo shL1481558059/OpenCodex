@@ -65,7 +65,7 @@ public sealed partial class ProxyStreamService
                             retryUsed=true;retryRound=true;
                             state.UpstreamRequest=ToolContractRetryPolicy.BuildRetryRequest(state.UpstreamRequest,
                                 context.ChannelType,mappings?.Keys??Array.Empty<string>(),tools?.Binding.WebSearchToolName);
-                            state.UpstreamRequestBody=ProxyLogBodyHandle.CaptureJson(state.UpstreamRequest);
+                            state.UpstreamRequestBody=_auditSpool.CaptureJson(state.UpstreamRequest);
                             break;
                         }
                         if(!moved)break;
@@ -91,7 +91,7 @@ public sealed partial class ProxyStreamService
             {
                 yield break;
             }
-            var response = ProtocolConverter.ConvertResponse(
+            var response = ProtocolConverter.ConvertOwnedResponse(
                 converted.UpstreamResponse, context.EntryProtocol, context.ChannelType,
                 context.Route.OriginalModel, textFormat, mappings);
             state.ResponsePayload = response;
@@ -146,7 +146,7 @@ public sealed partial class ProxyStreamService
             if (tools.NextRequest is { } next)
             {
                 state.UpstreamRequest = next;
-                state.UpstreamRequestBody = ProxyLogBodyHandle.CaptureJson(next);
+                state.UpstreamRequestBody = _auditSpool.CaptureJson(next);
                 continue;
             }
             if (terminal is not null)

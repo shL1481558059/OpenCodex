@@ -248,10 +248,34 @@ public static partial class ProtocolConverter
         IReadOnlyDictionary<string, ResponsesToolCallMapping>? toolCallMappings = null)
     {
         ArgumentNullException.ThrowIfNull(payload);
+        return ConvertResponseCore(AsObject(DeepCopy(payload)), sourceProtocol, targetProtocol,
+            originalModel, textFormat, toolCallMappings);
+    }
+
+    internal static Dictionary<string, object?> ConvertOwnedResponse(
+        Dictionary<string, object?> payload,
+        string sourceProtocol,
+        string targetProtocol,
+        string? originalModel,
+        TextFormatInfo? textFormat = null,
+        IReadOnlyDictionary<string, ResponsesToolCallMapping>? toolCallMappings = null)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        return ConvertResponseCore(new Dictionary<string, object?>(payload, StringComparer.Ordinal),
+            sourceProtocol, targetProtocol, originalModel, textFormat, toolCallMappings);
+    }
+
+    private static Dictionary<string, object?> ConvertResponseCore(
+        Dictionary<string, object?> converted,
+        string sourceProtocol,
+        string targetProtocol,
+        string? originalModel,
+        TextFormatInfo? textFormat,
+        IReadOnlyDictionary<string, ResponsesToolCallMapping>? toolCallMappings)
+    {
 
         if (sourceProtocol == targetProtocol)
         {
-            var converted = AsObject(DeepCopy(payload));
             if (!string.IsNullOrEmpty(originalModel))
             {
                 converted["model"] = originalModel;
@@ -260,7 +284,7 @@ public static partial class ProtocolConverter
             return converted;
         }
 
-        var canonical = ToCanonicalResponse(payload, targetProtocol, originalModel, toolCallMappings);
+        var canonical = ToCanonicalResponse(converted, targetProtocol, originalModel, toolCallMappings);
         var result = FromCanonicalResponse(canonical, sourceProtocol);
 
         if (textFormat is { Type: "json_schema" } && sourceProtocol == Responses)

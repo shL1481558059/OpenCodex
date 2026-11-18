@@ -236,6 +236,8 @@ public sealed class ResponsesWebSocketPool : IAsyncDisposable
 /// <summary>Exclusive lease for one request on a pooled Responses WebSocket.</summary>
 public sealed class ResponsesWebSocketLease : IAsyncDisposable
 {
+    private static readonly IReadOnlySet<string> ResponseCreateExcludedProperties =
+        new HashSet<string>(["stream", "stream_options", "background"], StringComparer.Ordinal);
     private readonly ResponsesWebSocketPool.ConnectionEntry _entry;
     private bool _disposed;
 
@@ -257,13 +259,13 @@ public sealed class ResponsesWebSocketLease : IAsyncDisposable
         IReadOnlyDictionary<string, object?> payload,
         CancellationToken cancellationToken)
     {
-        var message = WebSearchPayload.DeepCopyObject(payload);
-        message["type"] = "response.create";
-        message.Remove("stream");
-        message.Remove("stream_options");
-        message.Remove("background");
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(message);
-        await Socket.SendAsync(bytes, WebSocketMessageType.Text, true, cancellationToken);
+        await WebSocketJsonWriter.SendAsync(
+            Socket,
+            payload,
+            _maxMessageBytes,
+            cancellationToken,
+            "response.create",
+            ResponseCreateExcludedProperties);
     }
 
     public async Task<Dictionary<string, object?>?> ReceiveAsync(

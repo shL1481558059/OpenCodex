@@ -1,62 +1,92 @@
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
-using OpenCodex.CoreBase.Abstractions;
-using D = System.Collections.Generic.Dictionary<string, object?>;
 
 namespace OpenCodex.Core.Services.MultiAgent;
 
-/// <summary>
-/// Owns private immutable JSON snapshots for one owner and thread. Input and output lists
-/// remain independent, while repeated history items and tool declarations share their content.
-/// Callers must deep-copy a snapshot before returning it outside the session store.
-/// </summary>
-internal sealed class NativeClientSnapshotPool
+/// <summary>Computes stable content identities without materializing canonical JSON text.</summary>
+internal static class NativeClientSnapshotPool
 {
-    private readonly Dictionary<string, object?> _snapshots = new(StringComparer.Ordinal);
-
-    public D Snapshot(D value)
+    internal static string Hash(object? value)
     {
-        var result = new D();
-        foreach (var (name, content) in value)
-            result[name] = name is "input" or "output" && content is List<object?> items
-                ? items.Select(Intern).ToList() : Intern(content);
-        return result;
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        using (var writer = new Utf8JsonWriter(new HashWriteStream(hash)))
+        {
+            WriteCanonical(writer, value, 0);
+            writer.Flush();
+        }
+        return Convert.ToHexString(hash.GetHashAndReset());
     }
 
-    private object? Intern(object? value)
+    private static void WriteCanonical(Utf8JsonWriter writer, object? value, int depth)
     {
-        if (value is null || value.GetType().IsValueType) return value;
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Canonical(value))));
-        if (_snapshots.TryGetValue(hash, out var snapshot)) return snapshot;
-        snapshot = WebSearchPayload.DeepCopy(value);
-        _snapshots.Add(hash, snapshot);
-        return snapshot;
+        if (depth > 64) throw new JsonException("JSON depth limit exceeded.");
+        switch (value)
+        {
+            case IReadOnlyDictionary<string, object?> dictionary:
+                writer.WriteStartObject();
+                foreach (var pair in dictionary.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+                {
+                    writer.WritePropertyName(pair.Key);
+                    WriteCanonical(writer, pair.Value, depth + 1);
+                }
+                writer.WriteEndObject();
+                break;
+            case IReadOnlyList<object?> list:
+                writer.WriteStartArray();
+                foreach (var item in list) WriteCanonical(writer, item, depth + 1);
+                writer.WriteEndArray();
+                break;
+            case JsonElement element:
+                WriteCanonical(writer, element, depth + 1);
+                break;
+            default:
+                JsonSerializer.Serialize(writer, value);
+                break;
+        }
     }
 
-    internal static string Canonical(object? value)
+    private static void WriteCanonical(Utf8JsonWriter writer, JsonElement element, int depth)
     {
-        using var json = JsonDocument.Parse(JsonSerializer.SerializeToUtf8Bytes(value));
-        using var memory = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(memory)) WriteCanonical(writer, json.RootElement);
-        return Encoding.UTF8.GetString(memory.ToArray());
-    }
-
-    private static void WriteCanonical(Utf8JsonWriter writer, JsonElement element)
-    {
+        if (depth > 64) throw new JsonException("JSON depth limit exceeded.");
         if (element.ValueKind == JsonValueKind.Object)
         {
             writer.WriteStartObject();
-            foreach (var property in element.EnumerateObject().OrderBy(p => p.Name, StringComparer.Ordinal))
-            { writer.WritePropertyName(property.Name); WriteCanonical(writer, property.Value); }
+            foreach (var property in element.EnumerateObject().OrderBy(property => property.Name, StringComparer.Ordinal))
+            {
+                writer.WritePropertyName(property.Name);
+                WriteCanonical(writer, property.Value, depth + 1);
+            }
             writer.WriteEndObject();
         }
         else if (element.ValueKind == JsonValueKind.Array)
         {
             writer.WriteStartArray();
-            foreach (var child in element.EnumerateArray()) WriteCanonical(writer, child);
+            foreach (var child in element.EnumerateArray()) WriteCanonical(writer, child, depth + 1);
             writer.WriteEndArray();
         }
-        else element.WriteTo(writer);
+        else
+        {
+            element.WriteTo(writer);
+        }
+    }
+
+    private sealed class HashWriteStream(IncrementalHash hash) : Stream
+    {
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Write(ReadOnlySpan<byte> buffer) => hash.AppendData(buffer);
+        public override void Write(byte[] buffer, int offset, int count) => hash.AppendData(buffer, offset, count);
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
     }
 }

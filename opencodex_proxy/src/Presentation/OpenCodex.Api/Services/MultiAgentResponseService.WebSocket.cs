@@ -180,8 +180,11 @@ public sealed partial class MultiAgentResponseService
                 Dictionary<string, object?> item;
                 try
                 {
-                    using var json = JsonDocument.Parse(message.ToArray());
-                    item = WebSearchPayload.FromJsonElement(json.RootElement) as Dictionary<string, object?>
+                    if (!message.TryGetBuffer(out var messageBuffer))
+                        throw new JsonException("The WebSocket message buffer is unavailable.");
+                    await using var payload = JsonPayload.FromOwnedUtf8(
+                        messageBuffer.AsMemory(0, checked((int)message.Length)));
+                    item = await payload.MaterializeObjectAsync(ct)
                         ?? throw new JsonException("A JSON object is required.");
                 }
                 catch (JsonException)
@@ -346,7 +349,8 @@ public sealed partial class MultiAgentResponseService
                         await ErrorAndClose("response.inject requires response_id and a non-empty input array of objects.");
                         return new EmptyResult();
                     }
-                    if(!active.IsCompleted&&injections is not null)
+                    var responseCompleted = terminalResponseId == responseId;
+                    if(!responseCompleted && !active.IsCompleted && injections is not null)
                     {
                         var weight=InjectionWeight(input,streamingLimits.MaxPendingInjectionBytes);
                         var charged=Interlocked.Add(ref pendingInjectionBytes,weight);

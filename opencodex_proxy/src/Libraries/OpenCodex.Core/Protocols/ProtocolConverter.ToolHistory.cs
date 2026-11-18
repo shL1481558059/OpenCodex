@@ -27,12 +27,14 @@ public static partial class ProtocolConverter
             {
                 if (folded.Count > 0 && TryAsObject(folded[^1], out var previous) && GetString(previous, "role") == "assistant")
                 {
-                    AppendReasoningContent(previous, GetValue(message, "reasoning_content"));
-                    MergeThinkingEncrypted(previous, message);
+                    var owned = new Dictionary<string, object?>(previous, StringComparer.Ordinal);
+                    AppendReasoningContent(owned, GetValue(message, "reasoning_content"));
+                    MergeThinkingEncrypted(owned, message);
+                    folded[^1] = owned;
                 }
                 else if (pendingReasoning is null)
                 {
-                    pendingReasoning = AsObject(DeepCopy(message));
+                    pendingReasoning = new Dictionary<string, object?>(message, StringComparer.Ordinal);
                 }
                 else
                 {
@@ -45,7 +47,7 @@ public static partial class ProtocolConverter
 
             if (GetString(message, "role") == "assistant" && pendingReasoning is not null)
             {
-                message = AsObject(DeepCopy(message));
+                message = new Dictionary<string, object?>(message, StringComparer.Ordinal);
                 AppendReasoningContent(message, GetValue(pendingReasoning, "reasoning_content"));
                 MergeThinkingEncrypted(message, pendingReasoning);
                 pendingReasoning = null;
@@ -110,11 +112,15 @@ public static partial class ProtocolConverter
             {
                 if (pending is null)
                 {
-                    pending = AsObject(DeepCopy(message));
+                    pending = message;
                 }
                 else
                 {
-                    ListValue(pending, "tool_calls").AddRange(ListValue(message, "tool_calls").Select(DeepCopy));
+                    var owned = new Dictionary<string, object?>(pending, StringComparer.Ordinal);
+                    var calls = new List<object?>(ListValue(owned, "tool_calls"));
+                    calls.AddRange(ListValue(message, "tool_calls"));
+                    owned["tool_calls"] = calls;
+                    pending = owned;
                 }
 
                 continue;
@@ -158,8 +164,8 @@ public static partial class ProtocolConverter
                 && TryAsObject(merged[^1], out var previous)
                 && IsAssistantTextOnlyMessage(previous))
             {
-                var target = AsObject(DeepCopy(previous));
-                target["tool_calls"] = ListValue(message, "tool_calls").Select(DeepCopy).ToList();
+                var target = new Dictionary<string, object?>(previous, StringComparer.Ordinal);
+                target["tool_calls"] = new List<object?>(ListValue(message, "tool_calls"));
                 AppendReasoningContent(target, GetValue(message, "reasoning_content"));
                 MergeThinkingEncrypted(target, message);
                 merged[^1] = target;

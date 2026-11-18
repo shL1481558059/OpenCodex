@@ -4,9 +4,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using OpenCodex.Core.Services.Caching;
-using OpenCodex.CoreBase.Abstractions;
 using StackExchange.Redis;
-using D = System.Collections.Generic.Dictionary<string, object?>;
 
 namespace OpenCodex.Core.Services.MultiAgent;
 
@@ -58,36 +56,6 @@ public sealed class NativeClientStateCache
     internal Task RemoveGroupAsync(Guid owner, string rootThreadId, CancellationToken ct)
         => DeleteAsync(GroupKey(owner, rootThreadId), ct);
 
-    internal Task<NativeClientCachedResponse?> GetResponseAsync(Guid owner, string threadId, string responseId, CancellationToken ct)
-        => GetAsync<NativeClientCachedResponse>(
-            ResponseKey(owner, threadId, responseId),
-            value => value.Version == 1 && value.Owner == owner && value.ThreadId == threadId
-                && value.ResponseId == responseId,
-            refresh: true,
-            ct);
-
-    internal Task<NativeClientCachedResponse?> GetReplayAsync(Guid owner, string threadId, string replayKey, CancellationToken ct)
-        => GetAsync<NativeClientCachedResponse>(
-            ReplayKey(owner, threadId, replayKey),
-            value => value.Version == 1 && value.Owner == owner && value.ThreadId == threadId
-                && value.ReplayKey == replayKey,
-            refresh: true,
-            ct);
-
-    internal Task SetResponseAsync(NativeClientCachedResponse response, CancellationToken ct)
-        => SetResponseValueAsync(ResponseKey(response.Owner, response.ThreadId, response.ResponseId), response, ct);
-
-    internal Task SetReplayAsync(NativeClientCachedResponse response, CancellationToken ct)
-        => response.ReplayKey.Length == 0
-            ? Task.CompletedTask
-            : SetResponseValueAsync(ReplayKey(response.Owner, response.ThreadId, response.ReplayKey), response, ct);
-
-    internal Task RemoveResponseAsync(Guid owner, string threadId, string responseId, CancellationToken ct)
-        => DeleteAsync(ResponseKey(owner, threadId, responseId), ct);
-
-    internal Task RemoveReplayAsync(Guid owner, string threadId, string replayKey, CancellationToken ct)
-        => DeleteAsync(ReplayKey(owner, threadId, replayKey), ct);
-
     private async Task<T?> GetAsync<T>(string key, Func<T, bool> valid, bool refresh, CancellationToken ct) where T : class
     {
         ct.ThrowIfCancellationRequested();
@@ -125,9 +93,6 @@ public sealed class NativeClientStateCache
             return null;
         }
     }
-
-    private Task SetResponseValueAsync(string key, NativeClientCachedResponse response, CancellationToken ct)
-        => SetAsync(key, response, ct);
 
     private Task SetAsync<T>(string key, T value, CancellationToken ct)
     {
@@ -225,12 +190,6 @@ public sealed class NativeClientStateCache
     private static string GroupKey(Guid owner, string rootThreadId)
         => $"native-client:group:{owner:N}:{Hash(rootThreadId)}";
 
-    private static string ResponseKey(Guid owner, string threadId, string responseId)
-        => $"native-client:response:{owner:N}:{Hash(threadId)}:{Hash(responseId)}";
-
-    private static string ReplayKey(Guid owner, string threadId, string replayKey)
-        => $"native-client:replay:{owner:N}:{Hash(threadId)}:{replayKey}";
-
     private static string Hash(string value)
         => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 }
@@ -254,25 +213,4 @@ internal sealed class NativeClientCachedGroup
     public string RootThreadId { get; set; } = "";
     public int MaxConcurrentSubagents { get; set; }
     public List<NativeClientCachedSession> Sessions { get; set; } = [];
-}
-
-internal sealed class NativeClientCachedResponse
-{
-    public int Version { get; set; } = 1;
-    public Guid Owner { get; set; }
-    public string ThreadId { get; set; } = "";
-    public string ResponseId { get; set; } = "";
-    public string ReplayKey { get; set; } = "";
-    public string PayloadJson { get; set; } = "";
-    public string ResponseJson { get; set; } = "";
-
-    public D Payload() => Parse(PayloadJson);
-
-    public D Response() => Parse(ResponseJson);
-
-    private static D Parse(string json)
-    {
-        using var document = JsonDocument.Parse(json);
-        return (D)WebSearchPayload.FromJsonElement(document.RootElement)!;
-    }
 }

@@ -319,7 +319,6 @@ public sealed class ResponsesUpstreamTransport : IDisposable
 
         var history = JsonDictionaryValue.List(snapshot.Request, "input")
             .Concat(JsonDictionaryValue.List(snapshot.Response, "output"))
-            .Select(WebSearchPayload.DeepCopy)
             .ToList();
         var delta = PrefixDelta(history, currentInput);
         if (delta is null)
@@ -328,10 +327,10 @@ public sealed class ResponsesUpstreamTransport : IDisposable
             return new StreamPlan(request, request, null);
         }
 
-        var logical = WebSearchPayload.DeepCopyObject(request);
-        logical["input"] = history.Concat(delta).Select(WebSearchPayload.DeepCopy).ToList();
+        var logical = new Dictionary<string, object?>(request, StringComparer.Ordinal);
+        logical["input"] = history.Concat(delta).ToList();
         logical.Remove("previous_response_id");
-        var outgoing = WebSearchPayload.DeepCopyObject(request);
+        var outgoing = new Dictionary<string, object?>(request, StringComparer.Ordinal);
         outgoing["input"] = delta;
         outgoing["previous_response_id"] = JsonDictionaryValue.String(snapshot.Response, "id");
         return new StreamPlan(logical, outgoing, JsonDictionaryValue.String(snapshot.Response, "id"));
@@ -349,7 +348,7 @@ public sealed class ResponsesUpstreamTransport : IDisposable
                 return null;
             }
         }
-        return current.Skip(history.Count).Select(WebSearchPayload.DeepCopy).ToList();
+        return current.Skip(history.Count).ToList();
     }
 
     private static List<string> IncompatibleProperties(
@@ -397,7 +396,7 @@ public sealed class ResponsesUpstreamTransport : IDisposable
             _logger.LogWarning("Responses context exceeds cache budget; continuation requires full history. context_scope={ContextScope}",scope);
             return;
         }
-        var snapshot=new ContextSnapshot { Request=WebSearchPayload.DeepCopyObject(request),Response=WebSearchPayload.DeepCopyObject(response),
+        var snapshot=new ContextSnapshot { Request=new Dictionary<string,object?>(request,StringComparer.Ordinal),Response=new Dictionary<string,object?>(response,StringComparer.Ordinal),
             LastUsed=_time.GetUtcNow(),Tenant=tenant,Scope=scope,Weight=weight };
         lock(_storeGate)
         {
@@ -460,19 +459,19 @@ public sealed class ResponsesUpstreamTransport : IDisposable
 
     private static Dictionary<string, object?> FullReplay(Dictionary<string, object?> logical)
     {
-        var full = WebSearchPayload.DeepCopyObject(logical);
+        var full = new Dictionary<string, object?>(logical, StringComparer.Ordinal);
         full.Remove("previous_response_id");
         return full;
     }
 
     private static Dictionary<string, object?> PassthroughRequest(ProxyStreamContext context)
     {
-        var outgoing = WebSearchPayload.DeepCopyObject(context.UpstreamRequest);
+        var outgoing = new Dictionary<string, object?>(context.UpstreamRequest, StringComparer.Ordinal);
         var originalInput = JsonDictionaryValue.Get(context.OriginalPayload, "input");
         if (originalInput is null)
             outgoing.Remove("input");
         else
-            outgoing["input"] = WebSearchPayload.DeepCopy(originalInput);
+            outgoing["input"] = originalInput;
 
         var previousId = JsonDictionaryValue.String(context.OriginalPayload, "previous_response_id");
         if (previousId.Length == 0)
@@ -552,7 +551,10 @@ public sealed class ResponsesUpstreamTransport : IDisposable
     {
         if (JsonDictionaryValue.String(payload, "type") is "response.completed" or "response.incomplete")
         {
-            var response = JsonDictionaryValue.Object(payload, "response", WebSearchPayload.DeepCopyObject);
+            var response = JsonDictionaryValue.Object(
+                payload,
+                "response",
+                static source => new Dictionary<string, object?>(source, StringComparer.Ordinal));
             if (response.Count > 0) terminal = response;
         }
     }
@@ -593,7 +595,7 @@ public sealed class ResponsesUpstreamTransport : IDisposable
                 }
             ];
         }
-        return JsonDictionaryValue.List(request, "input").Select(WebSearchPayload.DeepCopy).ToList();
+        return JsonDictionaryValue.List(request, "input");
     }
 
     private static int InputItemCount(IReadOnlyDictionary<string, object?> request)

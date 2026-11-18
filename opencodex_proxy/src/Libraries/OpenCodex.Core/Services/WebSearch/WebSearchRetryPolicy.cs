@@ -27,7 +27,7 @@ internal static class ToolContractRetryPolicy
         IEnumerable<string> declaredToolNames,
         string? webSearchToolName = null)
     {
-        var result = DeepCopyObject(request);
+        var result = new Dictionary<string, object?>(request, StringComparer.Ordinal);
         var names = declaredToolNames
             .Where(name => name.Length > 0)
             .Distinct(StringComparer.Ordinal)
@@ -61,10 +61,10 @@ internal static class ToolContractRetryPolicy
         Dictionary<string, object?> request,
         string instruction)
     {
-        var messages = ListValue(request, "messages");
-        var system = messages
-            .OfType<Dictionary<string, object?>>()
-            .FirstOrDefault(message => StringValue(message, "role") == "system");
+        var messages = new List<object?>(ListValue(request, "messages"));
+        var systemIndex = messages.FindIndex(item =>
+            item is Dictionary<string, object?> message && StringValue(message, "role") == "system");
+        var system = systemIndex >= 0 ? messages[systemIndex] as Dictionary<string, object?> : null;
         if (system is null)
         {
             messages.Insert(0, new Dictionary<string, object?>
@@ -76,7 +76,12 @@ internal static class ToolContractRetryPolicy
             return;
         }
 
-        system["content"] = AppendTextContent(GetValue(system, "content"), instruction);
+        var ownedSystem = new Dictionary<string, object?>(system, StringComparer.Ordinal)
+        {
+            ["content"] = AppendTextContent(GetValue(system, "content"), instruction)
+        };
+        messages[systemIndex] = ownedSystem;
+        request["messages"] = messages;
     }
 
     private static void AppendMessagesSystemInstruction(
@@ -100,7 +105,7 @@ internal static class ToolContractRetryPolicy
 
         if (TryAsList(current, out var blocks))
         {
-            var copy = blocks.Select(DeepCopy).ToList();
+            var copy = new List<object?>(blocks);
             copy.Add(new Dictionary<string, object?>
             {
                 ["type"] = "text",

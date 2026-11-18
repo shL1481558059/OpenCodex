@@ -77,9 +77,14 @@ internal sealed class WebSearchStreamEventState
         out Dictionary<string, object?> finalResponse)
     {
         var eventName = frame.Event?.EventName ?? "message";
-        var payload = frame.Event?.Data is IReadOnlyDictionary<string, object?> source ? DeepCopyObject(source) : null;
+        var payload = frame.Event?.Data is IReadOnlyDictionary<string, object?> source
+            ? new Dictionary<string, object?>(source, StringComparer.Ordinal)
+            : null;
         payload ??= new Dictionary<string, object?>();
-        var response = ObjectValue(payload, "response");
+        var response = TryAsObject(GetValue(payload, "response"), out var sourceResponse)
+            ? new Dictionary<string, object?>(sourceResponse, StringComparer.Ordinal)
+            : new Dictionary<string, object?>(StringComparer.Ordinal);
+        payload["response"] = response;
         response["id"] = _responseId ?? StringValue(response, "id");
         if (_createdAt is not null)
         {
@@ -99,8 +104,8 @@ internal sealed class WebSearchStreamEventState
                 ?? GetValue(response, "incomplete_details");
         }
         payload["response"] = response;
-        finalResponse = DeepCopyObject(response);
-        return Emit(eventName, payload);
+        finalResponse = new Dictionary<string, object?>(response, StringComparer.Ordinal);
+        return SseFrame.FromOwnedJson(payload, eventName);
     }
 
     public string Fail(string code, string message, out Dictionary<string, object?> finalResponse) =>

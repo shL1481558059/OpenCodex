@@ -317,7 +317,11 @@ internal sealed class StreamCaptureBudget : IDisposable
     private readonly CancellationToken _cancellation;
     private readonly int _maxFields;
     private readonly List<CaptureText> _texts=[];
+    private readonly List<CaptureBinary> _binaries=[];
     public bool IsStrict => _spool is not null;
+    internal ProxyAuditSpool? Spool => _spool;
+    internal CancellationToken CancellationToken => _cancellation;
+    internal int MemoryThresholdBytes => _spool?.MemoryThresholdBytes ?? int.MaxValue;
     internal StreamCaptureBudget(int maxBytes,int maxItems,int maxFields,ProxyAuditSpool spool,CancellationToken cancellationToken)
         :this(maxBytes,maxItems)
     { if(maxBytes<=0 || maxItems<=0 || maxFields<=0)throw new ArgumentOutOfRangeException(nameof(maxBytes));_spool=spool;_cancellation=cancellationToken;_maxFields=maxFields; }
@@ -326,7 +330,12 @@ internal sealed class StreamCaptureBudget : IDisposable
         if(IsStrict && _texts.Count>=_maxFields)throw new UpstreamException("Complete stream audit exceeds its field budget; no content was truncated.");
         var text=new CaptureText(_spool,_cancellation);_texts.Add(text);return text;
     }
-    public void Dispose() { foreach(var text in _texts)text.Dispose();_texts.Clear();_eventText.Clear(); }
+    internal CaptureBinary CreateBinary()
+    {
+        if(IsStrict && _binaries.Count>=_maxFields)throw new UpstreamException("Complete stream audit exceeds its field budget; no content was truncated.");
+        var binary=new CaptureBinary(this);_binaries.Add(binary);return binary;
+    }
+    public void Dispose() { foreach(var binary in _binaries)binary.Dispose();_binaries.Clear();foreach(var text in _texts)text.Dispose();_texts.Clear();_eventText.Clear(); }
     // One event-scoped lookup: keys are parsed OBJECT IDENTITY + semantic field, not
     // equal delta text. It is cleared before the next Accept; no history/delta cache.
     private readonly Dictionary<CaptureField,CapturedTextSlice?> _eventText = new(new CaptureFieldComparer());
@@ -356,6 +365,13 @@ internal sealed class StreamCaptureBudget : IDisposable
         if(string.IsNullOrEmpty(fragment))return;
         if(IsStrict) { Consume(Encoding.UTF8.GetByteCount(fragment));target.Append(fragment);return; }
         target.AppendLegacy(this,fragment);
+    }
+    internal void Spend(long bytes)
+    {
+        if (bytes <= 0) return;
+        if (bytes > _remainingBytes)
+            throw new UpstreamException("Complete stream audit exceeds its byte budget; no content was truncated.");
+        _remainingBytes -= checked((int)bytes);
     }
 
     public StreamCaptureBudget(

@@ -126,7 +126,7 @@ public sealed class ProxyLogService : IProxyLogService
             nameof(RequestLog.ProcessingStartedAt));
 
         _contentStore.WriteBodies(requestLogId, [RequestLogContentSlot.UpstreamRequestBody],
-            _ => context.UpstreamRequestBody ?? ProxyLogBodyHandle.CaptureJson(context.UpstreamRequest));
+            _ => context.UpstreamRequestBody ?? _auditSpool.CaptureJson(context.UpstreamRequest));
         PublishLogWritten(requestLogId, ownerUsername, 0, null);
     }
 

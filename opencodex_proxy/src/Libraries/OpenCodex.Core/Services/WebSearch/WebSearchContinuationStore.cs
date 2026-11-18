@@ -224,7 +224,7 @@ public sealed class WebSearchContinuationStore(
                 output.AddRange(pendingResults);
                 pendingResults.Clear();
             }
-            output.Add(DeepCopy(value));
+            output.Add(value);
         }
 
         output.AddRange(pendingResults);

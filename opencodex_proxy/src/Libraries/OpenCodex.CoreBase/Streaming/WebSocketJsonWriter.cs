@@ -8,20 +8,29 @@ namespace OpenCodex.Core.Protocols;
 public static class WebSocketJsonWriter
 {
     public static async Task SendAsync(WebSocket socket,IReadOnlyDictionary<string,object?> payload,int maxBytes,CancellationToken ct)
+        => await SendAsync(socket,payload,maxBytes,ct,null,null);
+
+    public static async Task SendAsync(
+        WebSocket socket,
+        IReadOnlyDictionary<string,object?> payload,
+        int maxBytes,
+        CancellationToken ct,
+        string? typeOverride,
+        IReadOnlySet<string>? excludedProperties)
     {
         ct.ThrowIfCancellationRequested();
         if(maxBytes<=0)throw new ArgumentOutOfRangeException(nameof(maxBytes));
-        if(GeneratedSseSerialization.IsSmall(payload,null)&&IsPlainJson(payload))
+        if(typeOverride is null&&excludedProperties is null&&GeneratedSseSerialization.IsSmall(payload,null)&&IsPlainJson(payload))
         {
             var bytes=JsonSerializer.SerializeToUtf8Bytes(payload);if(bytes.Length>maxBytes)throw new InvalidDataException("WebSocket event exceeds configured MaxEventBytes.");
             await socket.SendAsync(bytes,WebSocketMessageType.Text,true,ct);return;
         }
         // Preflight the complete event BEFORE any fragment is attempted. This uses
         // the same default encoder as the old JsonSerializer wire, not relaxed SSE JSON.
-        using(var count=new CountStream(maxBytes,ct))using(var json=new Utf8JsonWriter(count))ProxyAuditSpool.WriteJson(json,payload,0);
+        using(var count=new CountStream(maxBytes,ct))using(var json=new Utf8JsonWriter(count))WriteRoot(json,payload,typeOverride,excludedProperties);
         var buffer=new ArrayBufferWriter<byte>(16*1024);using var writer=new Utf8JsonWriter(buffer);var sent=0;
-        await Value(payload,0);await Drain(true);
-        async ValueTask Value(object? value,int depth)
+        await Value(payload,0,true);await Drain(true);
+        async ValueTask Value(object? value,int depth,bool root=false)
         {
             ct.ThrowIfCancellationRequested();if(depth>64)throw new JsonException("JSON depth limit exceeded.");
             switch(value)
@@ -35,7 +44,14 @@ public static class WebSocketJsonWriter
                     }
                     break;
                 case IReadOnlyDictionary<string,object?> map:
-                    writer.WriteStartObject();foreach(var pair in map){writer.WritePropertyName(pair.Key);await Value(pair.Value,depth+1);}writer.WriteEndObject();break;
+                    writer.WriteStartObject();
+                    if(root&&typeOverride is not null)writer.WriteString("type",typeOverride);
+                    foreach(var pair in map)
+                    {
+                        if(root&&(pair.Key=="type"&&typeOverride is not null||excludedProperties?.Contains(pair.Key)==true))continue;
+                        writer.WritePropertyName(pair.Key);await Value(pair.Value,depth+1);
+                    }
+                    writer.WriteEndObject();break;
                 case IReadOnlyList<object?> items:
                     writer.WriteStartArray();foreach(var item in items)await Value(item,depth+1);writer.WriteEndArray();break;
                 default:JsonSerializer.Serialize(writer,value);break;
@@ -49,6 +65,23 @@ public static class WebSocketJsonWriter
             sent+=buffer.WrittenCount;
             await socket.SendAsync(buffer.WrittenMemory,WebSocketMessageType.Text,final,ct);buffer.Clear();
         }
+    }
+
+    private static void WriteRoot(
+        Utf8JsonWriter writer,
+        IReadOnlyDictionary<string,object?> payload,
+        string? typeOverride,
+        IReadOnlySet<string>? excludedProperties)
+    {
+        writer.WriteStartObject();
+        if(typeOverride is not null)writer.WriteString("type",typeOverride);
+        foreach(var pair in payload)
+        {
+            if(pair.Key=="type"&&typeOverride is not null||excludedProperties?.Contains(pair.Key)==true)continue;
+            writer.WritePropertyName(pair.Key);
+            ProxyAuditSpool.WriteJson(writer,pair.Value,1);
+        }
+        writer.WriteEndObject();
     }
     // Unknown extension DTOs may hide a large string: they cannot use the small
     // whole-message allocation path merely because their CLR wrapper is small.

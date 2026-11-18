@@ -234,8 +234,11 @@ public sealed class ResponsesWebSocketClientService(
 
             try
             {
-                using var json = JsonDocument.Parse(message.ToArray());
-                return WebSearchPayload.FromJsonElement(json.RootElement) as Dictionary<string, object?>
+                if (!message.TryGetBuffer(out var messageBuffer))
+                    throw new JsonException("The WebSocket message buffer is unavailable.");
+                await using var payload = JsonPayload.FromOwnedUtf8(
+                    messageBuffer.AsMemory(0, checked((int)message.Length)));
+                return await payload.MaterializeObjectAsync(ct)
                     ?? throw new JsonException("A JSON object is required.");
             }
             catch (JsonException)

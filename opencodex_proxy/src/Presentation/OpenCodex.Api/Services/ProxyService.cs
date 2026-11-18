@@ -304,7 +304,11 @@ public sealed class ProxyService : IProxyService
         HttpResponse response)
     {
         var started = Stopwatch.GetTimestamp();
-        var payload = await _bodyReader.ReadJsonObjectAsync(request, request.HttpContext.RequestAborted);
+        await using var payloadSource = await _bodyReader.ReadJsonPayloadAsync(
+            request, request.HttpContext.RequestAborted);
+        var payload = payloadSource is null
+            ? null
+            : await payloadSource.MaterializeObjectAndReleaseAsync(request.HttpContext.RequestAborted);
         if (entryProtocol == ProtocolConverter.Responses && payload is not null)
         {
             var services = request.HttpContext.RequestServices;
@@ -375,7 +379,8 @@ public sealed class ProxyService : IProxyService
                     request,
                     request.HttpContext.Connection.RemoteIpAddress?.ToString()),
                 new ProxyStreamResponseWriter(response),
-                request.HttpContext.RequestAborted));
+                request.HttpContext.RequestAborted,
+                payloadSource: payloadSource));
         if (result.IsEmpty)
         {
             return new EmptyResult();

@@ -13,11 +13,10 @@ public static class ProxyRequestMetadataFactory
             request.Method,
             request.Path.ToString(),
             clientIp,
-            headers,
-            raw)
+            headers)
         {
-            LogBodies = raw is { Length: > 0 } bytes
-                ? new ProxyLogBodyHandles(ProxyLogBodyHandle.CaptureJson(headers), ProxyLogBodyHandle.FromOwnedUtf8(bytes))
+            LogBodies = raw is not null
+                ? new ProxyLogBodyHandles(ProxyLogBodyHandle.CaptureJson(headers), raw)
                 : null
         };
     }

@@ -96,7 +96,7 @@ internal sealed class BuiltinToolSession(
         {
             ["iteration"] = _rounds.Count + 1,
             ["after_limit"] = _searchDisabled,
-            ["request"] = DeepCopyObject(request),
+            ["request"] = request,
             ["usage"] = DeepCopyObject(ObjectValue(response, "usage")),
             ["tool_calls"] = calls.Select(call => (object?)new Dictionary<string, object?>
             {

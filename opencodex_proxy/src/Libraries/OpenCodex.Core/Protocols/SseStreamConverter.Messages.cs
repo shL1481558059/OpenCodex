@@ -889,10 +889,12 @@ public static partial class SseStreamConverter
 
         var incomplete = stopReason == "max_tokens";
 
-        yield return Emit(
-            incomplete ? "response.incomplete" : "response.completed",
+        var terminalEvent = incomplete ? "response.incomplete" : "response.completed";
+        yield return SseFrame.FromOwnedJson(
             new Dictionary<string, object?>
             {
+                ["type"] = terminalEvent,
+                ["sequence_number"] = sequenceNumber,
                 ["response"] = new Dictionary<string, object?>
                 {
                     ["id"] = responseId,
@@ -910,7 +912,8 @@ public static partial class SseStreamConverter
                         ? new Dictionary<string, object?> { ["reason"] = "max_output_tokens" }
                         : null
                 }
-            });
+            },
+            terminalEvent);
     }
 
     private static string BuildThinkingEncryptedContent(

@@ -95,7 +95,7 @@ public sealed partial class MultiAgentResponseService
     {
         var executor = new NativeClientResponseExecutor(NativeSessions,StreamingOptions(),HttpContext.RequestServices.GetService<ProxyAuditSpool>());
         var response = await executor.ExecuteWarmupAsync(session, request, "", ct);
-        var created = WebSearchPayload.DeepCopyObject(response);
+        var created = new Dictionary<string, object?>(response, StringComparer.Ordinal);
         created["status"] = "in_progress";
         await emit(new Dictionary<string, object?>
         {

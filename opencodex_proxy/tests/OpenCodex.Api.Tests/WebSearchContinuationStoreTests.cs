@@ -16,6 +16,30 @@ public sealed class WebSearchContinuationStoreTests
     private static readonly Guid OwnerUserId = Guid.Parse("44444444-4444-4444-4444-444444444444");
 
     [Fact]
+    public async Task Restore_ReusesUnchangedHistoryItems()
+    {
+        using var context = OpenCodexDbContextFactory.Create("sqlite", "Data Source=:memory:");
+        var store = CreateStore(context);
+        var history = new Dictionary<string, object?>
+        {
+            ["role"] = "user",
+            ["content"] = new string('x', 1024 * 1024)
+        };
+        var payload = new Dictionary<string, object?>
+        {
+            ["input"] = new List<object?> { history }
+        };
+
+        await store.RestoreAsync(
+            payload,
+            OwnerUserId,
+            WebSearchRequestPolicy.ToolName,
+            CancellationToken.None);
+
+        Assert.Same(history, Assert.Single(ListValue(payload, "input")));
+    }
+
+    [Fact]
     public async Task SavedResult_RestoresAcrossStoreAndContextInstances()
     {
         var dbPath = NewDbPath();

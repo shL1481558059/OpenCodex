@@ -72,6 +72,24 @@ public sealed class GeneratedSseFrameTests
         Assert.Throws<JsonException>(() => SseFrame.FromJson(cycle));
     }
 
+    [Fact]
+    public void OwnedGeneratedFrameKeepsTheCallerOwnedGraphWithoutFreezingIt()
+    {
+        var output = new List<object?> { new Dictionary<string, object?> { ["text"] = "large" } };
+        var payload = new Dictionary<string, object?>
+        {
+            ["type"] = "response.completed",
+            ["response"] = new Dictionary<string, object?> { ["output"] = output }
+        };
+
+        var frame = SseFrame.FromOwnedJson(payload, "response.completed");
+
+        Assert.Same(payload, frame.Event!.Data);
+        Assert.Same(output, Assert.IsType<Dictionary<string, object?>>(
+            Assert.IsType<Dictionary<string, object?>>(frame.Event.Data)["response"])["output"]);
+        Assert.Contains("large", frame.WireText, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("chat", "responses")]
     [InlineData("chat", "messages")]

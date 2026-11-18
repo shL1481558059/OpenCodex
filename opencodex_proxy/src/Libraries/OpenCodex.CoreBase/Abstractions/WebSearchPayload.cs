@@ -31,13 +31,18 @@ public static class WebSearchPayload
                 StringComparer.Ordinal),
             JsonValueKind.Array => element.EnumerateArray().Select(FromJsonElement).ToList(),
             JsonValueKind.String => element.GetString(),
-            JsonValueKind.Number => element.TryGetInt64(out var longValue)
-                ? longValue is >= int.MinValue and <= int.MaxValue ? (int)longValue : longValue
-                : element.GetDouble(),
+            JsonValueKind.Number => NumberValue(element),
             JsonValueKind.True => true,
             JsonValueKind.False => false,
             _ => null
         };
+    }
+
+    private static object NumberValue(JsonElement element)
+    {
+        if (!element.TryGetInt64(out var longValue)) return element.GetDouble();
+        if (longValue is >= int.MinValue and <= int.MaxValue) return (int)longValue;
+        return longValue;
     }
 
     /// <summary>

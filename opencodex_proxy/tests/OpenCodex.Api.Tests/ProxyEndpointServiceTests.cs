@@ -15,6 +15,44 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class ProxyEndpointServiceTests
 {
+    [Fact]
+    public async Task ProxyAsync_CapturesUpstreamBodyThroughAuditSpool()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "opencodex-endpoint-spool-" + Guid.NewGuid().ToString("N"));
+        var spool = new ProxyAuditSpool(new ProxyAuditSpoolOptions
+        {
+            Directory = directory,
+            MemoryThresholdBytes = 0,
+            MaxBodyBytes = 4 * 1024 * 1024,
+            MaxTotalBytes = 16 * 1024 * 1024,
+            MaxFiles = 8,
+            OrphanAgeSeconds = 60
+        });
+        var logs = new StubProxyLogService();
+        var channel = CreateChannel("spool", 0);
+        var service = CreateService(
+            new ChannelCapacityService(),
+            new StubProxyRouteService([CreateRoute(channel, "model", "upstream")]),
+            logs: logs,
+            auditSpool: spool);
+
+        try
+        {
+            await service.ProxyAsync(CreateChatContext(CreateChatPayload("model")));
+
+            var processing = Assert.Single(logs.ProcessingContexts);
+            var body = Assert.IsType<ProxyLogBodyHandle>(processing.UpstreamRequestBody);
+            var snapshot = body.ReadSnapshot();
+            Assert.Null(snapshot.Utf8);
+            Assert.NotNull(snapshot.Spool);
+            body.Dispose();
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -1482,7 +1520,8 @@ public sealed class ProxyEndpointServiceTests
         IProxyNonStreamService? nonStreams = null,
         IProxyStreamService? streams = null,
         IProxyLogService? logs = null,
-        IWebSearchToolExecutor? webSearch = null)
+        IWebSearchToolExecutor? webSearch = null,
+        ProxyAuditSpool? auditSpool = null)
     {
         return new ProxyEndpointService(
             logs ?? new StubProxyLogService(),
@@ -1498,7 +1537,8 @@ public sealed class ProxyEndpointServiceTests
             streams ?? new StubProxyStreamService(_ => Task.CompletedTask),
             webSearch ?? new StubWebSearchToolExecutor(),
             WebSearchTestStore.Create(),
-            new MultiAgentRepeatGuard());
+            new MultiAgentRepeatGuard(),
+            auditSpool);
     }
 
     private static ProxyEndpointContext CreateChatContext(string model)
@@ -1784,6 +1824,8 @@ public sealed class ProxyEndpointServiceTests
 
         public List<ProxyLogContext> WrittenLogs { get; } = [];
 
+        public List<ProxyRequestLogProcessingContext> ProcessingContexts { get; } = [];
+
         public Guid CreateQueuedLog(ProxyRequestLogQueuedContext context)
         {
             return context.RequestType == ProxyRequestTypes.Attempt ? Guid.NewGuid() : QueuedLogId;
@@ -1791,6 +1833,7 @@ public sealed class ProxyEndpointServiceTests
 
         public void MarkProcessing(Guid requestLogId, ProxyRequestLogProcessingContext context)
         {
+            ProcessingContexts.Add(context);
         }
 
         public Task CompleteLogAsync(Guid requestLogId, ProxyLogContext context, ProxyRequestMetadata request)

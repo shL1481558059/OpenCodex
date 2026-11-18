@@ -66,14 +66,9 @@ public sealed partial class HttpUpstreamClient
     /// 直接产出字节，避免 <see cref="StringContent"/> 持有整份 UTF-16 字符串并在发送时再次编码；
     /// 线缆字节与旧实现一致。
     /// </remarks>
-    private static ByteArrayContent JsonBodyContent(IReadOnlyDictionary<string, object?> payload)
+    private static HttpContent JsonBodyContent(IReadOnlyDictionary<string, object?> payload)
     {
-        var content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(payload, JsonOptions));
-        content.Headers.ContentType = new MediaTypeHeaderValue("application/json")
-        {
-            CharSet = "utf-8"
-        };
-        return content;
+        return new JsonStreamBodyContent(payload, "application/json");
     }
 
     private static HttpRequestMessage BuildGetRequest(

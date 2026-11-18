@@ -33,6 +33,7 @@ public sealed class ProxyAuditSpool
     private int _inheritedFiles;
     private readonly HashSet<string> _ownedPaths = new(StringComparer.Ordinal);
     internal Func<string, FileStreamOptions, Stream> CreateFile { get; init; } = (path, options) => new FileStream(path, options);
+    internal int MemoryThresholdBytes => _memoryThreshold;
     public ProxyAuditSpool(ProxyAuditSpoolOptions options)
     {
         if (options.MemoryThresholdBytes < 0 || options.MaxBodyBytes <= 0 || options.MaxBodyBytes > int.MaxValue || options.MaxTotalBytes <= 0 || options.MaxFiles <= 0 || options.OrphanAgeSeconds <= 0)
@@ -53,6 +54,18 @@ public sealed class ProxyAuditSpool
             using(var writer=new Utf8JsonWriter(body,new() { Encoder=JavaScriptEncoder.UnsafeRelaxedJsonEscaping }))
             { WriteJson(writer,value,0);writer.Flush(); }
             body.Seal();return ProxyLogBodyHandle.FromSpool(body);
+        }
+        catch { body.Dispose();throw; }
+    }
+
+    public ProxyLogBodyHandle CaptureUtf8(ReadOnlySpan<byte> value, CancellationToken cancellationToken = default)
+    {
+        var body=CreateStaging(cancellationToken);
+        try
+        {
+            body.Write(value);
+            body.Seal();
+            return ProxyLogBodyHandle.FromSpool(body);
         }
         catch { body.Dispose();throw; }
     }

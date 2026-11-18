@@ -22,7 +22,15 @@ public sealed class NativeClientSession
 /// <summary>A single Responses request projection; it never schedules business tasks.</summary>
 public sealed class NativeClientRequest
 {
-    public Dictionary<string, object?> Payload { get; internal init; } = [];
+    private Dictionary<string, object?>? _payload;
+
+    public Dictionary<string, object?> Payload
+    {
+        get => _payload ??= PayloadLoader?.Invoke() ?? [];
+        internal init => _payload = value;
+    }
+
+    internal Func<Dictionary<string, object?>>? PayloadLoader { get; init; }
     public Dictionary<string, object?>? ReplayResponse { get; internal init; }
     internal NativeClientSession Session { get; init; } = null!;
     internal string ReplayKey { get; init; } = "";

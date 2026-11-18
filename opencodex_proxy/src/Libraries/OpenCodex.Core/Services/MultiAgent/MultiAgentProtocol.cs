@@ -20,7 +20,7 @@ public static class MultiAgentProtocol
 
     public static Dictionary<string, object?> NormalizeRequest(Dictionary<string, object?> request)
     {
-        var result = WebSearchPayload.DeepCopyObject(request);
+        var result = new Dictionary<string, object?>(request, StringComparer.Ordinal);
         result["tools"] = MergeClientTools([], JsonDictionaryValue.List(result, "tools")
             .Concat(AdditionalTools(result))).Concat(CreateTools()).ToList();
         foreach (var field in new[] { "input", "multi_agent", "previous_response_id", "conversation", "context_management" })
@@ -105,11 +105,16 @@ public static class MultiAgentProtocol
         {
             if (value is not IReadOnlyDictionary<string, object?> source)
                 throw new BadRequestException("Multi-agent input items must be objects.");
-            var item = WebSearchPayload.DeepCopyObject(source);
-            var type = JsonDictionaryValue.String(item, "type");
+            var type = JsonDictionaryValue.String(source, "type");
             if (type == "additional_tools") continue;
-            item.Remove("additional_tools");
-            item.Remove("agent");
+            IReadOnlyDictionary<string, object?> item = source;
+            if (source.ContainsKey("additional_tools") || source.ContainsKey("agent"))
+            {
+                var owned = new Dictionary<string, object?>(source, StringComparer.Ordinal);
+                owned.Remove("additional_tools");
+                owned.Remove("agent");
+                item = owned;
+            }
             if (type == "agent_message")
             {
                 var blocks = JsonDictionaryValue.List(item, "content");

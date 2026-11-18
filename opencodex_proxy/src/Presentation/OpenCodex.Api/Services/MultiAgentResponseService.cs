@@ -35,7 +35,7 @@ public sealed partial class MultiAgentResponseService(
         var options = JsonDictionaryValue.Object(request, "multi_agent", WebSearchPayload.DeepCopyObject);
         if (JsonDictionaryValue.Get(options, "enabled") is false)
         {
-            var direct = WebSearchPayload.DeepCopyObject(request);
+            var direct = new Dictionary<string, object?>(request, StringComparer.Ordinal);
             direct.Remove("multi_agent");
             var result = await proxyEndpoint.ProxyAsync(new ProxyEndpointContext(ProtocolConverter.Responses,
                 direct, new ProxyRequestMetadata(metadata.Method, metadata.Path, metadata.ClientIp, metadata.Headers),

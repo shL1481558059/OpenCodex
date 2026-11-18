@@ -87,7 +87,7 @@ public static partial class ProtocolConverter
         {
             if (TryAsObject(item, out var message))
             {
-                messages.Add(DeepCopy(message));
+                messages.Add(message);
             }
         }
 
@@ -230,7 +230,7 @@ public static partial class ProtocolConverter
             {
                 if (message.TryGetValue(key, out var value))
                 {
-                    converted[key] = DeepCopy(value);
+                    converted[key] = value;
                 }
             }
 

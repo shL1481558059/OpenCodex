@@ -44,6 +44,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
     private readonly IWebSearchToolExecutor _webSearch;
     private readonly WebSearchContinuationStore _webSearchHistory;
     private readonly MultiAgentRepeatGuard _multiAgentRepeatGuard;
+    private readonly ProxyAuditSpool _auditSpool;
 
     public ProxyEndpointService(
         IProxyLogService logs,
@@ -58,7 +59,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         IProxyStreamService streams,
         IWebSearchToolExecutor webSearch,
         WebSearchContinuationStore webSearchHistory,
-        MultiAgentRepeatGuard multiAgentRepeatGuard)
+        MultiAgentRepeatGuard multiAgentRepeatGuard,
+        ProxyAuditSpool? auditSpool = null)
     {
         _logs = logs;
         _requests = requests;
@@ -73,6 +75,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         _webSearch = webSearch;
         _webSearchHistory = webSearchHistory;
         _multiAgentRepeatGuard = multiAgentRepeatGuard;
+        _auditSpool = auditSpool ?? ProxyAuditSpool.Default;
     }
 
     public async Task<ProxyEndpointResult> ProxyAsync(ProxyEndpointContext context)
@@ -307,7 +310,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                     attemptUpstreamRequest = upstreamRequest;
                     requestMetadata = requestMetadata.WithLogBodies(requestMetadata.LogBodies! with
                     {
-                        UpstreamRequest = ProxyLogBodyHandle.CaptureJson(upstreamRequest)
+                        UpstreamRequest = _auditSpool.CaptureJson(upstreamRequest)
                     });
 
                     if (requestLogId.HasValue)
