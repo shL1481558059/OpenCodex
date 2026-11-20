@@ -38,6 +38,7 @@ public sealed class WebSearchToolExecutorTests
         var executor = CreateExecutor(db, client);
 
         Assert.Equal(WebSearchModes.Simulate, executor.CurrentMode());
+        Assert.True(executor.CurrentStrict());
         Assert.Equal(0, client.Calls);
         var first = await executor.ExecuteAsync("call_1", "{\"query\":\"test\"}", CancellationToken.None);
         var second = await executor.ExecuteAsync("call_2", "{\"query\":\"test\"}", CancellationToken.None);
@@ -130,6 +131,30 @@ public sealed class WebSearchToolExecutorTests
         Assert.Equal("completed", result.Status);
         Assert.Same(options, client.LastOptions);
         Assert.Equal(expectedResults, ((List<object?>)result.OpenCodexResult["results"]!).Count);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CurrentStrict_ReadsConfiguredValue(bool strict)
+    {
+        await using var db = await CreateDatabaseAsync();
+        var settings = await db.WebSearchSettings.SingleAsync();
+        settings.Strict = strict;
+        await db.SaveChangesAsync();
+
+        Assert.Equal(strict, CreateExecutor(db, new RecordingSearchClient()).CurrentStrict());
+    }
+
+    [Fact]
+    public async Task CurrentStrict_DefaultsToTrueWhenSettingsAreMissing()
+    {
+        await using var db = await CreateDatabaseAsync();
+        db.WebSearchSettings.RemoveRange(db.WebSearchSettings);
+        await db.SaveChangesAsync();
+
+        Assert.True(CreateExecutor(db, new RecordingSearchClient()).CurrentStrict());
+        Assert.Equal(WebSearchModes.Convert, CreateExecutor(db, new RecordingSearchClient()).CurrentMode());
     }
 
     private static WebSearchToolExecutor CreateExecutor(IOpenCodexDbContext db, IWebSearchClient client)

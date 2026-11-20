@@ -48,7 +48,8 @@ public static class WebSearchRequestPolicy
         string entryProtocol,
         string channelType,
         string ownerRole,
-        Guid ownerUserId = default)
+        Guid ownerUserId = default,
+        bool strict = true)
     {
         if (mode != WebSearchModes.Simulate
             || entryProtocol != ProtocolConverter.Responses
@@ -85,7 +86,7 @@ public static class WebSearchRequestPolicy
             ["type"] = "function",
             ["name"] = name,
             ["description"] = "Search the web for current information when needed. Results contain source URLs; cite relevant URLs in the answer.",
-            ["strict"] = true,
+            ["strict"] = strict,
             ["parameters"] = new Dictionary<string, object?>
             {
                 ["type"] = "object",

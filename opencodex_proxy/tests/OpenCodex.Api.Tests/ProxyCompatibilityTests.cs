@@ -441,6 +441,7 @@ public sealed partial class ProxyCompatibilityTests : IClassFixture<OpenCodexApi
         {
             var data = importDocument.RootElement.GetProperty("Data");
             Assert.Equal("simulate", data.GetProperty("mode").GetString());
+            Assert.True(data.GetProperty("strict").GetBoolean());
             Assert.Equal(456, data.GetProperty("default_key_usage_limit").GetInt32());
             var importedKey = data.GetProperty("keys").EnumerateArray().Single();
             Assert.Equal(80, importedKey.GetProperty("usage_limit").GetInt32());
@@ -455,10 +456,77 @@ public sealed partial class ProxyCompatibilityTests : IClassFixture<OpenCodexApi
         using var readDocument = await JsonDocument.ParseAsync(await readResponse.Content.ReadAsStreamAsync());
         var readData = readDocument.RootElement.GetProperty("Data");
         Assert.Equal("simulate", readData.GetProperty("mode").GetString());
+        Assert.True(readData.GetProperty("strict").GetBoolean());
         Assert.Equal(456, readData.GetProperty("default_key_usage_limit").GetInt32());
         var readKey = readData.GetProperty("keys").EnumerateArray().Single();
         Assert.Equal(80, readKey.GetProperty("usage_limit").GetInt32());
         Assert.Equal(3, readKey.GetProperty("usage_count").GetInt32());
+    }
+
+    [Fact]
+    public async Task WebSearchConfig_PersistsStrictFalseThroughSaveAndImport()
+    {
+        using var factory = new OpenCodexApiFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = false
+        });
+        var cookie = await LoginAndReadSessionCookie(client);
+
+        var saveResponse = await SendJsonWithCookie(
+            client,
+            HttpMethod.Post,
+            "/web-search",
+            cookie,
+            new
+            {
+                mode = "simulate",
+                strict = false,
+                keys = Array.Empty<object>()
+            });
+        Assert.Equal(HttpStatusCode.OK, saveResponse.StatusCode);
+        using (var saveDocument = await JsonDocument.ParseAsync(await saveResponse.Content.ReadAsStreamAsync()))
+        {
+            Assert.False(saveDocument.RootElement.GetProperty("Data").GetProperty("strict").GetBoolean());
+        }
+
+        using var readAfterSave = new HttpRequestMessage(HttpMethod.Get, "/web-search");
+        readAfterSave.Headers.Add("Cookie", cookie);
+        var readAfterSaveResponse = await client.SendAsync(readAfterSave);
+        Assert.Equal(HttpStatusCode.OK, readAfterSaveResponse.StatusCode);
+        using (var readDocument = await JsonDocument.ParseAsync(await readAfterSaveResponse.Content.ReadAsStreamAsync()))
+        {
+            var data = readDocument.RootElement.GetProperty("Data");
+            Assert.Equal("simulate", data.GetProperty("mode").GetString());
+            Assert.False(data.GetProperty("strict").GetBoolean());
+        }
+
+        var importResponse = await SendJsonWithCookie(
+            client,
+            HttpMethod.Post,
+            "/web-search/import",
+            cookie,
+            new
+            {
+                mode = "convert",
+                strict = false,
+                keys = Array.Empty<object>()
+            });
+        Assert.Equal(HttpStatusCode.OK, importResponse.StatusCode);
+        using (var importDocument = await JsonDocument.ParseAsync(await importResponse.Content.ReadAsStreamAsync()))
+        {
+            var data = importDocument.RootElement.GetProperty("Data");
+            Assert.Equal("convert", data.GetProperty("mode").GetString());
+            Assert.False(data.GetProperty("strict").GetBoolean());
+        }
+
+        using var readAfterImport = new HttpRequestMessage(HttpMethod.Get, "/web-search");
+        readAfterImport.Headers.Add("Cookie", cookie);
+        var readAfterImportResponse = await client.SendAsync(readAfterImport);
+        Assert.Equal(HttpStatusCode.OK, readAfterImportResponse.StatusCode);
+        using var finalDocument = await JsonDocument.ParseAsync(await readAfterImportResponse.Content.ReadAsStreamAsync());
+        Assert.False(finalDocument.RootElement.GetProperty("Data").GetProperty("strict").GetBoolean());
     }
 
     [Fact]

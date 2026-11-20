@@ -66,11 +66,13 @@ public sealed class TavilyKeyDto(
 /// 表示管理接口返回的联网搜索配置。
 /// </summary>
 /// <param name="mode">Web 搜索处理模式。</param>
+/// <param name="strict">模拟注入的 web_search 工具是否使用 strict。</param>
 /// <param name="providers">可用的 Web 搜索提供方名称。</param>
 /// <param name="defaultKeyUsageLimit">应用到密钥的默认使用上限。</param>
 /// <param name="keys">已配置的提供方密钥。</param>
 public sealed class WebSearchConfigDto(
     string mode,
+    bool strict,
     IReadOnlyList<string> providers,
     int defaultKeyUsageLimit,
     IReadOnlyList<TavilyKeyDto> keys)
@@ -79,6 +81,11 @@ public sealed class WebSearchConfigDto(
     /// 获取 Web 搜索处理模式。
     /// </summary>
     public string Mode { get; } = mode;
+
+    /// <summary>
+    /// 获取模拟注入的 web_search 工具是否使用 strict。
+    /// </summary>
+    public bool Strict { get; } = strict;
 
     /// <summary>
     /// 获取可用的联网搜索提供方名称。

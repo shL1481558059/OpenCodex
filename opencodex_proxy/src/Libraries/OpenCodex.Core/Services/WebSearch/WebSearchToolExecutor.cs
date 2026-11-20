@@ -13,11 +13,17 @@ public sealed class WebSearchToolExecutor(
     IRepository<WebSearchSettings> settings,
     IRepository<TavilyKey> keys) : IWebSearchToolExecutor
 {
-    public string CurrentMode()
+    public string CurrentMode() => ReadSettings().Mode;
+
+    public bool CurrentStrict() => ReadSettings().Strict;
+
+    private (string Mode, bool Strict) ReadSettings()
     {
-        var mode = settings.TableNoTracking.Select(item => item.Mode).FirstOrDefault()
-            ?.Trim().ToLowerInvariant() ?? WebSearchModes.Convert;
-        return WebSearchModes.IsValid(mode) ? mode : WebSearchModes.Convert;
+        var row = settings.TableNoTracking
+            .Select(item => new { item.Mode, item.Strict })
+            .FirstOrDefault();
+        var mode = row?.Mode?.Trim().ToLowerInvariant() ?? WebSearchModes.Convert;
+        return (WebSearchModes.IsValid(mode) ? mode : WebSearchModes.Convert, row?.Strict ?? true);
     }
 
     public Task<WebSearchToolResult> ExecuteAsync(

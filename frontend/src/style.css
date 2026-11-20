@@ -998,6 +998,11 @@ html.dark {
   font-weight: 600;
 }
 
+.web-search-control-row > .web-search-strict-hint {
+  font-weight: 400;
+  font-size: 13px;
+}
+
 .drawer-footer {
   display: flex;
   justify-content: flex-end;

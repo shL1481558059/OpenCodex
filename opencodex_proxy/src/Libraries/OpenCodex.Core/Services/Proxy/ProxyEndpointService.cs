@@ -260,6 +260,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                     }
 
                     var webSearchMode = _webSearch.CurrentMode();
+                    var webSearchStrict = _webSearch.CurrentStrict();
                     // This clone is the attempt's ownership boundary. All following owned
                     // rewriters/conversion may reuse its containers, never the client graph.
                     effectivePayload = WebSearchRequestPolicy.ApplyMode(effectivePayload, webSearchMode);
@@ -278,7 +279,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         context.EntryProtocol,
                         channelType,
                         ownerRole,
-                        ownerUserId);
+                        ownerUserId,
+                        webSearchStrict);
                     if (multiAgentAction == MultiAgentV2Action.Downgrade)
                     {
                         effectivePayload = _multiAgentRepeatGuard.Apply(sessionId, effectivePayload);

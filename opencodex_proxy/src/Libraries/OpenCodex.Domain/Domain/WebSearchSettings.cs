@@ -4,6 +4,8 @@ public sealed class WebSearchSettings : BaseEntity<Guid>
 {
     public string Mode { get; set; } = "convert";
 
+    public bool Strict { get; set; } = true;
+
     public int KeyUsageLimit { get; set; }
 
     public double CreatedAt { get; set; }

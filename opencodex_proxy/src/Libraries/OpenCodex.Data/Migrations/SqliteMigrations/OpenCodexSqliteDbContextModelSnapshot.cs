@@ -959,6 +959,11 @@ namespace OpenCodex.Data.Migrations.SqliteMigrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<bool>("Strict")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(true);
+
                     b.Property<double>("UpdatedAt")
                         .HasColumnType("REAL");
 

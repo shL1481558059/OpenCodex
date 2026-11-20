@@ -964,6 +964,11 @@ namespace OpenCodex.Data.Migrations.PostgresMigrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<bool>("Strict")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
+
                     b.Property<double>("UpdatedAt")
                         .HasColumnType("double precision");
 

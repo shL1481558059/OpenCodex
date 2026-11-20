@@ -14,6 +14,13 @@ public sealed class WebSearchConfigRequest
     public string Mode { get; set; } = string.Empty;
 
     /// <summary>
+    /// 获取或设置模拟注入的 web_search 工具是否使用 strict。
+    /// 缺省或 null 时按 true 处理。
+    /// </summary>
+    [JsonPropertyName("strict")]
+    public bool? Strict { get; set; }
+
+    /// <summary>
     /// 获取或设置搜索密钥的默认使用次数上限。
     /// </summary>
     [JsonPropertyName("key_usage_limit")]
@@ -41,6 +48,11 @@ public sealed class WebSearchConfigRequest
         if (KeyUsageLimit.HasValue)
         {
             config["key_usage_limit"] = KeyUsageLimit.Value;
+        }
+
+        if (Strict.HasValue)
+        {
+            config["strict"] = Strict.Value;
         }
 
         return config;

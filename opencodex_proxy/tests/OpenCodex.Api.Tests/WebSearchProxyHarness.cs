@@ -94,7 +94,8 @@ internal sealed class WebSearchProxyHarness(
             "responses",
             protocol,
             "superadmin",
-            WebSearchTestStore.OwnerUserId);
+            WebSearchTestStore.OwnerUserId,
+            _executor.CurrentStrict());
         var request = DeepCopyObject(upstreamRequest);
         var definitions = ProtocolConverter.ConvertRequest(prepared, "responses", protocol, "upstream");
         var replacement = ListValue(definitions, "tools").OfType<Dictionary<string, object?>>().Single(tool =>

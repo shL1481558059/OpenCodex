@@ -44,6 +44,13 @@
         :disabled="webSearchLoading || webSearchSaving"
         @change="handleWebSearchModeChange"
       />
+      <span>严格模式</span>
+      <el-switch
+        v-model="webSearchConfig.strict"
+        :disabled="webSearchLoading || webSearchSaving"
+        @change="handleWebSearchStrictChange"
+      />
+      <span class="text-muted web-search-strict-hint">设置模拟注入的 web_search 工具的 strict</span>
     </div>
 
     <div class="section-scroll">
@@ -317,6 +324,7 @@ function exportWebSearch() {
     exported_at: new Date().toISOString(),
     type: "web_search",
     mode: normalizeWebSearchMode(webSearchConfig.mode),
+    strict: normalizeWebSearchStrict(webSearchConfig.strict),
     key_usage_limit: webSearchConfig.default_key_usage_limit,
     keys: webSearchConfig.keys.map((k) => ({
       provider: k.provider,
@@ -362,6 +370,7 @@ async function handleImportWebSearchFile(event) {
     }
     const payload = {
       mode: normalizeWebSearchMode(parsed.mode),
+      strict: normalizeWebSearchStrict(parsed.strict),
       key_usage_limit: parsed.key_usage_limit ?? webSearchConfig.default_key_usage_limit,
       keys: parsed.keys
     };
@@ -400,6 +409,11 @@ async function persistWebSearchConfig(successMessage = "Web Search 配置已生�
 
 async function handleWebSearchModeChange() {
   await persistWebSearchConfig(`Web Search 已切换为${formatWebSearchMode(webSearchConfig.mode)}模式`);
+}
+
+async function handleWebSearchStrictChange() {
+  const enabled = normalizeWebSearchStrict(webSearchConfig.strict);
+  await persistWebSearchConfig(`Web Search 严格模式已${enabled ? "开启" : "关闭"}`);
 }
 
 function openWebSearchKeyDrawer(key = null, index = -1) {
@@ -455,7 +469,7 @@ async function testWebSearchKey(row) {
 // --- Web Search helpers ---
 
 function defaultWebSearchConfig() {
-  return { mode: "convert", providers: ["tavily"], default_key_usage_limit: 1000, keys: [] };
+  return { mode: "convert", strict: true, providers: ["tavily"], default_key_usage_limit: 1000, keys: [] };
 }
 
 function defaultWebSearchKey() {
@@ -526,6 +540,7 @@ function assignWebSearchConfig(data) {
   );
   Object.assign(webSearchConfig, defaultWebSearchConfig(), data || {}, {
     mode: normalizeWebSearchMode(data?.mode),
+    strict: normalizeWebSearchStrict(data?.strict),
     providers,
     default_key_usage_limit: defaultKeyUsageLimit,
     keys: normalizeWebSearchKeys(data?.keys || [], providers, defaultKeyUsageLimit)
@@ -551,6 +566,10 @@ function normalizeWebSearchProvider(provider, providers = webSearchConfig.provid
 function formatWebSearchProvider(provider) {
   const normalized = String(provider || "tavily").trim().toLowerCase();
   return WEB_SEARCH_PROVIDER_LABELS[normalized] || provider || "tavily";
+}
+
+function normalizeWebSearchStrict(value) {
+  return value !== false;
 }
 
 function normalizeWebSearchMode(mode) {
@@ -605,7 +624,7 @@ function buildWebSearchPayload() {
   });
   const emptyIndex = keys.findIndex((item) => !item.key);
   if (emptyIndex !== -1) throw new Error(`第 ${emptyIndex + 1} 个 Web Search Key 不能为空`);
-  return { mode: normalizeWebSearchMode(webSearchConfig.mode), keys };
+  return { mode: normalizeWebSearchMode(webSearchConfig.mode), strict: normalizeWebSearchStrict(webSearchConfig.strict), keys };
 }
 
 function formatWebSearchTestResult(result) {

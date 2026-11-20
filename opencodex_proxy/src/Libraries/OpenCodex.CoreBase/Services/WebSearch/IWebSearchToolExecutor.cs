@@ -6,6 +6,11 @@ public interface IWebSearchToolExecutor
 {
     string CurrentMode();
 
+    /// <summary>
+    /// 读取模拟注入的 web_search 工具是否使用 strict。未实现时默认为 true。
+    /// </summary>
+    bool CurrentStrict() => true;
+
     Task<WebSearchToolResult> ExecuteAsync(
         string callId,
         string arguments,

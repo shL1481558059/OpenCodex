@@ -116,6 +116,7 @@ public abstract class OpenCodexDbContextBase : DbContext, IOpenCodexDbContext
         settings.HasKey(item => item.Id);
         settings.Property(item => item.Id).ValueGeneratedOnAdd();
         settings.Property(item => item.Mode).IsRequired();
+        settings.Property(item => item.Strict).IsRequired().HasDefaultValue(true);
 
         var keys = modelBuilder.Entity<TavilyKey>();
         keys.ToTable("TavilyKeys");

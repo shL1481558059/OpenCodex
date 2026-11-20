@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using OpenCodex.Core.Config;
 using OpenCodex.Core.Domain;
 using OpenCodex.CoreBase.Abstractions;
@@ -116,6 +117,7 @@ public sealed class WebSearchService : IWebSearchService
 
         return new WebSearchConfigDto(
             ParseWebSearchMode(webSearchSettings?.Mode),
+            webSearchSettings?.Strict ?? true,
             WebSearchProviders.Order(StringComparer.Ordinal).ToList(),
             webSearchSettings?.KeyUsageLimit ?? DefaultWebSearchKeyUsageLimit,
             keys);
@@ -156,11 +158,13 @@ public sealed class WebSearchService : IWebSearchService
                 key.CreatedAt));
 
         settings.Mode = ParseWebSearchMode(JsonDictionaryValue.Get(config, "mode"));
+        settings.Strict = ParseWebSearchStrict(JsonDictionaryValue.Get(config, "strict"));
         settings.KeyUsageLimit = defaultKeyUsageLimit;
         settings.UpdatedAt = now;
         _settingsRepository.Update(
             settings,
             nameof(WebSearchSettings.Mode),
+            nameof(WebSearchSettings.Strict),
             nameof(WebSearchSettings.KeyUsageLimit),
             nameof(WebSearchSettings.UpdatedAt));
 
@@ -201,11 +205,13 @@ public sealed class WebSearchService : IWebSearchService
         }
 
         settings.Mode = ParseWebSearchMode(JsonDictionaryValue.Get(config, "mode"));
+        settings.Strict = ParseWebSearchStrict(JsonDictionaryValue.Get(config, "strict"));
         settings.KeyUsageLimit = defaultKeyUsageLimit;
         settings.UpdatedAt = now;
         _settingsRepository.Update(
             settings,
             nameof(WebSearchSettings.Mode),
+            nameof(WebSearchSettings.Strict),
             nameof(WebSearchSettings.KeyUsageLimit),
             nameof(WebSearchSettings.UpdatedAt));
 
@@ -423,6 +429,44 @@ public sealed class WebSearchService : IWebSearchService
         }
 
         return mode;
+    }
+
+    private static bool ParseWebSearchStrict(object? value)
+    {
+        if (value is JsonElement element)
+        {
+            return element.ValueKind switch
+            {
+                JsonValueKind.Null or JsonValueKind.Undefined => true,
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                JsonValueKind.String => ParseWebSearchStrictText(element.GetString()),
+                _ => throw new ArgumentException("web search strict must be a boolean")
+            };
+        }
+
+        return value switch
+        {
+            null => true,
+            bool flag => flag,
+            string text => ParseWebSearchStrictText(text),
+            _ => throw new ArgumentException("web search strict must be a boolean")
+        };
+    }
+
+    private static bool ParseWebSearchStrictText(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return true;
+        }
+
+        if (bool.TryParse(text, out var parsed))
+        {
+            return parsed;
+        }
+
+        throw new ArgumentException("web search strict must be a boolean");
     }
 
     private static string WebSearchApiKey(IReadOnlyDictionary<string, object?> item)

@@ -42,6 +42,27 @@ public sealed class WebSearchRequestPolicyTests
             new Dictionary<string, object?> { ["tool"] = WebSearchPayload.ListValue(payload, "tools")[0] }, "tool")["type"]);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void RegisterBuiltin_UsesConfiguredStrict(bool strict)
+    {
+        var payload = Request();
+        var binding = WebSearchRequestPolicy.RegisterBuiltin(
+            payload, "simulate", "responses", "chat", "superadmin", strict: strict);
+        Assert.NotNull(binding);
+        Assert.Equal(strict, NativeTool(payload)["strict"]);
+    }
+
+    [Fact]
+    public void RegisterBuiltin_DefaultsStrictToTrue()
+    {
+        var payload = Request();
+        var binding = WebSearchRequestPolicy.RegisterBuiltin(payload, "simulate", "responses", "chat", "superadmin");
+        Assert.NotNull(binding);
+        Assert.Equal(true, NativeTool(payload)["strict"]);
+    }
+
     [Fact]
     public void NoNativeDeclaration_DoesNotInjectSearch()
     {
