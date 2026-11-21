@@ -551,6 +551,7 @@ public sealed class ModelCatalogService : IModelCatalogService
             double fraction => (long)fraction,
             decimal decimalValue => (long)decimalValue,
             string text when long.TryParse(text, out var parsed) => parsed,
+            JsonElement { ValueKind: JsonValueKind.Number } element when element.TryGetInt64(out var parsed) => parsed,
             _ => 0
         };
         return number > 0 ? number : null;

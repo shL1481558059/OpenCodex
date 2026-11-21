@@ -1294,8 +1294,65 @@ public sealed class ModelCatalogServiceTests
         Assert.Equal(650000L, entry["context_window"]);
     }
 
-    [Fact]
-    public void UpdateModelKeepsCatalogContextWindowWhenCapabilitiesUnchanged()
+    [Theory]
+    [InlineData(272000L, 650000L)]
+    [InlineData(990000L, 1000000L)]
+    public void UpdateModelSyncsContextWindowFromJsonRequest(long previousWindow, long contextWindow)
+    {
+        var dbPath = CreateDbPath();
+        var modelId = SeedGlobalModel(
+            dbPath,
+            "gpt-6.1-sol",
+            """
+            {
+              "context_window": 272000,
+              "max_context_window": 872000,
+              "effective_context_window_percent": 95,
+              "truncation_policy": { "mode": "tokens", "limit": 10000 }
+            }
+            """,
+            JsonSerializer.Serialize(new { context_window = previousWindow }));
+        var request = JsonSerializer.Deserialize<ModelInfoUpdateRequest>(
+            $$"""
+            {
+              "provider_code": "test",
+              "model_key": "gpt-6.1-sol",
+              "display_name": "GPT-6.1-Sol",
+              "match_type": "exact",
+              "match_pattern": "gpt-6.1-sol",
+              "catalog": {
+                "context_window": 272000,
+                "max_context_window": 872000,
+                "effective_context_window_percent": 95,
+                "truncation_policy": { "mode": "tokens", "limit": 10000 }
+              },
+              "capabilities": { "context_window": {{contextWindow}} }
+            }
+            """)!;
+        var service = CreateService(dbPath);
+
+        Assert.True(service.UpdateModel(modelId, request).Succeeded);
+
+        using var verify = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var stored = verify.ModelInfos.Single(item => item.Id == modelId);
+        using var catalog = JsonDocument.Parse(stored.CatalogJson);
+        using var capabilities = JsonDocument.Parse(stored.CapabilitiesJson);
+        Assert.Equal(contextWindow, catalog.RootElement.GetProperty("context_window").GetInt64());
+        Assert.Equal(contextWindow, capabilities.RootElement.GetProperty("context_window").GetInt64());
+
+        var entry = Assert.Single(service.BuildProxyModelCatalog(
+            [new ProxyModelCapabilityDto("gpt-6.1-sol", false, null, "", "gpt-6.1-sol")]));
+        Assert.Equal(contextWindow, entry["context_window"]);
+        Assert.Equal(872000L, entry["max_context_window"]);
+        Assert.Equal(95L, entry["effective_context_window_percent"]);
+        var truncation = Assert.IsType<Dictionary<string, object?>>(entry["truncation_policy"]);
+        Assert.Equal(10000L, truncation["limit"]);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void UpdateModelKeepsCatalogContextWindowWhenCapabilitiesUnchanged(bool jsonRequest)
     {
         var dbPath = CreateDbPath();
         var modelId = SeedGlobalModel(
@@ -1310,6 +1367,10 @@ public sealed class ModelCatalogServiceTests
         var request = ModelRequest("gpt-5.5", 1m);
         request.Catalog = new Dictionary<string, object?> { ["context_window"] = 1050000L };
         request.Capabilities = new Dictionary<string, object?> { ["context_window"] = 272000L };
+        if (jsonRequest)
+        {
+            request = JsonSerializer.Deserialize<ModelInfoUpdateRequest>(JsonSerializer.Serialize(request))!;
+        }
 
         Assert.True(service.UpdateModel(modelId, request).Succeeded);
 
@@ -1318,8 +1379,10 @@ public sealed class ModelCatalogServiceTests
         Assert.Equal(1050000L, entry["context_window"]);
     }
 
-    [Fact]
-    public void UpsertChannelModelInfoSyncsEditedCapabilitiesContextWindowIntoCatalog()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void UpsertChannelModelInfoSyncsEditedCapabilitiesContextWindowIntoCatalog(bool jsonRequest)
     {
         var dbPath = CreateDbPath();
         var channelId = Guid.NewGuid();
@@ -1350,7 +1413,7 @@ public sealed class ModelCatalogServiceTests
         }
 
         var service = CreateService(dbPath);
-        var saved = service.UpsertChannelModelInfo(channelId, new ChannelModelInfoUpsertRequest
+        var request = new ChannelModelInfoUpsertRequest
         {
             RequestModel = "request-model",
             UpstreamModel = "upstream-model",
@@ -1361,7 +1424,13 @@ public sealed class ModelCatalogServiceTests
             MatchPattern = "request-model",
             Catalog = new Dictionary<string, object?> { ["context_window"] = 272000L },
             Capabilities = new Dictionary<string, object?> { ["context_window"] = 650000L }
-        });
+        };
+        if (jsonRequest)
+        {
+            request = JsonSerializer.Deserialize<ChannelModelInfoUpsertRequest>(JsonSerializer.Serialize(request))!;
+        }
+
+        var saved = service.UpsertChannelModelInfo(channelId, request);
 
         Assert.True(saved.Succeeded);
         using var verify = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
