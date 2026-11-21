@@ -6,6 +6,7 @@ using OpenCodex.Api.Infrastructure;
 using OpenCodex.Core.Errors;
 using OpenCodex.Core.Services.MultiAgent;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Services.Proxy;
 
 namespace OpenCodex.Api.Services;
 
@@ -228,7 +229,9 @@ public sealed partial class MultiAgentResponseService
                     var clientIdentity = MultiAgentClientIdentity.Parse(metadata.Headers);
                     var existingNative = clientIdentity is not null
                         && await NativeSessions.TryGetAsync(identity.ApiKeyId, clientIdentity.ThreadId, ct) is not null;
-                    var simulatesMultiAgent = catalog.SimulatesMultiAgent(model);
+                    var simulatesMultiAgent = !existingNative && await ModelSimulationPolicy.IsEnabledAsync(
+                        catalog, HttpContext.RequestServices.GetRequiredService<IProxyRouteService>(),
+                        identity.OwnerUsername, model);
                     if (!simulatesMultiAgent && !existingNative)
                     {
                         var generic = HttpContext.RequestServices.GetRequiredService<ResponsesWebSocketClientService>();

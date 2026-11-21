@@ -29,6 +29,36 @@ namespace OpenCodex.Api.Tests;
 public sealed class ProxyControllerTests
 {
     [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task Responses_UsesChannelSimulationBeforeGlobal(bool globalEnabled, bool channelEnabled)
+    {
+        using var client = ClientRoutingContext();
+        client.Http.Request.Headers["thread-id"] = "channel-root";
+        var channelId = Guid.NewGuid();
+        var catalog = new StubModelCatalogService(simulatesMultiAgent: globalEnabled)
+        {
+            ChannelSimulation = channelEnabled
+        };
+        var proxy = new StubProxyEndpointService();
+        var controller = CreateController(new StubRequestBodyReader(MultiAgentClientResponseTests.ClientRequest()), proxy,
+            interceptProbeRequests: false, catalogService: catalog, routeCandidates:
+            [
+                new ProxyRouteDto(new Dictionary<string, object?> { ["id"] = channelId.ToString(), ["type"] = "chat" },
+                    "fake", "mapped-fake", false, true)
+            ]);
+        controller.ControllerContext.HttpContext = client.Http;
+        using var services = new ServiceCollection().AddSingleton(client.Service).AddSingleton(client.NativeStore).BuildServiceProvider();
+        client.Http.RequestServices = services;
+
+        await controller.Responses();
+
+        Assert.Equal(!channelEnabled, proxy.Called);
+        Assert.Equal((channelId, "fake", "mapped-fake"), Assert.Single(catalog.ChannelCalls));
+        Assert.Equal(channelEnabled ? 1 : 0, client.FakeEndpoint.Calls.Count);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Responses_UnboundSidebarSessionDifferencesKeepOriginalRoute(bool simulationEnabled)
@@ -653,14 +683,15 @@ public sealed class ProxyControllerTests
         ICodexOfficialModelCatalogService? codexModels = null,
         IProxyLogService? logs = null,
         bool simulatesMultiAgent = false,
-        IReadOnlyList<ProxyRouteDto>? routeCandidates = null)
+        IReadOnlyList<ProxyRouteDto>? routeCandidates = null,
+        IModelCatalogService? catalogService = null)
     {
         var proxyService = new ProxyService(
             bodyReader,
             proxy,
             new StubProxyIdentityContext(),
             new StubProxyRouteService(routeCandidates),
-            new StubModelCatalogService(modelCatalog, simulatesMultiAgent),
+            catalogService ?? new StubModelCatalogService(modelCatalog, simulatesMultiAgent),
             codexModels ?? new StubCodexOfficialModelCatalogService(),
             new StubProxySettingsService(interceptProbeRequests),
             logs ?? new StubProxyLogService());
@@ -825,6 +856,8 @@ public sealed class ProxyControllerTests
     {
         private readonly IReadOnlyList<Dictionary<string, object?>> _modelCatalog;
         private readonly bool _simulatesMultiAgent;
+        public bool? ChannelSimulation { get; init; }
+        public List<(Guid? ChannelId, string Model, string? UpstreamModel)> ChannelCalls { get; } = [];
 
         public StubModelCatalogService(
             IReadOnlyList<Dictionary<string, object?>>? modelCatalog = null,
@@ -835,6 +868,12 @@ public sealed class ProxyControllerTests
         }
 
         public bool SimulatesMultiAgent(string model) => _simulatesMultiAgent;
+
+        public bool SimulatesMultiAgent(Guid? channelId, string model, string? upstreamModel)
+        {
+            ChannelCalls.Add((channelId, model, upstreamModel));
+            return ChannelSimulation ?? _simulatesMultiAgent;
+        }
 
         public ApiOpResult<ModelProviderListResponse> ListProviders(bool includeDisabled = false)
         {

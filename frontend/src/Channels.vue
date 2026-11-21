@@ -921,19 +921,19 @@
           </template>
         </el-table-column>
         <el-table-column label="上下文窗口" width="130" align="right">
-          <template #default="{ row }">{{ contextWindowSummary(effectiveChannelPricingModel(row)) }}</template>
+          <template #default="{ row }">{{ contextWindowSummary(effectiveChannelModel(row)) }}</template>
         </el-table-column>
         <el-table-column label="输入" width="115" align="right">
-          <template #default="{ row }">{{ pricingRuleSummary(effectiveChannelPricingModel(row), "input") }}</template>
+          <template #default="{ row }">{{ pricingRuleSummary(effectiveChannelModel(row), "input") }}</template>
         </el-table-column>
         <el-table-column label="输出" width="115" align="right">
-          <template #default="{ row }">{{ pricingRuleSummary(effectiveChannelPricingModel(row), "output") }}</template>
+          <template #default="{ row }">{{ pricingRuleSummary(effectiveChannelModel(row), "output") }}</template>
         </el-table-column>
         <el-table-column label="缓存写" width="115" align="right">
-          <template #default="{ row }">{{ pricingRuleSummary(effectiveChannelPricingModel(row), "cache_write") }}</template>
+          <template #default="{ row }">{{ pricingRuleSummary(effectiveChannelModel(row), "cache_write") }}</template>
         </el-table-column>
         <el-table-column label="缓存读" width="115" align="right">
-          <template #default="{ row }">{{ pricingRuleSummary(effectiveChannelPricingModel(row), "cache_read") }}</template>
+          <template #default="{ row }">{{ pricingRuleSummary(effectiveChannelModel(row), "cache_read") }}</template>
         </el-table-column>
         <el-table-column label="Catalog" width="100" align="center">
           <template #default="{ row }">
@@ -976,13 +976,13 @@
           </div>
           <div class="pricing-model-card__info">上游模型：{{ row.upstream_model || "-" }}</div>
           <div class="pricing-model-card__info">{{ formatChannelPricingModel(row) }}</div>
-          <div class="pricing-model-card__info">上下文窗口：{{ contextWindowSummary(effectiveChannelPricingModel(row)) }}</div>
+          <div class="pricing-model-card__info">上下文窗口：{{ contextWindowSummary(effectiveChannelModel(row)) }}</div>
           <div class="pricing-model-card__info">Catalog：{{ catalogSourceLabel(row) }}</div>
           <dl class="pricing-model-card__rules">
-            <div><dt>输入</dt><dd>{{ pricingRuleSummary(effectiveChannelPricingModel(row), "input") }}</dd></div>
-            <div><dt>输出</dt><dd>{{ pricingRuleSummary(effectiveChannelPricingModel(row), "output") }}</dd></div>
-            <div><dt>缓存写</dt><dd>{{ pricingRuleSummary(effectiveChannelPricingModel(row), "cache_write") }}</dd></div>
-            <div><dt>缓存读</dt><dd>{{ pricingRuleSummary(effectiveChannelPricingModel(row), "cache_read") }}</dd></div>
+            <div><dt>输入</dt><dd>{{ pricingRuleSummary(effectiveChannelModel(row), "input") }}</dd></div>
+            <div><dt>输出</dt><dd>{{ pricingRuleSummary(effectiveChannelModel(row), "output") }}</dd></div>
+            <div><dt>缓存写</dt><dd>{{ pricingRuleSummary(effectiveChannelModel(row), "cache_write") }}</dd></div>
+            <div><dt>缓存读</dt><dd>{{ pricingRuleSummary(effectiveChannelModel(row), "cache_read") }}</dd></div>
           </dl>
           <div class="mobile-channel-card__actions">
             <el-button size="small" :icon="Edit" @click="openChannelPricingEditor(row)">编辑</el-button>
@@ -1018,294 +1018,16 @@
       :title="channelPricingEditorTitle"
       width="880px"
       :fullscreen="isMobile"
-      class="channel-mobile-dialog channel-pricing-editor-dialog"
+      class="model-editor-dialog"
       append-to-body
     >
-      <el-form label-position="top" :model="channelPricingDraft">
-        <el-row :gutter="16">
-          <el-col :span="16">
-            <el-form-item label="供应商">
-              <el-select v-model="channelPricingDraft.provider_code" class="full-width">
-                <el-option
-                  v-for="provider in modelProviders"
-                  :key="provider.code"
-                  :label="provider.name"
-                  :value="provider.code"
-                />
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="状态">
-              <el-switch v-model="channelPricingDraft.enabled" />
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-row :gutter="16">
-          <el-col :span="12">
-            <el-form-item label="请求模型">
-              <el-input v-model="channelPricingDraft.request_model" disabled />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="上游模型">
-              <el-input v-model="channelPricingDraft.upstream_model" disabled />
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-row :gutter="16">
-          <el-col :span="12">
-            <el-form-item label="模型标识">
-              <el-input v-model="channelPricingDraft.model_key" autocomplete="off" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="显示名称">
-              <el-input v-model="channelPricingDraft.display_name" autocomplete="off" />
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-row :gutter="16">
-          <el-col :span="12">
-            <el-form-item label="匹配类型">
-              <el-select v-model="channelPricingDraft.match_type" class="full-width" @change="handleChannelPricingMatchTypeChange">
-                <el-option label="精确" value="exact" />
-                <el-option label="前缀" value="prefix" />
-                <el-option label="后缀" value="suffix" />
-                <el-option label="包含" value="contains" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-form-item label="匹配键">
-          <el-select
-            v-if="channelPricingDraft.match_type === 'exact'"
-            v-model="channelPricingDraft.match_patterns"
-            multiple
-            filterable
-            allow-create
-            default-first-option
-            clearable
-            placeholder="输入后回车添加"
-            class="full-width"
-          >
-            <el-option
-              v-for="pattern in channelPricingDraft.match_patterns"
-              :key="pattern"
-              :label="pattern"
-              :value="pattern"
-            />
-          </el-select>
-          <el-input v-else v-model="channelPricingDraft.match_pattern" autocomplete="off" />
-        </el-form-item>
-
-        <el-form-item label="描述">
-          <el-input v-model="channelPricingDraft.description" type="textarea" :rows="2" />
-        </el-form-item>
-
-        <el-row :gutter="16">
-          <el-col :span="8">
-            <el-form-item label="支持图片">
-              <el-switch v-model="channelPricingDraft.capabilities.supports_image" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="上下文窗口">
-              <el-input-number
-                v-model="channelPricingDraft.capabilities.context_window"
-                :min="0"
-                :step="8192"
-                class="full-width"
-              />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="币种">
-              <el-input v-model="channelPricingDraft.pricing.currency" autocomplete="off" />
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-divider content-position="left">计费规则</el-divider>
-        <div class="off-peak-panel">
-          <div class="off-peak-panel__head">
-            <el-select
-              v-model="channelPricingDraft.pricing.time_zone"
-              filterable
-              allow-create
-              default-first-option
-              clearable
-              placeholder="峰谷时区，留空表示不启用"
-              class="off-peak-zone"
-            >
-              <el-option v-for="zone in offPeakTimeZones" :key="zone" :label="zone" :value="zone" />
-            </el-select>
-            <span class="off-peak-panel__hint">{{ channelOffPeakHint }}</span>
-          </div>
-
-          <div
-            v-for="(window, index) in channelPricingDraft.pricing.off_peak_windows"
-            :key="index"
-            class="off-peak-window"
-          >
-            <el-select v-model="window.start" filterable allow-create default-first-option class="off-peak-time">
-              <el-option v-for="time in offPeakTimeOptions" :key="`s-${time}`" :label="time" :value="time" />
-            </el-select>
-            <span class="off-peak-window__sep">至</span>
-            <el-select v-model="window.end" filterable allow-create default-first-option class="off-peak-time">
-              <el-option v-for="time in offPeakTimeOptions" :key="`e-${time}`" :label="time" :value="time" />
-            </el-select>
-            <el-select
-              v-model="window.days"
-              multiple
-              collapse-tags
-              collapse-tags-tooltip
-              placeholder="每天"
-              class="off-peak-days"
-            >
-              <el-option v-for="day in offPeakWeekdays" :key="day.value" :label="day.label" :value="day.value" />
-            </el-select>
-            <el-button link type="danger" :icon="Delete" @click="removeChannelOffPeakWindow(index)" />
-            <span v-if="crossesMidnight(window)" class="off-peak-window__note">保存后按起始日拆成两段</span>
-          </div>
-
-          <div class="off-peak-panel__actions">
-            <el-button link type="primary" :icon="Plus" @click="addChannelOffPeakWindow">添加谷段窗口</el-button>
-            <div class="off-peak-discount">
-              <span>谷段折扣</span>
-              <el-input-number
-                v-model="channelOffPeakDiscount"
-                :min="0"
-                :max="1"
-                :step="0.05"
-                :precision="2"
-                size="small"
-              />
-              <el-button size="small" @click="fillChannelOffPeakDiscount">按折扣填充谷价</el-button>
-            </div>
-          </div>
-        </div>
-        <el-table
-          v-if="!isMobile"
-          :data="channelPricingDraft.pricing.rules"
-          border
-          size="small"
-          class="pricing-rule-table"
-        >
-          <el-table-column label="计费项" width="110">
-            <template #default="{ row }">{{ formatBillingItem(row.billing_item) }}</template>
-          </el-table-column>
-          <el-table-column label="模式" width="170">
-            <template #default="{ row }">
-              <el-select v-model="row.billing_mode" class="full-width">
-                <el-option label="按次" value="per_request" />
-                <el-option label="每百万 token" value="per_million_tokens" />
-                <el-option label="阶梯 token" value="tiered_tokens" />
-              </el-select>
-            </template>
-          </el-table-column>
-          <el-table-column label="单价" width="160">
-            <template #default="{ row }">
-              <el-input-number v-model="row.unit_price" :min="0" :precision="8" :step="0.01" class="full-width" />
-            </template>
-          </el-table-column>
-          <el-table-column label="峰谷" width="70" align="center">
-            <template #default="{ row }">
-              <el-switch v-model="row.off_peak_enabled" :disabled="!channelOffPeakEnabled" />
-            </template>
-          </el-table-column>
-          <el-table-column label="谷段单价" width="160">
-            <template #default="{ row }">
-              <el-input-number
-                v-model="row.off_peak_unit_price"
-                :min="0"
-                :precision="8"
-                :step="0.01"
-                :disabled="!channelOffPeakEnabled || row.off_peak_enabled !== true"
-                class="full-width"
-              />
-            </template>
-          </el-table-column>
-          <el-table-column label="阶梯">
-            <template #default="{ row }">
-              <el-input
-                v-model="row.tiers_text"
-                type="textarea"
-                :rows="2"
-                :disabled="row.billing_mode !== 'tiered_tokens'"
-              />
-              <el-input
-                v-if="row.billing_mode === 'tiered_tokens' && row.off_peak_enabled === true"
-                v-model="row.off_peak_tiers_text"
-                type="textarea"
-                :rows="2"
-                class="off-peak-tiers"
-                placeholder="谷段阶梯 JSON"
-              />
-            </template>
-          </el-table-column>
-          <el-table-column label="启用" width="80" align="center">
-            <template #default="{ row }">
-              <el-switch v-model="row.enabled" />
-            </template>
-          </el-table-column>
-        </el-table>
-        <div v-else class="pricing-rule-list">
-          <div v-for="rule in channelPricingDraft.pricing.rules" :key="rule.billing_item" class="pricing-rule-card">
-            <div class="pricing-rule-card__header">
-              <strong>{{ formatBillingItem(rule.billing_item) }}</strong>
-              <el-switch v-model="rule.enabled" inline-prompt active-text="启用" inactive-text="停用" />
-            </div>
-            <el-form-item label="模式">
-              <el-select v-model="rule.billing_mode" class="full-width">
-                <el-option label="按次" value="per_request" />
-                <el-option label="每百万 token" value="per_million_tokens" />
-                <el-option label="阶梯 token" value="tiered_tokens" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="单价">
-              <el-input-number v-model="rule.unit_price" :min="0" :precision="8" :step="0.01" class="full-width" />
-            </el-form-item>
-            <el-form-item label="峰谷计费">
-              <el-switch v-model="rule.off_peak_enabled" :disabled="!channelOffPeakEnabled" />
-            </el-form-item>
-            <el-form-item v-if="rule.off_peak_enabled === true" label="谷段单价">
-              <el-input-number
-                v-model="rule.off_peak_unit_price"
-                :min="0"
-                :precision="8"
-                :step="0.01"
-                :disabled="!channelOffPeakEnabled"
-                class="full-width"
-              />
-            </el-form-item>
-            <el-form-item label="阶梯">
-              <el-input
-                v-model="rule.tiers_text"
-                type="textarea"
-                :rows="2"
-                :disabled="rule.billing_mode !== 'tiered_tokens'"
-              />
-            </el-form-item>
-            <el-form-item
-              v-if="rule.billing_mode === 'tiered_tokens' && rule.off_peak_enabled === true"
-              label="谷段阶梯"
-            >
-              <el-input v-model="rule.off_peak_tiers_text" type="textarea" :rows="2" />
-            </el-form-item>
-          </div>
-        </div>
-
-        <el-collapse class="advanced-collapse">
-          <el-collapse-item title="Catalog JSON" name="catalog">
-            <el-input v-model="channelPricingCatalogText" type="textarea" :rows="8" />
-          </el-collapse-item>
-        </el-collapse>
-      </el-form>
+      <ModelEditorForm
+        :draft="channelPricingDraft"
+        :providers="modelProviders"
+        :is-mobile="isMobile"
+        v-model:catalog-text="channelPricingCatalogText"
+        channel
+      />
 
       <template #footer>
         <div class="drawer-footer">
@@ -1673,6 +1395,11 @@
 import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
 import { ElMessageBox } from "element-plus/es/components/message-box/index.mjs";
+import ModelEditorForm from "./ModelEditorForm.vue";
+import {
+  buildModelEditorPayload, createChannelModelEditorDraft, createModelEditorDraft,
+  effectiveChannelModel, modelCatalogText
+} from "./modelEditorState.js";
 import {
   applyChannelTestStreamEvent,
   createChannelTestState,
@@ -1693,17 +1420,7 @@ import {
 } from "./channelOrdering.js";
 import { streamChannelTest } from "./channelTestStream.js";
 import { createSseStream } from "./api/sseClient.js";
-import {
-  OFF_PEAK_TIME_OPTIONS,
-  OFF_PEAK_TIME_ZONES,
-  OFF_PEAK_WEEKDAYS,
-  applyOffPeakDiscount,
-  crossesMidnight,
-  currentPhaseLabel,
-  emptyOffPeakWindow,
-  normalizeOffPeakWindows,
-  offPeakConfigured
-} from "./pricingOffPeak.js";
+import { offPeakConfigured } from "./pricingOffPeak.js";
 import {
   Connection,
   Delete,
@@ -1766,12 +1483,7 @@ const batchEditVisible = ref(false);
 const batchEditText = ref("");
 
 const modelProviders = ref([]);
-const billingItems = [
-  { value: "input", label: "输入" },
-  { value: "output", label: "输出" },
-  { value: "cache_write", label: "缓存写" },
-  { value: "cache_read", label: "缓存读" }
-];
+
 const channelPricingVisible = ref(false);
 const channelPricingEditorVisible = ref(false);
 const channelPricingLoading = ref(false);
@@ -1780,12 +1492,8 @@ const channelPricingRestoringId = ref("");
 const channelPricingRows = ref([]);
 const channelPricingChannel = ref(null);
 const channelPricingCatalogText = ref("{}");
-const channelPricingDraft = reactive(emptyChannelPricingDraft());
-const channelOffPeakDiscount = ref(0.5);
-const channelOffPeakClock = ref(Date.now());
-const offPeakTimeZones = OFF_PEAK_TIME_ZONES;
-const offPeakTimeOptions = OFF_PEAK_TIME_OPTIONS;
-const offPeakWeekdays = OFF_PEAK_WEEKDAYS;
+const channelPricingDraft = reactive(createModelEditorDraft());
+
 const config = reactive({ channels: [] });
 const channelTableRef = ref(null);
 const selectedChannels = ref([]);
@@ -1811,7 +1519,7 @@ const isMobile = ref(false);
 const isSmallDesktop = ref(false);
 let mobileMediaQuery;
 let smallDesktopMediaQuery;
-let channelOffPeakTimer = null;
+
 
 // --- 渠道列表自定义列与响应式设置 ---
 const CHANNEL_COLUMNS_STORAGE_KEY = "opencodex-channel-columns";
@@ -2566,36 +2274,8 @@ async function loadChannelPricingRows() {
 }
 
 function openChannelPricingEditor(row) {
-  const model = effectiveChannelPricingModel(row);
-  Object.assign(channelPricingDraft, emptyChannelPricingDraft());
-  channelPricingDraft.request_model = row.request_model || model?.request_model || "";
-  channelPricingDraft.upstream_model = row.upstream_model || "";
-  channelPricingDraft.provider_code = model?.provider_code || modelProviders.value[0]?.code || "";
-  channelPricingDraft.model_key = model?.model_key || row.request_model || "";
-  channelPricingDraft.display_name = model?.display_name || row.request_model || "";
-  channelPricingDraft.description = model?.description || "";
-  channelPricingDraft.match_type = model?.match_type || "exact";
-  const requestModel = row.request_model || model?.request_model || row.upstream_model || "";
-  const existingPatterns = channelMatchPatternList(row?.override_model);
-  const legacyUpstreamModel = String(row.upstream_model || model?.upstream_model || "").trim().toLowerCase();
-  const requestPatterns = existingPatterns.filter((pattern) =>
-    !legacyUpstreamModel || String(pattern || "").trim().toLowerCase() !== legacyUpstreamModel
-  );
-  const patternsForDraft = requestModel
-    ? [...new Set([...requestPatterns, requestModel])]
-    : requestPatterns;
-  channelPricingDraft.match_pattern = requestModel || existingPatterns[0] || "";
-  channelPricingDraft.match_patterns = patternsForDraft;
-  channelPricingDraft.enabled = model?.enabled !== false;
-  channelPricingDraft.capabilities = {
-    supports_image: model?.capabilities?.supports_image === true,
-    context_window: Number(model?.capabilities?.context_window || 0)
-  };
-  channelPricingDraft.pricing = normalizeChannelPricing(model?.pricing || null);
-  channelPricingCatalogText.value = JSON.stringify(
-    model?.catalog || defaultChannelPricingCatalog(row.request_model),
-    null,
-    2);
+  Object.assign(channelPricingDraft, createChannelModelEditorDraft(row, modelProviders.value[0]?.code || ""));
+  channelPricingCatalogText.value = modelCatalogText(effectiveChannelModel(row), row.request_model);
   channelPricingEditorVisible.value = true;
 }
 
@@ -2610,7 +2290,7 @@ async function saveChannelPricing() {
   try {
     await props.api(`/channels/${channelId}/model-infos`, {
       method: "PUT",
-      body: JSON.stringify(buildChannelPricingPayload())
+      body: JSON.stringify(buildModelEditorPayload(channelPricingDraft, channelPricingCatalogText.value, true))
     });
     channelPricingEditorVisible.value = false;
     await loadChannelPricingRows();
@@ -2641,84 +2321,6 @@ async function restoreChannelPricing(row) {
   }
 }
 
-function buildChannelPricingPayload() {
-  const catalog = parseJsonText(channelPricingCatalogText.value || "{}", "Catalog JSON");
-  if (!isPlainObject(catalog)) {
-    throw new Error("Catalog JSON 必须是 JSON 对象");
-  }
-  const matchPatterns = channelPricingDraft.match_type === "exact"
-    ? normalizeChannelMatchPatternList(channelPricingDraft.match_patterns)
-    : normalizeChannelMatchPatternList([channelPricingDraft.match_pattern]);
-  const matchPattern = matchPatterns[0]
-    || channelPricingDraft.request_model
-    || channelPricingDraft.model_key
-    || "";
-
-  return {
-    request_model: channelPricingDraft.request_model,
-    upstream_model: channelPricingDraft.upstream_model,
-    provider_code: channelPricingDraft.provider_code,
-    model_key: channelPricingDraft.model_key,
-    display_name: channelPricingDraft.display_name,
-    description: channelPricingDraft.description,
-    match_type: channelPricingDraft.match_type,
-    match_pattern: matchPattern,
-    match_patterns: matchPatterns,
-    catalog,
-    capabilities: {
-      ...channelPricingDraft.capabilities,
-      context_window: Number(channelPricingDraft.capabilities.context_window || 0)
-    },
-    pricing: {
-      currency: channelPricingDraft.pricing.currency || "USD",
-      enabled: channelPricingDraft.pricing.enabled !== false,
-      time_zone: channelPricingDraft.pricing.time_zone || "",
-      off_peak_windows: channelPricingDraft.pricing.time_zone
-        ? normalizeOffPeakWindows(channelPricingDraft.pricing.off_peak_windows)
-        : [],
-      rules: channelPricingDraft.pricing.rules.map((rule) => ({
-        billing_item: rule.billing_item,
-        billing_mode: rule.billing_mode,
-        unit_price: Number(rule.unit_price || 0),
-        tiers: rule.billing_mode === "tiered_tokens" ? parsePricingTiers(rule.tiers_text) : [],
-        off_peak_enabled: rule.off_peak_enabled === true,
-        off_peak_unit_price: Number(rule.off_peak_unit_price || 0),
-        off_peak_tiers: rule.billing_mode === "tiered_tokens" && rule.off_peak_enabled === true
-          ? parsePricingTiers(rule.off_peak_tiers_text)
-          : [],
-        enabled: rule.enabled !== false
-      }))
-    },
-    enabled: channelPricingDraft.enabled !== false
-  };
-}
-
-function effectiveChannelPricingModel(row) {
-  if (!row) {
-    return null;
-  }
-
-  const overrideModel = row.override_model;
-  const globalModel = row.global_model;
-  if (!overrideModel) {
-    return globalModel || null;
-  }
-
-  return {
-    ...globalModel,
-    ...overrideModel,
-    catalog: {
-      ...(globalModel?.catalog || {}),
-      ...(overrideModel.catalog || {})
-    },
-    capabilities: {
-      ...(globalModel?.capabilities || {}),
-      ...(overrideModel.capabilities || {})
-    },
-    pricing: overrideModel.pricing || globalModel?.pricing || null
-  };
-}
-
 function catalogSourceLabel(row) {
   if (Object.keys(row?.override_model?.catalog || {}).length > 0) {
     return "渠道";
@@ -2730,7 +2332,7 @@ function catalogSourceLabel(row) {
 }
 
 function formatChannelPricingModel(row) {
-  const model = effectiveChannelPricingModel(row);
+  const model = effectiveChannelModel(row);
   if (!model) {
     return "-";
   }
@@ -2760,19 +2362,6 @@ function channelPricingRowKey(row) {
   return `${row?.request_model || ""}|${row?.upstream_model || ""}`;
 }
 
-function handleChannelPricingMatchTypeChange() {
-  if (channelPricingDraft.match_type === "exact") {
-    if (channelPricingDraft.match_patterns.length === 0) {
-      channelPricingDraft.match_patterns = normalizeChannelMatchPatternList([channelPricingDraft.match_pattern]);
-    }
-    return;
-  }
-
-  const current = normalizeChannelMatchPatternList(channelPricingDraft.match_patterns);
-  channelPricingDraft.match_pattern = current[0] || channelPricingDraft.match_pattern || channelPricingDraft.model_key || "";
-  channelPricingDraft.match_patterns = [];
-}
-
 function contextWindowSummary(model) {
   const catalogWindow = Number(model?.catalog?.context_window || 0);
   const capabilityWindow = Number(model?.capabilities?.context_window || 0);
@@ -2784,124 +2373,12 @@ function pricingRuleSummary(model, item) {
   const rule = (model?.pricing?.rules || []).find((entry) => entry.billing_item === item && entry.enabled !== false);
   if (!rule) return "-";
   const offPeak = offPeakConfigured(model?.pricing) && rule.off_peak_enabled === true;
-  if (rule.billing_mode === "tiered_tokens") return offPeak ? "阶梯（峰/谷）" : "阶梯";
+  if (rule.billing_mode === "tiered_tokens") return offPeak ? "窗口档（峰/谷）" : "窗口档";
   const suffix = rule.billing_mode === "per_request" ? " / 次" : "";
   const peakPrice = `${formatPrice(rule.unit_price)}${suffix}`;
   return offPeak
     ? `${peakPrice} 峰 / ${formatPrice(rule.off_peak_unit_price)} 谷`
     : peakPrice;
-}
-
-function normalizeChannelPricing(pricing) {
-  const rulesByItem = new Map();
-  for (const rule of pricing?.rules || []) {
-    rulesByItem.set(rule.billing_item, normalizePricingRule(rule));
-  }
-
-  return {
-    currency: pricing?.currency || "USD",
-    enabled: pricing?.enabled !== false,
-    time_zone: pricing?.time_zone || "",
-    off_peak_windows: normalizeOffPeakWindows(pricing?.off_peak_windows),
-    rules: billingItems.map((item) => rulesByItem.get(item.value) || defaultPricingRule(item.value))
-  };
-}
-
-function normalizePricingRule(rule) {
-  return {
-    billing_item: rule.billing_item,
-    billing_mode: rule.billing_mode || "per_million_tokens",
-    unit_price: Number(rule.unit_price || 0),
-    tiers_text: JSON.stringify(rule.tiers || [], null, 2),
-    off_peak_enabled: rule.off_peak_enabled === true,
-    off_peak_unit_price: Number(rule.off_peak_unit_price || 0),
-    off_peak_tiers_text: JSON.stringify(rule.off_peak_tiers || [], null, 2),
-    enabled: rule.enabled !== false
-  };
-}
-
-function defaultPricingRule(item) {
-  return {
-    billing_item: item,
-    billing_mode: "per_million_tokens",
-    unit_price: 0,
-    tiers_text: "[]",
-    off_peak_enabled: false,
-    off_peak_unit_price: 0,
-    off_peak_tiers_text: "[]",
-    enabled: true
-  };
-}
-
-const channelOffPeakEnabled = computed(() => offPeakConfigured(channelPricingDraft.pricing));
-
-const channelOffPeakHint = computed(
-  () => currentPhaseLabel(channelPricingDraft.pricing, new Date(channelOffPeakClock.value)));
-
-function addChannelOffPeakWindow() {
-  channelPricingDraft.pricing.off_peak_windows.push(emptyOffPeakWindow());
-}
-
-function removeChannelOffPeakWindow(index) {
-  channelPricingDraft.pricing.off_peak_windows.splice(index, 1);
-}
-
-function fillChannelOffPeakDiscount() {
-  const changed = applyOffPeakDiscount(
-    channelPricingDraft.pricing.rules,
-    channelOffPeakDiscount.value);
-  if (changed === 0) {
-    ElMessage.warning("先为需要打折的计费项打开峰谷开关");
-    return;
-  }
-  ElMessage.success(`已按峰价的 ${channelOffPeakDiscount.value} 倍填充 ${changed} 项谷价`);
-}
-
-function parsePricingTiers(text) {
-  const value = parseJsonText(text || "[]", "阶梯");
-  if (!Array.isArray(value)) {
-    throw new Error("阶梯必须是 JSON 数组");
-  }
-
-  return value.map((tier) => ({
-    up_to: tier.up_to === null || tier.up_to === undefined || tier.up_to === "" ? null : Number(tier.up_to),
-    unit_price: Number(tier.unit_price || 0)
-  }));
-}
-
-function defaultChannelPricingCatalog(upstreamModel) {
-  const model = String(upstreamModel || "").trim();
-  return {
-    slug: model,
-    display_name: model,
-    visibility: "list",
-    supported_in_api: true
-  };
-}
-
-function emptyChannelPricingDraft() {
-  return {
-    request_model: "",
-    upstream_model: "",
-    provider_code: "",
-    model_key: "",
-    display_name: "",
-    description: "",
-    match_type: "exact",
-    match_pattern: "",
-    match_patterns: [],
-    catalog: {},
-    capabilities: {
-      supports_image: false,
-      context_window: 128000
-    },
-    pricing: normalizeChannelPricing(null),
-    enabled: true
-  };
-}
-
-function formatBillingItem(value) {
-  return billingItems.find((item) => item.value === value)?.label || value || "-";
 }
 
 function formatPrice(value) {
@@ -3753,19 +3230,12 @@ onMounted(async () => {
   smallDesktopMediaQuery.addEventListener("change", updateSmallDesktopViewport);
   await loadChannels();
   runtimeStream.start();
-  channelOffPeakTimer = window.setInterval(() => {
-    channelOffPeakClock.value = Date.now();
-  }, 30000);
 });
 
 onBeforeUnmount(() => {
   mobileMediaQuery?.removeEventListener("change", updateMobileViewport);
   smallDesktopMediaQuery?.removeEventListener("change", updateSmallDesktopViewport);
   runtimeStream.stop();
-  if (channelOffPeakTimer) {
-    window.clearInterval(channelOffPeakTimer);
-    channelOffPeakTimer = null;
-  }
 });
 </script>
 
@@ -3878,7 +3348,6 @@ onBeforeUnmount(() => {
 .model-mapping-list,
 .discover-model-list,
 .pricing-model-list,
-.pricing-rule-list,
 .bulk-test-card-list {
   display: grid;
   gap: 10px;
@@ -3898,7 +3367,6 @@ onBeforeUnmount(() => {
 .mobile-channel-card,
 .model-mapping-card,
 .pricing-model-card,
-.pricing-rule-card,
 .bulk-test-card {
   min-width: 0;
   padding: 12px;
@@ -3909,7 +3377,6 @@ onBeforeUnmount(() => {
 
 .mobile-channel-card__header,
 .pricing-model-card__header,
-.pricing-rule-card__header,
 .bulk-test-card__header {
   display: flex;
   align-items: center;
@@ -4047,15 +3514,6 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
 }
 
-.pricing-rule-card__header {
-  justify-content: space-between;
-  margin-bottom: 14px;
-}
-
-.pricing-rule-card :deep(.el-form-item:last-child) {
-  margin-bottom: 0;
-}
-
 .bulk-test-card .bulk-test-output {
   max-height: 180px;
   padding: 10px;
@@ -4084,77 +3542,6 @@ onBeforeUnmount(() => {
 .bulk-edit-row :deep(.el-checkbox) {
   margin-right: 0;
   min-width: 0;
-}
-
-.pricing-rule-table {
-  margin-top: 8px;
-}
-
-.off-peak-panel {
-  margin: 8px 0 12px;
-}
-
-.off-peak-panel__head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
-}
-
-.off-peak-panel__hint {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-
-.off-peak-panel__actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.off-peak-window {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 6px;
-}
-
-.off-peak-window__sep {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-
-.off-peak-window__note {
-  font-size: 12px;
-  color: var(--el-color-warning);
-}
-
-.off-peak-zone {
-  width: 240px;
-}
-
-.off-peak-time {
-  width: 110px;
-}
-
-.off-peak-days {
-  width: 220px;
-}
-
-.off-peak-discount {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-
-.off-peak-tiers {
-  margin-top: 6px;
 }
 
 .advanced-collapse {
@@ -4194,17 +3581,6 @@ onBeforeUnmount(() => {
 @media (max-width: 767px) {
   .channels-page {
     min-width: 0;
-  }
-
-  .off-peak-zone,
-  .off-peak-days,
-  .off-peak-time {
-    width: 100%;
-  }
-
-  .off-peak-window {
-    padding-bottom: 8px;
-    border-bottom: 1px solid var(--el-border-color-lighter);
   }
 
   .channels-page .toolbar {
@@ -4326,8 +3702,7 @@ onBeforeUnmount(() => {
     border-top: 1px solid var(--el-border-color-lighter);
   }
 
-  :global(.channel-editor-drawer .el-col),
-  :global(.channel-pricing-editor-dialog .el-col) {
+  :global(.channel-editor-drawer .el-col) {
     max-width: 100% !important;
     flex: 0 0 100% !important;
   }

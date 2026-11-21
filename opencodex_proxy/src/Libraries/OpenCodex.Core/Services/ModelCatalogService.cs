@@ -1972,7 +1972,24 @@ public sealed class ModelCatalogService : IModelCatalogService
 
     public bool SimulatesMultiAgent(string model)
     {
-        var info = ResolveGlobalModel(model);
+        return SimulatesMultiAgent(null, model, model);
+    }
+
+    public bool SimulatesMultiAgent(Guid? channelId, string model, string? upstreamModel)
+    {
+        var requestModel = Normalize(model);
+        var actualUpstreamModel = Normalize(upstreamModel);
+        if (channelId.HasValue)
+        {
+            var channelMatch = ResolveChannelModelMatch(channelId.Value, requestModel, actualUpstreamModel);
+            if (channelMatch is not null
+                && ReadBoolean(DeserializeObject(channelMatch.Model.CapabilitiesJson), "v2_agent_simulation") is { } enabled)
+            {
+                return enabled;
+            }
+        }
+
+        var info = ResolveGlobalModelWithFallback(requestModel, actualUpstreamModel, out _, out _);
         return info is not null
             && ReadBoolean(DeserializeObject(info.CapabilitiesJson), "v2_agent_simulation") == true;
     }

@@ -78,7 +78,7 @@
 
 1. 请求已通过代理 API key 鉴权，且运行器可取得稳定的 API key 标识。
 2. 请求体是 JSON 对象，`model` 在进入运行器前可解析。
-3. 新根 `POST /responses` 要创建服务端运行，命中的全局启用模型必须显式声明 `capabilities.v2_agent_simulation=true`，且没有走原生 Responses 直通；已有客户端协同组子请求通过组内绑定进入对应代理。
+3. 新根 `POST /responses` 要创建服务端运行，首个候选渠道的模型配置按渠道覆盖、全局模型回退解析后的 `capabilities.v2_agent_simulation` 必须为 `true`，且没有走原生 Responses 直通；已有客户端协同组子请求通过组内绑定进入对应代理。
 4. `GET /responses` WebSocket 升级固定由 `MultiAgentResponseService` 处理；`response.create` 先解析已有客户端绑定，未绑定的新运行仍需通过模型能力检查。
 5. 客户端若希望续接同一运行，需要继续提供相同的 API key、会话标识或可解析的 `previous_response_id`。
 6. 客户端工具调用必须由客户端执行；服务端只分配调用 ID、记录归属并等待结果。
@@ -139,12 +139,14 @@
 
 ### 4.1 能力开关与入口分流
 
-`IModelCatalogService.SimulatesMultiAgent` 的默认实现返回 `false`；`ModelCatalogService.SimulatesMultiAgent` 只在命中启用中的全局模型且 `CapabilitiesJson` 中 `v2_agent_simulation` 显式为 `true` 时返回 `true`。前端模型编辑器在新建模型时把该能力初始化为 `false`。
+`IModelCatalogService.SimulatesMultiAgent` 保留无渠道的全局查询，并提供渠道、请求模型和上游模型参数。`ModelCatalogService` 先读取启用中的渠道模型覆盖；显式 `true/false` 直接生效，未设置则按请求模型优先、上游模型回退读取全局模型，最终默认关闭。前端渠道编辑提供「继承全局/开启/关闭」。
+
+HTTP 与 WebSocket 通过 `ModelSimulationPolicy` 使用首个路由候选解析该开关；原生 Responses 渠道保持直通。现有原生代理绑定仍优先续接，不受新根请求的开关判断影响。亲和、容量或故障切换不在运行中重新选择模拟模式。
 
 | 入口 | 当前分流条件 | 当前行为 |
 |---|---|---|
 | `POST /responses`、`POST /v1/responses` | 已有客户端协同组/子预登记，未显式关闭 | 优先进入对应 actor，早于模型能力、原生直通和探针判断；不创建另一根运行 |
-| `POST /responses`、`POST /v1/responses` | 未绑定，`SimulatesMultiAgent(model)` 为 `true` 且首个路由候选渠道类型不是 responses | 进入模拟运行器，按 native 能力选择客户端协同模式或 legacy |
+| `POST /responses`、`POST /v1/responses` | 未绑定，首个候选渠道的模型模拟配置解析为 `true` 且渠道类型不是 responses | 进入模拟运行器，按 native 能力选择客户端协同模式或 legacy |
 | `POST /responses`、`POST /v1/responses` | 未绑定，模型能力开启且首个路由候选渠道类型为 responses | 保持 `responses -> responses` 直通，不新建服务端代理组 |
 | `POST /responses`、`POST /v1/responses` | 未绑定且能力未开启或模型不匹配 | 继续普通管线，包括普通 native 子请求 |
 | `POST /responses` 且 `multi_agent.enabled=false` | 即使模型能力开启 | 顶层 `multi_agent` 被移除，直接调用普通管线 |
@@ -426,7 +428,7 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 11. 当前实现仅使用进程内字典、进程内信号量和本地文件快照，没有 Redis 或跨实例协调。
 12. WebSocket 的注入集合与已完成 ID 集合按连接建立；重连后不会把旧连接上的注入状态带入新连接。
 13. 会话标识自动生成时，HTTP 客户端可通过响应头获知；WebSocket 客户端当前只能依赖自己提供标识或继续使用 `previous_response_id`。
-14. `v2_agent_simulation` 只由全局模型目录解析，渠道级模型覆盖编辑器没有该能力开关。
+14. `v2_agent_simulation` 支持渠道覆盖，未设置才继承全局；不随运行中的渠道故障切换重新判断。
 15. legacy 事件的 `agent` 归属只是协议数据，不创建原生子聊天；客户端协同模式的可见子 thread 由原生客户端协作工具创建。
 16. 官方 hosted 多代理密文和外部 hosted 历史的互通不在当前实现范围。
 
@@ -438,7 +440,7 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 
 **状态：** CURRENT（已实现）
 
-**要求：** 新根运行通过启用中的全局模型 `capabilities.v2_agent_simulation=true` 开启；缺省、`false`、模型未启用、无匹配或空模型名都返回未开启。已在客户端协同组中预登记的子 actor 按绑定续接，允许显式选择未开启该标志的模型。
+**要求：** 新根运行优先使用首个候选渠道的启用模型覆盖 `capabilities.v2_agent_simulation`；显式 `false` 覆盖全局 `true`，未设置才回退全局模型，最终默认关闭。已在客户端协同组中预登记的子 actor 按绑定续接，允许显式选择未开启该标志的模型。
 
 **验收标准：**
 
@@ -962,7 +964,7 @@ HTTP 服务端运行器路径把最终值写入 `X-OpenCodex-Multi-Agent-Session
 7. WebSocket 自动生成的会话标识没有响应头暴露；已完成 ID 与注入通道按连接建立，重连不继承旧连接状态。
 8. 客户端工具调用没有独立超时；客户端不返回结果时，HTTP 运行保持 pending，WebSocket 等待注入或断开。
 9. `multi_agent.enabled=false` 是顶层字段回退，不是完整的 v2 标记清理；其它 v2 标记仍可能触发普通管线策略。
-10. `v2_agent_simulation` 只从全局模型目录解析，渠道级模型覆盖编辑器没有该能力开关。
+10. `v2_agent_simulation` 支持渠道覆盖并回退全局；首个路由候选决定新根请求的模式，不随运行中的故障切换重算。
 11. 模型调用次数没有上限；`ModelTurns` 按调度预先累计，并非实际发出或完成的调用数。运行由正常完成、取消或错误结束，当前没有单独的代理级费用科目。
 12. 快照以明文 JSON 写入本地目录，当前没有静态加密、保留期限、容量配额或自动清理。
 13. 没有对代理数量、路径深度、单代理历史长度、工具输出大小或快照大小设置独立上限；实际仍受上游模型上下文窗口、HTTP/WebSocket 请求体限制和系统资源约束。

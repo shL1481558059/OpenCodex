@@ -10,6 +10,8 @@ public interface IModelCatalogService
 {
     bool SimulatesMultiAgent(string model) => false;
 
+    bool SimulatesMultiAgent(Guid? channelId, string model, string? upstreamModel) => SimulatesMultiAgent(model);
+
     ApiOpResult<ModelProviderListResponse> ListProviders(bool includeDisabled = false);
 
     ApiOpResult<ModelProviderResponsePayload> CreateProvider(ModelProviderUpsertRequest request);

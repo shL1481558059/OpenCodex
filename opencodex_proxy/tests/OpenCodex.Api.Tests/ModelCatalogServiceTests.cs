@@ -22,6 +22,97 @@ namespace OpenCodex.Api.Tests;
 public sealed class ModelCatalogServiceTests
 {
     [Theory]
+    [InlineData(false, true, true, true)]
+    [InlineData(true, false, true, false)]
+    [InlineData(true, null, true, true)]
+    [InlineData(false, null, true, false)]
+    [InlineData(false, true, false, false)]
+    [InlineData(true, false, false, true)]
+    public void SimulatesMultiAgentUsesChannelOverrideBeforeGlobal(
+        bool globalEnabled, bool? channelEnabled, bool overrideEnabled, bool expected)
+    {
+        var dbPath = CreateDbPath();
+        var modelId = SeedGlobalModel(dbPath, "request-model", "{}",
+            JsonSerializer.Serialize(new { v2_agent_simulation = globalEnabled }));
+        var channelId = Guid.NewGuid();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            var providerId = context.ModelInfos.Single(item => item.Id == modelId).ProviderId;
+            AddChannel(context, channelId, "test-channel", "upstream-model");
+            context.ChannelModelInfos.Add(new ChannelModelInfo
+            {
+                ChannelId = channelId,
+                RequestModel = "request-model",
+                UpstreamModel = "upstream-model",
+                ProviderId = providerId,
+                ModelKey = "request-model",
+                MatchType = ModelMatchTypes.Exact,
+                MatchPattern = "request-model",
+                CapabilitiesJson = channelEnabled is null
+                    ? "{}"
+                    : JsonSerializer.Serialize(new { v2_agent_simulation = channelEnabled.Value }),
+                Enabled = overrideEnabled,
+                CreatedAt = 1,
+                UpdatedAt = 1
+            });
+            context.SaveChanges();
+        }
+        IModelCatalogService service = CreateService(dbPath);
+
+        Assert.Equal(expected, service.SimulatesMultiAgent(channelId, "request-model", "upstream-model"));
+        Assert.Equal(globalEnabled, service.SimulatesMultiAgent(Guid.NewGuid(), "request-model", "upstream-model"));
+    }
+
+    [Fact]
+    public void SimulatesMultiAgentFallsBackToGlobalUpstreamModel()
+    {
+        var dbPath = CreateDbPath();
+        SeedGlobalModel(dbPath, "upstream-model", "{}", """{"v2_agent_simulation":true}""");
+        IModelCatalogService service = CreateService(dbPath);
+
+        Assert.True(service.SimulatesMultiAgent(null, "request-alias", "upstream-model"));
+        Assert.False(service.SimulatesMultiAgent(null, "unmatched", "other-upstream"));
+    }
+
+    [Fact]
+    public void SimulatesMultiAgentChannelSaveCanRestoreGlobalInheritance()
+    {
+        var dbPath = CreateDbPath();
+        SeedGlobalModel(dbPath, "request-model", "{}", """{"v2_agent_simulation":true}""");
+        var channelId = Guid.NewGuid();
+        using (var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}"))
+        {
+            AddChannel(context, channelId, "test-channel", "upstream-model");
+        }
+        var service = CreateService(dbPath, new InMemoryCacheService());
+        var request = JsonSerializer.Deserialize<ChannelModelInfoUpsertRequest>(
+            """
+            {
+              "provider_code": "test",
+              "request_model": "request-model",
+              "upstream_model": "upstream-model",
+              "model_key": "request-model",
+              "match_type": "exact",
+              "match_pattern": "request-model",
+              "capabilities": { "v2_agent_simulation": false, "extra_capability": true }
+            }
+            """)!;
+
+        Assert.True(service.UpsertChannelModelInfo(channelId, request).Succeeded);
+        Assert.False(service.SimulatesMultiAgent(channelId, "request-model", "upstream-model"));
+        Assert.False(CreateService(dbPath).SimulatesMultiAgent(channelId, "request-model", "upstream-model"));
+
+        request.Capabilities.Remove("v2_agent_simulation");
+        Assert.True(service.UpsertChannelModelInfo(channelId, request).Succeeded);
+        Assert.True(service.SimulatesMultiAgent(channelId, "request-model", "upstream-model"));
+        Assert.True(CreateService(dbPath).SimulatesMultiAgent(channelId, "request-model", "upstream-model"));
+        using var verify = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        using var capabilities = JsonDocument.Parse(verify.ChannelModelInfos.Single().CapabilitiesJson);
+        Assert.False(capabilities.RootElement.TryGetProperty("v2_agent_simulation", out _));
+        Assert.True(capabilities.RootElement.GetProperty("extra_capability").GetBoolean());
+    }
+
+    [Theory]
     [InlineData("{}", true, false)]
     [InlineData("{\"v2_agent_simulation\":false}", true, false)]
     [InlineData("{\"v2_agent_simulation\":true}", true, true)]

@@ -13,6 +13,7 @@ using OpenCodex.Api.Services;
 using OpenCodex.Core.Services.MultiAgent;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
+using OpenCodex.CoreBase.DTOs.Proxy;
 using OpenCodex.CoreBase.Services;
 using OpenCodex.CoreBase.Services.Proxy;
 using D = System.Collections.Generic.Dictionary<string, object?>;
@@ -32,6 +33,9 @@ internal sealed class MultiAgentApiTestContext : IDisposable
     public NativeClientSessionStore NativeStore { get; }
     public Guid Key { get; }
     public bool CatalogEnabled { get; set; } = true;
+    public bool? ChannelCatalogEnabled { get; set; }
+    public IReadOnlyList<ProxyRouteDto> RouteCandidates { get; set; } = [];
+    public List<(Guid? ChannelId, string Model, string? UpstreamModel)> CatalogCalls { get; } = [];
     public CancellationTokenSource Lifetime { get; } = new(TimeSpan.FromSeconds(10));
 
     public MultiAgentApiTestContext(Func<ProxyEndpointContext, Task<ProxyEndpointResult>> handler,
@@ -51,8 +55,11 @@ internal sealed class MultiAgentApiTestContext : IDisposable
         Http.Response.Body = Body;
         Http.RequestAborted = Lifetime.Token;
         FakeEndpoint = new Endpoint(handler);
+        var routes = DispatchProxy.Create<IProxyRouteService, RoutesProxy>();
+        ((RoutesProxy)(object)routes).Candidates = () => RouteCandidates;
         _services = new ServiceCollection()
             .AddSingleton(NativeStore)
+            .AddSingleton(routes)
             .AddSingleton(connectionCache ?? new ClientConnectionCache())
             .AddSingleton<IProxyIdentityContext>(new Identity(Key))
             .AddScoped<IProxyEndpointService>(_ => FakeEndpoint)
@@ -63,6 +70,11 @@ internal sealed class MultiAgentApiTestContext : IDisposable
         Http.RequestServices = _services;
         var catalog = DispatchProxy.Create<IModelCatalogService, CatalogProxy>();
         ((CatalogProxy)(object)catalog).Enabled = () => CatalogEnabled;
+        ((CatalogProxy)(object)catalog).ChannelEnabled = (channelId, model, upstreamModel) =>
+        {
+            CatalogCalls.Add((channelId, model, upstreamModel));
+            return ChannelCatalogEnabled ?? CatalogEnabled;
+        };
         Service = new MultiAgentResponseService(new FixedContextAccessor { HttpContext = Http }, catalog,
             new Identity(Key), FakeEndpoint, Store, _services.GetRequiredService<IServiceScopeFactory>(),
             configuration ?? new ConfigurationBuilder().Build(),
@@ -138,8 +150,21 @@ internal sealed class MultiAgentApiTestContext : IDisposable
     public class CatalogProxy : DispatchProxy
     {
         public Func<bool> Enabled { get; set; } = () => true;
+        public Func<Guid?, string, string?, bool>? ChannelEnabled { get; set; }
         protected override object? Invoke(MethodInfo? method, object?[]? args) =>
-            method?.Name == "SimulatesMultiAgent" ? Enabled() : throw new NotSupportedException(method?.Name);
+            method?.Name == "SimulatesMultiAgent"
+                ? args?.Length == 3 && ChannelEnabled is not null
+                    ? ChannelEnabled((Guid?)args[0], (string)args[1]!, (string?)args[2])
+                    : Enabled()
+                : throw new NotSupportedException(method?.Name);
+    }
+    public class RoutesProxy : DispatchProxy
+    {
+        public Func<IReadOnlyList<ProxyRouteDto>> Candidates { get; set; } = () => [];
+        protected override object? Invoke(MethodInfo? method, object?[]? args) =>
+            method?.Name == "ListRouteCandidatesAsync"
+                ? Task.FromResult(Candidates())
+                : throw new NotSupportedException(method?.Name);
     }
     private sealed class SocketFeature(TestSocket socket) : IHttpWebSocketFeature
     {

@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.AspNetCore.Mvc;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.DTOs.Proxy;
 using Xunit;
 using D = System.Collections.Generic.Dictionary<string, object?>;
 using static OpenCodex.Api.Tests.MultiAgentApiTestContext;
@@ -9,6 +10,52 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class MultiAgentWebSocketTests
 {
+    [Fact]
+    public async Task NativeResponsesRouteKeepsPassthroughWhenSimulationIsEnabled()
+    {
+        using var test = new MultiAgentApiTestContext(ctx => Stream(ctx, Events(Terminal(Message("native")))));
+        test.RouteCandidates =
+        [
+            new ProxyRouteDto(new D { ["id"] = Guid.NewGuid().ToString(), ["type"] = "responses" },
+                "fake", "mapped-fake", false, true)
+        ];
+        var socket = test.Socket();
+        var operation = test.Service.ResponsesWebSocket();
+        socket.ClientSend(Create());
+        await socket.Until("response.completed", test.Lifetime.Token);
+        socket.ClientClose();
+        await operation;
+
+        Assert.Empty(test.CatalogCalls);
+        Assert.DoesNotContain(socket.Sent, item => Type(item) == "response.created");
+        Assert.Single(test.FakeEndpoint.Calls);
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task CreateUsesChannelSimulationBeforeGlobal(bool globalEnabled, bool channelEnabled)
+    {
+        using var test = new MultiAgentApiTestContext(ctx => Stream(ctx, Events(Terminal(Message("done")))));
+        test.CatalogEnabled = globalEnabled;
+        test.ChannelCatalogEnabled = channelEnabled;
+        var channelId = Guid.NewGuid();
+        test.RouteCandidates =
+        [
+            new ProxyRouteDto(new D { ["id"] = channelId.ToString(), ["type"] = "chat" },
+                "fake", "mapped-fake", false, true)
+        ];
+        var socket = test.Socket();
+        var operation = test.Service.ResponsesWebSocket();
+        socket.ClientSend(Create());
+        await socket.Until("response.completed", test.Lifetime.Token);
+        socket.ClientClose();
+        await operation;
+
+        Assert.Equal((channelId, "fake", "mapped-fake"), Assert.Single(test.CatalogCalls));
+        Assert.Equal(channelEnabled, socket.Sent.Any(item => Type(item) == "response.created"));
+    }
+
     private static D Create() { var request = Request(); request["type"] = "response.create"; return request; }
     private static D Injection(string response, string call) => new()
     {

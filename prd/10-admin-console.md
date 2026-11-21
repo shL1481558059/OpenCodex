@@ -570,7 +570,9 @@ status, errorCode, message, requestId, retryAfter, details, isNetworkError, isAb
 
 移动端模型Dialog全屏，计费规则由表格转换为卡片。
 
-`capabilities.v2_agent_simulation` 仅在全局模型编辑器出现；渠道级模型覆盖编辑器没有该字段（见 TBD-UI-014）。
+全局与渠道模型编辑共用 `ModelEditorForm`，统一字段布局、可视化窗口档位和 Catalog 对象校验。渠道编辑额外显示只读的请求/上游模型。
+
+`capabilities.v2_agent_simulation` 支持渠道模型覆盖：渠道选择「继承全局」时不提交该字段；「开启/关闭」分别保存 `true/false`。全局模型提供开启/关闭，未设置默认关闭。
 
 ### 14.3 当前限制
 
@@ -1219,7 +1221,7 @@ flowchart LR
 
 **验收标准**：
 1. 渠道模型覆盖编辑器只暴露后端支持的字段（匹配键、上游模型名、定价覆盖等）。
-2. 全局模型能力 `v2_agent_simulation` 是否允许渠道级覆盖按 TBD-UI-014 结论执行；在结论前 UI 不得展示无效开关。
+2. `v2_agent_simulation` 按渠道模型显式值、全局模型、默认关闭的顺序解析；显式 `false` 必须覆盖全局 `true`。HTTP 与 WebSocket 使用相同规则。
 3. 覆盖保存/删除调用 `/channels/{channelId}/model-infos` 系列接口，并给出成功/失败反馈。
 
 #### REQ-UI-049（MUST）模型生命周期与批量删除两段式一致
@@ -1339,7 +1341,7 @@ flowchart LR
 | TBD-UI-011 | 是否支持暗色/高对比主题 | 高对比为可访问性优先，暗色可后续 | 设计+产品 |
 | TBD-UI-012 | 离开页面时后台测试是否继续 | 按任务类型定义，结果可回查 | 产品+后端 |
 | TBD-UI-013 | 普通用户是否允许进入系统设置的「图片识别」分区 | 组件已支持，建议放开外壳限制并保留服务端 owner 收敛 | 产品+前端+安全 |
-| TBD-UI-014 | 渠道级模型覆盖是否暴露 `v2_agent_simulation` 能力开关 | 与全局模型能力语义对齐后再决定 | 产品+后端 |
+| TBD-UI-014（已定） | 渠道级模型覆盖暴露 `v2_agent_simulation` | 继承全局/开启/关闭；渠道显式值优先 | 产品+后端 |
 | TBD-UI-015 | 桌面 `intercept_probe_requests` 残留字段与 `OPENCODEX_INTERCEPT_PROBE_REQUESTS` 注入的兼容/删除策略 | 明确唯一事实源为数据库 `ProxySetting` | 产品+桌面端 |
 
 ---

@@ -410,385 +410,18 @@
 
     <el-dialog
       v-model="modelDialogVisible"
-      class="model-catalog-model-dialog"
+      class="model-editor-dialog"
       :title="modelDraft.id ? '编辑模型' : '新增模型'"
       :width="isMobile ? undefined : '880px'"
       :fullscreen="isMobile"
+      append-to-body
     >
-      <el-form label-position="top" :model="modelDraft">
-        <el-row :gutter="16">
-          <el-col :xs="24" :span="16">
-            <el-form-item label="供应商">
-              <el-select v-model="modelDraft.provider_code" class="full-width">
-                <el-option
-                  v-for="provider in providers"
-                  :key="provider.code"
-                  :label="provider.name"
-                  :value="provider.code"
-                />
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :xs="24" :span="8">
-            <el-form-item label="状态">
-              <el-switch v-model="modelDraft.enabled" />
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-row :gutter="16">
-          <el-col :xs="24" :span="12">
-            <el-form-item label="模型标识">
-              <el-input v-model="modelDraft.model_key" autocomplete="off" />
-            </el-form-item>
-          </el-col>
-          <el-col :xs="24" :span="12">
-            <el-form-item label="显示名称">
-              <el-input v-model="modelDraft.display_name" autocomplete="off" />
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-row :gutter="16">
-          <el-col :xs="24" :span="8">
-            <el-form-item label="匹配类型">
-              <el-select v-model="modelDraft.match_type" class="full-width" @change="handleModelMatchTypeChange">
-                <el-option label="精确" value="exact" />
-                <el-option label="前缀" value="prefix" />
-                <el-option label="后缀" value="suffix" />
-                <el-option label="包含" value="contains" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :xs="24" :span="16">
-            <el-form-item label="匹配键">
-              <el-select
-                v-if="modelDraft.match_type === 'exact'"
-                v-model="modelDraft.match_patterns"
-                multiple
-                filterable
-                allow-create
-                default-first-option
-                clearable
-                placeholder="输入后回车添加"
-                class="full-width"
-              >
-                <el-option
-                  v-for="pattern in modelDraft.match_patterns"
-                  :key="pattern"
-                  :label="pattern"
-                  :value="pattern"
-                />
-              </el-select>
-              <el-input v-else v-model="modelDraft.match_pattern" autocomplete="off" />
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-form-item label="描述">
-          <el-input v-model="modelDraft.description" type="textarea" :rows="2" />
-        </el-form-item>
-
-        <el-row :gutter="16">
-          <el-col :xs="24" :span="8">
-            <el-form-item label="支持图片">
-              <el-switch v-model="modelDraft.capabilities.supports_image" />
-            </el-form-item>
-          </el-col>
-          <el-col :xs="24" :span="8">
-            <el-form-item label="上下文窗口">
-              <el-input-number
-                v-model="modelDraft.capabilities.context_window"
-                :min="0"
-                :step="8192"
-                class="full-width"
-              />
-            </el-form-item>
-          </el-col>
-          <el-col :xs="24" :span="8">
-            <el-form-item label="币种">
-              <el-input v-model="modelDraft.pricing.currency" autocomplete="off" />
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-form-item label="v2 Agent 模拟">
-          <el-switch v-model="modelDraft.capabilities.v2_agent_simulation" />
-          <span class="form-tip">按此模型的匹配规则对请求模型生效，客户端 base_url 保持 /v1。开启后由服务器调度子代理，会增加模型调用。</span>
-        </el-form-item>
-
-        <el-divider content-position="left">计费规则</el-divider>
-        <div class="off-peak-panel">
-          <div class="off-peak-panel__head">
-            <el-select
-              v-model="modelDraft.pricing.time_zone"
-              filterable
-              allow-create
-              default-first-option
-              clearable
-              placeholder="峰谷时区，留空表示不启用"
-              class="off-peak-zone"
-            >
-              <el-option v-for="zone in offPeakTimeZones" :key="zone" :label="zone" :value="zone" />
-            </el-select>
-            <span class="off-peak-panel__hint">{{ offPeakHint }}</span>
-          </div>
-
-          <div
-            v-for="(window, index) in modelDraft.pricing.off_peak_windows"
-            :key="index"
-            class="off-peak-window"
-          >
-            <el-select v-model="window.start" filterable allow-create default-first-option class="off-peak-time">
-              <el-option v-for="time in offPeakTimeOptions" :key="`s-${time}`" :label="time" :value="time" />
-            </el-select>
-            <span class="off-peak-window__sep">至</span>
-            <el-select v-model="window.end" filterable allow-create default-first-option class="off-peak-time">
-              <el-option v-for="time in offPeakTimeOptions" :key="`e-${time}`" :label="time" :value="time" />
-            </el-select>
-            <el-select
-              v-model="window.days"
-              multiple
-              collapse-tags
-              collapse-tags-tooltip
-              placeholder="每天"
-              class="off-peak-days"
-            >
-              <el-option v-for="day in offPeakWeekdays" :key="day.value" :label="day.label" :value="day.value" />
-            </el-select>
-            <el-button link type="danger" :icon="Delete" @click="removeOffPeakWindow(index)" />
-            <span v-if="crossesMidnight(window)" class="off-peak-window__note">保存后按起始日拆成两段</span>
-          </div>
-
-          <div class="off-peak-panel__actions">
-            <el-button link type="primary" :icon="Plus" @click="addOffPeakWindow">添加谷段窗口</el-button>
-            <div class="off-peak-discount">
-              <span>谷段折扣</span>
-              <el-input-number
-                v-model="offPeakDiscount"
-                :min="0"
-                :max="1"
-                :step="0.05"
-                :precision="2"
-                size="small"
-              />
-              <el-button size="small" @click="fillOffPeakDiscount">按折扣填充谷价</el-button>
-            </div>
-          </div>
-      </div>
-      <div v-if="!isMobile" class="rule-table-wrap">
-        <el-table
-          :data="modelDraft.pricing.rules"
-          border
-          size="small"
-          scrollbar-always-on
-          class="model-catalog-rule-table"
-        >
-          <el-table-column label="计费项" width="110">
-            <template #default="{ row }">{{ formatBillingItem(row.billing_item) }}</template>
-          </el-table-column>
-          <el-table-column label="模式" width="170">
-            <template #default="{ row }">
-              <el-select v-model="row.billing_mode" class="full-width">
-                <el-option label="按次" value="per_request" />
-                <el-option label="每百万 token" value="per_million_tokens" />
-                <el-option label="上下文窗口档" value="tiered_tokens" />
-              </el-select>
-            </template>
-          </el-table-column>
-          <el-table-column label="单价" width="160">
-            <template #default="{ row }">
-              <el-input-number v-model="row.unit_price" :min="0" :precision="8" :step="0.01" class="full-width" />
-            </template>
-          </el-table-column>
-          <el-table-column label="峰谷" width="70" align="center">
-            <template #default="{ row }">
-              <el-switch v-model="row.off_peak_enabled" :disabled="!offPeakEnabledForDraft" />
-            </template>
-          </el-table-column>
-          <el-table-column label="谷段单价" width="160">
-            <template #default="{ row }">
-              <el-input-number
-                v-model="row.off_peak_unit_price"
-                :min="0"
-                :precision="8"
-                :step="0.01"
-                :disabled="!offPeakEnabledForDraft || row.off_peak_enabled !== true"
-                class="full-width"
-              />
-            </template>
-          </el-table-column>
-          <el-table-column label="阶梯" width="420">
-            <template #default="{ row }">
-              <div v-if="row.billing_mode === 'tiered_tokens'" class="tier-editor">
-                <div class="tier-editor-section">
-                  <div class="tier-editor-head">窗口档（峰）</div>
-                  <div v-for="(tier, i) in tiersOf(row)" :key="i" class="tier-editor-row">
-                    <span class="tier-editor-label">≤</span>
-                    <el-input-number
-                      v-model="tier.up_to"
-                      :min="0"
-                      :step="1000"
-                      :controls="false"
-                      class="tier-editor-up-to"
-                      placeholder="不限留空"
-                      @change="syncTiers(row, '_tiers', 'tiers_text')"
-                    />
-                    <el-input-number
-                      v-model="tier.unit_price"
-                      :min="0"
-                      :precision="8"
-                      :step="0.01"
-                      :controls="false"
-                      class="tier-editor-price"
-                      @change="syncTiers(row, '_tiers', 'tiers_text')"
-                    />
-                    <el-button text type="danger" :icon="Delete" @click="removeTier(row, i)" />
-                  </div>
-                  <el-button text type="primary" :icon="Plus" @click="addTier(row)">添加档位</el-button>
-                </div>
-                <div v-if="row.off_peak_enabled === true" class="tier-editor-section off-peak-tiers">
-                  <div class="tier-editor-head">窗口档（谷）</div>
-                  <div v-for="(tier, i) in offPeakTiersOf(row)" :key="i" class="tier-editor-row">
-                    <span class="tier-editor-label">≤</span>
-                    <el-input-number
-                      v-model="tier.up_to"
-                      :min="0"
-                      :step="1000"
-                      :controls="false"
-                      class="tier-editor-up-to"
-                      placeholder="不限留空"
-                      @change="syncTiers(row, '_offPeakTiers', 'off_peak_tiers_text')"
-                    />
-                    <el-input-number
-                      v-model="tier.unit_price"
-                      :min="0"
-                      :precision="8"
-                      :step="0.01"
-                      :controls="false"
-                      class="tier-editor-price"
-                      @change="syncTiers(row, '_offPeakTiers', 'off_peak_tiers_text')"
-                    />
-                    <el-button text type="danger" :icon="Delete" @click="removeOffPeakTier(row, i)" />
-                  </div>
-                  <el-button text type="primary" :icon="Plus" @click="addOffPeakTier(row)">添加档位</el-button>
-                </div>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="启用" width="80" align="center">
-            <template #default="{ row }">
-              <el-switch v-model="row.enabled" />
-            </template>
-          </el-table-column>
-        </el-table>
-      </div>
-
-        <div v-else class="mobile-model-catalog-rules">
-          <section v-for="rule in modelDraft.pricing.rules" :key="rule.billing_item" class="model-catalog-rule-card">
-            <div class="model-catalog-rule-heading">
-              <strong>{{ formatBillingItem(rule.billing_item) }}</strong>
-              <div class="model-catalog-rule-switch">
-                <span>{{ rule.enabled ? "启用" : "停用" }}</span>
-                <el-switch v-model="rule.enabled" />
-              </div>
-            </div>
-            <label class="model-catalog-rule-field">
-              <span>计费模式</span>
-             <el-select v-model="rule.billing_mode" class="full-width">
-               <el-option label="按次" value="per_request" />
-               <el-option label="每百万 token" value="per_million_tokens" />
-                <el-option label="上下文窗口档" value="tiered_tokens" />
-             </el-select>
-           </label>
-            <label class="model-catalog-rule-field">
-              <span>单价</span>
-              <el-input-number
-                v-model="rule.unit_price"
-                :min="0"
-                :precision="8"
-                :step="0.01"
-                class="full-width"
-              />
-            </label>
-            <div class="model-catalog-rule-switch">
-              <span>峰谷计费</span>
-              <el-switch v-model="rule.off_peak_enabled" :disabled="!offPeakEnabledForDraft" />
-            </div>
-            <label v-if="rule.off_peak_enabled === true" class="model-catalog-rule-field">
-              <span>谷段单价</span>
-              <el-input-number
-                v-model="rule.off_peak_unit_price"
-                :min="0"
-                :precision="8"
-                :step="0.01"
-                :disabled="!offPeakEnabledForDraft"
-                class="full-width"
-              />
-            </label>
-            <div v-if="rule.billing_mode === 'tiered_tokens'" class="tier-editor mobile-tier-editor">
-              <div class="tier-editor-section">
-                <div class="tier-editor-head">窗口档（峰）</div>
-                <div v-for="(tier, i) in tiersOf(rule)" :key="i" class="tier-editor-row">
-                  <span class="tier-editor-label">≤</span>
-                  <el-input-number
-                    v-model="tier.up_to"
-                    :min="0"
-                    :step="1000"
-                    :controls="false"
-                    class="tier-editor-up-to"
-                    placeholder="不限留空"
-                    @change="syncTiers(rule, '_tiers', 'tiers_text')"
-                  />
-                  <el-input-number
-                    v-model="tier.unit_price"
-                    :min="0"
-                    :precision="8"
-                    :step="0.01"
-                    :controls="false"
-                    class="tier-editor-price"
-                    @change="syncTiers(rule, '_tiers', 'tiers_text')"
-                  />
-                  <el-button text type="danger" :icon="Delete" @click="removeTier(rule, i)" />
-                </div>
-                <el-button text type="primary" :icon="Plus" @click="addTier(rule)">添加档位</el-button>
-              </div>
-              <div v-if="rule.off_peak_enabled === true" class="tier-editor-section off-peak-tiers">
-                <div class="tier-editor-head">窗口档（谷）</div>
-                <div v-for="(tier, i) in offPeakTiersOf(rule)" :key="i" class="tier-editor-row">
-                  <span class="tier-editor-label">≤</span>
-                  <el-input-number
-                    v-model="tier.up_to"
-                    :min="0"
-                    :step="1000"
-                    :controls="false"
-                    class="tier-editor-up-to"
-                    placeholder="不限留空"
-                    @change="syncTiers(rule, '_offPeakTiers', 'off_peak_tiers_text')"
-                  />
-                  <el-input-number
-                    v-model="tier.unit_price"
-                    :min="0"
-                    :precision="8"
-                    :step="0.01"
-                    :controls="false"
-                    class="tier-editor-price"
-                    @change="syncTiers(rule, '_offPeakTiers', 'off_peak_tiers_text')"
-                  />
-                  <el-button text type="danger" :icon="Delete" @click="removeOffPeakTier(rule, i)" />
-                </div>
-                <el-button text type="primary" :icon="Plus" @click="addOffPeakTier(rule)">添加档位</el-button>
-              </div>
-            </div>
-          </section>
-        </div>
-
-        <el-collapse class="advanced-collapse">
-          <el-collapse-item title="Catalog JSON" name="catalog">
-            <el-input v-model="catalogText" type="textarea" :rows="8" />
-          </el-collapse-item>
-        </el-collapse>
-      </el-form>
+      <ModelEditorForm
+        :draft="modelDraft"
+        :providers="providers"
+        :is-mobile="isMobile"
+        v-model:catalog-text="catalogText"
+      />
 
       <template #footer>
         <div class="drawer-footer">
@@ -841,6 +474,8 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
 import { ElMessage } from "element-plus/es/components/message/index.mjs";
 import { ElMessageBox } from "element-plus/es/components/message-box/index.mjs";
 import { ArrowDown, CircleClose, Close, Delete, DocumentCopy, Download, Edit, Plus, Refresh, RefreshRight, Search, Select, Upload, Warning } from "@element-plus/icons-vue";
+import ModelEditorForm from "./ModelEditorForm.vue";
+import { buildModelEditorPayload, createModelEditorDraft, modelCatalogText } from "./modelEditorState.js";
 import {
   createModelCatalogImportState,
   parseModelCatalogFile,
@@ -850,17 +485,7 @@ import {
   resetModelCatalogImport,
   syncModelKeys
 } from "./modelCatalogImportState.js";
-import {
-  OFF_PEAK_TIME_OPTIONS,
-  OFF_PEAK_TIME_ZONES,
-  OFF_PEAK_WEEKDAYS,
-  applyOffPeakDiscount,
-  crossesMidnight,
-  currentPhaseLabel,
-  emptyOffPeakWindow,
-  normalizeOffPeakWindows,
-  offPeakConfigured
-} from "./pricingOffPeak.js";
+import { offPeakConfigured } from "./pricingOffPeak.js";
 
 const props = defineProps({
   api: { type: Function, required: true }
@@ -879,11 +504,6 @@ const syncOverwrite = ref(false);
 const catalogFileInput = ref(null);
 const catalogImportState = reactive(createModelCatalogImportState());
 const modelDialogVisible = ref(false);
-const offPeakDiscount = ref(0.5);
-const offPeakClock = ref(Date.now());
-const offPeakTimeZones = OFF_PEAK_TIME_ZONES;
-const offPeakTimeOptions = OFF_PEAK_TIME_OPTIONS;
-const offPeakWeekdays = OFF_PEAK_WEEKDAYS;
 const modelSaving = ref(false);
 const providerDialogVisible = ref(false);
 const providerSaving = ref(false);
@@ -901,20 +521,13 @@ const matchTypes = {
   suffix: "后缀",
   contains: "包含"
 };
-const billingItems = [
-  { value: "input", label: "输入" },
-  { value: "output", label: "输出" },
-  { value: "cache_write", label: "缓存写" },
-  { value: "cache_read", label: "缓存读" }
-];
 const filters = reactive({
   query: "",
   enabled: null
 });
-const modelDraft = reactive(emptyModelDraft());
+const modelDraft = reactive(createModelEditorDraft());
 const providerDraft = reactive(emptyProviderDraft());
 let mobileMediaQuery = null;
-let offPeakTimer = null;
 
 const pagedModels = computed(() => {
   const start = (page.value - 1) * pageSize.value;
@@ -1126,35 +739,9 @@ function openModelDialog(row = null) {
     return;
   }
 
-  Object.assign(modelDraft, emptyModelDraft());
-  catalogText.value = "{}";
-  if (row) {
-    Object.assign(modelDraft, {
-      id: row.id,
-      provider_code: row.provider_code || providers.value[0]?.code || "",
-      model_key: row.model_key || "",
-      display_name: row.display_name || "",
-      description: row.description || "",
-      match_type: row.match_type || "exact",
-      match_pattern: row.match_pattern || matchPatternList(row)[0] || row.model_key || "",
-      match_patterns: matchPatternList(row),
-      enabled: row.enabled !== false,
-      capabilities: {
-        ...row.capabilities,
-        supports_image: row.capabilities?.supports_image === true,
-        v2_agent_simulation: row.capabilities?.v2_agent_simulation === true,
-        context_window: Number(row.capabilities?.context_window || 0)
-      },
-      pricing: normalizePricing(row.pricing)
-    });
-    catalogText.value = JSON.stringify(row.catalog || {}, null, 2);
-  } else {
-    modelDraft.provider_code = activeProvider.value !== "all"
-      ? activeProvider.value
-      : providers.value[0]?.code || "";
-    modelDraft.pricing = normalizePricing(null);
-    catalogText.value = JSON.stringify(defaultCatalog(), null, 2);
-  }
+  const providerCode = activeProvider.value !== "all" ? activeProvider.value : providers.value[0]?.code || "";
+  Object.assign(modelDraft, createModelEditorDraft(row, providerCode));
+  catalogText.value = modelCatalogText(row);
   modelDialogVisible.value = true;
 }
 
@@ -1226,7 +813,7 @@ async function saveProvider() {
 async function saveModel() {
   modelSaving.value = true;
   try {
-    const body = JSON.stringify(buildModelPayload());
+    const body = JSON.stringify(buildModelEditorPayload(modelDraft, catalogText.value));
     if (modelDraft.id) {
       await props.api(`/model-infos/${modelDraft.id}`, { method: "PATCH", body });
     } else {
@@ -1331,73 +918,6 @@ async function runBatch(action, ids = selection.value) {
   }
 }
 
-function buildModelPayload() {
-  const catalog = parseJson(catalogText.value || "{}", "Catalog JSON");
-  const matchPatterns = modelDraft.match_type === "exact"
-    ? normalizeMatchPatternList(modelDraft.match_patterns)
-    : normalizeMatchPatternList([modelDraft.match_pattern]);
-  const matchPattern = matchPatterns[0] || modelDraft.model_key || "";
-  const rules = modelDraft.pricing.rules.map((rule) => ({
-    billing_item: rule.billing_item,
-    billing_mode: rule.billing_mode,
-    unit_price: Number(rule.unit_price || 0),
-    tiers: rule.billing_mode === "tiered_tokens"
-      ? parseTiers(rule.tiers_text)
-      : [],
-    off_peak_enabled: rule.off_peak_enabled === true,
-    off_peak_unit_price: Number(rule.off_peak_unit_price || 0),
-    off_peak_tiers: rule.billing_mode === "tiered_tokens" && rule.off_peak_enabled === true
-      ? parseTiers(rule.off_peak_tiers_text)
-      : [],
-    enabled: rule.enabled !== false
-  }));
-  return {
-    provider_code: modelDraft.provider_code,
-    model_key: modelDraft.model_key,
-    display_name: modelDraft.display_name,
-    description: modelDraft.description,
-    match_type: modelDraft.match_type,
-    match_pattern: matchPattern,
-    match_patterns: matchPatterns,
-    catalog,
-    capabilities: {
-      ...modelDraft.capabilities,
-      context_window: Number(modelDraft.capabilities.context_window || 0)
-    },
-    pricing: {
-      currency: modelDraft.pricing.currency || "USD",
-      enabled: modelDraft.pricing.enabled !== false,
-      time_zone: modelDraft.pricing.time_zone || "",
-      off_peak_windows: modelDraft.pricing.time_zone
-        ? normalizeOffPeakWindows(modelDraft.pricing.off_peak_windows)
-        : [],
-      rules
-    },
-    enabled: modelDraft.enabled !== false
-  };
-}
-
-function emptyModelDraft() {
-  return {
-    id: null,
-    provider_code: "",
-    model_key: "",
-    display_name: "",
-    description: "",
-    match_type: "exact",
-    match_pattern: "",
-    match_patterns: [],
-    catalog: {},
-    capabilities: {
-      supports_image: false,
-      v2_agent_simulation: false,
-      context_window: 128000
-    },
-    pricing: normalizePricing(null),
-    enabled: true
-  };
-}
-
 function emptyProviderDraft() {
   return {
     id: null,
@@ -1465,56 +985,6 @@ function normalizeProviderCode(value) {
   return String(value || "").trim().toLowerCase();
 }
 
-function normalizePricing(pricing) {
-  const rulesByItem = new Map();
-  for (const rule of pricing?.rules || []) {
-    rulesByItem.set(rule.billing_item, normalizeRule(rule));
-  }
-  return {
-    currency: pricing?.currency || "USD",
-    enabled: pricing?.enabled !== false,
-    time_zone: pricing?.time_zone || "",
-    off_peak_windows: normalizeOffPeakWindows(pricing?.off_peak_windows),
-    rules: billingItems.map((item) => rulesByItem.get(item.value) || defaultRule(item.value))
-  };
-}
-
-function normalizeRule(rule) {
-  return {
-    billing_item: rule.billing_item,
-    billing_mode: rule.billing_mode || "per_million_tokens",
-    unit_price: Number(rule.unit_price || 0),
-    tiers_text: JSON.stringify(rule.tiers || [], null, 2),
-    _tiers: (rule.tiers || []).map((tier) => ({
-      up_to: tier.up_to === null || tier.up_to === undefined || tier.up_to === "" ? null : Number(tier.up_to),
-      unit_price: Number(tier.unit_price || 0)
-    })),
-    off_peak_enabled: rule.off_peak_enabled === true,
-    off_peak_unit_price: Number(rule.off_peak_unit_price || 0),
-    off_peak_tiers_text: JSON.stringify(rule.off_peak_tiers || [], null, 2),
-    _offPeakTiers: (rule.off_peak_tiers || []).map((tier) => ({
-      up_to: tier.up_to === null || tier.up_to === undefined || tier.up_to === "" ? null : Number(tier.up_to),
-      unit_price: Number(tier.unit_price || 0)
-    })),
-    enabled: rule.enabled !== false
-  };
-}
-
-function defaultRule(item) {
-  return {
-    billing_item: item,
-    billing_mode: "per_million_tokens",
-    unit_price: 0,
-    tiers_text: "[]",
-    _tiers: [],
-    off_peak_enabled: false,
-    off_peak_unit_price: 0,
-    off_peak_tiers_text: "[]",
-    _offPeakTiers: [],
-    enabled: true
-  };
-}
-
 function pricingSummary(row, item) {
   const rule = (row.pricing?.rules || []).find((entry) => entry.billing_item === item && entry.enabled !== false);
   if (!rule) return "-";
@@ -1525,89 +995,6 @@ function pricingSummary(row, item) {
   return offPeak
     ? `${peakPrice} 峰 / ${formatPrice(rule.off_peak_unit_price)} 谷`
     : peakPrice;
-}
-
-function parseTiers(text) {
-  const value = parseJson(text || "[]", "阶梯");
-  if (!Array.isArray(value)) {
-    throw new Error("阶梯必须是 JSON 数组");
-  }
-  return value.map((tier) => ({
-    up_to: tier.up_to === null || tier.up_to === undefined || tier.up_to === "" ? null : Number(tier.up_to),
-    unit_price: Number(tier.unit_price || 0)
-  }));
-}
-
-// 窗口档可视化编辑：tiers_text 是存储中间态，tiersOf 把它解析成可编辑数组并缓存到行上，
-// 增删改档位后用 syncTiers 写回 tiers_text，保持 buildRulePayload 提交链路不变。
-function tiersOf(rule) {
-  return rule._tiers || parseTiers(rule.tiers_text);
-}
-
-function offPeakTiersOf(rule) {
-  return rule._offPeakTiers || parseTiers(rule.off_peak_tiers_text);
-}
-
-function syncTiers(rule, cacheKey, textKey) {
-  rule[textKey] = JSON.stringify(rule[cacheKey] || [], null, 2);
-}
-
-function addTier(rule) {
-  tiersOf(rule).push({ up_to: null, unit_price: 0 });
-  syncTiers(rule, "_tiers", "tiers_text");
-}
-
-function removeTier(rule, index) {
-  tiersOf(rule).splice(index, 1);
-  syncTiers(rule, "_tiers", "tiers_text");
-}
-
-function addOffPeakTier(rule) {
-  offPeakTiersOf(rule).push({ up_to: null, unit_price: 0 });
-  syncTiers(rule, "_offPeakTiers", "off_peak_tiers_text");
-}
-
-function removeOffPeakTier(rule, index) {
-  offPeakTiersOf(rule).splice(index, 1);
-  syncTiers(rule, "_offPeakTiers", "off_peak_tiers_text");
-}
-
-const offPeakEnabledForDraft = computed(() => offPeakConfigured(modelDraft.pricing));
-
-const offPeakHint = computed(() => currentPhaseLabel(modelDraft.pricing, new Date(offPeakClock.value)));
-
-function addOffPeakWindow() {
-  modelDraft.pricing.off_peak_windows.push(emptyOffPeakWindow());
-}
-
-function removeOffPeakWindow(index) {
-  modelDraft.pricing.off_peak_windows.splice(index, 1);
-}
-
-function fillOffPeakDiscount() {
-  const changed = applyOffPeakDiscount(modelDraft.pricing.rules, offPeakDiscount.value);
-  if (changed === 0) {
-    ElMessage.warning("先为需要打折的计费项打开峰谷开关");
-    return;
-  }
-  ElMessage.success(`已按峰价的 ${offPeakDiscount.value} 倍填充 ${changed} 项谷价`);
-}
-
-function parseJson(text, label) {
-  try {
-    return JSON.parse(text || "{}");
-  } catch {
-    throw new Error(`${label} 不是合法 JSON`);
-  }
-}
-
-function defaultCatalog() {
-  return {
-    slug: modelDraft.model_key,
-    display_name: modelDraft.display_name || modelDraft.model_key,
-    visibility: "list",
-    supported_in_api: true
-  };
 }
 
 function formatMatchType(value) {
@@ -1622,23 +1009,6 @@ function normalizeMatchPatternList(values) {
 function matchPatternList(model) {
   const patterns = normalizeMatchPatternList(model?.match_patterns);
   return patterns.length > 0 ? patterns : normalizeMatchPatternList(model?.match_pattern);
-}
-
-function handleModelMatchTypeChange() {
-  if (modelDraft.match_type === "exact") {
-    if (modelDraft.match_patterns.length === 0) {
-      modelDraft.match_patterns = normalizeMatchPatternList([modelDraft.match_pattern]);
-    }
-    return;
-  }
-
-  const current = normalizeMatchPatternList(modelDraft.match_patterns);
-  modelDraft.match_pattern = current[0] || modelDraft.match_pattern || modelDraft.model_key || "";
-  modelDraft.match_patterns = [];
-}
-
-function formatBillingItem(value) {
-  return billingItems.find((item) => item.value === value)?.label || value || "-";
 }
 
 function formatPrice(value) {
@@ -1657,17 +1027,10 @@ onMounted(() => {
   syncMobileState(mobileMediaQuery);
   mobileMediaQuery.addEventListener("change", syncMobileState);
   loadAll();
-  offPeakTimer = window.setInterval(() => {
-    offPeakClock.value = Date.now();
-  }, 30000);
 });
 
 onBeforeUnmount(() => {
   mobileMediaQuery?.removeEventListener("change", syncMobileState);
-  if (offPeakTimer) {
-    window.clearInterval(offPeakTimer);
-    offPeakTimer = null;
-  }
 });
 </script>
 
@@ -1690,131 +1053,6 @@ onBeforeUnmount(() => {
 
 .match-pattern {
   margin-left: 8px;
-}
-
-.model-catalog-rule-table {
-  margin-bottom: 16px;
-}
-
-/* 计费规则表格只保留 el-table 自身的横向滚动条：外层再套一层 overflow-x 时，
-   列宽总和一旦超过外层 min-width 就会同时出现两条横向滚动条。 */
-.rule-table-wrap {
-  margin-bottom: 16px;
-}
-.rule-table-wrap .model-catalog-rule-table {
-  margin-bottom: 0;
-}
-
-.off-peak-panel {
-  margin-bottom: 12px;
-}
-
-.off-peak-panel__head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
-}
-
-.off-peak-panel__hint {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-
-.off-peak-panel__actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.off-peak-window {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 6px;
-}
-
-.off-peak-window__sep {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-
-.off-peak-window__note {
-  font-size: 12px;
-  color: var(--el-color-warning);
-}
-
-.off-peak-zone {
-  width: 240px;
-}
-
-.off-peak-time {
-  width: 110px;
-}
-
-.off-peak-days {
-  width: 220px;
-}
-
-.off-peak-discount {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-
-.off-peak-tiers {
-  margin-top: 6px;
-}
-
-.tier-editor {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.tier-editor-section {
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 6px;
-  padding: 8px;
-}
-
-.tier-editor-head {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  margin-bottom: 6px;
-}
-
-.tier-editor-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
-}
-
-.tier-editor-label {
-  color: var(--el-text-color-secondary);
-  white-space: nowrap;
-}
-
-.tier-editor-up-to {
-  width: 110px;
-  flex-shrink: 0;
-}
-
-.tier-editor-price {
-  flex: 1;
-  min-width: 110px;
-}
-
-.mobile-tier-editor {
-  min-width: 0;
-  width: 100%;
 }
 
 .model-card-select {
@@ -1930,17 +1168,6 @@ onBeforeUnmount(() => {
   .model-catalog-page .toolbar {
     display: block;
     margin-bottom: 16px;
-  }
-
-  .off-peak-zone,
-  .off-peak-days,
-  .off-peak-time {
-    width: 100%;
-  }
-
-  .off-peak-window {
-    padding-bottom: 8px;
-    border-bottom: 1px solid var(--el-border-color-lighter);
   }
 
   .model-catalog-page .toolbar-actions {
@@ -2156,52 +1383,6 @@ onBeforeUnmount(() => {
     margin: 0;
   }
 
-  .mobile-model-catalog-rules {
-    display: grid;
-    gap: 12px;
-    overflow-x: auto;
-    max-width: 100%;
-  }
-
-  .model-catalog-rule-card {
-    min-width: 0;
-    max-width: 100%;
-    padding: 14px;
-    border: 1px solid var(--el-border-color-lighter);
-    border-radius: 6px;
-    background: var(--el-fill-color-extra-light);
-  }
-
-  .model-catalog-rule-heading,
-  .model-catalog-rule-switch {
-    display: flex;
-    align-items: center;
-  }
-
-  .model-catalog-rule-heading {
-    justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 14px;
-  }
-
-  .model-catalog-rule-switch {
-    gap: 8px;
-    color: var(--el-text-color-secondary);
-    font-size: 13px;
-  }
-
-  .model-catalog-rule-field {
-    display: grid;
-    gap: 7px;
-    margin-top: 12px;
-    color: var(--el-text-color-regular);
-    font-size: 13px;
-  }
-
-  .model-catalog-rule-field:first-of-type {
-    margin-top: 0;
-  }
-
   .model-catalog-page :deep(.el-input__inner),
   .model-catalog-page :deep(.el-textarea__inner) {
     font-size: 16px;
@@ -2215,7 +1396,6 @@ onBeforeUnmount(() => {
   }
 }
 
-:global(.model-catalog-model-dialog.is-fullscreen),
 :global(.model-catalog-provider-dialog.is-fullscreen) {
   display: flex;
   flex-direction: column;
@@ -2224,7 +1404,6 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
-:global(.model-catalog-model-dialog.is-fullscreen .el-dialog__header),
 :global(.model-catalog-provider-dialog.is-fullscreen .el-dialog__header) {
   flex: none;
   padding: 16px;
@@ -2232,7 +1411,6 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid var(--el-border-color-lighter);
 }
 
-:global(.model-catalog-model-dialog.is-fullscreen .el-dialog__body),
 :global(.model-catalog-provider-dialog.is-fullscreen .el-dialog__body) {
   flex: 1;
   min-height: 0;
@@ -2241,7 +1419,6 @@ onBeforeUnmount(() => {
   padding: 14px 16px;
 }
 
-:global(.model-catalog-model-dialog.is-fullscreen .el-dialog__footer),
 :global(.model-catalog-provider-dialog.is-fullscreen .el-dialog__footer) {
   flex: none;
   padding: 12px 16px;
@@ -2250,22 +1427,18 @@ onBeforeUnmount(() => {
   background: var(--el-bg-color);
 }
 
-:global(.model-catalog-model-dialog.is-fullscreen .drawer-footer),
 :global(.model-catalog-provider-dialog.is-fullscreen .drawer-footer) {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
-:global(.model-catalog-model-dialog.is-fullscreen .drawer-footer .el-button),
 :global(.model-catalog-provider-dialog.is-fullscreen .drawer-footer .el-button) {
   width: 100%;
   min-height: 44px;
   margin-left: 0;
 }
 
-:global(.model-catalog-model-dialog.is-fullscreen .el-input__inner),
-:global(.model-catalog-model-dialog.is-fullscreen .el-textarea__inner),
 :global(.model-catalog-provider-dialog.is-fullscreen .el-input__inner) {
   font-size: 16px;
 }
