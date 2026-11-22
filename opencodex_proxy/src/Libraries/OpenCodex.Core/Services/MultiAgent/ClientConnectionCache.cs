@@ -2,10 +2,10 @@ namespace OpenCodex.Core.Services.MultiAgent;
 
 public sealed class ClientConnectionCacheOptions
 {
-    public long MaxBytes { get; set; } = 128L * 1024 * 1024;
-    public long MaxTenantBytes { get; set; } = 32L * 1024 * 1024;
-    public long MaxConnectionBytes { get; set; } = 16L * 1024 * 1024;
-    public long MaxSnapshotBytes { get; set; } = 8L * 1024 * 1024;
+    public long MaxBytes { get; set; } = 192L * 1024 * 1024;
+    public long MaxTenantBytes { get; set; } = 128L * 1024 * 1024;
+    public long MaxConnectionBytes { get; set; } = 96L * 1024 * 1024;
+    public long MaxSnapshotBytes { get; set; } = 40L * 1024 * 1024;
     public int MaxEntries { get; set; } = 4096;
     public int MaxConnectionEntries { get; set; } = 256;
     public int TtlSeconds { get; set; } = 900;

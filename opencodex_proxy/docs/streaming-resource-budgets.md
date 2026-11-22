@@ -175,7 +175,7 @@ transport conversation cache. Defaults:
 
 | Setting | Default |
 |---|---:|
-| MaxBytes / MaxTenantBytes / MaxConnectionBytes / MaxSnapshotBytes | 128 / 32 / 16 / 8 MiB |
+| MaxBytes / MaxTenantBytes / MaxConnectionBytes / MaxSnapshotBytes | 192 / 128 / 96 / 40 MiB |
 | MaxEntries / MaxConnectionEntries | 4096 / 256 |
 | TtlSeconds / CleanupIntervalSeconds / MaxKeyCharacters | 900 / 60 / 512 |
 

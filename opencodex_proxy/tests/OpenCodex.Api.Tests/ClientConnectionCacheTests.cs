@@ -10,6 +10,24 @@ public sealed class ClientConnectionCacheTests
 {
     private static D Value(string value="x")=>new(){["value"]=value};
     [Fact]
+    public void DefaultBudgetsCoverMillionTokenSnapshotsWithoutNarrowConnectionCaps()
+    {
+        var options=new ClientConnectionCacheOptions();
+        Assert.Equal(192L*1024*1024,options.MaxBytes);
+        Assert.Equal(128L*1024*1024,options.MaxTenantBytes);
+        Assert.Equal(96L*1024*1024,options.MaxConnectionBytes);
+        Assert.Equal(40L*1024*1024,options.MaxSnapshotBytes);
+    }
+    [Fact]
+    public void DefaultSnapshotBudgetAcceptsGraphAbovePreviousEightMiBCap()
+    {
+        using var cache=new ClientConnectionCache();
+        using var scope=cache.Open(Guid.NewGuid());
+        var request=Value(new string('x',3*1024*1024));
+        Assert.True(scope.RememberResponse("large",Value(),request,Value()));
+        Assert.NotNull(scope.FindResponse<D>("large"));
+    }
+    [Fact]
     public void ChurnBoundsBothRecordsAndKnownIdsAndCloseReleasesAll()
     {
         using var cache=new ClientConnectionCache(new(){MaxEntries=8,MaxConnectionEntries=4});
@@ -18,7 +36,7 @@ public sealed class ClientConnectionCacheTests
             for(var i=0;i<10_000;i++)
             {
                 scope.RememberId("id"+i);scope.RememberResponse("id"+i,Value(),Value(),Value());
-                Assert.InRange(cache.Usage.Entries,0,4);Assert.InRange(cache.Usage.Bytes,0,16*1024*1024);
+                Assert.InRange(cache.Usage.Entries,0,4);Assert.InRange(cache.Usage.Bytes,0,96L*1024*1024);
             }
             Assert.Null(scope.FindResponse<D>("id0"));Assert.False(scope.Knows("id0"));Assert.NotNull(scope.FindResponse<D>("id9999"));
         }
@@ -32,7 +50,7 @@ public sealed class ClientConnectionCacheTests
         b.RememberResponse("same",Value("tenant-b"),Value(),Value());
         for(var i=0;i<10;i++)a.RememberResponse("a"+i,Value("tenant-a"),Value(),Value());
         Assert.Equal("tenant-b",b.FindResponse<D>("same")!["value"]);Assert.Null(a.FindResponse<D>("same"));Assert.Null(a2.FindResponse<D>("a9"));
-        Assert.InRange(cache.Usage.Bytes,1,128*1024*1024);
+        Assert.InRange(cache.Usage.Bytes,1,192L*1024*1024);
     }
     [Fact]
     public void IdleTtlRefreshAndOversizeRejectionDoNotRetainGraph()
