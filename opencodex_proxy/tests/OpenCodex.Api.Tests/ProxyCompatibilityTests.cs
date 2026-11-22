@@ -704,8 +704,12 @@ public sealed partial class ProxyCompatibilityTests : IClassFixture<OpenCodexApi
         Assert.DoesNotContain("The client will not recognize the plan", systemContent);
     }
 
-    [Fact]
-    public void ConvertRequest_ResponsesInputImage_ConvertsToChatImageUrlContent()
+    [Theory]
+    [InlineData("original", "high")]
+    [InlineData("high", "high")]
+    public void ConvertRequest_ResponsesInputImage_ConvertsToChatImageUrlContent(
+        string sourceDetail,
+        string expectedDetail)
     {
         var request = ProtocolConverter.ConvertRequest(
             new Dictionary<string, object?>
@@ -727,7 +731,7 @@ public sealed partial class ProxyCompatibilityTests : IClassFixture<OpenCodexApi
                             {
                                 ["type"] = "input_image",
                                 ["image_url"] = "data:image/png;base64,AAAA",
-                                ["detail"] = "high"
+                                ["detail"] = sourceDetail
                             }
                         }
                     }
@@ -751,7 +755,7 @@ public sealed partial class ProxyCompatibilityTests : IClassFixture<OpenCodexApi
 
         var imageUrl = Assert.IsType<Dictionary<string, object?>>(imagePart["image_url"]);
         Assert.Equal("data:image/png;base64,AAAA", imageUrl["url"]);
-        Assert.Equal("high", imageUrl["detail"]);
+        Assert.Equal(expectedDetail, imageUrl["detail"]);
 
         var serialized = JsonSerializer.Serialize(content);
         Assert.DoesNotContain("input_image", serialized);

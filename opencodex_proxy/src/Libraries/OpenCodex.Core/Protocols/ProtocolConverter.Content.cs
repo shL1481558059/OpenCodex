@@ -28,7 +28,9 @@ public static partial class ProtocolConverter
                     var imageUrl = Obj(("url", GetValue(block, "image_url") ?? string.Empty));
                     if (GetValue(block, "detail") is not null)
                     {
-                        imageUrl["detail"] = GetValue(block, "detail");
+                        imageUrl["detail"] = GetString(block, "detail") == "original"
+                            ? "high"
+                            : GetValue(block, "detail");
                     }
 
                     result.Add(Obj(("type", "image_url"), ("image_url", imageUrl)));
