@@ -35,6 +35,7 @@ public sealed class ResponsesWebSocketClientService(
         Task active = Task.CompletedTask;
         CancellationTokenSource? activeStop = null;
         string activeResponseId = "";
+        string activeModel = "";
         string terminalResponseId = "";
         var maximumBytes = 16 * 1024 * 1024;
         var first = firstRequest;
@@ -85,6 +86,7 @@ public sealed class ResponsesWebSocketClientService(
             CancellationToken responseCt)
         {
             var model = JsonDictionaryValue.String(request, "model");
+            activeModel = model;
             // The parsed frame is request-scoped and immutable after projection.
             // Rewrite stages copy the payload before changing request semantics.
             var clientRequest = request;
@@ -268,11 +270,13 @@ public sealed class ResponsesWebSocketClientService(
                 return;
             }
 
+            var interrupted = false;
             if (!active.IsCompleted && activeResponseId == responseId
                 && terminalResponseId != responseId && activeStop is not null)
             {
                 activeStop.Cancel();
                 await active;
+                interrupted = true;
             }
 
             if (history.Knows(responseId) || activeResponseId == responseId || terminalResponseId == responseId)
@@ -282,6 +286,14 @@ public sealed class ResponsesWebSocketClientService(
                     ["type"] = "response.interrupt.accepted",
                     ["response_id"] = responseId
                 });
+                if (interrupted)
+                {
+                    await Send(new Dictionary<string, object?>
+                    {
+                        ["type"] = "response.incomplete",
+                        ["response"] = InterruptedResponse(responseId, activeModel)
+                    });
+                }
             }
             else
             {
@@ -385,6 +397,7 @@ public sealed class ResponsesWebSocketClientService(
                 activeStop?.Dispose();
                 activeStop = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 activeResponseId = "";
+                activeModel = "";
                 terminalResponseId = "";
                 active = Execute(item, generate, ++createIndex, activeStop.Token);
                 item = await RunActiveAsync();
@@ -489,6 +502,18 @@ public sealed class ResponsesWebSocketClientService(
         ["output"] = new List<object?>(),
         ["store"] = false
     };
+
+    private static Dictionary<string, object?> InterruptedResponse(
+        string id,
+        string model)
+    {
+        var response = SyntheticResponse(id, model, "incomplete");
+        response["incomplete_details"] = new Dictionary<string, object?>
+        {
+            ["reason"] = "interrupted"
+        };
+        return response;
+    }
 
     private sealed class StoredClientResponse
     {

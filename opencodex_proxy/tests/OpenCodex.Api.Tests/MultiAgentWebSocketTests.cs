@@ -228,8 +228,27 @@ public sealed class MultiAgentWebSocketTests
             var accepted = await socket.Until("response.interrupt.accepted", interruptTimeout.Token);
             Assert.Equal(responseId, accepted["response_id"]);
             await cancelled.Task.WaitAsync(interruptTimeout.Token);
+            var incomplete = await socket.Until("response.incomplete", interruptTimeout.Token);
+            var interruptedResponse = JsonDictionaryValue.Object(
+                incomplete, "response", WebSearchPayload.DeepCopyObject);
+            Assert.Equal(responseId, interruptedResponse["id"]);
+            Assert.Equal("incomplete", interruptedResponse["status"]);
+            Assert.Equal(
+                "interrupted",
+                JsonDictionaryValue.String(
+                    JsonDictionaryValue.Object(
+                        interruptedResponse, "incomplete_details", WebSearchPayload.DeepCopyObject),
+                    "reason"));
+            var interruptEvents = socket.Sent
+                .Where(item => Type(item) is "response.interrupt.accepted" or "response.incomplete")
+                .Select(Type)
+                .ToArray();
+            Assert.Equal(
+                ["response.interrupt.accepted", "response.incomplete"],
+                interruptEvents);
             Assert.Equal(System.Net.WebSockets.WebSocketState.Open, socket.State);
 
+            while (socket.Outgoing.Reader.TryRead(out _)) { }
             socket.ClientSend(Create());
             var completed = (D)(await socket.Until("response.completed", test.Lifetime.Token))["response"]!;
             Assert.Contains("NEXT", System.Text.Json.JsonSerializer.Serialize(completed));

@@ -27,6 +27,7 @@ public sealed partial class MultiAgentResponseService
         Task active = Task.CompletedTask;
         CancellationTokenSource? activeStop = null;
         string activeResponseId = "";
+        string activeModel = "";
         string terminalResponseId = "";
         Channel<MultiAgentInjection>? injections = null;
         MultiAgentRun? connectionRun = null;
@@ -86,6 +87,7 @@ public sealed partial class MultiAgentResponseService
             var binding = connectionBinding;
             var runtimeLease = binding is null ? await store.AcquireRequestAsync(run!,responseCt) : null;
             var responseId = "";
+            activeModel = JsonDictionaryValue.String(request, "model");
 
             try
             {
@@ -285,6 +287,7 @@ public sealed partial class MultiAgentResponseService
                     activeStop?.Dispose();
                     activeStop = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     activeResponseId = "";
+                    activeModel = "";
                     terminalResponseId = "";
                     active = Execute(item, connectionRun, injections, generate, activeStop.Token);
                 }
@@ -307,11 +310,13 @@ public sealed partial class MultiAgentResponseService
                         continue;
                     }
 
+                    var interrupted = false;
                     if (!active.IsCompleted && activeResponseId == responseId
                         && terminalResponseId != responseId && activeStop is not null)
                     {
                         activeStop.Cancel();
                         await active;
+                        interrupted = true;
                     }
 
                     if (knownIds.Knows(responseId)||activeResponseId==responseId||terminalResponseId==responseId)
@@ -321,6 +326,14 @@ public sealed partial class MultiAgentResponseService
                             ["type"] = "response.interrupt.accepted",
                             ["response_id"] = responseId
                         });
+                        if (interrupted)
+                        {
+                            await Send(new Dictionary<string, object?>
+                            {
+                                ["type"] = "response.incomplete",
+                                ["response"] = InterruptedResponse(responseId, activeModel)
+                            });
+                        }
                     }
                     else
                     {
@@ -394,6 +407,12 @@ public sealed partial class MultiAgentResponseService
         return new EmptyResult();
     }
     private static readonly object CompletedResponseMarker=new();
+    private static Dictionary<string, object?> InterruptedResponse(string id,string model)=>new()
+    {
+        ["id"]=id,["object"]="response",["status"]="incomplete",
+        ["model"]=model,["output"]=new List<object?>(),
+        ["incomplete_details"]=new Dictionary<string,object?>{["reason"]="interrupted"}
+    };
     private sealed class InjectionLease(Action release):IDisposable
     {private Action? _release=release;public void Dispose()=>Interlocked.Exchange(ref _release,null)?.Invoke();}
     private static long InjectionWeight(object? value,long cap,int depth=0)

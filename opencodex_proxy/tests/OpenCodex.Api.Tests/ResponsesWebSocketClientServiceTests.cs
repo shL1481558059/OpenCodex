@@ -278,6 +278,20 @@ public sealed class ResponsesWebSocketClientServiceTests
             var accepted = await socket.Until("response.interrupt.accepted", interruptTimeout.Token);
             Assert.Equal(responseId, accepted["response_id"]);
             await modelCancelled.Task.WaitAsync(interruptTimeout.Token);
+            var incomplete = await socket.Until("response.incomplete", interruptTimeout.Token);
+            var interruptEvents = socket.Sent
+                .Where(item => Type(item) is "response.interrupt.accepted" or "response.incomplete")
+                .Select(Type)
+                .ToArray();
+            Assert.Equal(["response.interrupt.accepted", "response.incomplete"], interruptEvents);
+            var interruptedResponse = JsonDictionaryValue.Object(incomplete, "response", WebSearchPayload.DeepCopyObject);
+            Assert.Equal(responseId, interruptedResponse["id"]);
+            Assert.Equal("incomplete", interruptedResponse["status"]);
+            Assert.Equal(
+                "interrupted",
+                JsonDictionaryValue.String(
+                    JsonDictionaryValue.Object(interruptedResponse, "incomplete_details", WebSearchPayload.DeepCopyObject),
+                    "reason"));
             Assert.Equal(System.Net.WebSockets.WebSocketState.Open, socket.State);
             Assert.DoesNotContain(socket.Sent, item => Type(item) == "response.failed");
             var recoverableError = Assert.Single(socket.Sent, item => Type(item) == "error");
@@ -287,6 +301,7 @@ public sealed class ResponsesWebSocketClientServiceTests
                     JsonDictionaryValue.Object(recoverableError, "error", WebSearchPayload.DeepCopyObject),
                     "code"));
 
+            while (socket.Outgoing.Reader.TryRead(out _)) { }
             socket.ClientSend(create);
             var completed = (D)(await socket.Until("response.completed", context.Lifetime.Token))["response"]!;
             Assert.Contains("NEXT", System.Text.Json.JsonSerializer.Serialize(completed));

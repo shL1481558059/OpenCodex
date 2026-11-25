@@ -44,6 +44,12 @@ Chat 或 Messages 上游仍是 HTTP 有状态代理。入站可以只接收 delt
 
 同一连接同时只允许一个活动响应。当前默认 lane 不支持命名 `stream_id`、`response.steer` 或并行响应流。
 
+客户端通过 `response.interrupt` 取消活动响应时，代理先返回
+`response.interrupt.accepted`，再为被取消的活动响应发送标准
+`response.incomplete`，其中 `status=incomplete`、
+`incomplete_details.reason=interrupted`。这样旧响应流能正常收尾，
+客户端可以随后发起新的 `response.create`；已完成响应不会重复产生终态。
+
 ### 3.2 连接内状态
 
 - 每个连接按 `previous_response_id` 保存已完成的请求 input 与响应 output。
