@@ -1,5 +1,6 @@
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using ProtocolBadRequestException = OpenCodex.ProtocolConversion.Errors.BadRequestException;
+using OpenCodex.ProtocolConversion;
 using Xunit;
 
 namespace OpenCodex.Api.Tests;
@@ -47,7 +48,7 @@ public sealed class NativeMcpHistoryTests
     [Fact]
     public void NativeMcpHistory_ToChat_IsRejected()
     {
-        var exception = Assert.Throws<BadRequestException>(() => ProtocolConverter.ConvertRequest(
+        var exception = Assert.Throws<ProtocolBadRequestException>(() => ProtocolConverter.ConvertRequest(
             MessagesHistory(), ProtocolConverter.Messages, ProtocolConverter.Chat, "upstream"));
         Assert.Contains("native MCP history", exception.Message, StringComparison.Ordinal);
     }

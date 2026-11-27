@@ -1,7 +1,8 @@
 using System.Security.Cryptography;
 using System.Text.Encodings.Web;
 using System.Text.Json;
-using System.Text.Json.Serialization;
+using OpenCodex.ProtocolConversion.Abstractions;
+using OpenCodex.ProtocolConversion.Json;
 
 namespace OpenCodex.CoreBase.Domain.Proxy;
 
@@ -17,12 +18,10 @@ public sealed class ProxyAuditSpoolOptions
 
 /// <summary>Process-wide quota for complete, immutable JSON audit snapshots; never truncates.
 /// The dedicated directory must also have an OS quota when shared by multiple server processes.</summary>
-public sealed class ProxyAuditSpool
+public sealed class ProxyAuditSpool : IProtocolAuditCapture
 {
     private static readonly Lazy<ProxyAuditSpool> Fallback = new(() => new(new()));
     internal static ProxyAuditSpool Default => Fallback.Value;
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping, Converters = { new SegmentedStringConverter() } };
     private readonly object _gate = new();
     private readonly string _directory;
     private readonly long _maxBody, _maxTotal;
@@ -84,6 +83,47 @@ public sealed class ProxyAuditSpool
         }
         try { return new AuditFile(this,path,cancellationToken); }
         catch { Release(0,true,path);throw; }
+    }
+
+    int IProtocolAuditCapture.MemoryThresholdBytes => _memoryThreshold;
+
+    IProtocolAuditBuffer IProtocolAuditCapture.CreateStaging(CancellationToken cancellationToken)
+    {
+        return new ProtocolAuditBuffer(CreateStaging(cancellationToken));
+    }
+
+    IProtocolAuditBody IProtocolAuditCapture.CaptureJson(object? value, CancellationToken cancellationToken)
+    {
+        var body = CreateStaging(cancellationToken);
+        try
+        {
+            using (var writer = new Utf8JsonWriter(body, new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }))
+            {
+                WriteJson(writer, value, 0);
+                writer.Flush();
+            }
+            body.Seal();
+            return new ProtocolAuditBody(body);
+        }
+        catch
+        {
+            body.Dispose();
+            throw;
+        }
+    }
+
+    private sealed class ProtocolAuditBuffer(AuditFile inner) : IProtocolAuditBuffer
+    {
+        public long Length => inner.Length;
+        public Stream OpenSnapshotRead() => inner.OpenSnapshotRead();
+        public void Write(ReadOnlySpan<byte> value) => inner.Write(value);
+        public void Dispose() => inner.Dispose();
+    }
+
+    private sealed class ProtocolAuditBody(AuditFile inner) : IProtocolAuditBody
+    {
+        public long Length => inner.Length;
+        public void Dispose() => inner.Dispose();
     }
     private Stream CreateStorage(string path)
     {
@@ -148,43 +188,8 @@ public sealed class ProxyAuditSpool
         return deleted;
     }
 
-    // Normalized protocol graphs are dictionaries/lists. Flush each bounded leaf so a
-    // long numeric/empty-item history cannot grow the writer's pending buffer indefinitely.
-    internal static void WriteJson(Utf8JsonWriter writer,object? value,int depth)
-    {
-        if(depth>64)throw new JsonException("Audit JSON exceeds maximum depth or contains a cycle.");
-        if(value is IReadOnlyDictionary<string,object?> dictionary)
-        {
-            writer.WriteStartObject();
-            foreach(var pair in dictionary) { writer.WritePropertyName(pair.Key);WriteJson(writer,pair.Value,depth+1); }
-            writer.WriteEndObject();
-        }
-        else if(value is IEnumerable<object?> items)
-        {
-            writer.WriteStartArray();foreach(var item in items)WriteJson(writer,item,depth+1);writer.WriteEndArray();
-        }
-        else JsonSerializer.Serialize(writer,value,JsonOptions);
-        writer.Flush();
-    }
-
-    // Serialize directly to the quota stream, rather than Serializer's whole-token pooled
-    // buffer. Large ordinary string values are escaped in bounded segments (same JSON bytes).
-    private sealed class SegmentedStringConverter : JsonConverter<string>
-    {
-        public override string? Read(ref Utf8JsonReader reader,Type type,JsonSerializerOptions options) => throw new NotSupportedException();
-        public override void WriteAsPropertyName(Utf8JsonWriter writer,string value,JsonSerializerOptions options) => writer.WritePropertyName(value);
-        public override void Write(Utf8JsonWriter writer,string value,JsonSerializerOptions options)
-        {
-            if(value.Length==0) { writer.WriteStringValue("");writer.Flush();return; }
-            for(var offset=0;offset<value.Length;)
-            {
-                var count=Math.Min(4096,value.Length-offset);
-                if(offset+count<value.Length && char.IsHighSurrogate(value[offset+count-1]))count--;
-                writer.WriteStringValueSegment(value.AsSpan(offset,count),offset+count==value.Length);
-                writer.Flush();offset+=count;
-            }
-        }
-    }
+    internal static void WriteJson(Utf8JsonWriter writer, object? value, int depth) =>
+        ProtocolJsonWriter.Write(writer, value, depth);
 
     internal sealed class AuditFile(ProxyAuditSpool owner, string path, CancellationToken cancellationToken) : Stream
     {

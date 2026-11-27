@@ -4,7 +4,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using OpenCodex.Core.Config;
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain;
@@ -155,10 +155,14 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
             var converted = new ConvertedStreamResult();
             IAsyncEnumerable<string> observableLines = channelType switch
             {
-                ProtocolConverter.Chat => SseStreamConverter.ChatToResponsesEvents(
-                    observedUpstreamLines, originalModel, converted, cancellationToken),
-                ProtocolConverter.Messages => SseStreamConverter.MessagesToResponsesEvents(
-                    observedUpstreamLines, originalModel, converted, cancellationToken),
+                ProtocolConverter.Chat => ProtocolConversion.ProtocolConversionErrors.WrapStream(
+                    SseStreamConverter.ChatToResponsesEvents(
+                        observedUpstreamLines, originalModel, converted, cancellationToken),
+                    cancellationToken),
+                ProtocolConverter.Messages => ProtocolConversion.ProtocolConversionErrors.WrapStream(
+                    SseStreamConverter.MessagesToResponsesEvents(
+                        observedUpstreamLines, originalModel, converted, cancellationToken),
+                    cancellationToken),
                 _ => observedUpstreamLines
             };
             metrics = await writer.WriteLinesAsync(
@@ -334,12 +338,13 @@ public sealed partial class ChannelDiagnosticsService : IChannelDiagnosticsServi
         channel = route.Channel;
 
         var channelCompat = JsonDictionaryValue.Object(channel, "compat", CloneObject);
-        var upstreamRequest = ProtocolConverter.ConvertRequest(
+        var upstreamRequest = ProtocolConversion.ProtocolConversionErrors.Wrap(
+            () => ProtocolConverter.ConvertRequest(
             payload,
             channelType,
             channelType,
             upstreamModel,
-            channelCompat);
+            channelCompat));
         upstreamRequest["stream"] = true;
         var compatibleRequest = ApplyCompat(
             upstreamRequest,

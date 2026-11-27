@@ -1,5 +1,5 @@
 using System.Text.Json;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
 using OpenCodex.Core.Services.MultiAgent;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;

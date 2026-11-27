@@ -1,4 +1,4 @@
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion.Streaming;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.DTOs.Proxy;
 

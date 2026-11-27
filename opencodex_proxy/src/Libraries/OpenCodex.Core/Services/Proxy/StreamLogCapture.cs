@@ -1,5 +1,6 @@
 using System.Text;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
 
 namespace OpenCodex.Core.Services.Proxy;
 

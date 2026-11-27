@@ -1,6 +1,6 @@
 using System.Collections;
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.Services.Proxy;
 

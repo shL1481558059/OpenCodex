@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.Core.Services.WebSearch;
 using OpenCodex.CoreBase.Abstractions;
@@ -15,6 +16,38 @@ namespace OpenCodex.Api.Tests;
 
 public sealed class ProxyStreamServiceTests
 {
+    [Theory]
+    [InlineData("chat", false)]
+    [InlineData("messages", false)]
+    [InlineData("responses", false)]
+    [InlineData("chat", true)]
+    [InlineData("messages", true)]
+    [InlineData("responses", true)]
+    public async Task StreamAsync_PassThroughCaptureFailure_RemainsAnUpstreamError(string protocol, bool malformed)
+    {
+        var data = malformed ? "{invalid" : protocol switch
+        {
+            "chat" => """{"id":"c","choices":[{"index":0,"delta":{"content":"hello"}}]}""",
+            "messages" => """{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"hello"}}""",
+            _ => """{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"hello"}"""
+        };
+        var logs = new StubProxyLogService();
+        var writer = new CapturingProxyStreamWriter();
+        var service = new ProxyStreamService(
+            new SequencedUpstreamClient([("data: " + data + "\n\n", 0)]),
+            logs,
+            new StubWebSearchToolExecutor(),
+            WebSearchTestStore.Create(),
+            outputFrames: new SseFrameOptions { MaxCaptureBytes = 1 });
+
+        var error = await Assert.ThrowsAsync<UpstreamException>(() =>
+            service.StreamAsync(IncrementalContext(protocol, protocol, writer)));
+
+        Assert.Equal(502, error.StatusCode);
+        Assert.Equal(502, logs.LastContext!.StatusCode);
+        Assert.DoesNotContain(writer.Lines, line => line.Contains("[DONE]", StringComparison.Ordinal));
+    }
+
     [Theory]
     [InlineData(false, 200)]
     [InlineData(true, 499)]
@@ -2046,7 +2079,9 @@ public sealed class ProxyStreamServiceTests
             await service.StreamAsync(context);
             Assert.Null(logs.LastContext!.Error);
             var body=System.Text.Json.JsonSerializer.Serialize(logs.LastContext.UpstreamResponse);
-            Assert.Contains(expected,body);Assert.DoesNotContain(expected+fragment,body);Assert.DoesNotContain("_opencodex_capture",body);
+            var occurrences=0;
+            for(var index=0;(index=body.IndexOf(expected,index,StringComparison.Ordinal))>=0;index+=expected.Length)occurrences++;
+            Assert.Equal(1,occurrences);Assert.DoesNotContain("_opencodex_capture",body);
             var usage=Assert.IsType<Dictionary<string,object?>>(logs.LastContext.UpstreamResponse!["usage"]);
             Assert.Equal(7,Convert.ToInt32(usage[upstreamProtocol=="chat"?"prompt_tokens":"input_tokens"]));
             Assert.Equal(11,Convert.ToInt32(usage[upstreamProtocol=="chat"?"completion_tokens":"output_tokens"]));

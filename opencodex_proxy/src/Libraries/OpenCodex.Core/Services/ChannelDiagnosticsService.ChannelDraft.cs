@@ -1,5 +1,5 @@
 using OpenCodex.Core.Config;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.DTOs;
 

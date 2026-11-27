@@ -1,4 +1,6 @@
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
+using OpenCodex.ProtocolConversion.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
 using Xunit;
 namespace OpenCodex.Api.Tests;
@@ -6,6 +8,38 @@ public sealed class SharedCaptureTextTests:IDisposable
 {
     private readonly string _directory=Path.Combine(Path.GetTempPath(),"ocx-shared-"+Guid.NewGuid().ToString("N"));
     private ProxyAuditSpool Spool()=>new(new(){Directory=_directory,MemoryThresholdBytes=0});
+    [Fact]
+    public void CachedPrefixAndDetachmentDoNotReopenTheSpool()
+    {
+        var spool = new SnapshotProbe(Spool());
+        using var budget = new StreamCaptureBudget(1024 * 1024, 100, 100, spool, default);
+        var source = budget.CreateText();
+        budget.Append(source, "prefix and future");
+        _ = source.ToString();
+        var reads = spool.SnapshotReads;
+        Assert.Equal("prefix", source.Prefix(6));
+        var target = budget.CreateText();
+        source.CopyPrefixTo(target, 6, budget);
+        Assert.Equal(reads, spool.SnapshotReads);
+        Assert.Equal("prefix", target.ToString());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PrefixCopyPreservesSurrogatesAtCopyBoundaryAndTrailingHighSurrogate(bool strict)
+    {
+        using var budget = strict
+            ? new StreamCaptureBudget(1024 * 1024, 100, 100, Spool(), default)
+            : new StreamCaptureBudget(1024 * 1024);
+        var source = budget.CreateText();
+        var text = new string('x', ProtocolConversionParameters.Current.CaptureCopyCharacters - 1) + "😀tail\ud83d";
+        budget.Append(source, text + "\ude00future");
+        var target = budget.CreateText();
+        source.CopyPrefixTo(target, text.Length, budget);
+        Assert.Equal(text, target.ToString());
+        Assert.Equal(text, source.Prefix(text.Length));
+    }
     [Fact]
     public void ExactFieldLeaseUsesOneSpoolAndOneFinalImmutableString()
     {
@@ -90,6 +124,81 @@ public sealed class SharedCaptureTextTests:IDisposable
         var calls=(List<object?>)message["tool_calls"]!;var function=(Dictionary<string,object?>)((Dictionary<string,object?>)calls[0]!)["function"]!;
         var output=(IReadOnlyList<object?>)terminal!["output"]!;var call=output.Cast<IReadOnlyDictionary<string,object?>>().Single(item=>Equals(item["type"],"function_call"));
         Assert.Same(function["arguments"],call["arguments"]);
+    }
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task ResolvedToolArgumentsReuseCurrentFragmentAndReplayOnlyDeferredPrefix(bool custom, bool delayedName)
+    {
+        var spool = Spool();
+        using var budget = new StreamCaptureBudget(1024 * 1024, 100, 100, spool, default);
+        using var capture = new StreamResponseCapture("chat", budget);
+        var result = new ConvertedStreamResult { SharedCapture = capture };
+        var pieces = custom
+            ? new[] { "first", "second", new string('x', 17) }
+            : new[] { "{\"x\":\"", "second", new string('x', 17) + "\"}" };
+        var deltas = new List<string>();
+        await foreach (var frame in SseStreamConverter.ChatToResponsesFrames(
+            Events(), "visible", result, null, false, 0, 0, default))
+        {
+            if (frame.Type is "response.function_call_arguments.delta" or "response.custom_tool_call_input.delta")
+                deltas.Add((string)((IReadOnlyDictionary<string, object?>)frame.Event!.Data!)["delta"]!);
+        }
+        Assert.Equal(string.Concat(pieces), string.Concat(deltas));
+        Assert.Same(pieces[^1], deltas[^1]);
+        Assert.Equal(delayedName ? 2 : 3, deltas.Count);
+
+        async IAsyncEnumerable<SseEvent> Events()
+        {
+            for (var index = 0; index < pieces.Length; index++)
+            {
+                var body = new Dictionary<string, object?>
+                {
+                    [custom ? "input" : "arguments"] = pieces[index]
+                };
+                if (!delayedName || index == 1) body["name"] = "tool";
+                var call = new Dictionary<string, object?>
+                {
+                    ["index"] = 0, ["id"] = "call", ["type"] = custom ? "custom" : "function",
+                    [custom ? "custom" : "function"] = body
+                };
+                var item = new SseEvent("message", new Dictionary<string, object?>
+                {
+                    ["choices"] = new List<object?>
+                    {
+                        new Dictionary<string, object?>
+                        {
+                            ["index"] = 0,
+                            ["delta"] = new Dictionary<string, object?> { ["tool_calls"] = new List<object?> { call } }
+                        }
+                    }
+                });
+                capture.Accumulator.Accept(item);
+                yield return item;
+            }
+            var done = new SseEvent("message", "[DONE]");
+            capture.Accumulator.Accept(done);
+            yield return done;
+            await Task.CompletedTask;
+        }
+    }
+    private sealed class SnapshotProbe(IProtocolAuditCapture inner) : IProtocolAuditCapture
+    {
+        internal int SnapshotReads;
+        public int MemoryThresholdBytes => inner.MemoryThresholdBytes;
+        public IProtocolAuditBody CaptureJson(object? value, CancellationToken cancellationToken) =>
+            inner.CaptureJson(value, cancellationToken);
+        public IProtocolAuditBuffer CreateStaging(CancellationToken cancellationToken) =>
+            new Buffer(inner.CreateStaging(cancellationToken), this);
+        private sealed class Buffer(IProtocolAuditBuffer inner, SnapshotProbe owner) : IProtocolAuditBuffer
+        {
+            public long Length => inner.Length;
+            public void Write(ReadOnlySpan<byte> value) => inner.Write(value);
+            public Stream OpenSnapshotRead() { owner.SnapshotReads++; return inner.OpenSnapshotRead(); }
+            public void Dispose() => inner.Dispose();
+        }
     }
     public void Dispose(){if(Directory.Exists(_directory))Directory.Delete(_directory,true);}
 }

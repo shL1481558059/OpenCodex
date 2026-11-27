@@ -1,4 +1,5 @@
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
 using Xunit;
 
 namespace OpenCodex.Api.Tests;

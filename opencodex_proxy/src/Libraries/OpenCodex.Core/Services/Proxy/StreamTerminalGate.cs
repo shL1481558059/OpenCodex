@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
 namespace OpenCodex.Core.Services.Proxy;
 
 /// <summary>One protocol terminal plus optional Responses [DONE]. No whole-round collection.

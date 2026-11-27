@@ -9,7 +9,7 @@ using OpenCodex.Api.Configuration;
 using OpenCodex.Api.Controllers;
 using OpenCodex.Api.Infrastructure;
 using OpenCodex.Api.Services;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
 using OpenCodex.Core.Services;
 using OpenCodex.Core.Services.MultiAgent;
 using OpenCodex.CoreBase.Abstractions;

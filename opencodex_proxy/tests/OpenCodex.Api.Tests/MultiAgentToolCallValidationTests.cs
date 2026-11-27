@@ -1,6 +1,7 @@
 using System.Text.Json;
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using ProtocolUpstreamException = OpenCodex.ProtocolConversion.Errors.UpstreamException;
+using OpenCodex.ProtocolConversion;
 using OpenCodex.CoreBase.Abstractions;
 using Xunit;
 
@@ -22,7 +23,7 @@ public sealed class MultiAgentToolCallValidationTests
         if (failure == "string_arguments") call["arguments"] = "{}";
         if (failure == "wrong_execution") call["execution"] = "unexpected";
         if (failure == "wrong_namespace") call["namespace"] = "invented";
-        Assert.Throws<UpstreamException>(() => ProtocolConverter.ValidateResponsesToolCalls(request, Response(call)));
+        Assert.Throws<ProtocolUpstreamException>(() => ProtocolConverter.ValidateResponsesToolCalls(request, Response(call)));
     }
 
     [Theory]
@@ -39,7 +40,7 @@ public sealed class MultiAgentToolCallValidationTests
     {
         var response = Response(Call(name, ns, type, payload));
         var before = WebSearchPayload.JsonDumps(response);
-        var error = Assert.Throws<UpstreamException>(() => ProtocolConverter.ValidateResponsesToolCalls(Request(), response));
+        var error = Assert.Throws<ProtocolUpstreamException>(() => ProtocolConverter.ValidateResponsesToolCalls(Request(), response));
         Assert.Equal(502, error.StatusCode);
         Assert.Equal(before, WebSearchPayload.JsonDumps(response));
         Assert.DoesNotContain(payload, error.Message, StringComparison.Ordinal);
@@ -52,10 +53,10 @@ public sealed class MultiAgentToolCallValidationTests
     {
         var call = Call("exec", ns, type, "{}");
         call[field] = new Dictionary<string, object?>();
-        Assert.Throws<UpstreamException>(() => ProtocolConverter.ValidateResponsesToolCalls(Request(), Response(call)));
+        Assert.Throws<ProtocolUpstreamException>(() => ProtocolConverter.ValidateResponsesToolCalls(Request(), Response(call)));
         call.Remove(field);
         call[field == "input" ? "arguments" : "input"] = "secret-payload";
-        var error = Assert.Throws<UpstreamException>(() => ProtocolConverter.ValidateResponsesToolCalls(Request(), Response(call)));
+        var error = Assert.Throws<ProtocolUpstreamException>(() => ProtocolConverter.ValidateResponsesToolCalls(Request(), Response(call)));
         Assert.DoesNotContain("secret-payload", error.Message);
     }
 
@@ -71,7 +72,7 @@ public sealed class MultiAgentToolCallValidationTests
         ProtocolConverter.ValidateResponsesToolCalls(Request(), response);
         Assert.Equal(before, WebSearchPayload.JsonDumps(response));
         function["namespace"] = "wrong";
-        Assert.Throws<UpstreamException>(() => ProtocolConverter.ValidateResponsesToolCalls(Request(), response));
+        Assert.Throws<ProtocolUpstreamException>(() => ProtocolConverter.ValidateResponsesToolCalls(Request(), response));
     }
 
     [Theory]
@@ -91,8 +92,8 @@ public sealed class MultiAgentToolCallValidationTests
     public void EmptyToolSetAndDuplicateCallIdsAreRejected()
     {
         var call = Call("exec", "functions", "custom_tool_call", "text(1);");
-        Assert.Throws<UpstreamException>(() => ProtocolConverter.ValidateResponsesToolCalls(Payload("""{"tools":[]}"""), Response(call)));
-        Assert.Throws<UpstreamException>(() => ProtocolConverter.ValidateResponsesToolCalls(Request(), Response(call, call)));
+        Assert.Throws<ProtocolUpstreamException>(() => ProtocolConverter.ValidateResponsesToolCalls(Payload("""{"tools":[]}"""), Response(call)));
+        Assert.Throws<ProtocolUpstreamException>(() => ProtocolConverter.ValidateResponsesToolCalls(Request(), Response(call, call)));
     }
 
     [Fact]
@@ -101,7 +102,7 @@ public sealed class MultiAgentToolCallValidationTests
         var request = Payload("""{"tools":[{"type":"function","name":"flat__name"},{"type":"namespace","name":"outer","tools":[{"type":"namespace","name":"inner","tools":[{"type":"custom","name":"read__file"}]}]}]}""");
         ProtocolConverter.ValidateResponsesToolCalls(request, Response(Call("flat__name", null, "function_call", "{}")));
         ProtocolConverter.ValidateResponsesToolCalls(request, Response(Call("read__file", "outer__inner", "custom_tool_call", "raw")));
-        Assert.Throws<UpstreamException>(() => ProtocolConverter.ValidateResponsesToolCalls(request,
+        Assert.Throws<ProtocolUpstreamException>(() => ProtocolConverter.ValidateResponsesToolCalls(request,
             Response(Call("name", "flat", "function_call", "{}"))));
     }
 

@@ -1,5 +1,6 @@
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using ProtocolBadRequestException = OpenCodex.ProtocolConversion.Errors.BadRequestException;
+using OpenCodex.ProtocolConversion;
 using Xunit;
 
 namespace OpenCodex.Api.Tests;
@@ -9,7 +10,7 @@ public sealed class NativeMcpProtocolTests
     [Fact]
     public void ResponsesNativeMcpToChat_IsRejectedInsteadOfBecomingFakeFunction()
     {
-        var exception = Assert.Throws<BadRequestException>(() => ProtocolConverter.ConvertRequest(
+        var exception = Assert.Throws<ProtocolBadRequestException>(() => ProtocolConverter.ConvertRequest(
             ResponsesRequest(
                 new Dictionary<string, object?>
                 {
@@ -143,7 +144,7 @@ public sealed class NativeMcpProtocolTests
             },
             null);
 
-        var exception = Assert.Throws<BadRequestException>(() =>
+        var exception = Assert.Throws<ProtocolBadRequestException>(() =>
             ProtocolConverter.EnsureRemoteMcpToolsConvertible(canonical, ProtocolConverter.Responses));
 
         Assert.Contains("requires server_label and one of server_url", exception.Message, StringComparison.Ordinal);

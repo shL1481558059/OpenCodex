@@ -1,14 +1,43 @@
 using OpenCodex.Core.Services.Proxy;
 using System.Text;
 using System.Text.Json;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
 using OpenCodex.Core.Errors;
+using ProtocolUpstreamException = OpenCodex.ProtocolConversion.Errors.UpstreamException;
 using Xunit;
 
 namespace OpenCodex.Api.Tests;
 
 public sealed class SseStreamConverterTests
 {
+    [Fact]
+    public void CustomInputDecoderReusesUnescapedCurrentFragment()
+    {
+        var decoder = new ApplyPatchJsonDeltaDecoder();
+        Assert.Equal("", decoder.Append("{\"input\":\""));
+        var fragment = new string('x', 257);
+        Assert.Same(fragment, decoder.Append(fragment));
+        Assert.Equal(0, decoder.BufferedCharacters);
+        Assert.Equal("", decoder.Append("\"}"));
+    }
+
+    [Theory]
+    [InlineData("input")]
+    [InlineData("patch")]
+    [InlineData("command")]
+    public void CustomInputDecoderPreservesEscapesAtEverySplit(string key)
+    {
+        const string input = "a\nb\r\t\"\\\b\f/中😀end";
+        var json = JsonSerializer.Serialize(new Dictionary<string, object?> { [key] = input });
+        for (var split = 0; split <= json.Length; split++)
+        {
+            var decoder = new ApplyPatchJsonDeltaDecoder();
+            var actual = decoder.Append(json[..split]) + decoder.Append(json[split..]);
+            Assert.Equal(input, actual);
+            Assert.Equal(0, decoder.BufferedCharacters);
+        }
+    }
     [Theory]
     [InlineData("chat")]
     [InlineData("messages")]
@@ -25,7 +54,7 @@ public sealed class SseStreamConverterTests
             ? SseStreamConverter.ChatToResponsesEvents(source, "test", result, CancellationToken.None)
             : SseStreamConverter.MessagesToResponsesEvents(source, "test", result, CancellationToken.None);
 
-        await Assert.ThrowsAsync<UpstreamException>(async () =>
+        await Assert.ThrowsAsync<ProtocolUpstreamException>(async () =>
         {
             await foreach (var line in converted)
             {
@@ -1153,7 +1182,7 @@ public sealed class SseStreamConverterTests
             SseBlock(ChatChunk(finishReason: "tool_calls")), SseBlock("[DONE]"));
         var emitted = new List<string>();
 
-        await Assert.ThrowsAsync<UpstreamException>(async () =>
+        await Assert.ThrowsAsync<ProtocolUpstreamException>(async () =>
         {
             await foreach (var e in SseStreamConverter.ChatToResponsesEvents(
                 lines, "gpt-5", CustomToolStreamResult(), CancellationToken.None))
@@ -1180,7 +1209,7 @@ public sealed class SseStreamConverterTests
         if (finishReason is not null) blocks.Add(SseBlock(ChatChunk(finishReason: finishReason)));
         if (done) blocks.Add(SseBlock("[DONE]"));
         var emitted = new List<string>();
-        await Assert.ThrowsAsync<UpstreamException>(async () =>
+        await Assert.ThrowsAsync<ProtocolUpstreamException>(async () =>
         {
             await foreach (var e in SseStreamConverter.ChatToResponsesEvents(
                 SseLines(blocks.ToArray()), "gpt-5", CustomToolStreamResult(), CancellationToken.None))
@@ -1223,7 +1252,7 @@ public sealed class SseStreamConverterTests
     public async Task Chat_DeclaredToolContractRejectsUnknownNamesBeforeAnyExecutableDone(string name)
     {
         var emitted = new List<string>();
-        await Assert.ThrowsAsync<UpstreamException>(async () =>
+        await Assert.ThrowsAsync<ProtocolUpstreamException>(async () =>
         {
             await foreach (var line in SseStreamConverter.ChatToResponsesEvents(SseLines(
                 SseBlock(ChatChunk(toolCalls: new[] { ChatToolCall(0, "call", name, "{}") })),
@@ -1303,7 +1332,7 @@ public sealed class SseStreamConverterTests
             ["other__exec"] = new() { ChatName = "other__exec", ResponsesName = "exec", Namespace = "other", NativeType = "custom" }
         };
         var emitted = new List<string>();
-        await Assert.ThrowsAsync<UpstreamException>(async () =>
+        await Assert.ThrowsAsync<ProtocolUpstreamException>(async () =>
         {
             await foreach (var line in SseStreamConverter.ChatToResponsesEvents(SseLines(
                 SseBlock(ChatChunk(toolCalls: new[] { ChatToolCall(0, "call", "exec", "{\"input\":\"text(1);\"}") })),
@@ -1342,11 +1371,11 @@ public sealed class SseStreamConverterTests
         };
         var response = """{"choices":[{"message":{"tool_calls":[{"id":"call","type":"custom","custom":{"name":"other__exec","input":"secret-payload"}}]},"finish_reason":"tool_calls"}]}""";
         using var document = JsonDocument.Parse(response);
-        Assert.Throws<UpstreamException>(() => ProtocolConverter.ConvertResponse(
+        Assert.Throws<ProtocolUpstreamException>(() => ProtocolConverter.ConvertResponse(
             ElementToDict(document.RootElement), ProtocolConverter.Responses, ProtocolConverter.Chat, "test",
             toolCallMappings: result.ToolCallMappings));
         var emitted = new List<string>();
-        await Assert.ThrowsAsync<UpstreamException>(async () =>
+        await Assert.ThrowsAsync<ProtocolUpstreamException>(async () =>
         {
             await foreach (var line in SseStreamConverter.ChatToResponsesEvents(SseLines(
                 SseBlock(ChatChunk(toolCalls: new[]

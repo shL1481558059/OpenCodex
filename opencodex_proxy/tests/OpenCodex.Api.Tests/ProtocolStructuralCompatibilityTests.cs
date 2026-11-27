@@ -1,6 +1,9 @@
 using System.Text.Json;
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
+using ProtocolBadRequestException = OpenCodex.ProtocolConversion.Errors.BadRequestException;
+using ProtocolUpstreamException = OpenCodex.ProtocolConversion.Errors.UpstreamException;
+using OpenCodex.ProtocolConversion.Streaming;
 using OpenCodex.Core.Services.Proxy;
 using Xunit;
 
@@ -188,7 +191,7 @@ public sealed class ProtocolStructuralCompatibilityTests
     [InlineData("text(1+1);")]
     public void CustomToolResponse_RejectsInvalidEnvelope(string arguments)
     {
-        var exception = Assert.Throws<UpstreamException>(() => ProtocolConverter.ConvertResponse(
+        var exception = Assert.Throws<ProtocolUpstreamException>(() => ProtocolConverter.ConvertResponse(
             CustomResponse(ProtocolConverter.Chat, arguments), ProtocolConverter.Responses, ProtocolConverter.Chat,
             "public", toolCallMappings: CustomMappings()));
         Assert.Equal("upstream_error", exception.ErrorType);
@@ -377,7 +380,7 @@ public sealed class ProtocolStructuralCompatibilityTests
             [key] = value
         };
 
-        var exception = Assert.Throws<BadRequestException>(() => ProtocolConverter.ConvertRequest(
+        var exception = Assert.Throws<ProtocolBadRequestException>(() => ProtocolConverter.ConvertRequest(
             request,
             ProtocolConverter.Responses,
             ProtocolConverter.Chat,
@@ -612,7 +615,7 @@ public sealed class ProtocolStructuralCompatibilityTests
             _ => "state_1"
         };
 
-        var exception = Assert.Throws<BadRequestException>(() => ProtocolConverter.ConvertRequest(
+        var exception = Assert.Throws<ProtocolBadRequestException>(() => ProtocolConverter.ConvertRequest(
             request,
             source,
             target,
@@ -669,7 +672,7 @@ public sealed class ProtocolStructuralCompatibilityTests
             ["type"] = "ephemeral"
         };
 
-        var exception = Assert.Throws<BadRequestException>(() => ProtocolConverter.ConvertRequest(
+        var exception = Assert.Throws<ProtocolBadRequestException>(() => ProtocolConverter.ConvertRequest(
             request,
             ProtocolConverter.Messages,
             ProtocolConverter.Chat,

@@ -1,0 +1,408 @@
+namespace OpenCodex.ProtocolConversion;
+
+public static partial class ProtocolConverter
+{
+    private static readonly string[] SchemaCompositionKeys =
+    [
+        "anyOf",
+        "oneOf",
+        "allOf",
+        "any_of",
+        "one_of",
+        "all_of"
+    ];
+
+    private static void SanitizeRequestToolSchemas(Dictionary<string, object?> request, string targetProtocol)
+    {
+        if (targetProtocol == Chat)
+        {
+            SanitizeChatRequestToolSchemas(request);
+        }
+        else if (targetProtocol == Messages)
+        {
+            SanitizeMessagesRequestToolSchemas(request);
+        }
+    }
+
+    /// <summary>
+    /// Upstream providers reject requests that set tool_choice without any tools.
+    /// Keep the outbound request consistent after conversion and same-protocol passthrough.
+    /// </summary>
+    private static void SanitizeRequestToolChoiceConsistency(Dictionary<string, object?> request)
+    {
+        if (HasEffectiveTools(request))
+        {
+            return;
+        }
+
+        if (request.TryGetValue("tools", out var tools)
+            && tools is IReadOnlyList<object?> toolList
+            && toolList.Count == 0)
+        {
+            request.Remove("tools");
+        }
+
+        request.Remove("tool_choice");
+    }
+
+    private static bool HasEffectiveTools(Dictionary<string, object?> request)
+    {
+        if (ListValue(request, "tools").Count > 0)
+        {
+            return true;
+        }
+
+        // Anthropic Messages may advertise remote MCP servers without a local tools array.
+        return ListValue(request, "mcp_servers").Count > 0;
+    }
+
+    private static void SanitizeChatRequestToolSchemas(Dictionary<string, object?> request)
+    {
+        var tools = ListValue(request, "tools");
+        if (tools.Count == 0)
+        {
+            return;
+        }
+
+        request["tools"] = tools.Select(SanitizeChatToolSchema).ToList();
+    }
+
+    private static void SanitizeMessagesRequestToolSchemas(Dictionary<string, object?> request)
+    {
+        var tools = ListValue(request, "tools");
+        if (tools.Count == 0)
+        {
+            return;
+        }
+
+        request["tools"] = tools.Select(SanitizeMessagesToolSchema).ToList();
+    }
+
+    private static object? SanitizeChatToolSchema(object? item)
+    {
+        if (!TryAsObject(item, out var tool))
+        {
+            return DeepCopy(item);
+        }
+
+        var hasFunction = TryAsObject(GetValue(tool, "function"), out var function) && function.Count > 0;
+        var result = new Dictionary<string, object?>(tool.Count, StringComparer.Ordinal);
+        foreach (var (key, value) in tool)
+        {
+            if (hasFunction && key == "function")
+            {
+                result[key] = function.ToDictionary(
+                    pair => pair.Key,
+                    pair => pair.Key == "parameters" ? SanitizeToolSchema(pair.Value) : DeepCopy(pair.Value),
+                    StringComparer.Ordinal);
+            }
+            else
+            {
+                result[key] = !hasFunction && key == "parameters"
+                    ? SanitizeToolSchema(value)
+                    : DeepCopy(value);
+            }
+        }
+
+        return result;
+    }
+
+    private static object? SanitizeMessagesToolSchema(object? item)
+    {
+        if (!TryAsObject(item, out var tool))
+        {
+            return DeepCopy(item);
+        }
+
+        var result = tool.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Key == "input_schema" ? SanitizeToolSchema(pair.Value) : DeepCopy(pair.Value),
+            StringComparer.Ordinal);
+
+        return result;
+    }
+
+    private static object? SanitizeToolSchema(object? schema)
+    {
+        schema = NormalizeJsonValue(schema);
+        if (TryAsObject(schema, out var root))
+        {
+            var context = new SchemaExpansionContext(
+                TryAsObject(GetValue(root, "$defs"), out var defsObject)
+                    ? defsObject
+                    : new Dictionary<string, object?>());
+            schema = ExpandSchemaDefs(root, context, depth: 0);
+        }
+
+        return SanitizeOwnedSchemaValue(schema);
+    }
+
+    private static object? SanitizeOwnedSchemaValue(object? value)
+    {
+        value = NormalizeJsonValue(value);
+        if (value is null or string or ValueType) return value;
+        if (TryAsObject(value, out var dictionary))
+        {
+            return SanitizeOwnedSchemaObject(dictionary);
+        }
+
+        if (TryAsList(value, out var list))
+        {
+            for (var index = 0; index < list.Count; index++)
+            {
+                list[index] = SanitizeOwnedSchemaValue(list[index]);
+            }
+            return list;
+        }
+
+        return value;
+    }
+
+    private const int MaxSchemaDefDepth = 32;
+    private const int MaxSchemaExpansionNodes = 20_000;
+
+    /// <summary>
+    /// 展开工具 schema 的 $ref 时贯穿始终的状态：$defs 定义、当前正在展开的 $ref 链
+    /// （用于环检测），以及剩余节点预算（防止无环但多重引用导致的指数级膨胀）。
+    /// </summary>
+    private sealed class SchemaExpansionContext
+    {
+        public SchemaExpansionContext(Dictionary<string, object?> defs)
+        {
+            Defs = defs;
+        }
+
+        public Dictionary<string, object?> Defs { get; }
+
+        public HashSet<string> ActiveRefs { get; } = new(StringComparer.Ordinal);
+
+        public int RemainingNodes { get; set; } = MaxSchemaExpansionNodes;
+    }
+
+    private static Dictionary<string, object?> LooseObjectSchema() => new()
+    {
+        ["type"] = "object",
+        ["properties"] = new Dictionary<string, object?>()
+    };
+
+    /// <summary>
+    /// 把工具参数 schema 里的 $ref/$defs 内部引用就地展开为自包含结构。
+    /// chat/messages 上游（含部分中转聚合层）不支持引用式 schema，遇到 $ref 会拒绝。
+    /// 展开时通过 <see cref="SchemaExpansionContext.ActiveRefs"/> 做环检测，并受节点预算
+    /// 约束，避免自引用或多重引用 schema 造成指数级膨胀甚至 OutOfMemoryException。
+    /// </summary>
+    private static Dictionary<string, object?> ExpandSchemaDefs(
+        Dictionary<string, object?> schema,
+        SchemaExpansionContext context,
+        int depth)
+    {
+        if (depth > MaxSchemaDefDepth || context.RemainingNodes <= 0)
+        {
+            return LooseObjectSchema();
+        }
+
+        context.RemainingNodes--;
+
+        var result = schema.Where(pair => pair.Key != "$defs").ToDictionary(
+            pair => pair.Key,
+            pair => ExpandSchemaDefsValue(pair.Value, context, depth),
+            StringComparer.Ordinal);
+
+        if (TryGetSchemaRef(result, out var refKey))
+        {
+            result.Remove("$ref");
+
+            // 环检测：该 $ref 已在当前展开链上（自引用或相互引用），停止内联，
+            // 保留同级已展开字段，为空则降级为宽松 object，杜绝无限展开。
+            if (context.ActiveRefs.Contains(refKey))
+            {
+                return result.Count > 0 ? result : LooseObjectSchema();
+            }
+
+            if (context.Defs.TryGetValue(refKey, out var definition))
+            {
+                context.ActiveRefs.Add(refKey);
+                var expanded = ExpandSchemaDefsValue(definition, context, depth + 1);
+                context.ActiveRefs.Remove(refKey);
+                if (TryAsObject(expanded, out var expandedObject))
+                {
+                    foreach (var (key, value) in expandedObject)
+                    {
+                        if (!result.ContainsKey(key))
+                        {
+                            result[key] = value;
+                        }
+                    }
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private static object? ExpandSchemaDefsValue(
+        object? value,
+        SchemaExpansionContext context,
+        int depth)
+    {
+        value = NormalizeJsonValue(value);
+        if (context.RemainingNodes <= 0)
+        {
+            return LooseObjectSchema();
+        }
+
+        if (value is null or string or ValueType) return value;
+        if (TryAsObject(value, out var dictionary))
+        {
+            return ExpandSchemaDefs(dictionary, context, depth);
+        }
+
+        if (TryAsList(value, out var list))
+        {
+            return list
+                .Select(item => ExpandSchemaDefsValue(item, context, depth))
+                .ToList();
+        }
+
+        return DeepCopy(value);
+    }
+
+    private static bool TryGetSchemaRef(Dictionary<string, object?> schema, out string refKey)
+    {
+        if (schema.TryGetValue("$ref", out var refValue)
+            && NormalizeJsonValue(refValue) is string refText
+            && refText.StartsWith("#/$defs/", StringComparison.Ordinal))
+        {
+            refKey = refText["#/$defs/".Length..];
+            return true;
+        }
+
+        refKey = string.Empty;
+        return false;
+    }
+
+    private static Dictionary<string, object?> SanitizeOwnedSchemaObject(Dictionary<string, object?> schema)
+    {
+        foreach (var key in schema.Keys.ToArray())
+        {
+            schema[key] = SanitizeOwnedSchemaValue(schema[key]);
+        }
+
+        // 部分上游（如某些中转聚合层）要求 object 类型的工具参数 schema 必须显式携带
+        // required 字段，缺失时直接返回 400。这里统一补齐，避免 Codex 下发无 required
+        // 的工具（例如 list_mcp_resources）导致上游拒绝。
+        if (NormalizeJsonValue(GetValue(schema, "type")) as string == "object"
+            && !schema.ContainsKey("required"))
+        {
+            schema["required"] = new List<object?>();
+        }
+
+        SanitizeEnum(schema);
+        SanitizeCompositionSchemas(schema);
+        return schema;
+    }
+
+    private static void SanitizeEnum(Dictionary<string, object?> schema)
+    {
+        if (!schema.TryGetValue("enum", out var enumValue)
+            || !TryAsList(enumValue, out var values)
+            || !values.Any(IsEmptyString))
+        {
+            return;
+        }
+
+        var filtered = values
+            .Where(value => !IsEmptyString(value))
+            .ToList();
+        if (filtered.Count > 0)
+        {
+            schema["enum"] = filtered;
+            return;
+        }
+
+        schema.Remove("enum");
+        if (!schema.ContainsKey("type") && InferJsonSchemaType(values) is { } inferredType)
+        {
+            schema["type"] = inferredType;
+        }
+    }
+
+    private static void SanitizeCompositionSchemas(Dictionary<string, object?> schema)
+    {
+        foreach (var key in SchemaCompositionKeys)
+        {
+            if (!schema.TryGetValue(key, out var value) || !TryAsList(value, out var variants))
+            {
+                continue;
+            }
+
+            var sanitized = DedupeSchemaVariants(variants
+                .Where(variant => variant is not null)
+                .ToList());
+
+            if (sanitized.Count == 0)
+            {
+                schema.Remove(key);
+            }
+            else if (sanitized.Count == 1 && TryAsObject(sanitized[0], out var onlyVariant))
+            {
+                schema.Remove(key);
+                foreach (var (variantKey, variantValue) in onlyVariant)
+                {
+                    if (!schema.ContainsKey(variantKey))
+                    {
+                        schema[variantKey] = variantValue;
+                    }
+                }
+            }
+            else
+            {
+                schema[key] = sanitized;
+            }
+        }
+    }
+
+    private static List<object?> DedupeSchemaVariants(List<object?> variants)
+    {
+        var result = new List<object?>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var variant in variants)
+        {
+            var key = JsonDumps(variant);
+            if (seen.Add(key))
+            {
+                result.Add(variant);
+            }
+        }
+
+        return result;
+    }
+
+    private static bool IsEmptyString(object? value)
+    {
+        return NormalizeJsonValue(value) is string text && text.Length == 0;
+    }
+
+    private static string? InferJsonSchemaType(List<object?> enumValues)
+    {
+        foreach (var value in enumValues.Select(NormalizeJsonValue))
+        {
+            if (value is string)
+            {
+                return "string";
+            }
+
+            if (value is bool)
+            {
+                return "boolean";
+            }
+
+            if (value is int or long or double or decimal)
+            {
+                return "number";
+            }
+        }
+
+        return null;
+    }
+}

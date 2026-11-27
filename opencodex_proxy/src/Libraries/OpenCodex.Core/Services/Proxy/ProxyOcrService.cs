@@ -3,7 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.DTOs.Proxy;
@@ -80,11 +80,12 @@ public sealed class ProxyOcrService : IProxyOcrService
                 upstreamRequest = engine == ProxyOcrEngines.Vision
                     && !string.IsNullOrWhiteSpace(channelType)
                     && !string.IsNullOrWhiteSpace(upstreamModel)
-                    ? ProtocolConverter.ConvertRequest(
+                    ? ProtocolConversion.ProtocolConversionErrors.Wrap(
+                        () => ProtocolConverter.ConvertRequest(
                         requestPayload,
                         ProtocolConverter.Responses,
                         channelType,
-                        upstreamModel)
+                        upstreamModel))
                     : requestPayload;
                 responsePayload = ResultPayload(cached.Text, cached.Description);
                 return new ProxyOcrResult(
@@ -105,11 +106,12 @@ public sealed class ProxyOcrService : IProxyOcrService
                 channelId = ChannelId(context.VisionRoute.Channel);
                 channelType = ChannelType(context.VisionRoute.Channel);
                 requestPayload = CreateOcrRequestPayload(context.Image, requestModel);
-                upstreamRequest = ProtocolConverter.ConvertRequest(
+                upstreamRequest = ProtocolConversion.ProtocolConversionErrors.Wrap(
+                    () => ProtocolConverter.ConvertRequest(
                     requestPayload,
                     ProtocolConverter.Responses,
                     channelType,
-                    upstreamModel);
+                    upstreamModel));
                 var ocrResult = await RecognizeWithVisionAsync(
                     context,
                     requestPayload,
@@ -233,11 +235,12 @@ public sealed class ProxyOcrService : IProxyOcrService
                 upstreamRequest,
                 context.DefaultTimeout,
                 context.CancellationToken);
-            var responsesPayload = ProtocolConverter.ConvertResponse(
+            var responsesPayload = ProtocolConversion.ProtocolConversionErrors.Wrap(
+                () => ProtocolConverter.ConvertResponse(
                 upstreamResponse,
                 ProtocolConverter.Responses,
                 ChannelType(context.VisionRoute.Channel),
-                context.VisionRoute.OriginalModel);
+                context.VisionRoute.OriginalModel));
             var responseText = ExtractResponseText(responsesPayload);
             var parsed = ParseVisionResult(responseText);
             return new VisionOcrExecutionResult(

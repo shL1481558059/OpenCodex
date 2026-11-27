@@ -1,4 +1,4 @@
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
 using static OpenCodex.CoreBase.Abstractions.WebSearchPayload;
 
 namespace OpenCodex.Core.Services.WebSearch;

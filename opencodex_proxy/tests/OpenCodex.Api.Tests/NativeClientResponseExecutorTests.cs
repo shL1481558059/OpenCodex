@@ -1,5 +1,5 @@
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
 using OpenCodex.Core.Services.MultiAgent;
 using OpenCodex.CoreBase.Abstractions;
 using Xunit;
@@ -573,6 +573,8 @@ public sealed class NativeClientResponseExecutorTests
                 return Response("r",Tool("call"));
             },e=> { emitted.Add(e);return Task.CompletedTask; },default);
             Assert.Equal("failed",result["status"]);
+            var error = Assert.IsType<D>(result["error"]);
+            Assert.Equal(diskFailure ? "server_error" : "upstream_error", error["code"]);
             Assert.DoesNotContain(emitted,e=>Type(e)=="response.output_item.done" || Type(e)=="response.completed");
             Assert.Single(emitted,e=>Type(e)=="response.failed");
             Assert.Equal((0L,0),spool.Usage);Assert.Empty(Directory.EnumerateFiles(directory));

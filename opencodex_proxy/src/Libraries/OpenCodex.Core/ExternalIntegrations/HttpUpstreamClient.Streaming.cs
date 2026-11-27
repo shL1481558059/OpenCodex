@@ -1,4 +1,5 @@
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -239,10 +240,10 @@ public sealed partial class HttpUpstreamClient
 
     // Fixed-size reads ensure a malicious single physical line cannot allocate an unbounded
     // StreamReader.ReadLine result before the event limit is checked. Queue holds at most one
-    // 4096-character read's frames, not the response. Parser survives the pre-content probe.
+    // configured read's frames, not the response. Parser survives the pre-content probe.
     private sealed class SseHttpFrameReader(StreamReader reader, SseFrameOptions options)
     {
-        private readonly char[] _buffer = new char[4096];
+        private readonly char[] _buffer = new char[ProtocolConversionParameters.Current.SseReadBufferCharacters];
         private readonly Queue<SseFrame> _ready = new();
         private readonly SseFrameReader _parser = new(options);
         private bool _ended;
@@ -262,7 +263,7 @@ public sealed partial class HttpUpstreamClient
                 {
                     try
                     {
-                        foreach (var frame in _parser.Feed(new string(_buffer, 0, count))) _ready.Enqueue(frame);
+                        _parser.Feed(_buffer.AsSpan(0, count), _ready);
                     }
                     catch (InvalidDataException exception)
                     {

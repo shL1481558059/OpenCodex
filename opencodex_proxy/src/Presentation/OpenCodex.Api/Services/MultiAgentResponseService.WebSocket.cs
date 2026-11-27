@@ -65,7 +65,7 @@ public sealed partial class MultiAgentResponseService
                     sequence = Math.Max(sequence + 1, WebSearchPayload.ToInt(value, sequence));
                     item["sequence_number"] = sequence;
                 }
-                await OpenCodex.Core.Protocols.WebSocketJsonWriter.SendAsync(socket,item,configuration.GetValue<int?>("ProxyStreaming:MaxEventBytes")??16*1024*1024,ct);
+                await OpenCodex.ProtocolConversion.Streaming.WebSocketJsonWriter.SendAsync(socket,item,OpenCodex.ProtocolConversion.ProtocolConversionParameters.Current.SseMaxEventBytes,ct);
             }
             finally { sendGate.Release(); }
         }

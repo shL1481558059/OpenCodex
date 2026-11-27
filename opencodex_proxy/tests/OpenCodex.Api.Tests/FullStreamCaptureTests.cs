@@ -1,5 +1,7 @@
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using ProtocolUpstreamException = OpenCodex.ProtocolConversion.Errors.UpstreamException;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
 using OpenCodex.CoreBase.Domain.Proxy;
 using Xunit;
 
@@ -50,7 +52,7 @@ public sealed class FullStreamCaptureTests : IDisposable
         using(var limited=new StreamResponseCapture("messages",new StreamCaptureBudget(1024,1,100,spool,default)))
         {
             limited.Accept(Frame("content_block_start",new() { ["index"]=0,["content_block"]=new Dictionary<string,object?> { ["type"]="text" } }));
-            Assert.Throws<UpstreamException>(()=>limited.Accept(Frame("content_block_start",new() { ["index"]=1,["content_block"]=new Dictionary<string,object?> { ["type"]="text" } })));
+            Assert.Throws<ProtocolUpstreamException>(()=>limited.Accept(Frame("content_block_start",new() { ["index"]=1,["content_block"]=new Dictionary<string,object?> { ["type"]="text" } })));
         }
         Assert.Equal((0L,0),spool.Usage);
     }
@@ -73,15 +75,27 @@ public sealed class FullStreamCaptureTests : IDisposable
             Assert.ThrowsAny<OperationCanceledException>(()=>capture.Accept(Frame("response.output_text.delta",new() { ["delta"]="late" })));
         }
         using(var capture=new StreamResponseCapture("responses",new StreamCaptureBudget(5,100,100,spool,default)))
-            Assert.Throws<UpstreamException>(()=>capture.Accept(Frame("response.output_text.delta",new() { ["delta"]="too long" })));
+            Assert.Throws<ProtocolUpstreamException>(()=>capture.Accept(Frame("response.output_text.delta",new() { ["delta"]="too long" })));
         Assert.Equal((0L,0),spool.Usage);Assert.Empty(Directory.EnumerateFiles(_dir));
+    }
+    [Fact]
+    public void ConverterJournalRejectsCancelledWritesWithoutSpendingAuditQuota()
+    {
+        var spool=Spool();
+        using var cancellation=new CancellationTokenSource();
+        using var budget=new StreamCaptureBudget(1024,100,100,spool,cancellation.Token);
+        var journal=new ConverterJsonFragments(budget);
+        journal.Add(true,new Dictionary<string,object?> { ["type"]="response.created" });
+        cancellation.Cancel();
+        Assert.ThrowsAny<OperationCanceledException>(()=>
+            journal.Add(true,new Dictionary<string,object?> { ["type"]="response.completed" }));
     }
     [Fact]
     public void ResponsesSparseContentIndexesCannotBeSilentlyTakenAwayAtBuildTime()
     {
         var spool=Spool();using var capture=new StreamResponseCapture("responses",new StreamCaptureBudget(10000,1,100,spool,default));
         capture.Accept(Frame("response.output_text.delta",new() { ["content_index"]=3,["delta"]="one" }));
-        Assert.Throws<UpstreamException>(()=>capture.Accept(Frame("response.refusal.delta",new() { ["content_index"]=7,["delta"]="two" })));
+        Assert.Throws<ProtocolUpstreamException>(()=>capture.Accept(Frame("response.refusal.delta",new() { ["content_index"]=7,["delta"]="two" })));
     }
     [Fact]
     public void DiskFailureIsExplicitAndAppendReservationsAreReleased()

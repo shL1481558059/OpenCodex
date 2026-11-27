@@ -1,14 +1,94 @@
 using System.Net;
 using System.Text;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using OpenCodex.Api.Hosting;
+using OpenCodex.Api.Infrastructure;
 using OpenCodex.Core.Errors;
 using OpenCodex.Core.ExternalIntegrations;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
 using Xunit;
 
 namespace OpenCodex.Api.Tests;
 
 public sealed class SseHttpEventPipelineTests
 {
+    [Fact]
+    public void StartupSseOptions_UseRootParametersInsteadOfGeneralConfiguration()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(
+            new Dictionary<string, string?>
+            {
+                ["ProxyStreaming:MaxEventBytes"] = "1",
+                ["ProxyStreaming:MaxCaptureBytes"] = "1",
+                ["ProxyStreaming:MaxCaptureItems"] = "1",
+                ["ProxyStreaming:MaxCaptureFields"] = "1",
+                ["ProxyStreaming:MaxBufferedRoundBytes"] = "1",
+                ["ProxyStreaming:MaxBufferedRoundFrames"] = "1",
+                ["ProxyStreaming:MaxBatchBytes"] = "1",
+                ["ProxyStreaming:MaxFlushDelayMilliseconds"] = "1",
+                ["ProxyStreaming:MaxQueuedEvents"] = "1",
+                ["ProxyStreaming:MaxQueuedBytes"] = "1",
+                ["ProxyStreaming:Upstream:MaxEventBytes"] = "1",
+                ["ProxyStreaming:Upstream:MaxProbeBytes"] = "1",
+                ["ProxyStreaming:Upstream:MaxProbeFrames"] = "1",
+                ["ProxyStreaming:Upstream:MaxWebSocketMessageBytes"] = "1"
+            }).Build();
+        var services = new ServiceCollection();
+        services.AddOpenCodexApi(configuration);
+        using var provider = services.BuildServiceProvider();
+        var frames = provider.GetRequiredService<SseFrameOptions>();
+        var transport = provider.GetRequiredService<SseTransportOptions>();
+        var writer = provider.GetRequiredService<IOptions<SseWriteOptions>>().Value;
+        var parameters = ProtocolConversionParameters.Current;
+        Assert.Equal(parameters.SseMaxEventBytes, frames.MaxEventBytes);
+        Assert.Equal(parameters.SseMaxCaptureBytes, frames.MaxCaptureBytes);
+        Assert.Equal(parameters.SseMaxCaptureItems, frames.MaxCaptureItems);
+        Assert.Equal(parameters.SseMaxCaptureFields, frames.MaxCaptureFields);
+        Assert.Equal(parameters.SseMaxBufferedRoundBytes, frames.MaxBufferedRoundBytes);
+        Assert.Equal(parameters.SseMaxBufferedRoundFrames, frames.MaxBufferedRoundFrames);
+        Assert.Equal(parameters.SseMaxEventBytes, transport.MaxEventBytes);
+        Assert.Equal(parameters.SseMaxProbeBytes, transport.MaxProbeBytes);
+        Assert.Equal(parameters.SseMaxProbeFrames, transport.MaxProbeFrames);
+        Assert.Equal(parameters.SseMaxWebSocketMessageBytes, transport.MaxWebSocketMessageBytes);
+        Assert.Equal(parameters.SseMaxEventBytes, writer.MaxEventBytes);
+        Assert.Equal(parameters.SseMaxBatchBytes, writer.MaxBatchBytes);
+        Assert.Equal(parameters.SseMaxFlushDelayMilliseconds, writer.MaxFlushDelayMilliseconds);
+        Assert.Equal(parameters.SseMaxQueuedEvents, writer.MaxQueuedEvents);
+        Assert.Equal(parameters.SseMaxQueuedBytes, writer.MaxQueuedBytes);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(7)]
+    [InlineData(4096)]
+    public void SpanInput_IsConsumedBeforeBufferReuseAndMatchesLegacyFrames(int chunkCharacters)
+    {
+        const string wire = "\uFEFF: heartbeat\r\n\r\nevent: delta\r\ndata: {\r\ndata:  \"delta\":\"汉😀\"}\r\n\r\ndata: [DONE]\r\n\r\ndata: {bad}";
+        var expectedParser = new SseFrameReader();
+        var expected = expectedParser.Feed(wire).ToList();
+        expected.Add(expectedParser.Complete()!);
+        var parser = new SseFrameReader();
+        var frames = new Queue<SseFrame>();
+        var buffer = new char[chunkCharacters];
+        for (var offset = 0; offset < wire.Length; offset += chunkCharacters)
+        {
+            var count = Math.Min(chunkCharacters, wire.Length - offset);
+            wire.AsSpan(offset, count).CopyTo(buffer);
+            parser.Feed(buffer.AsSpan(0, count), frames);
+            buffer.AsSpan().Fill('!');
+        }
+        frames.Enqueue(parser.Complete()!);
+        Assert.Equal(expected.Select(frame => frame.WireText), frames.Select(frame => frame.WireText));
+        Assert.Equal(expected.Select(frame => frame.BoundaryComplete), frames.Select(frame => frame.BoundaryComplete));
+        Assert.Equal(expected.Select(frame => frame.Malformed), frames.Select(frame => frame.Malformed));
+        Assert.Equal(expected.Select(frame => System.Text.Json.JsonSerializer.Serialize(frame.Event)),
+            frames.Select(frame => System.Text.Json.JsonSerializer.Serialize(frame.Event)));
+    }
+
     [Fact]
     public async Task HttpProbe_MultilineErrorRetries_ThenSharesDecodedPartialToolArguments()
     {

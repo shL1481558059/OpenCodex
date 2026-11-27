@@ -3,7 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using OpenCodex.Api.Authentication;
 using OpenCodex.Api.Infrastructure;
 using OpenCodex.Api.Services;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
 
 namespace OpenCodex.Api.Controllers;
 

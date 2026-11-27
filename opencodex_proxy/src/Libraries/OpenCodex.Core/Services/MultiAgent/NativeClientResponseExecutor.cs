@@ -1,5 +1,6 @@
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
 using OpenCodex.CoreBase.Abstractions;
 using System.Text.Json;
 using OpenCodex.CoreBase.Domain.Proxy;
@@ -127,7 +128,8 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
                 throw new UpstreamException("The model stream repeated an output item done event.");
             if (type == "response.output_item.done" && !added.Contains(index))
                 throw new UpstreamException("The model stream completed an output item before adding it.");
-            if(itemEvent || argumentEvent || buffering)events.Add(buffering, value);
+            if(itemEvent || argumentEvent || buffering)
+                ProtocolConversion.ProtocolConversionErrors.Wrap(() => events.Add(buffering, value));
             if(!buffering)await Send(value);
         }
 
@@ -190,7 +192,8 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
             if (validateDeclaredToolIdentity)
             {
                 RestoreDeclaredToolIdentitiesIfNeeded(result);
-                ProtocolConverter.ValidateResponsesToolCalls(projection.Payload, result);
+                ProtocolConversion.ProtocolConversionErrors.Wrap(
+                    () => ProtocolConverter.ValidateResponsesToolCalls(projection.Payload, result));
             }
             var items = JsonDictionaryValue.List(result, "output").OfType<D>().ToList();
             if (!items.Any(i => IsTool(i) || Text(i, "type") == "message" && JsonDictionaryValue.List(i, "content").OfType<D>()

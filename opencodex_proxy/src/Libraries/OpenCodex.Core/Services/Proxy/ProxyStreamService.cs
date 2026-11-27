@@ -1,7 +1,8 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
 using OpenCodex.Core.Services.WebSearch;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
@@ -80,9 +81,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                 streamTermination = streamLogCapture.SawTerminalEvent
                     ? StreamCaptureTermination.Completed
                     : StreamCaptureTermination.UnexpectedEnd;
-                upstreamResponse = passThroughResponseCapture!
-                    .Complete(streamTermination)
-                    .Response;
+                upstreamResponse = CompleteCapture(passThroughResponseCapture!, streamTermination).Response;
             }
             else
             {
@@ -123,9 +122,9 @@ public sealed partial class ProxyStreamService : IProxyStreamService
             streamTermination = exception is OperationCanceledException && context.CancellationToken.IsCancellationRequested
                 ? StreamCaptureTermination.ClientCancelled
                 : StreamCaptureTermination.UpstreamError;
-            var capturedUpstreamResponse = passThroughResponseCapture?
-                .Complete(streamTermination)
-                .Response;
+            var capturedUpstreamResponse = passThroughResponseCapture is null
+                ? null
+                : CompleteCapture(passThroughResponseCapture, streamTermination).Response;
             if (exception is ProxyException proxyException)
             {
                 statusCode = proxyException.StatusCode;
@@ -170,9 +169,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
             webSearchDetails = tools?.Details;
             if (passThroughResponseCapture is not null && upstreamResponse is null)
             {
-                upstreamResponse = passThroughResponseCapture!
-                    .Complete(streamTermination)
-                    .Response;
+                upstreamResponse = CompleteCapture(passThroughResponseCapture, streamTermination).Response;
             }
 
             await PersistLog();
@@ -231,6 +228,11 @@ public sealed partial class ProxyStreamService : IProxyStreamService
     private StreamResponseCapture CreateFullCapture(string protocol,CancellationToken cancellationToken,IReadOnlySet<string>? toolNames=null) =>
         new(protocol,new StreamCaptureBudget(_outputFrames.MaxCaptureBytes,_outputFrames.MaxCaptureItems,
             _outputFrames.MaxCaptureFields,_auditSpool,cancellationToken),toolNames);
+
+    private static StreamResponseCaptureResult CompleteCapture(
+        StreamResponseCapture capture,
+        StreamCaptureTermination termination) =>
+        ProtocolConversion.ProtocolConversionErrors.Wrap(() => capture.Complete(termination));
 
     private static bool HasStreamFailure(Dictionary<string, object?>? response)
     {
@@ -301,7 +303,10 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         var sawDone = false;
         await foreach (var frame in frames.WithCancellation(cancellationToken))
         {
-            capture?.Accept(frame);
+            if (capture is not null)
+            {
+                ProtocolConversion.ProtocolConversionErrors.Wrap(() => capture.Accept(frame));
+            }
             log.Observe(frame);
             sawCompleted |= frame.IsResponseCompleted && frame.BoundaryComplete;
             sawDone |= frame.IsDone;
@@ -322,7 +327,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
     {
         await foreach (var line in lines.WithCancellation(cancellationToken))
         {
-            capture.Accept(line);
+            ProtocolConversion.ProtocolConversionErrors.Wrap(() => capture.Accept(line));
             yield return line;
             if (capture.IsComplete)
             {

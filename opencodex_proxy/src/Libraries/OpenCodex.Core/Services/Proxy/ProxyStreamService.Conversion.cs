@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
 using OpenCodex.Core.Services.WebSearch;
 using OpenCodex.CoreBase.Domain.Proxy;
 using static OpenCodex.CoreBase.Abstractions.WebSearchPayload;
@@ -54,7 +55,7 @@ public sealed partial class ProxyStreamService
                         try { moved=await enumerator.MoveNextAsync(); }
                         catch(UpstreamException exception) when(ToolContractRetryPolicy.IsUndeclaredToolCall(exception))
                         {
-                            var rejected=converted.UpstreamResponse ?? capture.Complete(capture.IsComplete
+                            var rejected=converted.UpstreamResponse ?? CompleteCapture(capture, capture.IsComplete
                                 ? StreamCaptureTermination.Completed : StreamCaptureTermination.UpstreamError).Response;
                             if(tools is not null)tools.RecordRejectedRound(rejected,exception.Message);
                             else BuiltinToolSession.AddUsage(state.RejectedUsage,rejected is null?new(StringComparer.Ordinal):ObjectValue(rejected,"usage"));
@@ -81,7 +82,7 @@ public sealed partial class ProxyStreamService
                 }
                 finally
                 {
-                    state.UpstreamResponse=converted.UpstreamResponse ?? capture.Complete(capture.IsComplete
+                    state.UpstreamResponse=converted.UpstreamResponse ?? CompleteCapture(capture, capture.IsComplete
                         ? StreamCaptureTermination.Completed : StreamCaptureTermination.UnexpectedEnd).Response;
                 }
             }
@@ -91,9 +92,10 @@ public sealed partial class ProxyStreamService
             {
                 yield break;
             }
-            var response = ProtocolConverter.ConvertOwnedResponse(
+            var response = ProtocolConversion.ProtocolConversionErrors.Wrap(
+                () => ProtocolConverter.ConvertOwnedResponse(
                 converted.UpstreamResponse, context.EntryProtocol, context.ChannelType,
-                context.Route.OriginalModel, textFormat, mappings);
+                context.Route.OriginalModel, textFormat, mappings));
             state.ResponsePayload = response;
             if (tools is null && state.RejectedUsage.Count > 0)
             {
@@ -186,7 +188,7 @@ public sealed partial class ProxyStreamService
     {
         await foreach (var line in lines.WithCancellation(cancellationToken))
         {
-            capture.Accept(line);
+            ProtocolConversion.ProtocolConversionErrors.Wrap(() => capture.Accept(line));
             if (line.Event is { } decoded) yield return decoded;
         }
 
@@ -208,7 +210,7 @@ public sealed partial class ProxyStreamService
         var includeUsage = context.Payload.TryGetValue("stream_options", out var options)
             && options is Dictionary<string, object?> streamOptions
             && streamOptions.TryGetValue("include_usage", out var usage) && usage is true;
-        return (context.EntryProtocol, context.ChannelType) switch
+        var frames = (context.EntryProtocol, context.ChannelType) switch
         {
             (ProtocolConverter.Responses, ProtocolConverter.Chat) => SseStreamConverter.ChatToResponsesFrames(
                 lines, model, converted, skipped, state?.HasResponse == true,
@@ -226,6 +228,7 @@ public sealed partial class ProxyStreamService
                 lines, model, converted, null, false, cancellationToken),
             _ => throw new BadRequestException($"streaming conversion not implemented for {context.EntryProtocol} to {context.ChannelType}")
         };
+        return ProtocolConversion.ProtocolConversionErrors.WrapStream(frames, cancellationToken);
     }
 
     private sealed class ConvertedProxyStreamState

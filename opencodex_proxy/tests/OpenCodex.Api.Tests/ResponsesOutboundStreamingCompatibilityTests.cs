@@ -1,6 +1,6 @@
 using System.Text;
 using System.Text.Json;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
 using Xunit;
 
 namespace OpenCodex.Api.Tests;

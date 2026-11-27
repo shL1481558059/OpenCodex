@@ -1,6 +1,9 @@
 using System.Text.Json;
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using ProtocolBadRequestException = OpenCodex.ProtocolConversion.Errors.BadRequestException;
+using ProtocolUpstreamException = OpenCodex.ProtocolConversion.Errors.UpstreamException;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
 using OpenCodex.Core.Services.MultiAgent;
 using OpenCodex.CoreBase.Abstractions;
 using Xunit;
@@ -46,7 +49,7 @@ public sealed class MultiAgentClientProtocolTests
     public void ResponseToolsRejectFinalWireNameCollisionAfterPrefixing()
     {
         var request = Payload("""{"tools":[{"type":"function","name":"a__b","parameters":{"type":"object"}},{"type":"namespace","name":"a","tools":[{"type":"function","name":"b","parameters":{"type":"object"}}]},{"type":"namespace","name":"c","tools":[{"type":"function","name":"b","parameters":{"type":"object"}}]}]}""");
-        var error = Assert.Throws<BadRequestException>(
+        var error = Assert.Throws<ProtocolBadRequestException>(
             () => ProtocolConverter.BuildResponsesToolCallMappings(request));
         Assert.Contains("resolve to the same wire name `a__b`", error.Message, StringComparison.Ordinal);
     }
@@ -236,10 +239,10 @@ public sealed class MultiAgentClientProtocolTests
     public void ToolCall_RejectsAmbiguousAndUnknownNames(string name)
     {
         var mappings = ProtocolConverter.BuildResponsesToolCallMappings(NamespacedTools());
-        var error = Assert.Throws<UpstreamException>(() => ProtocolConverter.ResponsesToolCallStartedItem(
+        var error = Assert.Throws<ProtocolUpstreamException>(() => ProtocolConverter.ResponsesToolCallStartedItem(
             "call", name, "item", mappings));
         Assert.Equal(502, error.StatusCode);
-        Assert.Throws<UpstreamException>(() => ProtocolConverter.ResponsesToolCallItemFromToolCall(
+        Assert.Throws<ProtocolUpstreamException>(() => ProtocolConverter.ResponsesToolCallItemFromToolCall(
             "call", name, "secret-payload", mappings: mappings));
         Assert.DoesNotContain("secret-payload", error.Message);
     }
@@ -283,7 +286,7 @@ public sealed class MultiAgentClientProtocolTests
     public void ToolCall_UniqueShortNameStillRejectsConflictingExplicitNamespace()
     {
         var mappings = ProtocolConverter.BuildResponsesToolCallMappings(UniqueDynamicCustomTool());
-        Assert.Throws<UpstreamException>(() => ProtocolConverter.ResponsesToolCallItemFromToolCall(
+        Assert.Throws<ProtocolUpstreamException>(() => ProtocolConverter.ResponsesToolCallItemFromToolCall(
             "call", "exec", "secret-payload", namespaceValue: "other", mappings: mappings));
         var call = ProtocolConverter.ResponsesToolCallItemFromToolCall("call", "exec", "text(1);", namespaceValue: "functions", mappings: mappings);
         Assert.Equal("functions", call["namespace"]);
@@ -302,7 +305,7 @@ public sealed class MultiAgentClientProtocolTests
         Assert.Equal("custom_tool_call", call["type"]);
         Assert.Equal("functions", call["namespace"]);
         mappings["other__exec"] = new() { ChatName = "other__exec", ResponsesName = "exec", Namespace = "other", NativeType = "custom" };
-        Assert.Throws<UpstreamException>(() => ProtocolConverter.ResponsesToolCallStartedItem("call", "exec", "item", mappings));
+        Assert.Throws<ProtocolUpstreamException>(() => ProtocolConverter.ResponsesToolCallStartedItem("call", "exec", "item", mappings));
     }
 
     private static Dictionary<string, object?> UniqueDynamicCustomTool() => Payload("""
@@ -313,7 +316,7 @@ public sealed class MultiAgentClientProtocolTests
     public void ToolCall_EmptyDeclarationsRejectCallsButAbsentContractKeepsLegacyConversion()
     {
         var mappings = ProtocolConverter.BuildResponsesToolCallMappings(Payload("""{"tools":[]}"""));
-        Assert.Throws<UpstreamException>(() => ProtocolConverter.ResponsesToolCallItemFromToolCall(
+        Assert.Throws<ProtocolUpstreamException>(() => ProtocolConverter.ResponsesToolCallItemFromToolCall(
             "call", "exec", "{}", mappings: mappings));
         Assert.Equal("function_call", ProtocolConverter.ResponsesToolCallItemFromToolCall(
             "call", "legacy", "{}")["type"]);
@@ -323,7 +326,7 @@ public sealed class MultiAgentClientProtocolTests
     public void ToolCall_RejectsExplicitNamespaceConflictingWithDeclaration()
     {
         var mappings = ProtocolConverter.BuildResponsesToolCallMappings(NamespacedTools());
-        Assert.Throws<UpstreamException>(() => ProtocolConverter.ResponsesToolCallItemFromToolCall(
+        Assert.Throws<ProtocolUpstreamException>(() => ProtocolConverter.ResponsesToolCallItemFromToolCall(
             "call", "functions__exec", "secret-payload", namespaceValue: "other", mappings: mappings));
     }
 

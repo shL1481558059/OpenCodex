@@ -331,6 +331,112 @@ public sealed class LogContentStoreTests
     }
 
     [Fact]
+    public void UnchangedSlots_QueryReferencesAndSharedManifestOncePerBatch()
+    {
+        var (dbPath, logId, _) = CreateDatabaseWithTwoLogs();
+        var probe = new BlockSqlProbe();
+        using var context = CreateCapturingContext(dbPath, probe);
+        var store = new LogContentStore(context);
+        var values = new Dictionary<RequestLogContentSlot, string?>
+        {
+            [RequestLogContentSlot.RequestBody] = "shared",
+            [RequestLogContentSlot.ResponseBody] = "shared",
+            [RequestLogContentSlot.UpstreamRequestBody] = "shared",
+            [RequestLogContentSlot.UpstreamResponseBody] = "shared"
+        };
+        store.Write(logId, values);
+        probe.Reset();
+
+        store.Write(logId, values);
+
+        Assert.Single(probe.Commands, sql => sql.StartsWith("SELECT", StringComparison.OrdinalIgnoreCase)
+            && sql.Contains("RequestLogContentRefs", StringComparison.OrdinalIgnoreCase));
+        Assert.Single(probe.Commands, sql => sql.StartsWith("SELECT", StringComparison.OrdinalIgnoreCase)
+            && sql.Contains("LogContentManifests", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(probe.Commands, sql =>
+            sql.StartsWith("DELETE", StringComparison.OrdinalIgnoreCase)
+            || sql.StartsWith("INSERT", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void MovingLastReferenceToAnotherSlot_ReusesManifestWithoutRecompression()
+    {
+        var (dbPath, logId, _) = CreateDatabaseWithTwoLogs();
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var store = new LogContentStore(context);
+        var value = BuildConversation(100);
+        store.Write(logId, Values(value));
+        var manifestId = context.RequestLogContentRefs.AsNoTracking().Single().ManifestId;
+        var before = Interlocked.Read(ref LogContentCodec.CompressionInvocationCount);
+
+        store.Write(logId, new Dictionary<RequestLogContentSlot, string?>
+        {
+            [RequestLogContentSlot.RequestBody] = null,
+            [RequestLogContentSlot.ResponseBody] = value
+        });
+
+        Assert.Equal(0, Interlocked.Read(ref LogContentCodec.CompressionInvocationCount) - before);
+        Assert.Equal(manifestId, context.RequestLogContentRefs.AsNoTracking().Single().ManifestId);
+        Assert.Null(store.Read(logId).Get(RequestLogContentSlot.RequestBody));
+        Assert.Equal(value, store.Read(logId).Get(RequestLogContentSlot.ResponseBody));
+    }
+
+    [Fact]
+    public void ReplacingSeveralSlots_DeletesReferencesOnceAndCleansOnlyOrphans()
+    {
+        var (dbPath, logId, secondLogId) = CreateDatabaseWithTwoLogs();
+        var probe = new BlockSqlProbe();
+        using var context = CreateCapturingContext(dbPath, probe);
+        var store = new LogContentStore(context);
+        store.Write(logId, new Dictionary<RequestLogContentSlot, string?>
+        {
+            [RequestLogContentSlot.RequestBody] = "retained by other request",
+            [RequestLogContentSlot.ResponseBody] = "orphan after replacement",
+            [RequestLogContentSlot.UpstreamResponseBody] = "orphan after deletion"
+        });
+        store.Write(secondLogId, Values("retained by other request"));
+        probe.Reset();
+
+        store.Write(logId, new Dictionary<RequestLogContentSlot, string?>
+        {
+            [RequestLogContentSlot.RequestBody] = "new",
+            [RequestLogContentSlot.ResponseBody] = "new",
+            [RequestLogContentSlot.UpstreamResponseBody] = null
+        });
+
+        Assert.Single(probe.Commands, sql => sql.StartsWith("DELETE", StringComparison.OrdinalIgnoreCase)
+            && sql.Contains("RequestLogContentRefs", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("new", store.Read(logId).Get(RequestLogContentSlot.RequestBody));
+        Assert.Equal("new", store.Read(logId).Get(RequestLogContentSlot.ResponseBody));
+        Assert.Null(store.Read(logId).Get(RequestLogContentSlot.UpstreamResponseBody));
+        Assert.Equal("retained by other request", store.Read(secondLogId).Get(RequestLogContentSlot.RequestBody));
+        Assert.Equal(2, context.LogContentManifests.Count());
+        Assert.DoesNotContain(context.LogContentBlocks,
+            block => !context.LogContentManifestChunks.Any(chunk => chunk.BlockId == block.Id));
+    }
+
+    [Fact]
+    public void RepeatedSlot_UsesLastValueAndRemovesSupersededContent()
+    {
+        var (dbPath, logId, _) = CreateDatabaseWithTwoLogs();
+        using var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
+        var store = new LogContentStore(context);
+        store.Write(logId, Values("original"));
+        var values = new Queue<byte[]?>(
+            [System.Text.Encoding.UTF8.GetBytes("temporary"), null, System.Text.Encoding.UTF8.GetBytes("final")]);
+
+        store.WriteSequential(logId,
+            [RequestLogContentSlot.RequestBody, RequestLogContentSlot.RequestBody, RequestLogContentSlot.RequestBody],
+            _ => values.Dequeue());
+
+        Assert.Equal("final", store.Read(logId).Get(RequestLogContentSlot.RequestBody));
+        Assert.Single(context.RequestLogContentRefs);
+        Assert.Single(context.LogContentManifests);
+        Assert.DoesNotContain(context.LogContentBlocks,
+            block => !context.LogContentManifestChunks.Any(chunk => chunk.BlockId == block.Id));
+    }
+
+    [Fact]
     public void SuccessfulWrite_DetachesOnlyOwnedEntitiesAndRetainsUnrelatedPendingChange()
     {
         var (dbPath, logId, _) = CreateDatabaseWithTwoLogs();

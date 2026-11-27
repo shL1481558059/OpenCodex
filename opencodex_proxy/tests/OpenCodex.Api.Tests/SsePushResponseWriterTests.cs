@@ -8,7 +8,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using OpenCodex.Api.Infrastructure;
 using OpenCodex.Core.Services.MultiAgent;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
 using Xunit;
 using D = System.Collections.Generic.Dictionary<string, object?>;
 

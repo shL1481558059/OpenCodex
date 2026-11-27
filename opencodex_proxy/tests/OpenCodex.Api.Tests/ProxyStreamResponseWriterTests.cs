@@ -1,6 +1,6 @@
 using Microsoft.AspNetCore.Http;
 using OpenCodex.Api.Infrastructure;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
 using OpenCodex.CoreBase.Abstractions;
 using Xunit;
 

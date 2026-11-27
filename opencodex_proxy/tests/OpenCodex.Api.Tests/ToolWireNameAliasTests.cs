@@ -1,6 +1,8 @@
 using System.Text.Json;
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using ProtocolBadRequestException = OpenCodex.ProtocolConversion.Errors.BadRequestException;
+using ProtocolUpstreamException = OpenCodex.ProtocolConversion.Errors.UpstreamException;
+using OpenCodex.ProtocolConversion;
 using OpenCodex.Core.Services.MultiAgent;
 using OpenCodex.Core.Services.Proxy;
 using Xunit;
@@ -125,10 +127,10 @@ public sealed class ToolWireNameAliasTests
         Assert.Equal(secondName, secondAliased["name"]);
         Assert.Equal(secondNamespace, secondAliased["namespace"]);
 
-        var error = Assert.Throws<UpstreamException>(
+        var error = Assert.Throws<ProtocolUpstreamException>(
             () => ProtocolConverter.ResolveResponsesToolCallShape(ambiguousAlias, mappings));
         Assert.Equal(ProtocolConverter.UndeclaredToolCallErrorCode, error.ErrorCode);
-        Assert.Throws<BadRequestException>(() => ProtocolConverter.ConvertRequest(
+        Assert.Throws<ProtocolBadRequestException>(() => ProtocolConverter.ConvertRequest(
             RequestWithChoice(request, ambiguousAlias),
             ProtocolConverter.Responses, ProtocolConverter.Chat, "upstream"));
 
@@ -148,7 +150,7 @@ public sealed class ToolWireNameAliasTests
     public void UnknownQualifiedNames_AreNotSplitOrStrippedToADeclaredTool(string upstreamName)
     {
         var mappings = ProtocolConverter.BuildResponsesToolCallMappings(ApifoxRequest());
-        var error = Assert.Throws<UpstreamException>(
+        var error = Assert.Throws<ProtocolUpstreamException>(
             () => ProtocolConverter.ResolveResponsesToolCallShape(upstreamName, mappings));
         Assert.Equal(ProtocolConverter.UndeclaredToolCallErrorCode, error.ErrorCode);
     }
@@ -158,7 +160,7 @@ public sealed class ToolWireNameAliasTests
     {
         var request = Request(Tool("update_goal"));
         var mappings = ProtocolConverter.BuildResponsesToolCallMappings(request);
-        var error = Assert.Throws<UpstreamException>(
+        var error = Assert.Throws<ProtocolUpstreamException>(
             () => ProtocolConverter.ResolveResponsesToolCallShape("update_plan", mappings));
         Assert.Equal(ProtocolConverter.UndeclaredToolCallErrorCode, error.ErrorCode);
         Assert.False(ProtocolConverter.TryGetResponsesToolCallMapping("update_plan", mappings, out _));
@@ -334,11 +336,11 @@ public sealed class ToolWireNameAliasTests
     public void ExplicitNamespace_DoesNotFallBackAcrossNamespaces(string name, string namespaceName)
     {
         var request = RequestWithChoice(ApifoxRequest(), name, namespaceName);
-        Assert.Throws<BadRequestException>(() => ProtocolConverter.ConvertRequest(
+        Assert.Throws<ProtocolBadRequestException>(() => ProtocolConverter.ConvertRequest(
             request, ProtocolConverter.Responses, ProtocolConverter.Chat, "upstream"));
 
         var mappings = ProtocolConverter.BuildResponsesToolCallMappings(ApifoxRequest());
-        Assert.Throws<UpstreamException>(() => ProtocolConverter.ResponsesToolCallItemFromToolCall(
+        Assert.Throws<ProtocolUpstreamException>(() => ProtocolConverter.ResponsesToolCallItemFromToolCall(
             "call", name, "{}", namespaceValue: namespaceName, mappings: mappings));
     }
 

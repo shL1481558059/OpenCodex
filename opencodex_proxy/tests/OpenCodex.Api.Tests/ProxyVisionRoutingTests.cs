@@ -3,7 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using OpenCodex.Api.Tests.Infrastructure;
 using OpenCodex.Core.Config;
 using OpenCodex.Core.Domain;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
 using OpenCodex.Core.Services;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.CoreBase.Abstractions;

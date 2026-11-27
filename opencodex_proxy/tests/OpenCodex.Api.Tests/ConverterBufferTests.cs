@@ -1,4 +1,4 @@
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
 using Xunit;
 namespace OpenCodex.Api.Tests;
 public sealed class ConverterBufferTests

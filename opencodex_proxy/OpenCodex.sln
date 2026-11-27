@@ -21,6 +21,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OpenCodex.Api.Tests", "tests\OpenCodex.Api.Tests\OpenCodex.Api.Tests.csproj", "{AF6080ED-6B41-488D-939B-8407FE4DC549}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OpenCodex.ProtocolConversion", "src\Libraries\OpenCodex.ProtocolConversion\OpenCodex.ProtocolConversion.csproj", "{082A135B-DB4F-41E4-8DBF-0772BA6DB291}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -103,6 +105,18 @@ Global
 		{AF6080ED-6B41-488D-939B-8407FE4DC549}.Release|x64.Build.0 = Release|Any CPU
 		{AF6080ED-6B41-488D-939B-8407FE4DC549}.Release|x86.ActiveCfg = Release|Any CPU
 		{AF6080ED-6B41-488D-939B-8407FE4DC549}.Release|x86.Build.0 = Release|Any CPU
+		{082A135B-DB4F-41E4-8DBF-0772BA6DB291}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{082A135B-DB4F-41E4-8DBF-0772BA6DB291}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{082A135B-DB4F-41E4-8DBF-0772BA6DB291}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{082A135B-DB4F-41E4-8DBF-0772BA6DB291}.Debug|x64.Build.0 = Debug|Any CPU
+		{082A135B-DB4F-41E4-8DBF-0772BA6DB291}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{082A135B-DB4F-41E4-8DBF-0772BA6DB291}.Debug|x86.Build.0 = Debug|Any CPU
+		{082A135B-DB4F-41E4-8DBF-0772BA6DB291}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{082A135B-DB4F-41E4-8DBF-0772BA6DB291}.Release|Any CPU.Build.0 = Release|Any CPU
+		{082A135B-DB4F-41E4-8DBF-0772BA6DB291}.Release|x64.ActiveCfg = Release|Any CPU
+		{082A135B-DB4F-41E4-8DBF-0772BA6DB291}.Release|x64.Build.0 = Release|Any CPU
+		{082A135B-DB4F-41E4-8DBF-0772BA6DB291}.Release|x86.ActiveCfg = Release|Any CPU
+		{082A135B-DB4F-41E4-8DBF-0772BA6DB291}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -114,5 +128,6 @@ Global
 		{B091751E-57AB-4568-B434-A0D343A124B3} = {5E7EC0AF-E837-5B7A-FB41-A4DCCA877D1F}
 		{C9607A0A-D094-48B3-A0A9-1D8667D87E4F} = {5E7EC0AF-E837-5B7A-FB41-A4DCCA877D1F}
 		{AF6080ED-6B41-488D-939B-8407FE4DC549} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{082A135B-DB4F-41E4-8DBF-0772BA6DB291} = {5E7EC0AF-E837-5B7A-FB41-A4DCCA877D1F}
 	EndGlobalSection
 EndGlobal

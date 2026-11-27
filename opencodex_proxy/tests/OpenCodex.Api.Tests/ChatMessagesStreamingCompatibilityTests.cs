@@ -1,7 +1,9 @@
 using System.Text;
 using System.Text.Json;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
 using OpenCodex.Core.Errors;
+using ProtocolUpstreamException = OpenCodex.ProtocolConversion.Errors.UpstreamException;
 using Xunit;
 
 namespace OpenCodex.Api.Tests;
@@ -93,7 +95,7 @@ public sealed class ChatMessagesStreamingCompatibilityTests
         var lines = SseLines(MessagesToolStart(0, "call_exec", "exec"), MessagesInputDelta(0, arguments),
             MessagesFinish("tool_use"), SseData(new { type = "message_stop" }));
         var emitted = new List<string>();
-        await Assert.ThrowsAsync<UpstreamException>(async () =>
+        await Assert.ThrowsAsync<ProtocolUpstreamException>(async () =>
         {
             await foreach (var e in SseStreamConverter.MessagesToResponsesEvents(
                 lines, "claude", CustomToolStreamResult(), CancellationToken.None))
@@ -119,7 +121,7 @@ public sealed class ChatMessagesStreamingCompatibilityTests
         if (stopReason is not null) blocks.Add(MessagesFinish(stopReason));
         if (stopped) blocks.Add(SseData(new { type = "message_stop" }));
         var emitted = new List<string>();
-        await Assert.ThrowsAsync<UpstreamException>(async () =>
+        await Assert.ThrowsAsync<ProtocolUpstreamException>(async () =>
         {
             await foreach (var e in SseStreamConverter.MessagesToResponsesEvents(
                 SseLines(blocks.ToArray()), "claude", CustomToolStreamResult(), CancellationToken.None))

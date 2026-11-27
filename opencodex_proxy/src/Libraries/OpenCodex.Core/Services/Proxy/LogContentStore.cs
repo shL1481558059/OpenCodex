@@ -112,10 +112,53 @@ internal sealed class LogContentStore
         try
         {
             using var transaction = _context.Database.BeginTransaction();
+            var existingReferences = _context.RequestLogContentRefs.AsNoTracking()
+                .Where(reference => reference.RequestLogId == requestLogId && slots.Contains(reference.Slot))
+                .ToDictionary(reference => reference.Slot);
+            var manifestsByHash = new Dictionary<string, LogContentManifest>(StringComparer.Ordinal);
+            var targets = new Dictionary<RequestLogContentSlot, LogContentManifest?>();
+            var retiredManifestIds = new HashSet<Guid>();
             foreach (var slot in slots)
             {
-                WriteSlot(requestLogId, slot, encode(slot), ownedEntities);
+                var manifest = encode(slot) is { } value
+                    ? ResolveManifest(value, manifestsByHash, ownedEntities)
+                    : null;
+                if (targets.TryGetValue(slot, out var previous) && previous is not null
+                    && previous.Id != manifest?.Id)
+                {
+                    retiredManifestIds.Add(previous.Id);
+                }
+                targets[slot] = manifest;
             }
+
+            var changedSlots = targets.Where(pair =>
+                existingReferences.GetValueOrDefault(pair.Key)?.ManifestId != pair.Value?.Id)
+                .Select(pair => pair.Key).ToList();
+            foreach (var reference in existingReferences.Values.Where(reference => changedSlots.Contains(reference.Slot)))
+            {
+                retiredManifestIds.Add(reference.ManifestId);
+            }
+            if (existingReferences.Values.Any(reference => changedSlots.Contains(reference.Slot)))
+            {
+                _context.RequestLogContentRefs
+                    .Where(reference => reference.RequestLogId == requestLogId && changedSlots.Contains(reference.Slot))
+                    .ExecuteDelete();
+            }
+            var replacements = changedSlots.Where(slot => targets[slot] is not null)
+                .Select(slot => new RequestLogContentRef
+                {
+                    Id = Guid.NewGuid(),
+                    RequestLogId = requestLogId,
+                    Slot = slot,
+                    ManifestId = targets[slot]!.Id
+                }).ToList();
+            if (replacements.Count > 0)
+            {
+                ownedEntities.AddRange(replacements);
+                _context.RequestLogContentRefs.AddRange(replacements);
+                _context.SaveChanges();
+            }
+            RemoveOrphanedReplacedContent(retiredManifestIds);
             transaction.Commit();
         }
         finally
@@ -128,37 +171,23 @@ internal sealed class LogContentStore
 
     private readonly record struct ContentValue(ReadOnlyMemory<byte>? Bytes, string? Hash, int Length, ProxyAuditSpool.AuditFile? Spool = null);
 
-    private void WriteSlot(
-        Guid requestLogId, RequestLogContentSlot slot, ContentValue? content,
+    private LogContentManifest ResolveManifest(
+        ContentValue value, Dictionary<string, LogContentManifest> manifestsByHash,
         List<object> ownedEntities)
     {
-        var replacedManifestIds = _context.RequestLogContentRefs
-            .Where(reference => reference.RequestLogId == requestLogId && reference.Slot == slot)
-            .Select(reference => reference.ManifestId)
-            .Distinct()
-            .ToList();
-        LogContentManifest? manifest = null;
-        if (content is { } value)
+        var hash = value.Hash ?? LogContentCodec.ContentHash(value.Bytes!.Value);
+        if (!manifestsByHash.TryGetValue(hash, out var manifest))
         {
-            var hash = value.Hash ?? LogContentCodec.ContentHash(value.Bytes!.Value);
             manifest = _context.LogContentManifests.AsNoTracking()
                 .FirstOrDefault(value => value.Sha256 == hash);
-            if (manifest is not null)
-            {
-                if (manifest.RawLength != value.Length)
-                    throw new InvalidDataException($"Content hash collision detected for manifest {hash}.");
-                // A lifecycle update with identical bytes must not churn references or
-                // repeat CDC chunk hashing, block queries, or compression.
-                if (replacedManifestIds.Count == 1 && replacedManifestIds[0] == manifest.Id) return;
-            }
-            else
+            if (manifest is null)
             {
                 if (value.Spool is { } spool)
                 {
                     using var source = spool.OpenRead();
-                    var plan = LogContentCodec.Plan(source,hash,value.Length);
-                    var blocks = EnsureStreamBlocks(source,plan);
-                    manifest=EnsureManifests([plan],blocks,ownedEntities)[hash];
+                    var plan = LogContentCodec.Plan(source, hash, value.Length);
+                    var blocks = EnsureStreamBlocks(source, plan);
+                    manifest = EnsureManifests([plan], blocks, ownedEntities)[hash];
                 }
                 else
                 {
@@ -169,29 +198,11 @@ internal sealed class LogContentStore
                     manifest = EnsureManifests([plan], blocksByHash, ownedEntities)[hash];
                 }
             }
+            manifestsByHash.Add(hash, manifest);
         }
-        else if (replacedManifestIds.Count == 0)
-        {
-            return;
-        }
-
-        _context.RequestLogContentRefs
-            .Where(reference => reference.RequestLogId == requestLogId && reference.Slot == slot)
-            .ExecuteDelete();
-        if (manifest is not null)
-        {
-            var reference = new RequestLogContentRef
-            {
-                Id = Guid.NewGuid(),
-                RequestLogId = requestLogId,
-                Slot = slot,
-                ManifestId = manifest.Id
-            };
-            ownedEntities.Add(reference);
-            _context.RequestLogContentRefs.Add(reference);
-            _context.SaveChanges();
-        }
-        RemoveOrphanedReplacedContent(replacedManifestIds);
+        if (manifest.RawLength != value.Length)
+            throw new InvalidDataException($"Content hash collision detected for manifest {hash}.");
+        return manifest;
     }
 
     public LogContentSnapshot Read(Guid requestLogId)
@@ -419,12 +430,10 @@ internal sealed class LogContentStore
             .Select(group => group.First())
             .ToList();
         var hashes = values.Select(value => value.Hash).ToList();
+        // ResolveManifest already established that these hashes are absent.
+        var existing = new Dictionary<string, LogContentManifest>(StringComparer.Ordinal);
         for (var attempt = 0; attempt < 2; attempt++)
         {
-            var existing = _context.LogContentManifests
-                .AsNoTracking()
-                .Where(manifest => hashes.Contains(manifest.Sha256))
-                .ToDictionary(manifest => manifest.Sha256, StringComparer.Ordinal);
             var missing = values.Where(value => !existing.ContainsKey(value.Hash)).ToList();
             if (missing.Count == 0)
             {
@@ -480,6 +489,9 @@ internal sealed class LogContentStore
                 {
                     _context.Entry(chunk).State = EntityState.Detached;
                 }
+                existing = _context.LogContentManifests.AsNoTracking()
+                    .Where(manifest => hashes.Contains(manifest.Sha256))
+                    .ToDictionary(manifest => manifest.Sha256, StringComparer.Ordinal);
             }
         }
 

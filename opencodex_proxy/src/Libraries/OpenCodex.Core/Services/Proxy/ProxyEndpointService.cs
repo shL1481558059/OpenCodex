@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
 using OpenCodex.Core.Services.WebSearch;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
@@ -297,12 +297,13 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                             context.CancellationToken);
                     }
 
-                    var conversion = ProtocolConverter.ConvertOwnedRequestWithMetadata(
+                    var conversion = ProtocolConversion.ProtocolConversionErrors.Wrap(
+                        () => ProtocolConverter.ConvertOwnedRequestWithMetadata(
                         effectivePayload,
                         context.EntryProtocol,
                         channelType,
                         route.UpstreamModel,
-                        channelCompat);
+                        channelCompat));
                     upstreamRequest = conversion.Request;
                     // force_params 是最终覆盖：协议转换完成后统一执行一次，避免转换产物与原始字段并存。
                     ChannelCompatRequestRewriter.ApplyForceParams(upstreamRequest, channelCompat);

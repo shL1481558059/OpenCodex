@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
 using OpenCodex.Core.Services.WebSearch;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
@@ -65,13 +65,14 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
                     tools?.Token(context.CancellationToken) ?? context.CancellationToken);
                 try
                 {
-                    responsePayload = ProtocolConverter.ConvertOwnedResponse(
+                    responsePayload = ProtocolConversion.ProtocolConversionErrors.Wrap(
+                        () => ProtocolConverter.ConvertOwnedResponse(
                         upstreamResponse,
                         context.EntryProtocol,
                         context.ChannelType,
                         context.Route.OriginalModel,
                         textFormat,
-                        toolCallMappings);
+                        toolCallMappings));
                     if (tools is null && rejectedUsage.Count > 0 && responsePayload is not null)
                     {
                         BuiltinToolSession.AddUsage(

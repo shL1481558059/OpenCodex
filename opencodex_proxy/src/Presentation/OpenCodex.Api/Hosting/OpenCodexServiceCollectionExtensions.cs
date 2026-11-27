@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
 using Microsoft.OpenApi;
 using OpenCodex.Api.Configuration;
 using OpenCodex.Api.Authentication;
@@ -26,6 +27,7 @@ using OpenCodex.CoreBase.Services.Proxy;
 using OpenCodex.CoreBase.Services.WebSearch;
 using OpenCodex.CoreBase.Data;
 using OpenCodex.Data;
+using OpenCodex.ProtocolConversion.Streaming;
 
 namespace OpenCodex.Api.Hosting;
 
@@ -35,9 +37,11 @@ public static class OpenCodexServiceCollectionExtensions
         this IServiceCollection services,
         IConfiguration configuration)
     {
-        services.Configure<OpenCodex.Api.Infrastructure.SseWriteOptions>(configuration.GetSection("ProxyStreaming"));
-        services.AddSingleton(configuration.GetSection("ProxyStreaming").Get<OpenCodex.Core.Protocols.SseFrameOptions>() ?? new());
-        services.AddSingleton(configuration.GetSection("ProxyStreaming:Upstream").Get<OpenCodex.Core.Protocols.SseTransportOptions>() ?? new());
+        var sseWriter = new SseWriteOptions();
+        sseWriter.Validate();
+        services.AddSingleton(Options.Create(sseWriter));
+        services.AddSingleton(new SseFrameOptions());
+        services.AddSingleton(new SseTransportOptions());
         services.AddControllers();
         services.Configure<KestrelServerOptions>(options =>
         {

@@ -9,6 +9,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\OpenCodex.Domain\OpenCodex.Domain.csproj" />
+    <ProjectReference Include="..\OpenCodex.ProtocolConversion\OpenCodex.ProtocolConversion.csproj" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="OpenCodex.Core" />

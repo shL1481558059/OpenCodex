@@ -1,6 +1,7 @@
 using System.Net.WebSockets;
 using System.Text.Json;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
 using Xunit;
 namespace OpenCodex.Api.Tests;
 public sealed class WebSocketJsonWriterTests

@@ -1,4 +1,4 @@
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
 using OpenCodex.CoreBase.Abstractions;
 
 namespace OpenCodex.Core.Services.Proxy;

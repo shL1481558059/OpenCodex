@@ -1,5 +1,6 @@
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using ProtocolBadRequestException = OpenCodex.ProtocolConversion.Errors.BadRequestException;
+using OpenCodex.ProtocolConversion;
 using Xunit;
 
 namespace OpenCodex.Api.Tests;
@@ -70,7 +71,7 @@ public sealed class NativeMcpResponseTests
     [Fact]
     public void ResponsesMcpCallToChat_IsExplicitlyRejected()
     {
-        Assert.Throws<BadRequestException>(() => ProtocolConverter.ConvertResponse(
+        Assert.Throws<ProtocolBadRequestException>(() => ProtocolConverter.ConvertResponse(
             ResponsesMcpResponse(), ProtocolConverter.Chat, ProtocolConverter.Responses, "public"));
     }
 

@@ -1,6 +1,6 @@
 using System.Net.WebSockets;
 using System.Text.Json;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
 using OpenCodex.Core.Services.MultiAgent;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
@@ -62,7 +62,7 @@ public sealed class ResponsesWebSocketClientService(
                     history.RememberId(responseId);
                     terminalResponseId = responseId;
                 }
-                await OpenCodex.Core.Protocols.WebSocketJsonWriter.SendAsync(socket,payload,configuration?.GetValue<int?>("ProxyStreaming:MaxEventBytes")??16*1024*1024,sendToken);
+                await OpenCodex.ProtocolConversion.Streaming.WebSocketJsonWriter.SendAsync(socket,payload,ProtocolConversionParameters.Current.SseMaxEventBytes,sendToken);
             }
             finally { sendGate.Release(); }
         }

@@ -18,5 +18,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Presentation\OpenCodex.Api\OpenCodex.Api.csproj" />
+    <Content Include="..\..\..\protocol-performance.parameters.json"
+             Link="protocol-performance.parameters.json"
+             CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

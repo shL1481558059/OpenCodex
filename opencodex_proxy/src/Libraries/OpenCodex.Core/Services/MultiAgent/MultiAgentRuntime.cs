@@ -3,7 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Channels;
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
 using OpenCodex.CoreBase.Abstractions;
 
 namespace OpenCodex.Core.Services.MultiAgent;
@@ -189,7 +189,8 @@ public sealed partial class MultiAgentRuntime
                     if (!operation.Stop.IsCancellationRequested)
                     {
                         if (_client is not null && Text(result, "status") == "completed")
-                            ProtocolConverter.ValidateResponsesToolCalls(operation.Request, result);
+                            ProtocolConversion.ProtocolConversionErrors.Wrap(
+                                () => ProtocolConverter.ValidateResponsesToolCalls(operation.Request, result));
                         await ProcessTurn(current, result, operation.Round, ct);
                     }
                     else await CloseModelItems(operation.Round);

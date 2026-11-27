@@ -1,5 +1,6 @@
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using ProtocolBadRequestException = OpenCodex.ProtocolConversion.Errors.BadRequestException;
+using OpenCodex.ProtocolConversion;
 using Xunit;
 
 namespace OpenCodex.Api.Tests;
@@ -32,7 +33,7 @@ public sealed class NativeMcpConfigurationTests
     [Fact]
     public void ResponsesMcpApprovalRequirement_IsNotSilentlyDroppedForMessages()
     {
-        Assert.Throws<BadRequestException>(() => ProtocolConverter.ConvertRequest(
+        Assert.Throws<ProtocolBadRequestException>(() => ProtocolConverter.ConvertRequest(
             ResponsesMcpRequest(new Dictionary<string, object?>
             {
                 ["type"] = "mcp",
@@ -91,7 +92,7 @@ public sealed class NativeMcpConfigurationTests
     [Fact]
     public void AnthropicDisabledOverride_IsRejectedInsteadOfBroadeningResponsesAccess()
     {
-        Assert.Throws<BadRequestException>(() => ProtocolConverter.ConvertRequest(
+        Assert.Throws<ProtocolBadRequestException>(() => ProtocolConverter.ConvertRequest(
             AnthropicMcpRequest(
                 new Dictionary<string, object?>
                 {
@@ -111,7 +112,7 @@ public sealed class NativeMcpConfigurationTests
     [Fact]
     public void ResponsesCompositeAllowedTools_IsRejectedWhenConstraintHasNoAnthropicEquivalent()
     {
-        Assert.Throws<BadRequestException>(() => ProtocolConverter.ConvertRequest(
+        Assert.Throws<ProtocolBadRequestException>(() => ProtocolConverter.ConvertRequest(
             ResponsesMcpRequest(new Dictionary<string, object?>
             {
                 ["type"] = "mcp",
@@ -132,7 +133,7 @@ public sealed class NativeMcpConfigurationTests
     [Fact]
     public void AnthropicDisabledServerConfiguration_IsRejectedInsteadOfBroadeningResponsesAccess()
     {
-        Assert.Throws<BadRequestException>(() => ProtocolConverter.ConvertRequest(
+        Assert.Throws<ProtocolBadRequestException>(() => ProtocolConverter.ConvertRequest(
             AnthropicMcpRequest(
                 new Dictionary<string, object?>
                 {

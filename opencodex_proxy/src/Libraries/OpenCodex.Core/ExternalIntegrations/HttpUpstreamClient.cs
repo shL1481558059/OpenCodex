@@ -1,4 +1,5 @@
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
 using System.Net;
 using System.Net.Http.Headers;
 using OpenCodex.Core.Errors;

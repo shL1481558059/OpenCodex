@@ -1,10 +1,64 @@
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Abstractions;
+using OpenCodex.ProtocolConversion.Errors;
+using System.Text.Json;
+using System.Text.Encodings.Web;
 using Xunit;
 
 namespace OpenCodex.Api.Tests;
 
 public sealed class StreamResponseCaptureTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FitsCountsExactJsonBytesWithoutCreatingAuditStorage(bool strict)
+    {
+        var value = new Dictionary<string, object?>
+        {
+            ["text"] = "中😀<>&\"\\\n\ud83d",
+            ["values"] = new object?[] { 1, 1.25m, true, null },
+            ["typed"] = new Dictionary<string, string> { ["<key>"] = "中<value>" }
+        };
+        var options = new JsonSerializerOptions
+        {
+            Encoder = strict ? JavaScriptEncoder.UnsafeRelaxedJsonEscaping : JavaScriptEncoder.Default
+        };
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(value, options).Length;
+        using var exact = Create(bytes);
+        Assert.True(exact.Fits(value));
+        if (strict) Assert.Throws<UpstreamException>(() => exact.Fits(null));
+        else Assert.False(exact.Fits(null));
+        using var tooSmall = Create(bytes - 1);
+        if (strict) Assert.Throws<UpstreamException>(() => tooSmall.Fits(value));
+        else
+        {
+            Assert.False(tooSmall.Fits(value));
+            Assert.True(tooSmall.Truncated);
+        }
+
+        StreamCaptureBudget Create(int size) => strict
+            ? new StreamCaptureBudget(size, 100, 100, new NoAuditStorage(), default)
+            : new StreamCaptureBudget(size);
+    }
+
+    [Fact]
+    public void FitsHonorsCancellationBeforeCounting()
+    {
+        using var stop = new CancellationTokenSource();
+        using var budget = new StreamCaptureBudget(1024, 100, 100, new NoAuditStorage(), stop.Token);
+        stop.Cancel();
+        Assert.Throws<OperationCanceledException>(() => budget.Fits(new { text = "unused" }));
+    }
+
+    private sealed class NoAuditStorage : IProtocolAuditCapture
+    {
+        public int MemoryThresholdBytes => 0;
+        public IProtocolAuditBuffer CreateStaging(CancellationToken cancellationToken) =>
+            throw new Xunit.Sdk.XunitException("Counting must not create a staging file.");
+        public IProtocolAuditBody CaptureJson(object? value, CancellationToken cancellationToken) =>
+            throw new Xunit.Sdk.XunitException("Counting must not serialize a temporary audit body.");
+    }
     [Fact]
     public void ResponsesCompleted_CapturesOutputAndDropsRequestEcho()
     {

@@ -22,6 +22,7 @@
   <ItemGroup>
     <ProjectReference Include="..\OpenCodex.CoreBase\OpenCodex.CoreBase.csproj" />
     <ProjectReference Include="..\OpenCodex.Domain\OpenCodex.Domain.csproj" />
+    <ProjectReference Include="..\OpenCodex.ProtocolConversion\OpenCodex.ProtocolConversion.csproj" />
   </ItemGroup>
 
 </Project>

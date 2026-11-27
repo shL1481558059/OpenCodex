@@ -12,13 +12,15 @@ RUN npm run build
 # ===== .NET 构建阶段 =====
 FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine AS dotnet-build
 
-WORKDIR /src
+WORKDIR /src/opencodex_proxy
 
+COPY protocol-conversion.parameters.json /src/protocol-conversion.parameters.json
 COPY opencodex_proxy/global.json ./
 COPY opencodex_proxy/src/Libraries/OpenCodex.Domain/OpenCodex.Domain.csproj ./src/Libraries/OpenCodex.Domain/
 COPY opencodex_proxy/src/Libraries/OpenCodex.Core/OpenCodex.Core.csproj ./src/Libraries/OpenCodex.Core/
 COPY opencodex_proxy/src/Libraries/OpenCodex.Data/OpenCodex.Data.csproj ./src/Libraries/OpenCodex.Data/
 COPY opencodex_proxy/src/Libraries/OpenCodex.CoreBase/OpenCodex.CoreBase.csproj ./src/Libraries/OpenCodex.CoreBase/
+COPY opencodex_proxy/src/Libraries/OpenCodex.ProtocolConversion/OpenCodex.ProtocolConversion.csproj ./src/Libraries/OpenCodex.ProtocolConversion/
 COPY opencodex_proxy/src/Presentation/OpenCodex.Api/OpenCodex.Api.csproj ./src/Presentation/OpenCodex.Api/
 
 RUN dotnet restore ./src/Presentation/OpenCodex.Api/OpenCodex.Api.csproj \

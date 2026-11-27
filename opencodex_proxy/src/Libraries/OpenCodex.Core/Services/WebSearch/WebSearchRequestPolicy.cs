@@ -2,7 +2,7 @@ using System.Text.Json;
 using System.Text;
 using System.Text.RegularExpressions;
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
 using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.Domain.WebSearch;
 using static OpenCodex.CoreBase.Abstractions.WebSearchPayload;

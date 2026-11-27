@@ -1,6 +1,8 @@
 using System.Text.Json;
 using OpenCodex.Core.Errors;
-using OpenCodex.Core.Protocols;
+using ProtocolUpstreamException = OpenCodex.ProtocolConversion.Errors.UpstreamException;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
 using Xunit;
 
 namespace OpenCodex.Api.Tests;
@@ -56,7 +58,7 @@ public sealed class RequestConversionResultTests
             new Dictionary<string, object?> { ["input"] = "hello" }, ProtocolConverter.Responses, target, "upstream");
         Assert.NotNull(attempt.ToolCallMappings);
         Assert.Empty(attempt.ToolCallMappings);
-        Assert.Throws<UpstreamException>(() => ProtocolConverter.ResolveResponsesToolCallShape("unexpected", attempt.ToolCallMappings));
+        Assert.Throws<ProtocolUpstreamException>(() => ProtocolConverter.ResolveResponsesToolCallShape("unexpected", attempt.ToolCallMappings));
     }
 
     [Theory]

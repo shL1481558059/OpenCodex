@@ -2,11 +2,43 @@ using System.Buffers;
 using System.Text;
 using Microsoft.AspNetCore.Http;
 using OpenCodex.Api.Infrastructure;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
 using Xunit;
 namespace OpenCodex.Api.Tests;
 public sealed class GeneratedUtf8WriterTests
 {
+    [Fact]
+    public async Task SmallGeneratedFramesReuseUtf8WithoutMaterializingWire()
+    {
+        var frame = SseFrame.FromOwnedJson(new Dictionary<string, object?>
+        {
+            ["text"] = "中😀\n\"<>", ["number"] = 42
+        }, "response.output_text.delta");
+        var length = frame.Utf8Length;
+        Assert.False(frame.IsWireMaterialized);
+        var writes = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => Task.Run(() =>
+        {
+            var output = new ArrayBufferWriter<byte>();
+            Assert.Equal(length, frame.WriteUtf8(output));
+            return Encoding.UTF8.GetString(output.WrittenSpan);
+        })));
+        Assert.False(frame.IsWireMaterialized);
+        Assert.All(writes, wire => Assert.Equal(frame.WireText, wire));
+    }
+
+    [Fact]
+    public void RepeatedCachedUtf8WriteDoesNotAllocate()
+    {
+        var frame = SseFrame.FromJson(new Dictionary<string, object?> { ["text"] = "delta" });
+        var output = new ArrayBufferWriter<byte>();
+        frame.WriteUtf8(output);
+        output.Clear();
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        frame.WriteUtf8(output);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.Equal(0, allocated);
+    }
     [Theory]
     [InlineData(false)][InlineData(true)]
     public void SegmentedUtf8MatchesLegacyUnicodeWireWithoutMaterializingIt(bool raw)

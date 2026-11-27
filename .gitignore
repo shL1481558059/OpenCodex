@@ -1,6 +1,7 @@
 .venv/
 .env
 config.json
+real-codex-e2e.parameters.json
 logs/
 .playwright-cli/
 .postgres-data/

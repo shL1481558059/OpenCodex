@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Options;
-using OpenCodex.Core.Protocols;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
 using OpenCodex.CoreBase.Abstractions;
 using System.Text;
 
@@ -8,11 +9,11 @@ namespace OpenCodex.Api.Infrastructure;
 
 public sealed class SseWriteOptions
 {
-    public int MaxBatchBytes { get; set; } = 16 * 1024;
-    public int MaxFlushDelayMilliseconds { get; set; } = 10;
-    public int MaxEventBytes { get; set; } = 16 * 1024 * 1024;
-    public int MaxQueuedEvents { get; set; } = 8;
-    public int MaxQueuedBytes { get; set; } = 1024 * 1024;
+    public int MaxBatchBytes { get; set; } = ProtocolConversionParameters.Current.SseMaxBatchBytes;
+    public int MaxFlushDelayMilliseconds { get; set; } = ProtocolConversionParameters.Current.SseMaxFlushDelayMilliseconds;
+    public int MaxEventBytes { get; set; } = ProtocolConversionParameters.Current.SseMaxEventBytes;
+    public int MaxQueuedEvents { get; set; } = ProtocolConversionParameters.Current.SseMaxQueuedEvents;
+    public int MaxQueuedBytes { get; set; } = ProtocolConversionParameters.Current.SseMaxQueuedBytes;
     internal bool AppendResponsesDone { get; set; } = true;
 
     internal void Validate()
