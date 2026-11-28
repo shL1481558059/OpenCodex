@@ -38,7 +38,8 @@ public sealed class ProxyErrorMiddleware
                 throw;
             }
 
-            // 分块请求体没有 Content-Length，Kestrel 在读取过程中才发现超限。
+            // chunked 请求体没有 Content-Length，Kestrel 在读取过程中才发现超限；
+            // 是否关闭连接由 RequestBodyReader 的 drain 结果决定，写入器统一处理。
             await ProxyErrorResponseWriter.WriteAsync(
                 context,
                 new ProxyException("request body too large", StatusCodes.Status413PayloadTooLarge));

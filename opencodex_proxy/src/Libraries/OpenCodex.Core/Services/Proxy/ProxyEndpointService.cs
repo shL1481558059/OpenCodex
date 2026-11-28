@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using OpenCodex.Core.Errors;
+using OpenCodex.Core.ExternalIntegrations;
 using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
 using OpenCodex.Core.Services.WebSearch;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
@@ -60,7 +62,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         IWebSearchToolExecutor webSearch,
         WebSearchContinuationStore webSearchHistory,
         MultiAgentRepeatGuard multiAgentRepeatGuard,
-        ProxyAuditSpool? auditSpool = null)
+        ProxyAuditSpool auditSpool)
     {
         _logs = logs;
         _requests = requests;
@@ -75,7 +77,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         _webSearch = webSearch;
         _webSearchHistory = webSearchHistory;
         _multiAgentRepeatGuard = multiAgentRepeatGuard;
-        _auditSpool = auditSpool ?? ProxyAuditSpool.Default;
+        ArgumentNullException.ThrowIfNull(auditSpool);
+        _auditSpool = auditSpool;
     }
 
     public async Task<ProxyEndpointResult> ProxyAsync(ProxyEndpointContext context)
@@ -104,6 +107,10 @@ public sealed class ProxyEndpointService : IProxyEndpointService
         var requestMetadata = context.RequestMetadata;
         var streamResponseStarted = false;
         Guid? requestLogId = null;
+        RequestExecutionBudget? executionBudget = null;
+        Exception? primaryFailure = null;
+        var outputFrames = new SseFrameOptions();
+        var modelCallStarted = false;
 
         try
         {
@@ -113,13 +120,18 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 throw new BadRequestException("request body must be a JSON object");
             }
 
+            executionBudget = RequestExecutionBudget.Create(_auditSpool, requestMetadata,
+                context.SnapshotReservation, context.HistoryCommitCredits, CancellationToken.None);
+            requestMetadata = executionBudget.Attach(requestMetadata);
+            RequestExecutionBudget.ValidateRequest(payload, context.CancellationToken);
+            executionBudget.EnsureQueued(requestMetadata, context.ClientPayload ?? payload, context.CancellationToken);
             var originalBodies = requestMetadata.LogBodies ?? new ProxyLogBodyHandles(null, null);
             requestMetadata = requestMetadata.WithLogBodies(originalBodies with
             {
-                Headers = originalBodies.Headers ?? ProxyLogBodyHandle.CaptureJson(requestMetadata.Headers),
+                Headers = originalBodies.Headers ?? executionBudget.CaptureAuditJson(requestMetadata.Headers, context.CancellationToken),
                 Request = originalBodies.Request ?? (requestMetadata.RawBody is { Length: > 0 } rawBody
-                    ? ProxyLogBodyHandle.CaptureUtf8(rawBody.Span)
-                    : ProxyLogBodyHandle.CaptureJson(context.ClientPayload ?? payload)),
+                    ? executionBudget.CaptureAuditUtf8(rawBody.Span, context.CancellationToken)
+                    : executionBudget.CaptureAuditJson(context.ClientPayload ?? payload, context.CancellationToken)),
                 UpstreamRequest = null
             });
             requestModel = JsonDictionaryValue.String(payload, "model");
@@ -140,7 +152,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 requestMetadata.Path,
                 requestMetadata.ClientIp,
                 requestMetadata.Headers,
-                rawRequestBody: requestMetadata.RawBody) { BodyHandles = requestMetadata.LogBodies });
+                rawRequestBody: requestMetadata.RawBody) { BodyHandles = executionBudget.TransferLogBodies(requestMetadata.LogBodies!) });
             var candidates = await OrderCandidatesAsync(
                 ownerUsername,
                 requestModel,
@@ -203,6 +215,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 Dictionary<string, object?>? attemptUpstreamRequest = null;
                 Guid? attemptLogId = null;
                 requestMetadata = requestMetadata.WithLogBodies(requestMetadata.LogBodies! with { UpstreamRequest = null });
+                logInFinally = true;
+                primaryFailure = null;
                 BuiltinToolRequestContext? builtinTools = null;
                 try
                 {
@@ -245,6 +259,9 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         && !route.SupportsImage
                         && route.MatchedModelMapping)
                     {
+                        executionBudget.EnsureCall(requestMetadata, payload, payload, outputFrames, context.EntryProtocol,
+                            isStream: false, context.CancellationToken);
+                        modelCallStarted = true;
                         var fallback = await _imageFallback.RewriteAsync(new ProxyImageFallbackContext(
                             requestId,
                             ownerUsername,
@@ -311,9 +328,11 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                     WebSearchRequestPolicy.FinalizeUpstreamRequest(upstreamRequest, builtinTools);
                     if (isStream) upstreamRequest["stream"] = true;
                     attemptUpstreamRequest = upstreamRequest;
+                    executionBudget.EnsureCall(requestMetadata, effectivePayload, upstreamRequest, outputFrames, channelType!,
+                        isStream, context.CancellationToken, hasBuiltinTools: builtinTools is not null);
                     requestMetadata = requestMetadata.WithLogBodies(requestMetadata.LogBodies! with
                     {
-                        UpstreamRequest = _auditSpool.CaptureJson(upstreamRequest)
+                        UpstreamRequest = executionBudget.CaptureAuditJson(upstreamRequest, context.CancellationToken)
                     });
 
                     if (requestLogId.HasValue)
@@ -326,7 +345,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                             upstreamModel,
                             channelId,
                             channelType,
-                            isStream) { UpstreamRequestBody = requestMetadata.LogBodies!.UpstreamRequest });
+                            isStream) { UpstreamRequestBody = executionBudget.TransferToLog(requestMetadata.LogBodies!.UpstreamRequest) });
                     }
 
                     if (requestLogId.HasValue)
@@ -356,6 +375,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         trackingWriter = new TrackingProxyStreamWriter(
                             context.StreamWriter,
                             countOnlyMeaningfulWrites: context.EntryProtocol != channelType);
+                        modelCallStarted = true;
                         await _streams.StreamAsync(
                             new ProxyStreamContext(
                                 started,
@@ -378,6 +398,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                                 trackingWriter,
                                 context.CancellationToken)
                             {
+                                SnapshotReservation = executionBudget.Reservation,
+                                HistoryCommitCredits = executionBudget.HistoryCommitCredits,
                                 BuiltinTools = builtinTools,
                                 ToolCallMappings = conversion.ToolCallMappings
                             });
@@ -408,6 +430,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                   }
 
                    logInFinally = false;
+                   modelCallStarted = true;
                    var result = await _nonStreams.SendAsync(
                        new ProxyNonStreamContext(
                            started,
@@ -429,6 +452,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                            requestMetadata,
                            context.CancellationToken)
                        {
+                           SnapshotReservation = executionBudget.Reservation,
+                           HistoryCommitCredits = executionBudget.HistoryCommitCredits,
                            BuiltinTools = builtinTools,
                            ToolCallMappings = conversion.ToolCallMappings
                        });
@@ -461,9 +486,11 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                    await _channelCircuitBreaker.RecordSuccessAsync(ownerUsername, candidateChannelId);
                   return new ProxyEndpointResult(result.StatusCode, result.Payload, IsEmpty: false, UpstreamProtocol: channelType);
               }
-              catch (ProxyException exception)
+              catch (Exception failure) when (ResourceErrors.Normalize(failure) is ProxyException)
               {
-                   var counted = await _channelCircuitBreaker.RecordFailureAsync(
+                   var exception = (ProxyException)ResourceErrors.Normalize(failure);
+                   primaryFailure = exception;
+                   var counted = exception is StorageCapacityException ? false : await _channelCircuitBreaker.RecordFailureAsync(
                       ownerUsername,
                       candidateChannelId,
                       exception,
@@ -476,12 +503,13 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                           candidateCircuitBreakDuration);
                   }
 
-                    var upstreamErrorResponse = UpstreamErrorBody(exception);
+                    var upstreamErrorResponse = UpstreamErrorBody(failure as ProxyException ?? exception);
                     if (isStream)
                     {
                         streamResponseStarted = trackingWriter?.HasWritten == true;
                         var failoverEligible = !streamResponseStarted
                             && builtinTools?.HasExecuted != true
+                            && exception is not StorageCapacityException
                             && ProxyFailoverPolicy.CanFailover(exception);
                         await WriteChannelAttemptLogAsync(
                             requestLogId,
@@ -512,7 +540,8 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                         throw;
                     }
 
-                    var canFailover = builtinTools?.HasExecuted != true && ProxyFailoverPolicy.CanFailover(exception);
+                    var canFailover = builtinTools?.HasExecuted != true && exception is not StorageCapacityException
+                        && ProxyFailoverPolicy.CanFailover(exception);
                     await WriteChannelAttemptLogAsync(
                         requestLogId,
                         requestId,
@@ -543,6 +572,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 }
                 catch (Exception exception)
                 {
+                   primaryFailure = exception;
                    if (halfOpenProbeAcquired)
                    {
                        await _channelCircuitBreaker.ReleaseHalfOpenProbeAsync(
@@ -588,8 +618,10 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 $"all enabled channels for {modelLabel} are at capacity",
                 ProxyHttpStatus.TooManyRequests);
         }
-        catch (ProxyException exception)
+        catch (Exception failure) when (ResourceErrors.Normalize(failure) is ProxyException)
         {
+            var exception = (ProxyException)ResourceErrors.Normalize(failure);
+            primaryFailure = exception;
             if (streamResponseStarted)
             {
                 throw;
@@ -605,44 +637,72 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             upstreamResponse = UpstreamErrorBody(exception);
             return new ProxyEndpointResult(statusCode, errorResponse, IsEmpty: false, UpstreamProtocol: channelType);
         }
-        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException exception) when (context.CancellationToken.IsCancellationRequested)
         {
+            primaryFailure = exception;
             statusCode = ProxyHttpStatus.ClientClosedRequest;
             error = ProxyRequestStatusResolver.ClientCancelledError;
             throw;
         }
+        catch (Exception exception)
+        {
+            primaryFailure = exception;
+            throw;
+        }
         finally
         {
-            if (logInFinally)
+            try
             {
-                var logContext = new ProxyLogContext(
-                        requestId,
-                        ownerUsername,
-                        apiKeyId,
-                        payload,
-                        upstreamRequest,
-                        UpstreamResponse: upstreamResponse,
-                        ResponsePayload: null,
-                        errorResponse,
-                        requestModel,
-                        upstreamModel,
-                        channelId,
-                        channelType,
-                        IsStream: false,
-                        TtftMs: null,
-                        statusCode,
-                        ElapsedMilliseconds(started),
-                        error,
-                        WebSearchDetails: null);
-                if (requestLogId.HasValue)
+                if (logInFinally)
                 {
-                    await _logs.CompleteLogAsync(requestLogId.Value, logContext, requestMetadata);
-                }
-                else
-                {
-                    await _logs.WriteLogAsync(logContext, requestMetadata);
+                    if (executionBudget is not null && !modelCallStarted)
+                    {
+                        var missingHeaders = requestMetadata.LogBodies?.Headers is null
+                            ? RequestExecutionBudget.AuditBytes(requestMetadata.Headers, CancellationToken.None) : 0;
+                        var missingRequest = requestMetadata.LogBodies?.Request is null
+                            ? requestMetadata.RawBody is { Length: > 0 } raw ? raw.Length
+                                : RequestExecutionBudget.AuditBytes(context.ClientPayload ?? payload, CancellationToken.None)
+                            : 0;
+                        executionBudget.EnsureAudit(checked(missingHeaders + missingRequest
+                            + RequestExecutionBudget.AuditBytes(upstreamRequest, CancellationToken.None)
+                            + RequestExecutionBudget.AuditBytes(upstreamResponse, CancellationToken.None)
+                            + RequestExecutionBudget.AuditBytes(errorResponse, CancellationToken.None) + 4),
+                            7, CancellationToken.None);
+                    }
+                    var logContext = new ProxyLogContext(
+                            requestId,
+                            ownerUsername,
+                            apiKeyId,
+                            payload,
+                            upstreamRequest,
+                            UpstreamResponse: upstreamResponse,
+                            ResponsePayload: null,
+                            errorResponse,
+                            requestModel,
+                            upstreamModel,
+                            channelId,
+                            channelType,
+                            IsStream: false,
+                            TtftMs: null,
+                            statusCode,
+                            ElapsedMilliseconds(started),
+                            error,
+                            WebSearchDetails: null);
+                    if (requestLogId.HasValue)
+                    {
+                        await _logs.CompleteLogAsync(requestLogId.Value, logContext, requestMetadata);
+                    }
+                    else
+                    {
+                        await _logs.WriteLogAsync(logContext, requestMetadata);
+                    }
                 }
             }
+            catch (Exception auditFailure) when (primaryFailure is not null)
+            {
+                throw ResourceErrors.Combine(primaryFailure, auditFailure);
+            }
+            finally { executionBudget?.Dispose(); }
         }
     }
 
@@ -981,6 +1041,9 @@ public sealed class ProxyEndpointService : IProxyEndpointService
     {
         if (exception is UpstreamException { Body: not null } upstream)
         {
+            if (upstream.Body is Dictionary<string, object?> evidence
+                && (ReceivedFrameEvidence.IsEvidence(evidence) || UpstreamJsonEvidence.IsEvidence(evidence)))
+                return evidence;
             return new Dictionary<string, object?>(StringComparer.Ordinal)
             {
                 ["error"] = upstream.Body

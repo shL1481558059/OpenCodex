@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using OpenCodex.Core.Config;
+using OpenCodex.Core.Errors;
 using OpenCodex.CoreBase.Abstractions;
 
 namespace OpenCodex.Core.ExternalIntegrations;
@@ -69,6 +70,56 @@ public sealed partial class HttpUpstreamClient
     private static HttpContent JsonBodyContent(IReadOnlyDictionary<string, object?> payload)
     {
         return new JsonStreamBodyContent(payload, "application/json");
+    }
+
+    private static void RejectOversizedJsonContentLength(
+        HttpResponseMessage response, IReadOnlyDictionary<string, object?> channel,
+        int captureMaxBytes, int overflowBlockBytes)
+        => BoundedJsonResponseReader.RejectContentLength(
+            response, captureMaxBytes, overflowBlockBytes, JsonDictionaryValue.String(channel, "id"));
+
+    private static (object? Parsed, (string ErrorType, string Message)? Retryable) ParseBoundedJsonBody(
+        HttpResponseMessage response, IReadOnlyDictionary<string, object?> channel,
+        ReadOnlyMemory<byte> ownedUtf8, int captureMaxBytes, int overflowBlockBytes,
+        CancellationToken cancellationToken)
+    {
+        (string ErrorType, string Message)? retryable = null;
+        var parsed = BoundedJsonResponseReader.Parse(
+            response, ownedUtf8, captureMaxBytes, overflowBlockBytes, cancellationToken,
+            JsonDictionaryValue.String(channel, "id"), root => retryable = TryGetRetryableErrorFromElement(root));
+        return (parsed, retryable);
+    }
+
+    private static async Task<Dictionary<string, object?>> ReadBoundedJsonObjectAsync(
+        HttpResponseMessage response, IReadOnlyDictionary<string, object?> channel,
+        int captureMaxBytes, int overflowBlockBytes, CancellationToken cancellationToken)
+    {
+        var channelId = JsonDictionaryValue.String(channel, "id");
+        var ownedUtf8 = await BoundedJsonResponseReader.ReadRawAsync(
+            response, captureMaxBytes, overflowBlockBytes, cancellationToken, channelId);
+        var (parsed, retryable) = ParseBoundedJsonBody(
+            response, channel, ownedUtf8, captureMaxBytes, overflowBlockBytes, cancellationToken);
+        var dictionary = BoundedJsonResponseReader.RequireObject(
+            parsed, response, ownedUtf8, captureMaxBytes, overflowBlockBytes, channelId);
+        // Preserve the existing HTTP-200 provider-error classification after both C checks.
+        if (retryable is { } providerError)
+            throw new UpstreamException(providerError.Message, ProxyHttpStatus.TooManyRequests,
+                body: dictionary, channelId: channelId);
+        return dictionary;
+    }
+
+    private static async Task ThrowBoundedJsonHttpErrorAsync(
+        HttpResponseMessage response, IReadOnlyDictionary<string, object?> channel,
+        int captureMaxBytes, int overflowBlockBytes, CancellationToken cancellationToken)
+    {
+        var channelId = JsonDictionaryValue.String(channel, "id");
+        var ownedUtf8 = await BoundedJsonResponseReader.ReadRawAsync(
+            response, captureMaxBytes, overflowBlockBytes, cancellationToken, channelId);
+        var (parsed, _) = ParseBoundedJsonBody(
+            response, channel, ownedUtf8, captureMaxBytes, overflowBlockBytes, cancellationToken);
+        throw new UpstreamException(
+            $"upstream returned HTTP {(int)response.StatusCode}", (int)response.StatusCode,
+            body: parsed, channelId: channelId);
     }
 
     private static HttpRequestMessage BuildGetRequest(

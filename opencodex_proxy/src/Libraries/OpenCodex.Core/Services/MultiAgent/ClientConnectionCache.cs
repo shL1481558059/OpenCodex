@@ -1,119 +1,295 @@
+using System.Security.Cryptography;
+using System.Text.Json;
+using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Json;
+using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Domain.Proxy;
+using D = System.Collections.Generic.Dictionary<string, object?>;
+
 namespace OpenCodex.Core.Services.MultiAgent;
 
-public sealed class ClientConnectionCacheOptions
+/// <summary>Explicit shared storage and connection/tenant isolation, with no lossy TTL/LRU cache.</summary>
+public sealed class ClientConnectionCache(SnapshotStore store) : IDisposable
 {
-    public long MaxBytes { get; set; } = 192L * 1024 * 1024;
-    public long MaxTenantBytes { get; set; } = 128L * 1024 * 1024;
-    public long MaxConnectionBytes { get; set; } = 96L * 1024 * 1024;
-    public long MaxSnapshotBytes { get; set; } = 40L * 1024 * 1024;
-    public int MaxEntries { get; set; } = 4096;
-    public int MaxConnectionEntries { get; set; } = 256;
-    public int TtlSeconds { get; set; } = 900;
-    public int CleanupIntervalSeconds { get; set; } = 60;
-    public int MaxKeyCharacters { get; set; } = 512;
-}
-
-/// <summary>Process/tenant/connection budgets for optional WS history and interrupt IDs.
-/// Eviction never invokes the model: continuation misses require full client history.</summary>
-public sealed class ClientConnectionCache : IDisposable
-{
-    private sealed record Entry(Connection Scope, string Key, object Value, long Bytes) { internal long LastAccess; }
     private readonly object _gate = new();
-    private readonly Dictionary<(Connection Scope, string Key), Entry> _entries = [];
-    private readonly ClientConnectionCacheOptions _options;
-    private readonly TimeProvider _time;
-    private readonly ITimer _cleanup;
-    private long _bytes;
+    private readonly HashSet<Connection> _connections = [];
     private bool _disposed;
-    public ClientConnectionCache(ClientConnectionCacheOptions? options = null, TimeProvider? timeProvider = null)
+    public SnapshotStore Store => store;
+
+    /// <summary>Worst committed output for a minimal ordinary WS request, using the same root layout policy.</summary>
+    public static long MinimumCommitCredits(SnapshotStore store)
     {
-        var input = options ?? new();
-        _options = new() { MaxBytes=input.MaxBytes,MaxTenantBytes=input.MaxTenantBytes,MaxConnectionBytes=input.MaxConnectionBytes,
-            MaxSnapshotBytes=input.MaxSnapshotBytes,MaxEntries=input.MaxEntries,MaxConnectionEntries=input.MaxConnectionEntries,
-            TtlSeconds=input.TtlSeconds,CleanupIntervalSeconds=input.CleanupIntervalSeconds,MaxKeyCharacters=input.MaxKeyCharacters };
-        if (_options.MaxBytes<=0 || _options.MaxBytes>long.MaxValue/8 || _options.MaxTenantBytes<=0 || _options.MaxTenantBytes>long.MaxValue/8
-            || _options.MaxConnectionBytes<=0 || _options.MaxConnectionBytes>long.MaxValue/8 || _options.MaxSnapshotBytes<=0 || _options.MaxSnapshotBytes>long.MaxValue/8
-            || _options.MaxEntries<=0 || _options.MaxConnectionEntries<=0 || _options.TtlSeconds<=0 || _options.CleanupIntervalSeconds<=0 || _options.MaxKeyCharacters<=0)
-            throw new ArgumentOutOfRangeException(nameof(options));
-        _time = timeProvider ?? TimeProvider.System;
-        var sweep = new SweepState(this); var period = TimeSpan.FromSeconds(_options.CleanupIntervalSeconds);
-        _cleanup = sweep.Timer = _time.CreateTimer(static state => ((SweepState)state!).Tick(), sweep, period, period);
+        var limits = ProtocolConversionParameters.Current;
+        var hash = new string('0', SHA256.HashSizeInBytes * 2);
+        var manifest = new D
+        {
+            ["id"] = "", ["request_metadata"] = hash, ["input"] = new List<object?>(),
+            ["response_metadata"] = hash, ["output"] = new List<object?>()
+        };
+        var identity = new D { ["id"] = "", ["tenant"] = Guid.Empty.ToString("N"), ["connection"] = Guid.Empty.ToString("N") };
+        var references = checked((long)limits.SseMaxCaptureItems
+            * (ProtocolJsonWriter.Count(hash, audit: true, CancellationToken.None) + 1));
+        var bytes = checked(limits.SseMaxCaptureBytes + 2L * limits.SseMaxEventBytes + references
+            + ProtocolJsonWriter.Count(manifest, audit: true, CancellationToken.None)
+            + ProtocolJsonWriter.Count(identity, audit: true, CancellationToken.None));
+        return store.EstimateCredits(bytes, checked(limits.SseMaxCaptureItems + 3), 2);
     }
-    private sealed class SweepState(ClientConnectionCache cache)
-    {
-        private readonly WeakReference<ClientConnectionCache> _owner = new(cache);
-        internal ITimer? Timer;
-        internal void Tick() { if (_owner.TryGetTarget(out var owner)) owner.Cleanup(); else Timer?.Dispose(); }
-    }
-    public Connection Open(Guid tenant) { lock (_gate) { ObjectDisposedException.ThrowIf(_disposed,this); return new(this,tenant); } }
-    private long Cap => Math.Min(_options.MaxSnapshotBytes,Math.Min(_options.MaxConnectionBytes,Math.Min(_options.MaxTenantBytes,_options.MaxBytes)));
-    private bool Put(Connection scope,string key,object value,long weight)
+
+    public Connection Open(Guid tenant)
     {
         lock (_gate)
         {
-            if (_disposed || scope.Closed || key.Length>_options.MaxKeyCharacters+2 || weight>Cap) return false;
-            Sweep();
-            Remove((scope,key));
-            while (_entries.Values.Count(e=>ReferenceEquals(e.Scope,scope))>=_options.MaxConnectionEntries
-                || _entries.Values.Where(e=>ReferenceEquals(e.Scope,scope)).Sum(e=>e.Bytes)+weight>_options.MaxConnectionBytes)
-                RemoveOldest(e=>ReferenceEquals(e.Scope,scope));
-            while (_entries.Values.Where(e=>e.Scope.Tenant==scope.Tenant).Sum(e=>e.Bytes)+weight>_options.MaxTenantBytes)
-                RemoveOldest(e=>e.Scope.Tenant==scope.Tenant);
-            while (_entries.Count>=_options.MaxEntries || _bytes+weight>_options.MaxBytes) RemoveOldest(static _=>true);
-            var entry = new Entry(scope,key,value,weight) { LastAccess=_time.GetUtcNow().UtcTicks };
-            _entries.Add((scope,key),entry);_bytes+=weight;return true;
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            var connection = new Connection(this, tenant);
+            _connections.Add(connection);
+            return connection;
         }
     }
-    private void RemoveOldest(Func<Entry,bool> predicate)
+
+    internal (int Entries, long Bytes) Usage
     {
-        var victim = _entries.Values.Where(predicate).MinBy(e=>e.LastAccess) ?? throw new InvalidOperationException("Cache admission accounting is inconsistent.");
-        Remove((victim.Scope,victim.Key));
+        get
+        {
+            lock (_gate)
+            {
+                var usage = store.Usage;
+                return (_connections.Sum(value => value.Count), checked(usage.PhysicalBytes + usage.MetadataBytes));
+            }
+        }
     }
-    private object? Get(Connection scope,string key)
+
+    private void Remove(Connection connection) { lock (_gate) _connections.Remove(connection); }
+    public void Dispose()
     {
+        Connection[] connections;
         lock (_gate)
         {
-            if (_disposed || scope.Closed) return null;
-            Sweep();
-            if (!_entries.TryGetValue((scope,key),out var entry)) return null;
-            entry.LastAccess=_time.GetUtcNow().UtcTicks;return entry.Value;
+            if (_disposed) return;
+            _disposed = true;
+            connections = _connections.ToArray();
+            _connections.Clear();
         }
+        foreach (var connection in connections) connection.Dispose();
     }
-    private void Remove((Connection Scope,string Key) key) { if (_entries.Remove(key,out var entry)) _bytes-=entry.Bytes; }
-    private void Sweep()
-    {
-        var deadline=_time.GetUtcNow().UtcTicks-TimeSpan.FromSeconds(_options.TtlSeconds).Ticks;
-        foreach(var entry in _entries.Values.Where(e=>e.LastAccess<=deadline).ToArray())Remove((entry.Scope,entry.Key));
-    }
-    internal void Cleanup() { lock(_gate)Sweep(); }
-    internal (int Entries,long Bytes) Usage { get { lock(_gate)return (_entries.Count,_bytes); } }
-    public void Dispose() { _cleanup.Dispose();lock(_gate) { _disposed=true;_entries.Clear();_bytes=0; } }
 
     public sealed class Connection : IDisposable
     {
+        private sealed class Entry(SnapshotLease identity)
+        {
+            internal readonly SnapshotLease Identity = identity;
+            internal ClientHistoryVersion? History;
+            internal bool Completed;
+        }
         private readonly ClientConnectionCache _owner;
-        internal readonly Guid Tenant;
-        internal bool Closed;
-        internal Connection(ClientConnectionCache owner,Guid tenant) { _owner=owner;Tenant=tenant; }
-        public bool RememberResponse(string id,object ownedRecord,object request,object response)
+        private readonly Guid _tenant;
+        private readonly Guid _scope = Guid.NewGuid();
+        private readonly SnapshotLease _scopeIdentity;
+        private readonly object _gate = new();
+        private readonly Dictionary<string, Entry> _entries = new(StringComparer.Ordinal);
+        private bool _closed;
+        internal Connection(ClientConnectionCache owner, Guid tenant)
         {
-            if(id.Length>_owner._options.MaxKeyCharacters)return false;
-            var weight=2*(ClientGraphWeight.Estimate(request,_owner.Cap)+ClientGraphWeight.Estimate(response,_owner.Cap))+512+4L*id.Length;
-            return _owner.Put(this,"r:"+id,ownedRecord,weight);
+            _owner = owner;
+            _tenant = tenant;
+            var identity = IdentityRecord("");
+            using var reservation = Store.Reserve(Store.EstimateCredits(
+                ProtocolJsonWriter.Count(identity, audit: true, CancellationToken.None), 1, 1));
+            _scopeIdentity = reservation.CaptureJson(identity);
         }
-        public T? FindResponse<T>(string id) where T:class => id.Length>_owner._options.MaxKeyCharacters?null:_owner.Get(this,"r:"+id) as T;
-        public void RememberId(string id)
+        internal SnapshotStore Store => _owner.Store;
+        internal int Count { get { lock (_gate) return _entries.Count; } }
+        internal D IdentityRecord(string id) => new()
         {
-            if(id.Length<=_owner._options.MaxKeyCharacters)_owner.Put(this,"i:"+id,id,256+4L*id.Length);
+            ["id"] = id, ["tenant"] = _tenant.ToString("N"), ["connection"] = _scope.ToString("N")
+        };
+
+        public bool Knows(string id) { lock (_gate) return !_closed && _entries.ContainsKey(id); }
+        public bool IsCompleted(string id)
+        {
+            lock (_gate) return !_closed && _entries.TryGetValue(id, out var entry) && entry.Completed;
         }
-        public bool Knows(string id) => id.Length<=_owner._options.MaxKeyCharacters && _owner.Get(this,"i:"+id) is not null;
+        public ClientHistoryVersion? AcquireHistory(string id)
+        {
+            lock (_gate)
+            {
+                ObjectDisposedException.ThrowIf(_closed, this);
+                return _entries.TryGetValue(id, out var entry) ? entry.History?.AddRef() : null;
+            }
+        }
+
+        /// <summary>Terminal bookkeeping for an already registered identity; performs no storage IO.</summary>
+        public void MarkCompleted(string id)
+        {
+            lock (_gate)
+            {
+                if (_closed || !_entries.TryGetValue(id, out var entry)) return;
+                entry.Completed = true;
+            }
+        }
+
+        public void DiscardHistory(string id)
+        {
+            ClientHistoryVersion? version;
+            lock (_gate)
+            {
+                if (_closed || !_entries.TryGetValue(id, out var entry)) return;
+                version = entry.History;
+                entry.History = null;
+                entry.Completed = false;
+            }
+            version?.Dispose();
+        }
+
+        public SnapshotReservation ReserveIdentity(CancellationToken cancellationToken)
+        {
+            var bytes = checked(ProtocolConversionParameters.Current.SseMaxEventBytes
+                + ProtocolJsonWriter.Count(IdentityRecord(""), audit: true, cancellationToken));
+            return Store.Reserve(Store.EstimateCredits(bytes, 1, 1), cancellationToken);
+        }
+        public void RememberId(string id, SnapshotReservation reservation, CancellationToken cancellationToken = default)
+        {
+            lock (_gate)
+            {
+                ObjectDisposedException.ThrowIf(_closed, this);
+                if (_entries.ContainsKey(id)) return;
+                var identity = reservation.CaptureJson(IdentityRecord(id), cancellationToken);
+                try { _entries.Add(id, new(identity)); }
+                catch { identity.Dispose(); throw; }
+            }
+        }
+        public void RememberCompletion(string id, SnapshotReservation reservation, CancellationToken cancellationToken = default)
+        {
+            RememberId(id, reservation, cancellationToken);
+            lock (_gate)
+            {
+                ObjectDisposedException.ThrowIf(_closed, this);
+                _entries[id].Completed = true;
+            }
+        }
+        internal void Commit(string id, ClientHistoryVersion version, SnapshotReservation reservation,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            RememberId(id, reservation, cancellationToken);
+            ClientHistoryVersion? previous;
+            lock (_gate)
+            {
+                ObjectDisposedException.ThrowIf(_closed, this);
+                var entry = _entries[id];
+                previous = entry.History;
+                entry.History = version;
+                entry.Completed = true;
+            }
+            previous?.Dispose();
+        }
+
+        public PreparedClientRequest Prepare(D request, ClientHistoryVersion? previous, bool generate,
+            CancellationToken cancellationToken)
+        {
+            using var pinned = previous?.AddRef();
+            previous = pinned;
+            var current = ReadInput(request);
+            var history = previous is null ? new List<object?>()
+                : previous.Input.Concat(previous.Output).Select(ClientHistoryVersion.ReadValue).ToList();
+            var isFullHistory = previous is not null && IsPrefix(history, current);
+            var full = previous?.ReadRequestMetadata() ?? new D(StringComparer.Ordinal);
+            foreach (var pair in request) full[pair.Key] = pair.Value;
+            full["input"] = previous is null || isFullHistory ? current : history.Concat(current).ToList();
+            full.Remove("previous_response_id");
+            full.Remove("type");
+            full.Remove("generate");
+            full.Remove("stream_id");
+            if (generate) full["stream"] = true;
+            OpenCodex.Core.ProtocolConversion.ProtocolConversionErrors.Wrap(
+                () => ProtocolJsonWriter.ValidateRequest(full, cancellationToken));
+
+            var metadata = new D(full, StringComparer.Ordinal);
+            metadata.Remove("input");
+            var shared = previous is null ? Array.Empty<SnapshotLease>() : previous.Input.Concat(previous.Output).ToArray();
+            var additions = previous is null || !isFullHistory ? current : current.Skip(shared.Length).ToList();
+            var shareMetadata = previous is not null && JsonValueComparer.AreEqual(previous.ReadRequestMetadata(), metadata);
+            var bytes = shareMetadata ? 0L : ProtocolJsonWriter.Count(metadata, audit: true, cancellationToken);
+            foreach (var item in additions) bytes = checked(bytes + ProtocolJsonWriter.Count(item, audit: true, cancellationToken));
+            var buffers = checked(additions.Count + (shareMetadata ? 0 : 1));
+            if (generate)
+            {
+                var hash = new string('0', SHA256.HashSizeInBytes * 2);
+                var manifest = new D
+                {
+                    ["id"] = "", ["request_metadata"] = hash, ["input"] = new List<object?>(),
+                    ["response_metadata"] = hash, ["output"] = new List<object?>()
+                };
+                var referenceBytes = checked(ProtocolJsonWriter.Count(hash, audit: true, cancellationToken) + 1);
+                var references = checked(shared.Length + additions.Count + ProtocolConversionParameters.Current.SseMaxCaptureItems);
+                bytes = checked(bytes + ProtocolConversionParameters.Current.SseMaxCaptureBytes
+                    + 2L * ProtocolConversionParameters.Current.SseMaxEventBytes
+                    + references * referenceBytes
+                    + ProtocolJsonWriter.Count(manifest, audit: true, cancellationToken)
+                    + ProtocolJsonWriter.Count(IdentityRecord(""), audit: true, cancellationToken));
+                buffers = checked(buffers + ProtocolConversionParameters.Current.SseMaxCaptureItems + 3);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            // Cancellation stops execution, not the reserved failure-audit ownership. Each stage still takes its token.
+            var reservation = Store.Reserve(Store.EstimateCredits(bytes, buffers, generate ? 2 : 1), CancellationToken.None);
+            var owned = new List<SnapshotLease>();
+            SnapshotLease? metadataLease = null;
+            try
+            {
+                metadataLease = shareMetadata ? previous!.RequestMetadata.AddRef() : reservation.CaptureJson(metadata, cancellationToken);
+                foreach (var value in shared) owned.Add(value.AddRef());
+                foreach (var value in additions) owned.Add(reservation.CaptureJson(value, cancellationToken));
+                return new(this, full, reservation, metadataLease, owned.ToArray(), generate);
+            }
+            catch
+            {
+                metadataLease?.Dispose();
+                foreach (var value in owned) value.Dispose();
+                reservation.Dispose();
+                throw;
+            }
+        }
+
+        private static List<object?> ReadInput(D request)
+        {
+            var value = JsonDictionaryValue.Get(request, "input");
+            if (value is null) return [];
+            if (value is string text)
+                return [new D { ["type"] = "message", ["role"] = "user", ["content"] = text }];
+            if (value is JsonElement element)
+            {
+                if (element.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined) return [];
+                if (element.ValueKind == JsonValueKind.String)
+                    return [new D { ["type"] = "message", ["role"] = "user", ["content"] = element.GetString() }];
+                if (element.ValueKind != JsonValueKind.Array)
+                    throw new OpenCodex.Core.Errors.BadRequestException("input must be a string or an array of input items.");
+            }
+            else if (value is not IEnumerable<object?>)
+                throw new OpenCodex.Core.Errors.BadRequestException("input must be a string or an array of input items.");
+            return JsonDictionaryValue.List(request, "input");
+        }
+        private static bool IsPrefix(IReadOnlyList<object?> prefix, IReadOnlyList<object?> values)
+        {
+            if (values.Count < prefix.Count) return false;
+            for (var index = 0; index < prefix.Count; index++)
+                if (!JsonValueComparer.AreEqual(prefix[index], values[index])) return false;
+            return true;
+        }
         public void Dispose()
         {
-            lock(_owner._gate)
+            Entry[] entries;
+            lock (_gate)
             {
-                if(Closed)return;Closed=true;
-                foreach(var key in _owner._entries.Keys.Where(k=>ReferenceEquals(k.Scope,this)).ToArray())_owner.Remove(key);
+                if (_closed) return;
+                _closed = true;
+                entries = _entries.Values.ToArray();
+                _entries.Clear();
             }
+            try
+            {
+                foreach (var entry in entries) { entry.History?.Dispose(); entry.Identity.Dispose(); }
+                _scopeIdentity.Dispose();
+            }
+            finally { _owner.Remove(this); }
         }
     }
 }

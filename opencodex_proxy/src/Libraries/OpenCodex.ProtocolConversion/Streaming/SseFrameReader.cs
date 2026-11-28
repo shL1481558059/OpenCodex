@@ -19,10 +19,14 @@ public sealed class SseTransportOptions
     public int MaxEventBytes { get; init; } = ProtocolConversionParameters.Current.SseMaxEventBytes;
     public int MaxProbeBytes { get; init; } = ProtocolConversionParameters.Current.SseMaxProbeBytes;
     public int MaxProbeFrames { get; init; } = ProtocolConversionParameters.Current.SseMaxProbeFrames;
+    // Sending a complete request always uses the mandatory root request budget.
+    public int MaxRequestBodyBytes => ProtocolConversionParameters.Current.MaxRequestBodyBytes;
+    // Receiving a response message retains its separate, explicit response budget.
     public int MaxWebSocketMessageBytes { get; init; } = ProtocolConversionParameters.Current.SseMaxWebSocketMessageBytes;
     public void Validate()
     {
-        if (MaxEventBytes <= 0 || MaxProbeBytes <= 0 || MaxProbeFrames <= 0 || MaxWebSocketMessageBytes <= 0)
+        if (MaxEventBytes <= 0 || MaxProbeBytes <= 0 || MaxProbeFrames <= 0
+            || MaxRequestBodyBytes <= 0 || MaxWebSocketMessageBytes <= 0)
             throw new ArgumentOutOfRangeException(nameof(SseTransportOptions));
     }
 }

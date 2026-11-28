@@ -7,6 +7,10 @@ namespace OpenCodex.CoreBase.Domain.Proxy;
 /// </summary>
 public sealed class ProxyEndpointContext
 {
+    /// <summary>Explicit request execution credits; a WS history owner retains its commit credits.</summary>
+    public SnapshotReservation? SnapshotReservation { get; init; }
+    public long HistoryCommitCredits { get; init; }
+
     /// <summary>
     /// 初始化 <see cref="ProxyEndpointContext"/> 类的新实例。
     /// </summary>

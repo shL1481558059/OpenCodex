@@ -60,6 +60,73 @@ esac
 [ -f "$COMPOSE_FILE" ] || fail "Compose file not found: $COMPOSE_FILE"
 [ -f "$DEPLOY_DIR/.env" ] || fail "Remote .env not found: $DEPLOY_DIR/.env"
 
+# Protocol-conversion budgets are mandatory and have no code default. Their single source
+# is the repository .env.example, which CI uploads beside this script. Append any key that
+# the server .env is still missing so an upgrade cannot fail on absent configuration.
+# Existing operator values are never overwritten.
+EXAMPLE_ENV="$DEPLOY_DIR/.env.example"
+[ -f "$EXAMPLE_ENV" ] || fail "Remote .env.example not found: $EXAMPLE_ENV"
+
+missing_keys=()
+synced_keys=()
+while IFS= read -r line; do
+    key="${line%%=*}"
+    value="${line#*=}"
+    case "$key" in
+        ProtocolConversion__*) ;;
+        *) continue ;;
+    esac
+    if grep -qE "^[[:space:]]*(export[[:space:]]+)?${key}=" "$DEPLOY_DIR/.env"; then
+        continue
+    fi
+    printf "%s=%s\n" "$key" "$value" >> "$DEPLOY_DIR/.env"
+    synced_keys+=("$key")
+done < "$EXAMPLE_ENV"
+
+if [ "${#synced_keys[@]}" -gt 0 ]; then
+    echo "Added ${#synced_keys[@]} protocol-conversion keys to $DEPLOY_DIR/.env from .env.example:"
+    printf "  %s\n" "${synced_keys[@]}"
+fi
+
+# Fail before recreating the container so a bad value is a deploy error, not a crash loop.
+while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    grep -qE "^[[:space:]]*(export[[:space:]]+)?${key}=" "$DEPLOY_DIR/.env" \
+        || { missing_keys+=("$key"); continue; }
+    value="$(sed -nE "s/^[[:space:]]*(export[[:space:]]+)?${key}=//p" "$DEPLOY_DIR/.env" | tail -n 1 | tr -d "\r" | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//")"
+    case "$value" in
+        "") missing_keys+=("$key") ;;
+        *[!0-9]*) fail "Remote .env key $key must be a whole number but was: $value" ;;
+    esac
+done <<'REQUIRED_KEYS'
+ProtocolConversion__MaxRequestBodyBytes
+ProtocolConversion__SnapshotStoreMaxBytes
+ProtocolConversion__StringSegmentCharacters
+ProtocolConversion__FlushBytes
+ProtocolConversion__GeneratedFrameCacheBytes
+ProtocolConversion__CaptureCopyCharacters
+ProtocolConversion__SseReadBufferCharacters
+ProtocolConversion__SseRetainedBufferCharacters
+ProtocolConversion__SseMaxEventBytes
+ProtocolConversion__SseMaxCaptureBytes
+ProtocolConversion__SseMaxCaptureItems
+ProtocolConversion__SseMaxCaptureFields
+ProtocolConversion__SseMaxBufferedRoundBytes
+ProtocolConversion__SseMaxBufferedRoundFrames
+ProtocolConversion__SseMaxProbeBytes
+ProtocolConversion__SseMaxProbeFrames
+ProtocolConversion__SseMaxWebSocketMessageBytes
+ProtocolConversion__SseMaxBatchBytes
+ProtocolConversion__SseMaxFlushDelayMilliseconds
+ProtocolConversion__SseMaxQueuedEvents
+ProtocolConversion__SseMaxQueuedBytes
+REQUIRED_KEYS
+
+if [ "${#missing_keys[@]}" -gt 0 ]; then
+    fail "Remote .env has invalid or empty values for: ${missing_keys[*]}"
+fi
+
+
 command -v docker >/dev/null 2>&1 || fail "docker is not installed"
 
 if docker compose version >/dev/null 2>&1; then
@@ -157,7 +224,25 @@ wait_for_health() {
   return 1
 }
 
-wait_for_health
+if ! wait_for_health; then
+  # The previous container was already recreated with the new image. Restore the last
+  # known-good image so a failed rollout does not leave the service down in a restart loop.
+  rollback_image=""
+  if [ -f "$DEPLOY_DIR/.previous-image" ]; then
+    rollback_image="$(tr -d "\r\n" < "$DEPLOY_DIR/.previous-image")"
+  fi
+  if [ -z "$rollback_image" ] || [ "$rollback_image" = "$IMAGE_REF" ]; then
+    fail "Deployment failed and no previous image is available to roll back to."
+  fi
+  echo "Rolling back to previous image: $rollback_image" >&2
+  export IMAGE_NAME="$rollback_image"
+  if "${COMPOSE[@]}" up -d --no-build --no-deps --force-recreate "$COMPOSE_SERVICE"; then
+    if wait_for_health; then
+      fail "Deployment of $IMAGE_REF failed; rolled back to the previous image $rollback_image."
+    fi
+  fi
+  fail "Deployment of $IMAGE_REF failed and rollback to $rollback_image also failed to become healthy."
+fi
 
 echo "Deployment complete: $IMAGE_REF"
 echo "Application container: $SERVICE_NAME"

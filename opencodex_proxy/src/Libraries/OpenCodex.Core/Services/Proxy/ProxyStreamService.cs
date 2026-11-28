@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using OpenCodex.Core.Errors;
+using OpenCodex.Core.ExternalIntegrations;
 using OpenCodex.ProtocolConversion;
 using OpenCodex.ProtocolConversion.Streaming;
 using OpenCodex.Core.Services.WebSearch;
@@ -26,8 +27,9 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         IProxyLogService logs,
         IWebSearchToolExecutor webSearch,
         WebSearchContinuationStore webSearchHistory,
+        ProxyAuditSpool auditSpool,
         ResponsesUpstreamTransport? responsesWebSocket = null,
-        SseFrameOptions? outputFrames = null, ProxyAuditSpool? auditSpool = null)
+        SseFrameOptions? outputFrames = null)
     {
         _upstream = upstream;
         _logs = logs;
@@ -35,12 +37,18 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         _webSearchHistory = webSearchHistory;
         _responsesWebSocket = responsesWebSocket;
         _outputFrames = outputFrames ?? new();
-        _auditSpool=auditSpool ?? ProxyAuditSpool.Default;
+        ArgumentNullException.ThrowIfNull(auditSpool);
+        _auditSpool = auditSpool;
         if (_outputFrames.MaxCaptureBytes <=0 || _outputFrames.MaxCaptureItems<=0 || _outputFrames.MaxCaptureFields<=0 || _outputFrames.MaxEventBytes <= 0 || _outputFrames.MaxBufferedRoundBytes <= 0 || _outputFrames.MaxBufferedRoundFrames <= 0) throw new ArgumentOutOfRangeException(nameof(outputFrames));
     }
 
     public async Task StreamAsync(ProxyStreamContext context)
     {
+        using var executionBudget = RequestExecutionBudget.Create(_auditSpool, context.RequestMetadata,
+            context.SnapshotReservation, context.HistoryCommitCredits, CancellationToken.None);
+        var requestMetadata = executionBudget.Attach(context.RequestMetadata);
+        Exception? primaryFailure = null;
+        var sourceCompleteAttempted = false;
         context.UpstreamRequest["stream"] = true;
 
         var ttftStarted = Stopwatch.GetTimestamp();
@@ -52,7 +60,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         Dictionary<string, object?>? upstreamResponse = null;
         Dictionary<string, object?>? responsePayload = null;
         using var passThroughResponseCapture=context.EntryProtocol==context.ChannelType
-            ? CreateFullCapture(context.ChannelType,context.CancellationToken) : null;
+            ? CreateFullCapture(context.ChannelType, executionBudget, context.CancellationToken) : null;
         var streamTermination = StreamCaptureTermination.UnexpectedEnd;
         var streamLogCapture = new StreamLogCapture(context.EntryProtocol);
         var statusCode = ProxyHttpStatus.Ok;
@@ -62,9 +70,26 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         BuiltinToolSession? tools = null;
         try
         {
+            executionBudget.EnsureQueued(requestMetadata, context.OriginalPayload, context.CancellationToken);
+            executionBudget.EnsureCall(requestMetadata, context.Payload, upstreamRequest, _outputFrames, context.ChannelType,
+                isStream: true, context.CancellationToken, hasBuiltinTools: context.BuiltinTools is not null);
+            var bodies = requestMetadata.LogBodies ?? new ProxyLogBodyHandles(null, null);
+            requestMetadata = requestMetadata.WithLogBodies(bodies with
+            {
+                Headers = bodies.Headers ?? executionBudget.CaptureAuditJson(requestMetadata.Headers, context.CancellationToken),
+                Request = bodies.Request ?? (requestMetadata.RawBody is { Length: > 0 } raw
+                    ? executionBudget.CaptureAuditUtf8(raw.Span, context.CancellationToken)
+                    : executionBudget.CaptureAuditJson(context.OriginalPayload, context.CancellationToken)),
+                UpstreamRequest = bodies.UpstreamRequest ?? executionBudget.CaptureAuditJson(upstreamRequest, context.CancellationToken)
+            });
             using var toolLifetime = tools = context.BuiltinTools is null ? null : new BuiltinToolSession(
                 context.BuiltinTools, _webSearch, _webSearchHistory,
-                context.ChannelType, context.DefaultTimeout, BuiltinToolSession.OutputTokenBudget(context.Payload));
+                context.ChannelType, context.DefaultTimeout, BuiltinToolSession.OutputTokenBudget(context.Payload))
+            {
+                BeforeToolExecution = (sourceRequest, details, token) => executionBudget.EnsureTool(
+                    details, sourceRequest, _outputFrames, context.ChannelType, isStream: true, token),
+                AfterToolExecution = RequestExecutionBudget.ValidateToolResult
+            };
             if (context.EntryProtocol == context.ChannelType)
             {
                 var streamFrames = _responsesWebSocket is not null
@@ -81,16 +106,19 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                 streamTermination = streamLogCapture.SawTerminalEvent
                     ? StreamCaptureTermination.Completed
                     : StreamCaptureTermination.UnexpectedEnd;
+                sourceCompleteAttempted = true;
                 upstreamResponse = CompleteCapture(passThroughResponseCapture!, streamTermination).Response;
+                RequestExecutionBudget.ValidateCompleteJson(upstreamResponse, "source", _outputFrames.MaxCaptureBytes,
+                    context.CancellationToken);
             }
             else
             {
                 convertedState = new ConvertedProxyStreamState
                 {
                     UpstreamRequest = upstreamRequest,
-                    UpstreamRequestBody = context.RequestMetadata.LogBodies?.UpstreamRequest
+                    UpstreamRequestBody = requestMetadata.LogBodies?.UpstreamRequest
                 };
-                var convertedLines = ConvertRoundsAsync(context, convertedState, tools, context.CancellationToken);
+                var convertedLines = ConvertRoundsAsync(context, convertedState, tools, executionBudget, requestMetadata, context.CancellationToken);
                 streamWriteMetrics = await context.StreamWriter.WriteFrameBatchAsync(
                     terminalGate.Hold(ObserveFrames(ValidateOutputFrames(convertedLines, context.CancellationToken),
                         streamLogCapture, null, context.CancellationToken),context.CancellationToken),
@@ -118,21 +146,62 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         }
         catch (Exception exception)
         {
-            error = exception.Message;
+            var failure = ResourceErrors.Normalize(exception);
+            primaryFailure = failure;
+            error = failure.Message;
             streamTermination = exception is OperationCanceledException && context.CancellationToken.IsCancellationRequested
                 ? StreamCaptureTermination.ClientCancelled
                 : StreamCaptureTermination.UpstreamError;
-            var capturedUpstreamResponse = passThroughResponseCapture is null
-                ? null
-                : CompleteCapture(passThroughResponseCapture, streamTermination).Response;
-            if (exception is ProxyException proxyException)
+            var evidenceResponse = convertedState?.FailureEvidence;
+            if (convertedState?.ToolExecutionPhase != true
+                && exception is UpstreamException { Body: Dictionary<string, object?> httpBody }
+                && UpstreamJsonEvidence.IsEvidence(httpBody))
+                evidenceResponse = httpBody;
+            if (evidenceResponse is null && failure is StorageCapacityException)
+                evidenceResponse = convertedState?.CurrentEvidence;
+            if (passThroughResponseCapture is not null)
+            {
+                // A normal network stop may still have a trustworthy canonical prefix.
+                // Complete once; rejected/malformed/over-C sources use exact evidence instead.
+                if (evidenceResponse is null && !sourceCompleteAttempted && failure is not StorageCapacityException
+                    && !passThroughResponseCapture.NeedsFailureEvidence)
+                {
+                    sourceCompleteAttempted = true;
+                    try
+                    {
+                        upstreamResponse = CompleteCapture(passThroughResponseCapture, streamTermination).Response;
+                        RequestExecutionBudget.ValidateCompleteJson(upstreamResponse, "source", _outputFrames.MaxCaptureBytes,
+                            CancellationToken.None);
+                    }
+                    catch (Exception captureFailure)
+                    {
+                        if (ResourceErrors.IsResourceFailure(captureFailure))
+                            failure = ResourceErrors.Combine(failure, captureFailure);
+                        evidenceResponse = executionBudget.Retain(
+                            passThroughResponseCapture.GetFailureEvidence(streamTermination)).Response;
+                    }
+                }
+                if (evidenceResponse is null && (failure is StorageCapacityException
+                    || passThroughResponseCapture.NeedsFailureEvidence))
+                    evidenceResponse = executionBudget.Retain(
+                        passThroughResponseCapture.GetFailureEvidence(streamTermination)).Response;
+            }
+            primaryFailure = failure;
+            error = failure.Message;
+            var capturedUpstreamResponse = upstreamResponse ?? convertedState?.UpstreamResponse;
+            if (evidenceResponse is not null)
+                upstreamResponse = evidenceResponse;
+            else if (convertedState?.ToolExecutionPhase != true && failure is ProxyException proxySourceFailure
+                && (proxySourceFailure is not UpstreamException upstreamFailure
+                    || !ReferenceEquals(upstreamFailure.Body, capturedUpstreamResponse)))
+                upstreamResponse = UpstreamErrorPayload.Combine(capturedUpstreamResponse,
+                    UpstreamErrorPayload.FromException(proxySourceFailure)) ?? capturedUpstreamResponse;
+            else
+                upstreamResponse = capturedUpstreamResponse;
+            if (failure is ProxyException proxyException)
             {
                 statusCode = proxyException.StatusCode;
                 errorResponse = proxyException.ToResponse();
-                upstreamResponse = UpstreamErrorPayload.Combine(
-                    capturedUpstreamResponse ?? upstreamResponse ?? convertedState?.UpstreamResponse,
-                    UpstreamErrorPayload.FromException(proxyException))
-                    ?? upstreamResponse;
             }
             else
             {
@@ -141,16 +210,19 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                         ? ProxyHttpStatus.ClientClosedRequest
                         : ProxyHttpStatus.GatewayTimeout
                     : ProxyHttpStatus.InternalServerError;
-                upstreamResponse ??= capturedUpstreamResponse;
             }
-            terminalGate.Fail(context.EntryProtocol,error,(exception as UpstreamException)?.ErrorCode);
+            terminalGate.Fail(context.EntryProtocol, error, failure is StorageCapacityException capacity
+                ? capacity.ErrorCode : (failure as UpstreamException)?.ErrorCode,
+                failure is ProxyException proxyFailure ? proxyFailure.StatusCode : null);
             if (exception is OperationCanceledException && !context.CancellationToken.IsCancellationRequested)
             {
                 var timeout = new UpstreamException("proxy request timed out", ProxyHttpStatus.GatewayTimeout);
                 error = timeout.Message;
                 errorResponse = timeout.ToResponse();
+                primaryFailure = timeout;
                 throw timeout;
             }
+            if (!ReferenceEquals(failure, exception)) throw failure;
             throw;
         }
         finally
@@ -167,15 +239,33 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                 responsePayload ??= convertedState.ResponsePayload;
             }
             webSearchDetails = tools?.Details;
-            if (passThroughResponseCapture is not null && upstreamResponse is null)
+            if (passThroughResponseCapture is not null && upstreamResponse is null && !sourceCompleteAttempted
+                && primaryFailure is null)
             {
+                sourceCompleteAttempted = true;
                 upstreamResponse = CompleteCapture(passThroughResponseCapture, streamTermination).Response;
             }
 
-            await PersistLog();
-            if(error is not null && terminalGate.HasCommitted && !context.CancellationToken.IsCancellationRequested)
-                await context.StreamWriter.WriteFramesAsync(terminalGate.Release(context.CancellationToken),SseFramePredicate.Never,
-                    ()=>ElapsedMilliseconds(ttftStarted),context.CancellationToken);
+            try { await PersistLog(); }
+            catch (Exception auditFailure) when (primaryFailure is not null)
+            {
+                throw ResourceErrors.Combine(primaryFailure, auditFailure);
+            }
+            if (error is not null && terminalGate.HasCommitted && !context.CancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    await context.StreamWriter.WriteFramesAsync(terminalGate.Release(context.CancellationToken), SseFramePredicate.Never,
+                        () => ElapsedMilliseconds(ttftStarted), context.CancellationToken);
+                }
+                catch (Exception sendFailure) when (primaryFailure is not null)
+                {
+                    // Error delivery is secondary to the normalized operation failure.
+                    // In particular a callback's generic upstream exception must not
+                    // replace a local 507 or make its channel look unhealthy.
+                    throw ResourceErrors.Combine(primaryFailure, ResourceErrors.Normalize(sendFailure));
+                }
+            }
         }
         // Success/stop is not publishable until complete audit persistence succeeds. This
         // does not delay any preceding role, tool-start or text event.
@@ -186,14 +276,21 @@ public sealed partial class ProxyStreamService : IProxyStreamService
         }
         catch(Exception exception)
         {
-            statusCode=exception is OperationCanceledException?ProxyHttpStatus.ClientClosedRequest:ProxyHttpStatus.InternalServerError;
-            error="Terminal stream write/flush failed: "+exception.Message;
+            var failure = ResourceErrors.Normalize(exception);
+            statusCode = failure is ProxyException proxy ? proxy.StatusCode
+                : exception is OperationCanceledException ? ProxyHttpStatus.ClientClosedRequest : ProxyHttpStatus.InternalServerError;
+            error = "Terminal stream write/flush failed: " + failure.Message;
+            if (failure is ProxyException terminalFailure) errorResponse = terminalFailure.ToResponse();
             try { await PersistLog(); }
-            catch(Exception auditError) { throw new AggregateException("Terminal output and failure audit both failed.",exception,auditError); }
+            catch (Exception auditError) { throw ResourceErrors.Combine(failure, auditError); }
+            if (!ReferenceEquals(failure, exception)) throw failure;
             throw;
         }
         async Task PersistLog()
         {
+            if (requestMetadata.LogBodies is { } bodies) executionBudget.TransferLogBodies(bodies);
+            var upstreamBody = executionBudget.TransferToLog(
+                convertedState?.UpstreamRequestBody ?? requestMetadata.LogBodies?.UpstreamRequest);
             await _logs.CompleteLogAsync(
                 context.RequestLogId,
                 new ProxyLogContext(
@@ -216,18 +313,20 @@ public sealed partial class ProxyStreamService : IProxyStreamService
                     error,
                     webSearchDetails)
                 {
-                    UpstreamRequestBody = convertedState?.UpstreamRequestBody ?? context.RequestMetadata.LogBodies?.UpstreamRequest,
+                    UpstreamRequestBody = upstreamBody,
                     AggregatedUsage = tools?.HasAccountingUsage == true
                         ? tools.AccountingUsage
                         : convertedState?.RejectedUsage.Count > 0 ? convertedState.RejectedUsage : null
                 },
-                context.RequestMetadata);
+                requestMetadata);
         }
     }
 
-    private StreamResponseCapture CreateFullCapture(string protocol,CancellationToken cancellationToken,IReadOnlySet<string>? toolNames=null) =>
-        new(protocol,new StreamCaptureBudget(_outputFrames.MaxCaptureBytes,_outputFrames.MaxCaptureItems,
-            _outputFrames.MaxCaptureFields,_auditSpool,cancellationToken),toolNames);
+    private StreamResponseCapture CreateFullCapture(string protocol, RequestExecutionBudget executionBudget,
+        CancellationToken cancellationToken, IReadOnlySet<string>? toolNames = null) =>
+        new(protocol, new StreamCaptureBudget(_outputFrames.MaxCaptureBytes, _outputFrames.MaxCaptureItems,
+            _outputFrames.MaxCaptureFields, executionBudget.AuditCapture, cancellationToken), toolNames,
+            maxEventBytes: RequestExecutionBudget.AcceptedSourceFrameBytes(protocol));
 
     private static StreamResponseCaptureResult CompleteCapture(
         StreamResponseCapture capture,

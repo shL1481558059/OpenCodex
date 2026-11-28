@@ -21,5 +21,9 @@
     <Content Include="..\..\..\protocol-performance.parameters.json"
              Link="protocol-performance.parameters.json"
              CopyToOutputDirectory="PreserveNewest" />
+    <!-- Protocol-conversion budgets come from .env; tests ship their own mandatory copy. -->
+    <Content Include="test.env"
+             Link=".env"
+             CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

@@ -10,7 +10,7 @@ internal sealed class StreamTerminalGate
     private SseFrame? _terminal;
     private bool _done;
     internal bool HasCommitted { get; private set; }
-    internal void Fail(string protocol,string message,string? code)
+    internal void Fail(string protocol,string message,string? code,int? status=null)
     {
         if(_terminal?.IsError==true)return;
         var error=new Dictionary<string,object?> { ["type"]="api_error",["message"]=message,["code"]=code??"upstream_stream_error" };
@@ -18,6 +18,7 @@ internal sealed class StreamTerminalGate
             ? new Dictionary<string,object?> { ["type"]="error",["message"]=message,["code"]=code??"upstream_stream_error" }
             : new Dictionary<string,object?> { ["error"]=error };
         if(protocol==ProtocolConverter.Messages)payload["type"]="error";
+        if(status is not null){ error["status"]=status; if(protocol is ProtocolConverter.Responses or ProtocolConverter.Messages)payload["status"]=status; }
         _terminal=SseFrame.FromJson(payload,protocol==ProtocolConverter.Chat?null:"error");_done=false;
     }
     internal async IAsyncEnumerable<SseFrame> Hold(IAsyncEnumerable<SseFrame> frames,[EnumeratorCancellation] CancellationToken ct)

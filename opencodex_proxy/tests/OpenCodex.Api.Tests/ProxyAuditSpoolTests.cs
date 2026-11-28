@@ -104,9 +104,13 @@ public sealed class ProxyAuditSpoolTests : IDisposable
     [Fact]
     public void DiskWriteFailureCleansFileAndQuotaRatherThanClaimingCompleteAudit()
     {
-        var spool=new ProxyAuditSpool(Options()) { CreateFile=(path,options)=>new FailingWrite(new FileStream(path,options)) };
-        var error=Assert.Throws<IOException>(()=>spool.CaptureJson(new { text="body" }));
-        Assert.Contains("disk full",error.Message);Assert.Equal((0L,0),spool.Usage);Assert.Empty(Directory.EnumerateFiles(_directory));
+        using var spool=new ProxyAuditSpool(Options()) { CreateFile=(path,options)=>new FailingWrite(new FileStream(path,options)) };
+        var error=Assert.Throws<SnapshotPersistenceException>(()=>spool.CaptureJson(new { text="body" }));
+        var inner=Assert.IsType<IOException>(error.InnerException);
+        Assert.Contains("disk full",inner.Message);
+        Assert.Equal("Complete snapshot storage IO failed; state could not be committed.",error.Message);
+        Assert.DoesNotContain(_directory,error.Message,StringComparison.Ordinal);
+        Assert.Equal((0L,0),spool.Usage);Assert.Empty(Directory.EnumerateFiles(_directory));
     }
     [Fact]
     public void CleanupDeletesOldOrphansButNotLiveSnapshotsFreshOrUnrelatedFiles()

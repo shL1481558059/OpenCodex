@@ -24,6 +24,8 @@ internal sealed class MultiAgentApiTestContext : IDisposable
 {
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<MultiAgentRunStore, NativeClientSessionStore> NativeStores = new();
     private readonly ServiceProvider _services;
+    private readonly ProxyAuditSpool? _ownedSpool;
+    private readonly ClientConnectionCache? _ownedCache;
     public DefaultHttpContext Http { get; } = new();
     public RecordingStream Body { get; } = new();
     public MultiAgentResponseService Service { get; }
@@ -55,12 +57,19 @@ internal sealed class MultiAgentApiTestContext : IDisposable
         Http.Response.Body = Body;
         Http.RequestAborted = Lifetime.Token;
         FakeEndpoint = new Endpoint(handler);
+        if (connectionCache is null)
+        {
+            _ownedSpool = new ProxyAuditSpool(new() { Directory = Path.Combine(Path.GetTempPath(), "ocxp-ws-spool-" + Guid.NewGuid().ToString("N")) });
+            connectionCache = _ownedCache = new ClientConnectionCache(new SnapshotStore(_ownedSpool));
+        }
         var routes = DispatchProxy.Create<IProxyRouteService, RoutesProxy>();
         ((RoutesProxy)(object)routes).Candidates = () => RouteCandidates;
         _services = new ServiceCollection()
             .AddSingleton(NativeStore)
             .AddSingleton(routes)
-            .AddSingleton(connectionCache ?? new ClientConnectionCache())
+            .AddSingleton(connectionCache)
+            .AddSingleton(connectionCache.Store)
+            .AddSingleton(connectionCache.Store.Spool)
             .AddSingleton<IProxyIdentityContext>(new Identity(Key))
             .AddScoped<IProxyEndpointService>(_ => FakeEndpoint)
             .AddSingleton<ILogger<ResponsesWebSocketClientService>>(_ =>
@@ -87,7 +96,15 @@ internal sealed class MultiAgentApiTestContext : IDisposable
         Http.Features.Set<IHttpWebSocketFeature>(new SocketFeature(socket));
         return socket;
     }
-    public void Dispose() { Lifetime.Cancel(); Lifetime.Dispose(); _services.Dispose(); Body.Dispose(); }
+    public void Dispose()
+    {
+        Lifetime.Cancel();
+        _services.Dispose();
+        _ownedCache?.Dispose();
+        _ownedSpool?.Dispose();
+        Lifetime.Dispose();
+        Body.Dispose();
+    }
     public static D Request(bool stream = false) => new()
     {
         ["model"] = "fake", ["store"] = false, ["stream"] = stream,

@@ -1,10 +1,12 @@
 using System.Collections.Concurrent;
+using System.Net.WebSockets;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using OpenCodex.Core.Errors;
 using OpenCodex.ProtocolConversion;
 using OpenCodex.ProtocolConversion.Streaming;
+using OpenCodex.ProtocolConversion.Json;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
 
@@ -105,6 +107,9 @@ public sealed class ResponsesUpstreamTransport : IDisposable
                 yield break;
             }
 
+            // A small delta must not bypass the budget of its restored context.
+            OpenCodex.Core.ProtocolConversion.ProtocolConversionErrors.Wrap(
+                () => ProtocolJsonWriter.ValidateRequest(planning.Logical, cancellationToken));
             var started = await TryStartAsync(
                 context,
                 planning.Outgoing,
@@ -127,7 +132,7 @@ public sealed class ResponsesUpstreamTransport : IDisposable
                 yield break;
             }
 
-            if (started.First is not null && IsRecoverableSocketLoss(started.First) && !passthrough)
+            if (started.First is not null && IsRecoverableSocketLoss(started.First.Payload) && !passthrough)
             {
                 await started.DisposeAsync();
                 var full = FullReplay(planning.Logical);
@@ -162,31 +167,31 @@ public sealed class ResponsesUpstreamTransport : IDisposable
             var sawTerminal = false;
             try
             {
-                if (started.First is not null)
+                if (started.First is { } first)
                 {
-                    CaptureTerminal(started.First, ref terminal);
-                    sawTerminal = IsTerminal(started.First);
+                    CaptureTerminal(first.Payload, ref terminal);
+                    sawTerminal = IsTerminal(first.Payload);
                     if (terminal is not null && !passthrough)
                         Store(owner,contextScope, planning.Logical, terminal);
                     _logger.LogDebug(
                         "Responses upstream event. event_type={EventType} terminal={Terminal} context_scope={ContextScope}",
-                        JsonDictionaryValue.String(started.First, "type"),
+                        JsonDictionaryValue.String(first.Payload, "type"),
                         sawTerminal,
                         contextScope);
-                    yield return Sse(started.First);
+                    yield return Sse(first);
                 }
 
                 while (!sawTerminal)
                 {
-                    var next = await started.Lease.ReceiveAsync(Timeout(context.Route.Channel, context.DefaultTimeout), cancellationToken);
+                    var next = await started.Lease.ReceiveDataAsync(Timeout(context.Route.Channel, context.DefaultTimeout), cancellationToken);
                     if (next is null) break;
-                    CaptureTerminal(next, ref terminal);
-                    sawTerminal = IsTerminal(next);
+                    CaptureTerminal(next.Payload, ref terminal);
+                    sawTerminal = IsTerminal(next.Payload);
                     if (terminal is not null && !passthrough)
                         Store(owner,contextScope, planning.Logical, terminal);
                     _logger.LogDebug(
                         "Responses upstream event. event_type={EventType} terminal={Terminal} context_scope={ContextScope}",
-                        JsonDictionaryValue.String(next, "type"),
+                        JsonDictionaryValue.String(next.Payload, "type"),
                         sawTerminal,
                         contextScope);
                     yield return Sse(next);
@@ -238,6 +243,9 @@ public sealed class ResponsesUpstreamTransport : IDisposable
         string conversation,
         CancellationToken cancellationToken)
     {
+        // Exact response.create encoding is checked before even acquiring a socket.
+        OpenCodex.Core.ProtocolConversion.ProtocolConversionErrors.Wrap(
+            () => ResponsesWebSocketLease.ValidateRequest(payload, cancellationToken));
         var fingerprint = ResponsesWebSocketLease.Fingerprint(context.Route.Channel);
         var key = string.Join(':',
             context.ApiKeyId?.ToString("N") ?? context.OwnerUsername,
@@ -254,7 +262,7 @@ public sealed class ResponsesUpstreamTransport : IDisposable
                 context.DefaultTimeout,
                 cancellationToken);
             await lease.SendAsync(payload, cancellationToken);
-            var first = await lease.ReceiveAsync(
+            var first = await lease.ReceiveDataAsync(
                 Timeout(context.Route.Channel, context.DefaultTimeout),
                 cancellationToken);
             return new StartedStream(lease, first);
@@ -275,6 +283,9 @@ public sealed class ResponsesUpstreamTransport : IDisposable
                 lease.Abort();
                 await lease.DisposeAsync();
             }
+            // Budget/storage failures and JSON/protocol errors are not socket
+            // capability failures. They must not enable probing, replay, or HTTP.
+            if (!IsNetworkStartFailure(exception)) throw;
             _logger.LogWarning(
                 exception,
                 "Responses upstream WebSocket start failed. channel_id={ChannelId} model={Model} conversation={Conversation}",
@@ -284,6 +295,13 @@ public sealed class ResponsesUpstreamTransport : IDisposable
             return null;
         }
     }
+
+    private static bool IsNetworkStartFailure(Exception exception)
+        => exception is WebSocketException or HttpRequestException
+            || exception is UpstreamException
+            {
+                ErrorCode: "websocket_connection_error" or "websocket_connection_timeout" or "websocket_idle_timeout"
+            };
 
     private StreamPlan? PlanContextRequest(string scope, Dictionary<string, object?> request)
     {
@@ -560,17 +578,16 @@ public sealed class ResponsesUpstreamTransport : IDisposable
         }
     }
 
-    private static SseFrame Sse(Dictionary<string, object?> payload)
-    {
-        var type = JsonDictionaryValue.String(payload, "type");
-        return new SseFrame($"event: {type}\ndata: {JsonSerializer.Serialize(payload)}\n\n", new SseEvent(type, payload));
-    }
+    private static SseFrame Sse(ReceivedJsonMessage received) =>
+        SseFrame.FromReceivedJson(received, JsonDictionaryValue.String(received.Payload, "type"));
 
     private async IAsyncEnumerable<SseFrame> HttpStreamAsync(
         ProxyStreamContext context,
         IReadOnlyDictionary<string, object?> payload,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        OpenCodex.Core.ProtocolConversion.ProtocolConversionErrors.Wrap(
+            () => ProtocolJsonWriter.ValidateRequest(payload, cancellationToken));
         await foreach (var line in http.StreamEventsAsync(
             context.Route.Channel,
             payload,
@@ -654,11 +671,11 @@ public sealed class ResponsesUpstreamTransport : IDisposable
         public DateTimeOffset ExpiresAt { get; init; }
     }
 
-    private sealed class StartedStream(ResponsesWebSocketLease lease, Dictionary<string, object?>? first)
+    private sealed class StartedStream(ResponsesWebSocketLease lease, ReceivedJsonMessage? first)
         : IAsyncDisposable
     {
         public ResponsesWebSocketLease Lease { get; } = lease;
-        public Dictionary<string, object?>? First { get; } = first;
+        public ReceivedJsonMessage? First { get; } = first;
         public ValueTask DisposeAsync() => Lease.DisposeAsync();
     }
 }

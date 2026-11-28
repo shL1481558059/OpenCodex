@@ -100,10 +100,16 @@ public sealed class FullStreamCaptureTests : IDisposable
     [Fact]
     public void DiskFailureIsExplicitAndAppendReservationsAreReleased()
     {
-        var spool=new ProxyAuditSpool(new() { Directory=_dir,MemoryThresholdBytes=0 })
+        using var spool=new ProxyAuditSpool(new() { Directory=_dir,MemoryThresholdBytes=0 })
         { CreateFile=(_,_)=>throw new IOException("simulated ENOSPC") };
         using(var capture=new StreamResponseCapture("responses",new StreamCaptureBudget(10000,100,100,spool,default)))
-            Assert.Throws<IOException>(()=>capture.Accept(Frame("response.output_text.delta",new() { ["delta"]="data" })));
+        {
+            var error=Assert.Throws<SnapshotPersistenceException>(()=>capture.Accept(Frame("response.output_text.delta",new() { ["delta"]="data" })));
+            var inner=Assert.IsType<IOException>(error.InnerException);
+            Assert.Contains("simulated ENOSPC",inner.Message);
+            Assert.Equal("Complete snapshot storage IO failed; state could not be committed.",error.Message);
+            Assert.DoesNotContain(_dir,error.Message,StringComparison.Ordinal);
+        }
         Assert.Equal((0L,0),spool.Usage);Assert.Empty(Directory.EnumerateFiles(_dir));
     }
     public void Dispose() { if(Directory.Exists(_dir))Directory.Delete(_dir,true); }

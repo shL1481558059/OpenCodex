@@ -1,4 +1,5 @@
 using OpenCodex.CoreBase.Domain.WebSearch;
+using OpenCodex.Core.Services.Proxy;
 using static OpenCodex.CoreBase.Abstractions.WebSearchPayload;
 
 namespace OpenCodex.Core.Services.WebSearch;
@@ -26,7 +27,8 @@ internal static class WebSearchSimulationLog
                     ["key_position"] = result.KeyPosition,
                     ["key_usage_count"] = result.KeyUsageCount,
                     ["key_usage_limit"] = result.KeyUsageLimit,
-                    ["raw"] = result.Raw
+                    ["raw"] = result.Raw,
+                    ["raw_representation"] = RequestExecutionBudget.ToolRawRepresentation(result.Raw)
                 })
                 .ToList(),
             ["upstream_calls"] = upstreamCalls.Cast<object?>().ToList(),

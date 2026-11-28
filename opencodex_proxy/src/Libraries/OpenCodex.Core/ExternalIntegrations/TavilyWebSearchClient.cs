@@ -4,6 +4,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.WebSearch;
+using OpenCodex.ProtocolConversion;
 
 namespace OpenCodex.Core.ExternalIntegrations;
 
@@ -35,6 +36,9 @@ public sealed class TavilyWebSearchClient : IWebSearchClient
         CancellationToken cancellationToken)
     {
         var started = Stopwatch.GetTimestamp();
+        var captureMaxBytes = ProtocolConversionParameters.Current.SseMaxCaptureBytes;
+        var overflowBlockBytes = ProtocolConversionParameters.Current.FlushBytes;
+        _ = UpstreamJsonEvidence.MaxRawBytes(captureMaxBytes, overflowBlockBytes);
         var profile = WebSearchProviderProfile.For(options.ContextSize);
         var payload = new Dictionary<string, object?>
         {
@@ -55,6 +59,7 @@ public sealed class TavilyWebSearchClient : IWebSearchClient
             payload["include_domains"] = options.AllowedDomains.ToArray();
             payload["include_domains_mode"] = "restrict";
         }
+        BoundedJsonResponseReader.ValidateRequest(payload, JavaScriptEncoder.UnsafeRelaxedJsonEscaping, cancellationToken);
         using var request = new HttpRequestMessage(HttpMethod.Post, TavilySearchUrl);
         request.Content = new StringContent(JsonSerializer.Serialize(payload, JsonOptions), Encoding.UTF8, "application/json");
         request.Headers.TryAddWithoutValidation("authorization", $"Bearer {key.Key}");
@@ -63,31 +68,34 @@ public sealed class TavilyWebSearchClient : IWebSearchClient
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(TimeSpan.FromSeconds(15));
-            using var response = await _httpClient.SendAsync(request, timeoutCts.Token);
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+            // Root C also bounds tool-provider JSON ingress. Raw remains parsed JSON, not wire evidence.
+            var ownedUtf8 = await BoundedJsonResponseReader.ReadRawAsync(
+                response, captureMaxBytes, overflowBlockBytes, timeoutCts.Token, "tavily");
+            var parsed = BoundedJsonResponseReader.Parse(
+                response, ownedUtf8, captureMaxBytes, overflowBlockBytes, timeoutCts.Token, "tavily");
             if (!response.IsSuccessStatusCode)
             {
-                var raw = DecodeJsonOrText(body);
                 var error = $"Tavily returned HTTP {(int)response.StatusCode}";
+                var errorSummary = new WebSearchSummary(string.Empty, [], error);
+                BoundedJsonResponseReader.EnsureNormalized(errorSummary, response, ownedUtf8,
+                    captureMaxBytes, overflowBlockBytes, timeoutCts.Token, "tavily");
                 return new WebSearchProviderResult(
                     false,
                     (int)response.StatusCode,
                     ElapsedMilliseconds(started),
                     "http_error",
                     error,
-                    new WebSearchSummary(string.Empty, [], error),
-                    raw);
+                    errorSummary,
+                    parsed);
             }
 
-            var rawObject = DecodeJsonObject(body);
-            var summary = SummaryFromRaw(rawObject);
-            if (summary.Results.Count > profile.TavilyMaxResults)
-            {
-                summary = new WebSearchSummary(
-                    summary.Answer,
-                    summary.Results.Take(profile.TavilyMaxResults).ToList(),
-                    summary.Error);
-            }
+            var rawObject = BoundedJsonResponseReader.RequireObject(
+                parsed, response, ownedUtf8, captureMaxBytes, overflowBlockBytes, "tavily");
+            var summary = SummaryFromRaw(rawObject, profile.TavilyMaxResults);
+            // Summary is a second C-bounded parsed projection. Raw itself stays unchanged.
+            BoundedJsonResponseReader.EnsureNormalized(summary, response, ownedUtf8,
+                captureMaxBytes, overflowBlockBytes, timeoutCts.Token, "tavily");
 
             return new WebSearchProviderResult(
                 true,
@@ -100,31 +108,30 @@ public sealed class TavilyWebSearchClient : IWebSearchClient
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return RequestError(started, "Tavily request timed out");
+            return RequestError(started, "Tavily request timed out", cancellationToken);
         }
         catch (HttpRequestException exception)
         {
-            return RequestError(started, $"failed to reach Tavily: {exception.Message}");
-        }
-        catch (JsonException)
-        {
-            return RequestError(started, "Tavily returned invalid JSON");
+            return RequestError(started, $"failed to reach Tavily: {exception.Message}", cancellationToken);
         }
     }
 
-    private static WebSearchProviderResult RequestError(long started, string error)
+    private static WebSearchProviderResult RequestError(long started, string error, CancellationToken cancellationToken)
     {
+        var summary = new WebSearchSummary(string.Empty, [], error);
+        BoundedJsonResponseReader.EnsureParsedBound(summary, ProtocolConversionParameters.Current.SseMaxCaptureBytes,
+            cancellationToken, "provider_network_error", "tavily");
         return new WebSearchProviderResult(
             false,
             null,
             ElapsedMilliseconds(started),
             "request_error",
             error,
-            new WebSearchSummary(string.Empty, [], error),
+            summary,
             null);
     }
 
-    private static WebSearchSummary SummaryFromRaw(Dictionary<string, object?> raw)
+    private static WebSearchSummary SummaryFromRaw(Dictionary<string, object?> raw, int resultLimit)
     {
         var results = new List<Dictionary<string, object?>>();
         if (WebSearchPayload.TryAsList(WebSearchPayload.GetValue(raw, "results"), out var rawResults))
@@ -143,36 +150,12 @@ public sealed class TavilyWebSearchClient : IWebSearchClient
                     ["content"] = WebSearchPayload.StringValue(result, "content"),
                     ["score"] = WebSearchPayload.GetValue(result, "score")
                 });
+                // Equivalent to the old final Take, without materializing discarded mapped items.
+                if (results.Count >= resultLimit) break;
             }
         }
 
         return new WebSearchSummary(WebSearchPayload.StringValue(raw, "answer"), results, null);
-    }
-
-    private static object? DecodeJsonOrText(string text)
-    {
-        if (string.IsNullOrEmpty(text))
-        {
-            return new Dictionary<string, object?>();
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(text);
-            return WebSearchPayload.FromJsonElement(document.RootElement);
-        }
-        catch (JsonException)
-        {
-            return text;
-        }
-    }
-
-    private static Dictionary<string, object?> DecodeJsonObject(string text)
-    {
-        using var document = JsonDocument.Parse(text);
-        return document.RootElement.ValueKind == JsonValueKind.Object
-            ? (Dictionary<string, object?>)WebSearchPayload.FromJsonElement(document.RootElement)!
-            : [];
     }
 
     private static int ElapsedMilliseconds(long started)

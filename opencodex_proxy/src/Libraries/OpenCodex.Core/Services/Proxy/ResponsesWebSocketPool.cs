@@ -1,5 +1,7 @@
 using OpenCodex.ProtocolConversion;
 using OpenCodex.ProtocolConversion.Streaming;
+using OpenCodex.ProtocolConversion.Json;
+using OpenCodex.ProtocolConversion.Protocols;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
@@ -62,7 +64,8 @@ public sealed class ResponsesWebSocketPool : IAsyncDisposable
                 entry.Socket = await ConnectAsync(channel, defaultTimeoutSeconds, cancellationToken);
             }
             entry.LastUsed = DateTimeOffset.UtcNow;
-            return new ResponsesWebSocketLease(entry, _streamOptions.MaxWebSocketMessageBytes);
+            return new ResponsesWebSocketLease(
+                entry, _streamOptions.MaxRequestBodyBytes, _streamOptions.MaxWebSocketMessageBytes);
         }
         catch
         {
@@ -121,7 +124,8 @@ public sealed class ResponsesWebSocketPool : IAsyncDisposable
             throw new UpstreamException(
                 "upstream WebSocket connection timed out",
                 ProxyHttpStatus.GatewayTimeout,
-                channelId: JsonDictionaryValue.String(channel, "id"));
+                channelId: JsonDictionaryValue.String(channel, "id"),
+                errorCode: "websocket_connection_timeout");
         }
         catch (WebSocketException exception)
         {
@@ -129,7 +133,8 @@ public sealed class ResponsesWebSocketPool : IAsyncDisposable
             throw new UpstreamException(
                 $"failed to connect upstream WebSocket: {exception.Message}",
                 ProxyHttpStatus.BadGateway,
-                channelId: JsonDictionaryValue.String(channel, "id"));
+                channelId: JsonDictionaryValue.String(channel, "id"),
+                errorCode: "websocket_connection_error");
         }
     }
 
@@ -242,34 +247,61 @@ public sealed class ResponsesWebSocketLease : IAsyncDisposable
     private readonly ResponsesWebSocketPool.ConnectionEntry _entry;
     private bool _disposed;
 
-    private readonly int _maxMessageBytes;
+    private readonly int _maxRequestBodyBytes;
+    private readonly int _maxResponseMessageBytes;
     private readonly byte[] _receiveBuffer = new byte[16 * 1024];
     private MemoryStream _receiveMessage = new();
     private CancellationTokenSource? _receiveTimeout;
     private CancellationToken _receiveParent;
-    internal ResponsesWebSocketLease(ResponsesWebSocketPool.ConnectionEntry entry, int maxMessageBytes)
+    internal ResponsesWebSocketLease(
+        ResponsesWebSocketPool.ConnectionEntry entry,
+        int maxRequestBodyBytes,
+        int maxResponseMessageBytes)
     {
         _entry = entry;
-        _maxMessageBytes = maxMessageBytes;
+        _maxRequestBodyBytes = maxRequestBodyBytes;
+        _maxResponseMessageBytes = maxResponseMessageBytes;
     }
 
     private ClientWebSocket Socket => _entry.Socket
         ?? throw new InvalidOperationException("The upstream WebSocket is unavailable.");
 
+    internal static long ValidateRequest(
+        IReadOnlyDictionary<string, object?> payload,
+        CancellationToken cancellationToken)
+        => ProtocolJsonWriter.ValidateRequest(
+            payload, cancellationToken, "response.create", ResponseCreateExcludedProperties);
+
     public async Task SendAsync(
         IReadOnlyDictionary<string, object?> payload,
         CancellationToken cancellationToken)
     {
-        await WebSocketJsonWriter.SendAsync(
-            Socket,
-            payload,
-            _maxMessageBytes,
-            cancellationToken,
-            "response.create",
-            ResponseCreateExcludedProperties);
+        try
+        {
+            await WebSocketJsonWriter.SendAsync(
+                Socket,
+                payload,
+                _maxRequestBodyBytes,
+                cancellationToken,
+                "response.create",
+                ResponseCreateExcludedProperties);
+        }
+        catch (InvalidDataException exception)
+        {
+            // The WS writer only uses InvalidDataException for its byte budget.
+            // Preserve that guard if a mutable payload changes after preflight.
+            throw new RequestBudgetExceededException(_maxRequestBodyBytes, innerException: exception);
+        }
     }
 
+    // Preserve the public payload-only ABI for existing lease users.
     public async Task<Dictionary<string, object?>?> ReceiveAsync(
+        int timeoutSeconds,
+        CancellationToken cancellationToken) =>
+        (await ReceiveDataAsync(timeoutSeconds, cancellationToken))?.Payload;
+
+    /// <summary>Returns only EOM, M-admitted JSON objects, with independently owned original UTF-8.</summary>
+    internal async Task<ReceivedJsonMessage?> ReceiveDataAsync(
         int timeoutSeconds,
         CancellationToken cancellationToken)
     {
@@ -296,10 +328,12 @@ public sealed class ResponsesWebSocketLease : IAsyncDisposable
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
-                    throw new UpstreamException("upstream WebSocket stream idle timeout", ProxyHttpStatus.GatewayTimeout);
+                    throw new UpstreamException(
+                        "upstream WebSocket stream idle timeout", ProxyHttpStatus.GatewayTimeout,
+                        errorCode: "websocket_idle_timeout");
                 }
                 if (received.MessageType == WebSocketMessageType.Close) return null;
-                if (received.MessageType != WebSocketMessageType.Text || message.Length + received.Count > _maxMessageBytes)
+                if (received.MessageType != WebSocketMessageType.Text || message.Length + received.Count > _maxResponseMessageBytes)
                     throw new UpstreamException("upstream WebSocket returned an invalid message.", ProxyHttpStatus.BadGateway);
                 message.Write(buffer, 0, received.Count);
             }
@@ -309,8 +343,11 @@ public sealed class ResponsesWebSocketLease : IAsyncDisposable
             {
                 message.TryGetBuffer(out var contents);
                 using var json = JsonDocument.Parse(contents.AsMemory(0, checked((int)message.Length)));
-                return WebSearchPayload.FromJsonElement(json.RootElement) as Dictionary<string, object?>
+                var payload = WebSearchPayload.FromJsonElement(json.RootElement) as Dictionary<string, object?>
                     ?? throw new JsonException("A JSON object is required.");
+                // EOM and object parsing succeeded within the raw receive M budget. Transfer a
+                // fresh exact-size array, never contents from the reusable/reset receive stream.
+                return new ReceivedJsonMessage(payload, message.ToArray());
             }
             catch (JsonException)
             {

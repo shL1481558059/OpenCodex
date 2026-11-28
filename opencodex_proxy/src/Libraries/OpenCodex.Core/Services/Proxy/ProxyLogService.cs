@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using OpenCodex.Core.Domain;
+using OpenCodex.Core.Errors;
 using OpenCodex.ProtocolConversion;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Data;
@@ -37,15 +38,16 @@ public sealed class ProxyLogService : IProxyLogService
         IOpenCodexDbContext dbContext,
         IRepository<RequestLog> logRepository,
         IRepository<User> userRepository,
-        IEventBus? eventBus = null,
-        ProxyAuditSpool? auditSpool = null)
+        ProxyAuditSpool auditSpool,
+        IEventBus? eventBus = null)
     {
         _settingsProvider = settingsProvider;
         _catalog = catalog;
         _logRepository = logRepository;
         _userRepository = userRepository;
         _contentStore = new LogContentStore(dbContext);
-        _auditSpool = auditSpool ?? ProxyAuditSpool.Default;
+        ArgumentNullException.ThrowIfNull(auditSpool);
+        _auditSpool = auditSpool;
         _eventBus = eventBus;
     }
 
@@ -84,10 +86,21 @@ public sealed class ProxyLogService : IProxyLogService
         RequestLogContentSlot[] queuedSlots = context.BodyHandles?.UpstreamRequest is null
             ? [RequestLogContentSlot.RequestHeaders, RequestLogContentSlot.RequestBody]
             : [RequestLogContentSlot.RequestHeaders, RequestLogContentSlot.RequestBody, RequestLogContentSlot.UpstreamRequestBody];
-        _contentStore.WriteBodies(log.Id, queuedSlots,
-            slot => context.BodyHandles?.ForSlot(slot) ?? (slot == RequestLogContentSlot.RequestHeaders
-                ? ProxyLogBodyHandle.CaptureJson(context.RequestHeaders)
-                : ProxyLogBodyHandle.FromOwnedUtf8(RawBodyMemory(context.RawRequestBody, context.Payload))));
+        using var queuedBudget = context.BodyHandles?.Headers is not null && context.BodyHandles.Request is not null
+            ? null : RequestExecutionBudget.Create(_auditSpool);
+        var missingHeaders = context.BodyHandles?.Headers is null
+            ? RequestExecutionBudget.AuditBytes(context.RequestHeaders, CancellationToken.None) : 0;
+        var missingRequest = context.BodyHandles?.Request is null
+            ? context.RawRequestBody is { Length: > 0 } raw ? raw.Length
+                : RequestExecutionBudget.AuditBytes(context.Payload, CancellationToken.None)
+            : 0;
+        queuedBudget?.EnsureAudit(checked(missingHeaders + missingRequest), 2, CancellationToken.None);
+        _contentStore.WriteBodies(log.Id, queuedSlots, slot => context.BodyHandles?.ForSlot(slot)
+            ?? (slot == RequestLogContentSlot.RequestHeaders
+                ? queuedBudget!.CaptureAuditJson(context.RequestHeaders, CancellationToken.None)
+                : context.RawRequestBody is { Length: > 0 } rawBody
+                    ? queuedBudget!.CaptureAuditUtf8(rawBody.Span, CancellationToken.None)
+                    : queuedBudget!.CaptureAuditJson(context.Payload, CancellationToken.None)));
         PublishLogWritten(log.Id, ownerUsername, 0, null);
         return log.Id;
     }
@@ -125,85 +138,104 @@ public sealed class ProxyLogService : IProxyLogService
             nameof(RequestLog.LifecycleStatus),
             nameof(RequestLog.ProcessingStartedAt));
 
+        using var processingBudget = context.UpstreamRequestBody is null ? RequestExecutionBudget.Create(_auditSpool) : null;
+        if (context.UpstreamRequestBody is null)
+            processingBudget!.EnsureAudit(RequestExecutionBudget.AuditBytes(context.UpstreamRequest, CancellationToken.None),
+                1, CancellationToken.None);
         _contentStore.WriteBodies(requestLogId, [RequestLogContentSlot.UpstreamRequestBody],
-            _ => context.UpstreamRequestBody ?? _auditSpool.CaptureJson(context.UpstreamRequest));
+            _ => context.UpstreamRequestBody ?? processingBudget!.CaptureAuditJson(context.UpstreamRequest, CancellationToken.None));
         PublishLogWritten(requestLogId, ownerUsername, 0, null);
     }
 
     public async Task CompleteLogAsync(Guid requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
     {
-        await CompleteLogAsync(requestLogId, new ProxyRequestLogContext(
-            context.RequestId,
-            context.OwnerUsername,
-            context.ApiKeyId,
-            context.Payload,
-            context.UpstreamRequest,
-            context.UpstreamResponse,
-            context.ResponsePayload,
-            context.ErrorResponse,
-            context.RequestModel,
-            context.UpstreamModel,
-            context.ChannelId,
-            context.ChannelType,
-            context.IsStream,
-            context.TtftMs,
-            context.StatusCode,
-            context.DurationMs,
-            context.Error,
-            context.WebSearchDetails,
-            request.Method,
-            request.Path,
-            request.ClientIp,
-            request.Headers,
-            context.RequestType,
-            context.ParentRequestLogId,
-            context.OcrDetails,
-            request.RawBody)
+        try
         {
-            AggregatedUsage = context.AggregatedUsage,
-            BodyHandles = MergeBodyHandles(context, request)
-        });
+            using var budget = RequestExecutionBudget.Create(_auditSpool, request, null, 0, CancellationToken.None);
+            await CompleteLogAsync(requestLogId, new ProxyRequestLogContext(
+                context.RequestId,
+                context.OwnerUsername,
+                context.ApiKeyId,
+                context.Payload,
+                context.UpstreamRequest,
+                context.UpstreamResponse,
+                context.ResponsePayload,
+                context.ErrorResponse,
+                context.RequestModel,
+                context.UpstreamModel,
+                context.ChannelId,
+                context.ChannelType,
+                context.IsStream,
+                context.TtftMs,
+                context.StatusCode,
+                context.DurationMs,
+                context.Error,
+                context.WebSearchDetails,
+                request.Method,
+                request.Path,
+                request.ClientIp,
+                request.Headers,
+                context.RequestType,
+                context.ParentRequestLogId,
+                context.OcrDetails,
+                request.RawBody)
+            {
+                AggregatedUsage = context.AggregatedUsage,
+                BodyHandles = MergeBodyHandles(context, request)
+            }, budget);
+        }
+        finally { DisposeReceivedBodies(request.LogBodies, context.UpstreamRequestBody); }
     }
 
     public async Task<Guid> WriteLogAsync(ProxyLogContext context, ProxyRequestMetadata request)
     {
-        return await WriteLogAsync(new ProxyRequestLogContext(
-            context.RequestId,
-            context.OwnerUsername,
-            context.ApiKeyId,
-            context.Payload,
-            context.UpstreamRequest,
-            context.UpstreamResponse,
-            context.ResponsePayload,
-            context.ErrorResponse,
-            context.RequestModel,
-            context.UpstreamModel,
-            context.ChannelId,
-            context.ChannelType,
-            context.IsStream,
-            context.TtftMs,
-            context.StatusCode,
-            context.DurationMs,
-            context.Error,
-            context.WebSearchDetails,
-            request.Method,
-            request.Path,
-            request.ClientIp,
-            request.Headers,
-            context.RequestType,
-            context.ParentRequestLogId,
-            context.OcrDetails,
-            request.RawBody)
+        try
         {
-            AggregatedUsage = context.AggregatedUsage,
-            BodyHandles = MergeBodyHandles(context, request)
-        });
+            using var budget = RequestExecutionBudget.Create(_auditSpool, request, null, 0, CancellationToken.None);
+            return await WriteCompletedLogAsync(_settingsProvider.GetSettings(), new ProxyRequestLogContext(
+                context.RequestId,
+                context.OwnerUsername,
+                context.ApiKeyId,
+                context.Payload,
+                context.UpstreamRequest,
+                context.UpstreamResponse,
+                context.ResponsePayload,
+                context.ErrorResponse,
+                context.RequestModel,
+                context.UpstreamModel,
+                context.ChannelId,
+                context.ChannelType,
+                context.IsStream,
+                context.TtftMs,
+                context.StatusCode,
+                context.DurationMs,
+                context.Error,
+                context.WebSearchDetails,
+                request.Method,
+                request.Path,
+                request.ClientIp,
+                request.Headers,
+                context.RequestType,
+                context.ParentRequestLogId,
+                context.OcrDetails,
+                request.RawBody)
+            {
+                AggregatedUsage = context.AggregatedUsage,
+                BodyHandles = MergeBodyHandles(context, request)
+            }, budget);
+        }
+        finally { DisposeReceivedBodies(request.LogBodies, context.UpstreamRequestBody); }
     }
 
     public async Task<Guid> WriteLogAsync(ProxyRequestLogContext context)
     {
-        var settings = _settingsProvider.GetSettings();
-        return await WriteCompletedLogAsync(settings, context);
+        try
+        {
+            var settings = _settingsProvider.GetSettings();
+            using var budget = RequestExecutionBudget.Create(_auditSpool);
+            return await WriteCompletedLogAsync(settings, context, budget);
+        }
+        finally { DisposeReceivedBodies(context.BodyHandles); }
     }
 
     // 计费时刻取请求进入网关的时刻(日志 CreatedAt):账单可复算,
@@ -230,7 +262,7 @@ public sealed class ProxyLogService : IProxyLogService
         return value.ToUnixTimeMilliseconds() / 1000.0;
     }
 
-    private async Task<Guid> CompleteLogAsync(Guid requestLogId, ProxyRequestLogContext context)
+    private async Task<Guid> CompleteLogAsync(Guid requestLogId, ProxyRequestLogContext context, RequestExecutionBudget budget)
     {
         var settings = _settingsProvider.GetSettings();
         var usage = ExtractUsage(context);
@@ -238,7 +270,7 @@ public sealed class ProxyLogService : IProxyLogService
        var log = _logRepository.Table.FirstOrDefault(item => item.Id == requestLogId);
         if (log is null)
         {
-            return await WriteCompletedLogAsync(settings, context);
+            return await WriteCompletedLogAsync(settings, context, budget);
         }
 
         var ownerUsername = context.OwnerUsername.Length == 0
@@ -317,7 +349,7 @@ public sealed class ProxyLogService : IProxyLogService
             nameof(RequestLog.ConversationWindowId),
             nameof(RequestLog.PreviousResponseId));
 
-        WriteSnapshotSlots(requestLogId,context);
+        WriteSnapshotSlots(requestLogId, context, budget);
 
         if (context.RequestType == ProxyRequestTypes.Main)
         {
@@ -354,7 +386,8 @@ public sealed class ProxyLogService : IProxyLogService
         return log.Id;
     }
 
-    private async Task<Guid> WriteCompletedLogAsync(OpenCodexRuntimeSettings settings, ProxyRequestLogContext context)
+    private async Task<Guid> WriteCompletedLogAsync(OpenCodexRuntimeSettings settings, ProxyRequestLogContext context,
+        RequestExecutionBudget budget)
     {
         var ownerUsername = context.OwnerUsername.Length == 0
             ? DefaultOwnerUsername(settings)
@@ -420,7 +453,8 @@ public sealed class ProxyLogService : IProxyLogService
                 UpstreamResponseModelReader.Read(context.UpstreamResponse)),
             context.RequestHeaders,
             context.Payload,
-            context);
+            context,
+            budget);
 
         PublishLogWritten(logId, ownerUsername, context.StatusCode, context.Error);
         return logId;
@@ -474,7 +508,8 @@ public sealed class ProxyLogService : IProxyLogService
         RequestLogWriteDto record,
         IReadOnlyDictionary<string, string> requestHeaders,
         IReadOnlyDictionary<string, object?>? requestPayload,
-        ProxyRequestLogContext snapshotContext)
+        ProxyRequestLogContext snapshotContext,
+        RequestExecutionBudget budget)
     {
         var log = new RequestLog
         {
@@ -514,7 +549,7 @@ public sealed class ProxyLogService : IProxyLogService
         ApplyConversationMetadata(log, requestHeaders, requestPayload);
         _logRepository.Insert(log);
 
-        WriteSnapshotSlots(log.Id,snapshotContext);
+        WriteSnapshotSlots(log.Id, snapshotContext, budget);
 
         if (record.RequestType == ProxyRequestTypes.Main)
         {
@@ -562,6 +597,20 @@ public sealed class ProxyLogService : IProxyLogService
         RequestLogContentSlot.OcrJson
     ];
 
+    private static void DisposeReceivedBodies(ProxyLogBodyHandles? bodies, ProxyLogBodyHandle? upstreamBody = null)
+    {
+        try { bodies?.Headers?.Dispose(); }
+        finally
+        {
+            try { bodies?.Request?.Dispose(); }
+            finally
+            {
+                try { bodies?.UpstreamRequest?.Dispose(); }
+                finally { upstreamBody?.Dispose(); }
+            }
+        }
+    }
+
     private static ProxyLogBodyHandles? MergeBodyHandles(ProxyLogContext context, ProxyRequestMetadata request)
     {
         if (request.LogBodies is null && context.UpstreamRequestBody is null) return null;
@@ -569,32 +618,49 @@ public sealed class ProxyLogService : IProxyLogService
             context.UpstreamRequestBody ?? request.LogBodies?.UpstreamRequest);
     }
 
-    private void WriteSnapshotSlots(Guid id, ProxyRequestLogContext context)
+    private void WriteSnapshotSlots(Guid id, ProxyRequestLogContext context, RequestExecutionBudget budget)
     {
-        var captured = new List<ProxyLogBodyHandle>();
-        try
+        // Direct logging has no model admission phase. It reserves the exact new slots on
+        // the shared ledger; admitted Core requests only consume their existing credits.
+        if (budget.OwnsReservation)
         {
-            _contentStore.WriteBodies(id,ContentSlots,slot=>
+            long bytes = 0;
+            foreach (var slot in ContentSlots)
             {
-                if (context.BodyHandles?.ForSlot(slot) is { } shared) return shared;
-                if (slot == RequestLogContentSlot.RequestBody)
-                    return ProxyLogBodyHandle.FromOwnedUtf8(RawBodyMemory(context.RawRequestBody,context.Payload));
-                object? value = slot switch
+                if (context.BodyHandles?.ForSlot(slot) is not null) continue;
+                if (slot == RequestLogContentSlot.RequestBody && context.RawRequestBody is { Length: > 0 } raw)
+                    bytes = checked(bytes + raw.Length);
+                else
                 {
-                    RequestLogContentSlot.RequestHeaders => context.RequestHeaders,
-                    RequestLogContentSlot.UpstreamRequestBody => context.UpstreamRequest,
-                    RequestLogContentSlot.UpstreamResponseBody => context.UpstreamResponse,
-                    RequestLogContentSlot.ResponseBody => context.ResponsePayload ?? context.ErrorResponse,
-                    RequestLogContentSlot.WebSearchJson => context.WebSearchDetails,
-                    RequestLogContentSlot.OcrJson => context.OcrDetails,
-                    _ => throw new ArgumentOutOfRangeException(nameof(slot))
-                };
-                if (value is null && slot is RequestLogContentSlot.WebSearchJson or RequestLogContentSlot.OcrJson) return null;
-                var handle=_auditSpool.CaptureJson(value);captured.Add(handle);return handle;
-            });
+                    var value = SnapshotValue(context, slot);
+                    if (value is null && slot is RequestLogContentSlot.WebSearchJson or RequestLogContentSlot.OcrJson) continue;
+                    bytes = checked(bytes + RequestExecutionBudget.AuditBytes(value, CancellationToken.None));
+                }
+            }
+            budget.EnsureAudit(bytes, ContentSlots.Length, CancellationToken.None);
         }
-        finally { foreach (var handle in captured) handle.Dispose(); }
+        _contentStore.WriteBodies(id, ContentSlots, slot =>
+        {
+            if (context.BodyHandles?.ForSlot(slot) is { } shared) return shared;
+            if (slot == RequestLogContentSlot.RequestBody && context.RawRequestBody is { Length: > 0 } raw)
+                return budget.CaptureAuditUtf8(raw.Span, CancellationToken.None);
+            var value = SnapshotValue(context, slot);
+            if (value is null && slot is RequestLogContentSlot.WebSearchJson or RequestLogContentSlot.OcrJson) return null;
+            return budget.CaptureAuditJson(value, CancellationToken.None);
+        });
     }
+
+    private static object? SnapshotValue(ProxyRequestLogContext context, RequestLogContentSlot slot) => slot switch
+    {
+        RequestLogContentSlot.RequestHeaders => context.RequestHeaders,
+        RequestLogContentSlot.RequestBody => context.Payload,
+        RequestLogContentSlot.UpstreamRequestBody => context.UpstreamRequest,
+        RequestLogContentSlot.UpstreamResponseBody => context.UpstreamResponse,
+        RequestLogContentSlot.ResponseBody => context.ResponsePayload ?? context.ErrorResponse,
+        RequestLogContentSlot.WebSearchJson => context.WebSearchDetails,
+        RequestLogContentSlot.OcrJson => context.OcrDetails,
+        _ => throw new ArgumentOutOfRangeException(nameof(slot))
+    };
 
     private static ReadOnlyMemory<byte> RawBodyMemory(
         ReadOnlyMemory<byte>? rawRequestBody, Dictionary<string, object?>? payload) =>

@@ -64,6 +64,9 @@ services:
       - MultiAgent__StateDirectory=/app/logs/multi-agent-runs
       - MultiAgent__NativeClientState__RedisTtlHours=24
       - MultiAgent__NativeClientState__RedisMaxValueBytes=8388608
+      # Snapshot/history spool must live on the mounted volume: the default temp
+      # directory is wiped on every --force-recreate deployment.
+      - ProxyAuditSpool__Directory=/app/logs/audit-spool
       - Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command=Warning
     volumes:
       - ./logs:/app/logs

@@ -1,6 +1,8 @@
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using OpenCodex.ProtocolConversion.Abstractions;
+using OpenCodex.ProtocolConversion.Protocols;
 
 namespace OpenCodex.ProtocolConversion.Json;
 
@@ -22,15 +24,65 @@ internal static class ProtocolJsonWriter
             Encoder = audit ? JavaScriptEncoder.UnsafeRelaxedJsonEscaping : JavaScriptEncoder.Default
         }))
         {
-            if (audit) Write(writer, value, 0);
+            if (audit || value is IProtocolJsonValue) Write(writer, value, 0, cancellationToken);
             else JsonSerializer.Serialize(writer, value);
         }
         return sink.Length;
     }
 
-    private sealed class CountingStream(CancellationToken cancellationToken) : Stream
+    // Uses the same segmented writer as HTTP/audit content, with the encoder
+    // chosen explicitly. Existing Count keeps its response-capture semantics.
+    internal static long Measure(object? value, JavaScriptEncoder encoder, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(encoder);
+        cancellationToken.ThrowIfCancellationRequested();
+        using var sink = new CountingStream(cancellationToken);
+        using (var writer = new Utf8JsonWriter(sink, new() { Encoder = encoder }))
+        {
+            Write(writer, value, 0, cancellationToken);
+        }
+        return sink.Length;
+    }
+
+    // A root-only request budget. No caller-selected request limit can bypass it.
+    // Type override/exclusions mirror the final Responses WS root on the wire.
+    internal static long ValidateRequest(
+        object? value,
+        CancellationToken cancellationToken,
+        string? typeOverride = null,
+        IReadOnlySet<string>? excludedProperties = null)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var sink = new CountingStream(cancellationToken, Parameters.MaxRequestBodyBytes);
+        using (var writer = new Utf8JsonWriter(sink))
+        {
+            if (typeOverride is null && excludedProperties is null)
+            {
+                Write(writer, value, 0, cancellationToken);
+            }
+            else
+            {
+                if (value is not IReadOnlyDictionary<string, object?> dictionary)
+                    throw new ArgumentException("A JSON object is required for a request root override.", nameof(value));
+                writer.WriteStartObject();
+                if (typeOverride is not null) writer.WriteString("type", typeOverride);
+                foreach (var pair in dictionary)
+                {
+                    if (pair.Key == "type" && typeOverride is not null
+                        || excludedProperties?.Contains(pair.Key) == true) continue;
+                    writer.WritePropertyName(pair.Key);
+                    Write(writer, pair.Value, 1, cancellationToken);
+                }
+                writer.WriteEndObject();
+            }
+        }
+        return sink.Length;
+    }
+
+    private sealed class CountingStream(CancellationToken cancellationToken, long? maximumBytes = null) : Stream
     {
         private long _length;
+        private RequestBudgetExceededException? _budgetExceeded;
         public override bool CanRead => false;
         public override bool CanSeek => false;
         public override bool CanWrite => true;
@@ -41,27 +93,35 @@ internal static class ProtocolJsonWriter
         public override void Write(ReadOnlySpan<byte> buffer)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (_budgetExceeded is not null) throw _budgetExceeded;
             _length = checked(_length + buffer.Length);
+            if (maximumBytes is { } maximum && _length > maximum)
+                throw _budgetExceeded = new RequestBudgetExceededException(maximum, _length);
         }
         public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
         public override void SetLength(long value) => throw new NotSupportedException();
     }
 
-    public static void Write(Utf8JsonWriter writer, object? value, int depth)
+    public static void Write(Utf8JsonWriter writer, object? value, int depth, CancellationToken cancellationToken = default)
     {
         if (depth > 64)
         {
             throw new JsonException("Protocol JSON exceeds maximum depth or contains a cycle.");
         }
 
-        if (value is IReadOnlyDictionary<string, object?> dictionary)
+        cancellationToken.ThrowIfCancellationRequested();
+        if (value is IProtocolJsonValue streamed)
+        {
+            streamed.Write(writer, cancellationToken);
+        }
+        else if (value is IReadOnlyDictionary<string, object?> dictionary)
         {
             writer.WriteStartObject();
             foreach (var pair in dictionary)
             {
                 writer.WritePropertyName(pair.Key);
-                Write(writer, pair.Value, depth + 1);
+                Write(writer, pair.Value, depth + 1, cancellationToken);
             }
             writer.WriteEndObject();
         }
@@ -70,7 +130,7 @@ internal static class ProtocolJsonWriter
             writer.WriteStartArray();
             foreach (var item in items)
             {
-                Write(writer, item, depth + 1);
+                Write(writer, item, depth + 1, cancellationToken);
             }
             writer.WriteEndArray();
         }

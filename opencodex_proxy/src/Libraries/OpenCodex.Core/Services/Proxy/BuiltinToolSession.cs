@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using OpenCodex.Core.Errors;
+using System.Text.Json;
 using OpenCodex.ProtocolConversion;
 using OpenCodex.Core.Services.WebSearch;
 using OpenCodex.CoreBase.Domain.Proxy;
@@ -30,6 +31,9 @@ internal sealed class BuiltinToolSession(
     private bool _searchDisabled;
     private int _providerCalls;
     private int _invalidCalls;
+
+    public Action<Dictionary<string, object?>, Dictionary<string, object?>, CancellationToken>? BeforeToolExecution { get; init; }
+    public Action<WebSearchToolResult, CancellationToken>? AfterToolExecution { get; init; }
 
     public BuiltinToolRequestContext Binding => binding;
     public IReadOnlyList<WebSearchToolResult> Results => _results;
@@ -63,6 +67,32 @@ internal sealed class BuiltinToolSession(
             ["error"] = error,
             ["usage"] = DeepCopyObject(usage)
         });
+    }
+
+    private static WebSearchToolResult FailedToolResult(string callId, string query, Exception exception,
+        WebSearchToolResult? returned)
+    {
+        var message = exception is OperationCanceledException ? "Web search was cancelled." : "Web search execution failed.";
+        var failed = WebSearchToolResult.Failed(callId, query, message, true);
+        var upstream = exception as UpstreamException;
+        var raw = returned?.Raw ?? upstream?.Body;
+        try
+        {
+            if (!RequestExecutionBudget.IsBoundedToolRaw(raw)) raw = null;
+        }
+        catch (Exception invalid) when (invalid is JsonException or ArgumentException or FormatException or OverflowException)
+        {
+            // A custom parsed producer did not provide a representable bounded source.
+            // Do not invent wire bytes or retain an unbounded rejected object.
+            raw = null;
+        }
+        var normalized = ResourceErrors.Normalize(exception);
+        var code = normalized is StorageCapacityException capacity ? capacity.ErrorCode : upstream?.ErrorCode;
+        return new WebSearchToolResult(callId, query, "failed", failed.ToolResult, failed.OpenCodexResult,
+            code is null ? failed.LogError : normalized.Message,
+            returned?.Provider ?? upstream?.ChannelId, returned?.KeyId, returned?.KeyPosition,
+            returned?.KeyUsageCount, returned?.KeyUsageLimit, code ?? returned?.ErrorType,
+            returned?.HttpStatus ?? upstream?.StatusCode, raw) { DisableSearch = true };
     }
 
     public static int? OutputTokenBudget(IReadOnlyDictionary<string, object?> payload) =>
@@ -144,20 +174,24 @@ internal sealed class BuiltinToolSession(
 
                 var itemId = $"{WebSearchRequestPolicy.PublicItemPrefix}{Guid.NewGuid():N}";
                 var query = WebSearchRequestPolicy.ParseQuery(call.Arguments).Query ?? string.Empty;
+                var willExecute = !_searchDisabled && _providerCalls < binding.MaxWebSearchCalls
+                    && _rounds.Count < binding.MaxWebSearchCalls + 3;
+                if (willExecute)
+                    BeforeToolExecution?.Invoke(request, WebSearchSimulationLog.Build(_results, _rounds, _retries),
+                        Token(cancellationToken));
                 yield return new BuiltinToolProgress(itemId, query, null);
                 binding.HasExecuted = true;
-                WebSearchToolResult result;
+                WebSearchToolResult? result = null;
                 try
                 {
-                    result = _searchDisabled || _providerCalls >= binding.MaxWebSearchCalls
-                        || _rounds.Count >= binding.MaxWebSearchCalls + 3
-                        ? WebSearchToolResult.Failed(call.Id, query, "Further web search calls are disabled for this response.", true)
-                        : await executor.ExecuteAsync(call.Id, call.Arguments, binding.WebSearch, Token(cancellationToken));
+                    result = willExecute
+                        ? await executor.ExecuteAsync(call.Id, call.Arguments, binding.WebSearch, Token(cancellationToken))
+                        : WebSearchToolResult.Failed(call.Id, query, "Further web search calls are disabled for this response.", true);
+                    AfterToolExecution?.Invoke(result, Token(cancellationToken));
                 }
                 catch (Exception exception)
                 {
-                    var failed = WebSearchToolResult.Failed(call.Id, query,
-                        exception is OperationCanceledException ? "Web search was cancelled." : "Web search execution failed.", true);
+                    var failed = FailedToolResult(call.Id, query, exception, result);
                     failed.ItemId = itemId;
                     _executed.Add(call.Id, (call.Arguments, failed));
                     _results.Add(failed);

@@ -17,8 +17,22 @@ using Xunit;
 
 namespace OpenCodex.Api.Tests;
 
-public sealed class ServiceQueryGovernanceTests
+public sealed class ServiceQueryGovernanceTests : IDisposable
 {
+    private readonly string _auditDirectory = Path.Combine(Path.GetTempPath(), "opencodex-query-fixture-" + Guid.NewGuid().ToString("N"));
+    private readonly ProxyAuditSpool _auditSpool;
+
+    public ServiceQueryGovernanceTests()
+    {
+        _auditSpool = new ProxyAuditSpool(new() { Directory = _auditDirectory });
+    }
+
+    public void Dispose()
+    {
+        _auditSpool.Dispose();
+        if (Directory.Exists(_auditDirectory)) Directory.Delete(_auditDirectory, recursive: true);
+    }
+
     private static readonly Guid AdminId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid AliceId = Guid.Parse("22222222-2222-2222-2222-222222222222");
 
@@ -508,7 +522,8 @@ public sealed class ServiceQueryGovernanceTests
             CreateEmptyCatalog(db),
             db,
             new EfRepository<RequestLog>(db),
-            new EfRepository<User>(db));
+            new EfRepository<User>(db),
+            _auditSpool);
 
         capture.Reset();
         for (var i = 0; i < 3; i++)
@@ -541,7 +556,8 @@ public sealed class ServiceQueryGovernanceTests
             CreateEmptyCatalog(db),
             db,
             new EfRepository<RequestLog>(db),
-            new EfRepository<User>(db));
+            new EfRepository<User>(db),
+            _auditSpool);
 
         // 第一次解析 bob 时用户尚不存在，不应把 Guid.Empty 记进请求内缓存。
         capture.Reset();

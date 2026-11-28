@@ -22,6 +22,7 @@ using OpenCodex.CoreBase.Caching;
 using OpenCodex.Core.Services.Proxy;
 using OpenCodex.Core.Services.WebSearch;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.Services;
 using OpenCodex.CoreBase.Services.Proxy;
 using OpenCodex.CoreBase.Services.WebSearch;
@@ -37,6 +38,7 @@ public static class OpenCodexServiceCollectionExtensions
         this IServiceCollection services,
         IConfiguration configuration)
     {
+        RuntimeCapacityConfiguration.Validate(configuration);
         var sseWriter = new SseWriteOptions();
         sseWriter.Validate();
         services.AddSingleton(Options.Create(sseWriter));
@@ -237,8 +239,9 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<IRealtimeStreamService, RealtimeStreamService>();
         services.AddScoped<IProxyService, ProxyService>();
         services.AddScoped<MultiAgentResponseService>();
-        services.AddSingleton(provider => new OpenCodex.Core.Services.MultiAgent.ClientConnectionCache(
-            provider.GetRequiredService<IConfiguration>().GetSection("MultiAgent:ClientWebSocketCache").Get<OpenCodex.Core.Services.MultiAgent.ClientConnectionCacheOptions>()));
+        services.AddSingleton<SnapshotStore>();
+        services.AddHostedService<CapacityStartupValidation>();
+        services.AddSingleton<OpenCodex.Core.Services.MultiAgent.ClientConnectionCache>();
         services.AddScoped<ResponsesWebSocketClientService>();
         services.AddScoped<IObservabilityQueryService, ObservabilityQueryService>();
         services.AddScoped<ISessionControllerService, SessionControllerService>();

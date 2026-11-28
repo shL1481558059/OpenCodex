@@ -6,6 +6,7 @@ using OpenCodex.Api.Infrastructure;
 using OpenCodex.Core.Errors;
 using OpenCodex.Core.Services.MultiAgent;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Domain.Proxy;
 using OpenCodex.CoreBase.Services.Proxy;
 
 namespace OpenCodex.Api.Services;
@@ -33,49 +34,58 @@ public sealed partial class MultiAgentResponseService
         MultiAgentRun? connectionRun = null;
         NativeClientSession? connectionBinding = null;
         string? connectionSession = null;
-        using var knownIds=HttpContext.RequestServices.GetRequiredService<ClientConnectionCache>().Open(identity.ApiKeyId);
+        ClientConnectionCache.Connection? knownIds = null;
+        SnapshotReservation? identityReservation = null;
         var streamingLimits=StreamingOptions();
         if(streamingLimits.MaxPendingInjections<=0||streamingLimits.MaxPendingInjectionBytes<=0||streamingLimits.MaxPendingInjectionBytes>long.MaxValue/8)throw new InvalidOperationException("Invalid injection queue limits.");
         long pendingInjectionBytes=0;
         var sequence = 0;
 
-        async Task Send(Dictionary<string, object?> item)
+        Task Send(Dictionary<string, object?> item) => SendFrame(item, recordIdentity: true);
+
+        async Task SendFrame(Dictionary<string, object?> item, bool recordIdentity)
         {
             await sendGate.WaitAsync(ct);
             try
             {
                 var type = JsonDictionaryValue.String(item, "type");
+                if (type is "response.completed" or "response.failed" or "response.incomplete" && terminalResponseId.Length > 0) return;
+                var nextSequence = sequence;
+                if (item.TryGetValue("sequence_number", out var value))
+                {
+                    nextSequence = Math.Max(sequence + 1, WebSearchPayload.ToInt(value, sequence));
+                    item["sequence_number"] = nextSequence;
+                }
+                if (OpenCodex.ProtocolConversion.Json.ProtocolJsonWriter.Count(item, audit: false, ct)
+                    > OpenCodex.ProtocolConversion.ProtocolConversionParameters.Current.SseMaxEventBytes)
+                    throw new InvalidDataException("A generated WebSocket message exceeds configured MaxEventBytes.");
                 var responseId = JsonDictionaryValue.Get(item, "response") is IReadOnlyDictionary<string, object?> response
-                    ? JsonDictionaryValue.String(response, "id")
-                    : "";
+                    ? JsonDictionaryValue.String(response, "id") : "";
                 if (type == "response.created" && responseId.Length > 0)
                 {
                     activeResponseId = responseId;
-                    knownIds.RememberId(responseId);
+                    if (recordIdentity) knownIds!.RememberId(responseId,
+                        identityReservation ?? throw new InvalidOperationException("The response has no identity reservation."), ct);
                 }
-                else if (type is "response.completed" or "response.failed" or "response.incomplete"
-                    && responseId.Length > 0)
+                else if (type is "response.completed" or "response.failed" or "response.incomplete" && responseId.Length > 0)
                 {
-                    knownIds.RememberId(responseId);
-                    knownIds.RememberResponse(responseId,CompletedResponseMarker,true,true);
+                    if (recordIdentity) knownIds!.RememberCompletion(responseId,
+                        identityReservation ?? throw new InvalidOperationException("The response has no identity reservation."), ct);
                     terminalResponseId = responseId;
                 }
-                if (item.TryGetValue("sequence_number", out var value))
-                {
-                    sequence = Math.Max(sequence + 1, WebSearchPayload.ToInt(value, sequence));
-                    item["sequence_number"] = sequence;
-                }
-                await OpenCodex.ProtocolConversion.Streaming.WebSocketJsonWriter.SendAsync(socket,item,OpenCodex.ProtocolConversion.ProtocolConversionParameters.Current.SseMaxEventBytes,ct);
+                sequence = nextSequence;
+                await OpenCodex.ProtocolConversion.Streaming.WebSocketJsonWriter.SendAsync(socket, item,
+                    OpenCodex.ProtocolConversion.ProtocolConversionParameters.Current.SseMaxEventBytes, ct);
             }
             finally { sendGate.Release(); }
         }
 
-        async Task ErrorAndClose(string message)
+        async Task ErrorAndClose(string message, int status = 400, string code = "invalid_payload")
         {
             await Send(new Dictionary<string, object?>
             {
-                ["type"] = "error", ["status"] = 400,
-                ["error"] = new Dictionary<string, object?> { ["type"] = "invalid_request_error", ["message"] = message }
+                ["type"] = "error", ["status"] = status,
+                ["error"] = new Dictionary<string, object?> { ["type"] = status == 507 ? "insufficient_storage" : "invalid_request_error", ["code"] = code, ["message"] = message }
             });
             await socket.CloseOutputAsync(WebSocketCloseStatus.InvalidPayloadData, "Invalid request", ct);
             stop.Cancel();
@@ -112,39 +122,63 @@ public sealed partial class MultiAgentResponseService
             catch (Exception exception)
             {
                 logger.LogError(exception, "Multi-agent WebSocket response failed for run {RunId}", run?.Id ?? binding?.ThreadId);
-                await Send(new Dictionary<string, object?>
+                if (terminalResponseId.Length > 0) return;
+                var failure = ResourceErrors.Normalize(exception);
+                var code = failure is StorageCapacityException capacity ? capacity.ErrorCode
+                    : failure is UpstreamException upstream && upstream.ErrorCode is { Length: > 0 } ? upstream.ErrorCode
+                    : failure is BadRequestException ? "invalid_request" : "server_error";
+                var status = failure is ProxyException proxy ? proxy.StatusCode : 502;
+                var failedId = activeResponseId.Length > 0 ? activeResponseId : run?.LastResponseId ?? responseId;
+                if (failedId.Length == 0 || !knownIds!.Knows(failedId))
+                {
+                    await ErrorAndClose(failure is ProxyException ? failure.Message : "The multi-agent response failed.", status, code);
+                    return;
+                }
+                await SendFrame(new Dictionary<string, object?>
                 {
                     ["type"] = "response.failed", ["sequence_number"] = 0,
                     ["response"] = new Dictionary<string, object?>
                     {
-                        ["id"] = run?.LastResponseId ?? responseId, ["object"] = "response", ["status"] = "failed",
+                        ["id"] = failedId, ["object"] = "response", ["status"] = "failed",
                         ["model"] = JsonDictionaryValue.String(request, "model"), ["output"] = new List<object?>(),
                         ["error"] = new Dictionary<string, object?>
                         {
-                            ["code"] = exception is ProxyException proxy ? proxy.ErrorType : "server_error",
-                            ["message"] = exception is BadRequestException ? exception.Message : "The multi-agent response failed. Check server logs before retrying."
+                            ["code"] = code,
+                            ["status"] = status,
+                            ["message"] = failure is ProxyException ? failure.Message : "The multi-agent response failed. Check server logs before retrying."
                         }
                     }
-                });
+                }, recordIdentity: false);
+                // The failed terminal is authoritative for this response even though sending it
+                // deliberately avoids fallible storage writes in the failure path.
+                knownIds!.MarkCompleted(failedId);
             }
             finally
             {
-                if (run is not null) responseId = run.LastResponseId;
-                if (responseId.Length > 0) knownIds.RememberId(responseId);
+                // Identity is registered by Send, never by a fallible cleanup operation.
                 channel.Writer.TryComplete();
-                if(runtimeLease is not null)await runtimeLease.DisposeAsync();
                 try
                 {
-                    while(channel.Reader.TryRead(out var pending))
-                    { pending.Dispose();if(!ct.IsCancellationRequested)await InjectionFailed(pending.ResponseId,pending.Input); }
+                    if (runtimeLease is not null) await runtimeLease.DisposeAsync();
                 }
-                finally{while(channel.Reader.TryRead(out var abandoned))abandoned.Dispose();}
+                finally
+                {
+                    try
+                    {
+                        while (channel.Reader.TryRead(out var pending))
+                        {
+                            pending.Dispose();
+                            if (!ct.IsCancellationRequested) await InjectionFailed(pending.ResponseId, pending.Input);
+                        }
+                    }
+                    finally { while (channel.Reader.TryRead(out var abandoned)) abandoned.Dispose(); }
+                }
             }
         }
 
         Task InjectionFailed(string responseId, List<object?> input)
         {
-            var completed = knownIds.FindResponse<object>(responseId) is not null || terminalResponseId==responseId;
+            var completed = knownIds!.IsCompleted(responseId) || terminalResponseId==responseId;
             return Send(new Dictionary<string, object?>
             {
                 ["type"] = "response.inject.failed", ["sequence_number"] = 0,
@@ -159,40 +193,24 @@ public sealed partial class MultiAgentResponseService
 
         try
         {
-            var buffer = new byte[16 * 1024];
+            knownIds = HttpContext.RequestServices.GetRequiredService<ClientConnectionCache>().Open(identity.ApiKeyId);
             while (socket.State == WebSocketState.Open && !ct.IsCancellationRequested)
             {
-                using var message = new MemoryStream();
-                WebSocketReceiveResult received;
-                do
-                {
-                    received = await socket.ReceiveAsync(buffer, ct);
-                    if (received.MessageType == WebSocketMessageType.Close)
-                    {
-                        await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Closed", ct);
-                        return new EmptyResult();
-                    }
-                    if (received.MessageType != WebSocketMessageType.Text || message.Length + received.Count > maximumBytes)
-                    {
-                        await ErrorAndClose("Only text JSON messages within the configured request size limit are accepted.");
-                        return new EmptyResult();
-                    }
-                    message.Write(buffer, 0, received.Count);
-                } while (!received.EndOfMessage);
-
                 Dictionary<string, object?> item;
                 try
                 {
-                    if (!message.TryGetBuffer(out var messageBuffer))
-                        throw new JsonException("The WebSocket message buffer is unavailable.");
-                    await using var payload = JsonPayload.FromOwnedUtf8(
-                        messageBuffer.AsMemory(0, checked((int)message.Length)));
-                    item = await payload.MaterializeObjectAsync(ct)
-                        ?? throw new JsonException("A JSON object is required.");
+                    var received = await WebSocketRequestReader.ReadAsync(socket, maximumBytes, ct);
+                    if (received is null) return new EmptyResult();
+                    item = received;
+                }
+                catch (OpenCodex.ProtocolConversion.Protocols.RequestBudgetExceededException exception)
+                {
+                    await ErrorAndClose(exception.Message, 413, "request_too_large");
+                    return new EmptyResult();
                 }
                 catch (JsonException)
                 {
-                    await ErrorAndClose("The message must be a valid JSON object.");
+                    await ErrorAndClose("The message must be a valid text JSON object.");
                     return new EmptyResult();
                 }
 
@@ -289,6 +307,8 @@ public sealed partial class MultiAgentResponseService
                     activeResponseId = "";
                     activeModel = "";
                     terminalResponseId = "";
+                    identityReservation?.Dispose();
+                    identityReservation = knownIds.ReserveIdentity(ct);
                     active = Execute(item, connectionRun, injections, generate, activeStop.Token);
                 }
                 else if (type == "response.interrupt")
@@ -316,10 +336,10 @@ public sealed partial class MultiAgentResponseService
                     {
                         activeStop.Cancel();
                         await active;
-                        interrupted = true;
+                        interrupted = terminalResponseId != responseId;
                     }
 
-                    if (knownIds.Knows(responseId)||activeResponseId==responseId||terminalResponseId==responseId)
+                    if (knownIds!.Knows(responseId)||activeResponseId==responseId||terminalResponseId==responseId)
                     {
                         await Send(new Dictionary<string, object?>
                         {
@@ -390,6 +410,14 @@ public sealed partial class MultiAgentResponseService
                 }
             }
         }
+        catch (SnapshotCapacityExceededException exception)
+        {
+            await ErrorAndClose(exception.Message, 507, "snapshot_capacity_exceeded");
+        }
+        catch (SnapshotPersistenceException exception)
+        {
+            await ErrorAndClose(exception.Message, 507, "snapshot_write_failed");
+        }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (WebSocketException exception)
         {
@@ -399,14 +427,24 @@ public sealed partial class MultiAgentResponseService
         {
             stop.Cancel();
             injections?.Writer.TryComplete();
-            try { await active; }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-            catch (WebSocketException) { }
-            activeStop?.Dispose();
+            try
+            {
+                try { await active; }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+                catch (WebSocketException) { }
+            }
+            finally
+            {
+                try { activeStop?.Dispose(); }
+                finally
+                {
+                    try { identityReservation?.Dispose(); }
+                    finally { knownIds?.Dispose(); }
+                }
+            }
         }
         return new EmptyResult();
     }
-    private static readonly object CompletedResponseMarker=new();
     private static Dictionary<string, object?> InterruptedResponse(string id,string model)=>new()
     {
         ["id"]=id,["object"]="response",["status"]="incomplete",

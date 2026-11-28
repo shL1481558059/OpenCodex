@@ -1,3 +1,5 @@
+using OpenCodex.ProtocolConversion;
+
 namespace OpenCodex.Api.Infrastructure;
 
 /// <summary>
@@ -5,15 +7,8 @@ namespace OpenCodex.Api.Infrastructure;
 /// </summary>
 public static class ProxyRequestLimits
 {
-    /// <summary>
-    /// 未配置时使用的默认上限（MiB）。
-    /// </summary>
-    public const int DefaultMaxRequestBodyMegabytes = 50;
-
-    private const int MinimumMegabytes = 1;
-    private const int MaximumMegabytes = 512;
-    private const string ConfigKey = "OpenCodex:MaxRequestBodyMb";
-    private const string EnvironmentKey = "OPENCODEX_MAX_REQUEST_BODY_MB";
+    private const string LegacyConfigKey = "OpenCodex:MaxRequestBodyMb";
+    private const string LegacyEnvironmentAlias = "OPENCODEX_MAX_REQUEST_BODY_MB";
 
     /// <summary>
     /// 解析生效的请求体上限（字节）。
@@ -22,10 +17,18 @@ public static class ProxyRequestLimits
     /// <returns>请求体上限字节数。</returns>
     public static long ResolveMaxRequestBodyBytes(IConfiguration configuration)
     {
-        var raw = configuration[ConfigKey] ?? configuration[EnvironmentKey];
-        var megabytes = int.TryParse(raw, out var parsed)
-            ? Math.Clamp(parsed, MinimumMegabytes, MaximumMegabytes)
-            : DefaultMaxRequestBodyMegabytes;
-        return megabytes * 1024L * 1024L;
+        ArgumentNullException.ThrowIfNull(configuration);
+        RejectLegacyKey(configuration, LegacyConfigKey);
+        RejectLegacyKey(configuration, LegacyEnvironmentAlias);
+        return ProtocolConversionParameters.Current.MaxRequestBodyBytes;
+    }
+
+    private static void RejectLegacyKey(IConfiguration configuration, string key)
+    {
+        if (configuration[key] is not null)
+        {
+            throw new InvalidOperationException(
+                $"Deprecated request-capacity configuration key {key}. Configure ProtocolConversion__MaxRequestBodyBytes in .env instead.");
+        }
     }
 }

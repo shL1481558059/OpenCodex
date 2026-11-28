@@ -2,13 +2,30 @@ using OpenCodex.Core.Errors;
 using OpenCodex.ProtocolConversion;
 using OpenCodex.Core.Services.MultiAgent;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Domain.Proxy;
 using Xunit;
 using D = System.Collections.Generic.Dictionary<string, object?>;
 
 namespace OpenCodex.Api.Tests;
 
-public sealed class NativeClientResponseExecutorTests
+public sealed class NativeClientResponseExecutorTests : IDisposable
 {
+    private readonly string _directory = Path.Combine(Path.GetTempPath(), "native-runner-fixture-" + Guid.NewGuid().ToString("N"));
+    private readonly ProxyAuditSpool _auditSpool;
+    private readonly List<NativeClientSessionStore> _stores = [];
+
+    public NativeClientResponseExecutorTests()
+    {
+        _auditSpool = new ProxyAuditSpool(new() { Directory = Path.Combine(_directory, "audit") });
+    }
+
+    public void Dispose()
+    {
+        foreach (var store in _stores) store.Dispose();
+        _auditSpool.Dispose();
+        if (Directory.Exists(_directory)) Directory.Delete(_directory, recursive: true);
+    }
+
     [Fact]
     public async Task ToolDoneWithoutAddedFailsWithoutPublishingDuplicateCompletion()
     {
@@ -529,22 +546,25 @@ public sealed class NativeClientResponseExecutorTests
     [InlineData(true)]
     public async Task IncompleteResponseCanContinueWithoutReplayingOrExecutingPartialTools(bool persist)
     {
-        var directory = Path.Combine(Path.GetTempPath(), "native-incomplete-" + Guid.NewGuid().ToString("N"));
+        var directory = Path.Combine(_directory, "incomplete-" + Guid.NewGuid().ToString("N"));
         var owner = Guid.NewGuid();
         var identity = new MultiAgentClientIdentity { ThreadId = "root", RootThreadId = "root", AgentName = "/root" };
         var store = new NativeClientSessionStore(directory);
+        _stores.Add(store);
         var session = await store.ResolveAsync(owner, identity, 1, default);
         var request = Request();
         var partial = Response("partial", Message("partial answer"), Tool("unfinished"));
         partial["status"] = "incomplete";
         partial["incomplete_details"] = new D { ["reason"] = "max_output_tokens" };
         var events = new List<D>();
-        await new NativeClientResponseExecutor(store).ExecuteAsync(session, request, "turn",
+        await new NativeClientResponseExecutor(store, _auditSpool).ExecuteAsync(session, request, "turn",
             (_, _, _) => Task.FromResult(partial), e => { events.Add(e); return Task.CompletedTask; }, default);
         Assert.DoesNotContain(events, e => Type(e) == "response.output_item.done");
         if (persist)
         {
+            store.Dispose();
             store = new NativeClientSessionStore(directory);
+            _stores.Add(store);
             session = await store.ResolveAsync(owner, identity, 1, default);
         }
         Assert.Null((await store.ProjectRequestAsync(session, request, "turn", default)).ReplayResponse);
@@ -554,7 +574,6 @@ public sealed class NativeClientResponseExecutorTests
         Assert.Equal(3, input.Count);
         Assert.Contains("partial answer", WebSearchPayload.JsonDumps(input));
         Assert.DoesNotContain(input, i => Type(i) is "function_call" or "custom_tool_call");
-        if (Directory.Exists(directory)) Directory.Delete(directory, true);
     }
 
     [Theory]
@@ -566,7 +585,7 @@ public sealed class NativeClientResponseExecutorTests
         { CreateFile=(path,options)=>diskFailure?throw new IOException("ENOSPC"):new FileStream(path,options) };
         try
         {
-            var emitted=new List<D>();var executor=new NativeClientResponseExecutor(store,new() { MaxBufferedEventBytes=diskFailure?1024*1024:5 },spool);
+            var emitted=new List<D>();var executor=new NativeClientResponseExecutor(store,spool,new() { MaxBufferedEventBytes=diskFailure?1024*1024:5 });
             var result=await executor.ExecuteAsync(session,Request(),"quota",async (_,emit,ct)=>
             {
                 await emit(new() { ["type"]="response.output_item.added",["output_index"]=0,["item"]=Tool("call") },ct);
@@ -580,7 +599,7 @@ public sealed class NativeClientResponseExecutorTests
             Assert.Equal((0L,0),spool.Usage);Assert.Empty(Directory.EnumerateFiles(directory));
             Assert.Null((await store.ProjectRequestAsync(session,Request(),"quota",default)).ReplayResponse);
         }
-        finally { Directory.Delete(directory,true); }
+        finally { spool.Dispose(); Directory.Delete(directory,true); }
     }
 
     [Fact]
@@ -613,15 +632,17 @@ public sealed class NativeClientResponseExecutorTests
         }
         finally
         {
+            spool.Dispose();
             if (Directory.Exists(directory)) Directory.Delete(directory, true);
         }
     }
 
-    private static async Task<(NativeClientSessionStore, NativeClientSession, NativeClientResponseExecutor)> Setup()
+    private async Task<(NativeClientSessionStore, NativeClientSession, NativeClientResponseExecutor)> Setup()
     {
-        var store = new NativeClientSessionStore(Path.Combine(Path.GetTempPath(), "native-runner-" + Guid.NewGuid().ToString("N")));
+        var store = new NativeClientSessionStore(Path.Combine(_directory, "session-" + Guid.NewGuid().ToString("N")));
+        _stores.Add(store);
         var session = await store.ResolveAsync(Guid.NewGuid(), new() { ThreadId = "root", RootThreadId = "root", AgentName = "/root" }, 1, default);
-        return (store, session, new(store));
+        return (store, session, new(store, _auditSpool));
     }
     private static D Request() => new() { ["model"] = "test", ["input"] = "question", ["tools"] = new List<object?> { new D { ["type"] = "custom", ["name"] = "exec" } } };
     private static D NamespaceRequest(string? secondNamespace = null)

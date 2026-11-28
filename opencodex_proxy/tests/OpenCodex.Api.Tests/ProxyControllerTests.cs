@@ -48,7 +48,7 @@ public sealed class ProxyControllerTests
                     "fake", "mapped-fake", false, true)
             ]);
         controller.ControllerContext.HttpContext = client.Http;
-        using var services = new ServiceCollection().AddSingleton(client.Service).AddSingleton(client.NativeStore).BuildServiceProvider();
+        using var services = ClientRoutingServices(client);
         client.Http.RequestServices = services;
 
         await controller.Responses();
@@ -72,7 +72,7 @@ public sealed class ProxyControllerTests
         var controller = CreateController(new StubRequestBodyReader(MultiAgentApiTestContext.Request()), proxy,
             interceptProbeRequests: false, simulatesMultiAgent: simulationEnabled, routeCandidates: NativeRoute("fake"));
         controller.ControllerContext.HttpContext = client.Http;
-        using var services = new ServiceCollection().AddSingleton(client.Service).AddSingleton(client.NativeStore).BuildServiceProvider();
+        using var services = ClientRoutingServices(client);
         client.Http.RequestServices = services;
 
         var response = Assert.IsType<ObjectResult>(await controller.Responses());
@@ -97,7 +97,7 @@ public sealed class ProxyControllerTests
         var controller = CreateController(new StubRequestBodyReader(MultiAgentClientResponseTests.ClientRequest()), proxy,
             interceptProbeRequests: false, simulatesMultiAgent: true, routeCandidates: routes);
         controller.ControllerContext.HttpContext = client.Http;
-        using var services = new ServiceCollection().AddSingleton(client.Service).AddSingleton(client.NativeStore).BuildServiceProvider();
+        using var services = ClientRoutingServices(client);
         client.Http.RequestServices = services;
 
         var response = Assert.IsType<ObjectResult>(await controller.Responses());
@@ -127,7 +127,7 @@ public sealed class ProxyControllerTests
         var controller = CreateController(new StubRequestBodyReader(request), proxy, interceptProbeRequests: true,
             simulatesMultiAgent: simulationEnabled, routeCandidates: NativeRoute(childModel));
         controller.ControllerContext.HttpContext = client.Http;
-        using var services = new ServiceCollection().AddSingleton(client.Service).AddSingleton(client.NativeStore).BuildServiceProvider();
+        using var services = ClientRoutingServices(client);
         client.Http.RequestServices = services;
 
         var result = Assert.IsType<ObjectResult>(await controller.Responses());
@@ -156,7 +156,7 @@ public sealed class ProxyControllerTests
         if (probe) request["max_output_tokens"] = 1;
         var controller = CreateController(new StubRequestBodyReader(request), proxy, interceptProbeRequests: true, logs: logs);
         controller.ControllerContext.HttpContext = client.Http;
-        using var services = new ServiceCollection().AddSingleton(client.Service).AddSingleton(client.NativeStore).BuildServiceProvider();
+        using var services = ClientRoutingServices(client);
         client.Http.RequestServices = services;
 
         var result = Assert.IsType<ObjectResult>(await controller.Responses());
@@ -182,7 +182,7 @@ public sealed class ProxyControllerTests
         var controller = CreateController(new StubRequestBodyReader(request), proxy,
             interceptProbeRequests: false, simulatesMultiAgent: true, routeCandidates: NativeRoute("fake"));
         controller.ControllerContext.HttpContext = client.Http;
-        using var services = new ServiceCollection().AddSingleton(client.Service).AddSingleton(client.NativeStore).BuildServiceProvider();
+        using var services = ClientRoutingServices(client);
         client.Http.RequestServices = services;
 
         await controller.Responses();
@@ -200,13 +200,26 @@ public sealed class ProxyControllerTests
         var proxy = new StubProxyEndpointService();
         var controller = CreateController(new StubRequestBodyReader(CreateMessagesPayload(4096)), proxy, interceptProbeRequests: false);
         controller.ControllerContext.HttpContext = client.Http;
-        using var services = new ServiceCollection().AddSingleton(client.Service).AddSingleton(client.NativeStore).BuildServiceProvider();
+        using var services = ClientRoutingServices(client);
         client.Http.RequestServices = services;
 
         await controller.Messages();
 
         Assert.True(proxy.Called);
         Assert.Empty(client.FakeEndpoint.Calls);
+    }
+
+    private static ServiceProvider ClientRoutingServices(MultiAgentApiTestContext client)
+    {
+        // Borrow the same context-owned ledger; the context outlives these services.
+        var spool = client.Http.RequestServices.GetRequiredService<ProxyAuditSpool>();
+        var services = new ServiceCollection()
+            .AddSingleton(client.Service)
+            .AddSingleton(client.NativeStore)
+            .AddSingleton(spool)
+            .BuildServiceProvider();
+        Assert.Same(spool, services.GetRequiredService<ProxyAuditSpool>());
+        return services;
     }
 
     private static MultiAgentApiTestContext ClientRoutingContext() => new(context => MultiAgentApiTestContext.Stream(context,

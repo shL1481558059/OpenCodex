@@ -26,9 +26,7 @@ public sealed class F1RootEventBudgetCollection;
 [Collection("F1 root event budget")]
 public sealed class F1WebSocketBudgetRegressionTests
 {
-    private const string ParameterFileName = "protocol-conversion.parameters.json";
     private const string ProbeFileName = "f1-budget-probe.json";
-    private const int BytesPerMegabyte = 1024 * 1024;
 
     [Fact]
     public async Task NonDefaultRootBudgetIsUsedInAnIsolatedProcess()
@@ -43,29 +41,26 @@ public sealed class F1WebSocketBudgetRegressionTests
             Assert.Equal("isolated-root-budget", probe.RootElement.GetProperty("mode").GetString());
             var expectedBudget = probe.RootElement.GetProperty("expectedBudget").GetInt32();
             Assert.NotEqual(probe.RootElement.GetProperty("originalBudget").GetInt32(), expectedBudget);
-            var isolatedParameters = JsonNode.Parse(File.ReadAllText(Path.Combine(sourceDirectory, ParameterFileName)))!.AsObject();
-            Assert.Equal(expectedBudget, isolatedParameters["SseMaxEventBytes"]!.GetValue<int>());
+            Assert.Equal(expectedBudget, ProtocolConversionTestEnv.Read(sourceDirectory, "SseMaxEventBytes"));
             Assert.Equal(expectedBudget, ProtocolConversionParameters.Current.SseMaxEventBytes);
             await VerifyServiceRootBudget(multiAgent: false);
             await VerifyServiceRootBudget(multiAgent: true);
             return;
         }
-        var originalParameters = File.ReadAllBytes(Path.Combine(sourceDirectory, ParameterFileName));
-        var parameters = JsonNode.Parse(originalParameters)!.AsObject();
-        var originalBudget = parameters["SseMaxEventBytes"]!.GetValue<int>();
-        // A distinct test budget comes from another explicit root parameter, not a
+        var originalEnv = File.ReadAllBytes(ProtocolConversionTestEnv.PathIn(sourceDirectory));
+        var originalBudget = ProtocolConversionTestEnv.Read(sourceDirectory, "SseMaxEventBytes");
+        // A distinct test budget comes from another explicitly configured value, not a
         // second operational default. Only the isolated output copy is changed.
-        var isolatedBudget = parameters["FlushBytes"]!.GetValue<int>();
+        var isolatedBudget = ProtocolConversionTestEnv.Read(sourceDirectory, "FlushBytes");
         Assert.True(isolatedBudget > 0);
         Assert.NotEqual(originalBudget, isolatedBudget);
-        parameters["SseMaxEventBytes"] = isolatedBudget;
 
         var directory = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "opencodex-f1-budget-" + Guid.NewGuid().ToString("N")));
         Directory.CreateDirectory(directory);
         try
         {
             CopyOutputDirectory(sourceDirectory, directory);
-            File.WriteAllText(Path.Combine(directory, ParameterFileName), parameters.ToJsonString());
+            ProtocolConversionTestEnv.Write(directory, "SseMaxEventBytes", isolatedBudget);
             File.WriteAllText(Path.Combine(directory, ProbeFileName), JsonSerializer.Serialize(new
             {
                 mode = "isolated-root-budget", expectedBudget = isolatedBudget, originalBudget
@@ -98,9 +93,8 @@ public sealed class F1WebSocketBudgetRegressionTests
             Assert.Equal("1", counters.Attribute("executed")!.Value);
             Assert.Equal("1", counters.Attribute("passed")!.Value);
             Assert.Equal("0", counters.Attribute("failed")!.Value);
-            Assert.Equal(isolatedBudget,
-                JsonNode.Parse(File.ReadAllText(Path.Combine(directory, ParameterFileName)))!["SseMaxEventBytes"]!.GetValue<int>());
-            Assert.Equal(originalParameters, File.ReadAllBytes(Path.Combine(sourceDirectory, ParameterFileName)));
+            Assert.Equal(isolatedBudget, ProtocolConversionTestEnv.Read(directory, "SseMaxEventBytes"));
+            Assert.Equal(originalEnv, File.ReadAllBytes(ProtocolConversionTestEnv.PathIn(sourceDirectory)));
         }
         finally
         {
@@ -111,8 +105,7 @@ public sealed class F1WebSocketBudgetRegressionTests
 
     private static async Task VerifyServiceRootBudget(bool multiAgent)
     {
-        var parameters = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, ParameterFileName)))!.AsObject();
-        var budget = parameters["SseMaxEventBytes"]!.GetValue<int>();
+        var budget = ProtocolConversionTestEnv.Read(AppContext.BaseDirectory, "SseMaxEventBytes");
         Assert.True(budget > 0);
         Assert.Equal(budget, ProtocolConversionParameters.Current.SseMaxEventBytes);
 
@@ -120,11 +113,7 @@ public sealed class F1WebSocketBudgetRegressionTests
         // Both the challenge value and fixture lengths derive from the root budget.
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["ProxyStreaming:MaxEventBytes"] = checked(2L * budget).ToString(CultureInfo.InvariantCulture),
-            // Admit the generated request so this regression measures outbound, not
-            // inbound admission. No production request-size policy is changed.
-            ["OpenCodex:MaxRequestBodyMb"] = ((2L * budget + BytesPerMegabyte - 1) / BytesPerMegabyte)
-                .ToString(CultureInfo.InvariantCulture)
+            ["ProxyStreaming:MaxEventBytes"] = checked(2L * budget).ToString(CultureInfo.InvariantCulture)
         }).Build();
 
         var withinId = new string('a', budget / 2);
@@ -132,7 +121,7 @@ public sealed class F1WebSocketBudgetRegressionTests
                    configuration: configuration))
         using (var socket = new BudgetSocket(multiAgent ? Interrupt(withinId) : null))
         {
-            await Handle(context, socket, Interrupt(withinId), multiAgent, configuration);
+            await Handle(context, socket, Interrupt(withinId), multiAgent);
             var frame = Assert.Single(socket.Events);
             Assert.Equal("response.interrupt.failed", frame.GetProperty("type").GetString());
             Assert.Equal(withinId, frame.GetProperty("response_id").GetString());
@@ -148,7 +137,7 @@ public sealed class F1WebSocketBudgetRegressionTests
         using (var socket = new BudgetSocket(multiAgent ? Interrupt(oversizedId) : null))
         {
             var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
-                Handle(context, socket, Interrupt(oversizedId), multiAgent, configuration));
+                Handle(context, socket, Interrupt(oversizedId), multiAgent));
             Assert.Contains("MaxEventBytes", error.Message, StringComparison.Ordinal);
             Assert.Equal(0, socket.SendAttempts);
             Assert.Empty(socket.Events);
@@ -164,7 +153,7 @@ public sealed class F1WebSocketBudgetRegressionTests
     };
 
     private static async Task Handle(MultiAgentApiTestContext context, BudgetSocket socket,
-        D firstRequest, bool multiAgent, IConfiguration configuration)
+        D firstRequest, bool multiAgent)
     {
         if (multiAgent)
         {
@@ -177,8 +166,7 @@ public sealed class F1WebSocketBudgetRegressionTests
             services.GetRequiredService<IServiceScopeFactory>(),
             NullLogger<ResponsesWebSocketClientService>.Instance,
             services.GetRequiredService<ClientConnectionCache>(),
-            services.GetRequiredService<IProxyIdentityContext>(),
-            configuration);
+            services.GetRequiredService<IProxyIdentityContext>());
         await service.HandleAsync(socket, firstRequest,
             new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
             context.Lifetime.Token);

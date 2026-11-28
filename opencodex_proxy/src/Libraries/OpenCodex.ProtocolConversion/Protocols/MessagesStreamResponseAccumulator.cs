@@ -465,10 +465,20 @@ internal sealed class MessagesStreamResponseAccumulator : IStreamResponseAccumul
             }
         }
 
+        private Exception FailIncompleteInputJson()
+        {
+            var failure = new OpenCodex.ProtocolConversion.Errors.UpstreamException(
+                "The upstream tool arguments are not complete JSON; full received-frame evidence is required.",
+                "invalid_tool_arguments");
+            _budget.RecordSourceFailure(failure);
+            return failure;
+        }
+
         private object? ParseInputJson()
         {
             if (_inputJson.Length == 0)
             {
+                if (_budget.IsStrict) throw FailIncompleteInputJson();
                 return null;
             }
 
@@ -479,6 +489,10 @@ internal sealed class MessagesStreamResponseAccumulator : IStreamResponseAccumul
             }
             catch (JsonException)
             {
+                if (_budget.IsStrict)
+                {
+                    throw FailIncompleteInputJson();
+                }
                 return null;
             }
         }

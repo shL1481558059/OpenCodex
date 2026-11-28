@@ -4,7 +4,9 @@ using System.Text.Json;
 using OpenCodex.Core.ExternalIntegrations;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.WebSearch;
+using OpenCodex.ProtocolConversion.Abstractions;
 using Xunit;
+using CoreUpstreamException = OpenCodex.Core.Errors.UpstreamException;
 
 namespace OpenCodex.Api.Tests;
 
@@ -82,23 +84,44 @@ public sealed class KeenableWebSearchClientTests
     }
 
     [Fact]
-    public async Task SearchAsync_InvalidJson_ReturnsRequestError()
+    public async Task SearchAsync_InvalidJson_ThrowsTypedUpstreamErrorWithReceivedEvidence()
     {
-        var handler = new CaptureHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        const string invalidJson = "not-json";
+        using var handler = new CaptureHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
-            Content = new StringContent("not-json", Encoding.UTF8, "application/json")
+            Content = new StringContent(invalidJson, Encoding.UTF8, "application/json")
         });
-        var client = new KeenableWebSearchClient(new HttpClient(handler));
+        using var http = new HttpClient(handler);
+        var client = new KeenableWebSearchClient(http);
+        WebSearchProviderResult? returned = null;
 
-        var result = await client.SearchAsync(
-            new WebSearchProviderKey("keenable", "keen_secret"),
-            "typescript best practices",
-            CancellationToken.None);
+        var failure = await Assert.ThrowsAsync<CoreUpstreamException>(async () =>
+        {
+            returned = await client.SearchAsync(
+                new WebSearchProviderKey("keenable", "keen_secret"),
+                "typescript best practices", CancellationToken.None);
+        });
 
-        Assert.False(result.Ok);
-        Assert.Null(result.StatusCode);
-        Assert.Equal("request_error", result.ErrorType);
-        Assert.Equal("Keenable returned invalid JSON", result.Error);
+        Assert.Null(returned); // Invalid JSON is not an Ok/failed result with an invented empty Raw.
+        Assert.Equal(1, handler.SendCount);
+        Assert.Equal(BoundedJsonResponseReader.InvalidJsonCode, failure.ErrorCode);
+        Assert.Equal((int)HttpStatusCode.BadGateway, failure.StatusCode);
+        var body = Assert.IsType<Dictionary<string, object?>>(failure.Body);
+        Assert.True(UpstreamJsonEvidence.IsEvidence(body));
+        Assert.Equal(true, body["body_read"]);
+        Assert.Equal(true, body["body_complete"]);
+        Assert.False(body.ContainsKey("results"));
+        var received = Assert.IsType<Dictionary<string, object?>>(body["received_json"]);
+        var metadata = Assert.IsType<Dictionary<string, object?>>(received["_opencodex_capture"]);
+        Assert.Equal("received_json", metadata["representation"]);
+        Assert.Equal((long)Encoding.UTF8.GetByteCount(invalidJson), metadata["received_bytes"]);
+        Assert.Equal(false, metadata["source_reconstructed"]);
+        Assert.False(received["received_utf8_base64"] is string);
+        var value = Assert.IsAssignableFrom<IProtocolJsonValue>(received["received_utf8_base64"]);
+        using var json = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(json)) value.Write(writer, CancellationToken.None);
+        using var document = JsonDocument.Parse(json.ToArray());
+        Assert.Equal(Encoding.UTF8.GetBytes(invalidJson), Convert.FromBase64String(document.RootElement.GetString()!));
     }
 
     [Theory]

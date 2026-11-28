@@ -14,8 +14,45 @@ using Xunit;
 
 namespace OpenCodex.Api.Tests;
 
-public sealed class ProxyStreamServiceTests
+public sealed class ProxyStreamServiceTests : IDisposable
 {
+    private readonly string _auditDirectory = Path.Combine(Path.GetTempPath(), "opencodex-stream-fixture-" + Guid.NewGuid().ToString("N"));
+    private readonly ProxyAuditSpool _auditSpool;
+    private readonly HashSet<StubProxyLogService> _ownedLogs = [];
+
+    public ProxyStreamServiceTests()
+    {
+        _auditSpool = new ProxyAuditSpool(new() { Directory = _auditDirectory });
+    }
+
+    private ProxyStreamService CreateStreamService(
+        IUpstreamClient upstream, IProxyLogService logs, IWebSearchToolExecutor webSearch,
+        WebSearchContinuationStore history, SseFrameOptions? outputFrames = null, ProxyAuditSpool? auditSpool = null)
+    {
+        if (logs is StubProxyLogService stubLogs) _ownedLogs.Add(stubLogs);
+        return new ProxyStreamService(upstream, logs, webSearch, history, auditSpool ?? _auditSpool, outputFrames: outputFrames);
+    }
+
+    private ProxyNonStreamService CreateNonStreamService(
+        IUpstreamClient upstream, IProxyLogService logs, IWebSearchToolExecutor webSearch, WebSearchContinuationStore history)
+    {
+        if (logs is StubProxyLogService stubLogs) _ownedLogs.Add(stubLogs);
+        return new ProxyNonStreamService(upstream, logs, webSearch, history, _auditSpool);
+    }
+
+    private void DisposeLogBodies()
+    {
+        foreach (var logs in _ownedLogs) logs.Dispose();
+        _ownedLogs.Clear();
+    }
+
+    public void Dispose()
+    {
+        DisposeLogBodies();
+        _auditSpool.Dispose();
+        if (Directory.Exists(_auditDirectory)) Directory.Delete(_auditDirectory, recursive: true);
+    }
+
     [Theory]
     [InlineData("chat", false)]
     [InlineData("messages", false)]
@@ -33,19 +70,23 @@ public sealed class ProxyStreamServiceTests
         };
         var logs = new StubProxyLogService();
         var writer = new CapturingProxyStreamWriter();
-        var service = new ProxyStreamService(
+        var service = CreateStreamService(
             new SequencedUpstreamClient([("data: " + data + "\n\n", 0)]),
             logs,
             new StubWebSearchToolExecutor(),
             WebSearchTestStore.Create(),
             outputFrames: new SseFrameOptions { MaxCaptureBytes = 1 });
 
-        var error = await Assert.ThrowsAsync<UpstreamException>(() =>
+        var error = await Assert.ThrowsAsync<StorageCapacityException>(() =>
             service.StreamAsync(IncrementalContext(protocol, protocol, writer)));
 
-        Assert.Equal(502, error.StatusCode);
-        Assert.Equal(502, logs.LastContext!.StatusCode);
+        Assert.Equal(507, error.StatusCode);
+        Assert.Equal("storage_error", error.ErrorType);
+        Assert.NotEmpty(error.ErrorCode);
+        Assert.Equal(507, logs.LastContext!.StatusCode);
         Assert.DoesNotContain(writer.Lines, line => line.Contains("[DONE]", StringComparison.Ordinal));
+        Assert.DoesNotContain(writer.Lines, line => line.Contains("response.completed", StringComparison.Ordinal)
+            || line.Contains("message_stop", StringComparison.Ordinal));
     }
 
     [Theory]
@@ -65,7 +106,7 @@ public sealed class ProxyStreamServiceTests
             "responses", "test", "superadmin", "model", "public", 120,
             new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
             new OpenCodex.Api.Infrastructure.ProxyStreamResponseWriter(http.Response), cancellation.Token);
-        var operation = new ProxyStreamService(new SequencedUpstreamClient(
+        var operation = CreateStreamService(new SequencedUpstreamClient(
         [
             ("data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\",\"status\":\"in_progress\"}}", 0), ("", 0),
             ("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"completed\",\"output\":[]}}", 0), ("", 0),
@@ -94,7 +135,7 @@ public sealed class ProxyStreamServiceTests
         {
             id = "chat-1", choices = new[] { new { index = 0, delta = new { content = new string('x', 2000) }, finish_reason = (string?)null } }
         });
-        var operation = new ProxyStreamService(new SequencedUpstreamClient(
+        var operation = CreateStreamService(new SequencedUpstreamClient(
             [("data: " + data, 0), ("", 0), ("data: [DONE]", 0), ("", 0)]),
             logs, new StubWebSearchToolExecutor(), WebSearchTestStore.Create(),
             outputFrames: new() { MaxEventBytes = budget }).StreamAsync(context);
@@ -168,7 +209,7 @@ public sealed class ProxyStreamServiceTests
             protocol, "test", "superadmin", "model", "public", 120,
             new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()), writer, CancellationToken.None);
 
-        var failure = await Assert.ThrowsAsync<UpstreamException>(() => new ProxyStreamService(
+        var failure = await Assert.ThrowsAsync<UpstreamException>(() => CreateStreamService(
             new SequencedUpstreamClient(lines), logs, new StubWebSearchToolExecutor(),
             WebSearchTestStore.Create()).StreamAsync(context));
 
@@ -221,7 +262,7 @@ public sealed class ProxyStreamServiceTests
             protocol, "test", "superadmin", "model", "public", 120,
             new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()), writer, CancellationToken.None);
 
-        await Assert.ThrowsAsync<UpstreamException>(() => new ProxyStreamService(
+        await Assert.ThrowsAsync<UpstreamException>(() => CreateStreamService(
             new SequencedUpstreamClient(lines), logs, new StubWebSearchToolExecutor(),
             WebSearchTestStore.Create()).StreamAsync(context));
 
@@ -265,7 +306,7 @@ public sealed class ProxyStreamServiceTests
         };
 
         await Assert.ThrowsAsync<UpstreamException>(() =>
-            new ProxyStreamService(
+            CreateStreamService(
                 new SequencedUpstreamClient(lines),
                 logs,
                 executor,
@@ -305,7 +346,7 @@ public sealed class ProxyStreamServiceTests
             {
                 BuiltinTools = binding
             };
-            var operation = new ProxyStreamService(
+            var operation = CreateStreamService(
                 upstream,
                 logs,
                 executor,
@@ -328,7 +369,7 @@ public sealed class ProxyStreamServiceTests
             {
                 BuiltinTools = binding
             };
-            var operation = new ProxyNonStreamService(
+            var operation = CreateNonStreamService(
                 upstream,
                 logs,
                 executor,
@@ -377,7 +418,7 @@ public sealed class ProxyStreamServiceTests
             ("", 0)
         ]);
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(
+        var service = CreateStreamService(
             upstream,
             logs,
             new StubWebSearchToolExecutor(),
@@ -463,7 +504,7 @@ public sealed class ProxyStreamServiceTests
             ["tools"] = new List<object?> { new Dictionary<string, object?> { ["type"] = "web_search" } }
         };
         var binding = WebSearchRequestPolicy.RegisterBuiltin(payload, "simulate", "responses", "messages", "superadmin");
-        var service = new ProxyStreamService(upstream, logs, webSearch, WebSearchTestStore.Create());
+        var service = CreateStreamService(upstream, logs, webSearch, WebSearchTestStore.Create());
         var writer = new CapturingProxyStreamWriter();
         var channel = new Dictionary<string, object?>
         {
@@ -585,7 +626,7 @@ public sealed class ProxyStreamServiceTests
             BuiltinTools = binding
         };
 
-        await Assert.ThrowsAsync<UpstreamException>(()=>new ProxyStreamService(upstream,logs,new StubWebSearchToolExecutor(),WebSearchTestStore.Create()).StreamAsync(context));
+        await Assert.ThrowsAsync<UpstreamException>(()=>CreateStreamService(upstream,logs,new StubWebSearchToolExecutor(),WebSearchTestStore.Create()).StreamAsync(context));
         Assert.Equal(1,upstream.Calls);
         var output=string.Concat(writer.Lines);
         Assert.Contains("discarded reasoning",output,StringComparison.Ordinal);
@@ -635,7 +676,7 @@ public sealed class ProxyStreamServiceTests
             BuiltinTools = binding
         };
 
-        var error = await Assert.ThrowsAsync<UpstreamException>(() => new ProxyStreamService(
+        var error = await Assert.ThrowsAsync<UpstreamException>(() => CreateStreamService(
             upstream,
             logs,
             new StubWebSearchToolExecutor(),
@@ -730,7 +771,7 @@ public sealed class ProxyStreamServiceTests
             BuiltinTools = binding
         };
 
-        await Assert.ThrowsAsync<UpstreamException>(() => new ProxyStreamService(
+        await Assert.ThrowsAsync<UpstreamException>(() => CreateStreamService(
             upstream,
             logs,
             executor,
@@ -805,7 +846,7 @@ public sealed class ProxyStreamServiceTests
             BuiltinTools = binding
         };
 
-        var result = await new ProxyNonStreamService(
+        var result = await CreateNonStreamService(
             upstream,
             logs,
             new StubWebSearchToolExecutor(),
@@ -923,7 +964,7 @@ public sealed class ProxyStreamServiceTests
             writer,
             CancellationToken.None);
 
-        await Assert.ThrowsAsync<UpstreamException>(()=>new ProxyStreamService(upstream,logs,new StubWebSearchToolExecutor(),WebSearchTestStore.Create()).StreamAsync(context));
+        await Assert.ThrowsAsync<UpstreamException>(()=>CreateStreamService(upstream,logs,new StubWebSearchToolExecutor(),WebSearchTestStore.Create()).StreamAsync(context));
         Assert.Equal(1,upstream.Calls);
         var output=string.Concat(writer.Lines);
         Assert.Contains("discarded reasoning",output,StringComparison.Ordinal);
@@ -1024,7 +1065,7 @@ public sealed class ProxyStreamServiceTests
             new ProxyRequestMetadata("POST", "/v1/responses", null, new Dictionary<string, string>()),
             CancellationToken.None);
 
-        var result = await new ProxyNonStreamService(
+        var result = await CreateNonStreamService(
             upstream,
             logs,
             new StubWebSearchToolExecutor(),
@@ -1060,7 +1101,7 @@ public sealed class ProxyStreamServiceTests
             },
             channelId: "responses"));
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(
+        var service = CreateStreamService(
             upstream,
             logs,
             new StubWebSearchToolExecutor(),
@@ -1118,7 +1159,7 @@ public sealed class ProxyStreamServiceTests
             ProxyHttpStatus.ServiceUnavailable,
             channelId: "responses"));
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(
+        var service = CreateStreamService(
             upstream,
             logs,
             new StubWebSearchToolExecutor(),
@@ -1170,7 +1211,7 @@ public sealed class ProxyStreamServiceTests
             406,
             channelId: "chat"));
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(
+        var service = CreateStreamService(
             upstream,
             logs,
             new StubWebSearchToolExecutor(),
@@ -1223,7 +1264,7 @@ public sealed class ProxyStreamServiceTests
             ProxyHttpStatus.TooManyRequests));
         var logs = new StubProxyLogService();
         var executor = new StubWebSearchToolExecutor();
-        var service = new ProxyStreamService(upstream, logs, executor, WebSearchTestStore.Create());
+        var service = CreateStreamService(upstream, logs, executor, WebSearchTestStore.Create());
         var writer = new CapturingProxyStreamWriter();
         var channel = new Dictionary<string, object?>
         {
@@ -1282,7 +1323,7 @@ public sealed class ProxyStreamServiceTests
             ("", 0)
         ]);
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(
+        var service = CreateStreamService(
             upstream,
             logs,
             new StubWebSearchToolExecutor(),
@@ -1339,7 +1380,7 @@ public sealed class ProxyStreamServiceTests
             ("", 0)
         ]);
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(
+        var service = CreateStreamService(
             upstream,
             logs,
             new StubWebSearchToolExecutor(),
@@ -1395,7 +1436,7 @@ public sealed class ProxyStreamServiceTests
         };
         var upstream = new SequencedUpstreamClient(upstreamLines.Select(line => (line, 0)).ToArray());
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(
+        var service = CreateStreamService(
             upstream,
             logs,
             new StubWebSearchToolExecutor(),
@@ -1455,7 +1496,7 @@ public sealed class ProxyStreamServiceTests
             ("data: [DONE]", 0)
         ]);
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(
+        var service = CreateStreamService(
             upstream,
             logs,
             new StubWebSearchToolExecutor(),
@@ -1505,7 +1546,7 @@ public sealed class ProxyStreamServiceTests
             ("data: [DONE]", 0)
         ]);
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(
+        var service = CreateStreamService(
             upstream,
             logs,
             new StubWebSearchToolExecutor(),
@@ -1594,7 +1635,7 @@ public sealed class ProxyStreamServiceTests
             ("", 0)
         ]);
         var logs = new StubProxyLogService();
-        var service = new ProxyStreamService(
+        var service = CreateStreamService(
             upstream,
             logs,
             new StubWebSearchToolExecutor(),
@@ -2070,7 +2111,7 @@ public sealed class ProxyStreamServiceTests
             }
             else Add("response.completed",new() { ["response"]=new Dictionary<string,object?> { ["id"]="r",["status"]="completed",["output"]=new List<object?>(),["usage"]=new Dictionary<string,object?> { ["input_tokens"]=7,["output_tokens"]=11 } } });
             var logs=new StubProxyLogService();
-            var service=new ProxyStreamService(new SequencedUpstreamClient(frames.Select(frame=>(frame,0)).ToArray()),logs,new StubWebSearchToolExecutor(),WebSearchTestStore.Create(),outputFrames:new SseFrameOptions { MaxEventBytes=4*1024*1024 },auditSpool:spool);
+            var service=CreateStreamService(new SequencedUpstreamClient(frames.Select(frame=>(frame,0)).ToArray()),logs,new StubWebSearchToolExecutor(),WebSearchTestStore.Create(),outputFrames:new SseFrameOptions { MaxEventBytes=4*1024*1024 },auditSpool:spool);
             var context=new ProxyStreamContext(startedTimestamp:Stopwatch.GetTimestamp(),requestLogId:Guid.NewGuid(),requestId:"large-audit",ownerUsername:"test",apiKeyId:Guid.NewGuid(),
                 originalPayload:new(),payload:new(),upstreamRequest:new(),entryProtocol:entry,
                 route:new ProxyRouteDto(new Dictionary<string,object?> { ["id"]="test",["type"]=upstreamProtocol },"public-model","upstream-model",false,true),
@@ -2085,9 +2126,10 @@ public sealed class ProxyStreamServiceTests
             var usage=Assert.IsType<Dictionary<string,object?>>(logs.LastContext.UpstreamResponse!["usage"]);
             Assert.Equal(7,Convert.ToInt32(usage[upstreamProtocol=="chat"?"prompt_tokens":"input_tokens"]));
             Assert.Equal(11,Convert.ToInt32(usage[upstreamProtocol=="chat"?"completion_tokens":"output_tokens"]));
+            DisposeLogBodies();
             Assert.Equal((0L,0),spool.Usage);Assert.Empty(Directory.EnumerateFiles(directory));
         }
-        finally { Directory.Delete(directory,true); }
+        finally { DisposeLogBodies(); spool.Dispose(); Directory.Delete(directory,true); }
     }
 
     [Theory]
@@ -2104,10 +2146,10 @@ public sealed class ProxyStreamServiceTests
         };
         var terminal=protocol switch { "chat"=>"data: [DONE]\n\n","messages"=>"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",_=>"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"output\":[]}}\n\n" };
         var source=new BarrierClient(first,terminal);var logs=new StubProxyLogService();var writer=new IncrementalWriter { Audit=()=>Assert.NotNull(logs.LastContext) };
-        var running=new ProxyStreamService(source,logs,new StubWebSearchToolExecutor(),WebSearchTestStore.Create()).StreamAsync(IncrementalContext(entry,protocol,writer));
+        var running=CreateStreamService(source,logs,new StubWebSearchToolExecutor(),WebSearchTestStore.Create()).StreamAsync(IncrementalContext(entry,protocol,writer));
         try { await writer.First.Task.WaitAsync(TimeSpan.FromSeconds(5));Assert.False(running.IsCompleted);Assert.Null(logs.LastContext); }
-        finally { source.AllowTerminal.TrySetResult(); }
-        await running;Assert.Contains(writer.Frames,f=>f.IsTerminal);
+        finally { source.AllowTerminal.TrySetResult(); await running; }
+        Assert.Contains(writer.Frames,f=>f.IsTerminal);
     }
     [Theory]
     [InlineData(false)][InlineData(true)]
@@ -2117,7 +2159,7 @@ public sealed class ProxyStreamServiceTests
         if(!failFlush)logs.CompleteHook=_=>throw new IOException("audit disk full");
         var writer=new IncrementalWriter { ThrowTerminal=failFlush };
         var source=new BarrierClient("data: {\"id\":\"c\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\n\n","data: [DONE]\n\n");source.AllowTerminal.TrySetResult();
-        await Assert.ThrowsAsync<IOException>(()=>new ProxyStreamService(source,logs,new StubWebSearchToolExecutor(),WebSearchTestStore.Create()).StreamAsync(IncrementalContext("chat","chat",writer)));
+        await Assert.ThrowsAsync<IOException>(()=>CreateStreamService(source,logs,new StubWebSearchToolExecutor(),WebSearchTestStore.Create()).StreamAsync(IncrementalContext("chat","chat",writer)));
         Assert.DoesNotContain(writer.Frames,f=>f.IsDone);
         if(failFlush) { Assert.Equal(500,logs.LastContext!.StatusCode);Assert.Contains("Terminal",logs.LastContext.Error); }
     }
@@ -2129,15 +2171,31 @@ public sealed class ProxyStreamServiceTests
         using var ct=new CancellationTokenSource();var writer=new IncrementalWriter();
         var first=SseFrame.FromJson(new Dictionary<string,object?> { ["id"]="c",["choices"]=new object?[] { new Dictionary<string,object?> { ["index"]=0,["delta"]=new Dictionary<string,object?> { ["content"]=new string('x',4096) } } } }).WireText;
         var source=new BarrierClient(first,"data: [DONE]\n\n");
+        var running=CreateStreamService(source,new StubProxyLogService(),new StubWebSearchToolExecutor(),WebSearchTestStore.Create(),auditSpool:spool)
+            .StreamAsync(IncrementalContext("responses","chat",writer,ct.Token));
         try
         {
-            var running=new ProxyStreamService(source,new StubProxyLogService(),new StubWebSearchToolExecutor(),WebSearchTestStore.Create(),auditSpool:spool)
-                .StreamAsync(IncrementalContext("responses","chat",writer,ct.Token));
             await source.Waiting.Task.WaitAsync(TimeSpan.FromSeconds(5));Assert.True(spool.Usage.Bytes>0);
             ct.Cancel();await Assert.ThrowsAnyAsync<OperationCanceledException>(()=>running);
-            Assert.DoesNotContain(writer.Frames,f=>f.IsTerminal);Assert.Equal((0L,0),spool.Usage);Assert.Empty(Directory.EnumerateFiles(directory));
+            Assert.DoesNotContain(writer.Frames,f=>f.IsTerminal);
+            // The production log pipeline owns transferred request bodies until its own
+            // disposal; release those owners before asserting physical usage.
+            DisposeLogBodies();
+            Assert.Equal((0L,0),spool.Usage);Assert.Empty(Directory.EnumerateFiles(directory));
         }
-        finally { ct.Cancel();source.AllowTerminal.TrySetResult();Directory.Delete(directory,true); }
+        finally
+        {
+            ct.Cancel();
+            source.AllowTerminal.TrySetResult();
+            try { await running; }
+            catch (OperationCanceledException) { }
+            finally
+            {
+                DisposeLogBodies();
+                spool.Dispose();
+                if (Directory.Exists(directory)) Directory.Delete(directory,true);
+            }
+        }
     }
 
     private static ProxyStreamContext IncrementalContext(string entry,string protocol,IProxyStreamWriter writer,CancellationToken ct=default)
@@ -2409,19 +2467,47 @@ public sealed class ProxyStreamServiceTests
         }
     }
 
-    private sealed class StubProxyLogService : IProxyLogService
+    private sealed class StubProxyLogService : IProxyLogService, IDisposable
     {
+        private readonly HashSet<ProxyLogBodyHandle> _bodies = [];
+
+        private void Own(ProxyLogBodyHandle? body)
+        {
+            if (body is not null) _bodies.Add(body);
+        }
+
+        public void Dispose()
+        {
+            foreach (var body in _bodies) body.Dispose();
+            _bodies.Clear();
+        }
+
         public Guid CreateQueuedLog(ProxyRequestLogQueuedContext context)
         {
+            Own(context.BodyHandles?.Headers);
+            Own(context.BodyHandles?.Request);
+            Own(context.BodyHandles?.UpstreamRequest);
             return Guid.NewGuid();
         }
 
         public void MarkProcessing(Guid requestLogId, ProxyRequestLogProcessingContext context)
         {
+            Own(context.UpstreamRequestBody);
+        }
+
+        private void OwnReceived(ProxyRequestMetadata request, ProxyLogContext context)
+        {
+            // The production log pipeline owns every body handle transferred to it and
+            // releases them in its own finally block.
+            Own(request.LogBodies?.Headers);
+            Own(request.LogBodies?.Request);
+            Own(request.LogBodies?.UpstreamRequest);
+            Own(context.UpstreamRequestBody);
         }
 
         public Task CompleteLogAsync(Guid requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
         {
+            OwnReceived(request, context);
             LastContext = context;
             return CompleteHook?.Invoke(context) ?? Task.CompletedTask;
         }
@@ -2431,6 +2517,7 @@ public sealed class ProxyStreamServiceTests
 
         public Task<Guid> WriteLogAsync(ProxyLogContext context, ProxyRequestMetadata request)
         {
+            OwnReceived(request, context);
             LastContext = context;
             return Task.FromResult(Guid.Empty);
         }

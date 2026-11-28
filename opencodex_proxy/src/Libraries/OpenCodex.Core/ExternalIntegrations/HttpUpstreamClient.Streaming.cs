@@ -35,6 +35,10 @@ public sealed partial class HttpUpstreamClient
             throw new BadRequestException($"unsupported upstream protocol: {channelType}");
         }
 
+        // Non-success HTTP response bodies use the same explicit root JSON-ingress C/F as non-stream model replies.
+        var captureMaxBytes = ProtocolConversionParameters.Current.SseMaxCaptureBytes;
+        var overflowBlockBytes = ProtocolConversionParameters.Current.FlushBytes;
+        _ = UpstreamJsonEvidence.MaxRawBytes(captureMaxBytes, overflowBlockBytes);
         var timeout = TimeoutValue(JsonDictionaryValue.Get(channel, "timeout_seconds"), defaultTimeout);
         var retryCount = RetryCountValue(JsonDictionaryValue.Get(channel, "retry_count"));
         var policy = StreamTimeoutPolicy.Create(channel, timeout, retryCount, RetryAfterCapSeconds);
@@ -52,6 +56,7 @@ public sealed partial class HttpUpstreamClient
             for (var attempt = 0; ; attempt++)
             {
                 ThrowIfStreamBudgetExpired(channel, totalCts.Token, cancellationToken);
+                ValidateJsonRequest(payload, cancellationToken);
                 using var request = BuildRequest(channel, payload, endpoint);
                 using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(totalCts.Token);
                 attemptCts.CancelAfter(policy.FirstContent);
@@ -63,6 +68,10 @@ public sealed partial class HttpUpstreamClient
                         request,
                         HttpCompletionOption.ResponseHeadersRead,
                         attemptCts.Token);
+                    // A declared over-budget error is a local policy failure, not an HTTP retry/probe signal.
+                    if (!response.IsSuccessStatusCode)
+                        BoundedJsonResponseReader.RejectContentLength(response, captureMaxBytes, overflowBlockBytes,
+                            JsonDictionaryValue.String(channel, "id"));
                     retryAfter = response.Headers.RetryAfter;
                     if (response.IsSuccessStatusCode)
                     {
@@ -101,7 +110,8 @@ public sealed partial class HttpUpstreamClient
                     }
                     else if (attempt >= retryCount || !RetryableStatuses.Contains(response.StatusCode))
                     {
-                        await ThrowHttpError(response, channel, attemptCts.Token);
+                        await ThrowBoundedJsonHttpErrorAsync(
+                            response, channel, captureMaxBytes, overflowBlockBytes, attemptCts.Token);
                     }
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)

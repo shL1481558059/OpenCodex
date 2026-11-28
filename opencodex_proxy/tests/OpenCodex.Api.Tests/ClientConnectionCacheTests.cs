@@ -1,115 +1,336 @@
+using System.Text.Json;
 using OpenCodex.Core.Services.MultiAgent;
 using OpenCodex.CoreBase.Abstractions;
+using OpenCodex.CoreBase.Domain.Proxy;
+using OpenCodex.ProtocolConversion;
 using Xunit;
-using D=System.Collections.Generic.Dictionary<string,object?>;
+using D = System.Collections.Generic.Dictionary<string, object?>;
 using static OpenCodex.Api.Tests.MultiAgentApiTestContext;
 
 namespace OpenCodex.Api.Tests;
 
-public sealed class ClientConnectionCacheTests
+public sealed class ClientConnectionCacheTests : IDisposable
 {
-    private static D Value(string value="x")=>new(){["value"]=value};
-    [Fact]
-    public void DefaultBudgetsCoverMillionTokenSnapshotsWithoutNarrowConnectionCaps()
+    private static readonly CacheTestParameters Settings = CacheTestParameters.Load();
+    private readonly string _directory = Path.Combine(Path.GetTempPath(), "ocxp-client-history-tests-" + Guid.NewGuid().ToString("N"));
+    private readonly ProxyAuditSpool _spool;
+    private readonly SnapshotStore _store;
+    private readonly ClientConnectionCache _cache;
+
+    public ClientConnectionCacheTests()
     {
-        var options=new ClientConnectionCacheOptions();
-        Assert.Equal(192L*1024*1024,options.MaxBytes);
-        Assert.Equal(128L*1024*1024,options.MaxTenantBytes);
-        Assert.Equal(96L*1024*1024,options.MaxConnectionBytes);
-        Assert.Equal(40L*1024*1024,options.MaxSnapshotBytes);
+        _spool = new ProxyAuditSpool(new() { Directory = _directory });
+        _store = new SnapshotStore(_spool);
+        _cache = new ClientConnectionCache(_store);
     }
-    [Fact]
-    public void DefaultSnapshotBudgetAcceptsGraphAbovePreviousEightMiBCap()
+
+    public void Dispose()
     {
-        using var cache=new ClientConnectionCache();
-        using var scope=cache.Open(Guid.NewGuid());
-        var request=Value(new string('x',3*1024*1024));
-        Assert.True(scope.RememberResponse("large",Value(),request,Value()));
-        Assert.NotNull(scope.FindResponse<D>("large"));
+        _cache.Dispose();
+        _spool.Dispose();
+        if (Directory.Exists(_directory)) Directory.Delete(_directory, recursive: true);
     }
+
     [Fact]
-    public void ChurnBoundsBothRecordsAndKnownIdsAndCloseReleasesAll()
+    public void RootSnapshotQuotaIsTheOnlyCacheBudget()
     {
-        using var cache=new ClientConnectionCache(new(){MaxEntries=8,MaxConnectionEntries=4});
-        using(var scope=cache.Open(Guid.NewGuid()))
+        Assert.Equal(ProtocolConversionParameters.Current.SnapshotStoreMaxBytes, _store.MaxBytes);
+        Assert.Same(_store, _cache.Store);
+        using var scope = _cache.Open(Guid.NewGuid());
+        Remember(scope, "root-budget", RequestValue(), "stored");
+        Assert.InRange(UsedCredits(), 1L, _store.MaxBytes);
+        Assert.True(scope.Knows("root-budget"));
+        Assert.True(scope.IsCompleted("root-budget"));
+        CloseAndAssertEmpty();
+    }
+
+    [Fact]
+    public void RootHistoricalRequestPersistsAndDeltaSharesOriginalBlob()
+    {
+        using var scope = _cache.Open(Guid.NewGuid());
+        var request = RequestValue("");
+        var overhead = JsonSerializer.SerializeToUtf8Bytes(request).Length;
+        var text = new string('x', checked(Settings.HistoricalRequestBytes - overhead));
+        request["input"] = text;
+        Assert.Equal((long)Settings.HistoricalRequestBytes, JsonSerializer.SerializeToUtf8Bytes(request).LongLength);
+        Remember(scope, "large", request, "first");
+
+        using (var first = Assert.IsType<ClientHistoryVersion>(scope.AcquireHistory("large")))
         {
-            for(var i=0;i<10_000;i++)
-            {
-                scope.RememberId("id"+i);scope.RememberResponse("id"+i,Value(),Value(),Value());
-                Assert.InRange(cache.Usage.Entries,0,4);Assert.InRange(cache.Usage.Bytes,0,96L*1024*1024);
-            }
-            Assert.Null(scope.FindResponse<D>("id0"));Assert.False(scope.Knows("id0"));Assert.NotNull(scope.FindResponse<D>("id9999"));
+            Assert.Equal(new[] { text }, InputTexts(first.MaterializeRequest()));
+            var before = _store.Usage.PhysicalBytes;
+            Remember(scope, "delta", RequestValue("next"), "second", first);
+            using var second = Assert.IsType<ClientHistoryVersion>(scope.AcquireHistory("delta"));
+            Assert.Equal(new[] { text, "next" }, InputTexts(second.MaterializeRequest()));
+            Assert.Equal(1, first.InputCount);
+            Assert.Equal(2, second.InputCount);
+            Assert.Equal("first", first.MaterializeResponse()["value"]);
+            Assert.Equal("second", second.MaterializeResponse()["value"]);
+            // A small delta must not persist a second physical copy of the large prefix.
+            Assert.InRange(_store.Usage.PhysicalBytes - before, 1L, Settings.HistoricalRequestBytes - 1L);
+            Assert.True(scope.Knows("large"));
+            Assert.True(scope.IsCompleted("large"));
+            Assert.InRange(UsedCredits(), 1L, _store.MaxBytes);
         }
-        Assert.Equal((0,0L),cache.Usage);
+        CloseAndAssertEmpty();
     }
+
+    [Fact]
+    public void CommittedVersionsDoNotRetainMutableRequestOrResponseGraphs()
+    {
+        using var scope = _cache.Open(Guid.NewGuid());
+        var request = RequestValue("original");
+        var response = Remember(scope, "immutable", request, "original");
+        request["input"] = "changed request";
+        response["value"] = "changed response";
+        using (var history = Assert.IsType<ClientHistoryVersion>(scope.AcquireHistory("immutable")))
+        {
+            Assert.Equal(new[] { "original" }, InputTexts(history.MaterializeRequest()));
+            Assert.Equal("original", history.MaterializeResponse()["value"]);
+            var materialized = history.MaterializeRequest();
+            Assert.IsType<D>(Assert.Single(JsonDictionaryValue.List(materialized, "input")))["content"] = "changed materialization";
+            Assert.Equal(new[] { "original" }, InputTexts(history.MaterializeRequest()));
+        }
+        CloseAndAssertEmpty();
+    }
+
+    [Fact]
+    public void ChurnRetainsEveryCommittedIdUntilConnectionClose()
+    {
+        using (var scope = _cache.Open(Guid.NewGuid()))
+        {
+            for (var index = 0; index < Settings.CacheHistoryVersions; index++)
+            {
+                Remember(scope, "id" + index, RequestValue("request" + index), "response" + index);
+                Assert.Equal(index + 1, _cache.Usage.Entries);
+                Assert.InRange(UsedCredits(), 1L, _store.MaxBytes);
+            }
+            for (var index = 0; index < Settings.CacheHistoryVersions; index++)
+            {
+                Assert.True(scope.Knows("id" + index));
+                Assert.True(scope.IsCompleted("id" + index));
+            }
+            using var first = Assert.IsType<ClientHistoryVersion>(scope.AcquireHistory("id0"));
+            using var last = Assert.IsType<ClientHistoryVersion>(scope.AcquireHistory("id" + (Settings.CacheHistoryVersions - 1)));
+            Assert.Equal("response0", first.MaterializeResponse()["value"]);
+            Assert.Equal("response" + (Settings.CacheHistoryVersions - 1), last.MaterializeResponse()["value"]);
+        }
+        CloseAndAssertEmpty();
+    }
+
     [Fact]
     public void TenantAndConnectionIsolationAreNotInferredFromStringKeys()
     {
-        using var cache=new ClientConnectionCache(new(){MaxTenantBytes=4000,MaxConnectionEntries=10});
-        var tenant=Guid.NewGuid();using var a=cache.Open(tenant);using var a2=cache.Open(tenant);using var b=cache.Open(Guid.NewGuid());
-        b.RememberResponse("same",Value("tenant-b"),Value(),Value());
-        for(var i=0;i<10;i++)a.RememberResponse("a"+i,Value("tenant-a"),Value(),Value());
-        Assert.Equal("tenant-b",b.FindResponse<D>("same")!["value"]);Assert.Null(a.FindResponse<D>("same"));Assert.Null(a2.FindResponse<D>("a9"));
-        Assert.InRange(cache.Usage.Bytes,1,192L*1024*1024);
-    }
-    [Fact]
-    public void IdleTtlRefreshAndOversizeRejectionDoNotRetainGraph()
-    {
-        var clock=new Clock();using var cache=new ClientConnectionCache(new(){TtlSeconds=2,MaxSnapshotBytes=4096},clock);
-        using var scope=cache.Open(Guid.NewGuid());
-        Assert.False(scope.RememberResponse("big",Value(),Value(new string('x',10_000)),Value()));Assert.Equal((0,0L),cache.Usage);
-        Assert.True(scope.RememberResponse("small",Value(),Value(),Value()));scope.RememberId("small");clock.Advance(1);
-        Assert.NotNull(scope.FindResponse<D>("small"));clock.Advance(1);cache.Cleanup();Assert.NotNull(scope.FindResponse<D>("small"));
-        clock.Advance(3);cache.Cleanup();Assert.Null(scope.FindResponse<D>("small"));Assert.False(scope.Knows("small"));Assert.Equal((0,0L),cache.Usage);
-    }
-    [Fact]
-    public async Task ConcurrentPutCloseAndCleanupLeaveNoEntriesOrCrossScopeReads()
-    {
-        using var cache=new ClientConnectionCache(new(){MaxEntries=64,MaxConnectionEntries=8});
-        await Task.WhenAll(Enumerable.Range(0,50).Select(async worker=>
+        var tenant = Guid.NewGuid();
+        using var a = _cache.Open(tenant);
+        using var a2 = _cache.Open(tenant);
+        using var b = _cache.Open(Guid.NewGuid());
+        Remember(a, "same", RequestValue(), "tenant-a");
+        Remember(a, "a-only", RequestValue(), "only-this-connection");
+        Remember(b, "same", RequestValue(), "tenant-b");
+        using (var historyA = Assert.IsType<ClientHistoryVersion>(a.AcquireHistory("same")))
+        using (var historyB = Assert.IsType<ClientHistoryVersion>(b.AcquireHistory("same")))
         {
-            using var scope=cache.Open(Guid.NewGuid());
-            await Task.WhenAll(Enumerable.Range(0,30).Select(index=>Task.Run(()=>{scope.RememberResponse("r"+index,Value(),Value(),Value());scope.RememberId("r"+index);cache.Cleanup();})));
-        }));
-        Assert.Equal((0,0L),cache.Usage);
-    }
-    [Fact]
-    public async Task EvictedWsHistoryReturnsRecoverableErrorWithoutCallingModelAndCloseClearsBudget()
-    {
-        using var cache=new ClientConnectionCache(new(){MaxConnectionEntries=2});
-        using var context=new MultiAgentApiTestContext(ctx=>Stream(ctx,Events(Terminal(Message("unexpected")))),connectionCache:cache);
-        context.CatalogEnabled=false;var socket=context.Socket();var operation=context.Service.ResponsesWebSocket();
-        try
-        {
-            D Warm()=>new(){["type"]="response.create",["model"]="fake",["generate"]=false,["input"]="hello"};
-            socket.ClientSend(Warm());var first=(D)(await socket.Until("response.completed",context.Lifetime.Token))["response"]!;
-            socket.ClientSend(Warm());await socket.Until("response.completed",context.Lifetime.Token);
-            socket.ClientSend(new(){["type"]="response.create",["model"]="fake",["previous_response_id"]=first["id"],["input"]="next"});
-            var error=await socket.Until("error",context.Lifetime.Token);
-            Assert.Equal("previous_response_not_found",JsonDictionaryValue.String(JsonDictionaryValue.Object(error,"error",WebSearchPayload.DeepCopyObject),"code"));
-            Assert.Empty(context.FakeEndpoint.Calls);Assert.InRange(cache.Usage.Entries,0,2);
+            Assert.Equal("tenant-a", historyA.MaterializeResponse()["value"]);
+            Assert.Equal("tenant-b", historyB.MaterializeResponse()["value"]);
         }
-        finally{socket.ClientClose();await operation;}
-        Assert.Equal((0,0L),cache.Usage);
+        Assert.Null(a2.AcquireHistory("same"));
+        Assert.Null(a2.AcquireHistory("a-only"));
+        Assert.Null(b.AcquireHistory("a-only"));
+        Assert.False(a2.Knows("same"));
+        Assert.False(b.Knows("a-only"));
+        Assert.Equal(3, _cache.Usage.Entries);
+        Assert.InRange(UsedCredits(), 1L, _store.MaxBytes);
+        CloseAndAssertEmpty();
     }
+
+    [Fact]
+    public void SharedQuotaRejectsNewHistoryWithoutEvictingOldId()
+    {
+        using var a = _cache.Open(Guid.NewGuid());
+        using var b = _cache.Open(Guid.NewGuid());
+        Remember(a, "old", RequestValue("old request"), "old response");
+        using (var blocker = BlockRemainingCredits())
+        {
+            Assert.Equal(_store.MaxBytes, UsedCredits());
+            var full = _store.Usage;
+            Assert.Throws<SnapshotCapacityExceededException>(() => a.Prepare(RequestValue("new request"), null, generate: false, cancellationToken: default));
+            Assert.Throws<SnapshotCapacityExceededException>(() => b.Prepare(RequestValue("other tenant"), null, generate: false, cancellationToken: default));
+            Assert.Equal(full, _store.Usage);
+            Assert.True(a.Knows("old"));
+            Assert.True(a.IsCompleted("old"));
+            using var old = Assert.IsType<ClientHistoryVersion>(a.AcquireHistory("old"));
+            Assert.Equal("old response", old.MaterializeResponse()["value"]);
+            Assert.Equal(full, _store.Usage); // AddRef/read does not request fresh storage credits.
+            Assert.Equal(1, _cache.Usage.Entries);
+        }
+        Remember(a, "new", RequestValue("new request"), "new response");
+        Assert.True(a.Knows("old"));
+        Assert.True(a.IsCompleted("old"));
+        Assert.True(a.Knows("new"));
+        Assert.Equal(2, _cache.Usage.Entries);
+        CloseAndAssertEmpty();
+    }
+
+    [Fact]
+    public void DiscardHistoryRetainsKnownIdAndIndependentLeaseSurvivesClose()
+    {
+        using var scope = _cache.Open(Guid.NewGuid());
+        Remember(scope, "discarded", RequestValue("retained request"), "retained response");
+        using var history = Assert.IsType<ClientHistoryVersion>(scope.AcquireHistory("discarded"));
+        scope.DiscardHistory("discarded");
+        Assert.True(scope.Knows("discarded"));
+        Assert.False(scope.IsCompleted("discarded"));
+        Assert.Null(scope.AcquireHistory("discarded"));
+        Assert.Equal(1, _cache.Usage.Entries);
+        scope.Dispose();
+        _cache.Dispose();
+        _spool.Dispose();
+        Assert.Equal(0, _cache.Usage.Entries);
+        Assert.InRange(_store.Usage.PhysicalBytes, 1L, _store.MaxBytes);
+        Assert.Equal(new[] { "retained request" }, InputTexts(history.MaterializeRequest()));
+        Assert.Equal("retained response", history.MaterializeResponse()["value"]);
+        history.Dispose();
+        CloseAndAssertEmpty();
+    }
+
+    [Fact]
+    public void CommitAfterConnectionCloseFailsAndReleasesPreparedCredits()
+    {
+        using var scope = _cache.Open(Guid.NewGuid());
+        var response = ResponseValue("closed", "not committed");
+        using var prepared = scope.Prepare(RequestValue(), null, generate: false, cancellationToken: default);
+        prepared.ReserveKnownResponse(response, default);
+        scope.Dispose();
+        Assert.Throws<ObjectDisposedException>(() => prepared.Commit(response, default));
+        Assert.False(prepared.Committed);
+        Assert.False(scope.Knows("closed"));
+        Assert.Equal(0, _cache.Usage.Entries);
+        prepared.Dispose();
+        CloseAndAssertEmpty();
+    }
+
+    [Fact]
+    public async Task ConcurrentCloseAndIndependentHistoryReadsReleaseAllOwners()
+    {
+        await Task.WhenAll(Enumerable.Range(0, Settings.CacheConcurrentWorkers).Select(async worker =>
+        {
+            using var scope = _cache.Open(Guid.NewGuid());
+            Remember(scope, "same", RequestValue("worker" + worker), "worker" + worker);
+            using var history = Assert.IsType<ClientHistoryVersion>(scope.AcquireHistory("same"));
+            var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var read = Task.Run(async () =>
+            {
+                await start.Task;
+                Assert.Equal(new[] { "worker" + worker }, InputTexts(history.MaterializeRequest()));
+                Assert.Equal("worker" + worker, history.MaterializeResponse()["value"]);
+            });
+            var close = Task.Run(async () =>
+            {
+                await start.Task;
+                scope.Dispose();
+            });
+            start.TrySetResult();
+            await Task.WhenAll(read, close);
+            Assert.False(scope.Knows("same"));
+            Assert.Throws<ObjectDisposedException>(() => scope.AcquireHistory("same"));
+        }));
+        CloseAndAssertEmpty();
+    }
+
+    [Fact]
+    public async Task OlderWsHistorySurvivesWarmupChurnWithoutCallingModelAndCloseClearsQuota()
+    {
+        using (var context = new MultiAgentApiTestContext(ctx => Stream(ctx, Events(Terminal(Message("unexpected")))), connectionCache: _cache))
+        {
+            context.CatalogEnabled = false;
+            using var socket = context.Socket();
+            var operation = context.Service.ResponsesWebSocket();
+            try
+            {
+                D Warm() => new() { ["type"] = "response.create", ["model"] = "fake", ["store"] = false, ["generate"] = false, ["input"] = "hello" };
+                socket.ClientSend(Warm());
+                var first = Assert.IsType<D>((await socket.Until("response.completed", context.Lifetime.Token))["response"]);
+                for (var index = 1; index < Settings.CacheWsWarmupVersions; index++)
+                {
+                    socket.ClientSend(Warm());
+                    await socket.Until("response.completed", context.Lifetime.Token);
+                }
+                socket.ClientSend(new() { ["type"] = "response.create", ["model"] = "fake", ["store"] = false, ["generate"] = false, ["previous_response_id"] = first["id"], ["input"] = "next" });
+                var continued = Assert.IsType<D>((await socket.Until("response.completed", context.Lifetime.Token))["response"]);
+                Assert.NotEqual(first["id"], continued["id"]);
+                Assert.Equal(Settings.CacheWsWarmupVersions + 1, _cache.Usage.Entries);
+                Assert.Empty(context.FakeEndpoint.Calls);
+                Assert.DoesNotContain(socket.Sent, item => Type(item) is "error" or "response.failed");
+            }
+            finally { socket.ClientClose(); await operation; }
+            Assert.Equal(0, _cache.Usage.Entries);
+        }
+        CloseAndAssertEmpty();
+    }
+
     [Fact]
     public async Task WsFailureAfterTerminalAttemptDoesNotSendSecondErrorTerminal()
     {
-        using var context=new MultiAgentApiTestContext(async ctx=>
+        using (var context = new MultiAgentApiTestContext(async ctx =>
         {
-            await Stream(ctx,Events(new D{["type"]="response.failed",["response"]=new D{["id"]="failed-once",["status"]="failed",["output"]=new List<object?>()}}));
+            await Stream(ctx, Events(new D { ["type"] = "response.failed", ["response"] = new D { ["id"] = "failed-once", ["status"] = "failed", ["output"] = new List<object?>() } }));
             throw new OpenCodex.Core.Errors.UpstreamException("failure after terminal send");
-        });
-        context.CatalogEnabled=false;var socket=context.Socket();var operation=context.Service.ResponsesWebSocket();
-        try{var request=Request();request["type"]="response.create";socket.ClientSend(request);await socket.Until("response.failed",context.Lifetime.Token);}
-        finally{socket.ClientClose();await operation;}
-        Assert.Single(socket.Sent,item=>Type(item)=="response.failed");Assert.DoesNotContain(socket.Sent,item=>Type(item)=="error"||Type(item)=="response.completed");
+        }, connectionCache: _cache))
+        {
+            context.CatalogEnabled = false;
+            using var socket = context.Socket();
+            var operation = context.Service.ResponsesWebSocket();
+            try
+            {
+                var request = Request();
+                request["type"] = "response.create";
+                socket.ClientSend(request);
+                await socket.Until("response.failed", context.Lifetime.Token);
+            }
+            finally { socket.ClientClose(); await operation; }
+            Assert.Single(socket.Sent, item => Type(item) == "response.failed");
+            Assert.DoesNotContain(socket.Sent, item => Type(item) == "error" || Type(item) == "response.completed");
+        }
+        CloseAndAssertEmpty();
     }
 
-    private sealed class Clock:TimeProvider
+    private static D RequestValue(string value = "x") => new() { ["model"] = "fake", ["input"] = value };
+    private static D ResponseValue(string id, string value) => new() { ["id"] = id, ["status"] = "completed", ["output"] = new List<object?>(), ["value"] = value };
+    private static string[] InputTexts(D request) => JsonDictionaryValue.List(request, "input").OfType<D>().Select(item => JsonDictionaryValue.String(item, "content")).ToArray();
+
+    private static D Remember(ClientConnectionCache.Connection scope, string id, D request, string value = "x", ClientHistoryVersion? previous = null)
     {
-        private DateTimeOffset _now=DateTimeOffset.Parse("2026-01-01T00:00:00Z");
-        public override DateTimeOffset GetUtcNow()=>_now;
-        public void Advance(int seconds)=>_now=_now.AddSeconds(seconds);
+        using var prepared = scope.Prepare(request, previous, generate: false, cancellationToken: default);
+        var response = ResponseValue(id, value);
+        prepared.ReserveKnownResponse(response, default);
+        prepared.Commit(response, default);
+        Assert.True(prepared.Committed);
+        return response;
+    }
+
+    private long UsedCredits()
+    {
+        var usage = _store.Usage;
+        return checked(usage.ReservedBytes + usage.PhysicalBytes + usage.MetadataBytes);
+    }
+
+    private SnapshotReservation BlockRemainingCredits() => _store.Reserve(checked(_store.MaxBytes - UsedCredits()));
+
+    private void CloseAndAssertEmpty()
+    {
+        _cache.Dispose();
+        _spool.Dispose();
+        Assert.Equal((0, 0L), _cache.Usage);
+        Assert.Equal((0L, 0L, 0L, 0), _store.Usage);
+    }
+
+    private sealed record CacheTestParameters(int HistoricalRequestBytes, int CacheHistoryVersions, int CacheConcurrentWorkers, int CacheWsWarmupVersions)
+    {
+        public static CacheTestParameters Load() => new(
+            WsHistoryTestParameters.HistoricalRequestBytes,
+            WsHistoryTestParameters.CacheHistoryVersions,
+            WsHistoryTestParameters.CacheConcurrentWorkers,
+            WsHistoryTestParameters.CacheWsWarmupVersions);
     }
 }

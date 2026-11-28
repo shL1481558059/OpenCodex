@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.FileProviders;
 using OpenCodex.Api.Errors;
 using OpenCodex.Api.Infrastructure;
@@ -22,6 +23,34 @@ public static class OpenCodexApplicationBuilderExtensions
             app.UseSwaggerUI();
         }
 
+        // Root MaxRequestBodyBytes bounds the decoded payload, not chunked wire framing.
+        // This must run before any component can read the body: Kestrel marks the
+        // per-request size feature read-only on first read, and its global limit would
+        // otherwise abort an oversized chunked request before a 413 can be written.
+        app.Use(async (context, next) =>
+        {
+            if (context.Request.Headers.TransferEncoding.ToString()
+                .Contains("chunked", StringComparison.OrdinalIgnoreCase)
+                && context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } size)
+            {
+                size.MaxRequestBodySize = null;
+            }
+            await next();
+        });
+        // Root MaxRequestBodyBytes bounds the decoded payload, not chunked wire framing.
+        // Run before any body reader: Kestrel makes the per-request size feature read-only
+        // on first read, and its global limit would otherwise abort an oversized chunked
+        // request before the protocol-compatible 413 can be written.
+        app.Use(async (context, next) =>
+        {
+            if (context.Request.Headers.TransferEncoding.ToString()
+                    .Contains("chunked", StringComparison.OrdinalIgnoreCase)
+                && context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } size)
+            {
+                size.MaxRequestBodySize = null;
+            }
+            await next();
+        });
         app.UseMiddleware<ProxyErrorMiddleware>();
         app.Use(async (context, next) =>
         {

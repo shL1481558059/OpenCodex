@@ -2118,7 +2118,7 @@ public sealed partial class ProxyCompatibilityTests : IClassFixture<OpenCodexApi
                 }),
             MessagesTextResponse("final answer"));
         var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
-        var simulator = new WebSearchProxyHarness(
+        using var simulator = new WebSearchProxyHarness(
             upstream,
             new SuccessfulWebSearchClient(),
             new EfRepository<WebSearchSettings>(wsContext),
@@ -2245,7 +2245,7 @@ public sealed partial class ProxyCompatibilityTests : IClassFixture<OpenCodexApi
                     ["y"] = 34
                 }));
         var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
-        var simulator = new WebSearchProxyHarness(
+        using var simulator = new WebSearchProxyHarness(
             upstream,
             new SuccessfulWebSearchClient(),
             new EfRepository<WebSearchSettings>(wsContext),
@@ -2899,7 +2899,7 @@ public sealed partial class ProxyCompatibilityTests : IClassFixture<OpenCodexApi
             ChatToolResponse("call_web", "web_search", "{\"query\":\"OpenAI\"}"),
             ChatTextResponse("final answer"));
         var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
-        var simulator = new WebSearchProxyHarness(
+        using var simulator = new WebSearchProxyHarness(
             upstream,
             new SuccessfulWebSearchClient(),
             new EfRepository<WebSearchSettings>(wsContext),
@@ -2991,7 +2991,7 @@ public sealed partial class ProxyCompatibilityTests : IClassFixture<OpenCodexApi
                     new Dictionary<string, object?> { ["path"] = "README.md" }, "read_file", null)
             ],
             null));
-        var simulator = new WebSearchProxyHarness(
+        using var simulator = new WebSearchProxyHarness(
             upstream,
             new SuccessfulWebSearchClient(),
             new EfRepository<WebSearchSettings>(db),
@@ -3041,7 +3041,7 @@ public sealed partial class ProxyCompatibilityTests : IClassFixture<OpenCodexApi
                 ],
                 "Before searching."),
             MessagesTextStreamResponse("After searching."));
-        var simulator = new WebSearchProxyHarness(
+        using var simulator = new WebSearchProxyHarness(
             upstream,
             new SuccessfulWebSearchClient(),
             new EfRepository<WebSearchSettings>(db),
@@ -3115,7 +3115,7 @@ public sealed partial class ProxyCompatibilityTests : IClassFixture<OpenCodexApi
             ChatToolStreamResponse("call_web_2", "web_search", "{\"query\":\"OpenAI second\"}"),
             ChatTextStreamResponse("final answer"));
         var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
-        var simulator = new WebSearchProxyHarness(
+        using var simulator = new WebSearchProxyHarness(
             upstream,
             new SuccessfulWebSearchClient(),
             new EfRepository<WebSearchSettings>(wsContext),
@@ -3235,7 +3235,7 @@ public sealed partial class ProxyCompatibilityTests : IClassFixture<OpenCodexApi
                 }),
             MessagesTextStreamResponse("final answer"));
         var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
-        var simulator = new WebSearchProxyHarness(
+        using var simulator = new WebSearchProxyHarness(
             upstream,
             new SuccessfulWebSearchClient(),
             new EfRepository<WebSearchSettings>(wsContext),
@@ -3368,7 +3368,7 @@ public sealed partial class ProxyCompatibilityTests : IClassFixture<OpenCodexApi
             ChatToolStreamResponse("call_web_1", "web_search", "{\"query\":\"OpenAI\"}"),
             ChatToolStreamResponse("call_ts_1", "tool_search", "{\"query\":\"browser\",\"limit\":3}"));
         var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
-        var simulator = new WebSearchProxyHarness(
+        using var simulator = new WebSearchProxyHarness(
             upstream,
             new SuccessfulWebSearchClient(),
             new EfRepository<WebSearchSettings>(wsContext),
@@ -3503,7 +3503,7 @@ public sealed partial class ProxyCompatibilityTests : IClassFixture<OpenCodexApi
                     ["y"] = 34
                 }));
         var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
-        var simulator = new WebSearchProxyHarness(
+        using var simulator = new WebSearchProxyHarness(
             upstream,
             new SuccessfulWebSearchClient(),
             new EfRepository<WebSearchSettings>(wsContext),
@@ -3727,7 +3727,7 @@ public sealed partial class ProxyCompatibilityTests : IClassFixture<OpenCodexApi
 
             var upstream = new RecordingStreamUpstreamClient(upstreamResponses.ToArray());
             var wsContext = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
-        var simulator = new WebSearchProxyHarness(
+        using var simulator = new WebSearchProxyHarness(
             upstream,
             new SuccessfulWebSearchClient(),
             new EfRepository<WebSearchSettings>(wsContext),

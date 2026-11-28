@@ -13,8 +13,22 @@ using D = System.Collections.Generic.Dictionary<string, object?>;
 
 namespace OpenCodex.Api.Tests;
 
-public sealed class ProtocolConversionMatrixTests
+public sealed class ProtocolConversionMatrixTests : IDisposable
 {
+    private readonly string _auditDirectory = Path.Combine(Path.GetTempPath(), "opencodex-matrix-fixture-" + Guid.NewGuid().ToString("N"));
+    private readonly ProxyAuditSpool _auditSpool;
+
+    public ProtocolConversionMatrixTests()
+    {
+        _auditSpool = new ProxyAuditSpool(new() { Directory = _auditDirectory });
+    }
+
+    public void Dispose()
+    {
+        _auditSpool.Dispose();
+        if (Directory.Exists(_auditDirectory)) Directory.Delete(_auditDirectory, recursive: true);
+    }
+
     [Theory]
     [InlineData("chat", "responses")]
     [InlineData("messages", "responses")]
@@ -70,12 +84,13 @@ public sealed class ProtocolConversionMatrixTests
             "upstream-model");
         var upstreamResponse = ResponsePayload(channelProtocol);
         var upstream = new MatrixUpstreamClient(upstreamResponse, []);
-        var logs = new MatrixLogService();
+        using var logs = new MatrixLogService();
         var service = new ProxyNonStreamService(
             upstream,
             logs,
             new DisabledWebSearchToolExecutor(),
-            WebSearchTestStore.Create());
+            WebSearchTestStore.Create(),
+            _auditSpool);
 
         var result = await service.SendAsync(new ProxyNonStreamContext(
             Stopwatch.GetTimestamp(),
@@ -123,13 +138,14 @@ public sealed class ProtocolConversionMatrixTests
             "upstream-model");
         var upstreamLines = StreamPayload(channelProtocol);
         var upstream = new MatrixUpstreamClient([], upstreamLines);
-        var logs = new MatrixLogService();
+        using var logs = new MatrixLogService();
         var writer = new MatrixStreamWriter();
         var service = new ProxyStreamService(
             upstream,
             logs,
             new DisabledWebSearchToolExecutor(),
-            WebSearchTestStore.Create());
+            WebSearchTestStore.Create(),
+            _auditSpool);
 
         await service.StreamAsync(new ProxyStreamContext(
             Stopwatch.GetTimestamp(),
@@ -230,8 +246,9 @@ public sealed class ProtocolConversionMatrixTests
             }
         };
         var upstream = new MatrixUpstreamClient(upstreamResponse, []);
-        var service = new ProxyNonStreamService(upstream, new MatrixLogService(),
-            new DisabledWebSearchToolExecutor(), WebSearchTestStore.Create());
+        using var logs = new MatrixLogService();
+        var service = new ProxyNonStreamService(upstream, logs,
+            new DisabledWebSearchToolExecutor(), WebSearchTestStore.Create(), _auditSpool);
 
         async Task<D> Send(D payload)
         {
@@ -754,14 +771,34 @@ public sealed class ProtocolConversionMatrixTests
         }
     }
 
-    private sealed class MatrixLogService : IProxyLogService
+    private sealed class MatrixLogService : IProxyLogService, IDisposable
     {
+        private readonly HashSet<ProxyLogBodyHandle> _bodies = [];
+
+        private void Own(ProxyLogBodyHandle? body)
+        {
+            if (body is not null) _bodies.Add(body);
+        }
+
+        public void Dispose()
+        {
+            foreach (var body in _bodies) body.Dispose();
+            _bodies.Clear();
+        }
+
         public ProxyLogContext? LastContext { get; private set; }
 
-        public Guid CreateQueuedLog(ProxyRequestLogQueuedContext context) => Guid.NewGuid();
+        public Guid CreateQueuedLog(ProxyRequestLogQueuedContext context)
+        {
+            Own(context.BodyHandles?.Headers);
+            Own(context.BodyHandles?.Request);
+            Own(context.BodyHandles?.UpstreamRequest);
+            return Guid.NewGuid();
+        }
 
         public void MarkProcessing(Guid requestLogId, ProxyRequestLogProcessingContext context)
         {
+            Own(context.UpstreamRequestBody);
         }
 
         public Task CompleteLogAsync(
@@ -769,6 +806,7 @@ public sealed class ProtocolConversionMatrixTests
             ProxyLogContext context,
             ProxyRequestMetadata request)
         {
+            Own(context.UpstreamRequestBody);
             LastContext = context;
             return Task.CompletedTask;
         }
@@ -777,6 +815,7 @@ public sealed class ProtocolConversionMatrixTests
             ProxyLogContext context,
             ProxyRequestMetadata request)
         {
+            Own(context.UpstreamRequestBody);
             LastContext = context;
             return Task.FromResult(Guid.NewGuid());
         }

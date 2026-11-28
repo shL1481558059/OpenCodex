@@ -1,5 +1,6 @@
 using OpenCodex.ProtocolConversion;
 using OpenCodex.ProtocolConversion.Streaming;
+using OpenCodex.ProtocolConversion.Json;
 using System.Net;
 using System.Net.Http.Headers;
 using OpenCodex.Core.Errors;
@@ -70,11 +71,15 @@ public sealed partial class HttpUpstreamClient : IUpstreamClient, IUpstreamModel
 
         var timeout = TimeoutValue(JsonDictionaryValue.Get(channel, "timeout_seconds"), defaultTimeout);
         var retryCount = RetryCountValue(JsonDictionaryValue.Get(channel, "retry_count"));
+        var captureMaxBytes = ProtocolConversionParameters.Current.SseMaxCaptureBytes;
+        var overflowBlockBytes = ProtocolConversionParameters.Current.FlushBytes;
+        _ = UpstreamJsonEvidence.MaxRawBytes(captureMaxBytes, overflowBlockBytes);
         Exception? lastException = null;
         HttpResponseMessage? lastResponse = null;
 
         for (var attempt = 0; attempt <= retryCount; attempt++)
         {
+            ValidateJsonRequest(payload, cancellationToken);
             using var request = BuildRequest(channel, payload, endpoint);
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeout));
@@ -83,17 +88,22 @@ public sealed partial class HttpUpstreamClient : IUpstreamClient, IUpstreamModel
             {
                 response = await _httpClient.SendAsync(
                     request,
-                    HttpCompletionOption.ResponseContentRead,
+                    HttpCompletionOption.ResponseHeadersRead,
                     timeoutCts.Token);
 
+                // C now also bounds non-stream response ingress. Do not let
+                // HttpClient buffer a whole response before this check.
+                RejectOversizedJsonContentLength(response, channel, captureMaxBytes, overflowBlockBytes);
                 if (response.IsSuccessStatusCode)
                 {
-                    return await ReadJsonObject(response, channel, cancellationToken);
+                    return await ReadBoundedJsonObjectAsync(
+                        response, channel, captureMaxBytes, overflowBlockBytes, timeoutCts.Token);
                 }
 
                 if (attempt >= retryCount || !RetryableStatuses.Contains(response.StatusCode))
                 {
-                    await ThrowHttpError(response, channel, cancellationToken);
+                    await ThrowBoundedJsonHttpErrorAsync(
+                        response, channel, captureMaxBytes, overflowBlockBytes, timeoutCts.Token);
                 }
 
                 lastResponse?.Dispose();
@@ -227,6 +237,15 @@ public sealed partial class HttpUpstreamClient : IUpstreamClient, IUpstreamModel
             "failed to reach upstream",
             ProxyHttpStatus.BadGateway,
             channelId: JsonDictionaryValue.String(channel, "id"));
+    }
+
+    private static void ValidateJsonRequest(
+        IReadOnlyDictionary<string, object?> payload, CancellationToken cancellationToken)
+    {
+        // JsonStreamBodyContent uses default-encoder ProtocolJsonWriter.Write.
+        // Validate before HTTP dispatch, not during a partially-sent request.
+        OpenCodex.Core.ProtocolConversion.ProtocolConversionErrors.Wrap(
+            () => ProtocolJsonWriter.ValidateRequest(payload, cancellationToken));
     }
 
     private Task DelayBeforeRetry(

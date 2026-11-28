@@ -277,6 +277,9 @@ jobs:
           ssh "${ssh_opts[@]}" "$ssh_target" "mkdir -p -- $remote_dir"
           scp "${scp_opts[@]}" docker-compose-pgsql.yml "$ssh_target:$REMOTE_DEPLOY_DIR/docker-compose.yml"
           scp "${scp_opts[@]}" scripts/deploy-ocxp-dev.sh "$ssh_target:$REMOTE_DEPLOY_DIR/deploy-ocxp-dev.sh"
+          # Single source for the mandatory protocol-conversion budgets. The deploy script
+          # appends any key the server .env is missing, without overwriting existing values.
+          scp "${scp_opts[@]}" .env.example "$ssh_target:$REMOTE_DEPLOY_DIR/.env.example"
 
       - name: Deploy approved image
         env:

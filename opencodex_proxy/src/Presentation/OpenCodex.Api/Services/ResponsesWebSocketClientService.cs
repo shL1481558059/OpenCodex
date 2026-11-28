@@ -1,6 +1,8 @@
 using System.Net.WebSockets;
 using System.Text.Json;
 using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Json;
+using OpenCodex.Api.Infrastructure;
 using OpenCodex.Core.Services.MultiAgent;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
@@ -12,13 +14,9 @@ namespace OpenCodex.Api.Services;
 public sealed class ResponsesWebSocketClientService(
     IServiceScopeFactory scopes,
     ILogger<ResponsesWebSocketClientService> logger,
-    ClientConnectionCache? connectionCache,
-    IProxyIdentityContext? identityContext,
-    IConfiguration? configuration)
+    ClientConnectionCache connectionCache,
+    IProxyIdentityContext identityContext)
 {
-    public ResponsesWebSocketClientService(IServiceScopeFactory scopes,ILogger<ResponsesWebSocketClientService> logger,ClientConnectionCache? connectionCache=null,IProxyIdentityContext? identityContext=null)
-        :this(scopes,logger,connectionCache,identityContext,null){}
-
     private const string WarmResponsePrefix = "resp_ocx_warm_";
 
     public async Task HandleAsync(
@@ -29,37 +27,42 @@ public sealed class ResponsesWebSocketClientService(
     {
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var sendGate = new SemaphoreSlim(1, 1);
-        using var ownedCache = connectionCache is null ? new ClientConnectionCache() : null;
-        using var history = (connectionCache ?? ownedCache!).Open(identityContext?.RequireIdentity().ApiKeyId ?? Guid.Empty);
+        using var history = connectionCache.Open(identityContext.RequireIdentity().ApiKeyId);
         var ct = stop.Token;
         Task active = Task.CompletedTask;
         CancellationTokenSource? activeStop = null;
         string activeResponseId = "";
         string activeModel = "";
         string terminalResponseId = "";
-        var maximumBytes = 16 * 1024 * 1024;
+        var modelErrorTerminal = false;
+        var maximumBytes = ProtocolConversionParameters.Current.MaxRequestBodyBytes;
+        PreparedClientRequest? activePrepared = null;
         var first = firstRequest;
 
-        async Task Send(Dictionary<string, object?> payload, CancellationToken? sendCancellation = null)
+        async Task Send(Dictionary<string, object?> payload, CancellationToken? sendCancellation = null, bool recordIdentity = true)
         {
             var sendToken = sendCancellation ?? ct;
             await sendGate.WaitAsync(sendToken);
             try
             {
                 if (socket.State != WebSocketState.Open) throw new WebSocketException(WebSocketError.InvalidState);
+                ValidateWire(payload, sendToken);
                 var type = JsonDictionaryValue.String(payload, "type");
+                if (type is "response.completed" or "response.failed" or "response.incomplete" && terminalResponseId.Length > 0) return;
                 var responseId = JsonDictionaryValue.Get(payload, "response") is IReadOnlyDictionary<string, object?> response
                     ? JsonDictionaryValue.String(response, "id")
                     : "";
                 if (type == "response.created" && responseId.Length > 0)
                 {
                     activeResponseId = responseId;
-                    history.RememberId(responseId);
+                    if (recordIdentity && !history.Knows(responseId))
+                        history.RememberId(responseId, (activePrepared ?? throw new InvalidOperationException("Response identity has no request reservation.")).Reservation, sendToken);
                 }
                 else if (type is "response.completed" or "response.failed" or "response.incomplete"
                     && responseId.Length > 0)
                 {
-                    history.RememberId(responseId);
+                    if (recordIdentity && !history.Knows(responseId))
+                        history.RememberId(responseId, (activePrepared ?? throw new InvalidOperationException("Response identity has no request reservation.")).Reservation, sendToken);
                     terminalResponseId = responseId;
                 }
                 await OpenCodex.ProtocolConversion.Streaming.WebSocketJsonWriter.SendAsync(socket,payload,ProtocolConversionParameters.Current.SseMaxEventBytes,sendToken);
@@ -82,115 +85,136 @@ public sealed class ResponsesWebSocketClientService(
             });
         }
 
+        void ValidateWire(Dictionary<string, object?> payload, CancellationToken token)
+        {
+            if (ProtocolJsonWriter.Count(payload, audit: false, token) > ProtocolConversionParameters.Current.SseMaxEventBytes)
+                throw new InvalidDataException("A generated WebSocket message exceeds configured MaxEventBytes.");
+        }
+
         async Task Execute(Dictionary<string, object?> request, bool generate, int createIndex,
             CancellationToken responseCt)
         {
             var model = JsonDictionaryValue.String(request, "model");
             activeModel = model;
-            // The parsed frame is request-scoped and immutable after projection.
-            // Rewrite stages copy the payload before changing request semantics.
-            var clientRequest = request;
-            var fullRequest = ProjectRequest(request, history.FindResponse<StoredClientResponse>, out var previous);
-            if (fullRequest is null)
-            {
-                await SendError(
-                    "previous_response_not_found",
-                    "The previous response is unavailable on this WebSocket connection. Resend the full client history without previous_response_id.");
-                return;
-            }
-
-            var clientInputItems = InputItemCount(request);
-            var projectedInputItems = JsonDictionaryValue.List(fullRequest, "input").Count;
-            var reusedHistoryItems = previous is null
-                ? 0
-                : JsonDictionaryValue.List(previous.Request, "input").Count
-                    + JsonDictionaryValue.List(previous.Response, "output").Count;
-            logger.LogInformation(
-                "Responses WebSocket create projected. create_index={CreateIndex} model={Model} generate={Generate} transport={Transport} previous_response_id={PreviousResponseId} client_input_item_count={ClientInputItemCount} reused_history_item_count={ReusedHistoryItemCount} projected_input_item_count={ProjectedInputItemCount}",
-                createIndex,
-                model,
-                generate,
-                "websocket",
-                JsonDictionaryValue.String(request, "previous_response_id"),
-                clientInputItems,
-                reusedHistoryItems,
-                projectedInputItems);
-
-            if (!generate)
-            {
-                var responseId = WarmResponsePrefix + Guid.NewGuid().ToString("N");
-                var response = SyntheticResponse(responseId, model, "completed");
-                history.RememberResponse(responseId, new StoredClientResponse
-                {
-                    Request = fullRequest,
-                    Response = response
-                }, fullRequest, response);
-                await Send(new Dictionary<string, object?>
-                {
-                    ["type"] = "response.created",
-                    ["response"] = SyntheticResponse(responseId, model, "in_progress")
-                });
-                await Send(new Dictionary<string, object?>
-                {
-                    ["type"] = "response.completed",
-                    ["response"] = response
-                });
-                return;
-            }
-
-            fullRequest["stream"] = true;
-            var writer = new MultiAgentModelStreamWriter(
-                (payload, token) => Send(payload, token));
+            // Request-scoped: a local failure terminal never suppresses later request errors.
+            modelErrorTerminal = false;
             try
             {
+                var previousId = JsonDictionaryValue.String(request, "previous_response_id");
+                using var previous = previousId.Length == 0 ? null : history.AcquireHistory(previousId);
+                if (previousId.Length > 0 && previous is null)
+                {
+                    await SendError("previous_response_not_found",
+                        "The previous response is unavailable on this WebSocket connection. Resend the full client history without previous_response_id.");
+                    return;
+                }
+                using var prepared = history.Prepare(request, previous, generate, responseCt);
+                activePrepared = prepared;
+                var fullRequest = prepared.Request;
+                logger.LogInformation(
+                    "Responses WebSocket create projected. create_index={CreateIndex} model={Model} generate={Generate} transport={Transport} previous_response_id={PreviousResponseId} client_input_item_count={ClientInputItemCount} reused_history_item_count={ReusedHistoryItemCount} projected_input_item_count={ProjectedInputItemCount}",
+                    createIndex, model, generate, "websocket", previousId, InputItemCount(request),
+                    previous is null ? 0 : previous.InputCount + previous.OutputCount,
+                    JsonDictionaryValue.List(fullRequest, "input").Count);
+
+                if (!generate)
+                {
+                    var responseId = WarmResponsePrefix + Guid.NewGuid().ToString("N");
+                    var response = SyntheticResponse(responseId, model, "completed");
+                    var created = new Dictionary<string, object?>
+                    {
+                        ["type"] = "response.created", ["response"] = SyntheticResponse(responseId, model, "in_progress")
+                    };
+                    var completed = new Dictionary<string, object?> { ["type"] = "response.completed", ["response"] = response };
+                    ValidateWire(created, responseCt);
+                    ValidateWire(completed, responseCt);
+                    prepared.ReserveKnownResponse(response, responseCt);
+                    prepared.Commit(response, responseCt);
+                    await Send(created, responseCt);
+                    await Send(completed, responseCt);
+                    return;
+                }
+
+                MultiAgentModelStreamWriter writer = null!;
+                writer = new MultiAgentModelStreamWriter(async (payload, token) =>
+                {
+                    if (terminalResponseId.Length > 0 || modelErrorTerminal) return;
+                    var type = JsonDictionaryValue.String(payload, "type");
+                    if (type == "error")
+                    {
+                        // The Core terminal gate already emitted the single local failure. A later
+                        // exception unwind must not turn it into a second response.failed terminal.
+                        modelErrorTerminal = true;
+                        await Send(payload, token);
+                        return;
+                    }
+                    if (type is "response.completed" or "response.incomplete")
+                    {
+                        ValidateWire(payload, token);
+                        var response = writer.Result ?? throw new InvalidOperationException("The terminal model event has no validated response.");
+                        activeResponseId = JsonDictionaryValue.String(response, "id");
+                        prepared.Commit(response, token);
+                    }
+                    await Send(payload, token);
+                });
                 await using var scope = scopes.CreateAsyncScope();
                 var endpoint = scope.ServiceProvider.GetRequiredService<IProxyEndpointService>();
                 var result = await endpoint.ProxyAsync(new ProxyEndpointContext(
-                    ProtocolConverter.Responses,
-                    fullRequest,
-                    metadata,
-                    writer,
-                    responseCt,
-                    clientRequest));
+                    ProtocolConverter.Responses, fullRequest, metadata, writer, responseCt, request)
+                {
+                    SnapshotReservation = prepared.Reservation,
+                    HistoryCommitCredits = prepared.Reservation.RemainingBytes
+                });
                 if (!result.IsEmpty)
                 {
                     await SendProxyError(result);
                     return;
                 }
-
-                var response = writer.Result;
-                var responseId = response is null ? "" : JsonDictionaryValue.String(response, "id");
-                if (response is null || responseId.Length == 0)
-                {
+                if (writer.Result is null || JsonDictionaryValue.String(writer.Result, "id").Length == 0)
                     await SendError("upstream_error", "The upstream response completed without a response object.", 502);
-                    return;
-                }
-
-                if (JsonDictionaryValue.String(response, "status") is "completed" or "incomplete")
-                {
-                    history.RememberResponse(responseId, new StoredClientResponse
-                    {
-                        Request = fullRequest,
-                        Response = response
-                    }, fullRequest, response);
-                }
             }
             catch (OperationCanceledException) when (responseCt.IsCancellationRequested) { }
             catch (Exception exception)
             {
                 logger.LogError(exception, "Responses WebSocket request failed for model {Model}", model);
-                // A terminal send was already attempted by the audited proxy. Neither a
-                // late upstream failure nor a failed terminal send permits a second terminal.
-                if (terminalResponseId.Length > 0) return;
-                await SendError(
-                    exception is OpenCodex.Core.Errors.ProxyException proxy ? proxy.ErrorType : "server_error",
-                    exception is OpenCodex.Core.Errors.BadRequestException
-                        ? exception.Message
-                        : "The upstream request failed.",
-                    exception is OpenCodex.Core.Errors.ProxyException failedProxy
-                        ? failedProxy.StatusCode
-                        : 502);
+                if (terminalResponseId.Length > 0 || modelErrorTerminal) return;
+                var status = exception switch
+                {
+                    SnapshotCapacityExceededException => 507,
+                    SnapshotPersistenceException => 507,
+                    OpenCodex.ProtocolConversion.Protocols.RequestBudgetExceededException => 413,
+                    OpenCodex.Core.Errors.ProxyException proxy => proxy.StatusCode,
+                    _ => 502
+                };
+                var code = exception switch
+                {
+                    SnapshotCapacityExceededException => "snapshot_capacity_exceeded",
+                    SnapshotPersistenceException => "snapshot_write_failed",
+                    OpenCodex.Core.Errors.StorageCapacityException storage => storage.ErrorCode,
+                    OpenCodex.ProtocolConversion.Protocols.RequestBudgetExceededException => "request_too_large",
+                    InvalidDataException => "output_event_limit",
+                    OpenCodex.Core.Errors.ProxyException proxy when proxy.StatusCode == 413 => "request_too_large",
+                    OpenCodex.Core.Errors.BadRequestException => "invalid_request",
+                    OpenCodex.Core.Errors.UpstreamException upstream when upstream.ErrorCode is { Length: > 0 } => upstream.ErrorCode,
+                    OpenCodex.Core.Errors.ProxyException proxy => proxy.ErrorType,
+                    _ => "server_error"
+                };
+                var message = exception is SnapshotCapacityExceededException or SnapshotPersistenceException
+                    or OpenCodex.Core.Errors.ProxyException or OpenCodex.ProtocolConversion.Protocols.RequestBudgetExceededException
+                    ? exception.Message : "The upstream request failed.";
+                if (activeResponseId.Length > 0 && history.Knows(activeResponseId))
+                {
+                    var failed = SyntheticResponse(activeResponseId, activeModel, "failed");
+                    failed["error"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = status == 507 ? "insufficient_storage" : status == 413 ? "invalid_request_error" : "upstream_error",
+                        ["code"] = code, ["status"] = status, ["message"] = message
+                    };
+                    await Send(new Dictionary<string, object?> { ["type"] = "response.failed", ["response"] = failed }, recordIdentity: false);
+                }
+                else await SendError(code, message, status);
             }
+            finally { activePrepared = null; }
         }
 
         async Task SendProxyError(ProxyEndpointResult result)
@@ -213,39 +237,16 @@ public sealed class ResponsesWebSocketClientService(
 
         async Task<Dictionary<string, object?>?> ReceiveAsync()
         {
-            using var message = new MemoryStream();
-            var buffer = new byte[16 * 1024];
-            WebSocketReceiveResult received;
-            do
+            try { return await WebSocketRequestReader.ReadAsync(socket, maximumBytes, ct); }
+            catch (OpenCodex.ProtocolConversion.Protocols.RequestBudgetExceededException exception)
             {
-                received = await socket.ReceiveAsync(buffer, ct);
-                if (received.MessageType == WebSocketMessageType.Close)
-                {
-                    await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Closed", ct);
-                    return null;
-                }
-                if (received.MessageType != WebSocketMessageType.Text || message.Length + received.Count > maximumBytes)
-                {
-                    await SendError("invalid_payload", "Only text JSON messages within the request limit are accepted.");
-                    await socket.CloseOutputAsync(WebSocketCloseStatus.InvalidPayloadData, "Invalid payload", ct);
-                    return null;
-                }
-                message.Write(buffer, 0, received.Count);
-            }
-            while (!received.EndOfMessage);
-
-            try
-            {
-                if (!message.TryGetBuffer(out var messageBuffer))
-                    throw new JsonException("The WebSocket message buffer is unavailable.");
-                await using var payload = JsonPayload.FromOwnedUtf8(
-                    messageBuffer.AsMemory(0, checked((int)message.Length)));
-                return await payload.MaterializeObjectAsync(ct)
-                    ?? throw new JsonException("A JSON object is required.");
+                await SendError("request_too_large", exception.Message, 413);
+                await socket.CloseOutputAsync(WebSocketCloseStatus.InvalidPayloadData, "Request too large", ct);
+                return null;
             }
             catch (JsonException)
             {
-                await SendError("invalid_payload", "The message must be a valid JSON object.");
+                await SendError("invalid_payload", "The message must be a valid text JSON object.");
                 await socket.CloseOutputAsync(WebSocketCloseStatus.InvalidPayloadData, "Invalid request", ct);
                 return null;
             }
@@ -276,7 +277,8 @@ public sealed class ResponsesWebSocketClientService(
             {
                 activeStop.Cancel();
                 await active;
-                interrupted = true;
+                interrupted = terminalResponseId != responseId;
+                if (interrupted) history.DiscardHistory(responseId);
             }
 
             if (history.Knows(responseId) || activeResponseId == responseId || terminalResponseId == responseId)
@@ -339,7 +341,9 @@ public sealed class ResponsesWebSocketClientService(
                 }
                 if (type == "response.create")
                 {
-                    if (terminalResponseId.Length > 0 || active.IsCompleted)
+                    // A local failure terminal (model error event) also ends this request;
+                    // a following create must be unwound rather than reported in-progress.
+                    if (terminalResponseId.Length > 0 || modelErrorTerminal || active.IsCompleted)
                     {
                         await active;
                         return received;
@@ -399,6 +403,7 @@ public sealed class ResponsesWebSocketClientService(
                 activeResponseId = "";
                 activeModel = "";
                 terminalResponseId = "";
+                modelErrorTerminal = false;
                 active = Execute(item, generate, ++createIndex, activeStop.Token);
                 item = await RunActiveAsync();
             }
@@ -417,70 +422,6 @@ public sealed class ResponsesWebSocketClientService(
             catch (WebSocketException) { }
             activeStop?.Dispose();
         }
-    }
-
-    private static Dictionary<string, object?>? ProjectRequest(
-        Dictionary<string, object?> request,
-        Func<string, StoredClientResponse?> records,
-        out StoredClientResponse? previous)
-    {
-        previous = null;
-        var previousId = JsonDictionaryValue.String(request, "previous_response_id");
-        var currentInput = ReadInput(request);
-        if (previousId.Length == 0)
-        {
-            var full = new Dictionary<string, object?>(request, StringComparer.Ordinal);
-            full["input"] = currentInput;
-            full.Remove("previous_response_id");
-            return full;
-        }
-
-        if ((previous = records(previousId)) is null) return null;
-        var previousInput = JsonDictionaryValue.List(previous.Request, "input");
-        var previousOutput = JsonDictionaryValue.List(previous.Response, "output");
-        var history = previousInput.Concat(previousOutput).ToList();
-        var fullRequest = new Dictionary<string, object?>(previous.Request, StringComparer.Ordinal);
-        foreach (var pair in request)
-        {
-            fullRequest[pair.Key] = pair.Value;
-        }
-        fullRequest["input"] = IsPrefix(history, currentInput)
-            ? currentInput
-            : history.Concat(currentInput).ToList();
-        fullRequest.Remove("previous_response_id");
-        return fullRequest;
-    }
-
-    private static bool IsPrefix(IReadOnlyList<object?> prefix, IReadOnlyList<object?> values)
-    {
-        if (values.Count < prefix.Count) return false;
-        for (var index = 0; index < prefix.Count; index++)
-        {
-            if (!JsonValueComparer.AreEqual(prefix[index], values[index]))
-            {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static List<object?> ReadInput(IReadOnlyDictionary<string, object?> request)
-    {
-        var input = JsonDictionaryValue.Get(request, "input");
-        if (input is null) return [];
-        if (input is string text)
-        {
-            return
-            [
-                new Dictionary<string, object?>
-                {
-                    ["type"] = "message",
-                    ["role"] = "user",
-                    ["content"] = text
-                }
-            ];
-        }
-        return JsonDictionaryValue.List(request, "input");
     }
 
     private static int InputItemCount(IReadOnlyDictionary<string, object?> request)
@@ -515,9 +456,4 @@ public sealed class ResponsesWebSocketClientService(
         return response;
     }
 
-    private sealed class StoredClientResponse
-    {
-        public Dictionary<string, object?> Request { get; init; } = [];
-        public Dictionary<string, object?> Response { get; init; } = [];
-    }
 }

@@ -24,21 +24,62 @@ public sealed class ProxyRequestBodyLimitAttribute : Attribute, IAsyncResourceFi
         var limit = ProxyRequestLimits.ResolveMaxRequestBodyBytes(
             httpContext.RequestServices.GetRequiredService<IConfiguration>());
 
+        // Root MaxRequestBodyBytes 是解码后的负载预算；chunked 的传输分帧不属于负载，
+        // 不能让它先于统一预算拦截，因此这里只对非 chunked 请求沿用 Kestrel 的线上上限。
+        var chunked = httpContext.Request.Headers.TransferEncoding.ToString()
+            .Contains("chunked", StringComparison.OrdinalIgnoreCase);
         var sizeFeature = httpContext.Features.Get<IHttpMaxRequestBodySizeFeature>();
         if (sizeFeature is { IsReadOnly: false })
         {
-            sizeFeature.MaxRequestBodySize = limit;
+            sizeFeature.MaxRequestBodySize = chunked ? null : limit;
         }
 
+        // 声明长度即可判定超限时仍然要把这段 body 消费掉：写出 413 后 Kestrel 会因未消费的
+        // 请求体中止连接，而客户端此时已把这条 keep-alive 连接放回池子，下一个请求必然失败。
         if (httpContext.Request.ContentLength is { } contentLength && contentLength > limit)
         {
-            await ProxyErrorResponseWriter.WriteAsync(
-                httpContext,
-                new ProxyException("request body too large", StatusCodes.Status413PayloadTooLarge));
+            await RejectAsync(httpContext, limit, 0);
             context.Result = new EmptyResult();
             return;
         }
 
-        await next();
+        try
+        {
+            await next();
+        }
+        catch (BadHttpRequestException exception)
+            when (exception.StatusCode == StatusCodes.Status413PayloadTooLarge)
+        {
+            // 响应已开始写出时不能再改写成 413，交给外层按原有语义处理。
+            if (httpContext.Response.HasStarted)
+            {
+                throw;
+            }
+
+            // chunked 请求体没有 Content-Length，读取器在流式读取时才发现超限。
+            await RejectAsync(httpContext, limit, limit);
+            context.Result = new EmptyResult();
+        }
+    }
+
+    private static async Task RejectAsync(HttpContext httpContext, long limit, long alreadyRead)
+    {
+        // 先放行 Kestrel 的线上上限，否则 drain 会在中途被自身的 wire 上限中止。
+        var sizeFeature = httpContext.Features.Get<IHttpMaxRequestBodySizeFeature>();
+        if (sizeFeature is { IsReadOnly: false }) sizeFeature.MaxRequestBodySize = null;
+
+        // 未读到 EOF 时必须关闭连接；读到 EOF 时连接可继续复用。
+        if (!await RequestBodyReader.DrainOversizedBodyAsync(
+                httpContext.Request,
+                limit,
+                alreadyRead,
+                httpContext.RequestAborted))
+        {
+            httpContext.Items[RequestBodyReader.OversizedBodyNotDrainedItemKey] = true;
+        }
+
+        await ProxyErrorResponseWriter.WriteAsync(
+            httpContext,
+            new ProxyException("request body too large", StatusCodes.Status413PayloadTooLarge));
     }
 }

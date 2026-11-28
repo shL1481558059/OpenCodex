@@ -12,10 +12,4 @@
     <InternalsVisibleTo Include="OpenCodex.Api.Tests" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Content Include="..\..\..\..\protocol-conversion.parameters.json"
-             Link="protocol-conversion.parameters.json"
-             CopyToOutputDirectory="PreserveNewest"
-             CopyToPublishDirectory="PreserveNewest" />
-  </ItemGroup>
 </Project>

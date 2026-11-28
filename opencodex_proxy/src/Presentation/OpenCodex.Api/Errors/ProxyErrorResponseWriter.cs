@@ -1,4 +1,5 @@
 using System.Text.Json;
+using OpenCodex.Api.Infrastructure;
 using OpenCodex.Core.Errors;
 using OpenCodex.CoreBase.Results;
 
@@ -28,6 +29,10 @@ internal static class ProxyErrorResponseWriter
     /// </summary>
     /// <param name="context">当前请求上下文。</param>
     /// <param name="exception">待写出的代理异常。</param>
+    /// <remarks>
+    /// <see cref="HttpResponse.Clear"/> 会清空已设置的响应头，因此与请求体未消费相关的
+    /// <c>Connection: close</c> 必须在其之后设置。
+    /// </remarks>
     public static async Task WriteAsync(HttpContext context, ProxyException exception)
     {
         // UpstreamException 携带上游原始状态码，返回给客户端时统一使用 502，
@@ -36,19 +41,13 @@ internal static class ProxyErrorResponseWriter
             ? ProxyHttpStatus.BadGateway
             : exception.StatusCode;
 
-        context.Response.Clear();
-        context.Response.StatusCode = clientStatusCode;
-        context.Response.ContentType = "application/json";
-
         var response = IsProxyCompatibilityEndpoint(context)
             ? exception.ToResponse()
             : ApiOpResult.Fail(
                 clientStatusCode,
                 exception is UpstreamException ? UpstreamClientMessage : exception.Message);
 
-        await context.Response.WriteAsync(
-            JsonSerializer.Serialize(response, JsonOptions),
-            context.RequestAborted);
+        await WriteAsync(context, clientStatusCode, response);
     }
 
     /// <summary>
@@ -57,16 +56,30 @@ internal static class ProxyErrorResponseWriter
     /// <param name="context">当前请求上下文。</param>
     public static async Task WriteInternalErrorAsync(HttpContext context)
     {
+        await WriteAsync(
+            context,
+            StatusCodes.Status500InternalServerError,
+            ApiOpResult.Fail(StatusCodes.Status500InternalServerError, "An unexpected error occurred."));
+    }
+
+    private static async Task WriteAsync(HttpContext context, int statusCode, object response)
+    {
         context.Response.Clear();
-        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        context.Response.StatusCode = statusCode;
         context.Response.ContentType = "application/json";
 
-        var response = ApiOpResult.Fail(
-            StatusCodes.Status500InternalServerError,
-            "An unexpected error occurred.");
+        // 请求体未读到 EOF 时连接已无法再承载下一个请求：Kestrel 会在响应收尾时中止它，
+        // 而客户端可能已经把这条 keep-alive 连接放回池子。显式关闭可让客户端立刻换新连接，
+        // 不会拿到裸连接重置。必须在 Clear() 之后设置。
+        if (context.Items.ContainsKey(RequestBodyReader.OversizedBodyNotDrainedItemKey))
+        {
+            context.Response.Headers.Connection = "close";
+        }
 
+        // 超限请求的取消令牌可能已被触发，这段小错误响应仍必须完整写出，
+        // 否则客户端看到的是裸重置而不是 413。
         await context.Response.WriteAsync(
             JsonSerializer.Serialize(response, JsonOptions),
-            context.RequestAborted);
+            CancellationToken.None);
     }
 }

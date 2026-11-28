@@ -14,8 +14,22 @@ using Xunit;
 
 namespace OpenCodex.Api.Tests;
 
-public sealed class ProxyLogServiceTests
+public sealed class ProxyLogServiceTests : IDisposable
 {
+    private readonly string _auditDirectory = Path.Combine(Path.GetTempPath(), "opencodex-log-fixture-" + Guid.NewGuid().ToString("N"));
+    private readonly ProxyAuditSpool _auditSpool;
+
+    public ProxyLogServiceTests()
+    {
+        _auditSpool = new ProxyAuditSpool(new() { Directory = _auditDirectory });
+    }
+
+    public void Dispose()
+    {
+        _auditSpool.Dispose();
+        if (Directory.Exists(_auditDirectory)) Directory.Delete(_auditDirectory, recursive: true);
+    }
+
     private static readonly Guid TestApiKeyId = Guid.Parse("55555555-5555-5555-5555-555555555501");
     private static readonly Guid TestChannelId = Guid.Parse("66666666-6666-6666-6666-666666666601");
 
@@ -996,7 +1010,7 @@ public sealed class ProxyLogServiceTests
         context.SaveChanges();
     }
 
-    private static ProxyLogService CreateService(string dbPath)
+    private ProxyLogService CreateService(string dbPath)
     {
         var settingsProvider = new TestSettingsProvider(dbPath);
         var context = OpenCodexDbContextFactory.Create("sqlite", $"Data Source={dbPath}");
@@ -1015,10 +1029,11 @@ public sealed class ProxyLogServiceTests
             catalog,
             context,
             new EfRepository<RequestLog>(context),
-            new EfRepository<User>(context));
+            new EfRepository<User>(context),
+            _auditSpool);
     }
 
-    private static async Task<LogContentSnapshot> WriteImageLogAsync(
+    private async Task<LogContentSnapshot> WriteImageLogAsync(
         Dictionary<string, object?>? payload = null,
         Dictionary<string, object?>? responsePayload = null,
         object? errorResponse = null,

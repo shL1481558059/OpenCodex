@@ -9,7 +9,7 @@ using D = System.Collections.Generic.Dictionary<string, object?>;
 namespace OpenCodex.Core.Services.MultiAgent;
 
 /// <summary>Executes one client-owned Responses request and publishes committed tool batches.</summary>
-public sealed class NativeClientResponseExecutor(NativeClientSessionStore store, MultiAgentStreamingOptions? streamingOptions = null,ProxyAuditSpool? auditSpool=null)
+public sealed class NativeClientResponseExecutor(NativeClientSessionStore store, ProxyAuditSpool auditSpool, MultiAgentStreamingOptions? streamingOptions = null)
 {
     public async Task<D> ExecuteAsync(NativeClientSession session, D request, string turnId,
         MultiAgentModelCall model, Func<D, Task> emit, CancellationToken ct,
@@ -24,7 +24,10 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
         var inProgress = false;
         var buffering = false;
         var terminalSent = false;
-        using var eventBudget=new StreamCaptureBudget((streamingOptions??new()).MaxBufferedEventBytes,int.MaxValue,4,auditSpool??ProxyAuditSpool.Default,lease.Token);
+        var bufferedBytes = (streamingOptions ?? new()).MaxBufferedEventBytes;
+        var snapshots = new SnapshotStore(auditSpool);
+        using var reservation = snapshots.Reserve(snapshots.EstimateCredits(bufferedBytes, 4, 1), lease.Token);
+        using var eventBudget = new StreamCaptureBudget(bufferedBytes, int.MaxValue, 4, reservation.AuditCapture, lease.Token);
         var events=new ConverterJsonFragments(eventBudget);
         var added = new HashSet<int>();
         var done = new HashSet<int>();

@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Text.Json;
 using OpenCodex.ProtocolConversion.Abstractions;
@@ -45,15 +46,23 @@ internal sealed class StreamResponseCapture : IDisposable
     private bool _discardPendingUntilBoundary;
     private bool _observerFailed;
     private StreamResponseCaptureResult? _completedResult;
+    private readonly ReceivedFrameEvidence? _evidence;
+    private ExceptionDispatchInfo? _strictFailure, _completionFailure;
+    private ReceivedFrameEvidenceSnapshot? _failureEvidence;
+    private long _acceptedFrames;
 
     public StreamResponseCapture(
         string protocol,
         int maxCapturedBytes = DefaultMaxCapturedBytes)
         : this(protocol,new StreamCaptureBudget(maxCapturedBytes)) { }
 
-    internal StreamResponseCapture(string protocol,StreamCaptureBudget budget,IReadOnlySet<string>? toolNames=null)
+    internal StreamResponseCapture(string protocol,StreamCaptureBudget budget,IReadOnlySet<string>? toolNames=null, int? maxEventBytes=null)
     {
         _budget=budget;
+        _evidence = budget.IsStrict
+            ? new ReceivedFrameEvidence(protocol, budget.MaxBytes,
+                maxEventBytes ?? ProtocolConversionParameters.Current.SseMaxEventBytes, budget.Spool!, budget.CancellationToken)
+            : null;
         _accumulator = protocol switch
         {
             ProtocolConverter.Responses => new ResponsesStreamResponseAccumulator(_budget),
@@ -68,12 +77,59 @@ internal sealed class StreamResponseCapture : IDisposable
     internal CapturedTextSlice? BorrowText(object owner,string field)=>_budget.BorrowText(owner,field);
     internal ConverterFragments CreateFragments()=>new(_budget);
     internal ConverterArguments CreateArguments()=>new(_budget);
-    public void Dispose()=>_budget.Dispose();
-
-    internal bool IsComplete => !_observerFailed && _accumulator.IsComplete;
-
-    public void Accept(SseFrame frame)
+    public void Dispose()
     {
+        try { _evidence?.Dispose(); }
+        finally { _budget.Dispose(); }
+        // GetFailureEvidence transfers its independent reader to the audit caller.
+    }
+
+    internal bool NeedsFailureEvidence => _strictFailure is not null || _completionFailure is not null
+        || _budget.SourceFailure is not null
+        || _evidence is { } evidence && evidence.RecordCount > _acceptedFrames;
+    internal bool IsComplete => !NeedsFailureEvidence && !_observerFailed && _accumulator.IsComplete;
+
+    /// <summary>Call before an upstream primer; Accept(frame, true) must consume the same ordered frames.</summary>
+    internal void RecordReceivedFrame(SseFrame frame)
+    {
+        if (_evidence is null) return;
+        _strictFailure?.Throw();
+        try { _evidence.Append(frame); }
+        catch (Exception exception) { _strictFailure ??= ExceptionDispatchInfo.Capture(exception); throw; }
+    }
+
+    /// <summary>The caller owns this snapshot until complete failure-audit persistence has finished.</summary>
+    internal ReceivedFrameEvidenceSnapshot GetFailureEvidence(
+        StreamCaptureTermination termination = StreamCaptureTermination.UpstreamError) =>
+        _failureEvidence ??= (_evidence ?? throw new InvalidOperationException(
+            "Received-frame evidence needs the explicitly injected strict capture store.")).Snapshot(termination);
+
+    public void Accept(SseFrame frame, bool evidenceAlreadyRecorded = false)
+    {
+        if (_evidence is not null)
+        {
+            _strictFailure?.Throw();
+            _completionFailure?.Throw();
+            _budget.SourceFailure?.Throw();
+            try
+            {
+                if (!evidenceAlreadyRecorded) RecordReceivedFrame(frame);
+                else if (_evidence.RecordCount <= _acceptedFrames)
+                    throw new InvalidOperationException("The ordered frame must be recorded before acceptance.");
+                if (frame.Event is not null)
+                {
+                    if (frame.Malformed)
+                    {
+                        _malformedEventCount++;
+                        throw new UpstreamException("The upstream audit contains malformed JSON; full received-frame evidence is required.");
+                    }
+                    _accumulator.Accept(frame.Event);
+                }
+                _acceptedFrames = checked(_acceptedFrames + 1);
+                return;
+            }
+            catch (Exception exception) { _strictFailure ??= ExceptionDispatchInfo.Capture(exception); throw; }
+        }
         if (_observerFailed || frame.Event is null) return;
         if (frame.Malformed) { _malformedEventCount++; if(_budget.IsStrict)throw new UpstreamException("The upstream audit contains malformed JSON; complete audit cannot be guaranteed.");return; }
         try { _accumulator.Accept(frame.Event); }
@@ -82,6 +138,14 @@ internal sealed class StreamResponseCapture : IDisposable
 
     public void Accept(string chunk)
     {
+        if (_evidence is not null)
+        {
+            _strictFailure?.Throw();
+            _completionFailure?.Throw();
+            _budget.SourceFailure?.Throw();
+            try { _evidence.AppendChunk(chunk); }
+            catch (Exception exception) { _strictFailure ??= ExceptionDispatchInfo.Capture(exception); throw; }
+        }
         if (_observerFailed)
         {
             return;
@@ -92,6 +156,7 @@ internal sealed class StreamResponseCapture : IDisposable
             if (chunk.Length == 0)
             {
                 AcceptLine(string.Empty);
+                if (_evidence is not null) _acceptedFrames = checked(_acceptedFrames + 1);
                 return;
             }
 
@@ -102,6 +167,12 @@ internal sealed class StreamResponseCapture : IDisposable
             {
                 AcceptLine(parts[index]);
             }
+            if (_evidence is not null) _acceptedFrames = checked(_acceptedFrames + 1);
+        }
+        catch (Exception exception) when (_budget.IsStrict && IsRecoverableCaptureException(exception))
+        {
+            _strictFailure ??= ExceptionDispatchInfo.Capture(exception);
+            throw;
         }
         catch (Exception exception) when (!_budget.IsStrict && IsRecoverableCaptureException(exception))
         {
@@ -111,53 +182,49 @@ internal sealed class StreamResponseCapture : IDisposable
 
     public StreamResponseCaptureResult Complete(StreamCaptureTermination termination)
     {
-        if (_completedResult is not null)
-        {
-            return _completedResult;
-        }
-
-        FlushPendingData(markMalformed: true);
-        Dictionary<string, object?>? response;
+        if (_completedResult is not null) return _completedResult;
+        _completionFailure?.Throw();
+        _strictFailure?.Throw();
+        _budget.SourceFailure?.Throw();
         try
         {
-            response = _accumulator.BuildResponse();
-        }
-        catch (Exception exception) when (!_budget.IsStrict && IsRecoverableCaptureException(exception))
-        {
-            _observerFailed = true;
-            response = null;
-        }
-        var completed = termination == StreamCaptureTermination.Completed
-            && _accumulator.IsComplete
-            && !_observerFailed;
-
-        var needsCaptureMetadata = !completed
-            || _budget.Truncated
-            || _malformedEventCount > 0
-            || _observerFailed;
-        if (response is null && needsCaptureMetadata)
-        {
-            response = new Dictionary<string, object?>(StringComparer.Ordinal);
-        }
-
-        if (response is not null && needsCaptureMetadata)
-        {
-            response["_opencodex_capture"] = new Dictionary<string, object?>(StringComparer.Ordinal)
+            if (_budget.IsStrict && NeedsFailureEvidence)
+                throw new UpstreamException("The received stream includes unapplied frames; full received-frame evidence is required.");
+            FlushPendingData(markMalformed: true);
+            Dictionary<string, object?>? response;
+            try { response = _accumulator.BuildResponse(); }
+            catch (Exception exception) when (!_budget.IsStrict && IsRecoverableCaptureException(exception))
             {
-                ["completed"] = completed,
-                ["termination"] = termination.ToString(),
-                ["truncated"] = _budget.Truncated,
-                ["malformed_events"] = _malformedEventCount,
-                ["observer_failed"] = _observerFailed
-            };
+                _observerFailed = true;
+                response = null;
+            }
+            var completed = termination == StreamCaptureTermination.Completed
+                && _accumulator.IsComplete && !_observerFailed;
+            var needsCaptureMetadata = !completed || _budget.Truncated
+                || _malformedEventCount > 0 || _observerFailed;
+            if (response is null && needsCaptureMetadata)
+                response = new Dictionary<string, object?>(StringComparer.Ordinal);
+            if (response is not null && needsCaptureMetadata)
+            {
+                response["_opencodex_capture"] = new Dictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["completed"] = completed,
+                    ["termination"] = termination.ToString(),
+                    ["truncated"] = _budget.Truncated,
+                    ["malformed_events"] = _malformedEventCount,
+                    ["observer_failed"] = _observerFailed
+                };
+            }
+            // Cache the built source before the caller validates its normal C limit.
+            // A failed build is separately cached below; never rebuild it in catch/finally.
+            return _completedResult = new StreamResponseCaptureResult(response, completed,
+                _budget.Truncated, _malformedEventCount);
         }
-
-        _completedResult = new StreamResponseCaptureResult(
-            response,
-            completed,
-            _budget.Truncated,
-            _malformedEventCount);
-        return _completedResult;
+        catch (Exception exception) when (_budget.IsStrict && IsRecoverableCaptureException(exception))
+        {
+            _completionFailure ??= ExceptionDispatchInfo.Capture(exception);
+            throw;
+        }
     }
 
     private void AcceptLine(string line)
@@ -280,6 +347,8 @@ internal sealed class StreamResponseCapture : IDisposable
         }
         catch (JsonException)
         {
+            if (_budget.IsStrict)
+                throw new UpstreamException("The upstream audit contains malformed JSON; full received-frame evidence is required.");
             return false;
         }
     }
@@ -314,6 +383,9 @@ internal sealed class StreamResponseCapture : IDisposable
 internal sealed class StreamCaptureBudget : IDisposable
 {
     private int _remainingBytes;
+    internal int MaxBytes { get; }
+    internal ExceptionDispatchInfo? SourceFailure { get; private set; }
+    internal void RecordSourceFailure(Exception exception) => SourceFailure ??= ExceptionDispatchInfo.Capture(exception);
     private readonly IProtocolAuditCapture? _spool;
     private readonly CancellationToken _cancellation;
     private readonly int _maxFields;
@@ -328,12 +400,12 @@ internal sealed class StreamCaptureBudget : IDisposable
     { if(maxBytes<=0 || maxItems<=0 || maxFields<=0)throw new ArgumentOutOfRangeException(nameof(maxBytes));_spool=spool;_cancellation=cancellationToken;_maxFields=maxFields; }
     internal CaptureText CreateText()
     {
-        if(IsStrict && _texts.Count>=_maxFields)throw new UpstreamException("Complete stream audit exceeds its field budget; no content was truncated.");
+        if(IsStrict && _texts.Count>=_maxFields)throw new UpstreamException("Complete stream audit exceeds its field budget; no content was truncated.", "output_capture_limit", 507);
         var text=new CaptureText(_spool,_cancellation);_texts.Add(text);return text;
     }
     internal CaptureBinary CreateBinary()
     {
-        if(IsStrict && _binaries.Count>=_maxFields)throw new UpstreamException("Complete stream audit exceeds its field budget; no content was truncated.");
+        if(IsStrict && _binaries.Count>=_maxFields)throw new UpstreamException("Complete stream audit exceeds its field budget; no content was truncated.", "output_capture_limit", 507);
         var binary=new CaptureBinary(this);_binaries.Add(binary);return binary;
     }
     public void Dispose() { foreach(var binary in _binaries)binary.Dispose();_binaries.Clear();foreach(var text in _texts)text.Dispose();_texts.Clear();_eventText.Clear(); }
@@ -358,7 +430,7 @@ internal sealed class StreamCaptureBudget : IDisposable
     private void Consume(int bytes)
     {
         _cancellation.ThrowIfCancellationRequested();
-        if(bytes>_remainingBytes)throw new UpstreamException("Complete stream audit exceeds its byte budget; no content was truncated.");
+        if(bytes>_remainingBytes)throw new UpstreamException("Complete stream audit exceeds its byte budget; no content was truncated.", "output_capture_limit", 507);
         _remainingBytes-=bytes;
     }
     public void Append(CaptureText target,string? fragment)
@@ -374,7 +446,7 @@ internal sealed class StreamCaptureBudget : IDisposable
         if (bytes <= 0) return;
         _cancellation.ThrowIfCancellationRequested();
         if (bytes > _remainingBytes)
-            throw new UpstreamException("Complete stream audit exceeds its byte budget; no content was truncated.");
+            throw new UpstreamException("Complete stream audit exceeds its byte budget; no content was truncated.", "output_capture_limit", 507);
         _remainingBytes -= checked((int)bytes);
     }
 
@@ -382,7 +454,8 @@ internal sealed class StreamCaptureBudget : IDisposable
         int maxBytes,
         int maxCollectionItems = StreamResponseCapture.MaxCapturedCollectionItems)
     {
-        _remainingBytes = Math.Max(0, maxBytes);
+        MaxBytes = Math.Max(0, maxBytes);
+        _remainingBytes = MaxBytes;
         MaxCollectionItems = Math.Max(0, maxCollectionItems);
     }
 
@@ -392,7 +465,7 @@ internal sealed class StreamCaptureBudget : IDisposable
 
     public void MarkTruncated()
     {
-        if(IsStrict)throw new UpstreamException("Complete stream audit exceeds its collection budget; no content was truncated.");
+        if(IsStrict)throw new UpstreamException("Complete stream audit exceeds its collection budget; no content was truncated.", "output_capture_limit", 507);
         Truncated = true;
     }
 

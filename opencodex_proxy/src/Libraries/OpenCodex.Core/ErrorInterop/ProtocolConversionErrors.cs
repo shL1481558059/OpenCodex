@@ -11,6 +11,10 @@ internal static class ProtocolConversionErrors
         {
             action();
         }
+        catch (OpenCodex.ProtocolConversion.Protocols.RequestBudgetExceededException exception)
+        {
+            throw new OpenCodex.Core.Errors.BadRequestException(exception.Message, exception.StatusCode);
+        }
         catch (OpenCodex.ProtocolConversion.Errors.BadRequestException exception)
         {
             throw new OpenCodex.Core.Errors.BadRequestException(exception.Message, exception.StatusCode);
@@ -29,6 +33,10 @@ internal static class ProtocolConversionErrors
         try
         {
             return action();
+        }
+        catch (OpenCodex.ProtocolConversion.Protocols.RequestBudgetExceededException exception)
+        {
+            throw new OpenCodex.Core.Errors.BadRequestException(exception.Message, exception.StatusCode);
         }
         catch (OpenCodex.ProtocolConversion.Errors.BadRequestException exception)
         {
@@ -58,6 +66,10 @@ internal static class ProtocolConversionErrors
                     yield break;
                 }
                 item = enumerator.Current;
+            }
+            catch (OpenCodex.ProtocolConversion.Protocols.RequestBudgetExceededException exception)
+            {
+                throw new OpenCodex.Core.Errors.BadRequestException(exception.Message, exception.StatusCode);
             }
             catch (OpenCodex.ProtocolConversion.Errors.BadRequestException exception)
             {

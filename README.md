@@ -50,6 +50,14 @@ OPENCODEX_MODEL_CATALOG_SYNC_URL=
 TZ=Asia/Shanghai
 ```
 
+### 协议转换与容量预算
+
+协议转换与容量预算不再有独立的 JSON 参数文件，全部通过 `.env` 中的 `ProtocolConversion__*` 键提供，完整清单与逐项说明见 [`.env.example`](.env.example)。这些键**全部必填**：缺失、非数字或越界都会让进程启动失败，没有代码默认值、不会自动截断，也不会回退到旧配置。
+
+读取规则：进程环境变量优先（容器可注入同名键），否则读取工作目录下的 `.env`；路径可用 `OPENCODEX_DOTENV_PATH` 显式指定。进程内只读取一次，修改后需重启生效。
+
+其中两个是功能级总预算：`ProtocolConversion__MaxRequestBodyBytes` 是一次完整解码请求的统一上限（HTTP、客户端 WebSocket 首条与后续、上游请求共用）；`ProtocolConversion__SnapshotStoreMaxBytes` 是历史与审计证据共享存储的总配额。旧的 `OpenCodex:MaxRequestBodyMb`、`OPENCODEX_MAX_REQUEST_BODY_MB`、`MultiAgent:ClientWebSocketCache`、`ProxyAuditSpool:MaxBodyBytes/MaxTotalBytes/MaxFiles` 现在是明确的启动迁移错误。
+
 `OPENCODEX_ADMIN_USERNAME` 和 `OPENCODEX_ADMIN_PASSWORD` 是环境变量超级管理员。超级管理员不能通过管理接口降级或删除，密码以环境变量为准；普通用户只能由超级管理员创建、停用和重置密码。
 
 数据库通过 `OPENCODEX_DB_PROVIDER`（`sqlite` 或 `postgres`）和 `OPENCODEX_DB_CONNECTION_STRING` 配置，本地开发默认使用 SQLite。`OPENCODEX_REDIS_CONNECTION` 留空则降级为纯进程内缓存；启用后鉴权/路由/定价缓存走两级，亲和/容量/熔断走跨实例共享，`OPENCODEX_REDIS_PREFIX` 和 `OPENCODEX_CACHE_DEFAULT_TTL_SECONDS` 分别控制 Redis Key 前缀与默认缓存 TTL。`OPENCODEX_OCR_CACHE_DIR` 是 OCR 中间缓存目录。`OPENCODEX_MODEL_CATALOG_SYNC_URL` 是模型目录同步地址，留空使用内置默认地址。

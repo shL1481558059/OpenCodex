@@ -17,6 +17,33 @@ use tauri_plugin_shell::{
     ShellExt,
 };
 
+// Protocol-conversion budgets for the bundled sidecar. The desktop build has no
+// operator-facing configuration file, so the same mandatory keys the server reads from
+// .env are supplied explicitly here. Keep these in sync with .env.example.
+const PROTOCOL_CONVERSION_ENV: &[(&str, &str)] = &[
+    ("ProtocolConversion__MaxRequestBodyBytes", "268435456"),
+    ("ProtocolConversion__SnapshotStoreMaxBytes", "4294967296"),
+    ("ProtocolConversion__StringSegmentCharacters", "4096"),
+    ("ProtocolConversion__FlushBytes", "16384"),
+    ("ProtocolConversion__GeneratedFrameCacheBytes", "32768"),
+    ("ProtocolConversion__CaptureCopyCharacters", "8192"),
+    ("ProtocolConversion__SseReadBufferCharacters", "4096"),
+    ("ProtocolConversion__SseRetainedBufferCharacters", "65536"),
+    ("ProtocolConversion__SseMaxEventBytes", "16777216"),
+    ("ProtocolConversion__SseMaxCaptureBytes", "67108864"),
+    ("ProtocolConversion__SseMaxCaptureItems", "4096"),
+    ("ProtocolConversion__SseMaxCaptureFields", "8192"),
+    ("ProtocolConversion__SseMaxBufferedRoundBytes", "33554432"),
+    ("ProtocolConversion__SseMaxBufferedRoundFrames", "65536"),
+    ("ProtocolConversion__SseMaxProbeBytes", "16777216"),
+    ("ProtocolConversion__SseMaxProbeFrames", "1024"),
+    ("ProtocolConversion__SseMaxWebSocketMessageBytes", "33554432"),
+    ("ProtocolConversion__SseMaxBatchBytes", "16384"),
+    ("ProtocolConversion__SseMaxFlushDelayMilliseconds", "10"),
+    ("ProtocolConversion__SseMaxQueuedEvents", "8"),
+    ("ProtocolConversion__SseMaxQueuedBytes", "1048576"),
+];
+
 const LOCALHOST_MODE: &str = "localhost";
 const LAN_MODE: &str = "lan";
 const LOCALHOST_BIND_HOST: &str = "127.0.0.1";
@@ -174,6 +201,13 @@ fn start_backend(app: &AppHandle, state: &BackendState) -> Result<DesktopSetting
             "OPENCODEX_INTERCEPT_PROBE_REQUESTS",
             settings.intercept_probe_requests.to_string(),
         );
+
+    // The bundled sidecar sets OPENCODEX_DISABLE_DOTENV, so every mandatory
+    // protocol-conversion key must be injected explicitly. Applied one by one with the
+    // same .env() builder used above. Keep in sync with .env.example.
+    let command = PROTOCOL_CONVERSION_ENV.iter().fold(command, |builder, (key, value)| {
+        builder.env(*key, *value)
+    });
 
     let (mut rx, child) = command.spawn().map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn(async move {

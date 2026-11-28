@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using OpenCodex.Core.Errors;
+using OpenCodex.Core.ExternalIntegrations;
 using OpenCodex.ProtocolConversion;
+using OpenCodex.ProtocolConversion.Streaming;
 using OpenCodex.Core.Services.WebSearch;
 using OpenCodex.CoreBase.Abstractions;
 using OpenCodex.CoreBase.Domain.Proxy;
@@ -22,19 +24,25 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
         IProxyLogService logs,
         IWebSearchToolExecutor webSearch,
         WebSearchContinuationStore webSearchHistory,
-        ProxyAuditSpool? auditSpool = null)
+        ProxyAuditSpool auditSpool)
     {
         _upstream = upstream;
         _logs = logs;
         _webSearch = webSearch;
         _webSearchHistory = webSearchHistory;
-        _auditSpool = auditSpool ?? ProxyAuditSpool.Default;
+        ArgumentNullException.ThrowIfNull(auditSpool);
+        _auditSpool = auditSpool;
     }
 
     public async Task<ProxyNonStreamResult> SendAsync(ProxyNonStreamContext context)
     {
+        using var executionBudget = RequestExecutionBudget.Create(_auditSpool, context.RequestMetadata,
+            context.SnapshotReservation, context.HistoryCommitCredits, CancellationToken.None);
+        var requestMetadata = executionBudget.Attach(context.RequestMetadata);
+        var outputFrames = new SseFrameOptions();
+        Exception? primaryFailure = null;
         var upstreamRequest = context.UpstreamRequest;
-        var upstreamRequestBody = context.RequestMetadata.LogBodies?.UpstreamRequest;
+        var upstreamRequestBody = requestMetadata.LogBodies?.UpstreamRequest;
         Dictionary<string, object?>? upstreamResponse = null;
         Dictionary<string, object?>? responsePayload = null;
         Dictionary<string, object?>? webSearchDetails = null;
@@ -50,19 +58,51 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
         BuiltinToolSession? tools = null;
         var rejectedUsage = new Dictionary<string, object?>(StringComparer.Ordinal);
         var retryUsed = false;
+        var toolExecutionPhase = false;
 
         try
         {
+            executionBudget.EnsureQueued(requestMetadata, context.OriginalPayload, context.CancellationToken);
+            var bodies = requestMetadata.LogBodies ?? new ProxyLogBodyHandles(null, null);
+            requestMetadata = requestMetadata.WithLogBodies(bodies with
+            {
+                Headers = bodies.Headers ?? executionBudget.CaptureAuditJson(requestMetadata.Headers, context.CancellationToken),
+                Request = bodies.Request ?? (requestMetadata.RawBody is { Length: > 0 } raw
+                    ? executionBudget.CaptureAuditUtf8(raw.Span, context.CancellationToken)
+                    : executionBudget.CaptureAuditJson(context.OriginalPayload, context.CancellationToken))
+            });
             using var toolLifetime = tools = context.BuiltinTools is null ? null : new BuiltinToolSession(
                 context.BuiltinTools, _webSearch, _webSearchHistory,
-                context.ChannelType, context.DefaultTimeout, BuiltinToolSession.OutputTokenBudget(context.Payload));
+                context.ChannelType, context.DefaultTimeout, BuiltinToolSession.OutputTokenBudget(context.Payload))
+            {
+                BeforeToolExecution = (sourceRequest, details, token) => executionBudget.EnsureTool(
+                    details, sourceRequest, outputFrames, context.ChannelType, isStream: false, token),
+                AfterToolExecution = RequestExecutionBudget.ValidateToolResult
+            };
             while (true)
             {
+                executionBudget.EnsureCall(requestMetadata, context.OriginalPayload, upstreamRequest, outputFrames, context.ChannelType,
+                    isStream: false, tools?.Token(context.CancellationToken) ?? context.CancellationToken,
+                    knownAuditDetails: tools?.Details, hasBuiltinTools: tools is not null);
+                upstreamRequestBody ??= executionBudget.CaptureAuditJson(upstreamRequest, context.CancellationToken);
                 upstreamResponse = await _upstream.PostJsonAsync(
                     context.Route.Channel,
                     upstreamRequest,
                     context.DefaultTimeout,
                     tools?.Token(context.CancellationToken) ?? context.CancellationToken);
+                try
+                {
+                    RequestExecutionBudget.ValidateCompleteJson(upstreamResponse, "source", outputFrames.MaxCaptureBytes,
+                        context.CancellationToken);
+                }
+                catch (StorageCapacityException)
+                {
+                    // A custom IUpstreamClient returning an over-C dictionary violated its
+                    // source contract. It has no original-wire evidence to fabricate. The
+                    // real HTTP adapter rejects earlier with bounded received-json evidence.
+                    upstreamResponse = null;
+                    throw;
+                }
                 try
                 {
                     responsePayload = ProtocolConversion.ProtocolConversionErrors.Wrap(
@@ -110,38 +150,66 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
                         context.ChannelType,
                         toolCallMappings?.Keys ?? Array.Empty<string>(),
                         tools?.Binding.WebSearchToolName);
-                    upstreamRequestBody = _auditSpool.CaptureJson(upstreamRequest);
+                    upstreamRequestBody = null; // The next model-call admission validates P and reserves this version.
                     continue;
+                }
+                try
+                {
+                    RequestExecutionBudget.ValidateCompleteJson(responsePayload, "downstream", outputFrames.MaxCaptureBytes,
+                        context.CancellationToken);
+                }
+                catch (StorageCapacityException)
+                {
+                    responsePayload = null; // The failed response is logged instead of an over-C success candidate.
+                    throw;
                 }
                 if (tools is null)
                 {
                     break;
                 }
+                toolExecutionPhase = true;
                 await foreach (var _ in tools.ProcessRoundAsync(
                     upstreamRequest, upstreamResponse, responsePayload, context.CancellationToken))
                 {
                 }
+                toolExecutionPhase = false;
                 responsePayload = tools.ResponsePayload;
                 if (tools.NextRequest is not { } next)
                 {
                     break;
                 }
                 upstreamRequest = next;
-                upstreamRequestBody = _auditSpool.CaptureJson(upstreamRequest);
+                upstreamRequestBody = null; // The next model-call admission validates P and reserves this version.
             }
 
+            try
+            {
+                RequestExecutionBudget.ValidateCompleteJson(responsePayload, "downstream", outputFrames.MaxCaptureBytes,
+                    context.CancellationToken);
+            }
+            catch (StorageCapacityException)
+            {
+                responsePayload = null;
+                throw;
+            }
             return new ProxyNonStreamResult(statusCode, responsePayload);
         }
-        catch (ProxyException exception)
+        catch (Exception failure) when (ResourceErrors.Normalize(failure) is ProxyException)
         {
+            var exception = (ProxyException)ResourceErrors.Normalize(failure);
+            primaryFailure = exception;
             statusCode = exception.StatusCode;
             error = exception.Message;
             errorResponse = exception.ToResponse();
-            upstreamResponse = UpstreamErrorBody(exception);
+            if (!toolExecutionPhase)
+                upstreamResponse = UpstreamErrorBody(failure as ProxyException ?? exception) ?? upstreamResponse;
+            // Tool failures retain their own bounded source in Details.calls[].raw;
+            // never relabel provider JSON as the model's original upstream response.
             return new ProxyNonStreamResult(statusCode, errorResponse, exception);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException exception)
         {
+            primaryFailure = exception;
             if (context.CancellationToken.IsCancellationRequested)
             {
                 statusCode = ProxyHttpStatus.ClientClosedRequest;
@@ -156,41 +224,51 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
         }
         catch (Exception exception)
         {
+            primaryFailure = exception;
             statusCode = ProxyHttpStatus.InternalServerError;
             error = exception.Message;
             throw;
         }
         finally
         {
-            webSearchDetails = tools?.Details;
-            await _logs.CompleteLogAsync(
-                context.RequestLogId,
-                new ProxyLogContext(
-                    context.RequestId,
-                    context.OwnerUsername,
-                    context.ApiKeyId,
-                    context.OriginalPayload,
-                    upstreamRequest,
-                    upstreamResponse,
-                    responsePayload,
-                    errorResponse,
-                    context.RequestModel,
-                    context.UpstreamModel,
-                    context.ChannelId,
-                    context.ChannelType,
-                    IsStream: false,
-                    TtftMs: null,
-                    statusCode,
-                    ElapsedMilliseconds(context.StartedTimestamp),
-                    error,
-                    webSearchDetails)
-                {
-                    UpstreamRequestBody = upstreamRequestBody,
-                    AggregatedUsage = tools?.HasAccountingUsage == true
-                        ? tools.AccountingUsage
-                        : rejectedUsage.Count > 0 ? rejectedUsage : null
-                },
-                context.RequestMetadata);
+            try
+            {
+                webSearchDetails = tools?.Details;
+                if (requestMetadata.LogBodies is { } bodies) executionBudget.TransferLogBodies(bodies);
+                upstreamRequestBody = executionBudget.TransferToLog(upstreamRequestBody);
+                await _logs.CompleteLogAsync(
+                    context.RequestLogId,
+                    new ProxyLogContext(
+                        context.RequestId,
+                        context.OwnerUsername,
+                        context.ApiKeyId,
+                        context.OriginalPayload,
+                        upstreamRequest,
+                        upstreamResponse,
+                        responsePayload,
+                        errorResponse,
+                        context.RequestModel,
+                        context.UpstreamModel,
+                        context.ChannelId,
+                        context.ChannelType,
+                        IsStream: false,
+                        TtftMs: null,
+                        statusCode,
+                        ElapsedMilliseconds(context.StartedTimestamp),
+                        error,
+                        webSearchDetails)
+                    {
+                        UpstreamRequestBody = upstreamRequestBody,
+                        AggregatedUsage = tools?.HasAccountingUsage == true
+                            ? tools.AccountingUsage
+                            : rejectedUsage.Count > 0 ? rejectedUsage : null
+                    },
+                    requestMetadata);
+            }
+            catch (Exception auditFailure) when (primaryFailure is not null)
+            {
+                throw ResourceErrors.Combine(primaryFailure, auditFailure);
+            }
         }
     }
 
@@ -205,6 +283,9 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
     {
         if (exception is UpstreamException { Body: not null } upstream)
         {
+            if (upstream.Body is Dictionary<string, object?> evidence
+                && (ReceivedFrameEvidence.IsEvidence(evidence) || UpstreamJsonEvidence.IsEvidence(evidence)))
+                return evidence;
             return new Dictionary<string, object?>(StringComparer.Ordinal)
             {
                 ["error"] = upstream.Body

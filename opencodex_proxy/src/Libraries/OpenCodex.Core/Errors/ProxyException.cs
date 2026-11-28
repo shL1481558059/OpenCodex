@@ -2,8 +2,8 @@ namespace OpenCodex.Core.Errors;
 
 public class ProxyException : Exception
 {
-    public ProxyException(string message, int statusCode = ProxyHttpStatus.InternalServerError)
-        : base(message)
+    public ProxyException(string message, int statusCode = ProxyHttpStatus.InternalServerError, Exception? innerException = null)
+        : base(message, innerException)
     {
         StatusCode = statusCode;
     }

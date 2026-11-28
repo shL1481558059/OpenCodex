@@ -14,8 +14,24 @@ using Xunit;
 
 namespace OpenCodex.Api.Tests;
 
-public sealed class ProxyEndpointServiceTests
+public sealed class ProxyEndpointServiceTests : IDisposable
 {
+    private readonly string _auditDirectory = Path.Combine(Path.GetTempPath(), "opencodex-endpoint-fixture-" + Guid.NewGuid().ToString("N"));
+    private readonly ProxyAuditSpool _auditSpool;
+    private readonly HashSet<StubProxyLogService> _ownedLogs = [];
+
+    public ProxyEndpointServiceTests()
+    {
+        _auditSpool = new ProxyAuditSpool(new() { Directory = _auditDirectory });
+    }
+
+    public void Dispose()
+    {
+        foreach (var logs in _ownedLogs) logs.Dispose();
+        _auditSpool.Dispose();
+        if (Directory.Exists(_auditDirectory)) Directory.Delete(_auditDirectory, recursive: true);
+    }
+
     [Fact]
     public async Task ProxyAsync_CapturesUpstreamBodyThroughAuditSpool()
     {
@@ -50,6 +66,8 @@ public sealed class ProxyEndpointServiceTests
         }
         finally
         {
+            logs.Dispose();
+            spool.Dispose();
             if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
         }
     }
@@ -62,7 +80,7 @@ public sealed class ProxyEndpointServiceTests
         var logs = new StubProxyLogService();
         var upstream = new FailedTerminalUpstreamClient(hasFailedTerminal);
         var webSearch = new StubWebSearchToolExecutor();
-        var streams = new ProxyStreamService(upstream, logs, webSearch, WebSearchTestStore.Create());
+        var streams = new ProxyStreamService(upstream, logs, webSearch, WebSearchTestStore.Create(), _auditSpool);
         var breaker = new ChannelCircuitBreakerService(1, TimeSpan.FromSeconds(30), 1, null, () => DateTimeOffset.UtcNow);
         var primary = CreateChannel("primary", 0, type: ProtocolConverter.Responses);
         var secondary = CreateChannel("secondary", 1, type: ProtocolConverter.Responses);
@@ -1513,7 +1531,7 @@ public sealed class ProxyEndpointServiceTests
         Assert.NotNull(nonStreams.LastContext);
     }
 
-    private static ProxyEndpointService CreateService(
+    private ProxyEndpointService CreateService(
         IChannelCapacityService capacity,
         IProxyRouteService routes,
         IChannelCircuitBreakerService? breaker = null,
@@ -1524,8 +1542,10 @@ public sealed class ProxyEndpointServiceTests
         IWebSearchToolExecutor? webSearch = null,
         ProxyAuditSpool? auditSpool = null)
     {
+        var logService = logs ?? new StubProxyLogService();
+        if (logService is StubProxyLogService stubLogs) _ownedLogs.Add(stubLogs);
         return new ProxyEndpointService(
-            logs ?? new StubProxyLogService(),
+            logService,
             new StubProxyRequestService(),
             new StubProxyIdentityContext(),
             routes,
@@ -1539,7 +1559,7 @@ public sealed class ProxyEndpointServiceTests
             webSearch ?? new StubWebSearchToolExecutor(),
             WebSearchTestStore.Create(),
             new MultiAgentRepeatGuard(),
-            auditSpool);
+            auditSpool ?? _auditSpool);
     }
 
     private static ProxyEndpointContext CreateChatContext(string model)
@@ -1819,8 +1839,21 @@ public sealed class ProxyEndpointServiceTests
         }
     }
 
-    private sealed class StubProxyLogService : IProxyLogService
+    private sealed class StubProxyLogService : IProxyLogService, IDisposable
     {
+        private readonly HashSet<ProxyLogBodyHandle> _bodies = [];
+
+        private void Own(ProxyLogBodyHandle? body)
+        {
+            if (body is not null) _bodies.Add(body);
+        }
+
+        public void Dispose()
+        {
+            foreach (var body in _bodies) body.Dispose();
+            _bodies.Clear();
+        }
+
         public Guid QueuedLogId { get; } = Guid.Parse("11111111-1111-1111-1111-111111111111");
 
         public List<ProxyLogContext> WrittenLogs { get; } = [];
@@ -1829,22 +1862,28 @@ public sealed class ProxyEndpointServiceTests
 
         public Guid CreateQueuedLog(ProxyRequestLogQueuedContext context)
         {
+            Own(context.BodyHandles?.Headers);
+            Own(context.BodyHandles?.Request);
+            Own(context.BodyHandles?.UpstreamRequest);
             return context.RequestType == ProxyRequestTypes.Attempt ? Guid.NewGuid() : QueuedLogId;
         }
 
         public void MarkProcessing(Guid requestLogId, ProxyRequestLogProcessingContext context)
         {
+            Own(context.UpstreamRequestBody);
             ProcessingContexts.Add(context);
         }
 
         public Task CompleteLogAsync(Guid requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
         {
+            Own(context.UpstreamRequestBody);
             if (context.RequestType == ProxyRequestTypes.Attempt) WrittenLogs.Add(context);
             return Task.CompletedTask;
         }
 
         public Task<Guid> WriteLogAsync(ProxyLogContext context, ProxyRequestMetadata request)
         {
+            Own(context.UpstreamRequestBody);
             WrittenLogs.Add(context);
             return Task.FromResult(Guid.NewGuid());
         }

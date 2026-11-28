@@ -8,9 +8,28 @@ namespace OpenCodex.CoreBase.Abstractions;
 public sealed class ProxyRequestMetadata
 {
     public ProxyLogBodyHandles? LogBodies { get; init; }
+    public SnapshotReservation? SnapshotReservation { get; init; }
+    public long HistoryCommitCredits { get; init; }
 
     public ProxyRequestMetadata WithLogBodies(ProxyLogBodyHandles bodies) =>
-        new(Method, Path, ClientIp, Headers, RawBody) { LogBodies = bodies };
+        new(Method, Path, ClientIp, Headers, RawBody)
+        {
+            LogBodies = bodies,
+            SnapshotReservation = SnapshotReservation,
+            HistoryCommitCredits = HistoryCommitCredits
+        };
+
+    public ProxyRequestMetadata WithSnapshotReservation(SnapshotReservation reservation, long historyCommitCredits) =>
+        new(Method, Path, ClientIp, Headers, RawBody)
+        {
+            LogBodies = LogBodies,
+            SnapshotReservation = reservation,
+            HistoryCommitCredits = historyCommitCredits
+        };
+
+    public ProxyLogBodyHandle CaptureAuditJson(object? value, CancellationToken cancellationToken = default) =>
+        (SnapshotReservation ?? throw new InvalidOperationException("An explicit request snapshot reservation is required."))
+            .CaptureAuditJson(value, cancellationToken);
 
     /// <summary>
     /// 初始化 <see cref="ProxyRequestMetadata"/> 类的新实例。

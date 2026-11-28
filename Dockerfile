@@ -14,7 +14,6 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine AS dotnet-build
 
 WORKDIR /src/opencodex_proxy
 
-COPY protocol-conversion.parameters.json /src/protocol-conversion.parameters.json
 COPY opencodex_proxy/global.json ./
 COPY opencodex_proxy/src/Libraries/OpenCodex.Domain/OpenCodex.Domain.csproj ./src/Libraries/OpenCodex.Domain/
 COPY opencodex_proxy/src/Libraries/OpenCodex.Core/OpenCodex.Core.csproj ./src/Libraries/OpenCodex.Core/

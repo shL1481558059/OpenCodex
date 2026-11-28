@@ -16,8 +16,24 @@ using static OpenCodex.CoreBase.Abstractions.WebSearchPayload;
 
 namespace OpenCodex.Api.Tests;
 
-public sealed class WebSearchProgressTests
+public sealed class WebSearchProgressTests : IDisposable
 {
+    private readonly string _auditDirectory = Path.Combine(Path.GetTempPath(), "opencodex-search-progress-" + Guid.NewGuid().ToString("N"));
+    private readonly ProxyAuditSpool _auditSpool;
+    private readonly Logs _logs = new();
+
+    public WebSearchProgressTests()
+    {
+        _auditSpool = new ProxyAuditSpool(new() { Directory = _auditDirectory });
+    }
+
+    public void Dispose()
+    {
+        _logs.Dispose();
+        _auditSpool.Dispose();
+        if (Directory.Exists(_auditDirectory)) Directory.Delete(_auditDirectory, recursive: true);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -47,7 +63,7 @@ public sealed class WebSearchProgressTests
         {
             BuiltinTools = binding
         };
-        var service = new ProxyStreamService(new ChatStream(), new Logs(), executor, history);
+        var service = new ProxyStreamService(new ChatStream(), _logs, executor, history, _auditSpool);
         var task = service.StreamAsync(context);
         try
         {
@@ -151,12 +167,42 @@ public sealed class WebSearchProgressTests
         }
     }
 
-    private sealed class Logs : IProxyLogService
+    private sealed class Logs : IProxyLogService, IDisposable
     {
-        public Guid CreateQueuedLog(ProxyRequestLogQueuedContext context) => Guid.NewGuid();
-        public void MarkProcessing(Guid id, ProxyRequestLogProcessingContext context) { }
-        public Task CompleteLogAsync(Guid id, ProxyLogContext context, ProxyRequestMetadata request) => Task.CompletedTask;
-        public Task<Guid> WriteLogAsync(ProxyLogContext context, ProxyRequestMetadata request) => Task.FromResult(Guid.NewGuid());
+        private readonly HashSet<ProxyLogBodyHandle> _bodies = [];
+
+        private void Own(ProxyLogBodyHandle? body)
+        {
+            if (body is not null) _bodies.Add(body);
+        }
+
+        public void Dispose()
+        {
+            foreach (var body in _bodies) body.Dispose();
+            _bodies.Clear();
+        }
+
+        public Guid CreateQueuedLog(ProxyRequestLogQueuedContext context)
+        {
+            Own(context.BodyHandles?.Headers);
+            Own(context.BodyHandles?.Request);
+            Own(context.BodyHandles?.UpstreamRequest);
+            return Guid.NewGuid();
+        }
+        public void MarkProcessing(Guid id, ProxyRequestLogProcessingContext context)
+        {
+            Own(context.UpstreamRequestBody);
+        }
+        public Task CompleteLogAsync(Guid id, ProxyLogContext context, ProxyRequestMetadata request)
+        {
+            Own(context.UpstreamRequestBody);
+            return Task.CompletedTask;
+        }
+        public Task<Guid> WriteLogAsync(ProxyLogContext context, ProxyRequestMetadata request)
+        {
+            Own(context.UpstreamRequestBody);
+            return Task.FromResult(Guid.NewGuid());
+        }
         public Task<Guid> WriteLogAsync(ProxyRequestLogContext context) => Task.FromResult(Guid.NewGuid());
     }
 }

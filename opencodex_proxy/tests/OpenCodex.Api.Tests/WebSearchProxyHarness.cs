@@ -14,13 +14,30 @@ using static OpenCodex.CoreBase.Abstractions.WebSearchPayload;
 
 namespace OpenCodex.Api.Tests;
 
-internal sealed class WebSearchProxyHarness(
-    IUpstreamClient upstream,
-    IWebSearchClient search,
-    IRepository<WebSearchSettings> settings,
-    IRepository<TavilyKey> keys)
+internal sealed class WebSearchProxyHarness : IDisposable
 {
-    private readonly WebSearchToolExecutor _executor = new(search, settings, keys);
+    private readonly string _auditDirectory = Path.Combine(Path.GetTempPath(), "opencodex-search-harness-" + Guid.NewGuid().ToString("N"));
+    private readonly IUpstreamClient _upstream;
+    private readonly WebSearchToolExecutor _executor;
+    private readonly ProxyAuditSpool _auditSpool;
+    private readonly List<CapturingLogs> _logs = [];
+
+    public WebSearchProxyHarness(
+        IUpstreamClient upstream, IWebSearchClient search,
+        IRepository<WebSearchSettings> settings, IRepository<TavilyKey> keys)
+    {
+        _upstream = upstream;
+        _executor = new(search, settings, keys);
+        _auditSpool = new ProxyAuditSpool(new() { Directory = _auditDirectory });
+    }
+
+    public void Dispose()
+    {
+        foreach (var logs in _logs) logs.Dispose();
+        _logs.Clear();
+        _auditSpool.Dispose();
+        if (Directory.Exists(_auditDirectory)) Directory.Delete(_auditDirectory, recursive: true);
+    }
 
     public async Task<WebSearchSimulationResult> RunAsync(
         IReadOnlyDictionary<string, object?> channel,
@@ -32,13 +49,14 @@ internal sealed class WebSearchProxyHarness(
     {
         var history = WebSearchTestStore.Create();
         var logs = new CapturingLogs();
+        _logs.Add(logs);
         var (prepared, request, binding, route) = Prepare(channel, upstreamRequest, payload, originalModel);
         var context = new ProxyNonStreamContext(
             Stopwatch.GetTimestamp(), Guid.NewGuid(), "test", "admin", Guid.Empty,
             payload, prepared, request, "responses", route, StringValue(channel, "type"),
             StringValue(channel, "id"), "superadmin", "upstream", originalModel,
             defaultTimeout, Metadata(), cancellationToken) { BuiltinTools = binding };
-        var result = await new ProxyNonStreamService(upstream, logs, _executor, history).SendAsync(context);
+        var result = await new ProxyNonStreamService(_upstream, logs, _executor, history, _auditSpool).SendAsync(context);
         if (result.FailureException is not null)
         {
             throw result.FailureException;
@@ -60,6 +78,7 @@ internal sealed class WebSearchProxyHarness(
     {
         var history = WebSearchTestStore.Create();
         var logs = new CapturingLogs();
+        _logs.Add(logs);
         var writer = new CapturingWriter();
         var (prepared, request, binding, route) = Prepare(channel, upstreamRequest, payload, originalModel);
         var context = new ProxyStreamContext(
@@ -68,7 +87,7 @@ internal sealed class WebSearchProxyHarness(
             StringValue(channel, "id"), "superadmin", "upstream", originalModel,
             defaultTimeout, Metadata(), writer, cancellationToken) { BuiltinTools = binding };
         await new ProxyStreamService(
-            new CapturingUpstream(upstream, streamCapture), logs, _executor, history).StreamAsync(context);
+            new CapturingUpstream(_upstream, streamCapture), logs, _executor, history, _auditSpool).StreamAsync(context);
         var log = logs.Last ?? throw new InvalidOperationException("proxy did not record the request");
         result.FinalUpstreamRequest = log.UpstreamRequest;
         result.FinalUpstreamResponse = log.UpstreamResponse;
@@ -151,18 +170,42 @@ internal sealed class WebSearchProxyHarness(
         }
     }
 
-    private sealed class CapturingLogs : IProxyLogService
+    private sealed class CapturingLogs : IProxyLogService, IDisposable
     {
+        private readonly HashSet<ProxyLogBodyHandle> _bodies = [];
+
+        private void Own(ProxyLogBodyHandle? body)
+        {
+            if (body is not null) _bodies.Add(body);
+        }
+
+        public void Dispose()
+        {
+            foreach (var body in _bodies) body.Dispose();
+            _bodies.Clear();
+        }
+
         public ProxyLogContext? Last { get; private set; }
-        public Guid CreateQueuedLog(ProxyRequestLogQueuedContext context) => Guid.NewGuid();
-        public void MarkProcessing(Guid requestLogId, ProxyRequestLogProcessingContext context) { }
+        public Guid CreateQueuedLog(ProxyRequestLogQueuedContext context)
+        {
+            Own(context.BodyHandles?.Headers);
+            Own(context.BodyHandles?.Request);
+            Own(context.BodyHandles?.UpstreamRequest);
+            return Guid.NewGuid();
+        }
+        public void MarkProcessing(Guid requestLogId, ProxyRequestLogProcessingContext context)
+        {
+            Own(context.UpstreamRequestBody);
+        }
         public Task CompleteLogAsync(Guid requestLogId, ProxyLogContext context, ProxyRequestMetadata request)
         {
+            Own(context.UpstreamRequestBody);
             Last = context;
             return Task.CompletedTask;
         }
         public Task<Guid> WriteLogAsync(ProxyLogContext context, ProxyRequestMetadata request)
         {
+            Own(context.UpstreamRequestBody);
             Last = context;
             return Task.FromResult(Guid.NewGuid());
         }
