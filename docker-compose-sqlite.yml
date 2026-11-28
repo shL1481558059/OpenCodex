@@ -15,9 +15,6 @@ services:
     env_file:
       - .env
     environment:
-      - OPENCODEX_DB_PROVIDER=sqlite
-      - OPENCODEX_DB_CONNECTION_STRING=Data Source=/app/logs/opencodex.db
-      - MultiAgent__StateDirectory=/app/logs/multi-agent-runs
       # Snapshot/history spool must live on the mounted volume: the default temp
       # directory is wiped on every --force-recreate deployment.
       - ProxyAuditSpool__Directory=/app/logs/audit-spool

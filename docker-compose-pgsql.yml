@@ -56,14 +56,7 @@ services:
     env_file:
       - .env
     environment:
-      - OPENCODEX_DB_PROVIDER=postgres
-      - OPENCODEX_DB_CONNECTION_STRING=Host=postgres;Port=5432;Database=opencodex;Username=admin;Password=123456
       - OPENCODEX_REDIS_CONNECTION=redis:6379,abortConnect=false
-      - OPENCODEX_REDIS_PREFIX=opencodex
-      - OPENCODEX_CACHE_DEFAULT_TTL_SECONDS=300
-      - MultiAgent__StateDirectory=/app/logs/multi-agent-runs
-      - MultiAgent__NativeClientState__RedisTtlHours=24
-      - MultiAgent__NativeClientState__RedisMaxValueBytes=8388608
       # Snapshot/history spool must live on the mounted volume: the default temp
       # directory is wiped on every --force-recreate deployment.
       - ProxyAuditSpool__Directory=/app/logs/audit-spool
