@@ -542,7 +542,7 @@ flowchart TD
 | HTTP 连接池、Cookie、Data Protection | [OpenCodexServiceCollectionExtensions.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Hosting/OpenCodexServiceCollectionExtensions.cs) |
 | 上游重试与退避 | [HttpUpstreamClient.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/ExternalIntegrations/HttpUpstreamClient.cs)、[HttpUpstreamClient.Streaming.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/ExternalIntegrations/HttpUpstreamClient.Streaming.cs) |
 | SSE 写出 | [ProxyStreamResponseWriter.cs](../opencodex_proxy/src/Presentation/OpenCodex.Api/Infrastructure/ProxyStreamResponseWriter.cs) |
-| 流捕获预算 | [StreamResponseCapture.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Protocols/StreamResponseCapture.cs) |
+| 流捕获预算 | [StreamResponseCapture.cs](../opencodex_proxy/src/Libraries/OpenCodex.ProtocolConversion/Protocols/StreamResponseCapture.cs) |
 | 熔断 | [ChannelCircuitBreakerService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/ChannelCircuitBreakerService.cs) |
 | 亲和 | [ChannelAffinityService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/ChannelAffinityService.cs) |
 | 容量 | [ChannelCapacityService.cs](../opencodex_proxy/src/Libraries/OpenCodex.Core/Services/Proxy/ChannelCapacityService.cs) |

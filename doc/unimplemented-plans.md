@@ -63,7 +63,7 @@
 未实施部分：
 
 - 定价缓存仍是 `PricingCacheTtl = 60 秒` + Redis 版本号机制，未切换到 `v1:pricing:` 前缀失效与无过期持久化；`BumpPricingVersion()` 尚未改为 `RemoveByPrefixAsync`，接入配置的定价规则与 provider 排序也尚未整体进缓存域。
-- `ConfigService`、`ObservabilityService` 中的裸 `IMemoryCache` 渠道快照尚未并入统一 `ICacheService` 域；多实例下仍靠 10 秒 TTL 兜底。
+- `ChannelService`、`ObservabilityService` 中的裸 `IMemoryCache` 渠道快照尚未并入统一 `ICacheService` 域；多实例下仍靠 10 秒 TTL 兜底。
 - `AccessApiKey.LastUsedAt` 回写仍挂在缓存回源路径；切无过期缓存前必须决定处理方式（建议节流异步批量写）。
 - 尚无 superadmin 清缓存运维端点；失效广播的新旧格式并存切换未完成。
 - 阶段 4 收尾（文档、清理、回归清单）未做。

@@ -1193,17 +1193,6 @@ onBeforeUnmount(() => {
     margin-left: 0;
   }
 
-  .pricing-page .toolbar-actions > :deep(.el-dropdown) {
-    grid-column: 1 / -1;
-    width: 100%;
-  }
-
-  .pricing-page .toolbar-actions > :deep(.el-dropdown) .el-button {
-    width: 100%;
-    min-height: 44px;
-    margin-left: 0;
-  }
-
   .create-model-button {
     grid-column: 1 / -1;
   }

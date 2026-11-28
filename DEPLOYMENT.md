@@ -45,7 +45,7 @@ npm --prefix frontend run dev -- --host 127.0.0.1 --port 5173
 使用 `OPENCODEX_ADMIN_USERNAME` 和 `OPENCODEX_ADMIN_PASSWORD` 调用 `/login` 登录。首次登录后建议先完成两件事：
 
 1. 调用 `/channels` 新增自己的上游渠道。渠道里的 `apikey` 是 Windhub、OpenAI 或其他上游服务的 Key。
-2. 调用 `/api-keys` 创建访问 API Key。这个 Key 是客户端调用 OpenCodex Proxy 的 Bearer Key，明文只显示一次。
+2. 调用 `/api-keys` 创建访问 API Key。这个 Key 是客户端调用 OpenCodex Proxy 的 Bearer Key；当前实现同时保存鉴权哈希和可按现有管理权限回显/复制的明文，数据库及备份应按敏感数据管理。
 
 普通用户只能由超级管理员创建。普通用户只能看到自己的渠道、自己的访问 API Key 和自己的请求日志；超级管理员能看到全部。Web Search 模拟只允许超级管理员配置和使用。
 
@@ -289,13 +289,15 @@ codex exec "使用工具创建一个名为 opencodex_tool_test.txt 的文件，�
 rm -rf /tmp/opencodex-codex-home
 ```
 
-## 日志展示等级
+## 请求日志使用 SOP
 
-- `BASIC`：时间、等级、路径、入口协议、模型、渠道、状态码、耗时、错误摘要。
-- `DEBUG`：增加上游模型、兼容规则、脱敏参数、上游错误摘要。
-- `TRACE`：增加脱敏后的请求和响应正文片段，仅建议本地临时排障。
+当前请求日志提供状态、耗时、用量、费用等摘要，并按现有管理权限返回请求头、原始或规范化正文和上游响应等详情；没有 `BASIC` / `DEBUG` / `TRACE` 分层展示或统一脱敏保证。
 
-所有等级都会脱敏 `Authorization`、`api_key`、`apikey`、`x-api-key`、cookie 和密码。
+1. 将日志正文、数据库、快照目录与备份视为可能含 Key、Cookie 和业务数据的敏感资产，仅授权维护人员访问。
+2. 排障分享前人工检查并脱敏，不直接上传原始日志或凭据。
+3. 按实例管理约定保留必要证据，清理使用现有管理入口；不要直接删除仍被日志、会话或密钥引用的数据文件。
+
+框架日志等级不等于请求日志正文等级。本说明不引入新的脱敏框架或自动清理机制。
 
 ## 模型目录同步源搭建
 

@@ -376,22 +376,6 @@ public sealed class WebSearchService : IWebSearchService
         return result;
     }
 
-    private TavilyKeyDto? ReserveTavilyKeyById(Guid keyId)
-    {
-        var reserved = _keyRepository.Table
-            .Where(key => key.Id == keyId && key.UsageCount < key.UsageLimit)
-            .FirstOrDefault();
-        if (reserved is null)
-        {
-            return null;
-        }
-
-        reserved.UsageCount += 1;
-        reserved.UpdatedAt = UnixTimeSeconds();
-        _keyRepository.Update(reserved);
-        return MapToDto(reserved);
-    }
-
     private static TavilyKeyDto MapToDto(TavilyKey key)
     {
         return new TavilyKeyDto(

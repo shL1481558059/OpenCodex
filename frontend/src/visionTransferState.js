@@ -122,11 +122,6 @@ export function selectChannel(state, group, channelId) {
   return state;
 }
 
-export function clearFallback(state) {
-  state.draft.fallback = { channelId: "", model: "" };
-  return state;
-}
-
 function isGroupFilled(group) {
   return Boolean(group.channelId) && Boolean(group.model);
 }

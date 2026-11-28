@@ -667,17 +667,6 @@ public sealed partial class NativeClientSessionStore
             throw new InvalidOperationException("The native client session is no longer active.");
     }
 
-    private async Task CacheSessionAsync(NativeClientSession session, CancellationToken ct)
-        => await _cache.SetSessionAsync(new()
-        {
-            Owner = session.Owner,
-            ThreadId = session.ThreadId,
-            RootThreadId = session.RootThreadId,
-            ParentThreadId = session.ParentThreadId,
-            AgentName = session.AgentName,
-            MaxConcurrentSubagents = session.MaxConcurrentSubagents
-        }, ct);
-
     private async Task CacheGroupAsync(Guid owner, string rootThread, CancellationToken ct)
     {
         if (!_groups.TryGetValue(SessionKey(owner, rootThread), out var group)) return;

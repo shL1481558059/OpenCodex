@@ -13,7 +13,7 @@ OpenCodex 是多协议 LLM 代理与配套管理台：接收客户端 Responses�
 |---|---|---|
 | Presentation | `src/Presentation/OpenCodex.Api` | HTTP 路由、请求体与元数据读取、SSE 写出、末端异常处理 |
 | Core 编排 | `src/Libraries/OpenCodex.Core/Services/Proxy` | `ProxyEndpointService` 主编排、非流式/流式服务、日志生命周期 |
-| Core 协议 | `src/Libraries/OpenCodex.Core/Protocols` | `ProtocolConverter` 请求/响应规范化、`SseStreamConverter` 六向转换、响应累积器 |
+| ProtocolConversion | `src/Libraries/OpenCodex.ProtocolConversion/Protocols` | `ProtocolConverter` 请求/响应规范化、`SseStreamConverter` 六向转换、响应累积器 |
 | 路由与可靠性 | `ProxyRouteService`、`ChannelAffinityService`、`ChannelCapacityService`、`ChannelCircuitBreakerService` | 候选生成、排序、亲和、容量、熔断 |
 | External | `src/Libraries/OpenCodex.Core/ExternalIntegrations` | 上游 HTTP 调用、重试、SSE 读取、Tavily/Keenable 搜索客户端 |
 | Domain/Data | `src/Libraries/OpenCodex.Domain`、`OpenCodex.Data` | 渠道、用户、密钥、模型目录、日志实体与 SQLite/PostgreSQL 双 provider 持久化 |

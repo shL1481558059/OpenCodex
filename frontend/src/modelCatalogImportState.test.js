@@ -9,7 +9,6 @@ import {
   applyModelCatalogImport,
   failModelCatalogImport,
   resetModelCatalogImport,
-  importSummary,
   syncModelKeys
 } from "./modelCatalogImportState.js";
 
@@ -157,7 +156,6 @@ test("dry run 预览与正式导入推进状态", () => {
   assert.equal(state.fileName, "catalog.json");
   assert.equal(state.preview, true);
   assert.equal(state.confirmed, false);
-  assert.equal(importSummary(state), "供应商新增 1，更新 0，无变化 2");
 
   applyModelCatalogImport(state, { ...result, dry_run: false });
   assert.equal(state.phase, "done");
@@ -176,7 +174,7 @@ test("失败与重置", () => {
   assert.equal(state.document, null);
 });
 
-test("同步增量模式摘要包含跳过计数", () => {
+test("同步增量模式保留新增与跳过模型键", () => {
   const state = createModelCatalogImportState();
   state.origin = "sync";
   const result = {
@@ -191,17 +189,13 @@ test("同步增量模式摘要包含跳过计数", () => {
   };
   applyModelCatalogDryRun(state, "", null, result);
 
-  const summary = importSummary(state);
-  assert.ok(summary.includes("跳过 5"));
-  assert.ok(summary.includes("模型新增 2"));
-
   const keys = syncModelKeys(state);
   assert.equal(keys.created.length, 2);
   assert.equal(keys.skipped.length, 5);
   assert.equal(keys.overwritten.length, 0);
 });
 
-test("覆盖模式摘要包含覆盖计数", () => {
+test("覆盖模式保留覆盖与新增模型键", () => {
   const state = createModelCatalogImportState();
   state.origin = "overwrite";
   const result = {
@@ -215,10 +209,6 @@ test("覆盖模式摘要包含覆盖计数", () => {
     errors: []
   };
   applyModelCatalogDryRun(state, "", null, result);
-
-  const summary = importSummary(state);
-  assert.ok(summary.includes("覆盖 2"));
-  assert.ok(summary.includes("模型新增 1"));
 
   const keys = syncModelKeys(state);
   assert.equal(keys.overwritten.length, 2);

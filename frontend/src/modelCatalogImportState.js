@@ -87,32 +87,6 @@ export function resetModelCatalogImport(state) {
   return state;
 }
 
-export function importSummary(state) {
-  if (!state.dryRun) return "";
-  const providers = state.dryRun.providers || {};
-  const models = state.dryRun.models || {};
-  if (state.origin === "sync" || state.origin === "overwrite") {
-    const parts = [
-      `供应商新增 ${providers.created || 0}`,
-      `无变化 ${providers.unchanged || 0}`,
-      `模型新增 ${models.created || 0}`
-    ];
-    if (state.origin === "sync") {
-      parts.push(`跳过 ${state.dryRun.skipped || 0}`);
-    }
-    if (state.origin === "overwrite") {
-      const overwritten = (state.dryRun.overwritten_model_keys || []).length;
-      parts.push(`覆盖 ${overwritten}`);
-    }
-    return parts.join("，");
-  }
-  return [
-    `供应商新增 ${providers.created || 0}`,
-    `更新 ${providers.updated || 0}`,
-    `无变化 ${providers.unchanged || 0}`
-  ].join("，");
-}
-
 export function syncModelKeys(state) {
   if (!state.dryRun) return { created: [], skipped: [], overwritten: [] };
   return {

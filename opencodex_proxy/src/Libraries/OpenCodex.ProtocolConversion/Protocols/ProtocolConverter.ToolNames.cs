@@ -44,22 +44,6 @@ public static partial class ProtocolConverter
             return false;
         }
 
-        public bool TryResolveUniqueResponsesName(string name, out ToolWireNameEntry entry)
-        {
-            var matches = _byIdentity.Values
-                .Where(candidate => string.Equals(candidate.ResponsesName, name, StringComparison.Ordinal))
-                .Take(2)
-                .ToList();
-            if (matches.Count == 1)
-            {
-                entry = matches[0];
-                return true;
-            }
-
-            entry = new ToolWireNameEntry();
-            return false;
-        }
-
         public bool TryResolveInbound(string name, string? namespaceName, out ToolWireNameEntry entry)
         {
             if (TryResolve(name, namespaceName, out entry))

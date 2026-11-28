@@ -27,18 +27,8 @@ public sealed class NativeClientStateCache
         _ttl = TimeSpan.FromHours(_options.RedisTtlHours);
     }
 
-    internal Task<NativeClientCachedSession?> GetSessionAsync(Guid owner, string threadId, CancellationToken ct)
-        => GetAsync<NativeClientCachedSession>(
-            SessionKey(owner, threadId),
-            value => value.Version == 1 && value.Owner == owner && value.ThreadId == threadId,
-            refresh: true,
-            ct);
-
     internal Task SetSessionAsync(NativeClientCachedSession session, CancellationToken ct)
         => SetAsync(SessionKey(session.Owner, session.ThreadId), session, ct);
-
-    internal Task RemoveSessionAsync(Guid owner, string threadId, CancellationToken ct)
-        => DeleteAsync(SessionKey(owner, threadId), ct);
 
     internal Task<NativeClientCachedGroup?> GetGroupAsync(Guid owner, string rootThreadId, CancellationToken ct)
         => GetAsync<NativeClientCachedGroup>(

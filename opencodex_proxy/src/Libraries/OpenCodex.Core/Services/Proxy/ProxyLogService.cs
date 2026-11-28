@@ -638,10 +638,6 @@ public sealed class ProxyLogService : IProxyLogService
         _ => throw new ArgumentOutOfRangeException(nameof(slot))
     };
 
-    private static ReadOnlyMemory<byte> RawBodyMemory(
-        ReadOnlyMemory<byte>? rawRequestBody, Dictionary<string, object?>? payload) =>
-        rawRequestBody is { Length: > 0 } raw ? raw : EncodeForLog(payload);
-
     private void PublishLogWritten(Guid logId, string ownerUsername, int statusCode, string? error)
     {
         var isError = !string.IsNullOrEmpty(error) || statusCode >= 400;
@@ -653,11 +649,6 @@ public sealed class ProxyLogService : IProxyLogService
 
 
         });
-    }
-
-    private static byte[] EncodeForLog(object? value)
-    {
-        return JsonSerializer.SerializeToUtf8Bytes(value, JsonOptions);
     }
 
     private static void ApplyConversationMetadata(

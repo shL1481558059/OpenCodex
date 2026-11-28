@@ -1057,7 +1057,7 @@ sequenceDiagram
 
 | 能力 | 源码锚点 | 现有测试锚点 |
 |---|---|---|
-| 协议常量/总分派 | `opencodex_proxy/src/Libraries/OpenCodex.Core/Protocols/ProtocolConverter.cs` | `ProtocolConversionMatrixTests.cs` |
+| 协议常量/总分派 | `opencodex_proxy/src/Libraries/OpenCodex.ProtocolConversion/Protocols/ProtocolConverter.cs` | `ProtocolConversionMatrixTests.cs` |
 | 请求转换 | `ProtocolConverter.Requests.cs`、`ProtocolConverter.ResponsesInput.cs` | `ProtocolStructuralCompatibilityTests.cs`、`InboundStreamingCompatibilityTests.cs` |
 | 响应转换 | `ProtocolConverter.Responses.cs` | `ProtocolConversionMatrixTests.NonStream_AllProtocolPairs_ConvertRequestAndResponse` |
 | 语义参数保护 | `ProtocolConverter.RequestValidation.cs` | `ProtocolStructuralCompatibilityTests.RequestParametersThatChangeStateOrModelBehavior_AreRejectedWhenNoEquivalentExists`、ResponsesToChat 状态字段系列、`ResponsesToMessages_DropsReasoningAndParallelToolCalls` |

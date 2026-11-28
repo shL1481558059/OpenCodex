@@ -330,7 +330,7 @@ OpenCodex 当前同时承担五类产品职责：
 | 服务启动与依赖注册 | `opencodex_proxy/src/Presentation/OpenCodex.Api/Program.cs`、`Hosting/` |
 | 管理 API | `opencodex_proxy/src/Presentation/OpenCodex.Api/Controllers/` |
 | 代理编排 | `OpenCodex.Core/Services/Proxy/ProxyEndpointService.cs` |
-| 协议转换 | `OpenCodex.Core/Protocols/` |
+| 协议转换 | `OpenCodex.ProtocolConversion/Protocols/` |
 | 管理业务 | `OpenCodex.Core/Services/` |
 | 数据模型 | `OpenCodex.Domain/Domain/`、`OpenCodex.Data/` |
 | 多代理 v2 | `OpenCodex.Core/Services/MultiAgent/`、`MultiAgentResponseService`、`MultiAgentRunStore` |

@@ -1214,7 +1214,7 @@ flowchart LR
 
 **验收标准**：
 1. 渠道页实时状态只消费实际存在的 `/channels/runtime/stream`，不引用已删除或未实现的路由。
-2. 发现模型与连接测试调用实际的 `POST /discover-models`、`POST /test-channel/stream`；`frontend/src/api/channels.js` 中导出的 `probeModels`/`probeStream` 若保留，必须有对应后端 Action 或标注为未接线。
+2. 发现模型与连接测试由[渠道页](<../frontend/src/Channels.vue>)及[流式请求函数](<../frontend/src/channelTestStream.js>)调用实际的 `POST /discover-models`、`POST /test-channel/stream`；旧 `probeModels`/`probeStream` 未接线封装已清理，不作为可用管理能力。
 3. 连接测试失败时页面能展示上游原始错误，日志列表对该类 Key 显示「连接测试」。
 
 #### REQ-UI-048（MUST）渠道级模型覆盖能力边界明确

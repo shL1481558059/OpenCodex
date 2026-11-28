@@ -2044,27 +2044,6 @@ public sealed class ModelCatalogService : IModelCatalogService
             .FirstOrDefault();
     }
 
-    private Dictionary<Guid, ModelPricingPlan> PlansByChannelModelIds(
-        IReadOnlyCollection<Guid> channelModelIds)
-    {
-        if (channelModelIds.Count == 0)
-        {
-            return [];
-        }
-
-        var plans = _plans.TableNoTracking
-            .Where(plan => plan.ChannelModelInfoId != null
-                && plan.ChannelId != null
-                && plan.Enabled
-                && channelModelIds.Contains(plan.ChannelModelInfoId.Value))
-            .ToList();
-        return plans
-            .GroupBy(plan => plan.ChannelModelInfoId!.Value)
-            .ToDictionary(
-                group => group.Key,
-                group => group.OrderByDescending(plan => plan.UpdatedAt).First());
-    }
-
     private static MatchScore? MatchRank(
         string matchType,
         IReadOnlyList<string> patterns,

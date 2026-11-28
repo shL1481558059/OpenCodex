@@ -83,17 +83,16 @@ TZ=Asia/Shanghai
 Authorization: Bearer ocx_...
 ```
 
-访问 API Key 是 OpenCodex Proxy 的调用凭证，不是上游模型服务的 Key。它只在创建成功时显示一次明文，数据库只保存哈希；停用或删除后立即不能继续调用。后端会按这个 Key 识别用户，并且只在该用户自己的渠道中路由请求。普通用户没有启用渠道时会返回 `no enabled channels configured`，不会回退使用超级管理员渠道。
+访问 API Key 是 OpenCodex Proxy 的调用凭证，不是上游模型服务的 Key。当前实现保存用于鉴权的哈希，同时保存可由现有管理权限查询、回显和复制的明文；因此数据库与备份均按敏感数据管理，不应对外分享。停用或删除后立即不能继续调用。后端会按这个 Key 识别用户，并且只在该用户自己的渠道中路由请求。普通用户没有启用渠道时会返回 `no enabled channels configured`，不会回退使用超级管理员渠道。
 
 上游模型服务 Key 仍然放在渠道配置的 `apikey` 或自定义 headers 中。代理不会把客户端传入的访问 API Key 透传给上游；需要上游认证时使用 `auth_mode=config` 并在渠道里配置上游 Key。
 
-日志展示等级：
+请求日志与数据使用约定：
 
-- `BASIC`：时间、等级、路径、入口协议、模型、渠道、状态码、耗时、错误摘要。
-- `DEBUG`：增加上游模型、兼容规则、脱敏参数、上游错误摘要。
-- `TRACE`：增加脱敏后的请求和响应正文片段，仅建议本地临时排障。
-
-所有日志展示都会脱敏 `Authorization`、`api_key`、`apikey`、`x-api-key`、cookie 和密码。
+- 请求日志记录路径、模型、渠道、状态、耗时、用量、费用和错误；详情按现有管理权限提供请求头、原始或规范化正文及上游响应等内容。
+- 当前请求日志没有 `BASIC` / `DEBUG` / `TRACE` 分层展示或统一脱敏保证；框架日志等级与请求日志正文是不同概念。
+- 原始日志、正文存储和备份可能包含访问 Key、上游 Key、Cookie 和业务数据，仅供授权维护使用；对外分享前人工脱敏。
+- 留存与清理由实例管理 SOP 决定，通过现有管理入口处理；不要把数据库、密钥或正文引用文件当构建缓存直接删除。
 
 ## Docker
 
@@ -116,11 +115,10 @@ docker run --rm \
 ```bash
 npm install
 npm --prefix frontend install
-npm run desktop:prepare
 npm run desktop:build
 ```
 
-`desktop:prepare` 会构建前端、复制管理台静态文件到 Tauri resources，并按当前平台发布 self-contained .NET sidecar。`desktop:build` 需要本机已安装 Rust/Cargo。
+`desktop:build` 通过现有 Tauri hook 自动运行 `desktop:prepare`，构建前端、复制管理台静态文件到 Tauri resources，并按当前平台发布 self-contained .NET sidecar；默认打包 SOP 不需先手工重复准备。独立 `desktop:prepare` 命令保留给只准备资源、不打包的场景。`desktop:build` 需要本机已安装 Rust/Cargo。
 
 ## Codex CLI
 

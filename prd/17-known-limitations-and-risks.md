@@ -29,7 +29,7 @@
 | RSK-009 | P1 | `/health` 仅浅层存活 | `SystemController` | 故障实例仍被认为健康 |
 | RSK-010 | P1 | 自动迁移无备份和回滚契约 | 启动初始化 | 发布导致数据不可恢复 |
 | RSK-011 | P1 | 日志正文无保留/配额/归档 | 内容寻址存储 | 磁盘耗尽、合规风险 |
-| RSK-012 | P1 | PR/普通 push 无 CI 门禁 | workflow 触发条件 | 缺陷直接进入主分支 |
+| RSK-012 | P1 | PR/非 main push 未覆盖同等 CI 验证 | main push 与手工部署已有 validate，未声明 PR 触发 | 未覆盖入口的变更可能绕过验证 |
 | RSK-013 | P1 | 桌面 CSP 为空且启用 DevTools | Tauri 配置 | 桌面 Web 安全面扩大 |
 | RSK-014 | P1 | 桌面正式签名/公证缺失 | 发布 workflow | 安装信任和供应链风险 |
 | RSK-015 | P2 | 管理接口授权依赖手工 Require 调用 | Controllers | 新接口容易漏鉴权 |
@@ -336,11 +336,11 @@ API helper 对 401 只抛错误，未统一清除会话并跳登录。用户可�
 已知不一致与已修复项：
 
 - `OPENCODEX_DB_PATH` 已修复：README/DEPLOYMENT 改用 `OPENCODEX_DB_PROVIDER` + `OPENCODEX_DB_CONNECTION_STRING`，源码不读取旧变量，需要 CI 防回归；
-- README/DEPLOYMENT 仍描述 `BASIC`/`DEBUG`/`TRACE` 日志展示等级，并宣称“所有日志展示都会脱敏”；当前代码没有对应日志等级实现，也没有请求日志脱敏层；
+- README/DEPLOYMENT 已纠正请求日志分层与统一脱敏的失真说明；当前代码没有请求日志脱敏层，原始正文/凭据仍需按授权访问、留存及分享 SOP 管理；
 - 部分内部/桌面环境变量未文档化；
 - 旧手工脚本（`capture_real_sse.sh`、`extract_sse_test_data.sh`、`test_streaming.py`）已在基线删除，旧文档若继续引用即为失效引用；
 - 仓库基线把 `doc/` 合并为 `implemented-logic.md` 与 `unimplemented-plans.md`，其它历史方案文档已删除，不得再作为当前事实引用；
-- 峰谷分时计费已写入 prd/11（`REQ-OBS-021`）与 prd/19 等多份文档，但 prd/18 追溯索引尚未收录峰谷条目。
+- 峰谷分时计费已写入 prd/11（`REQ-OBS-021`）及相关设计，prd/18 已收录 `REQ-OBS-021`–`REQ-OBS-024`；具体已实现项与 TBD 按现行索引区分，不再称“尚未收录”。
 
 `REQ-RSK-012`（MUST）：正式发布文档必须由当前配置源和测试验证，历史方案不得混入现行操作说明。
 

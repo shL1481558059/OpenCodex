@@ -472,20 +472,6 @@ function defaultWebSearchConfig() {
   return { mode: "convert", strict: true, providers: ["tavily"], default_key_usage_limit: 1000, keys: [] };
 }
 
-function defaultWebSearchKey() {
-  const usageLimit = defaultWebSearchKeyUsageLimit();
-  return {
-    client_id: `new-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    id: null,
-    provider: firstWebSearchProvider(),
-    key: "",
-    enabled: true,
-    usage_count: 0,
-    usage_limit: usageLimit,
-    key_usage_limit: usageLimit
-  };
-}
-
 function defaultWebSearchKeyDraft() {
   const usageLimit = defaultWebSearchKeyUsageLimit();
   return {

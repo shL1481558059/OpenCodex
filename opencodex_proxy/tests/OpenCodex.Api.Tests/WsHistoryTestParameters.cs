@@ -2,8 +2,8 @@ namespace OpenCodex.Api.Tests;
 
 /// <summary>
 /// Explicit scales for the long-history / WebSocket regression fixtures. These are test-only
-/// sizes and timeouts, not production capacity; all production capacity comes from the
-/// mandatory root parameter file. Kept in source so the tests have no uncommitted dependency.
+/// sizes and timeouts, not production capacity; production protocol budgets come from the
+/// mandatory ProtocolConversion__* environment/.env values. Kept in source so the tests have no uncommitted dependency.
 /// </summary>
 internal static class WsHistoryTestParameters
 {

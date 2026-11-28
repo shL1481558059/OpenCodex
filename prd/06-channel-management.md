@@ -265,7 +265,7 @@
 4. 诊断响应中的请求头、API Key、Cookie、密码等键会被脱敏为 `...`。
 5. 失败响应会在 `channel_test.completed.upstream_response` 中携带上游原始错误体；前端 `formatChannelTestResult` 优先展示上游原始错误消息，而不是客户端 502 脱敏文案。
 6. 请求日志列表在 `request_type=diagnostic` 时，把 API Key 列显示为“连接测试”。
-7. `frontend/src/api/channels.js` 仍导出 `probeModels`、`probeStream`，分别指向 `/channels/{id}/probe-models`、`/channels/{id}/probe-stream`；当前前端没有调用这两个函数，后端也没有对应控制器 Action。
+7. 旧的 `probeModels`、`probeStream` 无调用封装已移除；`/channels/{id}/probe-models`、`/channels/{id}/probe-stream` 仍无对应后端 Action，不得作为已实现诊断能力展示。
 
 #### 健康重置
 
@@ -730,8 +730,8 @@ sequenceDiagram
 
 **验收标准：**
 
-1. 管理台调用 `/discover-models` 与 `/test-channel/stream`（`frontend/src/api/channels.js`、`frontend/src/channelTestStream.js`）；后端 `ChannelDiagnosticsController` 同时注册这两条路径与等价别名 `/channels/discover-models`、`/channels/test/stream`。
-2. `probe-models/probe-stream` 在 `frontend/src/api/channels.js` 只有函数定义、无调用方，后端也没有对应 Action，不得作为已实现能力展示。
+1. 管理台通过[渠道页](<../frontend/src/Channels.vue>)与[流式请求函数](<../frontend/src/channelTestStream.js>)调用 `/discover-models` 与 `/test-channel/stream`；后端 `ChannelDiagnosticsController` 同时注册这两条路径与等价别名 `/channels/discover-models`、`/channels/test/stream`。
+2. `probe-models/probe-stream` 没有对应后端 Action；旧的未接线前端封装已经清理，不得作为已实现能力展示。
 3. 新增端点或别名必须同时更新前端调用方与路由测试。
 
 ### REQ-CH-024 连接测试错误可诊断性（MUST）
@@ -801,7 +801,7 @@ sequenceDiagram
 9. 导入不是显式事务业务操作，逐项仓储保存可能造成大量数据库往返。
 10. 没有乐观锁或 ETag，并发更新可能后写覆盖先写。
 11. `GET /channels` 的排序与实际路由顺序不同，容易造成产品认知偏差。
-12. `frontend/src/api/channels.js` 中的 `probeModels`、`probeStream` 没有调用方，后端也没有 `probe-models/probe-stream` Action。
+12. 旧的 `probeModels`、`probeStream` 无调用封装已清理；后端仍没有 `probe-models/probe-stream` Action，诊断能力以实际路由为准。
 13. `ChannelModelInfo.match_patterns` 目前不参与核心路由候选匹配，只在模型目录、能力判断、图片支持和定价场景消费。
 14. 连接测试日志内容存储当前保留上游 API Key 与敏感 header 原文；`ChannelDiagnosticsLogTests.TestChannelStreamWritesCompleteRequestLogContent` 明确断言该行为。
 

@@ -5,7 +5,6 @@ import {
   applyServerSettings,
   canSave,
   channelOptions,
-  clearFallback,
   createVisionTransferState,
   hasCandidates,
   hasModelCapability,
@@ -123,17 +122,12 @@ test("主未选完整时不允许保存", () => {
   assert.equal(canSave(state), true);
 });
 
-test("兜底只选一半时给出提示,整组留空则合法", () => {
+test("兜底只选一半时给出提示", () => {
   const state = stateWithCandidates();
   state.draft.primary = { channelId: "c1", model: "vision-a" };
   state.draft.fallback = { channelId: "c2", model: "" };
 
   assert.equal(validationMessage(state), "兜底需要同时选择渠道和模型,或者整组留空");
-
-  clearFallback(state);
-
-  assert.equal(canSave(state), true);
-  assert.equal(toSaveRequest(state).fallback, null);
 });
 
 test("兜底与主完全相同时拒绝保存", () => {

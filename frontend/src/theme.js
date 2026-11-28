@@ -1,4 +1,4 @@
-import { ref, computed } from "vue";
+import { ref } from "vue";
 
 const THEME_STORAGE_KEY = "opencodex-theme";
 
