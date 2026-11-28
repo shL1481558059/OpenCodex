@@ -6,6 +6,10 @@ using D = System.Collections.Generic.Dictionary<string, object?>;
 
 namespace OpenCodex.Api.Tests;
 
+[CollectionDefinition("Native client large payload", DisableParallelization = true)]
+public sealed class NativeClientLargePayloadCollection;
+
+[Collection("Native client large payload")]
 public sealed class NativeClientLargePayloadTests : IDisposable
 {
     private readonly string _directory = Path.Combine(
