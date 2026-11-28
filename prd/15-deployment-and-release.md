@@ -157,7 +157,7 @@
 
 - `postgres:17-alpine` 服务（`admin`/`123456` 示例凭据、`pg_isready` 健康检查、`./postgres-data` 卷）；
 - `redis:7-alpine` 服务（`redis-server --save 60 1`、`redis-cli ping` 健康检查、`./redis-data` 卷、无认证）；
-- OpenCodex 服务（`mem_limit` 默认 `${APP_MEMORY_LIMIT:-1g}`、端口映射 `${APP_PORT_MAPPING:-127.0.0.1:8002:8080}`、`./logs` 卷、依赖 postgres/redis 健康后启动）；
+- OpenCodex 服务（不设置 `mem_limit`、端口映射 `${APP_PORT_MAPPING:-127.0.0.1:8002:8080}`、`./logs` 卷、依赖 postgres/redis 健康后启动）；
 - 容器健康检查统一 `wget --spider http://localhost:8080/health`；
 - `ocxp-network` 网络（`${NETWORK_NAME:-ocxp-network}`）；
 - JSON 日志轮转，默认约 `50m × 5`（`DOCKER_LOG_MAX_SIZE`/`DOCKER_LOG_MAX_FILE`）。

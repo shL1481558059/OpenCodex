@@ -120,7 +120,7 @@ DB_TYPE=postgres \
 
 1. 把 [`.env.example`](.env.example) 中 `ProtocolConversion__*` 整段追加到服务器 `.env`；
 2. 核对 `ProtocolConversion__MaxRequestBodyBytes`：一次完整解码请求的统一上限（当前 256 MiB）。
-3. 确认 `/app/logs` 所在磁盘有足够空间容纳历史与审计快照；容器内存上限由 `APP_MEMORY_LIMIT` 单独控制（默认 1 GiB）。
+3. 确认 `/app/logs` 所在磁盘有足够空间容纳历史与审计快照。应用容器不设置进程级内存上限。
 
 `scripts/deploy-ocxp-dev.sh` 会在重建容器**之前**校验这 20 个键，缺任意一个直接失败，不会进入重启循环。
 
