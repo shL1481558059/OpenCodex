@@ -121,7 +121,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
             }
 
             executionBudget = RequestExecutionBudget.Create(_auditSpool, requestMetadata,
-                context.SnapshotReservation, context.HistoryCommitCredits, CancellationToken.None);
+                context.SnapshotReservation, CancellationToken.None);
             requestMetadata = executionBudget.Attach(requestMetadata);
             RequestExecutionBudget.ValidateRequest(payload, context.CancellationToken);
             executionBudget.EnsureQueued(requestMetadata, context.ClientPayload ?? payload, context.CancellationToken);
@@ -399,7 +399,6 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                                 context.CancellationToken)
                             {
                                 SnapshotReservation = executionBudget.Reservation,
-                                HistoryCommitCredits = executionBudget.HistoryCommitCredits,
                                 BuiltinTools = builtinTools,
                                 ToolCallMappings = conversion.ToolCallMappings
                             });
@@ -453,7 +452,6 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                            context.CancellationToken)
                        {
                            SnapshotReservation = executionBudget.Reservation,
-                           HistoryCommitCredits = executionBudget.HistoryCommitCredits,
                            BuiltinTools = builtinTools,
                            ToolCallMappings = conversion.ToolCallMappings
                        });
@@ -657,17 +655,7 @@ public sealed class ProxyEndpointService : IProxyEndpointService
                 {
                     if (executionBudget is not null && !modelCallStarted)
                     {
-                        var missingHeaders = requestMetadata.LogBodies?.Headers is null
-                            ? RequestExecutionBudget.AuditBytes(requestMetadata.Headers, CancellationToken.None) : 0;
-                        var missingRequest = requestMetadata.LogBodies?.Request is null
-                            ? requestMetadata.RawBody is { Length: > 0 } raw ? raw.Length
-                                : RequestExecutionBudget.AuditBytes(context.ClientPayload ?? payload, CancellationToken.None)
-                            : 0;
-                        executionBudget.EnsureAudit(checked(missingHeaders + missingRequest
-                            + RequestExecutionBudget.AuditBytes(upstreamRequest, CancellationToken.None)
-                            + RequestExecutionBudget.AuditBytes(upstreamResponse, CancellationToken.None)
-                            + RequestExecutionBudget.AuditBytes(errorResponse, CancellationToken.None) + 4),
-                            7, CancellationToken.None);
+                        executionBudget.EnsureAudit(CancellationToken.None);
                     }
                     var logContext = new ProxyLogContext(
                             requestId,

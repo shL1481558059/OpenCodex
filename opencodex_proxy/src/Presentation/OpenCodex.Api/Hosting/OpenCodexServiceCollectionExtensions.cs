@@ -240,7 +240,6 @@ public static class OpenCodexServiceCollectionExtensions
         services.AddScoped<IProxyService, ProxyService>();
         services.AddScoped<MultiAgentResponseService>();
         services.AddSingleton<SnapshotStore>();
-        services.AddHostedService<CapacityStartupValidation>();
         services.AddSingleton<OpenCodex.Core.Services.MultiAgent.ClientConnectionCache>();
         services.AddScoped<ResponsesWebSocketClientService>();
         services.AddScoped<IObservabilityQueryService, ObservabilityQueryService>();

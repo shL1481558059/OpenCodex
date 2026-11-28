@@ -9,9 +9,8 @@ namespace OpenCodex.CoreBase.Domain.Proxy;
 /// </summary>
 public sealed class ProxyStreamContext
 {
-    /// <summary>Explicit request execution credits; a WS history owner retains its commit credits.</summary>
+    /// <summary>Request snapshot owner used for captured request/response bodies.</summary>
     public SnapshotReservation? SnapshotReservation { get; init; }
-    public long HistoryCommitCredits { get; init; }
 
     public BuiltinToolRequestContext? BuiltinTools { get; init; }
 

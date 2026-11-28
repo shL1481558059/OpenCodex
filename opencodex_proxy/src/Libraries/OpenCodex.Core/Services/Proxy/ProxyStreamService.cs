@@ -45,7 +45,7 @@ public sealed partial class ProxyStreamService : IProxyStreamService
     public async Task StreamAsync(ProxyStreamContext context)
     {
         using var executionBudget = RequestExecutionBudget.Create(_auditSpool, context.RequestMetadata,
-            context.SnapshotReservation, context.HistoryCommitCredits, CancellationToken.None);
+            context.SnapshotReservation, CancellationToken.None);
         var requestMetadata = executionBudget.Attach(context.RequestMetadata);
         Exception? primaryFailure = null;
         var sourceCompleteAttempted = false;

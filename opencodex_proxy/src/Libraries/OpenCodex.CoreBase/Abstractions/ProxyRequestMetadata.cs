@@ -9,22 +9,19 @@ public sealed class ProxyRequestMetadata
 {
     public ProxyLogBodyHandles? LogBodies { get; init; }
     public SnapshotReservation? SnapshotReservation { get; init; }
-    public long HistoryCommitCredits { get; init; }
 
     public ProxyRequestMetadata WithLogBodies(ProxyLogBodyHandles bodies) =>
         new(Method, Path, ClientIp, Headers, RawBody)
         {
             LogBodies = bodies,
-            SnapshotReservation = SnapshotReservation,
-            HistoryCommitCredits = HistoryCommitCredits
+            SnapshotReservation = SnapshotReservation
         };
 
-    public ProxyRequestMetadata WithSnapshotReservation(SnapshotReservation reservation, long historyCommitCredits) =>
+    public ProxyRequestMetadata WithSnapshotReservation(SnapshotReservation reservation) =>
         new(Method, Path, ClientIp, Headers, RawBody)
         {
             LogBodies = LogBodies,
-            SnapshotReservation = reservation,
-            HistoryCommitCredits = historyCommitCredits
+            SnapshotReservation = reservation
         };
 
     public ProxyLogBodyHandle CaptureAuditJson(object? value, CancellationToken cancellationToken = default) =>

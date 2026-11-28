@@ -5,8 +5,8 @@ using OpenCodex.ProtocolConversion.Abstractions;
 namespace OpenCodex.CoreBase.Domain.Proxy;
 
 /// <summary>
-/// Explicit execution credits. Capture never borrows outside this reservation. Disposal refunds
-/// unused credits while independently owned sealed leases/readers retain their physical charges.
+/// Request-scoped snapshot ownership. Disposing the owner releases its containers while
+/// independently owned sealed leases/readers keep their own physical storage alive.
 /// </summary>
 public sealed class SnapshotReservation : IDisposable
 {
@@ -15,8 +15,6 @@ public sealed class SnapshotReservation : IDisposable
     private readonly CancellationToken _cancellationToken;
     private readonly IProtocolAuditCapture _auditCapture;
     private SnapshotContainer? _history, _audit;
-    // Only the shared spool's QuotaGate protects these ledger fields.
-    internal long RemainingCredits;
     internal bool Disposed;
 
     internal SnapshotReservation(SnapshotStore store, CancellationToken cancellationToken)
@@ -26,22 +24,7 @@ public sealed class SnapshotReservation : IDisposable
         _auditCapture = new ScopedAuditCapture(this);
     }
 
-    public long RemainingBytes { get { lock (_store.Spool.QuotaGate) return RemainingCredits; } }
     public IProtocolAuditCapture AuditCapture => _auditCapture;
-
-    public void Extend(long additionalBytes, CancellationToken cancellationToken = default)
-    {
-        ArgumentOutOfRangeException.ThrowIfNegative(additionalBytes);
-        CheckCancellation(cancellationToken);
-        _store.Spool.ExtendReservation(this, additionalBytes);
-    }
-
-    public void EnsureRemaining(long requiredCredits, CancellationToken cancellationToken = default)
-    {
-        ArgumentOutOfRangeException.ThrowIfNegative(requiredCredits);
-        CheckCancellation(cancellationToken);
-        _store.Spool.EnsureReservation(this, requiredCredits);
-    }
 
     internal void ThrowIfDisposed()
     {

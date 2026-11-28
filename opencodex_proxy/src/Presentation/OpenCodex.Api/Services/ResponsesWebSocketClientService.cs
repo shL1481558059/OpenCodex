@@ -163,7 +163,6 @@ public sealed class ResponsesWebSocketClientService(
                     ProtocolConverter.Responses, fullRequest, metadata, writer, responseCt, request)
                 {
                     SnapshotReservation = prepared.Reservation,
-                    HistoryCommitCredits = prepared.Reservation.RemainingBytes
                 });
                 if (!result.IsEmpty)
                 {
@@ -180,7 +179,6 @@ public sealed class ResponsesWebSocketClientService(
                 if (terminalResponseId.Length > 0 || modelErrorTerminal) return;
                 var status = exception switch
                 {
-                    SnapshotCapacityExceededException => 507,
                     SnapshotPersistenceException => 507,
                     OpenCodex.ProtocolConversion.Protocols.RequestBudgetExceededException => 413,
                     OpenCodex.Core.Errors.ProxyException proxy => proxy.StatusCode,
@@ -188,7 +186,6 @@ public sealed class ResponsesWebSocketClientService(
                 };
                 var code = exception switch
                 {
-                    SnapshotCapacityExceededException => "snapshot_capacity_exceeded",
                     SnapshotPersistenceException => "snapshot_write_failed",
                     OpenCodex.Core.Errors.StorageCapacityException storage => storage.ErrorCode,
                     OpenCodex.ProtocolConversion.Protocols.RequestBudgetExceededException => "request_too_large",
@@ -199,7 +196,7 @@ public sealed class ResponsesWebSocketClientService(
                     OpenCodex.Core.Errors.ProxyException proxy => proxy.ErrorType,
                     _ => "server_error"
                 };
-                var message = exception is SnapshotCapacityExceededException or SnapshotPersistenceException
+                var message = exception is SnapshotPersistenceException
                     or OpenCodex.Core.Errors.ProxyException or OpenCodex.ProtocolConversion.Protocols.RequestBudgetExceededException
                     ? exception.Message : "The upstream request failed.";
                 if (activeResponseId.Length > 0 && history.Knows(activeResponseId))

@@ -52,7 +52,7 @@ internal static class BoundedJsonResponseReader
             }
         }
         catch (IOException exception)
-            when (exception is not SnapshotCapacityExceededException && exception is not SnapshotPersistenceException)
+            when (exception is not SnapshotPersistenceException)
         {
             throw new HttpRequestException("failed to read upstream response body", exception);
         }
@@ -153,7 +153,7 @@ internal static class BoundedJsonResponseReader
     }
 
     internal static bool IsPolicyFailure(Exception exception)
-        => exception is RequestBudgetExceededException or SnapshotCapacityExceededException or SnapshotPersistenceException
+        => exception is RequestBudgetExceededException or SnapshotPersistenceException
             || exception is ProxyException { StatusCode: 413 or 507 }
             || exception is UpstreamException
             { ErrorCode: CaptureLimitCode or "response_capture_limit_exceeded" or InvalidJsonCode };

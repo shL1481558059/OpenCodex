@@ -12,7 +12,6 @@ internal sealed class ProtocolConversionParameters
     internal static ProtocolConversionParameters Current { get; } = Load();
 
     public required int MaxRequestBodyBytes { get; init; }
-    public required long SnapshotStoreMaxBytes { get; init; }
     public required int StringSegmentCharacters { get; init; }
     public required int FlushBytes { get; init; }
     public required int GeneratedFrameCacheBytes { get; init; }
@@ -39,7 +38,6 @@ internal sealed class ProtocolConversionParameters
         var parameters = new ProtocolConversionParameters
         {
             MaxRequestBodyBytes = values.Int32(nameof(MaxRequestBodyBytes)),
-            SnapshotStoreMaxBytes = values.Int64(nameof(SnapshotStoreMaxBytes)),
             StringSegmentCharacters = values.Int32(nameof(StringSegmentCharacters)),
             FlushBytes = values.Int32(nameof(FlushBytes)),
             GeneratedFrameCacheBytes = values.Int32(nameof(GeneratedFrameCacheBytes)),
@@ -63,7 +61,6 @@ internal sealed class ProtocolConversionParameters
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(parameters.MaxRequestBodyBytes);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(parameters.MaxRequestBodyBytes, Array.MaxLength);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(parameters.SnapshotStoreMaxBytes);
         ArgumentOutOfRangeException.ThrowIfLessThan(parameters.StringSegmentCharacters, 2);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(parameters.FlushBytes);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(parameters.GeneratedFrameCacheBytes);

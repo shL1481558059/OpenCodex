@@ -56,7 +56,7 @@ TZ=Asia/Shanghai
 
 读取规则：进程环境变量优先（容器可注入同名键），否则读取工作目录下的 `.env`；路径可用 `OPENCODEX_DOTENV_PATH` 显式指定。进程内只读取一次，修改后需重启生效。
 
-其中两个是功能级总预算：`ProtocolConversion__MaxRequestBodyBytes` 是一次完整解码请求的统一上限（HTTP、客户端 WebSocket 首条与后续、上游请求共用）；`ProtocolConversion__SnapshotStoreMaxBytes` 是历史与审计证据共享存储的总配额。旧的 `OpenCodex:MaxRequestBodyMb`、`OPENCODEX_MAX_REQUEST_BODY_MB`、`MultiAgent:ClientWebSocketCache`、`ProxyAuditSpool:MaxBodyBytes/MaxTotalBytes/MaxFiles` 现在是明确的启动迁移错误。
+其中 `ProtocolConversion__MaxRequestBodyBytes` 是一次完整解码请求的统一上限（HTTP、客户端 WebSocket 首条与后续、上游请求共用）。快照与审计存储不再设置进程级总量配额。旧的 `OpenCodex:MaxRequestBodyMb`、`OPENCODEX_MAX_REQUEST_BODY_MB`、`MultiAgent:ClientWebSocketCache`、`ProxyAuditSpool:MaxBodyBytes/MaxTotalBytes/MaxFiles` 现在是明确的启动迁移错误。
 
 `OPENCODEX_ADMIN_USERNAME` 和 `OPENCODEX_ADMIN_PASSWORD` 是环境变量超级管理员。超级管理员不能通过管理接口降级或删除，密码以环境变量为准；普通用户只能由超级管理员创建、停用和重置密码。
 

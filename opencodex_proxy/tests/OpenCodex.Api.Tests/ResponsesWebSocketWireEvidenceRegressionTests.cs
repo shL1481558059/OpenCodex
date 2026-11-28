@@ -34,8 +34,8 @@ public sealed class ResponsesWebSocketWireEvidenceRegressionTests
     public ResponsesWebSocketWireEvidenceRegressionTests(ITestOutputHelper output)
     {
         output.WriteLine(
-            "Root P={0} S={1} C={2} E={3} M={4}; Fixture C={5} E={6} M={7}, fragment={8}, timeout_ms={9}. Fixture M derives from fixture E and actual root M/E; no root override.",
-            Root.MaxRequestBodyBytes, Root.SnapshotStoreMaxBytes, Root.SseMaxCaptureBytes,
+            "Root P={0} C={1} E={2} M={3}; Fixture C={4} E={5} M={6}, fragment={7}, timeout_ms={8}. Fixture M derives from fixture E and actual root M/E; no root override.",
+            Root.MaxRequestBodyBytes, Root.SseMaxCaptureBytes,
             Root.SseMaxEventBytes, Root.SseMaxWebSocketMessageBytes, Settings.CaptureBytes,
             Settings.EventBytes, Settings.MessageBytes, Settings.FragmentBytes, Settings.CaseTimeoutMilliseconds);
     }
@@ -329,11 +329,8 @@ public sealed class ResponsesWebSocketWireEvidenceRegressionTests
             Store = new SnapshotStore(Spool);
             try
             {
-                Assert.Equal(Root.SnapshotStoreMaxBytes, Store.MaxBytes);
                 Assert.Equal(Root.FlushBytes, Store.PageBytes);
-                var bytes = checked(ReceivedFrameEvidence.MaxJournalBytes(Settings.CaptureBytes, Settings.MessageBytes)
-                    + 2L * Settings.CaptureBytes + ReceivedFrameEvidence.MaxJsonBytes(Settings.CaptureBytes, Settings.MessageBytes));
-                Reservation = Store.Reserve(Store.EstimateCredits(bytes, maxLiveBuffers: 3, containers: 1), Token);
+                Reservation = Store.Reserve(Token);
             }
             catch { Spool.Dispose(); _deadline.Dispose(); DeleteOwnDirectory(); throw; }
         }
@@ -353,7 +350,7 @@ public sealed class ResponsesWebSocketWireEvidenceRegressionTests
         {
             for (var index = _holders.Count - 1; index >= 0; index--) _holders[index].Dispose();
             Reservation.Dispose(); Spool.Dispose(); _deadline.Dispose();
-            Assert.Equal((0L, 0L, 0L, 0), Store.Usage);
+            Assert.Equal((0L, 0L, 0, 0), Store.Usage);
             DeleteOwnDirectory();
         }
         private void DeleteOwnDirectory()

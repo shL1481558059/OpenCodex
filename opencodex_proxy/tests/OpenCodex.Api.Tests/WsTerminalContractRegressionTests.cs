@@ -712,11 +712,10 @@ public sealed class WsTerminalContractRegressionTests
         internal void AssertSnapshotEmpty()
         {
             // Every caller has finished all snapshot admission/reading. End this fixture
-            // spool lifetime so its idle owner.lock charge is released. This only stops
-            // admission; active leases/reservations remain charged and still fail below.
+            // spool lifetime so its idle owner.lock can be released.
             // Do NOT dispose Cache here: that would hide an unclosed connection owner.
             Spool.Dispose();
-            Assert.Equal((0L, 0L, 0L, 0), Store.Usage);
+            Assert.Equal((0L, 0L, 0, 0), Store.Usage);
         }
 
         public void Dispose()

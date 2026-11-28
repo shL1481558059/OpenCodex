@@ -11,9 +11,9 @@ using OpenCodex.ProtocolConversion.Streaming;
 namespace OpenCodex.Core.Services.Proxy;
 
 /// <summary>
-/// A ledger adapter, not another storage backend. A WS reservation is borrowed until the
-/// history owner commits; a direct Core/HTTP request owns a normal reservation on the injected spool.
-/// Every audit write is fenced from the history owner's unused commit credits.
+/// Owns the request-scoped snapshot lifetime and audit handles. A WS request may borrow the
+/// connection history's reservation until commit; actual file allocation remains bounded by
+/// the protocol capture budgets.
 /// </summary>
 public sealed class RequestExecutionBudget : IDisposable
 {
@@ -22,68 +22,44 @@ public sealed class RequestExecutionBudget : IDisposable
     private readonly List<ProxyLogBodyHandle> _handles = [];
     private readonly List<IDisposable> _owners = [];
     private readonly IProtocolAuditCapture _auditCapture;
-    private bool _auditAreaStarted;
 
     private RequestExecutionBudget(ProxyAuditSpool spool, SnapshotReservation? reservation,
-        long historyCommitCredits, CancellationToken cancellationToken)
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(spool);
-        ArgumentOutOfRangeException.ThrowIfNegative(historyCommitCredits);
-        if (reservation is null && historyCommitCredits != 0)
-            throw new ArgumentException("History commit credits need their explicit reservation.", nameof(reservation));
         _store = new SnapshotStore(spool);
         _ownsReservation = reservation is null;
-        Reservation = reservation ?? _store.Reserve(_store.EstimateCredits(0, 0, 0), cancellationToken);
-        HistoryCommitCredits = historyCommitCredits;
+        Reservation = reservation ?? _store.Reserve(cancellationToken);
         _auditCapture = new ProtectedAuditCapture(this);
     }
 
     public SnapshotReservation Reservation { get; }
     public bool OwnsReservation => _ownsReservation;
-    public long HistoryCommitCredits { get; }
     public IProtocolAuditCapture AuditCapture => _auditCapture;
 
     public static RequestExecutionBudget Create(ProxyAuditSpool spool, ProxyRequestMetadata metadata,
-        SnapshotReservation? reservation, long historyCommitCredits, CancellationToken cancellationToken)
+        SnapshotReservation? reservation, CancellationToken cancellationToken)
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(historyCommitCredits);
-        ArgumentOutOfRangeException.ThrowIfNegative(metadata.HistoryCommitCredits);
-        if (reservation is not null && metadata.SnapshotReservation is not null
-            && !ReferenceEquals(reservation, metadata.SnapshotReservation))
-            throw new ArgumentException("Request metadata and context must share one snapshot reservation.");
-        return new RequestExecutionBudget(spool, reservation ?? metadata.SnapshotReservation,
-            Math.Max(historyCommitCredits, metadata.HistoryCommitCredits), cancellationToken);
+        return new RequestExecutionBudget(spool, reservation ?? metadata.SnapshotReservation, cancellationToken);
     }
 
     public static RequestExecutionBudget Create(ProxyAuditSpool spool, CancellationToken cancellationToken = default) =>
-        new(spool, null, 0, cancellationToken);
+        new(spool, null, cancellationToken);
 
     public ProxyRequestMetadata Attach(ProxyRequestMetadata metadata) =>
-        metadata.WithSnapshotReservation(Reservation, HistoryCommitCredits);
+        metadata.WithSnapshotReservation(Reservation);
 
-    public void EnsureAudit(long physicalPayloadBytes, int maxLiveBuffers, CancellationToken cancellationToken)
+    public void EnsureAudit(CancellationToken cancellationToken)
     {
-        try
-        {
-            Reservation.EnsureRemaining(checked(HistoryCommitCredits
-                + _store.EstimateCredits(physicalPayloadBytes, maxLiveBuffers, 2)), cancellationToken);
-        }
-        catch (Exception exception) when (ResourceErrors.IsResourceFailure(exception))
-        {
-            throw ResourceErrors.Normalize(exception);
-        }
+        cancellationToken.ThrowIfCancellationRequested();
+        Reservation.ThrowIfDisposed();
     }
 
     public void EnsureQueued(ProxyRequestMetadata metadata, object? clientPayload, CancellationToken cancellationToken)
     {
         if (metadata.RawBody is { } rawBody && rawBody.Length > ProtocolConversionParameters.Current.MaxRequestBodyBytes)
             throw new StorageCapacityException("request body too large", 413, "request_too_large");
-        var bodies = metadata.LogBodies;
-        var headers = bodies?.Headers is null ? AuditBytes(metadata.Headers, cancellationToken) : 0;
-        var request = bodies?.Request is null
-            ? metadata.RawBody is { Length: > 0 } raw ? raw.Length : AuditBytes(clientPayload, cancellationToken)
-            : 0;
-        EnsureAudit(checked(headers + request), 2, cancellationToken);
+        EnsureAudit(cancellationToken);
     }
 
     public void EnsureCall(ProxyRequestMetadata metadata, object? logicalRequest, object? upstreamRequest,
@@ -95,24 +71,15 @@ public sealed class RequestExecutionBudget : IDisposable
         if (metadata.RawBody is { } raw && raw.Length > ProtocolConversionParameters.Current.MaxRequestBodyBytes)
             throw new StorageCapacityException("request body too large", 413, "request_too_large");
 
-        var requestBytes = AuditBytes(upstreamRequest, cancellationToken);
-        var missingHeaders = metadata.LogBodies?.Headers is null ? AuditBytes(metadata.Headers, cancellationToken) : 0;
-        var missingRequest = metadata.LogBodies?.Request is null
-            ? metadata.RawBody is { Length: > 0 } body ? body.Length : AuditBytes(logicalRequest, cancellationToken)
-            : 0;
-        var knownDetailsBytes = knownAuditDetails is null ? 0 : AuditBytes(knownAuditDetails, cancellationToken);
-        EnsureAuditPayload(requestBytes, missingHeaders, missingRequest, frames, sourceProtocol, isStream,
-            cancellationToken, knownDetailsBytes, hasBuiltinTools);
+        EnsureAuditPayload(cancellationToken);
     }
 
-    private void EnsureAuditPayload(long requestBytes, long missingHeaders, long missingRequest, SseFrameOptions frames,
-        string sourceProtocol, bool isStream, CancellationToken cancellationToken, long knownDetailsBytes, bool hasBuiltinTools)
+    private void EnsureAuditPayload(CancellationToken cancellationToken)
     {
         try
         {
-            Reservation.EnsureRemaining(checked(HistoryCommitCredits + EstimateCallCredits(_store, requestBytes,
-                missingHeaders, missingRequest, frames, sourceProtocol, isStream, knownDetailsBytes, hasBuiltinTools)),
-                cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            Reservation.ThrowIfDisposed();
         }
         catch (Exception exception) when (ResourceErrors.IsResourceFailure(exception))
         {
@@ -120,53 +87,12 @@ public sealed class RequestExecutionBudget : IDisposable
         }
     }
 
-    private static long EstimateCallCredits(SnapshotStore store, long requestBytes, long missingHeaders,
-        long missingRequest, SseFrameOptions frames, string sourceProtocol, bool isStream,
-        long knownDetailsBytes = 0, bool hasBuiltinTools = false)
-    {
-        var acceptedSourceFrameBytes = isStream ? AcceptedSourceFrameBytes(sourceProtocol) : 0;
-        // Text/binary share C; raw UTF-16 is 2C. Deferred default-encoder
-        // serialization can temporarily write six bytes per source byte before Spend.
-        var rawBytes = isStream ? checked(2L * frames.MaxCaptureBytes + 6L * acceptedSourceFrameBytes + 2) : 0;
-        var receivedJournalBytes = isStream
-            ? ReceivedFrameEvidence.MaxJournalBytes(frames.MaxCaptureBytes, acceptedSourceFrameBytes) : 0;
-        var rawBuffers = isStream ? checked(2 * frames.MaxCaptureFields) : 0;
-        // A is an explicit failure-evidence bound, not a larger normal C policy.
-        var httpErrorAuditBytes = UpstreamJsonEvidence.MaxJsonBytes(ProtocolConversionParameters.Current.SseMaxCaptureBytes,
-            ProtocolConversionParameters.Current.FlushBytes);
-        // A model stream may fail at HTTP headers/body before producing any SSE/WS
-        // frames. That producer uses root C/F, independently of this capture's C.
-        // Reserve both source representations explicitly; neither changes a wire limit.
-        var sourceAuditBytes = isStream
-            ? checked(ReceivedFrameEvidence.MaxJsonBytes(frames.MaxCaptureBytes, acceptedSourceFrameBytes) + httpErrorAuditBytes)
-            : httpErrorAuditBytes;
-        var completionBytes = checked(sourceAuditBytes + 2L * frames.MaxCaptureBytes);
-        // Existing tool details include whole P-sized requests; measure them exactly.
-        // One new round retains this actual source request. The two C slots only
-        // cover new bounded model usage/tool-call summary and other completion metadata.
-        var detailBytes = checked(knownDetailsBytes + (hasBuiltinTools ? requestBytes : 0)
-            + 2L * frames.MaxCaptureBytes);
-        return store.EstimateCredits(checked(requestBytes + missingHeaders + missingRequest + rawBytes
-            + receivedJournalBytes + completionBytes + detailBytes),
-            checked(rawBuffers + (isStream ? 1 : 0) + 3 + 3 + 2), 2);
-    }
-
     /// <summary>Called immediately before an actual tool invocation, not after an unreserved result.</summary>
     public void EnsureTool(object? knownDetails, object? sourceRequest, SseFrameOptions frames,
         string sourceProtocol, bool isStream, CancellationToken cancellationToken)
     {
         ValidateRequest(sourceRequest, cancellationToken);
-        var detailsBytes = knownDetails is null ? 0 : AuditBytes(knownDetails, cancellationToken);
-        var sourceBytes = AuditBytes(sourceRequest, cancellationToken);
-        var parameters = ProtocolConversionParameters.Current;
-        var toolFailureBytes = UpstreamJsonEvidence.MaxJsonBytes(parameters.SseMaxCaptureBytes, parameters.FlushBytes);
-        var modelSourceBytes = isStream
-            ? ReceivedFrameEvidence.MaxJsonBytes(frames.MaxCaptureBytes, AcceptedSourceFrameBytes(sourceProtocol))
-            : toolFailureBytes;
-        // Normal complete tool data must fit P; a genuine producer failure retains
-        // its independently bounded C+Flush evidence A. Neither changes P or C policy.
-        EnsureAudit(checked(detailsBytes + sourceBytes + parameters.MaxRequestBodyBytes + toolFailureBytes
-            + modelSourceBytes + 2L * frames.MaxCaptureBytes), 8, cancellationToken);
+        EnsureAudit(cancellationToken);
     }
 
     public static void ValidateToolResult(WebSearchToolResult result, CancellationToken cancellationToken)
@@ -207,29 +133,6 @@ public sealed class RequestExecutionBudget : IDisposable
         return "provider_parsed_result";
     }
 
-    /// <summary>
-    /// Startup-only lower admission requirement for a fixed minimal request and worst
-    /// legal output. No P-sized input is assumed, no quota is allocated, and no root
-    /// value is increased. The host may add its separate WS history-commit requirement.
-    /// </summary>
-    public static long MinimumExecutionCredits(SnapshotStore store)
-    {
-        ArgumentNullException.ThrowIfNull(store);
-        var frames = new SseFrameOptions();
-        var minimal = new Dictionary<string, object?>
-        {
-            ["model"] = "m", ["input"] = Array.Empty<object?>(), ["stream"] = true
-        };
-        var requestBytes = AuditBytes(minimal, CancellationToken.None);
-        var headersBytes = AuditBytes(new Dictionary<string, string>(), CancellationToken.None);
-        var queued = store.EstimateCredits(checked(requestBytes + headersBytes), 2, 2);
-        // Compare independent phase reservations; never alter any protocol wire limit.
-        var responses = EstimateCallCredits(store, requestBytes, 0, 0, frames, ProtocolConverter.Responses, true);
-        var httpSse = EstimateCallCredits(store, requestBytes, 0, 0, frames, ProtocolConverter.Chat, true);
-        var httpJson = EstimateCallCredits(store, requestBytes, 0, 0, frames, ProtocolConverter.Responses, false);
-        return checked(queued + Math.Max(responses, Math.Max(httpSse, httpJson)));
-    }
-
     // Responses can use upstream WS: explicitly reserve its existing receive budget M.
     // Chat/Messages are HTTP SSE and use E. The downstream writer keeps its own E policy.
     public static int AcceptedSourceFrameBytes(string sourceProtocol) => sourceProtocol == ProtocolConverter.Responses
@@ -263,7 +166,6 @@ public sealed class RequestExecutionBudget : IDisposable
         try
         {
             var handle = Reservation.CaptureAuditJson(value, cancellationToken);
-            _auditAreaStarted = true;
             _handles.Add(handle);
             return handle;
         }
@@ -279,7 +181,6 @@ public sealed class RequestExecutionBudget : IDisposable
         try
         {
             var handle = Reservation.CaptureAuditUtf8(value, cancellationToken);
-            _auditAreaStarted = true;
             _handles.Add(handle);
             return handle;
         }
@@ -307,13 +208,7 @@ public sealed class RequestExecutionBudget : IDisposable
     private void CheckAvailable(long physicalPayloadBytes, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var captureCredits = _store.EstimateCredits(physicalPayloadBytes, 1, 2);
-        if (_auditAreaStarted)
-            captureCredits = checked(captureCredits - _store.EstimateCredits(0, 0, 2));
-        var required = checked(HistoryCommitCredits + captureCredits);
-        var available = Reservation.RemainingBytes;
-        if (available < required)
-            throw ResourceErrors.Normalize(new SnapshotCapacityExceededException(required, available));
+        Reservation.ThrowIfDisposed();
     }
 
     public T Retain<T>(T owner) where T : IDisposable
@@ -339,15 +234,12 @@ public sealed class RequestExecutionBudget : IDisposable
         {
             budget.CheckAvailable(0, cancellationToken);
             var buffer = budget.Reservation.AuditCapture.CreateStaging(cancellationToken);
-            budget._auditAreaStarted = true;
             return new ProtectedAuditBuffer(buffer, budget, cancellationToken);
         }
         public IProtocolAuditBody CaptureJson(object? value, CancellationToken cancellationToken)
         {
             budget.CheckAvailable(AuditBytes(value, cancellationToken), cancellationToken);
-            var body = budget.Reservation.AuditCapture.CaptureJson(value, cancellationToken);
-            budget._auditAreaStarted = true;
-            return body;
+            return budget.Reservation.AuditCapture.CaptureJson(value, cancellationToken);
         }
     }
 

@@ -100,7 +100,6 @@ while IFS= read -r key; do
     esac
 done <<'REQUIRED_KEYS'
 ProtocolConversion__MaxRequestBodyBytes
-ProtocolConversion__SnapshotStoreMaxBytes
 ProtocolConversion__StringSegmentCharacters
 ProtocolConversion__FlushBytes
 ProtocolConversion__GeneratedFrameCacheBytes

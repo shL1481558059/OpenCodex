@@ -37,7 +37,7 @@ public sealed class ProxyNonStreamService : IProxyNonStreamService
     public async Task<ProxyNonStreamResult> SendAsync(ProxyNonStreamContext context)
     {
         using var executionBudget = RequestExecutionBudget.Create(_auditSpool, context.RequestMetadata,
-            context.SnapshotReservation, context.HistoryCommitCredits, CancellationToken.None);
+            context.SnapshotReservation, CancellationToken.None);
         var requestMetadata = executionBudget.Attach(context.RequestMetadata);
         var outputFrames = new SseFrameOptions();
         Exception? primaryFailure = null;

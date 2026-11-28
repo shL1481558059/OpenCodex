@@ -104,7 +104,7 @@ public sealed class ProxyRequestBodyLimitTests
                 Assert.Null(content.Headers.ContentLength);
             }
             else Assert.Equal((long)size, content.Headers.ContentLength);
-            var context = $"fixtureP={budget}; actualRootP={ProtocolConversionParameters.Current.MaxRequestBodyBytes}; KestrelP={kestrelBytes}; size={size}; bodyBytes={body.Length}; chunked={chunked}; ContentLength={content.Headers.ContentLength?.ToString() ?? "none"}; TransferEncodingChunked={request.Headers.TransferEncodingChunked}; requestVersion={request.Version}; listenerPort={client.BaseAddress.Port}; cookieUtf8Bytes={Encoding.UTF8.GetByteCount(cookie)}; apiKeyCharacters={apiKey.Length}; rootE={ProtocolConversionParameters.Current.SseMaxEventBytes}; rootS={ProtocolConversionParameters.Current.SnapshotStoreMaxBytes}; expectedStatus={(int)expectedStatus}";
+            var context = $"fixtureP={budget}; actualRootP={ProtocolConversionParameters.Current.MaxRequestBodyBytes}; KestrelP={kestrelBytes}; size={size}; bodyBytes={body.Length}; chunked={chunked}; ContentLength={content.Headers.ContentLength?.ToString() ?? "none"}; TransferEncodingChunked={request.Headers.TransferEncodingChunked}; requestVersion={request.Version}; listenerPort={client.BaseAddress.Port}; cookieUtf8Bytes={Encoding.UTF8.GetByteCount(cookie)}; apiKeyCharacters={apiKey.Length}; rootE={ProtocolConversionParameters.Current.SseMaxEventBytes}; expectedStatus={(int)expectedStatus}";
             HttpResponseMessage? response = null;
             string? responseBody = null;
             var stage = "send-response-headers";

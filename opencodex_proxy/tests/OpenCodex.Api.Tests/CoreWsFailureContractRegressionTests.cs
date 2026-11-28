@@ -264,7 +264,7 @@ public sealed class CoreWsFailureContractRegressionTests
         {
             // Do not dispose Cache here: an unclosed WS history owner must remain observable.
             Spool.Dispose();
-            Assert.Equal((0L, 0L, 0L, 0), Snapshots.Usage);
+            Assert.Equal((0L, 0L, 0, 0), Snapshots.Usage);
         }
 
         public void Dispose()

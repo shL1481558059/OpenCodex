@@ -5,10 +5,9 @@ using OpenCodex.ProtocolConversion;
 namespace OpenCodex.CoreBase.Domain.Proxy;
 
 /// <summary>
-/// Explicit request reservations over the same process-wide ledger as the audit spool.
-/// Credits cover allocated private-file bytes and binary manifest/index fields, not RSS or
-/// the persistent audit database. File/object slots have nonzero manifest charges, so there
-/// is no separate, smaller file-count admission limit on this path.
+/// Creates request-scoped snapshot owners over the shared audit spool. This type does not
+/// impose a byte or file-count admission limit; actual allocation still uses bounded pages
+/// and explicit ownership for safe cleanup.
 /// </summary>
 public sealed class SnapshotStore
 {
@@ -27,45 +26,17 @@ public sealed class SnapshotStore
     }
 
     public int PageBytes { get; }
-    public long MaxBytes => _spool.MaxTotalBytes;
-    public (long ReservedBytes, long PhysicalBytes, long MetadataBytes, int Containers) Usage => _spool.SnapshotUsage;
+    public (long PhysicalBytes, long MetadataBytes, int Files, int Containers) Usage => _spool.SnapshotUsage;
     internal ProxyAuditSpool Spool => _spool;
     internal long ContainerMetadataBytes => _spool.SnapshotContainerMetadataBytes;
     internal long PhysicalPageBytes => checked((long)PageBytes + PageHeaderBytes);
 
-    public SnapshotReservation Reserve(long credits, CancellationToken cancellationToken = default)
+    public SnapshotReservation Reserve(CancellationToken cancellationToken = default)
     {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(credits);
         cancellationToken.ThrowIfCancellationRequested();
         var reservation = new SnapshotReservation(this, cancellationToken);
-        _spool.InitializeReservation(reservation, credits);
+        _spool.InitializeReservation(reservation);
         return reservation;
-    }
-
-    /// <summary>
-    /// Upper bound for simultaneously live payload, logical buffers and the two lifetime areas.
-    /// Each nonempty buffer can leave one partial page. Reset/dispose returns its pages to the
-    /// request's free list; interleaved one-character writes do not allocate per-delta extents.
-    /// Include all simultaneously live raw UTF-16 and sealed UTF-8 copies in payloadBytes.
-    /// The first instance owner header and directory/lock index credits are also included.
-    /// </summary>
-    public long EstimateCredits(long physicalPayloadBytes, int maxLiveBuffers, int containers)
-    {
-        ArgumentOutOfRangeException.ThrowIfNegative(physicalPayloadBytes);
-        ArgumentOutOfRangeException.ThrowIfNegative(maxLiveBuffers);
-        ArgumentOutOfRangeException.ThrowIfNegative(containers);
-        if (physicalPayloadBytes > 0 && (maxLiveBuffers == 0 || containers == 0))
-            throw new ArgumentException("Nonempty payload needs explicit buffer and container credits.");
-        if (maxLiveBuffers > 0 && containers == 0)
-            throw new ArgumentException("Logical buffers need explicit container credits.");
-        var fullPages = physicalPayloadBytes / PageBytes;
-        if (physicalPayloadBytes % PageBytes != 0) fullPages = checked(fullPages + 1);
-        var pages = physicalPayloadBytes == 0 ? 0 : checked(fullPages + maxLiveBuffers - 1L);
-        return checked(ReservationMetadataBytes
-            + (containers == 0 ? 0 : _spool.SnapshotOwnerCredits)
-            + containers * ContainerMetadataBytes
-            + (long)maxLiveBuffers * BufferMetadataBytes
-            + pages * PhysicalPageBytes);
     }
 }
 
@@ -89,7 +60,7 @@ internal sealed class SnapshotContainer
         _store = store;
         _reservation = reservation;
         _metadataBytes = store.ContainerMetadataBytes;
-        try { _path = store.Spool.AllocateSnapshotPath(reservation, _metadataBytes); }
+        try { _path = store.Spool.AllocateSnapshotPath(_metadataBytes); }
         catch (IOException exception) { throw SnapshotPersistenceException.Wrap(exception); }
     }
 
@@ -102,7 +73,7 @@ internal sealed class SnapshotContainer
         lock (_gate)
         {
             EnsureWritable();
-            _store.Spool.ConsumeSnapshot(_reservation, SnapshotStore.BufferMetadataBytes, metadata: true);
+            _store.Spool.ConsumeSnapshot(SnapshotStore.BufferMetadataBytes, metadata: true);
             try
             {
                 var buffer = new SnapshotBuffer(this);
@@ -111,7 +82,7 @@ internal sealed class SnapshotContainer
             }
             catch
             {
-                _store.Spool.RefundSnapshot(_reservation, SnapshotStore.BufferMetadataBytes, metadata: true);
+                _store.Spool.RefundSnapshot(SnapshotStore.BufferMetadataBytes, metadata: true);
                 throw;
             }
         }
@@ -138,7 +109,7 @@ internal sealed class SnapshotContainer
             return page;
         }
         var offset = _physicalBytes;
-        _store.Spool.ConsumeSnapshot(_reservation, PhysicalPageBytes, metadata: false);
+                _store.Spool.ConsumeSnapshot(PhysicalPageBytes, metadata: false);
         var length = checked(offset + PhysicalPageBytes);
         // Retain the offered allocation charge on IO failure until deletion is proven. A failed
         // SetLength/Write may have grown the private file partially; never refund around it.
@@ -232,7 +203,7 @@ internal sealed class SnapshotContainer
                 }
             }
             _buffers--;
-            _store.Spool.RefundSnapshot(_reservation, SnapshotStore.BufferMetadataBytes, metadata: true);
+            _store.Spool.RefundSnapshot(SnapshotStore.BufferMetadataBytes, metadata: true);
             if (_ownerReleased && _buffers == 0) Retire();
         }
     }
@@ -256,7 +227,7 @@ internal sealed class SnapshotContainer
     {
         if (_disposed) return;
         _disposed = true;
-        _store.Spool.RetireSnapshotContainer(_reservation, _path, _physicalBytes, _metadataBytes);
+        _store.Spool.RetireSnapshotContainer(_path, _physicalBytes, _metadataBytes);
     }
 
     private static long ReadLink(Stream source, long offset)

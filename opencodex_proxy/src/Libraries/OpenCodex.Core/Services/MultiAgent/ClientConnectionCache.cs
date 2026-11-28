@@ -16,25 +16,6 @@ public sealed class ClientConnectionCache(SnapshotStore store) : IDisposable
     private bool _disposed;
     public SnapshotStore Store => store;
 
-    /// <summary>Worst committed output for a minimal ordinary WS request, using the same root layout policy.</summary>
-    public static long MinimumCommitCredits(SnapshotStore store)
-    {
-        var limits = ProtocolConversionParameters.Current;
-        var hash = new string('0', SHA256.HashSizeInBytes * 2);
-        var manifest = new D
-        {
-            ["id"] = "", ["request_metadata"] = hash, ["input"] = new List<object?>(),
-            ["response_metadata"] = hash, ["output"] = new List<object?>()
-        };
-        var identity = new D { ["id"] = "", ["tenant"] = Guid.Empty.ToString("N"), ["connection"] = Guid.Empty.ToString("N") };
-        var references = checked((long)limits.SseMaxCaptureItems
-            * (ProtocolJsonWriter.Count(hash, audit: true, CancellationToken.None) + 1));
-        var bytes = checked(limits.SseMaxCaptureBytes + 2L * limits.SseMaxEventBytes + references
-            + ProtocolJsonWriter.Count(manifest, audit: true, CancellationToken.None)
-            + ProtocolJsonWriter.Count(identity, audit: true, CancellationToken.None));
-        return store.EstimateCredits(bytes, checked(limits.SseMaxCaptureItems + 3), 2);
-    }
-
     public Connection Open(Guid tenant)
     {
         lock (_gate)
@@ -92,8 +73,7 @@ public sealed class ClientConnectionCache(SnapshotStore store) : IDisposable
             _owner = owner;
             _tenant = tenant;
             var identity = IdentityRecord("");
-            using var reservation = Store.Reserve(Store.EstimateCredits(
-                ProtocolJsonWriter.Count(identity, audit: true, CancellationToken.None), 1, 1));
+            using var reservation = Store.Reserve();
             _scopeIdentity = reservation.CaptureJson(identity);
         }
         internal SnapshotStore Store => _owner.Store;
@@ -142,9 +122,7 @@ public sealed class ClientConnectionCache(SnapshotStore store) : IDisposable
 
         public SnapshotReservation ReserveIdentity(CancellationToken cancellationToken)
         {
-            var bytes = checked(ProtocolConversionParameters.Current.SseMaxEventBytes
-                + ProtocolJsonWriter.Count(IdentityRecord(""), audit: true, cancellationToken));
-            return Store.Reserve(Store.EstimateCredits(bytes, 1, 1), cancellationToken);
+            return Store.Reserve(cancellationToken);
         }
         public void RememberId(string id, SnapshotReservation reservation, CancellationToken cancellationToken = default)
         {
@@ -208,29 +186,9 @@ public sealed class ClientConnectionCache(SnapshotStore store) : IDisposable
             var shared = previous is null ? Array.Empty<SnapshotLease>() : previous.Input.Concat(previous.Output).ToArray();
             var additions = previous is null || !isFullHistory ? current : current.Skip(shared.Length).ToList();
             var shareMetadata = previous is not null && JsonValueComparer.AreEqual(previous.ReadRequestMetadata(), metadata);
-            var bytes = shareMetadata ? 0L : ProtocolJsonWriter.Count(metadata, audit: true, cancellationToken);
-            foreach (var item in additions) bytes = checked(bytes + ProtocolJsonWriter.Count(item, audit: true, cancellationToken));
-            var buffers = checked(additions.Count + (shareMetadata ? 0 : 1));
-            if (generate)
-            {
-                var hash = new string('0', SHA256.HashSizeInBytes * 2);
-                var manifest = new D
-                {
-                    ["id"] = "", ["request_metadata"] = hash, ["input"] = new List<object?>(),
-                    ["response_metadata"] = hash, ["output"] = new List<object?>()
-                };
-                var referenceBytes = checked(ProtocolJsonWriter.Count(hash, audit: true, cancellationToken) + 1);
-                var references = checked(shared.Length + additions.Count + ProtocolConversionParameters.Current.SseMaxCaptureItems);
-                bytes = checked(bytes + ProtocolConversionParameters.Current.SseMaxCaptureBytes
-                    + 2L * ProtocolConversionParameters.Current.SseMaxEventBytes
-                    + references * referenceBytes
-                    + ProtocolJsonWriter.Count(manifest, audit: true, cancellationToken)
-                    + ProtocolJsonWriter.Count(IdentityRecord(""), audit: true, cancellationToken));
-                buffers = checked(buffers + ProtocolConversionParameters.Current.SseMaxCaptureItems + 3);
-            }
             cancellationToken.ThrowIfCancellationRequested();
             // Cancellation stops execution, not the reserved failure-audit ownership. Each stage still takes its token.
-            var reservation = Store.Reserve(Store.EstimateCredits(bytes, buffers, generate ? 2 : 1), CancellationToken.None);
+            var reservation = Store.Reserve(CancellationToken.None);
             var owned = new List<SnapshotLease>();
             SnapshotLease? metadataLease = null;
             try

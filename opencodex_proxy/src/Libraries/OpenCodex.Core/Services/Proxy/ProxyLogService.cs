@@ -88,13 +88,7 @@ public sealed class ProxyLogService : IProxyLogService
             : [RequestLogContentSlot.RequestHeaders, RequestLogContentSlot.RequestBody, RequestLogContentSlot.UpstreamRequestBody];
         using var queuedBudget = context.BodyHandles?.Headers is not null && context.BodyHandles.Request is not null
             ? null : RequestExecutionBudget.Create(_auditSpool);
-        var missingHeaders = context.BodyHandles?.Headers is null
-            ? RequestExecutionBudget.AuditBytes(context.RequestHeaders, CancellationToken.None) : 0;
-        var missingRequest = context.BodyHandles?.Request is null
-            ? context.RawRequestBody is { Length: > 0 } raw ? raw.Length
-                : RequestExecutionBudget.AuditBytes(context.Payload, CancellationToken.None)
-            : 0;
-        queuedBudget?.EnsureAudit(checked(missingHeaders + missingRequest), 2, CancellationToken.None);
+        queuedBudget?.EnsureAudit(CancellationToken.None);
         _contentStore.WriteBodies(log.Id, queuedSlots, slot => context.BodyHandles?.ForSlot(slot)
             ?? (slot == RequestLogContentSlot.RequestHeaders
                 ? queuedBudget!.CaptureAuditJson(context.RequestHeaders, CancellationToken.None)
@@ -140,8 +134,7 @@ public sealed class ProxyLogService : IProxyLogService
 
         using var processingBudget = context.UpstreamRequestBody is null ? RequestExecutionBudget.Create(_auditSpool) : null;
         if (context.UpstreamRequestBody is null)
-            processingBudget!.EnsureAudit(RequestExecutionBudget.AuditBytes(context.UpstreamRequest, CancellationToken.None),
-                1, CancellationToken.None);
+            processingBudget!.EnsureAudit(CancellationToken.None);
         _contentStore.WriteBodies(requestLogId, [RequestLogContentSlot.UpstreamRequestBody],
             _ => context.UpstreamRequestBody ?? processingBudget!.CaptureAuditJson(context.UpstreamRequest, CancellationToken.None));
         PublishLogWritten(requestLogId, ownerUsername, 0, null);
@@ -151,7 +144,7 @@ public sealed class ProxyLogService : IProxyLogService
     {
         try
         {
-            using var budget = RequestExecutionBudget.Create(_auditSpool, request, null, 0, CancellationToken.None);
+            using var budget = RequestExecutionBudget.Create(_auditSpool, request, null, CancellationToken.None);
             await CompleteLogAsync(requestLogId, new ProxyRequestLogContext(
                 context.RequestId,
                 context.OwnerUsername,
@@ -191,7 +184,7 @@ public sealed class ProxyLogService : IProxyLogService
     {
         try
         {
-            using var budget = RequestExecutionBudget.Create(_auditSpool, request, null, 0, CancellationToken.None);
+            using var budget = RequestExecutionBudget.Create(_auditSpool, request, null, CancellationToken.None);
             return await WriteCompletedLogAsync(_settingsProvider.GetSettings(), new ProxyRequestLogContext(
                 context.RequestId,
                 context.OwnerUsername,
@@ -620,25 +613,8 @@ public sealed class ProxyLogService : IProxyLogService
 
     private void WriteSnapshotSlots(Guid id, ProxyRequestLogContext context, RequestExecutionBudget budget)
     {
-        // Direct logging has no model admission phase. It reserves the exact new slots on
-        // the shared ledger; admitted Core requests only consume their existing credits.
-        if (budget.OwnsReservation)
-        {
-            long bytes = 0;
-            foreach (var slot in ContentSlots)
-            {
-                if (context.BodyHandles?.ForSlot(slot) is not null) continue;
-                if (slot == RequestLogContentSlot.RequestBody && context.RawRequestBody is { Length: > 0 } raw)
-                    bytes = checked(bytes + raw.Length);
-                else
-                {
-                    var value = SnapshotValue(context, slot);
-                    if (value is null && slot is RequestLogContentSlot.WebSearchJson or RequestLogContentSlot.OcrJson) continue;
-                    bytes = checked(bytes + RequestExecutionBudget.AuditBytes(value, CancellationToken.None));
-                }
-            }
-            budget.EnsureAudit(bytes, ContentSlots.Length, CancellationToken.None);
-        }
+        // Direct logging has no model admission phase; the budget only owns snapshot lifetime.
+        budget.EnsureAudit(CancellationToken.None);
         _contentStore.WriteBodies(id, ContentSlots, slot =>
         {
             if (context.BodyHandles?.ForSlot(slot) is { } shared) return shared;

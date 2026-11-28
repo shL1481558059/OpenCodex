@@ -11,7 +11,7 @@ namespace OpenCodex.CoreBase.Domain.Proxy;
 public sealed class ProxyAuditSpoolOptions
 {
     public string Directory { get; set; } = Path.Combine(Path.GetTempPath(), "opencodex-audit-spool");
-    // Existing legacy small-body policy only. Explicit reservations always use root-sized disk pages.
+    // Existing legacy small-body policy only. Explicit snapshots always use root-sized disk pages.
     public int MemoryThresholdBytes { get; set; } = 256 * 1024;
     // Compatibility for explicitly configured test fixtures, not production capacity sources.
     // Production binding must reject these retired keys. No default body/file gate remains.
@@ -21,7 +21,7 @@ public sealed class ProxyAuditSpoolOptions
     public int OrphanAgeSeconds { get; set; } = 3600;
 }
 
-/// <summary>One process ledger for complete immutable snapshots, staging, reservations and metadata.
+/// <summary>Tracks complete immutable snapshots, staging files, owners and metadata.
 /// The dedicated directory also needs an OS quota if used by multiple server processes.</summary>
 public sealed class ProxyAuditSpool : IProtocolAuditCapture, IDisposable
 {
@@ -30,7 +30,7 @@ public sealed class ProxyAuditSpool : IProtocolAuditCapture, IDisposable
     private readonly object _gate = new();
     private readonly string _directory, _snapshotDirectory, _snapshotOwnerPath;
     private readonly Guid _snapshotInstance = Guid.NewGuid();
-    private readonly long _maxTotal, _containerMetadataBytes, _snapshotContainerMetadataBytes, _snapshotOwnerMetadataBytes;
+    private readonly long _containerMetadataBytes, _snapshotContainerMetadataBytes, _snapshotOwnerMetadataBytes;
     private const int SnapshotOwnerHeaderBytes = 8 + 16; // Version magic plus binary instance UUID, not a capacity policy.
     private static ReadOnlySpan<byte> SnapshotOwnerMagic => "OCXSNP01"u8;
     private FileStream? _snapshotOwnerLock;
@@ -40,7 +40,7 @@ public sealed class ProxyAuditSpool : IProtocolAuditCapture, IDisposable
     private readonly long? _legacyMaxBody, _legacyMaxTotal;
     private readonly int? _legacyMaxFiles;
     private readonly int _orphanAge, _memoryThreshold;
-    private long _bytes, _metadata, _reserved, _legacyBytes, _nextSweep;
+    private long _bytes, _metadata, _legacyBytes, _nextSweep;
     private int _files, _legacyFiles;
     private bool _disposed;
     private long _inheritedBytes, _inheritedMetadata, _inheritedOwnerBytes;
@@ -51,16 +51,12 @@ public sealed class ProxyAuditSpool : IProtocolAuditCapture, IDisposable
     internal Func<string, FileStreamOptions, Stream> CreateFile { get; init; } = (path, options) => new FileStream(path, options);
     internal int MemoryThresholdBytes => _memoryThreshold;
     internal object QuotaGate => _gate;
-    internal long MaxTotalBytes => _maxTotal;
     internal long SnapshotContainerMetadataBytes => _snapshotContainerMetadataBytes;
-    internal long SnapshotOwnerCredits
+    internal (long PhysicalBytes, long MetadataBytes, int Files, int Containers) SnapshotUsage
     {
-        get { lock (_gate) return _snapshotOwnerCharged ? 0 : checked(_snapshotOwnerMetadataBytes + SnapshotOwnerHeaderBytes); }
-    }
-    internal (long ReservedBytes, long PhysicalBytes, long MetadataBytes, int Containers) SnapshotUsage
-    {
-        get { lock (_gate) return (_reserved, checked(_bytes + _inheritedBytes),
-            checked(_metadata + _inheritedMetadata), checked(_files + _inheritedFiles - _inheritedOwners - (_snapshotOwnerCharged ? 1 : 0))); }
+        get { lock (_gate) return (checked(_bytes + _inheritedBytes),
+            checked(_metadata + _inheritedMetadata), checked(_files + _inheritedFiles - _inheritedOwners - (_snapshotOwnerCharged ? 1 : 0)),
+            _snapshotContainers); }
     }
 
     public ProxyAuditSpool(ProxyAuditSpoolOptions options)
@@ -72,7 +68,6 @@ public sealed class ProxyAuditSpool : IProtocolAuditCapture, IDisposable
         _directory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(options.Directory));
         _snapshotDirectory = Path.Combine(_directory, $"snapshot-{_snapshotInstance:N}");
         _snapshotOwnerPath = Path.Combine(_snapshotDirectory, "owner.lock");
-        _maxTotal = ProtocolConversionParameters.Current.SnapshotStoreMaxBytes;
         _containerMetadataBytes = ContainerMetadataFor(_directory);
         _snapshotContainerMetadataBytes = ContainerMetadataFor(_snapshotDirectory);
         _snapshotOwnerMetadataBytes = OwnerMetadataFor(_snapshotDirectory);
@@ -101,86 +96,32 @@ public sealed class ProxyAuditSpool : IProtocolAuditCapture, IDisposable
         + Encoding.UTF8.GetByteCount(Path.Combine(directory, "owner.lock"))
         + 16 + sizeof(int) + Encoding.UTF8.GetByteCount(directory));
 
-    private long AvailableCredits()
-    {
-        var room = _maxTotal;
-        if (_bytes >= room) return 0; room -= _bytes;
-        if (_metadata >= room) return 0; room -= _metadata;
-        if (_reserved >= room) return 0; room -= _reserved;
-        if (_inheritedBytes >= room) return 0; room -= _inheritedBytes;
-        if (_inheritedMetadata >= room) return 0;
-        return room - _inheritedMetadata;
-    }
-
-    private void RequireCredits(long credits)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        var available = AvailableCredits();
-        if (credits > available) throw new SnapshotCapacityExceededException(credits, available);
-    }
-
-    internal void InitializeReservation(SnapshotReservation reservation, long credits)
+    internal void InitializeReservation(SnapshotReservation reservation)
     {
         try { if (Environment.TickCount64 >= Interlocked.Read(ref _nextSweep)) CleanupExpired(); }
         catch (IOException exception) { throw SnapshotPersistenceException.Wrap(exception); }
         lock (_gate)
         {
-            if (credits < SnapshotStore.ReservationMetadataBytes)
-                throw new SnapshotCapacityExceededException(SnapshotStore.ReservationMetadataBytes, credits);
-            RequireCredits(credits);
-            reservation.RemainingCredits = credits - SnapshotStore.ReservationMetadataBytes;
-            _reserved = checked(_reserved + reservation.RemainingCredits);
-            _metadata = checked(_metadata + SnapshotStore.ReservationMetadataBytes);
+            ObjectDisposedException.ThrowIf(_disposed, this);
             _activeReservations = checked(_activeReservations + 1);
         }
     }
 
-    internal void ExtendReservation(SnapshotReservation reservation, long additionalBytes)
-    {
-        lock (_gate)
-        {
-            ObjectDisposedException.ThrowIf(reservation.Disposed, reservation);
-            RequireCredits(additionalBytes);
-            reservation.RemainingCredits = checked(reservation.RemainingCredits + additionalBytes);
-            _reserved = checked(_reserved + additionalBytes);
-        }
-    }
-
-    internal void EnsureReservation(SnapshotReservation reservation, long requiredCredits)
+    internal void ConsumeSnapshot(long bytes, bool metadata)
     {
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            ObjectDisposedException.ThrowIf(reservation.Disposed, reservation);
-            if (requiredCredits <= reservation.RemainingCredits) return;
-            ExtendReservation(reservation, requiredCredits - reservation.RemainingCredits);
-        }
-    }
-
-    internal void ConsumeSnapshot(SnapshotReservation reservation, long bytes, bool metadata)
-    {
-        lock (_gate)
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            ObjectDisposedException.ThrowIf(reservation.Disposed, reservation);
-            if (bytes > reservation.RemainingCredits)
-                throw new SnapshotCapacityExceededException(bytes, reservation.RemainingCredits);
-            reservation.RemainingCredits -= bytes; _reserved -= bytes;
             if (metadata) _metadata = checked(_metadata + bytes);
             else _bytes = checked(_bytes + bytes);
         }
     }
 
-    internal void RefundSnapshot(SnapshotReservation reservation, long bytes, bool metadata)
+    internal void RefundSnapshot(long bytes, bool metadata)
     {
         lock (_gate)
         {
             if (metadata) _metadata -= bytes; else _bytes -= bytes;
-            if (!reservation.Disposed)
-            {
-                reservation.RemainingCredits = checked(reservation.RemainingCredits + bytes);
-                _reserved = checked(_reserved + bytes);
-            }
         }
     }
 
@@ -190,21 +131,19 @@ public sealed class ProxyAuditSpool : IProtocolAuditCapture, IDisposable
         {
             if (reservation.Disposed) return false;
             reservation.Disposed = true;
-            _reserved -= reservation.RemainingCredits; reservation.RemainingCredits = 0;
-            _metadata -= SnapshotStore.ReservationMetadataBytes;
             _activeReservations--;
             ReleaseSnapshotOwnerIfIdle();
             return true;
         }
     }
 
-    internal string AllocateSnapshotPath(SnapshotReservation reservation, long metadataBytes)
+    internal string AllocateSnapshotPath(long metadataBytes)
     {
         var path = Path.Combine(_snapshotDirectory, $"audit-{Guid.NewGuid():N}.tmp");
         lock (_gate)
         {
-            EnsureSnapshotOwner(reservation);
-            ConsumeSnapshot(reservation, metadataBytes, metadata: true);
+            EnsureSnapshotOwner();
+            ConsumeSnapshot(metadataBytes, metadata: true);
             try
             {
                 _ownedPaths.Add(path); _files = checked(_files + 1);
@@ -213,7 +152,7 @@ public sealed class ProxyAuditSpool : IProtocolAuditCapture, IDisposable
             catch
             {
                 _ownedPaths.Remove(path);
-                RefundSnapshot(reservation, metadataBytes, metadata: true);
+                RefundSnapshot(metadataBytes, metadata: true);
                 throw;
             }
         }
@@ -231,7 +170,7 @@ public sealed class ProxyAuditSpool : IProtocolAuditCapture, IDisposable
         catch (IOException exception) { throw SnapshotPersistenceException.Wrap(exception); }
     }
 
-    internal void RetireSnapshotContainer(SnapshotReservation reservation, string path, long physicalBytes, long metadataBytes)
+    internal void RetireSnapshotContainer(string path, long physicalBytes, long metadataBytes)
     {
         var deleted = DeleteOwnedPath(path);
         lock (_gate)
@@ -241,8 +180,8 @@ public sealed class ProxyAuditSpool : IProtocolAuditCapture, IDisposable
                 _pendingCleanup[path] = new(physicalBytes, metadataBytes, Legacy: false);
             else
             {
-                RefundSnapshot(reservation, physicalBytes, metadata: false);
-                RefundSnapshot(reservation, metadataBytes, metadata: true);
+                RefundSnapshot(physicalBytes, metadata: false);
+                RefundSnapshot(metadataBytes, metadata: true);
                 _files--; _ownedPaths.Remove(path);
             }
             ReleaseSnapshotOwnerIfIdle();
@@ -256,16 +195,13 @@ public sealed class ProxyAuditSpool : IProtocolAuditCapture, IDisposable
         catch (UnauthorizedAccessException) { return false; }
     }
 
-    private void EnsureSnapshotOwner(SnapshotReservation reservation)
+    private void EnsureSnapshotOwner()
     {
         if (_snapshotOwnerFailure is { } failure)
             throw new IOException("Private snapshot owner initialization failed.", failure);
         if (_snapshotOwnerLock is not null) return;
-        var credits = checked(_snapshotOwnerMetadataBytes + SnapshotOwnerHeaderBytes);
-        if (credits > reservation.RemainingCredits)
-            throw new SnapshotCapacityExceededException(credits, reservation.RemainingCredits);
-        ConsumeSnapshot(reservation, _snapshotOwnerMetadataBytes, metadata: true);
-        ConsumeSnapshot(reservation, SnapshotOwnerHeaderBytes, metadata: false);
+        ConsumeSnapshot(_snapshotOwnerMetadataBytes, metadata: true);
+        ConsumeSnapshot(SnapshotOwnerHeaderBytes, metadata: false);
         _snapshotOwnerCharged = true; _files = checked(_files + 1);
         FileStream? lifetime = null;
         try
@@ -417,7 +353,7 @@ public sealed class ProxyAuditSpool : IProtocolAuditCapture, IDisposable
         catch { body.Dispose();throw; }
     }
 
-    // A request-owned append buffer shares EXACTLY the same quota, lifecycle and crash cleanup
+    // A request-owned append buffer shares the same lifecycle and crash cleanup
     // as immutable JSON snapshots. Only Core can use this; callers must Dispose in all paths.
     internal AuditFile CreateStaging(CancellationToken cancellationToken)
     {
@@ -430,7 +366,6 @@ public sealed class ProxyAuditSpool : IProtocolAuditCapture, IDisposable
         {
             if (_legacyMaxFiles is { } files && _legacyFiles + _inheritedFiles >= files)
                 throw new IOException("Complete audit spool file quota exceeded.");
-            RequireCredits(metadata);
             _metadata = checked(_metadata + metadata);
             _files++; _legacyFiles++; _ownedPaths.Add(path);
         }
@@ -494,7 +429,6 @@ public sealed class ProxyAuditSpool : IProtocolAuditCapture, IDisposable
             if (_legacyMaxBody is { } body && count > body - bodyLength
                 || _legacyMaxTotal is { } total && count > total - _legacyBytes - _inheritedBytes)
                 throw new IOException("Complete audit spool byte quota exceeded; body was not truncated.");
-            RequireCredits(physicalGrowth);
             _legacyBytes = checked(_legacyBytes + count);
             _bytes = checked(_bytes + physicalGrowth);
         }

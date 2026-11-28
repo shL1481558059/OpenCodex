@@ -117,17 +117,15 @@ DB_TYPE=postgres \
 
 ### 升级前必须检查 `.env`
 
-协议转换预算键（`ProtocolConversion__*`，共 21 个）是**必填项且没有默认值**：缺失、非数字或越界都会让容器在启动阶段直接退出。配合 `restart: unless-stopped` 会表现为反复重启、健康检查持续失败。
+协议转换预算键（`ProtocolConversion__*`，共 20 个）是**必填项且没有默认值**：缺失、非数字或越界都会让容器在启动阶段直接退出。配合 `restart: unless-stopped` 会表现为反复重启、健康检查持续失败。
 
 升级镜像前请：
 
 1. 把 [`.env.example`](.env.example) 中 `ProtocolConversion__*` 整段追加到服务器 `.env`；
-2. 核对两个功能级预算是否符合现网资源：
-   - `ProtocolConversion__MaxRequestBodyBytes`：一次完整解码请求的统一上限（当前 256 MiB）；
-   - `ProtocolConversion__SnapshotStoreMaxBytes`：历史与审计证据共享存储的总配额（当前 4 GiB，**磁盘记账上限，不是常驻内存**）。
-3. 确认 `/app/logs` 所在磁盘足够容纳上述配额；容器内存上限由 `APP_MEMORY_LIMIT` 单独控制（默认 1 GiB）。
+2. 核对 `ProtocolConversion__MaxRequestBodyBytes`：一次完整解码请求的统一上限（当前 256 MiB）。
+3. 确认 `/app/logs` 所在磁盘有足够空间容纳历史与审计快照；容器内存上限由 `APP_MEMORY_LIMIT` 单独控制（默认 1 GiB）。
 
-`scripts/deploy-ocxp-dev.sh` 会在重建容器**之前**校验这 21 个键，缺任意一个直接失败，不会进入重启循环。
+`scripts/deploy-ocxp-dev.sh` 会在重建容器**之前**校验这 20 个键，缺任意一个直接失败，不会进入重启循环。
 
 镜像不再携带任何配置文件；容器通过 `env_file: .env` 接收环境变量，也支持直接用 `docker run --env-file .env` 注入。
 

@@ -22,7 +22,6 @@ use tauri_plugin_shell::{
 // .env are supplied explicitly here. Keep these in sync with .env.example.
 const PROTOCOL_CONVERSION_ENV: &[(&str, &str)] = &[
     ("ProtocolConversion__MaxRequestBodyBytes", "268435456"),
-    ("ProtocolConversion__SnapshotStoreMaxBytes", "4294967296"),
     ("ProtocolConversion__StringSegmentCharacters", "4096"),
     ("ProtocolConversion__FlushBytes", "16384"),
     ("ProtocolConversion__GeneratedFrameCacheBytes", "32768"),

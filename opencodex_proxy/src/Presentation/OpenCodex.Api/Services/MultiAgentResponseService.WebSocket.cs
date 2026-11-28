@@ -410,10 +410,6 @@ public sealed partial class MultiAgentResponseService
                 }
             }
         }
-        catch (SnapshotCapacityExceededException exception)
-        {
-            await ErrorAndClose(exception.Message, 507, "snapshot_capacity_exceeded");
-        }
         catch (SnapshotPersistenceException exception)
         {
             await ErrorAndClose(exception.Message, 507, "snapshot_write_failed");

@@ -24,8 +24,8 @@ public sealed class ReceivedEvidenceRegressionTests
     public ReceivedEvidenceRegressionTests(ITestOutputHelper output)
     {
         output.WriteLine(
-            "RootMeta P={0} S={1} C={2} CaptureItems={3} CaptureFields={4} FlushBytes={5} SSE={6} WS={7}; FixtureC={8} FixtureSSE={9} FixtureWS={10} CaseTimeoutMilliseconds={11}",
-            Root.MaxRequestBodyBytes, Root.SnapshotStoreMaxBytes, Root.SseMaxCaptureBytes,
+            "RootMeta P={0} C={1} CaptureItems={2} CaptureFields={3} FlushBytes={4} SSE={5} WS={6}; FixtureC={7} FixtureSSE={8} FixtureWS={9} CaseTimeoutMilliseconds={10}",
+            Root.MaxRequestBodyBytes, Root.SseMaxCaptureBytes,
             Root.SseMaxCaptureItems, Root.SseMaxCaptureFields, Root.FlushBytes,
             Root.SseMaxEventBytes, Root.SseMaxWebSocketMessageBytes,
             Settings.CaptureBytes, Settings.EventBytes, Settings.WebSocketMessageBytes,
@@ -531,17 +531,13 @@ public sealed class ReceivedEvidenceRegressionTests
             try
             {
                 Assert.Equal(Root.FlushBytes, Store.PageBytes);
-                Assert.Equal(Root.SnapshotStoreMaxBytes, Store.MaxBytes);
-                // Journal + possible raw UTF-16 arguments + one persisted JSON body; pages allocate on demand.
-                var payload = checked(ReceivedFrameEvidence.MaxJournalBytes(Settings.CaptureBytes, sourceMargin)
-                    + 2L * Settings.CaptureBytes + ReceivedFrameEvidence.MaxJsonBytes(Settings.CaptureBytes, sourceMargin));
-                Reservation = Store.Reserve(Store.EstimateCredits(payload, maxLiveBuffers: 3, containers: 1), Token);
+                Reservation = Store.Reserve(Token);
             }
             catch
             {
                 Spool.Dispose();
                 _deadline.Dispose();
-                Assert.Equal((0L, 0L, 0L, 0), Store.Usage);
+                Assert.Equal((0L, 0L, 0, 0), Store.Usage);
                 DeleteOwnDirectory();
                 throw;
             }
@@ -566,7 +562,7 @@ public sealed class ReceivedEvidenceRegressionTests
             Reservation.Dispose();
             Spool.Dispose();
             _deadline.Dispose();
-            Assert.Equal((0L, 0L, 0L, 0), Store.Usage);
+            Assert.Equal((0L, 0L, 0, 0), Store.Usage);
             DeleteOwnDirectory();
         }
         private void DeleteOwnDirectory()

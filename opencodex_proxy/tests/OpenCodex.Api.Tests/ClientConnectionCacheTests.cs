@@ -32,13 +32,12 @@ public sealed class ClientConnectionCacheTests : IDisposable
     }
 
     [Fact]
-    public void RootSnapshotQuotaIsTheOnlyCacheBudget()
+    public void RootSnapshotStoreOwnsTheConnectionHistory()
     {
-        Assert.Equal(ProtocolConversionParameters.Current.SnapshotStoreMaxBytes, _store.MaxBytes);
         Assert.Same(_store, _cache.Store);
         using var scope = _cache.Open(Guid.NewGuid());
         Remember(scope, "root-budget", RequestValue(), "stored");
-        Assert.InRange(UsedCredits(), 1L, _store.MaxBytes);
+        Assert.True(UsedCredits() > 0);
         Assert.True(scope.Knows("root-budget"));
         Assert.True(scope.IsCompleted("root-budget"));
         CloseAndAssertEmpty();
@@ -70,7 +69,7 @@ public sealed class ClientConnectionCacheTests : IDisposable
             Assert.InRange(_store.Usage.PhysicalBytes - before, 1L, Settings.HistoricalRequestBytes - 1L);
             Assert.True(scope.Knows("large"));
             Assert.True(scope.IsCompleted("large"));
-            Assert.InRange(UsedCredits(), 1L, _store.MaxBytes);
+            Assert.True(UsedCredits() > 0);
         }
         CloseAndAssertEmpty();
     }
@@ -103,7 +102,7 @@ public sealed class ClientConnectionCacheTests : IDisposable
             {
                 Remember(scope, "id" + index, RequestValue("request" + index), "response" + index);
                 Assert.Equal(index + 1, _cache.Usage.Entries);
-                Assert.InRange(UsedCredits(), 1L, _store.MaxBytes);
+                Assert.True(UsedCredits() > 0);
             }
             for (var index = 0; index < Settings.CacheHistoryVersions; index++)
             {
@@ -140,30 +139,16 @@ public sealed class ClientConnectionCacheTests : IDisposable
         Assert.False(a2.Knows("same"));
         Assert.False(b.Knows("a-only"));
         Assert.Equal(3, _cache.Usage.Entries);
-        Assert.InRange(UsedCredits(), 1L, _store.MaxBytes);
+        Assert.True(UsedCredits() > 0);
         CloseAndAssertEmpty();
     }
 
     [Fact]
-    public void SharedQuotaRejectsNewHistoryWithoutEvictingOldId()
+    public void SharedHistoryAddsNewVersionsWithoutEvictingOldId()
     {
         using var a = _cache.Open(Guid.NewGuid());
         using var b = _cache.Open(Guid.NewGuid());
         Remember(a, "old", RequestValue("old request"), "old response");
-        using (var blocker = BlockRemainingCredits())
-        {
-            Assert.Equal(_store.MaxBytes, UsedCredits());
-            var full = _store.Usage;
-            Assert.Throws<SnapshotCapacityExceededException>(() => a.Prepare(RequestValue("new request"), null, generate: false, cancellationToken: default));
-            Assert.Throws<SnapshotCapacityExceededException>(() => b.Prepare(RequestValue("other tenant"), null, generate: false, cancellationToken: default));
-            Assert.Equal(full, _store.Usage);
-            Assert.True(a.Knows("old"));
-            Assert.True(a.IsCompleted("old"));
-            using var old = Assert.IsType<ClientHistoryVersion>(a.AcquireHistory("old"));
-            Assert.Equal("old response", old.MaterializeResponse()["value"]);
-            Assert.Equal(full, _store.Usage); // AddRef/read does not request fresh storage credits.
-            Assert.Equal(1, _cache.Usage.Entries);
-        }
         Remember(a, "new", RequestValue("new request"), "new response");
         Assert.True(a.Knows("old"));
         Assert.True(a.IsCompleted("old"));
@@ -187,7 +172,7 @@ public sealed class ClientConnectionCacheTests : IDisposable
         _cache.Dispose();
         _spool.Dispose();
         Assert.Equal(0, _cache.Usage.Entries);
-        Assert.InRange(_store.Usage.PhysicalBytes, 1L, _store.MaxBytes);
+        Assert.True(_store.Usage.PhysicalBytes > 0);
         Assert.Equal(new[] { "retained request" }, InputTexts(history.MaterializeRequest()));
         Assert.Equal("retained response", history.MaterializeResponse()["value"]);
         history.Dispose();
@@ -312,17 +297,15 @@ public sealed class ClientConnectionCacheTests : IDisposable
     private long UsedCredits()
     {
         var usage = _store.Usage;
-        return checked(usage.ReservedBytes + usage.PhysicalBytes + usage.MetadataBytes);
+        return checked(usage.PhysicalBytes + usage.MetadataBytes);
     }
-
-    private SnapshotReservation BlockRemainingCredits() => _store.Reserve(checked(_store.MaxBytes - UsedCredits()));
 
     private void CloseAndAssertEmpty()
     {
         _cache.Dispose();
         _spool.Dispose();
         Assert.Equal((0, 0L), _cache.Usage);
-        Assert.Equal((0L, 0L, 0L, 0), _store.Usage);
+        Assert.Equal((0L, 0L, 0, 0), _store.Usage);
     }
 
     private sealed record CacheTestParameters(int HistoricalRequestBytes, int CacheHistoryVersions, int CacheConcurrentWorkers, int CacheWsWarmupVersions)

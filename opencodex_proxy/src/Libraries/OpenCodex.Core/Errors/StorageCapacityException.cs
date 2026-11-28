@@ -41,9 +41,6 @@ public static class ResourceErrors
                 "request_too_large", exception),
             BadRequestException { StatusCode: 413 } => new StorageCapacityException("request body too large", 413,
                 "request_too_large", exception),
-            SnapshotCapacityExceededException => new StorageCapacityException(
-                "Complete snapshot storage capacity exceeded; no content was truncated.", 507,
-                "snapshot_capacity_exceeded", exception),
             SnapshotPersistenceException => new StorageCapacityException(
                 "Complete snapshot storage IO failed; state could not be committed.", 507,
                 "snapshot_write_failed", exception),

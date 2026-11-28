@@ -108,7 +108,7 @@ public sealed class ClientHistoryVersion : IDisposable
     }
 }
 
-/// <summary>Prepared model input and credits. A successful commit adds independent sealed owners.</summary>
+    /// <summary>Prepared model input and snapshot ownership. A successful commit adds independent sealed owners.</summary>
 public sealed class PreparedClientRequest : IDisposable
 {
     private readonly ClientConnectionCache.Connection _connection;
@@ -144,23 +144,8 @@ public sealed class PreparedClientRequest : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (_generates) throw new InvalidOperationException("Model execution credits must be reserved before execution.");
-        var id = JsonDictionaryValue.String(response, "id");
-        var output = JsonDictionaryValue.List(response, "output");
-        var metadata = new D(response, StringComparer.Ordinal);
-        metadata.Remove("output");
-        var hash = new string('0', SHA256.HashSizeInBytes * 2);
-        var manifest = new D
-        {
-            ["id"] = id, ["request_metadata"] = _metadata.Hash,
-            ["input"] = _input.Select(value => (object?)value.Hash).ToList(),
-            ["response_metadata"] = hash,
-            ["output"] = output.Select(_ => (object?)hash).ToList()
-        };
-        var bytes = checked(ProtocolJsonWriter.Count(metadata, audit: true, cancellationToken)
-            + ProtocolJsonWriter.Count(manifest, audit: true, cancellationToken)
-            + ProtocolJsonWriter.Count(_connection.IdentityRecord(id), audit: true, cancellationToken));
-        foreach (var item in output) bytes = checked(bytes + ProtocolJsonWriter.Count(item, audit: true, cancellationToken));
-        Reservation.EnsureRemaining(_connection.Store.EstimateCredits(bytes, output.Count + 3, 1), cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        Reservation.ThrowIfDisposed();
     }
 
     public void Commit(D response, CancellationToken cancellationToken)

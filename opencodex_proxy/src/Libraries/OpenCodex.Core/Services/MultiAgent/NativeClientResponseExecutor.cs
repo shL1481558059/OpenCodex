@@ -26,7 +26,7 @@ public sealed class NativeClientResponseExecutor(NativeClientSessionStore store,
         var terminalSent = false;
         var bufferedBytes = (streamingOptions ?? new()).MaxBufferedEventBytes;
         var snapshots = new SnapshotStore(auditSpool);
-        using var reservation = snapshots.Reserve(snapshots.EstimateCredits(bufferedBytes, 4, 1), lease.Token);
+        using var reservation = snapshots.Reserve(lease.Token);
         using var eventBudget = new StreamCaptureBudget(bufferedBytes, int.MaxValue, 4, reservation.AuditCapture, lease.Token);
         var events=new ConverterJsonFragments(eventBudget);
         var added = new HashSet<int>();
